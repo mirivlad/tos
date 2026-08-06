@@ -21,7 +21,7 @@ use core::ptr;
 
 use efi::*;
 use tos_boot_protocol::{BootInfo, MemoryRange, RESULT_CAPSULE_INVALID, RESULT_PANIC};
-use tos_capsule::{CapsError, Capsule};
+use tos_capsule::{parse, CapsError};
 use tos_hash::sha256;
 
 const STACK_PAGES: usize = 8; // 32 KiB
@@ -36,6 +36,10 @@ impl PoolBuf {
     fn as_slice(&self) -> &[u8] {
         unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
     }
+
+    fn len(&self) -> usize {
+        self.len
+    }
 }
 
 #[panic_handler]
@@ -48,11 +52,9 @@ fn panic(_info: &PanicInfo) -> ! {
 fn result_port(code: u8) -> ! {
     unsafe {
         asm!(
-            "mov dx, {port}",
-            "mov al, {code}",
             "out dx, al",
-            port = in(reg) tos_boot_protocol::RESULT_PORT as u16,
-            code = in(reg_byte) code,
+            in("al") code,
+            in("dx") (tos_boot_protocol::RESULT_PORT as u16),
             options(nomem, nostack, preserves_flags)
         );
     }
@@ -87,7 +89,7 @@ fn conout(st: *mut SystemTable, s: &str) {
     }
     buf[n] = 0;
     unsafe {
-        (out.output_string)(out, buf.as_ptr());
+        ((*out).output_string)(out, buf.as_ptr());
     }
 }
 
@@ -137,7 +139,7 @@ fn error_tag(e: CapsError) -> &'static [u8] {
 /// Allocate a pool buffer (RuntimeServicesData: survives ExitBootServices).
 fn alloc_pool(bt: *mut BootServices, size: usize) -> Option<PoolBuf> {
     let mut p: *mut c_void = ptr::null_mut();
-    let st = unsafe { (bt.allocate_pool)(MEM_TYPE_RUNTIME_SERVICES_DATA, size, &mut p) };
+    let st = unsafe { ((*bt).allocate_pool)(MEM_TYPE_RUNTIME_SERVICES_DATA, size, &mut p) };
     if st != EFI_SUCCESS {
         return None;
     }
@@ -151,7 +153,7 @@ fn alloc_pool(bt: *mut BootServices, size: usize) -> Option<PoolBuf> {
 fn open_ro(root: *mut FileProtocol, name: &str) -> Option<*mut FileProtocol> {
     let mut wide = [0u16; 64];
     let mut n = 0;
-    for b in name.as_bytes() {
+    for &b in name.as_bytes() {
         if n >= wide.len() - 1 {
             return None;
         }
@@ -160,7 +162,7 @@ fn open_ro(root: *mut FileProtocol, name: &str) -> Option<*mut FileProtocol> {
     }
     wide[n] = 0;
     let mut f: *mut FileProtocol = ptr::null_mut();
-    let st = unsafe { (root.open)(root, &mut f, wide.as_ptr(), EfiOpenFileRead, 0) };
+    let st = unsafe { ((*root).open)(root, &mut f, wide.as_ptr(), EFI_OPEN_FILE_READ, 0) };
     if st == EFI_SUCCESS {
         Some(f)
     } else {
@@ -172,26 +174,26 @@ fn open_ro(root: *mut FileProtocol, name: &str) -> Option<*mut FileProtocol> {
 fn read_file(bt: *mut BootServices, root: *mut FileProtocol, name: &str) -> Option<PoolBuf> {
     let file = open_ro(root, name)?;
     unsafe {
-        (file.set_position)(file, u64::MAX);
+        ((*file).set_position)(file, u64::MAX);
     }
     let mut size: u64 = 0;
     unsafe {
-        (file.get_position)(file, &mut size);
+        ((*file).get_position)(file, &mut size);
     }
     if size == 0 {
         unsafe {
-            (file.close)(file);
+            ((*file).close)(file);
         }
         return None;
     }
     let buf = alloc_pool(bt, size as usize)?;
     unsafe {
-        (file.set_position)(file, 0);
+        ((*file).set_position)(file, 0);
     }
     let mut rd: usize = size as usize;
-    let st = unsafe { (file.read)(file, &mut rd, buf.ptr as *mut c_void) };
+    let st = unsafe { ((*file).read)(file, &mut rd, buf.ptr as *mut c_void) };
     unsafe {
-        (file.close)(file);
+        ((*file).close)(file);
     }
     if st != EFI_SUCCESS || rd != size as usize {
         return None;
@@ -210,7 +212,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
     // --- our device handle via the Loaded Image protocol ---
     let mut loaded: *mut LoadedImageProtocol = ptr::null_mut();
     let st = unsafe {
-        (bt.handle_protocol)(
+        ((*bt).handle_protocol)(
             image_handle,
             &GUID_LOADED_IMAGE,
             &mut loaded as *mut *mut LoadedImageProtocol as *mut *mut c_void,
@@ -224,7 +226,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
     // --- file system on that device ---
     let mut fs: *mut SimpleFileSystemProtocol = ptr::null_mut();
     let st = unsafe {
-        (bt.handle_protocol)(
+        ((*bt).handle_protocol)(
             device,
             &GUID_SIMPLE_FILE_SYSTEM,
             &mut fs as *mut *mut SimpleFileSystemProtocol as *mut *mut c_void,
@@ -234,7 +236,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
         serial_fatal(b"TOS.BOOT.FAILI no-fs");
     }
     let mut root: *mut FileProtocol = ptr::null_mut();
-    let st = unsafe { (fs.open_volume)(fs, &mut root) };
+    let st = unsafe { ((*fs).open_volume)(fs, &mut root) };
     if st != EFI_SUCCESS {
         serial_fatal(b"TOS.BOOT.FAILI no-volume");
     }
@@ -248,7 +250,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
         None => serial_fatal(b"TOS.BOOT.FAILI no-nucleus"),
     };
     unsafe {
-        (root.close)(root);
+        ((*root).close)(root);
     }
 
     // --- capsule validation ---
@@ -257,7 +259,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
     tos_serial::put_hex32(&cd);
     tos_serial::puts(b"\r\n");
 
-    let cap = match Capsule::parse(capsule.as_slice()) {
+    let cap = match parse(capsule.as_slice()) {
         Ok(c) => c,
         Err(e) => {
             tos_serial::puts(b"TOS.BOOT.FAILC capsule_err=");
@@ -271,7 +273,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
     let nucleus_pages = (nucleus.len() + 0xfff) / 0x1000;
     let mut nucleus_phys: u64 = 0;
     let st = unsafe {
-        (bt.allocate_pages)(
+        ((*bt).allocate_pages)(
             ALLOCATE_ANY_PAGES,
             MEM_TYPE_LOADER_CODE,
             nucleus_pages,
@@ -288,7 +290,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
     // --- stack pages (non-executable) ---
     let mut stack_phys: u64 = 0;
     let st = unsafe {
-        (bt.allocate_pages)(
+        ((*bt).allocate_pages)(
             ALLOCATE_ANY_PAGES,
             MEM_TYPE_LOADER_DATA,
             STACK_PAGES,
@@ -305,7 +307,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
     let mut desc_size: usize = 0;
     let mut desc_ver: u32 = 0;
     let st = unsafe {
-        (bt.get_memory_map)(
+        ((*bt).get_memory_map)(
             &mut map_size,
             ptr::null_mut(),
             &mut map_key,
@@ -330,7 +332,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
     // --- memory map: fill (final key) ---
     let mut got: usize = desc_cap;
     let st = unsafe {
-        (bt.get_memory_map)(
+        ((*bt).get_memory_map)(
             &mut got,
             desc_buf.ptr as *mut EfiMemoryDescriptor,
             &mut map_key,
@@ -348,20 +350,20 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
     let mut prev_end: u64 = 0;
     for i in 0..n {
         let md = unsafe { &*((desc_buf.ptr as usize + i * desc_size) as *const EfiMemoryDescriptor) };
-        let start = md.physical_start;
-        let len = md.number_of_pages * 0x1000;
-        if start < prev_end {
+        let start1 = md.physical_start;
+        let len1 = md.number_of_pages * 0x1000;
+        if start1 < prev_end {
             serial_fatal(b"TOS.BOOT.FAILI unsorted-map");
         }
         unsafe {
             ranges.add(i).write(MemoryRange {
-                phys_start: start,
-                phys_length: len,
+                phys_start: start1,
+                phys_length: len1,
                 ty: md.ty,
                 flags: 0,
             });
         }
-        prev_end = start + len;
+        prev_end = start1 + len1;
     }
     let range_len = n * core::mem::size_of::<MemoryRange>();
 
@@ -372,7 +374,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
     };
     let mut bi = BootInfo::new();
     bi.capsule_phys = capsule.ptr as u64;
-    bi.capsule_length = capsule.len as u64;
+    bi.capsule_length = capsule.len() as u64;
     bi.capsule_digest = cd;
     bi.capsule_identity_kind = cap.header().source_identity_kind;
     bi.capsule_source_identity = cap.header().source_identity_digest;
@@ -386,7 +388,7 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
     let bi_phys = bi_buf.ptr as u64;
 
     // --- exit boot services (key from the final GetMemoryMap) ---
-    let st = unsafe { (bt.exit_boot_services)(image_handle, map_key) };
+    let st = unsafe { ((*bt).exit_boot_services)(image_handle, map_key) };
     if st != EFI_SUCCESS {
         serial_fatal(b"TOS.BOOT.FAILI exit-bs");
     }
@@ -410,5 +412,4 @@ pub extern "C" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTabl
             options(noreturn)
         );
     }
-    unreachable!()
 }

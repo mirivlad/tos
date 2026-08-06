@@ -14,17 +14,13 @@ use core::ffi::c_void;
 pub type EfiStatus = usize;
 pub const EFI_SUCCESS: EfiStatus = 0;
 pub const EFI_BUFFER_TOO_SMALL: EfiStatus = 5;
-pub const EFI_NOT_FOUND: EfiStatus = 14;
-pub const EFI_DEVICE_ERROR: EfiStatus = 7;
 
-pub const EfiOpenFileRead: u64 = 0x1;
+pub const EFI_OPEN_FILE_READ: u64 = 0x1;
 
 // EFI memory type codes (UEFI 2.10 section 7.2): the documented numeric values.
 pub const MEM_TYPE_LOADER_CODE: u32 = 1;
 pub const MEM_TYPE_LOADER_DATA: u32 = 2;
-pub const MEM_TYPE_BOOT_SERVICES_DATA: u32 = 4;
 pub const MEM_TYPE_RUNTIME_SERVICES_DATA: u32 = 6;
-pub const MEM_TYPE_CONVENTIONAL: u32 = 7;
 pub const ALLOCATE_ANY_PAGES: u32 = 0;
 
 #[repr(C)]

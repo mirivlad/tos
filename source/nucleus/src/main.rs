@@ -16,7 +16,7 @@ use tos_boot_protocol::{
     BootInfo, MemoryRange, RESULT_ABI_INVALID, RESULT_CAPSULE_INVALID, RESULT_HALT_OK,
     RESULT_MEMORY_INVALID, RESULT_PANIC, RESULT_PORT,
 };
-use tos_capsule::{Capsule, BOOT_PATH};
+use tos_capsule::parse;
 use tos_hash::{Sha256, sha256};
 use tos_serial;
 
@@ -30,11 +30,9 @@ fn panic(_info: &PanicInfo) -> ! {
 fn result_port(code: u8) -> ! {
     unsafe {
         asm!(
-            "mov dx, {port}",
-            "mov al, {code}",
             "out dx, al",
-            port = in(reg) RESULT_PORT as u16,
-            code = in(reg_byte) code,
+            in("al") code,
+            in("dx") (RESULT_PORT as u16),
             options(nomem, nostack, preserves_flags)
         );
     }
@@ -84,6 +82,7 @@ fn first_logical_line(content: &[u8]) -> Option<&[u8]> {
 }
 
 #[no_mangle]
+#[link_section = ".text.boot_entry"]
 pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::init();
     tos_serial::puts(b"TOS.NUCLEUS.ENTRY\r\n");
@@ -122,7 +121,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     if sha256(cap_bytes) != bi.capsule_digest {
         cap_fail();
     }
-    let cap = match Capsule::parse(cap_bytes) {
+    let cap = match parse(cap_bytes) {
         Ok(c) => c,
         Err(_) => cap_fail(),
     };
@@ -160,6 +159,5 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
 
     // --- 6. halt with success code ---
     tos_serial::puts(b"TOS.HALT ok=0x10\r\n");
-    let _ = BOOT_PATH; // referenced for documentation of the constant
     result_port(RESULT_HALT_OK)
 }

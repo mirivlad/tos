@@ -30,14 +30,14 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 | 6 | crates/capsule: парсер (no_std, тотальный) | done | 10/10 lib-тестов, фаззинг 300k раундов без паники |
 | 7 | crates/capsule: host-билдер (feature="host") | done | детерминизм: builder == golden vector |
 | 8 | crates/tos-serial (16550 COM1, no_std) | done | используется loader + nucleus |
-| 9 | boot/uefi-loader (EFI app, рукописные биндинги) | код написан | НЕ собран: нет таргета x86_64-unknown-uefi |
-| 10 | nucleus (freestanding, boot ABI v1, serial, halt-код) | код написан | НЕ собран: нет таргета x86_64-unknown-none |
+| 9 | boot/uefi-loader (EFI app, рукописные биндинги) | done | PE32+ EFI app x86_64 собран, 0 warnings; release 14848 B |
+| 10 | nucleus (freestanding, boot ABI v1, serial, halt-код) | done | raw-binary собран (entry первой, `sub rsp`); release 10520 B |
 | 11 | system/boot/init.tos + NOTICES.txt | done | source/system/boot/ |
 | 12 | host-tools/capsule (CLI-билдер) | done | регенерация векторов через него |
 | 13 | Golden-векторы (7 .bin, коммитимые) | done | source/tests/vectors/capsule-v1/ |
 | 14 | tests/integration | done | 8/8 (golden, tamper, determinism, truncation, perf) |
 | 15 | tests/fuzz (детерминированный мутационный) | done | FUZZ PASS rounds=300000 |
-| 16 | Сборка всех таргетов (host + uefi + none) | частично | host собирается; uefi/none — rustup target add |
+| 16 | Сборка всех таргетов (host + uefi + none) | done | host: 31/31 тестов; uefi loader: PE32+ EFI app 0 warnings; none nucleus: raw binary (entry first) |
 | 17 | host-tools/qemu-test (ESP-образ + OVMF) | pending | — |
 | 18 | QEMU-прогоны: success + corrupted capsule | pending | — |
 | 19 | scripts/check-spdx, check-dco | pending | — |
@@ -70,10 +70,20 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   `1bc8c16` журнал, `3226077` workspace config, `dc16726` impact statement.
 - Подпись DCO: `mirivlad <mirvtop@yandex.ru>`. Рабочее дерево чистое.
 
+### 2026-08-06 — сборка целевых таргетов
+
+- `rustup target add x86_64-unknown-uefi x86_64-unknown-none` (для тулчейна
+  1.97.1 из source/; повтор из корня не помог — клал в stable).
+- Loader `--target x86_64-unknown-uefi`: полная отладка вызовов через
+  `(*ptr).field` (C-стиль `ptr->field` не компилится), `in("dx")`/`in("al")`
+  вместо `mov dx,{port}` (sub-register). PE32+ EFI x86-64, 0 warnings.
+- Nucleus `--target x86_64-unknown-none`: добавлен `build.rs` (`-T linker.ld`,
+  `--oformat=binary`), `#[link_section=".text.boot_entry"]`; raw-образ, точка
+  входа первой (`sub rsp` пролог). release 10520 B.
+- `source/.cargo/config.toml`: `relocation-model=static` для x86_64-unknown-none.
+
 ## Открытые вопросы / риски
 
-- Сборка uefi/none-таргетов требует `rustup target add x86_64-unknown-uefi x86_64-unknown-none`
-  (через прокси, см. память окружения).
 - OVMF: нужен пакет/файл OVMF.fd для QEMU (проверить наличие на хосте).
 - Подпись DCO: `mirivlad <mirvtop@yandex.ru>` (совпадает с git config и базовым
   коммитом c5b818c; вопрос про mir@yandex.ru закрыт — в историю не вносим).
