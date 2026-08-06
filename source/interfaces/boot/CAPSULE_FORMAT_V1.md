@@ -23,7 +23,7 @@ must not claim to be a system update.
 | `FORMAT_UUID` | `2c4f78b3-9d1e-4b0a-9f2c-1a5c8e0d6f71` (16 bytes, RFC order) | format identity |
 | `FORMAT_VERSION` | 1 | version of this document |
 | `HEADER_SIZE` | 184 | fixed header length |
-| `ALIGNMENT` | 8 | required alignment of offsets and entry sizes |
+| `ALIGNMENT` | 8 | structural alignment unit of the header and the fixed entry sizes (see §2.1) |
 | `PATH_ENTRY_SIZE` | 16 | fixed path-table entry size |
 | `FILE_ENTRY_SIZE` | 64 | fixed file-table entry size |
 | `DIGEST_BYTES` | 32 | SHA-256 digest length |
@@ -31,6 +31,23 @@ must not claim to be a system update.
 | `BUILDER_VERSION` | 1 | capsule builder contract version |
 
 Byte order: all multi-byte integers are **little-endian**.
+
+### 2.1 Alignment semantics (ADR-0017)
+
+`ALIGNMENT` constrains the fixed structural sizes, not every offset:
+
+- `HEADER_SIZE`, `PATH_ENTRY_SIZE` and `FILE_ENTRY_SIZE` are multiples of
+  `ALIGNMENT`;
+- `path_table_offset == HEADER_SIZE`, and is therefore `ALIGNMENT`-aligned;
+- `file_table_offset`, `payload_offset` and `content_offset` are **not** required
+  to be multiples of `ALIGNMENT`: the name arena and the file contents have
+  arbitrary byte lengths, and padding them would change the bytes of every
+  capsule.
+
+Consequently an implementation must not assume aligned access anywhere in the
+capsule. Every field is decoded byte-wise from the little-endian encoding above;
+casting capsule bytes to a target struct is not a conforming implementation
+technique.
 
 ## 3. Header layout (184 bytes)
 
@@ -72,10 +89,16 @@ The capsule layout is strictly sequential:
 [header] [path table] [name arena] [file table] [payload] [licence notice]
 ```
 
+The layout admits **no undescribed bytes**: every byte of the capsule belongs to
+exactly one of the six regions above (ADR-0017). In particular
+`path_table_offset == HEADER_SIZE` — the path table begins immediately after the
+header, with no gap.
+
 The name arena begins immediately after the path table and ends exactly at
 `file_table_offset`. The file table ends exactly at `payload_offset`. The
 licence notice, when present, is the exact tail of the capsule. Hence:
 
+- `path_table_offset == HEADER_SIZE`;
 - `file_table_offset == path_table_offset + path_table_count * PATH_ENTRY_SIZE + name_arena_length`;
 - `payload_offset == file_table_offset + file_count * FILE_ENTRY_SIZE`;
 - `payload_offset + payload_length + licence_notice_length == total_length`;
@@ -99,11 +122,27 @@ Path names must be **canonical absolute paths**:
 - valid UTF-8; no NUL bytes; no control characters;
 - no `.` or `..` components; no empty components (`//`), no trailing `/`;
 - lexically sorted in ascending byte order over the whole table;
-- distinct (no duplicate names);
-- the path table is a **bijection onto the file table**: each name is
-  referenced exactly once, and every `file_index` in `[0, file_count)` is
-  referenced by exactly one path entry (no duplicate references, no orphan
-  files).
+- distinct (no duplicate names).
+
+**Packed name arena (ADR-0017).** The names tile the arena exactly, in path-table
+order:
+
+- `path_entry[0].name_offset == 0`;
+- `path_entry[i].name_offset == path_entry[i-1].name_offset + path_entry[i-1].name_length`;
+- the end of the last name equals `file_table_offset`.
+
+No byte of the arena is outside a name; names neither overlap nor leave gaps.
+
+**Canonical index mapping (ADR-0017).** The path table is a **bijection onto the
+file table**, realised canonically:
+
+- `path_table_count == file_count`;
+- `path_entry[i].file_index == i`.
+
+The file table and the payload therefore follow the same order as the
+name-sorted path table. A non-canonical permutation of `file_index` — including
+one that happens to be a valid bijection — is rejected, so that a given file set
+has exactly one valid capsule encoding and the check costs a single O(n) pass.
 
 ### 4.2 File entry (64 bytes)
 
@@ -200,7 +239,9 @@ The digest is verified over the exact bytes passed to the parser.
 12. duplicate path names;
 13. path table not sorted ascending;
 14. `file_index` out of range, or the path table not being a bijection
-    (duplicate references to one file, or an orphan file);
+    (duplicate references to one file, or an orphan file). Under §4.1 this is
+    decided canonically: `path_table_count != file_count`, or any
+    `path_entry[i].file_index != i`;
 15. file table not sorted by content offset;
 16. file content out of payload bounds or misaligned;
 17. overlapping or non-covering payload content;
@@ -210,7 +251,14 @@ The digest is verified over the exact bytes passed to the parser.
 21. licence notice block out of bounds, not the exact capsule tail, absent
     fields inconsistent (offset non-zero with zero length), or not valid UTF-8;
 22. reserved fields non-zero (header, path-entry, file-entry 12-byte block);
-23. boot-canonical flag inconsistency between path entry and file entry.
+23. boot-canonical flag inconsistency between path entry and file entry;
+24. `path_table_offset != HEADER_SIZE`, i.e. a gap between the header and the
+    path table (§4, ADR-0017);
+25. the name arena is not packed: `path_entry[0].name_offset != 0`, a name that
+    does not start where the previous one ends, or a last name that does not end
+    exactly at `file_table_offset` (§4.1, ADR-0017);
+26. `path_entry[i].file_index != i` — a non-canonical index mapping (§4.1,
+    ADR-0017).
 
 A parser must return a structured error naming the rule violated; it must never
 panic on malformed input.
