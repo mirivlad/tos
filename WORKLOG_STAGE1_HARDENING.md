@@ -518,3 +518,15 @@ regression-прогон, немедленный push, после каждого 
   обоих целевых триплетов → чисто; `cargo test` → 56 passed / 0 failed;
   обе release-сборки; fuzz 50 000 → PASS; QEMU success → PASS (exit 33),
   QEMU negative (`invalid-kind-none.bin`, `--expect 67`) → PASS.
+
+### G2b — `cargo fmt --all` (механический шаг перед G3)
+
+- Статус: **готово**. Уровень: **Level 0** — только форматирование.
+- Зачем отдельным коммитом: `cargo fmt --check` в workflow G3 иначе красный с
+  первого дня, а смешивать 50 форматных диффов с настройкой CI — значит сделать
+  оба коммита нечитаемыми. Ручных правок в этом коммите нет: применён
+  `cargo fmt --all` и ничего больше.
+- Затронуто 9 файлов, 225 вставок / 114 удалений.
+- Проверки: `cargo fmt --all -- --check` → чисто; `cargo test` → 56 passed /
+  0 failed; `clippy -D warnings` → чисто на хосте и обоих триплетах; обе
+  release-сборки; QEMU success → PASS (exit 33).

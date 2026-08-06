@@ -213,7 +213,14 @@ fn rd_u32(b: &[u8], at: usize) -> u32 {
 #[inline]
 fn rd_u64(b: &[u8], at: usize) -> u64 {
     u64::from_le_bytes([
-        b[at], b[at + 1], b[at + 2], b[at + 3], b[at + 4], b[at + 5], b[at + 6], b[at + 7],
+        b[at],
+        b[at + 1],
+        b[at + 2],
+        b[at + 3],
+        b[at + 4],
+        b[at + 5],
+        b[at + 6],
+        b[at + 7],
     ])
 }
 
@@ -395,10 +402,7 @@ impl<'a> Capsule<'a> {
 
     /// Iterator over (name, content) for all files, in path-table order.
     pub fn files(&self) -> FileIter<'a> {
-        FileIter {
-            cap: *self,
-            idx: 0,
-        }
+        FileIter { cap: *self, idx: 0 }
     }
 
     // --- internal decoding helpers ---
@@ -477,14 +481,23 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     if h.alignment != ALIGNMENT {
         return Err(CapsError::BadAlignment);
     }
-    if bytes[off::RESERVED..off::RESERVED + 2].iter().any(|&b| b != 0) {
+    if bytes[off::RESERVED..off::RESERVED + 2]
+        .iter()
+        .any(|&b| b != 0)
+    {
         return Err(CapsError::NonZeroReservedHeader);
     }
-    if bytes[off::SRC_RESERVED..off::SRC_VALUE].iter().any(|&b| b != 0) {
+    if bytes[off::SRC_RESERVED..off::SRC_VALUE]
+        .iter()
+        .any(|&b| b != 0)
+    {
         return Err(CapsError::NonZeroReservedHeader);
     }
     // 4-byte reserved gap between the identity value and the licence offset.
-    if bytes[off::SRC_TAIL_RESERVED..off::LICENCE_OFFSET].iter().any(|&b| b != 0) {
+    if bytes[off::SRC_TAIL_RESERVED..off::LICENCE_OFFSET]
+        .iter()
+        .any(|&b| b != 0)
+    {
         return Err(CapsError::NonZeroReservedHeader);
     }
     // Identity kind/algorithm consistency: git requires an explicit OID
@@ -816,8 +829,14 @@ mod tests {
         let bytes = b.build().expect("build");
         let cap = parse(&bytes).expect("parse with licence tail");
         let h = cap.header();
-        assert_eq!(h.licence_notice_length as usize, bytes.len() - h.payload_offset as usize - h.payload_length as usize);
-        assert_eq!(h.licence_notice_offset as usize, h.payload_offset as usize + h.payload_length as usize);
+        assert_eq!(
+            h.licence_notice_length as usize,
+            bytes.len() - h.payload_offset as usize - h.payload_length as usize
+        );
+        assert_eq!(
+            h.licence_notice_offset as usize,
+            h.payload_offset as usize + h.payload_length as usize
+        );
         let boot = cap.boot_file().expect("boot file");
         assert!(boot.flags & FLAG_BOOT_CANONICAL != 0);
     }
@@ -1010,10 +1029,7 @@ mod tests {
         let mut b = Builder::new();
         b.source_identity_kind = SRC_KIND_DETACHED;
         b.source_identity_value = [0x22; DIGEST_BYTES];
-        b.add(FileSpec::new(
-            "/system/boot/init.tos",
-            b"# boot\n",
-        ));
+        b.add(FileSpec::new("/system/boot/init.tos", b"# boot\n"));
         for i in 0..64 {
             b.add(FileSpec::new(
                 &format!("/system/lib/file{i:03}.tos"),
