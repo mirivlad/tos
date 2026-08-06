@@ -1,25 +1,83 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# TOS Stage 1 QEMU boot test.
+# TOS Stage 1 QEMU boot test — self-judging harness.
 #
 # Builds the capsule from system/boot/ sources, lays out an ESP (FAT32 via
 # mtools), boots OVMF + QEMU, captures the serial boot-event log and the
-# isa-debug-exit result code (RESULT_PORT = 0x501; QEMU exits with
-# (code << 1) | 1, so HALT_OK=0x10 -> 33, CAPSULE_INVALID=0x21 -> 67).
+# isa-debug-exit result code, then decides pass/fail itself.
+#
+# Result codes: RESULT_PORT = 0x501, QEMU exits with (code << 1) | 1, so
+# HALT_OK 0x10 -> 33, CAPSULE_INVALID 0x21 -> 67, ABI_INVALID 0x22 -> 69.
+#
+# Exit status of THIS SCRIPT is a verdict, not QEMU's raw code:
+#   0  expected result code observed and every required boot event present
+#   1  wrong result code, missing/misordered event, or a forbidden event
+#   2  environment problem (missing artifact, missing tool)
+#   3  QEMU timed out
 #
 # Usage:
 #   bash host-tools/qemu-test/run.sh [OUT_DIR] [CAPSULE_FILE]
-# CAPSULE_FILE overrides the capsule placed on the ESP (negative tests, e.g.
-# tests/vectors/capsule-v1/invalid-kind-none.bin).
+#   bash host-tools/qemu-test/run.sh --out DIR [--capsule FILE] [--expect N]
+#                                    [--require "EV ..."] [--forbid "EV ..."]
+#                                    [--timeout SECONDS]
+#
+# --expect defaults to 33 (HALT_OK). --require/--forbid default to the event
+# set implied by --expect (see below) and may be overridden for a new scenario.
+# Positional arguments are kept so the reproduction command recorded in
+# interfaces/boot/STAGE1_REPORT.md keeps working.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # Repository root (two more levels up from source/): identity gate resolves
 # repo-relative paths against the current git commit.
 GITROOT="$(cd "$ROOT/.." && pwd)"
-OUT="${1:-$ROOT/target/qemu-test}"
-CAPSULE_IN="${2:-}"
+
+OUT=""
+CAPSULE_IN=""
+EXPECT=33
+REQUIRE=""
+FORBID=""
+QEMU_TIMEOUT=90
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --out)      OUT="$2"; shift 2 ;;
+        --capsule)  CAPSULE_IN="$2"; shift 2 ;;
+        --expect)   EXPECT="$2"; shift 2 ;;
+        --require)  REQUIRE="$2"; shift 2 ;;
+        --forbid)   FORBID="$2"; shift 2 ;;
+        --timeout)  QEMU_TIMEOUT="$2"; shift 2 ;;
+        -h|--help)  sed -n '3,28p' "$0"; exit 0 ;;
+        --*)        echo "unknown option: $1" >&2; exit 2 ;;
+        *)
+            # positional: OUT_DIR then CAPSULE_FILE
+            if [ -z "$OUT" ]; then OUT="$1"; else CAPSULE_IN="$1"; fi
+            shift ;;
+    esac
+done
+
+OUT="${OUT:-$ROOT/target/qemu-test}"
 mkdir -p "$OUT"
+
+# Default event expectations per result code. The identifiers are the stable
+# boot-event log contract (interfaces/boot/BOOT_ABI_V1.md §7); the harness
+# checks presence AND relative order, so a boot that halts early cannot pass by
+# printing the right final line.
+if [ -z "$REQUIRE" ]; then
+    case "$EXPECT" in
+        33) REQUIRE="TOS.BOOT.ENTRY TOS.CAPSULE.OK TOS.BOOT.HANDOFF TOS.NUCLEUS.ENTRY TOS.BOOTTEXT.PATH TOS.BOOTTEXT.DIGEST TOS.IDENTITY TOS.HALT" ;;
+        67) REQUIRE="TOS.BOOT.ENTRY TOS.BOOT.FAILC" ;;
+        *)  REQUIRE="TOS.BOOT.ENTRY" ;;
+    esac
+fi
+if [ -z "$FORBID" ]; then
+    case "$EXPECT" in
+        # A rejected capsule must fail closed in the loader: control must never
+        # reach the nucleus.
+        67) FORBID="TOS.NUCLEUS.ENTRY" ;;
+        *)  FORBID="TOS.PANIC" ;;
+    esac
+fi
 
 TOOL="$ROOT/target/release/tos-capsule-tool"
 LOADER="$ROOT/target/x86_64-unknown-uefi/release/tos-uefi-loader.efi"
@@ -28,7 +86,10 @@ OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
 OVMF_VARS="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
 
 for f in "$TOOL" "$LOADER" "$NUCLEUS" "$OVMF_CODE" "$OVMF_VARS"; do
-    [ -f "$f" ] || { echo "missing: $f"; exit 2; }
+    [ -f "$f" ] || { echo "missing: $f" >&2; exit 2; }
+done
+for t in qemu-system-x86_64 mformat mcopy mmd; do
+    command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 2; }
 done
 
 # --- 1. capsule ---
@@ -58,9 +119,10 @@ mcopy -i "$ESP" "$NUCLEUS" ::/nucleus.bin
 # --- 3. boot ---
 cp "$OVMF_CODE" "$OUT/OVMF_CODE.fd"
 cp "$OVMF_VARS" "$OUT/OVMF_VARS.fd"
+chmod u+w "$OUT/OVMF_CODE.fd" "$OUT/OVMF_VARS.fd"
 rm -f "$OUT/serial.log"
 set +e
-timeout 90 qemu-system-x86_64 \
+timeout "$QEMU_TIMEOUT" qemu-system-x86_64 \
     -machine q35 \
     -cpu qemu64 \
     -m 256M \
@@ -75,7 +137,56 @@ timeout 90 qemu-system-x86_64 \
     > "$OUT/qemu.stdout" 2> "$OUT/qemu.stderr"
 RC=$?
 set -e
-echo "qemu exit code: $RC (HALT_OK=33, CAPSULE_INVALID=67, ABI_INVALID=69)"
+
+# --- 4. boot-event log ---
+# Strip terminal escape sequences written by the firmware, then keep only the
+# TOS event lines. Firmware chatter (BdsDxe:) and the UEFI console string the
+# firmware mirrors to serial are deliberately excluded: they do not match
+# `^TOS\.`, which is the contract.
+EVENTS="$OUT/events.log"
+# `tr -d '\r'`: the boot-event log is CRLF-terminated (16550 output), and a
+# trailing CR would silently defeat every exact event comparison below.
+sed 's/\x1b\[[0-9;=?]*[A-Za-z]//g' "$OUT/serial.log" 2>/dev/null \
+    | tr -d '\r' \
+    | grep -a '^TOS\.[A-Z0-9_.]*' > "$EVENTS" || true
+
 echo "--- serial boot-event log ---"
-cat "$OUT/serial.log" 2>/dev/null || echo "(empty serial.log)"
-exit $RC
+cat "$EVENTS" 2>/dev/null || echo "(no TOS events captured)"
+echo "-----------------------------"
+
+fail() { echo "QEMU-TEST FAIL: $*" >&2; exit 1; }
+
+if [ "$RC" -eq 124 ]; then
+    echo "QEMU-TEST FAIL: timed out after ${QEMU_TIMEOUT}s (no result code written)" >&2
+    exit 3
+fi
+
+# --- 5. verdict ---
+if [ "$RC" -ne "$EXPECT" ]; then
+    fail "expected exit code $EXPECT, got $RC"
+fi
+
+# Required events must appear in the given order (a sequential scan, so a
+# repeated identifier such as TOS.CAPSULE.OK is matched once per requirement).
+line_no=0
+for ev in $REQUIRE; do
+    found=0
+    n=0
+    while IFS= read -r line; do
+        n=$((n + 1))
+        [ "$n" -le "$line_no" ] && continue
+        case "$line" in
+            "$ev"|"$ev "*) line_no=$n; found=1; break ;;
+        esac
+    done < "$EVENTS"
+    [ "$found" -eq 1 ] || fail "missing or out-of-order boot event: $ev"
+done
+
+for ev in $FORBID; do
+    if grep -q "^$ev\([ ]\|$\)" "$EVENTS"; then
+        fail "forbidden boot event present: $ev"
+    fi
+done
+
+echo "QEMU-TEST PASS: exit $RC as expected; $(wc -w <<<"$REQUIRE") required events in order, $(wc -w <<<"$FORBID") forbidden absent"
+exit 0
