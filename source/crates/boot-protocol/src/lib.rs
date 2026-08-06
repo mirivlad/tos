@@ -24,6 +24,18 @@ pub const FB_FORMAT_NONE: u32 = 0;
 /// Memory-range descriptor size (bytes).
 pub const MEM_DESC_SIZE: u64 = 24;
 
+// TOS memory-range types (BOOT_ABI_V1.md §5).
+pub const MEM_USABLE: u32 = 1;
+pub const MEM_RESERVED: u32 = 2;
+pub const MEM_ACPI_RECLAIM: u32 = 3;
+pub const MEM_ACPI_NVS: u32 = 4;
+pub const MEM_MMIO: u32 = 5;
+
+// Capsule source-identity kinds (mirrors capsule crate; kept local so the boot
+// ABI crate has no dependency on the capsule format crate).
+pub const SRC_KIND_GIT: u8 = 1;
+pub const SRC_KIND_DETACHED: u8 = 2;
+
 /// QEMU `isa-debug-exit` I/O port; a written u8 makes QEMU exit with
 /// `(value << 1) | 1`.
 pub const RESULT_PORT: u16 = 0x501;
@@ -101,7 +113,10 @@ impl BootInfo {
             capsule_phys: 0,
             capsule_length: 0,
             capsule_digest: [0; 32],
-            capsule_identity_kind: 0,
+            // Detached identity is the conservative default for a capsule
+            // without a git provenance record (SRC_KIND_GIT=1, DETACHED=2;
+            // 0 is rejected by validate_bytes).
+            capsule_identity_kind: SRC_KIND_DETACHED,
             reserved: [0; 7],
             capsule_source_identity: [0; 32],
             acpi_rsdp: 0,
@@ -131,10 +146,15 @@ pub enum BootInfoError {
     UnsupportedMinor,
     /// `total_size < STRUCT_SIZE`.
     ShortTotalSize,
-    /// reserved trailing bytes non-zero.
+    /// reserved trailing bytes (beyond `STRUCT_SIZE` within `total_size`)
+    /// non-zero.
     NonZeroReserved,
+    /// in-struct reserved blocks `reserved`/`reserved2` non-zero.
+    NonZeroReservedFields,
     /// `architecture_id` not `ARCH_X86_64`.
     BadArchitecture,
+    /// `boot_mode` not `BOOT_MODE_NORMAL`.
+    BadBootMode,
     /// `memory_desc_size` not `MEM_DESC_SIZE`.
     BadDescriptorSize,
     /// memory map is empty.
@@ -145,12 +165,18 @@ pub enum BootInfoError {
     UnsortedMemoryMap,
     /// descriptors overlap.
     OverlappingMemoryMap,
+    /// framebuffer fields are inconsistent (present vs absent).
+    BadFramebuffer,
     /// capsule range arithmetic overflow.
     CapsuleRangeOverflow,
     /// capsule absent (phys == 0 or length == 0).
     ZeroCapsule,
     /// capsule range not contained in any memory-map descriptor.
     CapsuleOutOfMemoryMap,
+    /// `capsule_identity_kind` not SRC_KIND_GIT or SRC_KIND_DETACHED.
+    UnsupportedCapsuleIdentityKind,
+    /// `next` non-zero (reserved extension pointer must be 0).
+    NonZeroNext,
 }
 
 impl core::fmt::Display for BootInfoError {
@@ -162,7 +188,7 @@ impl core::fmt::Display for BootInfoError {
 impl BootInfo {
     /// Validate a raw byte slice as a BootInfo v1 image. The slice length must
     /// be at least `total_size`; bytes beyond `STRUCT_SIZE` within
-    /// `total_size` must be zero.
+    /// `total_size` must be zero. Total over arbitrary bytes.
     pub fn validate_bytes(bytes: &[u8]) -> Result<(), BootInfoError> {
         if bytes.len() < STRUCT_SIZE as usize {
             return Err(BootInfoError::ShortTotalSize);
@@ -200,9 +226,46 @@ impl BootInfo {
         if arch != ARCH_X86_64 {
             return Err(BootInfoError::BadArchitecture);
         }
+        let boot_mode = u32::from_le_bytes(bytes[36..40].try_into().unwrap());
+        if boot_mode != BOOT_MODE_NORMAL {
+            return Err(BootInfoError::BadBootMode);
+        }
         let desc_size = u64::from_le_bytes(bytes[56..64].try_into().unwrap());
         if desc_size != MEM_DESC_SIZE {
             return Err(BootInfoError::BadDescriptorSize);
+        }
+
+        // --- framebuffer consistency ---
+        let fb_phys = u64::from_le_bytes(bytes[64..72].try_into().unwrap());
+        let fb_w = u32::from_le_bytes(bytes[72..76].try_into().unwrap());
+        let fb_h = u32::from_le_bytes(bytes[76..80].try_into().unwrap());
+        let fb_pitch = u32::from_le_bytes(bytes[80..84].try_into().unwrap());
+        let fb_fmt = u32::from_le_bytes(bytes[84..88].try_into().unwrap());
+        let fb_present = fb_phys != 0;
+        if fb_present {
+            if fb_w == 0 || fb_h == 0 || fb_pitch == 0 || fb_fmt == FB_FORMAT_NONE {
+                return Err(BootInfoError::BadFramebuffer);
+            }
+        } else if fb_w != 0 || fb_h != 0 || fb_pitch != 0 || fb_fmt != FB_FORMAT_NONE {
+            return Err(BootInfoError::BadFramebuffer);
+        }
+
+        // --- capsule identity kind ---
+        let id_kind = bytes[136];
+        if id_kind != SRC_KIND_GIT && id_kind != SRC_KIND_DETACHED {
+            return Err(BootInfoError::UnsupportedCapsuleIdentityKind);
+        }
+
+        // --- in-struct reserved blocks and extension fields ---
+        if bytes[137..144].iter().any(|&b| b != 0) {
+            return Err(BootInfoError::NonZeroReservedFields);
+        }
+        let next = u64::from_le_bytes(bytes[192..200].try_into().unwrap());
+        if next != 0 {
+            return Err(BootInfoError::NonZeroNext);
+        }
+        if bytes[200..224].iter().any(|&b| b != 0) {
+            return Err(BootInfoError::NonZeroReservedFields);
         }
         Ok(())
     }
@@ -274,6 +337,15 @@ impl BootInfo {
     }
 }
 
+/// Fix-up: internal constant alias used for capsule identity kind matching.
+/// (Kept as a private helper so the public `SRC_KIND_*` names can use the
+/// capsule-compatible values.)
+pub const SRC_GID: u8 = boot_protocol_src_kind();
+const fn boot_protocol_src_kind() -> u8 {
+    // SRC_KIND_GIT == 1 per capsule format v1.
+    1
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -313,6 +385,106 @@ mod tests {
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::ShortTotalSize)
         );
+    }
+
+    #[test]
+    fn bad_boot_mode_rejected() {
+        let mut bi = BootInfo::new();
+        bi.boot_mode = 1;
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
+        };
+        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::BadBootMode));
+    }
+
+    #[test]
+    fn next_must_be_zero() {
+        let mut bi = BootInfo::new();
+        bi.next = 0x1234;
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
+        };
+        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::NonZeroNext));
+    }
+
+    #[test]
+    fn framebuffer_absent_consistency() {
+        let bi = BootInfo::new(); // all fb fields zero
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
+        };
+        assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
+    }
+
+    #[test]
+    fn framebuffer_partial_rejected() {
+        let mut bi = BootInfo::new();
+        bi.framebuffer_phys = 0;
+        bi.framebuffer_width = 800; // width without phys -> inconsistent
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
+        };
+        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::BadFramebuffer));
+    }
+
+    #[test]
+    fn framebuffer_present_requires_format_and_dims() {
+        let mut bi = BootInfo::new();
+        bi.framebuffer_phys = 0x1000;
+        bi.framebuffer_width = 800;
+        bi.framebuffer_height = 600;
+        bi.framebuffer_pitch = 3200;
+        bi.framebuffer_format = 1; // not FB_FORMAT_NONE
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
+        };
+        assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
+
+        bi.framebuffer_format = FB_FORMAT_NONE; // present but format none -> reject
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
+        };
+        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::BadFramebuffer));
+    }
+
+    #[test]
+    fn identity_kind_must_be_git_or_detached() {
+        let mut bi = BootInfo::new();
+        bi.capsule_identity_kind = 0; // SRC_KIND_NONE not allowed
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
+        };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::UnsupportedCapsuleIdentityKind)
+        );
+
+        let mut bi = BootInfo::new();
+        bi.capsule_identity_kind = 99;
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
+        };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::UnsupportedCapsuleIdentityKind)
+        );
+    }
+
+    #[test]
+    fn in_struct_reserved_rejected() {
+        let mut bi = BootInfo::new();
+        bi.reserved[0] = 1;
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
+        };
+        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::NonZeroReservedFields));
+
+        let mut bi = BootInfo::new();
+        bi.reserved2[0] = 1;
+        let bytes = unsafe {
+            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
+        };
+        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::NonZeroReservedFields));
     }
 
     #[test]

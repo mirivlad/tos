@@ -109,11 +109,11 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     }
 
     // --- 3. capsule: plain digest, then full structural validation ---
-    if bi.capsule_phys == 0
-        || bi.capsule_length == 0
-        || bi.capsule_length > usize::MAX as u64
-        || bi.capsule_length > bi.memory_map_length
-    {
+    // Overflow safety: slice length must fit in usize (x86_64: u64). Range
+    // containment within a declared memory map entry is enforced separately by
+    // check_capsule_in_memory above (memory_map_length is unrelated to the
+    // capsule size, so it is NOT compared against capsule_length).
+    if bi.capsule_phys == 0 || bi.capsule_length == 0 || bi.capsule_length > usize::MAX as u64 {
         cap_fail();
     }
     let cap_bytes =

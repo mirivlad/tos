@@ -98,11 +98,33 @@ no signature-policy claim, no driver boundary touched.
 
 - Capsule round-trip, property (bounds/overflow) and fuzz (deterministic corpus)
   tests in `source/tests/`.
-- Golden valid/invalid version vectors.
+- Golden valid/invalid version vectors — 13 binaries in
+  `source/tests/vectors/capsule-v1/`: 1 valid (built from the real
+  `source/system/boot/init.tos` with the real NOTICES.txt licence tail) and
+  12 invalid (bad magic, truncated, kind none, path traversal, duplicate path
+  entry, file-reserved bytes, path-flag misuse, duplicate/unreferenced file
+  index, boot-canonical cross-check mismatch, licence-tail mismatch,
+  payload gap). The generator `tests/vectors/gen/gen.sh` rebuilds them all
+  deterministically.
+- Capsule lib unit tests (11) and integration tests (8): golden reproduction,
+  tamper/truncation sweeps over every byte, deterministic rebuild, parser
+  invalid-vector expectations.
+- UEFI loader: compile-time layout assertions pin every EFI structure offset
+  (`EFI_TABLE_HEADER` 24 B, SystemTable header_size 0x78, BootServices at
+  ST+0x60, RuntimeServices at ST+0x58, EFI_MEMORY_DESCRIPTOR 40 B); all
+  firmware calls check status with `efi_error`/`efi_success`; error-path
+  statuses (EFI_BUFFER_TOO_SMALL probe, EFI_INVALID_PARAMETER retry) are
+  handled explicitly, not by ignoring the status.
 - QEMU success + corrupted-capsule tests asserting serial event IDs and result
-  codes.
+  codes (`host-tools/qemu-test/run.sh` builds the capsule with
+  `--git-commit HEAD` so the identity gate runs in the real boot path).
 - Architecture test: init.tos printed hash equals canonical input hash.
-- Stage 1 identity test: capsule source_commit is present in `git`.
+- Stage 1 identity gate: `tos-capsule-tool --git-commit HEAD` resolves the
+  commit oid, verifies `cat-file -e`, checks every manifest source against
+  `git cat-file blob HEAD:path`, and emits a meta JSON with
+  commit / sha256(commit-oid) / repo_path + content_sha256 / capsule_sha256.
+  Proven negative: a tampered init.tos is refused (exit 2); deterministic
+  rebuild yields the identical capsule_sha256.
 - SPDX, DCO, documentation-integrity `--check`, deterministic-builder tests.
 
 ## Known limitations (declared now, accepted)

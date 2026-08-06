@@ -1,29 +1,92 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Minimal hand-written UEFI bindings (x86_64). Only the pieces Stage 1 needs:
 //! console output, memory map, pool/page allocation, file system, loaded image,
-//! and exit boot services. Struct field order follows the UEFI 2.10 spec;
-//! unused slots are `*mut c_void` placeholders to keep offsets correct.
+//! and exit boot services. Field order and offsets follow UEFI 2.10.
 //!
-//! On x86_64 the EFI calling convention is the SysV C ABI, so `extern "C"`
-//! is correct here (the unstable `efiapi` ABI is not required).
+//! Calling convention: every firmware entry point and every protocol function
+//! pointer uses `extern "efiapi"` (the EFI ABI, stable since Rust 1.68).
+//! On x86_64-unknown-uefi this compiles to the MS x64 convention required by
+//! the UEFI spec; `extern "C"` must not be used because it silently changes
+//! meaning if the code is ever built for a non-UEFI target.
+//!
+//! Layout discipline: `EFI_TABLE_HEADER` is 24 bytes (Signature 8, Revision 4,
+//! HeaderSize 4, CRC32 4, Reserved 4). The compile-time assertions at the
+//! bottom pin every offset used by the loader; a struct that merely compiles
+//! is not treated as correct.
 
 #![allow(non_camel_case_types)]
 
 use core::ffi::c_void;
 
+// ---------------------------------------------------------------------------
+// EFI_STATUS
+// ---------------------------------------------------------------------------
+
 pub type EfiStatus = usize;
+
 pub const EFI_SUCCESS: EfiStatus = 0;
-pub const EFI_BUFFER_TOO_SMALL: EfiStatus = 5;
+pub const EFI_INVALID_PARAMETER: EfiStatus = 0x8000000000000002;
+pub const EFI_BUFFER_TOO_SMALL: EfiStatus = 0x8000000000000005;
+// Full UEFI 2.10 status set is pinned here for ABI documentation; the loader
+// only consumes SUCCESS / INVALID_PARAMETER / BUFFER_TOO_SMALL today.
+#[allow(dead_code)]
+pub const EFI_NOT_FOUND: EfiStatus = 0x800000000000000E;
+#[allow(dead_code)]
+pub const EFI_DEVICE_ERROR: EfiStatus = 0x8000000000000007;
+#[allow(dead_code)]
+pub const EFI_OUT_OF_RESOURCES: EfiStatus = 0x8000000000000009;
+
+/// True when `code` has the EFI error bit (63) set. Warning codes (bits 30-31
+/// set, bit 63 clear) are neither success nor error; `efi_success` covers the
+/// success range explicitly.
+#[inline]
+pub const fn efi_error(code: EfiStatus) -> bool {
+    code & (1usize << 63) != 0
+}
+
+#[inline]
+pub const fn efi_success(code: EfiStatus) -> bool {
+    code == EFI_SUCCESS
+}
 
 pub const EFI_OPEN_FILE_READ: u64 = 0x1;
 
-// EFI memory type codes (UEFI 2.10 section 7.2): the documented numeric values.
+// ---------------------------------------------------------------------------
+// EFI memory types (UEFI 2.10 section 7.2)
+// ---------------------------------------------------------------------------
+
 pub const MEM_TYPE_LOADER_CODE: u32 = 1;
 pub const MEM_TYPE_LOADER_DATA: u32 = 2;
+pub const MEM_TYPE_BOOT_SERVICES_CODE: u32 = 3;
+pub const MEM_TYPE_BOOT_SERVICES_DATA: u32 = 4;
+pub const MEM_TYPE_RUNTIME_SERVICES_CODE: u32 = 5;
 pub const MEM_TYPE_RUNTIME_SERVICES_DATA: u32 = 6;
+pub const MEM_TYPE_CONVENTIONAL: u32 = 7;
+pub const MEM_TYPE_UNUSABLE: u32 = 8;
+pub const MEM_TYPE_ACPI_RECLAIM: u32 = 9;
+pub const MEM_TYPE_ACPI_NVS: u32 = 10;
+pub const MEM_TYPE_MMIO: u32 = 11;
+pub const MEM_TYPE_MMIO_PORT: u32 = 12;
+pub const MEM_TYPE_PAL_CODE: u32 = 13;
+pub const MEM_TYPE_PERSISTENT: u32 = 14;
+/// First vendor-defined memory type.
+// Vendor-defined EFI memory types start at 0x8000_0000 (UEFI 2.10 §7.2);
+// pinned for the vendor-range arm of tos_memory_type.
+#[allow(dead_code)]
+pub const MEM_TYPE_VENDOR_BASE: u32 = 0x8000_0000;
+
 pub const ALLOCATE_ANY_PAGES: u32 = 0;
+// AllocateAtMaxAddress is pinned for the ABI surface even though Stage 1 only
+// requests ANY_PAGES for the nucleus/stack.
+#[allow(dead_code)]
+pub const ALLOCATE_MAX_ADDRESS: u32 = 1;
+
+// ---------------------------------------------------------------------------
+// GUID and protocol GUIDs
+// ---------------------------------------------------------------------------
 
 #[repr(C)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Guid {
     pub data1: u32,
     pub data2: u16,
@@ -45,29 +108,56 @@ pub const GUID_SIMPLE_FILE_SYSTEM: Guid = Guid {
     data4: [0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B],
 };
 
+// ---------------------------------------------------------------------------
+// EFI_TABLE_HEADER and EFI_MEMORY_DESCRIPTOR
+// ---------------------------------------------------------------------------
+
+/// `EFI_TABLE_HEADER` (UEFI 2.10 section 4.2): 24 bytes. Must be the first
+/// field of `SystemTable` and `BootServices`.
 #[repr(C)]
+#[derive(Clone, Copy, Debug)]
+pub struct EfiTableHeader {
+    pub signature: u64,
+    pub revision: u32,
+    pub header_size: u32,
+    pub crc32: u32,
+    pub reserved: u32,
+}
+
+/// `EFI_MEMORY_DESCRIPTOR` (UEFI 2.10 section 7.2): 40 bytes. Entry size is
+/// reported by `GetMemoryMap` and may exceed 40 on future firmware; the loader
+/// strides by the reported `descriptor_size`, never by `size_of::<Self>()`.
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct EfiMemoryDescriptor {
     pub ty: u32,
+    pub pad: u32,
     pub physical_start: u64,
     pub virtual_start: u64,
     pub number_of_pages: u64,
     pub attribute: u64,
 }
 
+// ---------------------------------------------------------------------------
+// Protocols
+// ---------------------------------------------------------------------------
+
+/// `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL` (UEFI 2.10 section 11.4): 10 slots.
 #[repr(C)]
 pub struct SimpleTextOutputProtocol {
-    pub reset: extern "C" fn(*mut Self, bool) -> EfiStatus,
-    pub output_string: extern "C" fn(*mut Self, *const u16) -> EfiStatus,
-    pub test_string: extern "C" fn(*mut Self, *const u16) -> EfiStatus,
-    pub query_mode: extern "C" fn(*mut Self, usize, *mut usize, *mut usize) -> EfiStatus,
-    pub set_mode: extern "C" fn(*mut Self, usize) -> EfiStatus,
-    pub set_attribute: extern "C" fn(*mut Self, usize) -> EfiStatus,
-    pub clear_screen: extern "C" fn(*mut Self) -> EfiStatus,
-    pub set_cursor_position: extern "C" fn(*mut Self, usize, usize) -> EfiStatus,
-    pub enable_cursor: extern "C" fn(*mut Self, bool) -> EfiStatus,
+    pub reset: extern "efiapi" fn(*mut Self, bool) -> EfiStatus,
+    pub output_string: extern "efiapi" fn(*mut Self, *const u16) -> EfiStatus,
+    pub test_string: extern "efiapi" fn(*mut Self, *const u16) -> EfiStatus,
+    pub query_mode: extern "efiapi" fn(*mut Self, usize, *mut usize, *mut usize) -> EfiStatus,
+    pub set_mode: extern "efiapi" fn(*mut Self, usize) -> EfiStatus,
+    pub set_attribute: extern "efiapi" fn(*mut Self, usize) -> EfiStatus,
+    pub clear_screen: extern "efiapi" fn(*mut Self) -> EfiStatus,
+    pub set_cursor_position: extern "efiapi" fn(*mut Self, usize, usize) -> EfiStatus,
+    pub enable_cursor: extern "efiapi" fn(*mut Self, bool) -> EfiStatus,
     pub mode: *mut c_void,
 }
 
+/// `EFI_LOADED_IMAGE_PROTOCOL` (UEFI 2.10 section 7.4): 12 slots.
 #[repr(C)]
 pub struct LoadedImageProtocol {
     pub revision: u32,
@@ -82,49 +172,58 @@ pub struct LoadedImageProtocol {
     pub image_size: u64,
     pub image_code_type: u32,
     pub image_data_type: u32,
-    pub unload: *mut c_void,
+    pub unload: extern "efiapi" fn(*mut Self) -> EfiStatus,
 }
 
+/// `EFI_FILE_PROTOCOL` (UEFI 2.10 section 12.5): 11 slots.
 #[repr(C)]
 pub struct FileProtocol {
     pub revision: u64,
-    pub open: extern "C" fn(*mut Self, *mut *mut Self, *const u16, u64, u64) -> EfiStatus,
-    pub close: extern "C" fn(*mut Self) -> EfiStatus,
-    pub delete: extern "C" fn(*mut Self) -> EfiStatus,
-    pub read: extern "C" fn(*mut Self, *mut usize, *mut c_void) -> EfiStatus,
-    pub write: extern "C" fn(*mut Self, *mut usize, *mut c_void) -> EfiStatus,
-    pub get_position: extern "C" fn(*mut Self, *mut u64) -> EfiStatus,
-    pub set_position: extern "C" fn(*mut Self, u64) -> EfiStatus,
-    pub get_info: extern "C" fn(*mut Self, *const Guid, *mut c_void, *mut usize) -> EfiStatus,
-    pub set_info: extern "C" fn(*mut Self, *const Guid, usize, *mut c_void) -> EfiStatus,
-    pub flush: extern "C" fn(*mut Self) -> EfiStatus,
+    pub open: extern "efiapi" fn(*mut Self, *mut *mut Self, *const u16, u64, u64) -> EfiStatus,
+    pub close: extern "efiapi" fn(*mut Self) -> EfiStatus,
+    pub delete: extern "efiapi" fn(*mut Self) -> EfiStatus,
+    pub read: extern "efiapi" fn(*mut Self, *mut usize, *mut c_void) -> EfiStatus,
+    pub write: extern "efiapi" fn(*mut Self, *mut usize, *mut c_void) -> EfiStatus,
+    pub get_position: extern "efiapi" fn(*mut Self, *mut u64) -> EfiStatus,
+    pub set_position: extern "efiapi" fn(*mut Self, u64) -> EfiStatus,
+    pub get_info: extern "efiapi" fn(*mut Self, *const Guid, *mut c_void, *mut usize) -> EfiStatus,
+    pub set_info: extern "efiapi" fn(*mut Self, *const Guid, usize, *mut c_void) -> EfiStatus,
+    pub flush: extern "efiapi" fn(*mut Self) -> EfiStatus,
 }
 
+/// `EFI_SIMPLE_FILE_SYSTEM_PROTOCOL` (UEFI 2.10 section 12.4): 2 slots.
 #[repr(C)]
 pub struct SimpleFileSystemProtocol {
     pub revision: u64,
-    pub open_volume: extern "C" fn(*mut Self, *mut *mut FileProtocol) -> EfiStatus,
+    pub open_volume: extern "efiapi" fn(*mut Self, *mut *mut FileProtocol) -> EfiStatus,
 }
 
-pub type FnGetMemoryMap = extern "C" fn(
+// ---------------------------------------------------------------------------
+// Boot services function types
+// ---------------------------------------------------------------------------
+
+pub type FnGetMemoryMap = extern "efiapi" fn(
     *mut usize,
     *mut EfiMemoryDescriptor,
     *mut usize,
     *mut usize,
     *mut u32,
 ) -> EfiStatus;
-pub type FnAllocatePages =
-    extern "C" fn(u32, u32, usize, *mut u64) -> EfiStatus;
-pub type FnAllocatePool = extern "C" fn(u32, usize, *mut *mut c_void) -> EfiStatus;
-pub type FnFreePool = extern "C" fn(*mut c_void) -> EfiStatus;
+pub type FnAllocatePages = extern "efiapi" fn(u32, u32, usize, *mut u64) -> EfiStatus;
+pub type FnAllocatePool = extern "efiapi" fn(u32, usize, *mut *mut c_void) -> EfiStatus;
+pub type FnFreePool = extern "efiapi" fn(*mut c_void) -> EfiStatus;
 pub type FnHandleProtocol =
-    extern "C" fn(*mut c_void, *const Guid, *mut *mut c_void) -> EfiStatus;
-pub type FnExitBootServices = extern "C" fn(*mut c_void, usize) -> EfiStatus;
-pub type FnStall = extern "C" fn(usize) -> EfiStatus;
+    extern "efiapi" fn(*mut c_void, *const Guid, *mut *mut c_void) -> EfiStatus;
+pub type FnExitBootServices = extern "efiapi" fn(*mut c_void, usize) -> EfiStatus;
+pub type FnStall = extern "efiapi" fn(usize) -> EfiStatus;
 
-/// Boot services table (subset with full ordering; unused slots are placeholders).
+/// `EFI_BOOT_SERVICES` (UEFI 2.10 section 4.4): `EFI_TABLE_HEADER` followed by
+/// 39 service pointers. Unused slots are `*mut c_void` placeholders that keep
+/// every later offset correct. `HandleProtocol` sits at 0x98,
+/// `ExitBootServices` at 0x100.
 #[repr(C)]
 pub struct BootServices {
+    pub header: EfiTableHeader,
     pub raise_tpl: *mut c_void,
     pub restore_tpl: *mut c_void,
     pub allocate_pages: FnAllocatePages,
@@ -143,7 +242,21 @@ pub struct BootServices {
     pub uninstall_protocol_interface: *mut c_void,
     pub handle_protocol: FnHandleProtocol,
     pub reserved: *mut c_void,
-    pub register_protocol_notify: *mut c_void,
+    pub set_watchdog_timer: *mut c_void,
+    pub stall: FnStall,
+    pub set_attribute: *mut c_void,
+    pub clear_screen: *mut c_void,
+    pub set_cursor_position: *mut c_void,
+    pub enable_cursor: *mut c_void,
+    pub get_next_monotonic_count: *mut c_void,
+    pub calculate_crc32: *mut c_void,
+    pub copy_mem: *mut c_void,
+    pub set_mem: *mut c_void,
+    pub create_event_ex: *mut c_void,
+    pub exit_boot_services: FnExitBootServices,
+    pub get_next_high_monotonic_count: *mut c_void,
+    pub install_multiple_protocol_interfaces: *mut c_void,
+    pub uninstall_multiple_protocol_interfaces: *mut c_void,
     pub locate_handle: *mut c_void,
     pub locate_device_path: *mut c_void,
     pub install_configuration_table: *mut c_void,
@@ -151,30 +264,15 @@ pub struct BootServices {
     pub start_image: *mut c_void,
     pub exit: *mut c_void,
     pub unload_image: *mut c_void,
-    pub exit_boot_services: FnExitBootServices,
-    pub get_next_monotonic_count: *mut c_void,
-    pub stall: FnStall,
-    pub set_watchdog_timer: *mut c_void,
-    pub connect_controller: *mut c_void,
-    pub disconnect_controller: *mut c_void,
-    pub open_protocol: *mut c_void,
-    pub close_protocol: *mut c_void,
-    pub open_protocol_information: *mut c_void,
-    pub protocols_per_handle: *mut c_void,
-    pub locate_handle_buffer: *mut c_void,
-    pub locate_protocol: *mut c_void,
-    pub install_multiple_protocol_interfaces: *mut c_void,
-    pub uninstall_multiple_protocol_interfaces: *mut c_void,
-    pub calculate_crc32: *mut c_void,
-    pub copy_mem: *mut c_void,
-    pub set_mem: *mut c_void,
-    pub create_event_ex: *mut c_void,
 }
 
+/// `EFI_SYSTEM_TABLE` (UEFI 2.10 section 4.3): `EFI_TABLE_HEADER` followed by
+/// 11 pointer/scalar fields; 120 bytes total (observed `header_size = 0x78`
+/// on OVMF 4M matches the spec exactly). `runtime_services` at 0x58,
+/// `boot_services` at 0x60.
 #[repr(C)]
 pub struct SystemTable {
-    pub signature: u64,
-    pub revision: u32,
+    pub header: EfiTableHeader,
     pub firmware_vendor: *const u16,
     pub firmware_revision: u32,
     pub con_in_handle: *mut c_void,
@@ -188,3 +286,57 @@ pub struct SystemTable {
     pub number_of_table_entries: usize,
     pub configuration_table: *mut c_void,
 }
+
+// ---------------------------------------------------------------------------
+// Compile-time layout assertions (UEFI 2.10 offsets; see header docs)
+// ---------------------------------------------------------------------------
+
+const _: () = {
+    use core::mem::{offset_of, size_of};
+
+    // EFI_TABLE_HEADER is 24 bytes: Signature(8) Revision(4) HeaderSize(4)
+    // CRC32(4) Reserved(4).
+    assert!(size_of::<EfiTableHeader>() == 24);
+    assert!(offset_of!(EfiTableHeader, crc32) == 16);
+
+    // EFI_MEMORY_DESCRIPTOR: Type(4) pad(4) PhysicalStart(8) VirtualStart(8)
+    // NumberOfPages(8) Attribute(8) = 40.
+    assert!(size_of::<EfiMemoryDescriptor>() == 40);
+    assert!(offset_of!(EfiMemoryDescriptor, physical_start) == 8);
+
+    // SystemTable: header(24) FirmwareVendor(0x18) FirmwareRevision(0x20)
+    // ConsoleInHandle(0x28) ConIn(0x30) ConsoleOutHandle(0x38) ConOut(0x40)
+    // StandardErrorHandle(0x48) StdErr(0x50) RuntimeServices(0x58)
+    // BootServices(0x60) NumberOfTableEntries(0x68) ConfigurationTable(0x70).
+    assert!(size_of::<SystemTable>() == 120);
+    assert!(offset_of!(SystemTable, header) == 0);
+    assert!(offset_of!(SystemTable, firmware_vendor) == 0x18);
+    assert!(offset_of!(SystemTable, con_out) == 0x40);
+    assert!(offset_of!(SystemTable, runtime_services) == 0x58);
+    assert!(offset_of!(SystemTable, boot_services) == 0x60);
+    assert!(offset_of!(SystemTable, configuration_table) == 0x70);
+
+    // BootServices: header(24) RaiseTPL(0x18) RestoreTPL(0x20)
+    // AllocatePages(0x28) FreePages(0x30) GetMemoryMap(0x38) AllocatePool(0x40)
+    // FreePool(0x48) CreateEvent(0x50) SetTimer(0x58) WaitForEvent(0x60)
+    // SignalEvent(0x68) CloseEvent(0x70) CheckEvent(0x78)
+    // InstallProtocolInterface(0x80) Reinstall(0x88) Uninstall(0x90)
+    // HandleProtocol(0x98) ... ExitBootServices(0x100).
+    assert!(size_of::<BootServices>() == 0x158);
+    assert!(offset_of!(BootServices, header) == 0);
+    assert!(offset_of!(BootServices, allocate_pages) == 0x28);
+    assert!(offset_of!(BootServices, get_memory_map) == 0x38);
+    assert!(offset_of!(BootServices, handle_protocol) == 0x98);
+    assert!(offset_of!(BootServices, exit_boot_services) == 0x100);
+
+    // Protocol layouts.
+    assert!(size_of::<SimpleTextOutputProtocol>() == 80); // 9 fn + Mode
+    assert!(offset_of!(SimpleTextOutputProtocol, output_string) == 8);
+    assert!(size_of::<LoadedImageProtocol>() == 96); // 12 slots
+    assert!(offset_of!(LoadedImageProtocol, device_handle) == 0x18);
+    assert!(offset_of!(LoadedImageProtocol, image_base) == 0x40);
+    assert!(size_of::<FileProtocol>() == 88); // Revision + 10 fn
+    assert!(offset_of!(FileProtocol, read) == 0x20);
+    assert!(size_of::<SimpleFileSystemProtocol>() == 16);
+    assert!(offset_of!(SimpleFileSystemProtocol, open_volume) == 8);
+};

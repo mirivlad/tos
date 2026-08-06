@@ -27,18 +27,18 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 | 3 | Спека BOOT_ABI_V1.md | done | source/interfaces/boot/BOOT_ABI_V1.md (§6 serial boot-event log) |
 | 4 | crates/tos-hash (SHA-256 no_std) | done | RFC 4231, 7/7 тестов |
 | 5 | crates/boot-protocol (BootInfo v1) | done | 6/6 тестов (структура 224 B, map, containment) |
-| 6 | crates/capsule: парсер (no_std, тотальный) | done | 10/10 lib-тестов, фаззинг 300k раундов без паники |
+| 6 | crates/capsule: парсер (no_std, тотальный) | done | 11/11 lib-тестов; split flags, reserved 12 B, биекция, boot-canonical cross-check, licence tail |
 | 7 | crates/capsule: host-билдер (feature="host") | done | детерминизм: builder == golden vector |
 | 8 | crates/tos-serial (16550 COM1, no_std) | done | используется loader + nucleus |
 | 9 | boot/uefi-loader (EFI app, рукописные биндинги) | done | PE32+ EFI app x86_64 собран, 0 warnings; release 14848 B |
 | 10 | nucleus (freestanding, boot ABI v1, serial, halt-код) | done | raw-binary собран (entry первой, `sub rsp`); release 10520 B |
 | 11 | system/boot/init.tos + NOTICES.txt | done | source/system/boot/ |
 | 12 | host-tools/capsule (CLI-билдер) | done | регенерация векторов через него |
-| 13 | Golden-векторы (7 .bin, коммитимые) | done | source/tests/vectors/capsule-v1/ |
+| 13 | Golden-векторы (13 .bin, коммитимые) | done | source/tests/vectors/capsule-v1/; valid-001 из реального init.tos + licence |
 | 14 | tests/integration | done | 8/8 (golden, tamper, determinism, truncation, perf) |
 | 15 | tests/fuzz (детерминированный мутационный) | done | FUZZ PASS rounds=300000 |
 | 16 | Сборка всех таргетов (host + uefi + none) | done | host: 31/31 тестов; uefi loader: PE32+ EFI app 0 warnings; none nucleus: raw binary (entry first) |
-| 17 | host-tools/qemu-test (ESP-образ + OVMF) | pending | — |
+| 17 | host-tools/qemu-test (ESP-образ + OVMF) | done | run.sh: identity gate `--git-commit HEAD`, manifest repo-relative |
 | 18 | QEMU-прогоны: success + corrupted capsule | pending | — |
 | 19 | scripts/check-spdx, check-dco | pending | — |
 | 20 | Архитектур-импакт-стейтмент (AGENTS.md §5, Level 2) | done | source/ARCHITECTURE_IMPACT_STATEMENT.md, коммит dc16726 |
@@ -81,6 +81,29 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   `--oformat=binary`), `#[link_section=".text.boot_entry"]`; raw-образ, точка
   входа первой (`sub rsp` пролог). release 10520 B.
 - `source/.cargo/config.toml`: `relocation-model=static` для x86_64-unknown-none.
+
+### 2026-08-06 — ABI-корректность: флаги, reserved, биекция, identity gate
+
+- Капсула v1 ужесточена по CAPSULE_FORMAT_V1.md §4/§9: раздельные наборы флагов
+  для path (bit0) и file (bits 0–1), 12 Б reserved в file entry обязаны быть
+  нулями, path table — биекция на `[0, file_count)` (DuplicateFileIndex /
+  UnreferencedFile), boot-canonical cross-check (path→file), licence tail —
+  точный хвост капсулы (offset+length == EOF, UTF-8).
+- Capsule lib: 11/11 тестов; integration 8/8 (golden из реального
+  `source/system/boot/init.tos` + NOTICES как licence, determinism,
+  tamper/truncation по всем байтам).
+- Векторы: valid-001 пересобран из реального init.tos + NOTICES; добавлены
+  6 invalid-векторов (file-reserved, path-flag, dup-file-index,
+  unreferenced-file, bootcanon-mismatch, licence-tail). Итог: 13 .bin.
+- Identity gate (пункт 9): `tos-capsule-tool --git-commit HEAD` резолвит
+  commit oid, проверяет `cat-file -e`, верифицирует каждый src-файл по
+  `git cat-file blob HEAD:path` и пишет meta JSON
+  (commit, sha256(commit-oid), repo_path+content_sha256, capsule_sha256).
+  Проверено: tampered init.tos → отказ (exit 2); deterministic rebuild дал
+  тот же capsule_sha256.
+- `qemu-test/run.sh`: капсула по умолчанию строится с `--git-commit HEAD`
+  и repo-relative manifest (identity gate в хватке), invalid-векторы можно
+  подкладывать вторым аргументом.
 
 ## Открытые вопросы / риски
 

@@ -39,8 +39,11 @@ pub const SRC_KIND_DETACHED: u8 = 2;
 
 pub const FLAG_BOOT_CANONICAL: u32 = 1 << 0;
 pub const FLAG_LICENCE_NOTICE: u32 = 1 << 1;
-/// All flag bits defined for v1.
-pub const ALL_KNOWN_FLAGS: u32 = FLAG_BOOT_CANONICAL | FLAG_LICENCE_NOTICE;
+/// Flag bits defined for v1 path entries: only boot-canonical is valid on a
+/// path (a licence-notice bit on a path is a reserved-bit violation).
+pub const PATH_KNOWN_FLAGS: u32 = FLAG_BOOT_CANONICAL;
+/// Flag bits defined for v1 file entries.
+pub const FILE_KNOWN_FLAGS: u32 = FLAG_BOOT_CANONICAL | FLAG_LICENCE_NOTICE;
 
 /// Canonical boot text path required by Stage 1.
 pub const BOOT_PATH: &[u8] = b"/system/boot/init.tos";
@@ -126,6 +129,11 @@ pub enum CapsError {
     UnsortedPathTable,
     BadPathFlags,
     PathFileIndexOutOfRange,
+    /// Two path entries reference the same `file_index` (a path table must be
+    /// a bijection onto `[0, file_count)`).
+    DuplicateFileIndex,
+    /// A file entry is never referenced by any path entry.
+    UnreferencedFile,
     NameOutOfArena,
     BadFileFlags,
     NonZeroReservedEntry,
@@ -140,6 +148,17 @@ pub enum CapsError {
     MissingBootCanonical,
     DuplicateBootCanonical,
     BadBootCanonicalName,
+    /// The boot-canonical flag is set on the canonical path entry but not on
+    /// the file entry it references (or vice versa); the two must agree.
+    BootCanonicalFlagMismatch,
+    /// A file entry carries the boot-canonical flag but is not the canonical
+    /// path's target (exactly one file may carry it, and it must be the
+    /// canonical file).
+    BootCanonicalOnWrongFile,
+    /// licence notice arithmetic: offset/length must cover the exact tail
+    /// `[payload_end, total_length)` when present, and both be zero when
+    /// absent.
+    LicenceTailMismatch,
 }
 
 impl core::fmt::Display for CapsError {
@@ -186,7 +205,8 @@ pub struct FileEntry {
     pub content_length: u64,
     pub content_digest: [u8; DIGEST_BYTES],
     pub file_flags: u32,
-    pub reserved: u32,
+    /// 12 reserved bytes at +52..+64; must be zero.
+    pub reserved: [u8; 12],
 }
 
 fn decode_path_entry(b: &[u8], at: usize) -> PathEntry {
@@ -201,12 +221,14 @@ fn decode_path_entry(b: &[u8], at: usize) -> PathEntry {
 fn decode_file_entry(b: &[u8], at: usize) -> FileEntry {
     let mut dg = [0u8; DIGEST_BYTES];
     dg.copy_from_slice(&b[at + 16..at + 16 + DIGEST_BYTES]);
+    let mut reserved = [0u8; 12];
+    reserved.copy_from_slice(&b[at + 52..at + 64]);
     FileEntry {
         content_offset: rd_u64(b, at),
         content_length: rd_u64(b, at + 8),
         content_digest: dg,
         file_flags: rd_u32(b, at + 48),
-        reserved: rd_u32(b, at + 52),
+        reserved,
     }
 }
 
@@ -483,9 +505,6 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     }
     // payload ends at or before EOF; the licence block, when present, is the
     // exact tail of the capsule.
-    let payload_end = payload_start
-        .checked_add(h.payload_length as usize)
-        .ok_or(CapsError::RegionOverflow)?;
     if payload_end > bytes.len() {
         return Err(CapsError::LayoutMismatch);
     }
@@ -493,8 +512,28 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     if tail != h.licence_notice_length as usize {
         return Err(CapsError::LicenceOutOfBounds);
     }
-    if h.licence_notice_length != 0 && h.licence_notice_offset as usize != payload_end {
-        return Err(CapsError::LicenceOutOfBounds);
+    if h.licence_notice_length == 0 {
+        // Absent notice: both fields must be zero (spec §3, §7).
+        if h.licence_notice_offset != 0 {
+            return Err(CapsError::LicenceTailMismatch);
+        }
+    } else {
+        // Present notice: it must cover exactly the tail of the capsule,
+        // i.e. [payload_end, total_length).
+        if h.licence_notice_offset as usize != payload_end {
+            return Err(CapsError::LicenceTailMismatch);
+        }
+        let lic_end = h
+            .licence_notice_offset
+            .checked_add(h.licence_notice_length)
+            .ok_or(CapsError::RegionOverflow)?;
+        if lic_end as usize != bytes.len() {
+            return Err(CapsError::LicenceTailMismatch);
+        }
+        // The block itself must be valid UTF-8 text (spec §7).
+        if core::str::from_utf8(&bytes[payload_end..]).is_err() {
+            return Err(CapsError::LicenceTailMismatch);
+        }
     }
 
     let name_arena_len = file_tbl_start - name_start;
@@ -503,9 +542,12 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     let mut prev_name: Option<&[u8]> = None;
     let mut canonical_count = 0usize;
     let mut canonical_name_ok = false;
+    // Boot-canonical cross-check: the canonical path's target file must carry
+    // FLAG_BOOT_CANONICAL too (checked after the file loop).
+    let mut canonical_file_index: Option<u32> = None;
     for i in 0..h.path_table_count as usize {
         let pe = decode_path_entry(bytes, path_tbl_start + i * PATH_ENTRY_SIZE as usize);
-        if pe.flags & !ALL_KNOWN_FLAGS != 0 {
+        if pe.flags & !PATH_KNOWN_FLAGS != 0 {
             return Err(CapsError::BadPathFlags);
         }
         let name_off = pe.name_offset as usize;
@@ -534,6 +576,7 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
         }
         if pe.flags & FLAG_BOOT_CANONICAL != 0 {
             canonical_count += 1;
+            canonical_file_index = Some(pe.file_index);
             if name == BOOT_PATH {
                 canonical_name_ok = true;
             }
@@ -542,12 +585,16 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
 
     // --- file table ---
     let mut prev_end: Option<u64> = None;
+    // Bijection path<->file: every file entry must be referenced exactly once
+    // (no duplicates, no orphans). O(n²) over the (small) path table; bounded
+    // by the input size and exits early on the first violation.
+    let mut canonical_target_ok = false;
     for i in 0..h.file_count as usize {
         let fe = decode_file_entry(bytes, file_tbl_start + i * FILE_ENTRY_SIZE as usize);
-        if fe.file_flags & !ALL_KNOWN_FLAGS != 0 {
+        if fe.file_flags & !FILE_KNOWN_FLAGS != 0 {
             return Err(CapsError::BadFileFlags);
         }
-        if fe.reserved != 0 {
+        if fe.reserved.iter().any(|&b| b != 0) {
             return Err(CapsError::NonZeroReservedEntry);
         }
         let end = fe
@@ -573,6 +620,16 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
             }
         }
         prev_end = Some(end);
+
+        // boot-canonical cross-check: the file referenced by the canonical
+        // path must carry FLAG_BOOT_CANONICAL, and no other file may.
+        if fe.file_flags & FLAG_BOOT_CANONICAL != 0 {
+            if canonical_file_index != Some(i as u32) {
+                return Err(CapsError::BootCanonicalOnWrongFile);
+            }
+            canonical_target_ok = true;
+        }
+
         // digest check
         let cs = payload_start + fe.content_offset as usize;
         let content = &bytes[cs..cs + fe.content_length as usize];
@@ -587,6 +644,31 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
         return Err(CapsError::PayloadGap);
     }
 
+    // --- bijection: every file index referenced exactly once ---
+    if h.path_table_count != h.file_count {
+        // Unequal counts cannot be a bijection; classify by direction.
+        return Err(if h.path_table_count < h.file_count {
+            CapsError::UnreferencedFile
+        } else {
+            CapsError::DuplicateFileIndex
+        });
+    }
+    for fi in 0..h.file_count as usize {
+        let mut refs = 0usize;
+        for pi in 0..h.path_table_count as usize {
+            let pe = decode_path_entry(bytes, path_tbl_start + pi * PATH_ENTRY_SIZE as usize);
+            if pe.file_index as usize == fi {
+                refs += 1;
+            }
+        }
+        if refs == 0 {
+            return Err(CapsError::UnreferencedFile);
+        }
+        if refs > 1 {
+            return Err(CapsError::DuplicateFileIndex);
+        }
+    }
+
     // --- boot-canonical rules ---
     if canonical_count == 0 {
         return Err(CapsError::MissingBootCanonical);
@@ -596,6 +678,11 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     }
     if !canonical_name_ok {
         return Err(CapsError::BadBootCanonicalName);
+    }
+    // The canonical path's target file must carry FLAG_BOOT_CANONICAL (and no
+    // other file may, enforced in the file loop above).
+    if !canonical_target_ok {
+        return Err(CapsError::BootCanonicalFlagMismatch);
     }
 
     // --- whole-capsule digest: bytes[0..152] || zeros[32] || bytes[184..] ---

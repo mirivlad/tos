@@ -1,0 +1,6 @@
+# transient regeneration artifacts — not committed
+.init.txt
+.version.txt
+.*.manifest
+.*.meta
+.*.bin

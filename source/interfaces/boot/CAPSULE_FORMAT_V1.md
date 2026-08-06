@@ -66,15 +66,20 @@ Byte order: all multi-byte integers are **little-endian**.
 The capsule layout is strictly sequential:
 
 ```text
-[header] [path table] [name arena] [file table] [payload]
+[header] [path table] [name arena] [file table] [payload] [licence notice]
 ```
 
 The name arena begins immediately after the path table and ends exactly at
-`file_table_offset`. The file table ends exactly at `payload_offset`. Hence:
+`file_table_offset`. The file table ends exactly at `payload_offset`. The
+licence notice, when present, is the exact tail of the capsule. Hence:
 
 - `file_table_offset == path_table_offset + path_table_count * PATH_ENTRY_SIZE + name_arena_length`;
 - `payload_offset == file_table_offset + file_count * FILE_ENTRY_SIZE`;
-- `payload_offset + payload_length == total_length`.
+- `payload_offset + payload_length + licence_notice_length == total_length`;
+- when the licence notice is absent, both `licence_notice_offset` and
+  `licence_notice_length` are zero;
+- when present, `licence_notice_offset == payload_offset + payload_length` and
+  `licence_notice_offset + licence_notice_length == total_length`.
 
 ### 4.1 Path entry (16 bytes)
 
@@ -83,7 +88,7 @@ The name arena begins immediately after the path table and ends exactly at
 | 0 | 4 | `name_offset` | offset of UTF-8 name relative to name arena start |
 | 4 | 4 | `name_length` | byte length of name; non-zero |
 | 8 | 4 | `file_index` | index into the file table; must be `< file_count` |
-| 12 | 4 | `flags` | bit 0: boot-canonical file; reserved bits must be zero |
+| 12 | 4 | `flags` | bit 0: boot-canonical file; **only bit 0 is defined for path entries** — all other bits must be zero |
 
 Path names must be **canonical absolute paths**:
 
@@ -92,7 +97,10 @@ Path names must be **canonical absolute paths**:
 - no `.` or `..` components; no empty components (`//`), no trailing `/`;
 - lexically sorted in ascending byte order over the whole table;
 - distinct (no duplicate names);
-- each name is referenced exactly once (`file_index` uniqueness per name).
+- the path table is a **bijection onto the file table**: each name is
+  referenced exactly once, and every `file_index` in `[0, file_count)` is
+  referenced by exactly one path entry (no duplicate references, no orphan
+  files).
 
 ### 4.2 File entry (64 bytes)
 
@@ -101,7 +109,7 @@ Path names must be **canonical absolute paths**:
 | 0 | 8 | `content_offset` | offset of file content **relative to `payload_offset`** |
 | 8 | 8 | `content_length` | byte length of content |
 | 16 | 32 | `content_digest` | SHA-256 of content bytes |
-| 48 | 4 | `file_flags` | bit 0: boot-canonical; bit 1: licence notice; reserved bits zero |
+| 48 | 4 | `file_flags` | bit 0: boot-canonical; bit 1: licence notice; **only bits 0-1 are defined** — reserved bits must be zero |
 | 52 | 12 | `reserved` | must be zero |
 
 Content constraints:
@@ -121,6 +129,10 @@ Content constraints:
 - File table: sorted by `content_offset` (ascending). Unsorted table is rejected.
 - `file_flags` boot-canonical bit (bit 0) is set for exactly one file, the
   system boot text at `/system/boot/init.tos`.
+- Boot-canonical **consistency**: the path entry carrying bit 0 must reference
+  the file entry that carries bit 0, and vice versa. A canonical path pointing
+  at a non-canonical file, a non-canonical path pointing at the canonical
+  file, or a canonical flag on any other file is rejected.
 
 ## 6. Identity fields
 
@@ -166,15 +178,18 @@ The digest is verified over the exact bytes passed to the parser.
 11. path not canonical (see §4.1);
 12. duplicate path names;
 13. path table not sorted ascending;
-14. `file_index` out of range or name referenced by more than one entry;
+14. `file_index` out of range, or the path table not being a bijection
+    (duplicate references to one file, or an orphan file);
 15. file table not sorted by content offset;
 16. file content out of payload bounds or misaligned;
 17. overlapping or non-covering payload content;
 18. per-file digest mismatch;
 19. whole-capsule digest mismatch;
 20. source identity kind unsupported, or kind 0 with boot-canonical flag;
-21. licence notice block out of bounds;
-22. reserved fields non-zero.
+21. licence notice block out of bounds, not the exact capsule tail, absent
+    fields inconsistent (offset non-zero with zero length), or not valid UTF-8;
+22. reserved fields non-zero (header, path-entry, file-entry 12-byte block);
+23. boot-canonical flag inconsistency between path entry and file entry.
 
 A parser must return a structured error naming the rule violated; it must never
 panic on malformed input.

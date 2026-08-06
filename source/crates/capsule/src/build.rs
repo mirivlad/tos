@@ -13,9 +13,9 @@ use std::vec::Vec;
 use tos_hash::Sha256;
 
 use crate::{
-    ALIGNMENT, ALL_KNOWN_FLAGS, ARCH_SPEC_VERSION, BUILDER_VERSION, DIGEST_BYTES, FILE_ENTRY_SIZE,
-    FLAG_BOOT_CANONICAL, FORMAT_UUID, FORMAT_VERSION, HEADER_SIZE, MAGIC, PATH_ENTRY_SIZE,
-    SRC_KIND_DETACHED, BOOT_PATH,
+    ALIGNMENT, ARCH_SPEC_VERSION, BOOT_PATH, BUILDER_VERSION, DIGEST_BYTES, FILE_ENTRY_SIZE,
+    FILE_KNOWN_FLAGS, FLAG_BOOT_CANONICAL, FORMAT_UUID, FORMAT_VERSION, HEADER_SIZE, MAGIC,
+    PATH_ENTRY_SIZE, SRC_KIND_DETACHED,
 };
 
 /// One file to place in the capsule.
@@ -78,7 +78,7 @@ impl Builder {
     pub fn add(&mut self, spec: FileSpec) {
         // Reserved bits are stripped silently; the parser is the authority.
         let mut spec = spec;
-        spec.flags &= ALL_KNOWN_FLAGS;
+        spec.flags &= FILE_KNOWN_FLAGS;
         self.files.push(spec);
     }
 
