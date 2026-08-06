@@ -1,0 +1,23 @@
+# Expected parse outcome of every committed capsule v1 fixture
+# (CAPSULE_FORMAT_V1.md §10). Hand-maintained, NOT generated: deriving it from
+# parser output would make the vector test tautological.
+#
+# <file>\t<outcome>   outcome = "accept" | "reject:<CapsError variant>"
+#
+# The variant name is the Debug name of tos_capsule::CapsError. A fixture
+# patched from a valid capsule also breaks the whole-capsule digest; the name
+# below is the rule the parser reaches first, which is the rule the fixture
+# exists to pin.
+valid-001.bin	accept
+invalid-badmagic.bin	reject:BadMagic
+invalid-truncated.bin	reject:TotalLengthMismatch
+invalid-kind-none.bin	reject:UnsupportedIdentityKind
+invalid-missing-boot.bin	reject:MissingBootCanonical
+invalid-bootcanon-mismatch.bin	reject:BootCanonicalFlagMismatch
+invalid-licence-tail.bin	reject:LicenceTailMismatch
+invalid-traversal.bin	reject:TraversalInPath
+invalid-dup.bin	reject:DuplicatePath
+invalid-dup-file-index.bin	reject:NonCanonicalFileIndex
+invalid-unreferenced-file.bin	reject:UnreferencedFile
+invalid-path-flag.bin	reject:BadPathFlags
+invalid-file-reserved.bin	reject:NonZeroReservedEntry

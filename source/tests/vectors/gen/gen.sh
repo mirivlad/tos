@@ -133,5 +133,8 @@ with open(p, "r+b") as f:
     f.write(struct.pack("<Q", v + 1))
 PY
 
+echo "NOTE: tests/vectors/capsule-v1/vectors.tsv is hand-maintained (see"
+echo "      CAPSULE_FORMAT_V1.md 10). Add or remove a vector here and you must"
+echo "      update that table too - the integration test fails if they disagree."
 echo "vectors regenerated:"
 ls -1 "$OUT"/*.bin

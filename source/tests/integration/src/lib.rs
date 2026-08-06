@@ -9,7 +9,7 @@
 
 #![cfg(test)]
 
-use tos_capsule::{CapsError, parse, SRC_KIND_DETACHED, FLAG_BOOT_CANONICAL};
+use tos_capsule::{parse, SRC_KIND_DETACHED, FLAG_BOOT_CANONICAL};
 use tos_hash::sha256;
 
 const V: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../vectors/capsule-v1/");
@@ -55,40 +55,59 @@ fn golden_valid_whole_digest_self_consistent() {
     assert_eq!(hh.finalize(), h.whole_capsule_digest);
 }
 
+/// Parse `vectors.tsv` (CAPSULE_FORMAT_V1.md §10) into (file, outcome) rows.
+/// The table is the committed expectation; the test is driven by it rather than
+/// by a list duplicated in Rust.
+fn vector_table() -> Vec<(String, String)> {
+    let text = std::fs::read_to_string(format!("{V}vectors.tsv")).expect("read vectors.tsv");
+    text.lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| {
+            let (name, outcome) = l.split_once('\t').expect("vectors.tsv is tab-separated");
+            (name.trim().to_string(), outcome.trim().to_string())
+        })
+        .collect()
+}
+
 #[test]
-fn golden_invalid_vectors_rejected() {
-    let cases: &[(&str, CapsError)] = &[
-        ("invalid-badmagic.bin", CapsError::BadMagic),
-        ("invalid-truncated.bin", CapsError::TotalLengthMismatch),
-        ("invalid-missing-boot.bin", CapsError::MissingBootCanonical),
-        ("invalid-traversal.bin", CapsError::TraversalInPath),
-        ("invalid-dup.bin", CapsError::DuplicatePath),
-        ("invalid-kind-none.bin", CapsError::UnsupportedIdentityKind),
-        (
-            "invalid-file-reserved.bin",
-            CapsError::NonZeroReservedEntry,
-        ),
-        ("invalid-path-flag.bin", CapsError::BadPathFlags),
-        (
-            // Both path entries reference file 0: a duplicate reference is a
-            // non-canonical index mapping under ADR-0017 rule 26.
-            "invalid-dup-file-index.bin",
-            CapsError::NonCanonicalFileIndex,
-        ),
-        (
-            "invalid-unreferenced-file.bin",
-            CapsError::UnreferencedFile,
-        ),
-        (
-            "invalid-bootcanon-mismatch.bin",
-            CapsError::BootCanonicalFlagMismatch,
-        ),
-        ("invalid-licence-tail.bin", CapsError::LicenceTailMismatch),
-    ];
-    for (name, err) in cases {
+fn every_vector_matches_its_declared_outcome() {
+    let rows = vector_table();
+    assert!(!rows.is_empty(), "vectors.tsv is empty");
+    for (name, outcome) in &rows {
         let bytes = vec(name);
-        assert_eq!(parse(&bytes), Err(*err), "vector {name}");
+        let got = parse(&bytes);
+        match outcome.as_str() {
+            "accept" => {
+                got.unwrap_or_else(|e| panic!("vector {name}: expected accept, got {e:?}"));
+            }
+            other => {
+                let want = other
+                    .strip_prefix("reject:")
+                    .unwrap_or_else(|| panic!("vector {name}: bad outcome {other:?}"));
+                // Compare the Debug name so the table stays readable and does
+                // not have to be kept in sync with a Rust match arm.
+                let err = got.err().unwrap_or_else(|| {
+                    panic!("vector {name}: expected reject:{want}, but it parsed")
+                });
+                assert_eq!(format!("{err:?}"), want, "vector {name}");
+            }
+        }
     }
+}
+
+#[test]
+fn vector_table_covers_every_committed_fixture() {
+    // A fixture that nobody declares would be silently untested; a declared
+    // fixture that no longer exists would make the table lie.
+    let declared: std::collections::BTreeSet<String> =
+        vector_table().into_iter().map(|(n, _)| n).collect();
+    let present: std::collections::BTreeSet<String> = std::fs::read_dir(V)
+        .expect("read vector dir")
+        .map(|e| e.expect("dir entry").file_name().to_string_lossy().into_owned())
+        .filter(|n| n.ends_with(".bin"))
+        .collect();
+    assert_eq!(declared, present, "vectors.tsv and *.bin disagree");
 }
 
 #[test]
