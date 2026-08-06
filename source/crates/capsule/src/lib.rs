@@ -478,9 +478,6 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     let payload_end = payload_start
         .checked_add(h.payload_length as usize)
         .ok_or(CapsError::RegionOverflow)?;
-    if payload_end != bytes.len() {
-        return Err(CapsError::LayoutMismatch);
-    }
     if h.file_count == 0 {
         return Err(CapsError::ZeroFileCount);
     }
@@ -654,6 +651,19 @@ mod tests {
         let v = cap.find(b"/system/version").expect("version");
         assert_eq!(v.content, b"0.2.1\n");
         assert_eq!(cap.find(b"/nope"), None);
+    }
+
+    #[test]
+    fn licence_notice_round_trip() {
+        let mut b = sample_builder();
+        b.set_licence_notice(b"SPDX-License-Identifier: GPL-3.0-or-later\n".to_vec());
+        let bytes = b.build().expect("build");
+        let cap = parse(&bytes).expect("parse with licence tail");
+        let h = cap.header();
+        assert_eq!(h.licence_notice_length as usize, bytes.len() - h.payload_offset as usize - h.payload_length as usize);
+        assert_eq!(h.licence_notice_offset as usize, h.payload_offset as usize + h.payload_length as usize);
+        let boot = cap.boot_file().expect("boot file");
+        assert!(boot.flags & FLAG_BOOT_CANONICAL != 0);
     }
 
     #[test]
