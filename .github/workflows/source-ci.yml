@@ -1,0 +1,78 @@
+# SPDX-License-Identifier: CC-BY-SA-4.0
+name: Source CI
+
+# The code gates required by docs/30_COMPLIANCE_AND_RELEASE_GATES.md
+# ("Engineering gate"). Until this workflow existed they were only ever run by
+# hand, so a red state could reach main unnoticed.
+#
+# The QEMU boot gate is deliberately NOT here: it is added separately, because
+# it needs firmware packages and a TCG boot, and it must be possible to see it
+# fail on its own terms rather than as part of a compile job.
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'claude/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: source-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        # rust-toolchain.toml lives in source/ and pins 1.97.1 with rustfmt and
+        # clippy. Every cargo/rustup command must run from here: invoking rustup
+        # from the repository root resolves to the default toolchain instead and
+        # silently installs targets for the wrong one.
+        working-directory: source
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Toolchain and targets
+        run: |
+          rustup show active-toolchain
+          rustup target add x86_64-unknown-uefi x86_64-unknown-none
+          rustc --version
+          cargo --version
+
+      - name: Formatting
+        run: cargo fmt --all -- --check
+
+      - name: Clippy (host crates)
+        run: cargo clippy --all-targets -- -D warnings
+
+      # --all-targets must not be used for the freestanding crates: building
+      # their test harness pulls in std and fails with a duplicate panic_impl
+      # lang item. The binaries themselves are what matters here.
+      - name: Clippy (UEFI loader)
+        run: cargo clippy -p tos-uefi-loader --target x86_64-unknown-uefi -- -D warnings
+
+      - name: Clippy (nucleus)
+        run: cargo clippy -p tos-nucleus --target x86_64-unknown-none -- -D warnings
+
+      - name: Workspace tests
+        run: cargo test
+
+      # The parser must be total over arbitrary bytes (AGENTS.md §8). The
+      # deterministic fuzz target is a cargo binary like any other and costs
+      # seconds, so it belongs with the compile gates rather than with the
+      # firmware-dependent QEMU job.
+      - name: Capsule parser fuzz (deterministic, fixed seed)
+        run: cargo run --release -p tos-tests-fuzz -- 200000
+
+      - name: Build UEFI loader
+        run: cargo build --release -p tos-uefi-loader --target x86_64-unknown-uefi
+
+      - name: Build nucleus
+        run: cargo build --release -p tos-nucleus --target x86_64-unknown-none
+
+      - name: Artifact sizes
+        run: |
+          ls -l target/x86_64-unknown-uefi/release/tos-uefi-loader.efi
+          ls -l target/x86_64-unknown-none/release/tos-nucleus
