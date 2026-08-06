@@ -18,7 +18,6 @@ use tos_boot_protocol::{
 };
 use tos_capsule::parse;
 use tos_hash::{Sha256, sha256};
-use tos_serial;
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
@@ -32,7 +31,7 @@ fn result_port(code: u8) -> ! {
         asm!(
             "out dx, al",
             in("al") code,
-            in("dx") (RESULT_PORT as u16),
+            in("dx") RESULT_PORT,
             options(nomem, nostack, preserves_flags)
         );
     }
@@ -81,6 +80,13 @@ fn first_logical_line(content: &[u8]) -> Option<&[u8]> {
     None
 }
 
+// SAFETY (entry-point contract): `bi_raw` is the physical address of a BootInfo
+// record placed in `rdi` by the loader per BOOT_ABI_V1 §3, in an identity-mapped
+// region the loader marked reserved. It is validated as raw bytes
+// (`BootInfo::validate_bytes`) before it is ever read as a struct. The function
+// cannot be an `unsafe fn`: the loader transfers control to it with a machine
+// `call`, not a Rust call, so `clippy::not_unsafe_ptr_arg_deref` does not apply.
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 #[link_section = ".text.boot_entry"]
 pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {

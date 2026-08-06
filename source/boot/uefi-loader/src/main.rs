@@ -65,7 +65,7 @@ fn result_port(code: u8) -> ! {
         asm!(
             "out dx, al",
             in("al") code,
-            in("dx") (tos_boot_protocol::RESULT_PORT as u16),
+            in("dx") tos_boot_protocol::RESULT_PORT,
             options(nomem, nostack, preserves_flags)
         );
     }
@@ -258,6 +258,14 @@ fn reserve_overlapping(ranges: &mut [MemoryRange], start: u64, len: u64) {
     }
 }
 
+// SAFETY (entry-point contract): `image_handle` and `sys_table` are supplied by
+// the firmware per UEFI 2.10 §4.1 and are valid for the whole call; their
+// validity is the firmware's half of the ABI, not something this image can
+// check. The function cannot be an `unsafe fn`: firmware invokes it through the
+// efiapi ABI, not through Rust, so `clippy::not_unsafe_ptr_arg_deref` does not
+// apply to it. Every dereference below is null-checked where the UEFI spec
+// permits a null field (`con_out`, `boot_services`).
+#[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[no_mangle]
 pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTable) -> usize {
     tos_serial::init();
@@ -333,7 +341,7 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     // ALLOCATE_ANY_PAGES + PIC relocation is not viable for a flat image
     // (GOT slots are never filled), so the loader must get exactly
     // NUCLEUS_BASE. If the firmware cannot honour it, fail closed.
-    let nucleus_pages = (nucleus.len() + 0xfff) / 0x1000;
+    let nucleus_pages = nucleus.len().div_ceil(0x1000);
     let mut nucleus_phys: u64 = NUCLEUS_BASE;
     let st = unsafe {
         ((*bt).allocate_pages)(
@@ -381,7 +389,7 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     if st != EFI_BUFFER_TOO_SMALL && efi_error(st) {
         serial_fatal(b"TOS.BOOT.FAILI memmap-probe");
     }
-    if desc_size < core::mem::size_of::<EfiMemoryDescriptor>() || desc_size % 8 != 0 {
+    if desc_size < core::mem::size_of::<EfiMemoryDescriptor>() || !desc_size.is_multiple_of(8) {
         // The firmware must report the EFI_MEMORY_DESCRIPTOR stride; refuse
         // anything smaller than the documented 40-byte layout.
         serial_fatal(b"TOS.BOOT.FAILI memmap-descsize");

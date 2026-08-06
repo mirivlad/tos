@@ -83,13 +83,13 @@ impl Sha256 {
 
     fn compress_block(&mut self) {
         let mut w = [0u32; 64];
-        for i in 0..16 {
-            w[i] = u32::from_be_bytes([
-                self.buf[i * 4],
-                self.buf[i * 4 + 1],
-                self.buf[i * 4 + 2],
-                self.buf[i * 4 + 3],
-            ]);
+        // FIPS 180-4 §6.2.2 step 1 for t = 0..15: the block is read as 16
+        // big-endian words. Zipping the words with 4-byte chunks keeps the
+        // indexing out of the loop without introducing a fallible conversion
+        // (no `try_into().unwrap()`): a trusted-base primitive must have no
+        // panic path at all.
+        for (word, chunk) in w[..16].iter_mut().zip(self.buf.chunks_exact(4)) {
+            *word = u32::from_be_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
         }
         for i in 16..64 {
             let s0 = w[i - 15].rotate_right(7) ^ w[i - 15].rotate_right(18) ^ (w[i - 15] >> 3);

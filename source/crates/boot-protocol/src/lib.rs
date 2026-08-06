@@ -288,11 +288,10 @@ impl BootInfo {
         let oid_len = bytes[138];
         match id_kind {
             SRC_KIND_GIT => {
-                let ok = match (oid_alg, oid_len) {
-                    (OID_ALG_SHA1, OID_LEN_SHA1) => true,
-                    (OID_ALG_SHA256, OID_LEN_SHA256) => true,
-                    _ => false,
-                };
+                let ok = matches!(
+                    (oid_alg, oid_len),
+                    (OID_ALG_SHA1, OID_LEN_SHA1) | (OID_ALG_SHA256, OID_LEN_SHA256)
+                );
                 if !ok {
                     return Err(BootInfoError::UnsupportedCapsuleIdentityKind);
                 }
@@ -321,7 +320,7 @@ impl BootInfo {
     /// Validate the memory map (descriptor array at `memory_map_phys` of
     /// `memory_map_length` bytes) and the capsule range.
     pub fn validate_memory_and_capsule(&self) -> Result<(), BootInfoError> {
-        if self.memory_map_length % MEM_DESC_SIZE != 0 {
+        if !self.memory_map_length.is_multiple_of(MEM_DESC_SIZE) {
             return Err(BootInfoError::BadDescriptorSize);
         }
         let desc_count = self.memory_map_length / MEM_DESC_SIZE;
