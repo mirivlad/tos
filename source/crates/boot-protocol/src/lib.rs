@@ -64,8 +64,17 @@ pub struct MemoryRange {
 }
 
 impl MemoryRange {
-    pub fn end(&self) -> u64 {
-        self.phys_start + self.phys_length
+    /// Exclusive end of the range, or `None` when `phys_start + phys_length`
+    /// wraps past `u64::MAX`.
+    ///
+    /// A wrapping descriptor is not a representable physical range: BOOT_ABI_V1
+    /// §8 rule 6 rejects a memory map region outside addressable bounds. The
+    /// checked form is mandatory here — an unchecked `+` panics in a debug
+    /// build (the validator must be total, AGENTS.md §8) and silently wraps in
+    /// a release build, which previously let an overlapping map pass
+    /// [`BootInfo::check_memory_map`].
+    pub fn checked_end(&self) -> Option<u64> {
+        self.phys_start.checked_add(self.phys_length)
     }
 }
 
@@ -185,6 +194,9 @@ pub enum BootInfoError {
     ZeroCapsule,
     /// capsule range not contained in any memory-map descriptor.
     CapsuleOutOfMemoryMap,
+    /// a descriptor's `phys_start + phys_length` wraps past `u64::MAX`, so the
+    /// range lies outside addressable bounds (BOOT_ABI_V1 §8 rule 6).
+    MemoryRangeOverflow,
     /// `capsule_identity_kind` not SRC_KIND_GIT or SRC_KIND_DETACHED.
     UnsupportedCapsuleIdentityKind,
     /// `next` non-zero (reserved extension pointer must be 0).
@@ -329,15 +341,23 @@ impl BootInfo {
         if descs.is_empty() {
             return Err(BootInfoError::EmptyMemoryMap);
         }
-        let mut prev_start = descs[0].phys_start;
-        let mut prev_end = descs[0].end();
         if descs[0].phys_length == 0 {
             return Err(BootInfoError::ZeroLengthRange);
         }
+        let mut prev_start = descs[0].phys_start;
+        // A wrapping range is rejected before it can be compared: with an
+        // unchecked end, `prev_end` wrapped below `prev_start` and every later
+        // overlap check passed vacuously.
+        let mut prev_end = descs[0]
+            .checked_end()
+            .ok_or(BootInfoError::MemoryRangeOverflow)?;
         for d in &descs[1..] {
             if d.phys_length == 0 {
                 return Err(BootInfoError::ZeroLengthRange);
             }
+            let end = d
+                .checked_end()
+                .ok_or(BootInfoError::MemoryRangeOverflow)?;
             // Before the previous region's start => strictly out of order.
             if d.phys_start < prev_start {
                 return Err(BootInfoError::UnsortedMemoryMap);
@@ -347,7 +367,7 @@ impl BootInfo {
                 return Err(BootInfoError::OverlappingMemoryMap);
             }
             prev_start = d.phys_start;
-            prev_end = d.end();
+            prev_end = end;
         }
         Ok(())
     }
@@ -358,9 +378,19 @@ impl BootInfo {
             .capsule_phys
             .checked_add(self.capsule_length)
             .ok_or(BootInfoError::CapsuleRangeOverflow)?;
-        let inside = descs.iter().any(|d| {
-            d.phys_start <= self.capsule_phys && cap_end <= d.phys_start + d.phys_length
-        });
+        // Fail closed on a malformed descriptor instead of comparing against a
+        // wrapped end: `phys_start + phys_length` panicked in debug and wrapped
+        // in release, so a range ending past `u64::MAX` produced an arbitrary
+        // containment verdict.
+        let mut inside = false;
+        for d in descs {
+            let d_end = d
+                .checked_end()
+                .ok_or(BootInfoError::MemoryRangeOverflow)?;
+            if d.phys_start <= self.capsule_phys && cap_end <= d_end {
+                inside = true;
+            }
+        }
         if !inside {
             return Err(BootInfoError::CapsuleOutOfMemoryMap);
         }
@@ -547,6 +577,90 @@ mod tests {
 
         let zero = [MemoryRange { phys_start: 0x1000, phys_length: 0, ty: 1, flags: 1 }];
         assert_eq!(bi.check_memory_map(&zero), Err(BootInfoError::ZeroLengthRange));
+    }
+
+    // --- regression: unchecked `phys_start + phys_length` (Stage 1 hardening) ---
+    //
+    // These run in a debug profile under plain `cargo test`, where the previous
+    // unchecked addition panicked with "attempt to add with overflow", and in a
+    // release profile under `cargo test --release`, where it wrapped silently.
+    // Both profiles must now produce the same structured error.
+
+    #[test]
+    fn checked_end_reports_overflow() {
+        let ok = MemoryRange { phys_start: 0x1000, phys_length: 0x1000, ty: 1, flags: 0 };
+        assert_eq!(ok.checked_end(), Some(0x2000));
+        let wraps = MemoryRange {
+            phys_start: u64::MAX - 0xfff,
+            phys_length: 0x2000,
+            ty: 1,
+            flags: 0,
+        };
+        assert_eq!(wraps.checked_end(), None);
+    }
+
+    #[test]
+    fn memory_map_wrapping_range_rejected() {
+        let bi = BootInfo::new();
+        let wraps = [MemoryRange {
+            phys_start: u64::MAX - 0xfff,
+            phys_length: 0x2000,
+            ty: 1,
+            flags: 0,
+        }];
+        assert_eq!(
+            bi.check_memory_map(&wraps),
+            Err(BootInfoError::MemoryRangeOverflow)
+        );
+    }
+
+    #[test]
+    fn wrapping_range_no_longer_hides_overlap() {
+        // Before the fix this map was ACCEPTED in a release build: the first
+        // descriptor's end wrapped to 0xfff, so `0x2000 < prev_end` was false
+        // and the overlap went unnoticed (in debug it panicked instead).
+        let bi = BootInfo::new();
+        let overlapping = [
+            MemoryRange { phys_start: 0x1000, phys_length: u64::MAX, ty: 1, flags: 0 },
+            MemoryRange { phys_start: 0x2000, phys_length: 0x1000, ty: 1, flags: 0 },
+        ];
+        assert_eq!(
+            bi.check_memory_map(&overlapping),
+            Err(BootInfoError::MemoryRangeOverflow)
+        );
+    }
+
+    #[test]
+    fn plain_overlap_still_reported_as_overlap() {
+        // The overflow guard must not swallow the ordinary overlap diagnosis.
+        let bi = BootInfo::new();
+        let overlapping = [
+            MemoryRange { phys_start: 0x1000, phys_length: 0x2000, ty: 1, flags: 0 },
+            MemoryRange { phys_start: 0x2000, phys_length: 0x1000, ty: 1, flags: 0 },
+        ];
+        assert_eq!(
+            bi.check_memory_map(&overlapping),
+            Err(BootInfoError::OverlappingMemoryMap)
+        );
+    }
+
+    #[test]
+    fn capsule_containment_wrapping_descriptor_rejected() {
+        // Before the fix: debug panicked, release wrapped the descriptor end to
+        // 0x1000 and answered the containment question from a bogus range.
+        let descs = [MemoryRange {
+            phys_start: 0xffff_ffff_ffff_f000,
+            phys_length: 0x2000,
+            ty: 1,
+            flags: 0,
+        }];
+        let mut bi = BootInfo::new();
+        bi.capsule_phys = 0x100;
+        bi.capsule_length = 0x100;
+        assert_eq!(
+            bi.check_capsule_in_memory(&descs),
+            Err(BootInfoError::MemoryRangeOverflow)
+        );
     }
 
     #[test]

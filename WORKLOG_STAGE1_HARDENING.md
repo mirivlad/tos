@@ -63,3 +63,50 @@ boot ABI v1 в этой ветке **не меняются**.
     файлов (весь `source/`, ADR-0016, `scripts/`, журналы) в него не входят;
   - `MANIFEST.txt` заявляет «15 accepted ADRs», фактически их 16;
   - в CI по-прежнему нет джоба для кода (cargo/clippy/QEMU) — это Priority 3.
+- Коммит: `7f5b8b2ea9047e6763d7e22dc66b517d114e9ce2`, запушен в
+  `origin/claude/stage1-hardening`.
+
+### B — checked arithmetic в boot-protocol
+
+- Статус: **готово**.
+- Проблема: `MemoryRange::end()` складывал `phys_start + phys_length` без
+  проверки. Подтверждено PoC до правки:
+  - debug: `thread 'main' panicked at crates/boot-protocol/src/lib.rs:68:
+    attempt to add with overflow` — валидатор, объявленный «total over arbitrary
+    bytes», паниковал (AGENTS.md §8);
+  - release: сложение заворачивалось, из-за чего
+    `check_memory_map([{0x1000, u64::MAX}, {0x2000, 0x1000}])` возвращал
+    **`Ok(())`** на перекрывающейся карте (fail-open против BOOT_ABI_V1 §8 п.6).
+    То же в `check_capsule_in_memory`: `d.phys_start + d.phys_length`.
+- Изменения (`source/crates/boot-protocol/src/lib.rs`):
+  - `MemoryRange::end() -> u64` заменён на `checked_end() -> Option<u64>`;
+  - новый вариант ошибки `BootInfoError::MemoryRangeOverflow`;
+  - `check_memory_map`: проверка нулевой длины поднята перед вычислением конца,
+    оба конца диапазонов вычисляются через `checked_end`;
+  - `check_capsule_in_memory`: явный цикл, fail closed на переполняющемся
+    дескрипторе вместо сравнения с завёрнутым концом.
+- **Нормативные контракты не менялись**: 24-байтовая раскладка дескриптора,
+  BootInfo v1 и capsule v1 не тронуты. `MemoryRangeOverflow` — реализация уже
+  существующего правила BOOT_ABI_V1 §8 п.6 («region outside addressable
+  bounds»), а не новое правило. `checked_end` — внутренний Rust-хелпер крейта
+  (`publish = false`), единственные вызовы были внутри самого крейта.
+- Тесты (5 новых regression-тестов, специально запускаются в обоих профилях):
+  `checked_end_reports_overflow`, `memory_map_wrapping_range_rejected`,
+  `wrapping_range_no_longer_hides_overlap`, `plain_overlap_still_reported_as_overlap`
+  (гарантирует, что защита от переполнения не подменяет обычный диагноз overlap),
+  `capsule_containment_wrapping_descriptor_rejected`.
+- Проверки:
+  - `cargo test -p tos-boot-protocol` → 18 passed / 0 failed (**debug**, профиль,
+    где старый код паниковал);
+  - `cargo test --release -p tos-boot-protocol` → 18 passed / 0 failed (профиль,
+    где старый код молча заворачивал);
+  - `cargo test` (воркспейс) → 44 passed / 0 failed (было 39);
+  - `cargo build --release --target x86_64-unknown-uefi` и
+    `--target x86_64-unknown-none` → собираются;
+  - QEMU: `bash host-tools/qemu-test/run.sh …` → **exit 33 (HALT_OK)**, реальная
+    карта памяти OVMF проходит ужесточённый валидатор,
+    `TOS.IDENTITY source_kind=git source_digest=7f5b8b2e…` = HEAD;
+  - `check-spdx`/`check-dco`/`build-specification.py --check` → OK.
+- Известные ограничения: у крейта остаются 2 предупреждения clippy
+  (`matches!`, `is_multiple_of`) — они были и до ветки, чистка предупреждений вне
+  области Priority 1.
