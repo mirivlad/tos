@@ -70,8 +70,10 @@ fn golden_invalid_vectors_rejected() {
         ),
         ("invalid-path-flag.bin", CapsError::BadPathFlags),
         (
+            // Both path entries reference file 0: a duplicate reference is a
+            // non-canonical index mapping under ADR-0017 rule 26.
             "invalid-dup-file-index.bin",
-            CapsError::DuplicateFileIndex,
+            CapsError::NonCanonicalFileIndex,
         ),
         (
             "invalid-unreferenced-file.bin",

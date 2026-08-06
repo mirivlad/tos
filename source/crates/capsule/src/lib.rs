@@ -145,11 +145,13 @@ pub enum CapsError {
     UnsortedPathTable,
     BadPathFlags,
     PathFileIndexOutOfRange,
-    /// Two path entries reference the same `file_index` (a path table must be
-    /// a bijection onto `[0, file_count)`).
-    DuplicateFileIndex,
     /// A file entry is never referenced by any path entry.
     UnreferencedFile,
+    /// `path_entry[i].file_index != i`. The bijection required by §4.1 is
+    /// realised canonically (spec rule 26, ADR-0017), so any other permutation
+    /// — even one that is itself a valid bijection — is a non-canonical
+    /// encoding of the same file set and is rejected.
+    NonCanonicalFileIndex,
     NameOutOfArena,
     /// A gap between the header and the path table: `path_table_offset` must
     /// equal `HEADER_SIZE` (spec §4 rule 24, ADR-0017).
@@ -640,6 +642,14 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
         if pe.file_index as usize >= h.file_count as usize {
             return Err(CapsError::PathFileIndexOutOfRange);
         }
+        // Canonical index mapping (spec §4.1 rule 26, ADR-0017): path entry i
+        // references file i. Verifying the bijection here costs one comparison
+        // per entry; the previous reference-counting form was O(n²) and took
+        // 3.55 s in release for 20 001 files, against the 250 ms p95 budget of
+        // docs/35_PERFORMANCE_CONTRACTS.md §Stage 1.
+        if pe.file_index as usize != i {
+            return Err(CapsError::NonCanonicalFileIndex);
+        }
         if pe.flags & FLAG_BOOT_CANONICAL != 0 {
             canonical_count += 1;
             canonical_file_index = Some(pe.file_index);
@@ -716,29 +726,16 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
         return Err(CapsError::PayloadGap);
     }
 
-    // --- bijection: every file index referenced exactly once ---
+    // --- bijection ---
+    // With rule 26 enforced above (path_entry[i].file_index == i), equal counts
+    // are sufficient: the mapping is the identity on [0, file_count), which is
+    // a bijection by construction. Only the count relation remains to check.
+    // A path table *longer* than the file table cannot reach this point: entry
+    // `file_count` would have to carry `file_index == file_count`, which the
+    // range check above already rejects. The only remaining mismatch is a file
+    // table longer than the path table, i.e. files no path names.
     if h.path_table_count != h.file_count {
-        // Unequal counts cannot be a bijection; classify by direction.
-        return Err(if h.path_table_count < h.file_count {
-            CapsError::UnreferencedFile
-        } else {
-            CapsError::DuplicateFileIndex
-        });
-    }
-    for fi in 0..h.file_count as usize {
-        let mut refs = 0usize;
-        for pi in 0..h.path_table_count as usize {
-            let pe = decode_path_entry(bytes, path_tbl_start + pi * PATH_ENTRY_SIZE as usize);
-            if pe.file_index as usize == fi {
-                refs += 1;
-            }
-        }
-        if refs == 0 {
-            return Err(CapsError::UnreferencedFile);
-        }
-        if refs > 1 {
-            return Err(CapsError::DuplicateFileIndex);
-        }
+        return Err(CapsError::UnreferencedFile);
     }
 
     // --- boot-canonical rules ---
@@ -970,6 +967,34 @@ mod tests {
         v[second..second + 4].copy_from_slice(&(old + 1).to_le_bytes());
         refix_whole_digest(&mut v);
         assert_eq!(parse(&v), Err(CapsError::UnpackedNameArena));
+    }
+
+    #[test]
+    fn non_canonical_file_index_rejected() {
+        // Path entry 1 is repointed at file 0. Under the pre-ADR-0017 rule this
+        // was a duplicate reference found by an O(n²) reference count; it is now
+        // a non-canonical mapping found in the same pass that reads the entry.
+        let mut v = sample_builder().build().expect("build");
+        let path_tbl = rd64(&v, off::PATH_TABLE_OFFSET) as usize;
+        let idx_field = path_tbl + PATH_ENTRY_SIZE as usize + 8; // entry 1, file_index
+        v[idx_field..idx_field + 4].copy_from_slice(&0u32.to_le_bytes());
+        refix_whole_digest(&mut v);
+        assert_eq!(parse(&v), Err(CapsError::NonCanonicalFileIndex));
+    }
+
+    #[test]
+    fn swapped_file_indices_rejected() {
+        // A genuine bijection that is not the identity: 0<->1 swapped. The old
+        // reference count accepted this; ADR-0017 rejects it so that a file set
+        // has exactly one valid encoding.
+        let mut v = sample_builder().build().expect("build");
+        let path_tbl = rd64(&v, off::PATH_TABLE_OFFSET) as usize;
+        let e0 = path_tbl + 8;
+        let e1 = path_tbl + PATH_ENTRY_SIZE as usize + 8;
+        v[e0..e0 + 4].copy_from_slice(&1u32.to_le_bytes());
+        v[e1..e1 + 4].copy_from_slice(&0u32.to_le_bytes());
+        refix_whole_digest(&mut v);
+        assert_eq!(parse(&v), Err(CapsError::NonCanonicalFileIndex));
     }
 
     #[test]

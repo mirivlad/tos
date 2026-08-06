@@ -147,7 +147,7 @@ fn error_tag(e: CapsError) -> &'static [u8] {
         CapsError::MissingBootCanonical => b"MissingBootCanonical",
         CapsError::DuplicateBootCanonical => b"DuplicateBootCanonical",
         CapsError::BadBootCanonicalName => b"BadBootCanonicalName",
-        CapsError::DuplicateFileIndex => b"DuplicateFileIndex",
+        CapsError::NonCanonicalFileIndex => b"NonCanonicalFileIndex",
         CapsError::UnreferencedFile => b"UnreferencedFile",
         CapsError::BootCanonicalFlagMismatch => b"BootCanonicalFlagMismatch",
         CapsError::BootCanonicalOnWrongFile => b"BootCanonicalOnWrongFile",
