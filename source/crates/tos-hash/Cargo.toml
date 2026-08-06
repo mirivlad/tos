@@ -1,0 +1,11 @@
+[package]
+name = "tos-hash"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "TOS SHA-256, no_std, dependency-free; reimplemented from FIPS 180-4."
+publish = false
+
+[lib]
+name = "tos_hash"
+# Null-dependency, works in no_std and host (unit tests use std).

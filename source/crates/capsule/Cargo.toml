@@ -1,0 +1,19 @@
+[package]
+name = "tos-capsule"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "TOS boot capsule v1: total bounded parser (no_std) and deterministic builder (host feature)."
+publish = false
+
+[dependencies]
+tos-hash = { path = "../tos-hash" }
+
+[features]
+default = []
+# Enables the deterministic builder (requires std + alloc); used by host tools
+# and host tests only. Never enabled in the loader/nucleus.
+host = []
+
+[lib]
+name = "tos_capsule"

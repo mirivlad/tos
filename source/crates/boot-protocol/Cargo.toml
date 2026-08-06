@@ -1,0 +1,7 @@
+[package]
+name = "tos-boot-protocol"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "TOS boot ABI v1: versioned loader-to-nucleus handoff structures, no_std."
+publish = false
