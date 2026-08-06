@@ -132,6 +132,8 @@ fn error_tag(e: CapsError) -> &'static [u8] {
         CapsError::BadPathFlags => b"BadPathFlags",
         CapsError::PathFileIndexOutOfRange => b"PathFileIndexOutOfRange",
         CapsError::NameOutOfArena => b"NameOutOfArena",
+        CapsError::PathTableNotAfterHeader => b"PathTableNotAfterHeader",
+        CapsError::UnpackedNameArena => b"UnpackedNameArena",
         CapsError::BadFileFlags => b"BadFileFlags",
         CapsError::NonZeroReservedEntry => b"NonZeroReservedEntry",
         CapsError::UnsortedFileTable => b"UnsortedFileTable",

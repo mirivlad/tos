@@ -76,10 +76,14 @@ cp "$OUT/valid-001.bin" "$OUT/invalid-dup-file-index.bin"
 printf '\x00\x00\x00\x00' | dd of="$OUT/invalid-dup-file-index.bin" bs=1 seek=$((PATH_TBL_OFF + 16 + 8)) conv=notrunc status=none
 
 # --- invalid-unreferenced-file : file_count > path_table_count ---
-# Build a 3-file capsule, then physically remove the third path entry and
-# shift every later section (file table, payload, licence) back by 16 bytes.
-# The result has a consistent layout with 3 files but only 2 paths, so the
-# bijection check reports UnreferencedFile (checked before whole digest).
+# Build a 3-file capsule, then physically remove the third path entry AND its
+# name from the arena, shifting every later section (file table, payload,
+# licence) back accordingly. Removing the name too is required since ADR-0017:
+# a name left behind in the arena would be undescribed data and the parser
+# would report UnpackedNameArena (rule 25) before reaching the bijection. The
+# result has a packed arena and a consistent layout with 3 files but only 2
+# paths, so the bijection check reports UnreferencedFile (checked before the
+# whole-capsule digest).
 printf '/system/boot/init.tos\t%s\n/system/version\t%s\n/system/etc/extra.tos\t%s\n' \
     "$INIT" "$GEN/.version.txt" "$GEN/.version.txt" > "$GEN/.unref.manifest"
 $TOOL --identity "$IDENT" --out "$GEN/.unref.bin" "$GEN/.unref.manifest"
@@ -90,21 +94,25 @@ b = bytearray(open(src, "rb").read())
 path_off = struct.unpack_from("<Q", b, 40)[0]
 path_cnt = struct.unpack_from("<I", b, 48)[0]
 assert path_cnt == 3, path_cnt
-# third path entry: [path_off+32, path_off+48)
-cut_start = path_off + 32
-cut_end = path_off + 48
-del b[cut_start:cut_end]
-# shift offsets of everything after the removed entry
+# third path entry: [path_off+32, path_off+48); its name is the last one in the
+# packed arena, which starts right after the path table.
+entry2 = path_off + 32
+name_off2, name_len2 = struct.unpack_from("<II", b, entry2)
+name_start = path_off + path_cnt * 16
+# Delete the name first (it lies after the entry), then the entry itself.
+del b[name_start + name_off2:name_start + name_off2 + name_len2]
+del b[entry2:entry2 + 16]
+shift = 16 + name_len2
 for off in (32,):  # total_length
     v = struct.unpack_from("<Q", b, off)[0]
-    struct.pack_into("<Q", b, off, v - 16)
+    struct.pack_into("<Q", b, off, v - shift)
 for off in (56, 72, 136):  # file_table_offset, payload_offset, licence_notice_offset
     v = struct.unpack_from("<Q", b, off)[0]
-    if v > cut_start:
-        struct.pack_into("<Q", b, off, v - 16)
+    if v > entry2:
+        struct.pack_into("<Q", b, off, v - shift)
 struct.pack_into("<I", b, 48, 2)  # path_table_count 3 -> 2
 open(dst, "wb").write(bytes(b))
-print("unreferenced vector: path_cnt=2 file_cnt=3, layout shifted")
+print(f"unreferenced vector: path_cnt=2 file_cnt=3, arena stays packed (-{shift} bytes)")
 PY
 
 # --- invalid-bootcanon-mismatch : canonical path flags set, file flags cleared ---

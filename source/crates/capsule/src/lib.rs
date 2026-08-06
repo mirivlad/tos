@@ -151,6 +151,15 @@ pub enum CapsError {
     /// A file entry is never referenced by any path entry.
     UnreferencedFile,
     NameOutOfArena,
+    /// A gap between the header and the path table: `path_table_offset` must
+    /// equal `HEADER_SIZE` (spec §4 rule 24, ADR-0017).
+    PathTableNotAfterHeader,
+    /// The name arena is not packed: the first name does not start at offset 0,
+    /// a name does not begin where the previous one ends, or the last name does
+    /// not end exactly at `file_table_offset` (spec §4.1 rule 25, ADR-0017).
+    /// Undescribed bytes in the arena are how arbitrary data used to travel
+    /// inside an otherwise valid capsule.
+    UnpackedNameArena,
     BadFileFlags,
     NonZeroReservedEntry,
     UnsortedFileTable,
@@ -516,9 +525,12 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     }
 
     // --- sequential-layout arithmetic (all checked) ---
+    // The path table begins immediately after the header: a capsule has no
+    // undescribed bytes (spec §4, ADR-0017). A lower bound alone would let
+    // arbitrary data sit between the header and the first path entry.
     let path_tbl_start = h.path_table_offset as usize;
-    if path_tbl_start < HEADER_SIZE {
-        return Err(CapsError::LayoutMismatch);
+    if path_tbl_start != HEADER_SIZE {
+        return Err(CapsError::PathTableNotAfterHeader);
     }
     let path_tbl_bytes = (h.path_table_count as usize)
         .checked_mul(PATH_ENTRY_SIZE as usize)
@@ -588,6 +600,9 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     // Boot-canonical cross-check: the canonical path's target file must carry
     // FLAG_BOOT_CANONICAL too (checked after the file loop).
     let mut canonical_file_index: Option<u32> = None;
+    // Packed-arena cursor: names tile the arena exactly, in table order
+    // (spec §4.1, ADR-0017).
+    let mut arena_cursor = 0usize;
     for i in 0..h.path_table_count as usize {
         let pe = decode_path_entry(bytes, path_tbl_start + i * PATH_ENTRY_SIZE as usize);
         if pe.flags & !PATH_KNOWN_FLAGS != 0 {
@@ -601,9 +616,17 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
         let end = name_off
             .checked_add(name_len)
             .ok_or(CapsError::RegionOverflow)?;
+        // Each name starts exactly where the previous one ended (the first at
+        // offset 0), so no arena byte lies outside a name. Checked before the
+        // bounds test: a misplaced name is a packing violation, and reporting
+        // it as such is more precise than the overrun it may also cause.
+        if name_off != arena_cursor {
+            return Err(CapsError::UnpackedNameArena);
+        }
         if end > name_arena_len {
             return Err(CapsError::NameOutOfArena);
         }
+        arena_cursor = end;
         let name = &bytes[name_start + name_off..name_start + end];
         check_path(name)?;
         if let Some(prev) = prev_name {
@@ -624,6 +647,12 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
                 canonical_name_ok = true;
             }
         }
+    }
+
+    // The last name ends exactly at `file_table_offset`: trailing arena slack
+    // is undescribed data, not padding.
+    if arena_cursor != name_arena_len {
+        return Err(CapsError::UnpackedNameArena);
     }
 
     // --- file table ---
@@ -860,6 +889,95 @@ mod tests {
         b.add(FileSpec::new("/system/version", b"0.2.1\n"));
         let bytes = b.build().expect("build");
         assert_eq!(parse(&bytes), Err(CapsError::MissingBootCanonical));
+    }
+
+    // --- no undescribed bytes (spec §4/§4.1 rules 24-25, ADR-0017) ---
+
+    /// Recompute `whole_capsule_digest` after a structural edit, so the test
+    /// exercises the layout rules instead of stopping at the digest check.
+    fn refix_whole_digest(v: &mut [u8]) {
+        let mut h = Sha256::new();
+        h.update(&v[0..off::WHOLE_DIGEST]);
+        h.update(&[0u8; DIGEST_BYTES]);
+        h.update(&v[HEADER_SIZE..]);
+        let d = h.finalize();
+        v[off::WHOLE_DIGEST..HEADER_SIZE].copy_from_slice(&d);
+    }
+
+    fn rd64(v: &[u8], at: usize) -> u64 {
+        u64::from_le_bytes(v[at..at + 8].try_into().unwrap())
+    }
+
+    #[test]
+    fn hidden_bytes_in_name_arena_rejected() {
+        // Regression: 64 arbitrary bytes appended to the name arena, with every
+        // downstream offset and the whole-capsule digest fixed up, used to
+        // parse as a fully valid capsule. One file set then had unboundedly
+        // many "valid" encodings and the extra bytes travelled to the nucleus.
+        let base = sample_builder().build().expect("build");
+        let file_tbl = rd64(&base, off::FILE_TABLE_OFFSET) as usize;
+        let mut v = std::vec::Vec::with_capacity(base.len() + 64);
+        v.extend_from_slice(&base[..file_tbl]);
+        v.extend_from_slice(&[0xee; 64]); // undescribed arena bytes
+        v.extend_from_slice(&base[file_tbl..]);
+        for at in [
+            off::TOTAL_LENGTH,
+            off::FILE_TABLE_OFFSET,
+            off::PAYLOAD_OFFSET,
+        ] {
+            let old = rd64(&v, at);
+            v[at..at + 8].copy_from_slice(&(old + 64).to_le_bytes());
+        }
+        refix_whole_digest(&mut v);
+        assert_eq!(parse(&v), Err(CapsError::UnpackedNameArena));
+    }
+
+    #[test]
+    fn gap_between_header_and_path_table_rejected() {
+        // The same trick one region earlier: pad between the header and the
+        // path table and move every later offset.
+        let base = sample_builder().build().expect("build");
+        let mut v = std::vec::Vec::with_capacity(base.len() + 8);
+        v.extend_from_slice(&base[..HEADER_SIZE]);
+        v.extend_from_slice(&[0x5a; 8]);
+        v.extend_from_slice(&base[HEADER_SIZE..]);
+        for at in [
+            off::TOTAL_LENGTH,
+            off::PATH_TABLE_OFFSET,
+            off::FILE_TABLE_OFFSET,
+            off::PAYLOAD_OFFSET,
+        ] {
+            let old = rd64(&v, at);
+            v[at..at + 8].copy_from_slice(&(old + 8).to_le_bytes());
+        }
+        let lic = rd64(&v, off::LICENCE_OFFSET);
+        if lic != 0 {
+            v[off::LICENCE_OFFSET..off::LICENCE_OFFSET + 8]
+                .copy_from_slice(&(lic + 8).to_le_bytes());
+        }
+        refix_whole_digest(&mut v);
+        assert_eq!(parse(&v), Err(CapsError::PathTableNotAfterHeader));
+    }
+
+    #[test]
+    fn arena_slack_between_names_rejected() {
+        // Same total length, but the second name is shifted forward by one
+        // byte, leaving one undescribed byte behind it.
+        let mut v = sample_builder().build().expect("build");
+        let path_tbl = rd64(&v, off::PATH_TABLE_OFFSET) as usize;
+        let second = path_tbl + PATH_ENTRY_SIZE as usize; // name_offset field
+        let old = u32::from_le_bytes(v[second..second + 4].try_into().unwrap());
+        v[second..second + 4].copy_from_slice(&(old + 1).to_le_bytes());
+        refix_whole_digest(&mut v);
+        assert_eq!(parse(&v), Err(CapsError::UnpackedNameArena));
+    }
+
+    #[test]
+    fn packed_arena_accepted() {
+        // The reference builder already emits a packed arena, so the rule must
+        // not reject anything it produces.
+        let bytes = sample_builder().build().expect("build");
+        assert!(parse(&bytes).is_ok());
     }
 
     #[test]
