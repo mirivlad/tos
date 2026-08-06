@@ -41,9 +41,9 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 | 17 | host-tools/qemu-test (ESP-образ + OVMF) | pending | — |
 | 18 | QEMU-прогоны: success + corrupted capsule | pending | — |
 | 19 | scripts/check-spdx, check-dco | pending | — |
-| 20 | Архитектур-импакт-стейтмент (AGENTS.md §5, Level 2) | pending | — |
+| 20 | Архитектур-импакт-стейтмент (AGENTS.md §5, Level 2) | done | source/ARCHITECTURE_IMPACT_STATEMENT.md, коммит dc16726 |
 | 21 | Stage 1 отчёт + identity record | pending | — |
-| 22 | Коммит source/ (DCO) | pending | `?? source/` в git status |
+| 22 | Коммит source/ + PROGRESS.md (DCO) | done | коммиты 8435698..1bc8c16 + 3226077, dc16726 |
 
 ## Журнал верификации (append-only)
 
@@ -63,11 +63,17 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   streaming_matches_single_shot и rfc4231_million_a; после фикса RFC 4231
   полностью зелёный, векторы перегенерированы.
 
+### 2026-08-06 — коммиты Stage 1 (DCO)
+
+- Рабочее дерево `source/` + PROGRESS.md закоммичены поверх c5b818c:
+  `8435698` спеки, `42f52bc` crates, `2edc9b7` boot stack+tests,
+  `1bc8c16` журнал, `3226077` workspace config, `dc16726` impact statement.
+- Подпись DCO: `mirivlad <mirvtop@yandex.ru>`. Рабочее дерево чистое.
+
 ## Открытые вопросы / риски
 
 - Сборка uefi/none-таргетов требует `rustup target add x86_64-unknown-uefi x86_64-unknown-none`
   (через прокси, см. память окружения).
 - OVMF: нужен пакет/файл OVMF.fd для QEMU (проверить наличие на хосте).
-- `source/` целиком untracked — после QEMU-проверки оформить коммит с DCO.
 - Подпись DCO: `mirivlad <mirvtop@yandex.ru>` (совпадает с git config и базовым
   коммитом c5b818c; вопрос про mir@yandex.ru закрыт — в историю не вносим).
