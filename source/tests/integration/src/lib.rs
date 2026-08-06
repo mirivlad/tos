@@ -9,7 +9,7 @@
 
 #![cfg(test)]
 
-use tos_capsule::{parse, SRC_KIND_DETACHED, FLAG_BOOT_CANONICAL};
+use tos_capsule::{parse, FLAG_BOOT_CANONICAL, SRC_KIND_DETACHED};
 use tos_hash::sha256;
 
 const V: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../vectors/capsule-v1/");
@@ -29,7 +29,10 @@ fn golden_valid_parses() {
     let boot = cap.boot_file().expect("boot file");
     assert!(boot.flags & FLAG_BOOT_CANONICAL != 0);
     assert_eq!(boot.name, b"/system/boot/init.tos");
-    assert_eq!(boot.content, INIT_TOS, "boot text must be the real init.tos");
+    assert_eq!(
+        boot.content, INIT_TOS,
+        "boot text must be the real init.tos"
+    );
     let v = cap.find(b"/system/version").expect("version file");
     assert_eq!(v.content, b"0.2.1\n");
     // licence tail is the real NOTICES.txt
@@ -104,7 +107,12 @@ fn vector_table_covers_every_committed_fixture() {
         vector_table().into_iter().map(|(n, _)| n).collect();
     let present: std::collections::BTreeSet<String> = std::fs::read_dir(V)
         .expect("read vector dir")
-        .map(|e| e.expect("dir entry").file_name().to_string_lossy().into_owned())
+        .map(|e| {
+            e.expect("dir entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .filter(|n| n.ends_with(".bin"))
         .collect();
     assert_eq!(declared, present, "vectors.tsv and *.bin disagree");
@@ -121,16 +129,15 @@ fn deterministic_build_reproduces_golden() {
         "/system/boot/init.tos",
         INIT_TOS,
     ));
-    b.add(tos_capsule::build::FileSpec::new("/system/version", b"0.2.1\n"));
+    b.add(tos_capsule::build::FileSpec::new(
+        "/system/version",
+        b"0.2.1\n",
+    ));
     b.set_licence_notice(NOTICES.to_vec());
     let rebuilt = b.build().expect("build");
     let golden = vec("valid-001.bin");
     assert_eq!(rebuilt, golden, "builder must reproduce the golden vector");
-    assert_eq!(
-        sha256(&rebuilt),
-        sha256(&golden),
-        "digest must match"
-    );
+    assert_eq!(sha256(&rebuilt), sha256(&golden), "digest must match");
 }
 
 #[test]

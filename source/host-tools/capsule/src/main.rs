@@ -152,7 +152,10 @@ fn resolve_identity(git_commit: &str) -> Result<Face, String> {
         git(&["rev-parse", &oid])?
     };
     if full.len() != 40 && full.len() != 64 {
-        return Err(format!("commit '{git_commit}' resolved to unexpected oid length {}", full.len()));
+        return Err(format!(
+            "commit '{git_commit}' resolved to unexpected oid length {}",
+            full.len()
+        ));
     }
     let oid_bytes = hex_to_bytes(&full);
     if oid_bytes.is_empty() {
@@ -161,7 +164,10 @@ fn resolve_identity(git_commit: &str) -> Result<Face, String> {
     // `git cat-file -e` verifies the commit object exists in the object DB.
     let _ = git(&["cat-file", "-e", &format!("{full}^{{commit}}")])
         .map_err(|e| format!("commit {full} object not found: {e}"))?;
-    Ok(Face { commit: full, oid_bytes })
+    Ok(Face {
+        commit: full,
+        oid_bytes,
+    })
 }
 
 /// Verify the given local file bytes are exactly the bytes committed at
@@ -247,11 +253,10 @@ fn main() {
         if let Some(face) = &face {
             // src is interpreted as both the local path and the repo-relative
             // path for the identity gate.
-            verify_committed(&face.commit, src, &content)
-                .unwrap_or_else(|e| {
-                    eprintln!("error: {e}");
-                    std::process::exit(2);
-                });
+            verify_committed(&face.commit, src, &content).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            });
         }
         manifest_rows.push((src.to_string(), sha256(&content)));
         b.add(FileSpec::new(cpath, &content));
@@ -317,7 +322,11 @@ fn main() {
                 "    {{\"repo_path\": \"{}\", \"content_sha256\": \"{}\"}}{}\n",
                 escape_json(path),
                 to_hex(ch),
-                if i + 1 == manifest_rows.len() { "" } else { "," }
+                if i + 1 == manifest_rows.len() {
+                    ""
+                } else {
+                    ","
+                }
             ));
         }
         json.push_str("  ]\n}\n");

@@ -249,7 +249,9 @@ mod tests {
     #[test]
     fn padding_boundaries() {
         // lengths around the 56/64-byte pad boundary must all agree with one-shot.
-        for len in [0usize, 1, 54, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129, 1024] {
+        for len in [
+            0usize, 1, 54, 55, 56, 57, 63, 64, 65, 119, 120, 127, 128, 129, 1024,
+        ] {
             let data = vec![0xabu8; len];
             let mut h = Sha256::new();
             h.update(&data);

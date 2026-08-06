@@ -17,7 +17,7 @@ use tos_boot_protocol::{
     RESULT_MEMORY_INVALID, RESULT_PANIC, RESULT_PORT, SRC_KIND_DETACHED, SRC_KIND_GIT,
 };
 use tos_capsule::parse;
-use tos_hash::{Sha256, sha256};
+use tos_hash::{sha256, Sha256};
 
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
@@ -105,8 +105,9 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         mem_fail();
     }
     let desc_count = (bi.memory_map_length / 24) as usize;
-    let descs: &[MemoryRange] =
-        unsafe { core::slice::from_raw_parts(bi.memory_map_phys as *const MemoryRange, desc_count) };
+    let descs: &[MemoryRange] = unsafe {
+        core::slice::from_raw_parts(bi.memory_map_phys as *const MemoryRange, desc_count)
+    };
     if bi.check_memory_map(descs).is_err() {
         mem_fail();
     }
@@ -122,8 +123,9 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     if bi.capsule_phys == 0 || bi.capsule_length == 0 || bi.capsule_length > usize::MAX as u64 {
         cap_fail();
     }
-    let cap_bytes =
-        unsafe { core::slice::from_raw_parts(bi.capsule_phys as *const u8, bi.capsule_length as usize) };
+    let cap_bytes = unsafe {
+        core::slice::from_raw_parts(bi.capsule_phys as *const u8, bi.capsule_length as usize)
+    };
     if sha256(cap_bytes) != bi.capsule_digest {
         cap_fail();
     }

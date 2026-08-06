@@ -232,8 +232,11 @@ fn tos_memory_type(efi_ty: u32) -> u32 {
         | MEM_TYPE_LOADER_DATA
         | MEM_TYPE_BOOT_SERVICES_CODE
         | MEM_TYPE_BOOT_SERVICES_DATA => MEM_USABLE,
-        MEM_TYPE_RUNTIME_SERVICES_CODE | MEM_TYPE_RUNTIME_SERVICES_DATA | MEM_TYPE_UNUSABLE
-        | MEM_TYPE_PAL_CODE | MEM_TYPE_PERSISTENT => MEM_RESERVED,
+        MEM_TYPE_RUNTIME_SERVICES_CODE
+        | MEM_TYPE_RUNTIME_SERVICES_DATA
+        | MEM_TYPE_UNUSABLE
+        | MEM_TYPE_PAL_CODE
+        | MEM_TYPE_PERSISTENT => MEM_RESERVED,
         MEM_TYPE_ACPI_RECLAIM => MEM_ACPI_RECLAIM,
         MEM_TYPE_ACPI_NVS => MEM_ACPI_NVS,
         MEM_TYPE_MMIO | MEM_TYPE_MMIO_PORT => MEM_MMIO,
@@ -444,7 +447,9 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
         let ranges = range_buf.ptr as *mut MemoryRange;
         let mut prev_end: u64 = 0;
         for i in 0..n {
-            let md = unsafe { &*((desc_buf.ptr as usize + i * desc_size) as *const EfiMemoryDescriptor) };
+            let md = unsafe {
+                &*((desc_buf.ptr as usize + i * desc_size) as *const EfiMemoryDescriptor)
+            };
             let start1 = md.physical_start;
             let len1 = match md.number_of_pages.checked_mul(0x1000) {
                 Some(l) => l,

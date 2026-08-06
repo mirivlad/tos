@@ -359,9 +359,7 @@ impl BootInfo {
             if d.phys_length == 0 {
                 return Err(BootInfoError::ZeroLengthRange);
             }
-            let end = d
-                .checked_end()
-                .ok_or(BootInfoError::MemoryRangeOverflow)?;
+            let end = d.checked_end().ok_or(BootInfoError::MemoryRangeOverflow)?;
             // Before the previous region's start => strictly out of order.
             if d.phys_start < prev_start {
                 return Err(BootInfoError::UnsortedMemoryMap);
@@ -418,9 +416,7 @@ impl BootInfo {
         // containment verdict.
         let mut inside = false;
         for d in descs {
-            let d_end = d
-                .checked_end()
-                .ok_or(BootInfoError::MemoryRangeOverflow)?;
+            let d_end = d.checked_end().ok_or(BootInfoError::MemoryRangeOverflow)?;
             if d.phys_start <= self.capsule_phys && cap_end <= d_end {
                 inside = true;
             }
@@ -454,9 +450,8 @@ mod tests {
     #[test]
     fn default_validates() {
         let bi = BootInfo::new();
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
     }
 
@@ -464,18 +459,19 @@ mod tests {
     fn bad_magic_rejected() {
         let mut bi = BootInfo::new();
         bi.magic = 0;
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
-        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::BadMagic));
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::BadMagic)
+        );
     }
 
     #[test]
     fn truncated_rejected() {
         let bi = BootInfo::new();
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 223)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 223) };
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::ShortTotalSize)
@@ -486,28 +482,31 @@ mod tests {
     fn bad_boot_mode_rejected() {
         let mut bi = BootInfo::new();
         bi.boot_mode = 1;
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
-        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::BadBootMode));
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::BadBootMode)
+        );
     }
 
     #[test]
     fn next_must_be_zero() {
         let mut bi = BootInfo::new();
         bi.next = 0x1234;
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
-        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::NonZeroNext));
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::NonZeroNext)
+        );
     }
 
     #[test]
     fn framebuffer_absent_consistency() {
         let bi = BootInfo::new(); // all fb fields zero
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
     }
 
@@ -516,10 +515,12 @@ mod tests {
         let mut bi = BootInfo::new();
         bi.framebuffer_phys = 0;
         bi.framebuffer_width = 800; // width without phys -> inconsistent
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
-        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::BadFramebuffer));
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::BadFramebuffer)
+        );
     }
 
     #[test]
@@ -530,25 +531,25 @@ mod tests {
         bi.framebuffer_height = 600;
         bi.framebuffer_pitch = 3200;
         bi.framebuffer_format = 1; // not FB_FORMAT_NONE
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
 
         bi.framebuffer_format = FB_FORMAT_NONE; // present but format none -> reject
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
-        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::BadFramebuffer));
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::BadFramebuffer)
+        );
     }
 
     #[test]
     fn identity_kind_must_be_git_or_detached() {
         let mut bi = BootInfo::new();
         bi.capsule_identity_kind = 0; // SRC_KIND_NONE not allowed
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::UnsupportedCapsuleIdentityKind)
@@ -556,9 +557,8 @@ mod tests {
 
         let mut bi = BootInfo::new();
         bi.capsule_identity_kind = 99;
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::UnsupportedCapsuleIdentityKind)
@@ -569,31 +569,55 @@ mod tests {
     fn in_struct_reserved_rejected() {
         let mut bi = BootInfo::new();
         bi.reserved[0] = 1;
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
-        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::NonZeroReservedFields));
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::NonZeroReservedFields)
+        );
 
         let mut bi = BootInfo::new();
         bi.reserved2[0] = 1;
-        let bytes = unsafe {
-            core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224)
-        };
-        assert_eq!(BootInfo::validate_bytes(bytes), Err(BootInfoError::NonZeroReservedFields));
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::NonZeroReservedFields)
+        );
     }
 
     #[test]
     fn memory_map_order_and_overlap() {
         let descs = [
-            MemoryRange { phys_start: 0x1000, phys_length: 0x1000, ty: 1, flags: 1 },
-            MemoryRange { phys_start: 0x2000, phys_length: 0x1000, ty: 1, flags: 1 },
+            MemoryRange {
+                phys_start: 0x1000,
+                phys_length: 0x1000,
+                ty: 1,
+                flags: 1,
+            },
+            MemoryRange {
+                phys_start: 0x2000,
+                phys_length: 0x1000,
+                ty: 1,
+                flags: 1,
+            },
         ];
         let bi = BootInfo::new();
         assert_eq!(bi.check_memory_map(&descs), Ok(()));
 
         let unsorted = [
-            MemoryRange { phys_start: 0x2000, phys_length: 0x1000, ty: 1, flags: 1 },
-            MemoryRange { phys_start: 0x1000, phys_length: 0x1000, ty: 1, flags: 1 },
+            MemoryRange {
+                phys_start: 0x2000,
+                phys_length: 0x1000,
+                ty: 1,
+                flags: 1,
+            },
+            MemoryRange {
+                phys_start: 0x1000,
+                phys_length: 0x1000,
+                ty: 1,
+                flags: 1,
+            },
         ];
         assert_eq!(
             bi.check_memory_map(&unsorted),
@@ -601,16 +625,34 @@ mod tests {
         );
 
         let overlap = [
-            MemoryRange { phys_start: 0x1000, phys_length: 0x2000, ty: 1, flags: 1 },
-            MemoryRange { phys_start: 0x2000, phys_length: 0x1000, ty: 1, flags: 1 },
+            MemoryRange {
+                phys_start: 0x1000,
+                phys_length: 0x2000,
+                ty: 1,
+                flags: 1,
+            },
+            MemoryRange {
+                phys_start: 0x2000,
+                phys_length: 0x1000,
+                ty: 1,
+                flags: 1,
+            },
         ];
         assert_eq!(
             bi.check_memory_map(&overlap),
             Err(BootInfoError::OverlappingMemoryMap)
         );
 
-        let zero = [MemoryRange { phys_start: 0x1000, phys_length: 0, ty: 1, flags: 1 }];
-        assert_eq!(bi.check_memory_map(&zero), Err(BootInfoError::ZeroLengthRange));
+        let zero = [MemoryRange {
+            phys_start: 0x1000,
+            phys_length: 0,
+            ty: 1,
+            flags: 1,
+        }];
+        assert_eq!(
+            bi.check_memory_map(&zero),
+            Err(BootInfoError::ZeroLengthRange)
+        );
     }
 
     // --- regression: unchecked `phys_start + phys_length` (Stage 1 hardening) ---
@@ -622,7 +664,12 @@ mod tests {
 
     #[test]
     fn checked_end_reports_overflow() {
-        let ok = MemoryRange { phys_start: 0x1000, phys_length: 0x1000, ty: 1, flags: 0 };
+        let ok = MemoryRange {
+            phys_start: 0x1000,
+            phys_length: 0x1000,
+            ty: 1,
+            flags: 0,
+        };
         assert_eq!(ok.checked_end(), Some(0x2000));
         let wraps = MemoryRange {
             phys_start: u64::MAX - 0xfff,
@@ -655,8 +702,18 @@ mod tests {
         // and the overlap went unnoticed (in debug it panicked instead).
         let bi = BootInfo::new();
         let overlapping = [
-            MemoryRange { phys_start: 0x1000, phys_length: u64::MAX, ty: 1, flags: 0 },
-            MemoryRange { phys_start: 0x2000, phys_length: 0x1000, ty: 1, flags: 0 },
+            MemoryRange {
+                phys_start: 0x1000,
+                phys_length: u64::MAX,
+                ty: 1,
+                flags: 0,
+            },
+            MemoryRange {
+                phys_start: 0x2000,
+                phys_length: 0x1000,
+                ty: 1,
+                flags: 0,
+            },
         ];
         assert_eq!(
             bi.check_memory_map(&overlapping),
@@ -669,8 +726,18 @@ mod tests {
         // The overflow guard must not swallow the ordinary overlap diagnosis.
         let bi = BootInfo::new();
         let overlapping = [
-            MemoryRange { phys_start: 0x1000, phys_length: 0x2000, ty: 1, flags: 0 },
-            MemoryRange { phys_start: 0x2000, phys_length: 0x1000, ty: 1, flags: 0 },
+            MemoryRange {
+                phys_start: 0x1000,
+                phys_length: 0x2000,
+                ty: 1,
+                flags: 0,
+            },
+            MemoryRange {
+                phys_start: 0x2000,
+                phys_length: 0x1000,
+                ty: 1,
+                flags: 0,
+            },
         ];
         assert_eq!(
             bi.check_memory_map(&overlapping),
@@ -772,9 +839,12 @@ mod tests {
 
     #[test]
     fn capsule_containment() {
-        let descs = [
-            MemoryRange { phys_start: 0x1000, phys_length: 0x10000, ty: 1, flags: 1 },
-        ];
+        let descs = [MemoryRange {
+            phys_start: 0x1000,
+            phys_length: 0x10000,
+            ty: 1,
+            flags: 1,
+        }];
         let mut bi = BootInfo::new();
         bi.capsule_phys = 0x2000;
         bi.capsule_length = 0x100;
