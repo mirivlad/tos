@@ -110,3 +110,48 @@ boot ABI v1 в этой ветке **не меняются**.
 - Известные ограничения: у крейта остаются 2 предупреждения clippy
   (`matches!`, `is_multiple_of`) — они были и до ветки, чистка предупреждений вне
   области Priority 1.
+- Коммит: `294477a95478b11f20fc206a966e42fa035ed9fc`, запушен.
+
+### C — сверка identity BootInfo ↔ заголовок capsule в нуклеусе
+
+- Статус: **готово**.
+- Проблема: нуклеус печатал `TOS.IDENTITY` из полей `BootInfo`
+  (`capsule_identity_kind`, `capsule_source_identity`), сверяя с реальными
+  байтами только `capsule_digest`. BOOT_ABI_V1 §6 объявляет эти поля *копией*
+  заголовка капсулы, но ничто эту копию не проверяло: запись Stage 1 identity —
+  главное доказательство гейта docs/37 — сообщала то, что заявил производитель
+  записи, а не то, что несёт сам артефакт. Детач-капсула + подделанный BootInfo
+  давали `source_kind=git` с произвольным «commit oid».
+- Изменения:
+  - `boot-protocol`: новая чистая функция `BootInfo::check_capsule_identity(kind,
+    oid_alg, oid_length, value)` и вариант ошибки `CapsuleIdentityMismatch`;
+  - `nucleus`: после успешного `parse()` четвёрка сверяется с `cap.header()`;
+    при расхождении — `TOS.IDENTITY.MISMATCH bootinfo-vs-capsule-header` и
+    fail closed;
+  - `nucleus`: `TOS.IDENTITY` теперь печатается из проверенного заголовка
+    капсулы, а не из handoff-записи (значения к этому моменту доказано равны).
+- **Нормативные контракты не менялись.** Код выхода — существующий
+  `RESULT_CAPSULE_INVALID` (0x21), тот же, что уже используется при
+  несовпадении `capsule_digest` с байтами капсулы; новый result-код не вводился
+  (это было бы изменением boot ABI). Новая serial-строка соответствует шаблону
+  BOOT_ABI_V1 §7 `^TOS\.[A-Z0-9_.]+`.
+- Тесты (5 новых, negative-ориентированные): `capsule_identity_match_accepted`,
+  `..._kind_mismatch_rejected` (git-запись против detached-капсулы — ровно
+  сценарий выдуманного provenance), `..._algorithm_mismatch_rejected`,
+  `..._oid_length_mismatch_rejected`, `..._value_mismatch_rejected` (флип байта в
+  oid и отдельно в нулевом хвосте).
+- Проверки:
+  - `cargo test -p tos-boot-protocol` → 23 passed / 0 failed (debug и release);
+  - `cargo test` (воркспейс) → 49 passed / 0 failed;
+  - сборка `x86_64-unknown-none` (нуклеус пересобран, 11 576 B) и
+    `x86_64-unknown-uefi` — без предупреждений;
+  - QEMU success → **exit 33**, сверка проходит на реальном пути,
+    `TOS.IDENTITY source_kind=git source_digest=294477a9…` (= HEAD, значение
+    теперь берётся из заголовка капсулы);
+  - QEMU negative (`invalid-bootcanon-mismatch.bin`) → **exit 67**,
+    `TOS.BOOT.FAILC capsule_err=BootCanonicalFlagMismatch` — fail-closed не
+    сломан.
+- Известные ограничения: сама ветка расхождения не проверяется в QEMU — для
+  этого нужен загрузчик, намеренно пишущий неверные поля (отдельный
+  тестовый режим loader'а). Логика покрыта unit-тестами; e2e-негатив на identity
+  mismatch остаётся открытым пунктом (кандидат в Priority 3/4).
