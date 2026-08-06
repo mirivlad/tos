@@ -1,2 +1,10 @@
-[target.x86_64-unknown-none]
-rustflags = ["-C", "relocation-model=static"]
+# SPDX-License-Identifier: GPL-3.0-or-later
+# x86_64-unknown-none (nucleus): linked at a FIXED physical address
+# (nucleus/linker.ld, NUCLEUS_BASE). The UEFI loader allocates exactly that
+# address (ALLOCATE_ADDRESS) and copies the flat image there, so static
+# relocation is correct.
+#
+# Do NOT use relocation-model=pic here: in a flat image LLVM emits GOT
+# indirections for cross-crate calls (`call *got(%rip)`) whose slots contain
+# absolute addresses from base 0 — never filled for an arbitrary load address.
+# Observed in QEMU: #GP with RIP=0 right after TOS.NUCLEUS.ENTRY.

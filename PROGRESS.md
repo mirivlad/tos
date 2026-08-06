@@ -39,11 +39,11 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 | 15 | tests/fuzz (детерминированный мутационный) | done | FUZZ PASS rounds=300000 |
 | 16 | Сборка всех таргетов (host + uefi + none) | done | host: 31/31 тестов; uefi loader: PE32+ EFI app 0 warnings; none nucleus: raw binary (entry first) |
 | 17 | host-tools/qemu-test (ESP-образ + OVMF) | done | run.sh: identity gate `--git-commit HEAD`, manifest repo-relative |
-| 18 | QEMU-прогоны: success + corrupted capsule | pending | — |
-| 19 | scripts/check-spdx, check-dco | pending | — |
+| 18 | QEMU-прогоны: success + corrupted capsule | done | exit code **33 (HALT_OK)**; 9 negative-векторов → 67 (CAPSULE_INVALID) |
+| 19 | scripts/check-spdx, check-dco | done | оба OK на всех tracked files / всех 11 коммитах |
 | 20 | Архитектур-импакт-стейтмент (AGENTS.md §5, Level 2) | done | source/ARCHITECTURE_IMPACT_STATEMENT.md, коммит dc16726 |
-| 21 | Stage 1 отчёт + identity record | pending | — |
-| 22 | Коммит source/ + PROGRESS.md (DCO) | done | коммиты 8435698..1bc8c16 + 3226077, dc16726 |
+| 21 | Stage 1 отчёт + identity record | done | source/interfaces/boot/STAGE1_REPORT.md |
+| 22 | Коммит source/ + PROGRESS.md (DCO) | pending | текущие правки (raw OID, QEMU-фиксы) в рабочем дереве |
 
 ## Журнал верификации (append-only)
 
@@ -105,8 +105,46 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   и repo-relative manifest (identity gate в хватке), invalid-векторы можно
   подкладывать вторым аргументом.
 
+### 2026-08-06 — QEMU: полный успех + negative-сценарии
+
+- **Первый полный QEMU-прогон Stage 1** (OVMF 4M, q35, 256 MiB, TCG):
+  `bash host-tools/qemu-test/run.sh /tmp/qemu-success7` → **exit 33 (HALT_OK)**.
+  Serial boot-event log целиком:
+  `TOS.BOOT.ENTRY → TOS boot loader → TOS.CAPSULE.OK files=1 → TOS.BOOT.HANDOFF →
+  TOS.NUCLEUS.ENTRY → TOS.CAPSULE.OK files=1 → TOS.BOOTTEXT.PATH /system/boot/init.tos →
+  TOS.BOOTTEXT.LINE → TOS.BOOTTEXT.DIGEST a3c82b57… → TOS.IDENTITY source_kind=git
+  source_digest=f59a14d5… capsule_digest=5c839516… → TOS.HALT ok=0x10`.
+  Identity gate подтверждён на реальном железе: `source_kind=git`,
+  `source_digest` = raw OID коммита f59a14d (не SHA-256-обёртка).
+- **9 negative-сценариев** (invalid-векторы из tests/vectors/capsule-v1/ как
+  CAPSULE_FILE): каждый → **exit 67 (CAPSULE_INVALID)** с точным
+  `TOS.BOOT.FAILC capsule_err=…`: UnsupportedIdentityKind, TotalLengthMismatch,
+  MissingBootCanonical, BootCanonicalFlagMismatch, LicenceTailMismatch,
+  TraversalInPath, DuplicatePath, UnreferencedFile, BadPathFlags. Фейлы —
+  в loader'е до handoff, nucleus не достигается.
+- **Найденные и устранённые баги** (подробно в STAGE1_REPORT.md §5):
+  1. handoff inline-asm: LLVM клал entry в RDI, `mov rdi,{bi}` затирал его →
+     call на BootInfo вместо nucleus; исправлено фиксированными регистрами
+     (`in("rdi")` bi, `in("rax")` entry, `call *%rax`);
+  2. nucleus при PIC линковался PIE-подобно: LLD оставлял .got с
+     R_X86_64_RELATIVE, не применявшимися в `--oformat=binary` → #GP RIP=0;
+     фикс: `relocation-model=static` + фиксированный адрес NUCLEUS_BASE +
+     `-no-pie` в nucleus/build.rs + явные `.got/.got.plt` в linker.ld.
+
+### 2026-08-06 — identity raw OID (ADR-0016)
+
+- Решение: capsule identity несёт **raw commit OID** (kind=git, alg=1/SHA-1,
+  len=0x14), а не SHA-256(oid). Оформлено как ADR-0016
+  (docs/adr/0016-capsule-git-raw-oid-identity.md).
+- Проверено e2e: `/tmp/tos_git.bin` на offset 96 = `01 01 14 00 f5 9a 14 d5…`
+  (kind=1, alg=1, len=0x14, raw OID f59a14d…); QEMU `TOS.IDENTITY` печатает
+  тот же raw OID.
+
 ## Открытые вопросы / риски
 
+- Нормативные документы не перестроены после правок интерфейсов (BOOT_ABI_V1.md,
+  CAPSULE_FORMAT_V1.md — см. §2 AGENTS.md). Переносится в отдельный коммит
+  вместе с `python3 tools/build-specification.py`.
 - OVMF: нужен пакет/файл OVMF.fd для QEMU (проверить наличие на хосте).
 - Подпись DCO: `mirivlad <mirvtop@yandex.ru>` (совпадает с git config и базовым
   коммитом c5b818c; вопрос про mir@yandex.ru закрыт — в историю не вносим).

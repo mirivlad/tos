@@ -14,7 +14,7 @@ use core::panic::PanicInfo;
 
 use tos_boot_protocol::{
     BootInfo, MemoryRange, RESULT_ABI_INVALID, RESULT_CAPSULE_INVALID, RESULT_HALT_OK,
-    RESULT_MEMORY_INVALID, RESULT_PANIC, RESULT_PORT,
+    RESULT_MEMORY_INVALID, RESULT_PANIC, RESULT_PORT, SRC_KIND_DETACHED, SRC_KIND_GIT,
 };
 use tos_capsule::parse;
 use tos_hash::{Sha256, sha256};
@@ -151,7 +151,19 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::puts(b"\r\n");
 
     // --- 5. identity record ---
-    tos_serial::puts(b"TOS.IDENTITY source_kind=detached source_digest=");
+    // Provenance kind comes from the BootInfo handoff, never hardcoded: the
+    // loader records SRC_KIND_GIT when the capsule was built with
+    // --git-commit (or SRC_KIND_DETACHED otherwise).
+    let kind: &[u8] = match bi.capsule_identity_kind {
+        SRC_KIND_GIT => b"git",
+        SRC_KIND_DETACHED => b"detached",
+        // validate_bytes rejects any other value; fall back to a stable
+        // error marker rather than a misleading kind.
+        _ => b"unknown",
+    };
+    tos_serial::puts(b"TOS.IDENTITY source_kind=");
+    tos_serial::puts(kind);
+    tos_serial::puts(b" source_digest=");
     tos_serial::put_hex32(&bi.capsule_source_identity);
     tos_serial::puts(b" capsule_digest=");
     tos_serial::put_hex32(&bi.capsule_digest);

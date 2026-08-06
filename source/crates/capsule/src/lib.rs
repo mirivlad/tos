@@ -37,6 +37,17 @@ pub const SRC_KIND_NONE: u8 = 0;
 pub const SRC_KIND_GIT: u8 = 1;
 pub const SRC_KIND_DETACHED: u8 = 2;
 
+/// Identity algorithms for `source_oid_alg` (git kind): the algorithm of the
+/// raw object id stored in `source_identity_value`. 0 = no OID (detached
+/// kind carries a plain source-set digest instead).
+pub const OID_ALG_NONE: u8 = 0;
+pub const OID_ALG_SHA1: u8 = 1;
+pub const OID_ALG_SHA256: u8 = 2;
+
+/// OID byte lengths for the supported git algorithms.
+pub const OID_LEN_SHA1: u8 = 20;
+pub const OID_LEN_SHA256: u8 = 32;
+
 pub const FLAG_BOOT_CANONICAL: u32 = 1 << 0;
 pub const FLAG_LICENCE_NOTICE: u32 = 1 << 1;
 /// Flag bits defined for v1 path entries: only boot-canonical is valid on a
@@ -68,8 +79,11 @@ mod off {
     pub const ARCH_SPEC_VERSION: usize = 88;
     pub const BUILDER_VERSION: usize = 92;
     pub const SRC_KIND: usize = 96;
-    pub const SRC_RESERVED: usize = 97;
-    pub const SRC_DIGEST: usize = 104;
+    pub const SRC_ALG: usize = 97;
+    pub const SRC_OID_LEN: usize = 98;
+    pub const SRC_RESERVED: usize = 99;
+    pub const SRC_VALUE: usize = 100;
+    pub const SRC_TAIL_RESERVED: usize = 132;
     pub const LICENCE_OFFSET: usize = 136;
     pub const LICENCE_LENGTH: usize = 144;
     pub const WHOLE_DIGEST: usize = 152;
@@ -95,7 +109,9 @@ pub struct Header {
     pub arch_spec_version: u32,
     pub builder_version: u32,
     pub source_identity_kind: u8,
-    pub source_identity_digest: [u8; DIGEST_BYTES],
+    pub source_oid_alg: u8,
+    pub source_oid_length: u8,
+    pub source_identity_value: [u8; 32],
     pub licence_notice_offset: u64,
     pub licence_notice_length: u64,
     pub whole_capsule_digest: [u8; DIGEST_BYTES],
@@ -238,8 +254,8 @@ fn decode_header(b: &[u8]) -> Header {
     magic.copy_from_slice(&b[off::MAGIC..off::MAGIC + 8]);
     let mut format_uuid = [0u8; 16];
     format_uuid.copy_from_slice(&b[off::UUID..off::UUID + 16]);
-    let mut sd = [0u8; DIGEST_BYTES];
-    sd.copy_from_slice(&b[off::SRC_DIGEST..off::SRC_DIGEST + DIGEST_BYTES]);
+    let mut sd = [0u8; 32];
+    sd.copy_from_slice(&b[off::SRC_VALUE..off::SRC_VALUE + 32]);
     let mut wd = [0u8; DIGEST_BYTES];
     wd.copy_from_slice(&b[off::WHOLE_DIGEST..off::WHOLE_DIGEST + DIGEST_BYTES]);
     Header {
@@ -260,7 +276,9 @@ fn decode_header(b: &[u8]) -> Header {
         arch_spec_version: rd_u32(b, off::ARCH_SPEC_VERSION),
         builder_version: rd_u32(b, off::BUILDER_VERSION),
         source_identity_kind: b[off::SRC_KIND],
-        source_identity_digest: sd,
+        source_oid_alg: b[off::SRC_ALG],
+        source_oid_length: b[off::SRC_OID_LEN],
+        source_identity_value: sd,
         licence_notice_offset: rd_u64(b, off::LICENCE_OFFSET),
         licence_notice_length: rd_u64(b, off::LICENCE_LENGTH),
         whole_capsule_digest: wd,
@@ -450,8 +468,33 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     if bytes[off::RESERVED..off::RESERVED + 2].iter().any(|&b| b != 0) {
         return Err(CapsError::NonZeroReservedHeader);
     }
-    if bytes[off::SRC_RESERVED..off::SRC_DIGEST].iter().any(|&b| b != 0) {
+    if bytes[off::SRC_RESERVED..off::SRC_VALUE].iter().any(|&b| b != 0) {
         return Err(CapsError::NonZeroReservedHeader);
+    }
+    // 4-byte reserved gap between the identity value and the licence offset.
+    if bytes[off::SRC_TAIL_RESERVED..off::LICENCE_OFFSET].iter().any(|&b| b != 0) {
+        return Err(CapsError::NonZeroReservedHeader);
+    }
+    // Identity kind/algorithm consistency: git requires an explicit OID
+    // algorithm and length (SHA-1 20B or SHA-256 32B); detached carries a
+    // plain source-set digest (no OID algorithm).
+    match h.source_identity_kind {
+        SRC_KIND_GIT => {
+            let ok = match (h.source_oid_alg, h.source_oid_length) {
+                (OID_ALG_SHA1, OID_LEN_SHA1) => true,
+                (OID_ALG_SHA256, OID_LEN_SHA256) => true,
+                _ => false,
+            };
+            if !ok {
+                return Err(CapsError::UnsupportedIdentityKind);
+            }
+        }
+        SRC_KIND_DETACHED => {
+            if h.source_oid_alg != OID_ALG_NONE || h.source_oid_length != 0 {
+                return Err(CapsError::UnsupportedIdentityKind);
+            }
+        }
+        _ => return Err(CapsError::UnsupportedIdentityKind),
     }
     if h.total_length as usize != bytes.len() {
         return Err(CapsError::TotalLengthMismatch);
@@ -717,7 +760,7 @@ mod tests {
     fn sample_builder() -> Builder {
         let mut b = Builder::new();
         b.source_identity_kind = SRC_KIND_DETACHED;
-        b.source_identity_digest = [0x11; DIGEST_BYTES];
+        b.source_identity_value = [0x11; DIGEST_BYTES];
         b.add(FileSpec::new(
             "/system/boot/init.tos",
             b"# TOS boot text\nprint(\"hello from boot\")\n",
@@ -813,7 +856,7 @@ mod tests {
     fn missing_boot_canonical_rejected() {
         let mut b = Builder::new();
         b.source_identity_kind = SRC_KIND_DETACHED;
-        b.source_identity_digest = [0x11; DIGEST_BYTES];
+        b.source_identity_value = [0x11; DIGEST_BYTES];
         b.add(FileSpec::new("/system/version", b"0.2.1\n"));
         let bytes = b.build().expect("build");
         assert_eq!(parse(&bytes), Err(CapsError::MissingBootCanonical));
@@ -823,7 +866,7 @@ mod tests {
     fn many_files_round_trip() {
         let mut b = Builder::new();
         b.source_identity_kind = SRC_KIND_DETACHED;
-        b.source_identity_digest = [0x22; DIGEST_BYTES];
+        b.source_identity_value = [0x22; DIGEST_BYTES];
         b.add(FileSpec::new(
             "/system/boot/init.tos",
             b"# boot\n",

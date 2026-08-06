@@ -9,7 +9,7 @@
 
 #![cfg(test)]
 
-use tos_capsule::{CapsError, parse, FLAG_BOOT_CANONICAL};
+use tos_capsule::{CapsError, parse, SRC_KIND_DETACHED, FLAG_BOOT_CANONICAL};
 use tos_hash::sha256;
 
 const V: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../vectors/capsule-v1/");
@@ -94,7 +94,8 @@ fn deterministic_build_reproduces_golden() {
     // Rebuilding the same real files must reproduce the committed golden
     // vector byte-for-byte (this pins the whole format).
     let mut b = tos_capsule::build::Builder::new();
-    b.source_identity_digest = [0x42; 32];
+    b.source_identity_kind = SRC_KIND_DETACHED;
+    b.source_identity_value = [0x42; 32];
     b.add(tos_capsule::build::FileSpec::new(
         "/system/boot/init.tos",
         INIT_TOS,
@@ -139,7 +140,7 @@ fn perf_smoke_1000_files() {
     // CI profile. This is a smoke bound (10x slack) to catch pathological
     // regressions on dev machines; the real measurement is the QEMU log.
     let mut b = tos_capsule::build::Builder::new();
-    b.source_identity_digest = [0x33; 32];
+    b.source_identity_value = [0x33; 32];
     b.add(tos_capsule::build::FileSpec::new(
         "/system/boot/init.tos",
         b"# boot\n",

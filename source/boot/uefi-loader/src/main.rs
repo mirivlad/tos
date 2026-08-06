@@ -34,6 +34,9 @@ use tos_hash::sha256;
 
 const STACK_PAGES: usize = 8; // 32 KiB
 
+/// Fixed physical load address of the nucleus (must match nucleus/linker.ld).
+const NUCLEUS_BASE: u64 = 0x2_000_000;
+
 /// A pool-allocated byte buffer. Never freed (we exit boot services).
 struct PoolBuf {
     ptr: *mut u8,
@@ -323,18 +326,22 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     tos_serial::put_u32_decimal(cap.file_count());
     tos_serial::puts(b"\r\n");
 
-    // --- nucleus image: executable pages ---
+    // --- nucleus image: executable pages at the fixed link address ---
+    // The nucleus is linked STATIC at NUCLEUS_BASE (see nucleus/linker.ld);
+    // ALLOCATE_ANY_PAGES + PIC relocation is not viable for a flat image
+    // (GOT slots are never filled), so the loader must get exactly
+    // NUCLEUS_BASE. If the firmware cannot honour it, fail closed.
     let nucleus_pages = (nucleus.len() + 0xfff) / 0x1000;
-    let mut nucleus_phys: u64 = 0;
+    let mut nucleus_phys: u64 = NUCLEUS_BASE;
     let st = unsafe {
         ((*bt).allocate_pages)(
-            ALLOCATE_ANY_PAGES,
+            ALLOCATE_ADDRESS,
             MEM_TYPE_LOADER_CODE,
             nucleus_pages,
             &mut nucleus_phys,
         )
     };
-    if efi_error(st) {
+    if efi_error(st) || nucleus_phys != NUCLEUS_BASE {
         serial_fatal(b"TOS.BOOT.FAILI alloc-nucleus");
     }
     unsafe {
@@ -502,7 +509,9 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     bi.capsule_length = capsule.len() as u64;
     bi.capsule_digest = cd;
     bi.capsule_identity_kind = cap.header().source_identity_kind;
-    bi.capsule_source_identity = cap.header().source_identity_digest;
+    bi.capsule_oid_alg = cap.header().source_oid_alg;
+    bi.capsule_oid_length = cap.header().source_oid_length;
+    bi.capsule_source_identity = cap.header().source_identity_value;
     bi.memory_map_phys = range_buf.ptr as u64;
     bi.memory_map_length = range_len as u64;
     bi.memory_desc_size = tos_boot_protocol::MEM_DESC_SIZE;
@@ -526,14 +535,18 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     tos_serial::puts(b"TOS.BOOT.HANDOFF\r\n");
     let entry = nucleus_phys as *const ();
     unsafe {
+        // Fixed registers: {stack} may take any caller-saved reg, but rdi
+        // and rax are pinned so the entry pointer can never be clobbered by
+        // the bi move. A bare `call {entry}` would let LLVM alias entry and
+        // bi onto the same register and call the BootInfo address instead of
+        // the nucleus (observed in QEMU: jump into UEFI garbage).
         asm!(
             "mov rsp, {stack}",
             "and rsp, -16",
-            "mov rdi, {bi}",
-            "call {entry}",
+            "call rax",
             stack = in(reg) stack_top,
-            bi = in(reg) bi_phys,
-            entry = in(reg) entry,
+            in("rax") entry,
+            in("rdi") bi_phys,
             options(noreturn)
         );
     }

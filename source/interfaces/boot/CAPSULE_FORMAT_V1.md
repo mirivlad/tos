@@ -54,8 +54,11 @@ Byte order: all multi-byte integers are **little-endian**.
 | 88 | 4 | `arch_spec_version` | must equal `ARCH_SPEC_VERSION` |
 | 92 | 4 | `builder_version` | must equal `BUILDER_VERSION` |
 | 96 | 1 | `source_identity_kind` | `0` none, `1` git commit, `2` detached source set |
-| 97 | 7 | `reserved` | must be zero |
-| 104 | 32 | `source_identity_digest` | SHA-256 binding (see §6) |
+| 97 | 1 | `source_oid_alg` | `0` none, `1` SHA-1, `2` SHA-256 (see §6) |
+| 98 | 1 | `source_oid_length` | OID byte length: 20 (SHA-1) or 32 (SHA-256); 0 when no OID |
+| 99 | 1 | `reserved` | must be zero |
+| 100 | 32 | `source_identity_value` | raw git object id (left-aligned, zero-padded) or detached source-set digest (see §6) |
+| 132 | 4 | `reserved` | must be zero |
 | 136 | 8 | `licence_notice_offset` | absolute offset of licence-notice text; 0 if absent |
 | 144 | 8 | `licence_notice_length` | length of licence-notice text; 0 if absent |
 | 152 | 32 | `whole_capsule_digest` | SHA-256 over capsule with this field zeroed |
@@ -136,12 +139,20 @@ Content constraints:
 
 ## 6. Identity fields
 
-- `source_identity_kind = 2` (detached source set): `source_identity_digest` is
-  SHA-256 of the concatenation of per-file `content_digest` values in file-table
-  order. This binds the capsule to the exact byte content of its source material
-  without a repository.
-- `source_identity_kind = 1` (git commit): `source_identity_digest` is SHA-256 of
-  the raw commit object id (binary, 20 or 32 bytes) of the source commit.
+- `source_identity_kind = 2` (detached source set): `source_oid_alg = 0`,
+  `source_oid_length = 0`, and `source_identity_value` is the SHA-256 of the
+  concatenation of per-file `content_digest` values in file-table order. This
+  binds the capsule to the exact byte content of its source material without
+  a repository.
+- `source_identity_kind = 1` (git commit): `source_oid_alg` names the OID
+  algorithm (`1` = SHA-1, `2` = SHA-256) and `source_oid_length` its byte
+  length (20 or 32). `source_identity_value` holds the **raw commit object
+  id**, left-aligned and zero-padded to 32 bytes. The id is stored directly
+  (not hashed) so a capsule can be resolved back to its commit with
+  `git show <oid>`; see ADR-0016.
+- The pair `(source_oid_alg, source_oid_length)` must be consistent with the
+  kind: git kind requires `(1, 20)` or `(2, 32)`; detached kind requires
+  `(0, 0)`. Anything else is rejected by the parser.
 - Kind `0` is forbidden for any capsule produced by an official builder; it is
   rejected by the parser for boot-canonical capsules. Development fixtures may
   use kind 2 with an explicit `detached-source-set` label in the manifest.

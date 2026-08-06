@@ -76,10 +76,10 @@ pub const MEM_TYPE_PERSISTENT: u32 = 14;
 pub const MEM_TYPE_VENDOR_BASE: u32 = 0x8000_0000;
 
 pub const ALLOCATE_ANY_PAGES: u32 = 0;
-// AllocateAtMaxAddress is pinned for the ABI surface even though Stage 1 only
-// requests ANY_PAGES for the nucleus/stack.
-#[allow(dead_code)]
-pub const ALLOCATE_MAX_ADDRESS: u32 = 1;
+// AllocateAddress: the nucleus is linked STATIC at a fixed physical address
+// (see NUCLEUS_BASE in main.rs / nucleus/linker.ld), so the loader must
+// request exactly that address rather than ANY_PAGES.
+pub const ALLOCATE_ADDRESS: u32 = 2;
 
 // ---------------------------------------------------------------------------
 // GUID and protocol GUIDs
@@ -218,16 +218,20 @@ pub type FnExitBootServices = extern "efiapi" fn(*mut c_void, usize) -> EfiStatu
 pub type FnStall = extern "efiapi" fn(usize) -> EfiStatus;
 
 /// `EFI_BOOT_SERVICES` (UEFI 2.10 section 4.4): `EFI_TABLE_HEADER` followed by
-/// 39 service pointers. Unused slots are `*mut c_void` placeholders that keep
-/// every later offset correct. `HandleProtocol` sits at 0x98,
-/// `ExitBootServices` at 0x100.
+/// 44 service pointers in the exact spec order. The layout is pinned by the
+/// compile-time assertions below; every pointer slot is present so the offsets
+/// of the consumed services (`handle_protocol` 0x98, `get_memory_map` 0x38,
+/// `exit_boot_services` 0xE8) match the firmware table exactly. Note that
+/// SetAttribute/ClearScreen/SetCursorPosition/EnableCursor belong to
+/// `EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL`, NOT to boot services, and are not
+/// present here.
 #[repr(C)]
 pub struct BootServices {
     pub header: EfiTableHeader,
-    pub raise_tpl: *mut c_void,
-    pub restore_tpl: *mut c_void,
+    pub raise_tpl: extern "efiapi" fn(usize) -> EfiStatus,
+    pub restore_tpl: extern "efiapi" fn(usize) -> EfiStatus,
     pub allocate_pages: FnAllocatePages,
-    pub free_pages: *mut c_void,
+    pub free_pages: extern "efiapi" fn(u32, usize, u64) -> EfiStatus,
     pub get_memory_map: FnGetMemoryMap,
     pub allocate_pool: FnAllocatePool,
     pub free_pool: FnFreePool,
@@ -242,21 +246,7 @@ pub struct BootServices {
     pub uninstall_protocol_interface: *mut c_void,
     pub handle_protocol: FnHandleProtocol,
     pub reserved: *mut c_void,
-    pub set_watchdog_timer: *mut c_void,
-    pub stall: FnStall,
-    pub set_attribute: *mut c_void,
-    pub clear_screen: *mut c_void,
-    pub set_cursor_position: *mut c_void,
-    pub enable_cursor: *mut c_void,
-    pub get_next_monotonic_count: *mut c_void,
-    pub calculate_crc32: *mut c_void,
-    pub copy_mem: *mut c_void,
-    pub set_mem: *mut c_void,
-    pub create_event_ex: *mut c_void,
-    pub exit_boot_services: FnExitBootServices,
-    pub get_next_high_monotonic_count: *mut c_void,
-    pub install_multiple_protocol_interfaces: *mut c_void,
-    pub uninstall_multiple_protocol_interfaces: *mut c_void,
+    pub register_protocol_notify: *mut c_void,
     pub locate_handle: *mut c_void,
     pub locate_device_path: *mut c_void,
     pub install_configuration_table: *mut c_void,
@@ -264,6 +254,24 @@ pub struct BootServices {
     pub start_image: *mut c_void,
     pub exit: *mut c_void,
     pub unload_image: *mut c_void,
+    pub exit_boot_services: FnExitBootServices,
+    pub get_next_monotonic_count: *mut c_void,
+    pub stall: FnStall,
+    pub set_watchdog_timer: *mut c_void,
+    pub connect_controller: *mut c_void,
+    pub disconnect_controller: *mut c_void,
+    pub open_protocol: *mut c_void,
+    pub close_protocol: *mut c_void,
+    pub open_protocol_information: *mut c_void,
+    pub protocols_per_handle: *mut c_void,
+    pub locate_handle_buffer: *mut c_void,
+    pub locate_protocol: *mut c_void,
+    pub install_multiple_protocol_interfaces: *mut c_void,
+    pub uninstall_multiple_protocol_interfaces: *mut c_void,
+    pub calculate_crc32: *mut c_void,
+    pub copy_mem: *mut c_void,
+    pub set_mem: *mut c_void,
+    pub create_event_ex: *mut c_void,
 }
 
 /// `EFI_SYSTEM_TABLE` (UEFI 2.10 section 4.3): `EFI_TABLE_HEADER` followed by
@@ -321,13 +329,29 @@ const _: () = {
     // FreePool(0x48) CreateEvent(0x50) SetTimer(0x58) WaitForEvent(0x60)
     // SignalEvent(0x68) CloseEvent(0x70) CheckEvent(0x78)
     // InstallProtocolInterface(0x80) Reinstall(0x88) Uninstall(0x90)
-    // HandleProtocol(0x98) ... ExitBootServices(0x100).
-    assert!(size_of::<BootServices>() == 0x158);
+    // HandleProtocol(0x98) Reserved(0xA0) RegisterProtocolNotify(0xA8)
+    // LocateHandle(0xB0) LocateDevicePath(0xB8) InstallConfigurationTable(0xC0)
+    // LoadImage(0xC8) StartImage(0xD0) Exit(0xD8) UnloadImage(0xE0)
+    // ExitBootServices(0xE8) GetNextMonotonicCount(0xF0) Stall(0xF8)
+    // SetWatchdogTimer(0x100) ConnectController(0x108)
+    // DisconnectController(0x110) OpenProtocol(0x118) CloseProtocol(0x120)
+    // OpenProtocolInformation(0x128) ProtocolsPerHandle(0x130)
+    // LocateHandleBuffer(0x138) LocateProtocol(0x140)
+    // InstallMultipleProtocolInterfaces(0x148)
+    // UninstallMultipleProtocolInterfaces(0x150) CalculateCrc32(0x158)
+    // CopyMem(0x160) SetMem(0x168) CreateEventEx(0x170); total 0x178.
+    assert!(size_of::<BootServices>() == 0x178);
     assert!(offset_of!(BootServices, header) == 0);
     assert!(offset_of!(BootServices, allocate_pages) == 0x28);
     assert!(offset_of!(BootServices, get_memory_map) == 0x38);
     assert!(offset_of!(BootServices, handle_protocol) == 0x98);
-    assert!(offset_of!(BootServices, exit_boot_services) == 0x100);
+    assert!(offset_of!(BootServices, register_protocol_notify) == 0xA8);
+    assert!(offset_of!(BootServices, exit_boot_services) == 0xE8);
+    assert!(offset_of!(BootServices, stall) == 0xF8);
+    assert!(offset_of!(BootServices, set_watchdog_timer) == 0x100);
+    assert!(offset_of!(BootServices, locate_protocol) == 0x140);
+    assert!(offset_of!(BootServices, calculate_crc32) == 0x158);
+    assert!(offset_of!(BootServices, create_event_ex) == 0x170);
 
     // Protocol layouts.
     assert!(size_of::<SimpleTextOutputProtocol>() == 80); // 9 fn + Mode

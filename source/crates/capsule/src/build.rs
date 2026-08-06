@@ -15,7 +15,7 @@ use tos_hash::Sha256;
 use crate::{
     ALIGNMENT, ARCH_SPEC_VERSION, BOOT_PATH, BUILDER_VERSION, DIGEST_BYTES, FILE_ENTRY_SIZE,
     FILE_KNOWN_FLAGS, FLAG_BOOT_CANONICAL, FORMAT_UUID, FORMAT_VERSION, HEADER_SIZE, MAGIC,
-    PATH_ENTRY_SIZE, SRC_KIND_DETACHED,
+    OID_ALG_NONE, PATH_ENTRY_SIZE, SRC_KIND_DETACHED,
 };
 
 /// One file to place in the capsule.
@@ -52,7 +52,9 @@ pub enum BuildError {
 #[derive(Clone, Debug)]
 pub struct Builder {
     pub source_identity_kind: u8,
-    pub source_identity_digest: [u8; DIGEST_BYTES],
+    pub source_oid_alg: u8,
+    pub source_oid_length: u8,
+    pub source_identity_value: [u8; 32],
     pub builder_version: u32,
     files: Vec<FileSpec>,
     licence_notice: Vec<u8>,
@@ -68,7 +70,9 @@ impl Builder {
     pub fn new() -> Self {
         Self {
             source_identity_kind: SRC_KIND_DETACHED,
-            source_identity_digest: [0u8; DIGEST_BYTES],
+            source_oid_alg: OID_ALG_NONE,
+            source_oid_length: 0,
+            source_identity_value: [0u8; 32],
             builder_version: BUILDER_VERSION,
             files: Vec::new(),
             licence_notice: Vec::new(),
@@ -151,7 +155,9 @@ impl Builder {
         w_u32(&mut out, 88, ARCH_SPEC_VERSION);
         w_u32(&mut out, 92, self.builder_version);
         out[96] = self.source_identity_kind;
-        w_bytes(&mut out, 104, &self.source_identity_digest);
+        out[97] = self.source_oid_alg;
+        out[98] = self.source_oid_length;
+        w_bytes(&mut out, 100, &self.source_identity_value);
         if !self.licence_notice.is_empty() {
             w_u64(&mut out, 136, payload_end as u64);
             w_u64(&mut out, 144, self.licence_notice.len() as u64);

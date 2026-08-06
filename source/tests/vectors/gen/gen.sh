@@ -12,7 +12,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 GEN="$ROOT/tests/vectors/gen"
 OUT="$ROOT/tests/vectors/capsule-v1"
-TOOL="$ROOT/target/debug/tos-capsule-tool"
+TOOL="$ROOT/target/release/tos-capsule-tool"
 IDENT="4242424242424242424242424242424242424242424242424242424242424242"
 INIT="$ROOT/system/boot/init.tos"
 NOTICES="$ROOT/system/boot/NOTICES.txt"

@@ -65,7 +65,9 @@ Result codes are written to `RESULT_PORT` as one `u8`; QEMU exits with
 | 96 | 8 | `capsule_length` | byte length of the capsule |
 | 104 | 32 | `capsule_digest` | SHA-256 of capsule bytes |
 | 136 | 1 | `capsule_identity_kind` | mirrors capsule header field |
-| 137 | 7 | `reserved` | zero |
+| 137 | 1 | `capsule_oid_alg` | mirrors capsule header field (0 none, 1 SHA-1, 2 SHA-256) |
+| 138 | 1 | `capsule_oid_length` | mirrors capsule header field (20/32, or 0 when no OID) |
+| 139 | 5 | `reserved` | zero |
 | 144 | 32 | `capsule_source_identity` | mirrors capsule header field |
 | 176 | 8 | `acpi_rsdp` | physical address of RSDP, 0 if absent |
 | 184 | 8 | `smbios` | physical address of SMBIOS table, 0 if absent |
@@ -87,10 +89,11 @@ overlap; `phys_length` is non-zero.
 
 ## 6. Capsule identity binding
 
-`capsule_digest`, `capsule_identity_kind` and `capsule_source_identity` are
-copied from the verified capsule header (`whole_capsule_digest`,
-`source_identity_kind`, `source_identity_digest`). The nucleus re-verifies the
-capsule digest against the bytes at `capsule_phys`.
+`capsule_digest`, `capsule_identity_kind`, `capsule_oid_alg`,
+`capsule_oid_length` and `capsule_source_identity` are copied from the
+verified capsule header (`whole_capsule_digest`, `source_identity_kind`,
+`source_oid_alg`, `source_oid_length`, `source_identity_value`). The nucleus
+re-verifies the capsule digest against the bytes at `capsule_phys`.
 
 ## 7. Stable diagnostic events
 

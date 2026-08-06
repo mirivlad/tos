@@ -14,8 +14,9 @@
 //!   * resolves the commit id (accepts `HEAD`, a full 40/64-hex SHA-1/SHA-256,
 //!     or a short prefix);
 //!   * verifies the commit object exists (`git cat-file -e <id>^{commit}`);
-//!   * writes `source_identity_kind = SRC_KIND_GIT` and digest = SHA-256 of the
-//!     raw commit object id (binary, 20 or 32 bytes), per
+//!   * writes `source_identity_kind = SRC_KIND_GIT`, `source_oid_alg` +
+//!     `source_oid_length` (SHA-1 20B / SHA-256 32B) and the raw commit
+//!     object id in `source_identity_value`, per
 //!     `interfaces/boot/CAPSULE_FORMAT_V1.md` §6;
 //!   * verifies that the commit contains exactly the source bytes that are
 //!     placed into the capsule (`git cat-file blob <id>:<repo-path>` must equal
@@ -31,7 +32,10 @@ use std::fs;
 use std::process::Command;
 
 use tos_capsule::build::{Builder, FileSpec};
-use tos_capsule::{parse, ARCH_SPEC_VERSION, BUILDER_VERSION, SRC_KIND_GIT};
+use tos_capsule::{
+    parse, ARCH_SPEC_VERSION, BUILDER_VERSION, OID_ALG_NONE, OID_ALG_SHA1, OID_ALG_SHA256,
+    OID_LEN_SHA1, OID_LEN_SHA256, SRC_KIND_DETACHED, SRC_KIND_GIT,
+};
 use tos_hash::sha256;
 
 struct Args {
@@ -192,10 +196,22 @@ fn main() {
             eprintln!("error: {e}");
             std::process::exit(2);
         });
-        // source_identity_digest = SHA-256 of the raw commit object id.
-        let digest = sha256(&f.oid_bytes);
+        // source_identity_value = raw commit object id (20 bytes SHA-1 or
+        // 32 bytes SHA-256); source_oid_alg/length identify the algorithm.
+        let (alg, len) = match f.oid_bytes.len() {
+            20 => (OID_ALG_SHA1, OID_LEN_SHA1),
+            32 => (OID_ALG_SHA256, OID_LEN_SHA256),
+            n => {
+                eprintln!("error: commit oid has unsupported length {n}");
+                std::process::exit(2);
+            }
+        };
+        let mut value = [0u8; 32];
+        value[..f.oid_bytes.len()].copy_from_slice(&f.oid_bytes);
         b.source_identity_kind = SRC_KIND_GIT;
-        b.source_identity_digest = digest;
+        b.source_oid_alg = alg;
+        b.source_oid_length = len;
+        b.source_identity_value = value;
         face = Some(f);
     } else {
         let identity = args.identity.as_ref().expect("identity checked");
@@ -210,7 +226,11 @@ fn main() {
         }
         let mut id_digest = [0u8; 32];
         id_digest.copy_from_slice(&bytes);
-        b.source_identity_digest = id_digest;
+        // Detached identity: plain source-set digest, no OID algorithm.
+        b.source_identity_kind = SRC_KIND_DETACHED;
+        b.source_oid_alg = OID_ALG_NONE;
+        b.source_oid_length = 0;
+        b.source_identity_value = id_digest;
         face = None;
     }
 
@@ -278,10 +298,17 @@ fn main() {
         let mut json = String::new();
         json.push_str(&format!("{{\n  \"capsule_sha256\": \"{cd_hex}\",\n  \"file_count\": {},\n  \"boot_text_sha256\": \"{bd_hex}\",\n  \"architecture\": \"{arch}\",\n  \"builder_version\": {BUILDER_VERSION},\n", cap.file_count()));
         if let Some(face) = &face {
+            let alg_name = match b.source_oid_alg {
+                OID_ALG_SHA1 => "sha1",
+                OID_ALG_SHA256 => "sha256",
+                _ => "unknown",
+            };
             json.push_str(&format!(
-                "  \"identity\": {{\n    \"kind\": \"git-commit\",\n    \"commit\": \"{}\",\n    \"algorithm\": \"sha256(commit-oid)\",\n    \"source_identity_digest\": \"{}\"\n  }},\n",
+                "  \"identity\": {{\n    \"kind\": \"git-commit\",\n    \"commit\": \"{}\",\n    \"oid_algorithm\": \"{}\",\n    \"oid_length\": {},\n    \"raw_oid\": \"{}\"\n  }},\n",
                 face.commit,
-                to_hex(&b.source_identity_digest)
+                alg_name,
+                b.source_oid_length,
+                to_hex(&b.source_identity_value[..b.source_oid_length as usize])
             ));
         }
         json.push_str("  \"sources\": [\n");

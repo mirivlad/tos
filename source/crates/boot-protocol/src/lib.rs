@@ -36,6 +36,14 @@ pub const MEM_MMIO: u32 = 5;
 pub const SRC_KIND_GIT: u8 = 1;
 pub const SRC_KIND_DETACHED: u8 = 2;
 
+/// Identity OID algorithms mirrored from the capsule header (v1): the raw
+/// `capsule_source_identity` is a git object id when kind is GIT.
+pub const OID_ALG_NONE: u8 = 0;
+pub const OID_ALG_SHA1: u8 = 1;
+pub const OID_ALG_SHA256: u8 = 2;
+pub const OID_LEN_SHA1: u8 = 20;
+pub const OID_LEN_SHA256: u8 = 32;
+
 /// QEMU `isa-debug-exit` I/O port; a written u8 makes QEMU exit with
 /// `(value << 1) | 1`.
 pub const RESULT_PORT: u16 = 0x501;
@@ -84,7 +92,9 @@ pub struct BootInfo {
     pub capsule_length: u64,
     pub capsule_digest: [u8; 32],
     pub capsule_identity_kind: u8,
-    pub reserved: [u8; 7],
+    pub capsule_oid_alg: u8,
+    pub capsule_oid_length: u8,
+    pub reserved: [u8; 5],
     pub capsule_source_identity: [u8; 32],
     pub acpi_rsdp: u64,
     pub smbios: u64,
@@ -117,7 +127,9 @@ impl BootInfo {
             // without a git provenance record (SRC_KIND_GIT=1, DETACHED=2;
             // 0 is rejected by validate_bytes).
             capsule_identity_kind: SRC_KIND_DETACHED,
-            reserved: [0; 7],
+            capsule_oid_alg: OID_ALG_NONE,
+            capsule_oid_length: 0,
+            reserved: [0; 5],
             capsule_source_identity: [0; 32],
             acpi_rsdp: 0,
             smbios: 0,
@@ -250,14 +262,33 @@ impl BootInfo {
             return Err(BootInfoError::BadFramebuffer);
         }
 
-        // --- capsule identity kind ---
+        // --- capsule identity kind + oid algorithm ---
         let id_kind = bytes[136];
         if id_kind != SRC_KIND_GIT && id_kind != SRC_KIND_DETACHED {
             return Err(BootInfoError::UnsupportedCapsuleIdentityKind);
         }
+        let oid_alg = bytes[137];
+        let oid_len = bytes[138];
+        match id_kind {
+            SRC_KIND_GIT => {
+                let ok = match (oid_alg, oid_len) {
+                    (OID_ALG_SHA1, OID_LEN_SHA1) => true,
+                    (OID_ALG_SHA256, OID_LEN_SHA256) => true,
+                    _ => false,
+                };
+                if !ok {
+                    return Err(BootInfoError::UnsupportedCapsuleIdentityKind);
+                }
+            }
+            _ => {
+                if oid_alg != OID_ALG_NONE || oid_len != 0 {
+                    return Err(BootInfoError::UnsupportedCapsuleIdentityKind);
+                }
+            }
+        }
 
         // --- in-struct reserved blocks and extension fields ---
-        if bytes[137..144].iter().any(|&b| b != 0) {
+        if bytes[139..144].iter().any(|&b| b != 0) {
             return Err(BootInfoError::NonZeroReservedFields);
         }
         let next = u64::from_le_bytes(bytes[192..200].try_into().unwrap());
