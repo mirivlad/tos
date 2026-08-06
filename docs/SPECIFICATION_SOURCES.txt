@@ -67,3 +67,4 @@ docs/adr/0012-dco-without-copyright-assignment.md
 docs/adr/0013-project-name-provisional.md
 docs/adr/0014-driver-source-reuse-and-clean-room.md
 docs/adr/0015-language-foundation-decision-gate.md
+docs/adr/0016-capsule-git-raw-oid-identity.md
