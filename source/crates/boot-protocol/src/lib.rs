@@ -197,6 +197,11 @@ pub enum BootInfoError {
     /// a descriptor's `phys_start + phys_length` wraps past `u64::MAX`, so the
     /// range lies outside addressable bounds (BOOT_ABI_V1 §8 rule 6).
     MemoryRangeOverflow,
+    /// the identity quadruple in the handoff record disagrees with the verified
+    /// capsule header (BOOT_ABI_V1 §6: these fields are *copied from* the
+    /// capsule, so any difference means the record cannot be trusted to name
+    /// the capsule's source).
+    CapsuleIdentityMismatch,
     /// `capsule_identity_kind` not SRC_KIND_GIT or SRC_KIND_DETACHED.
     UnsupportedCapsuleIdentityKind,
     /// `next` non-zero (reserved extension pointer must be 0).
@@ -368,6 +373,36 @@ impl BootInfo {
             }
             prev_start = d.phys_start;
             prev_end = end;
+        }
+        Ok(())
+    }
+
+    /// Cross-check the mirrored capsule identity against the header of the
+    /// capsule that was actually parsed and digest-verified.
+    ///
+    /// BOOT_ABI_V1 §6 defines `capsule_identity_kind`, `capsule_oid_alg`,
+    /// `capsule_oid_length` and `capsule_source_identity` as copies of the
+    /// capsule header fields. Nothing in the handoff record proves that: a
+    /// consumer that reports the identity straight from `BootInfo` reports what
+    /// the *producer of the record* claimed, not what the capsule says. Since
+    /// the capsule is parsed anyway, the equality is verified rather than
+    /// assumed, and a mismatch fails closed.
+    ///
+    /// `value` is the capsule's `source_identity_value` (all 32 bytes,
+    /// including the zero padding beyond `source_oid_length`).
+    pub fn check_capsule_identity(
+        &self,
+        kind: u8,
+        oid_alg: u8,
+        oid_length: u8,
+        value: &[u8; 32],
+    ) -> Result<(), BootInfoError> {
+        if self.capsule_identity_kind != kind
+            || self.capsule_oid_alg != oid_alg
+            || self.capsule_oid_length != oid_length
+            || &self.capsule_source_identity != value
+        {
+            return Err(BootInfoError::CapsuleIdentityMismatch);
         }
         Ok(())
     }
@@ -660,6 +695,79 @@ mod tests {
         assert_eq!(
             bi.check_capsule_in_memory(&descs),
             Err(BootInfoError::MemoryRangeOverflow)
+        );
+    }
+
+    // --- capsule identity cross-check (BOOT_ABI_V1 §6) ---
+
+    /// A record whose mirrored identity matches the capsule header it claims to
+    /// describe.
+    fn git_identity_bootinfo() -> (BootInfo, [u8; 32]) {
+        let mut value = [0u8; 32];
+        value[..20].copy_from_slice(&[0xab; 20]); // raw SHA-1 commit oid, zero-padded
+        let mut bi = BootInfo::new();
+        bi.capsule_identity_kind = SRC_KIND_GIT;
+        bi.capsule_oid_alg = OID_ALG_SHA1;
+        bi.capsule_oid_length = OID_LEN_SHA1;
+        bi.capsule_source_identity = value;
+        (bi, value)
+    }
+
+    #[test]
+    fn capsule_identity_match_accepted() {
+        let (bi, value) = git_identity_bootinfo();
+        assert_eq!(
+            bi.check_capsule_identity(SRC_KIND_GIT, OID_ALG_SHA1, OID_LEN_SHA1, &value),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn capsule_identity_kind_mismatch_rejected() {
+        // The record claims a git commit while the capsule carries a detached
+        // source set: exactly the case that would let a boot report an invented
+        // repository provenance.
+        let (bi, value) = git_identity_bootinfo();
+        assert_eq!(
+            bi.check_capsule_identity(SRC_KIND_DETACHED, OID_ALG_NONE, 0, &value),
+            Err(BootInfoError::CapsuleIdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn capsule_identity_algorithm_mismatch_rejected() {
+        let (bi, value) = git_identity_bootinfo();
+        assert_eq!(
+            bi.check_capsule_identity(SRC_KIND_GIT, OID_ALG_SHA256, OID_LEN_SHA1, &value),
+            Err(BootInfoError::CapsuleIdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn capsule_identity_oid_length_mismatch_rejected() {
+        let (bi, value) = git_identity_bootinfo();
+        assert_eq!(
+            bi.check_capsule_identity(SRC_KIND_GIT, OID_ALG_SHA1, OID_LEN_SHA256, &value),
+            Err(BootInfoError::CapsuleIdentityMismatch)
+        );
+    }
+
+    #[test]
+    fn capsule_identity_value_mismatch_rejected() {
+        // One flipped byte of the commit oid, including inside the zero padding
+        // beyond source_oid_length, must fail closed.
+        let (bi, value) = git_identity_bootinfo();
+        let mut other = value;
+        other[0] ^= 0x01;
+        assert_eq!(
+            bi.check_capsule_identity(SRC_KIND_GIT, OID_ALG_SHA1, OID_LEN_SHA1, &other),
+            Err(BootInfoError::CapsuleIdentityMismatch)
+        );
+        let mut padded = value;
+        padded[31] ^= 0x01;
+        assert_eq!(
+            bi.check_capsule_identity(SRC_KIND_GIT, OID_ALG_SHA1, OID_LEN_SHA1, &padded),
+            Err(BootInfoError::CapsuleIdentityMismatch)
         );
     }
 

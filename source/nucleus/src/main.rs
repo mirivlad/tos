@@ -126,6 +126,26 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         Err(_) => cap_fail(),
     };
 
+    // The handoff record only mirrors the capsule's identity fields
+    // (BOOT_ABI_V1 §6); it does not prove them. Verify the mirror against the
+    // header of the capsule just parsed, so TOS.IDENTITY reports what the
+    // artifact carries rather than what the record claimed. Fails closed with
+    // RESULT_CAPSULE_INVALID, the same code already used when capsule_digest
+    // disagrees with the capsule bytes.
+    let ch = cap.header();
+    if bi
+        .check_capsule_identity(
+            ch.source_identity_kind,
+            ch.source_oid_alg,
+            ch.source_oid_length,
+            &ch.source_identity_value,
+        )
+        .is_err()
+    {
+        tos_serial::puts(b"TOS.IDENTITY.MISMATCH bootinfo-vs-capsule-header\r\n");
+        cap_fail();
+    }
+
     tos_serial::puts(b"TOS.CAPSULE.OK files=");
     tos_serial::put_u32_decimal(cap.file_count());
     tos_serial::puts(b"\r\n");
@@ -151,20 +171,22 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::puts(b"\r\n");
 
     // --- 5. identity record ---
-    // Provenance kind comes from the BootInfo handoff, never hardcoded: the
-    // loader records SRC_KIND_GIT when the capsule was built with
+    // Provenance is read from the parsed capsule header, never hardcoded and
+    // never taken on the handoff record's word: the record was proved equal to
+    // this header above, and the header belongs to bytes whose digest was
+    // verified. The builder writes SRC_KIND_GIT when the capsule was built with
     // --git-commit (or SRC_KIND_DETACHED otherwise).
-    let kind: &[u8] = match bi.capsule_identity_kind {
+    let kind: &[u8] = match ch.source_identity_kind {
         SRC_KIND_GIT => b"git",
         SRC_KIND_DETACHED => b"detached",
-        // validate_bytes rejects any other value; fall back to a stable
-        // error marker rather than a misleading kind.
+        // parse() rejects any other value; fall back to a stable error marker
+        // rather than a misleading kind.
         _ => b"unknown",
     };
     tos_serial::puts(b"TOS.IDENTITY source_kind=");
     tos_serial::puts(kind);
     tos_serial::puts(b" source_digest=");
-    tos_serial::put_hex32(&bi.capsule_source_identity);
+    tos_serial::put_hex32(&ch.source_identity_value);
     tos_serial::puts(b" capsule_digest=");
     tos_serial::put_hex32(&bi.capsule_digest);
     tos_serial::puts(b" arch=0.2.1 builder=1\r\n");
