@@ -1,0 +1,157 @@
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# Performance contracts
+
+## Purpose
+
+TOS does not promise performance by adjective. The architecture must be measurable early enough that a beautiful source model cannot hide an unusable execution path.
+
+Performance contracts do not permit replacing TOS with a conventional implementation. Reference implementations may serve as benchmark oracles only under ADR-0011.
+
+## Measurement rules
+
+Every reported result includes:
+
+- exact source commit;
+- architecture and stage;
+- QEMU and firmware versions;
+- host CPU and virtualization mode;
+- guest CPU count and memory;
+- workload definition and data size;
+- warm-up policy;
+- sample count;
+- median, p95 and p99 where latency applies;
+- throughput and CPU utilization where applicable;
+- comparison baseline source and build identity;
+- profiler/trace artifact where feasible.
+
+A number without its environment is not a conformance result.
+
+## Budget classes
+
+### Hard architectural budgets
+
+These are topology/count constraints. Exceeding one requires an ADR because it indicates an architectural path change.
+
+### Reference-platform budgets
+
+These are quantitative thresholds on the documented QEMU reference platform. They may be revised with measurements and an ADR, but cannot be silently weakened to close a stage.
+
+### Observational metrics
+
+These are tracked from first implementation without a pass/fail threshold until evidence is sufficient.
+
+## Stage 1 — Boot and capsule
+
+Hard budgets:
+
+- capsule parsing is single-pass or bounded multi-pass;
+- no recursion dependent on untrusted capsule depth;
+- parser performs no allocation proportional to attacker-declared count before validating total bounds;
+- lookup of one canonical path does not require copying every payload.
+
+Reference-platform budget:
+
+- a capsule fixture containing 1,000 files and 16 MiB total payload validates and locates `/system/boot/init.tos` in no more than 250 ms p95 in release mode under the declared QEMU CI profile.
+
+The threshold is deliberately loose for the first stage but prevents accidental quadratic design.
+
+## Stage 1.5–2 — Language frontend and runtime
+
+Hard budgets:
+
+- parsing and lowering have explicit source-size, nesting, identifier and diagnostic quotas;
+- bootstrap-profile execution has instruction/fuel or equivalent preemption accounting;
+- cache validation is bounded by declared dependency closure;
+- source maps are retained without requiring an unbounded in-memory duplicate of source.
+
+Reference-platform budgets for the bootstrap profile:
+
+- parse, type-check, lower and verify a 256 KiB canonical module in no more than 500 ms p95;
+- execute the standard one-million-operation integer/control-flow benchmark in no more than 10 times the host reference interpreter time under the same semantic implementation;
+- reject quota-exceeding source within 2 times the accepted-input budget rather than degrading without bound.
+
+These are initial research gates, not claims of application-language competitiveness.
+
+## Stage 3 — IPC and capabilities
+
+Hard budgets for steady-state small-message IPC after initialization:
+
+- no dynamic allocation in the nucleus fast path;
+- no more than two payload copies for an inline message;
+- large payload transfer uses shared regions rather than copying payload through the nucleus;
+- one request/reply exchange requires no more than four user/kernel boundary crossings excluding scheduler preemption;
+- capability validation is constant-time with respect to the process's total capability count, or the alternative bound is documented and tested.
+
+Reference-platform budget:
+
+- p99 request/reply latency for a 64-byte message between two runnable processes is no more than 8 times an in-process function-call benchmark and no more than 200 microseconds on the declared QEMU CI profile.
+
+Both relative and absolute limits are required because either alone can mislead.
+
+## Stage 4 — VirtIO block textual driver
+
+Hard budgets after queue initialization:
+
+- zero dynamic allocation per completed block request on the steady-state path;
+- no more than one payload copy between client memory and device-visible memory; zero-copy is preferred where the DMA contract permits it;
+- no more than four address-space/scheduler handoffs per unbatched request;
+- one interrupt wakeup may complete a batch of requests; the implementation must not require one scheduling cycle per descriptor when batching is available;
+- no global driver lock serializes independent queues in the long-term contract.
+
+Reference baseline:
+
+A minimal, separately isolated Rust VirtIO-block benchmark implementation may be built only as a host/reference oracle. It is not an accepted nucleus driver and cannot satisfy the TOS stage gate.
+
+Stage 4 reference-platform budgets:
+
+- sequential throughput is at least 35% of the reference baseline for the same queue depth and image;
+- random 4 KiB p99 latency is no more than 5 times the reference baseline;
+- CPU time per MiB is no more than 8 times the reference baseline;
+- performance results include textual-runtime engine identity and cache state.
+
+Failure to meet a target does not justify hiding the driver in the nucleus. It triggers profiling, execution-engine work or an explicit architecture review.
+
+## Stage 5 — Repository and activation
+
+Hard budgets:
+
+- mounting a commit tree does not require eager checkout of all blobs;
+- lookup cost depends on path depth and object/index access, not total repository size;
+- protected-ref activation uses a bounded transactional record and does not rewrite the system tree;
+- rollback does not copy all system files;
+- garbage collection cannot scan or mutate the live namespace while holding an unbounded global stop-the-world lock.
+
+Reference fixtures:
+
+- 100,000 paths, 20,000 commits and a 10 GiB logical object set;
+- deep but bounded trees;
+- adversarially long histories and malformed object graphs within parser quotas.
+
+Reference-platform budgets:
+
+- resolve and expose a selected commit root within 2 seconds p95 when required indexes are warm and within 10 seconds cold;
+- switch candidate boot metadata in under 100 ms excluding health checks;
+- `status` over a 10,000-file overlay completes within 3 seconds p95;
+- failed activation returns to last-known-good without work proportional to total `/system` bytes.
+
+## Stage 7 — Network
+
+Before implementation, Stage 7 adds explicit budgets for packet copies, context crossings, throughput, p99 latency, interrupt moderation and memory pressure. “Line rate” is not a valid requirement without link speed, packet size and CPU budget.
+
+## Regression policy
+
+CI retains benchmark history. A regression above 15% in a hard-gated metric requires explanation; above 30% blocks a stage/release unless an ADR changes the contract.
+
+Debug builds are never compared to release baselines. Benchmark fixtures and parsers are versioned.
+
+## Reporting status
+
+Each performance claim is labelled:
+
+- **P0 unmeasured design**;
+- **P1 locally measured**;
+- **P2 reproducible CI measurement**;
+- **P3 independently reproduced**.
+
+No stage closes on P0 for a metric assigned to that stage.

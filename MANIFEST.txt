@@ -1,0 +1,39 @@
+TOS — TextOS Development Documentation
+Version: 0.2.1
+Date: 2026-08-06
+Status: Accepted architecture, governance, licensing, security-model and implementation-gate baseline for Stage 1
+
+Canonical entry points:
+- README.md
+- ARCHITECTURE.md
+- docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md
+- docs/02_SYSTEM_INVARIANTS.md
+- docs/21_ARCHITECTURE_PRESERVATION_POLICY.md
+- docs/37_STAGE_IDENTITY_GATES.md
+- AGENTS.md
+- CODEX_START.md
+- LICENSE.md
+- GOVERNANCE.md
+- PATENTS.md
+
+Generated convenience view:
+- TOS_DEVELOPMENT_SPECIFICATION.md (non-normative; do not edit)
+
+This package includes:
+- architecture and subsystem specifications;
+- 21 active system invariants;
+- 15 accepted ADRs;
+- normative documentation hierarchy and generated-specification tooling;
+- architecture preservation, stage identity and conformance policy;
+- explicit threat model and security evidence rules;
+- quantitative performance contracts and benchmark methodology;
+- versioned Git-compatibility profiles;
+- GPL-3.0-or-later / Apache-2.0 / CC-BY-SA-4.0 licensing matrix;
+- full license texts;
+- DCO 1.1 and contribution provenance policy;
+- patent landscape and defensive publication protocol;
+- provisional naming and trademark policy;
+- release provenance, reproducibility and compliance gates;
+- first Codex Stage 1 implementation task.
+
+Legal note: project policy is not jurisdiction-specific legal advice or a freedom-to-operate opinion.

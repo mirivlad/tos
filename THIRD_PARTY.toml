@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# This inventory begins empty. Add one table per vendored or imported component.
+#
+# [[component]]
+# name = "example"
+# version = "1.2.3"
+# upstream = "https://example.invalid/repository"
+# source_revision = "commit-or-release"
+# license_expression = "Apache-2.0"
+# role = "host-tool" # reference | oracle | host-tool | isolated-service | trusted-dependency
+# modified = false
+# notice_files = []
+# review = "ADR or review reference"

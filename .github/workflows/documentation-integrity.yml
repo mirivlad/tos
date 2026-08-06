@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: CC-BY-SA-4.0
+name: Documentation integrity
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  generated-specification:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check generated consolidated specification
+        run: python3 tools/build-specification.py --check
+      - name: Validate source manifest and accepted ADR coverage
+        shell: python
+        run: |
+          from pathlib import Path
+          root = Path('.')
+          listed = {
+              line.strip() for line in (root/'docs/SPECIFICATION_SOURCES.txt').read_text().splitlines()
+              if line.strip() and not line.lstrip().startswith('#')
+          }
+          adrs = {str(p) for p in (root/'docs/adr').glob('*.md')}
+          missing = sorted(adrs - listed)
+          if missing:
+              raise SystemExit('accepted ADRs missing from specification manifest: ' + ', '.join(missing))
