@@ -1,0 +1,6 @@
+# Derived build artifacts — never canonical, never committed.
+/target/
+/out/
+# QEMU scratch: disk images and generated EFI/capsule binaries produced by host-tools.
+host-tools/qemu-test/work/
+legal/release-manifests/*.bin

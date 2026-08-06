@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/tos-hash",
+    "crates/tos-serial",
+    "crates/boot-protocol",
+    "crates/capsule",
+    "boot/uefi-loader",
+    "nucleus",
+    "host-tools/capsule",
+    "tests/integration",
+    "tests/fuzz",
+]
+# Target-only crates (UEFI / freestanding) are members but not default members:
+# they are built explicitly with their target, never on the host default build.
+exclude = []
+default-members = [
+    "crates/tos-hash",
+    "crates/tos-serial",
+    "crates/boot-protocol",
+    "crates/capsule",
+    "host-tools/capsule",
+    "tests/integration",
+]
+
+[profile.release]
+panic = "abort"
+opt-level = 2
+lto = true
