@@ -8,7 +8,7 @@
 use core::arch::asm;
 
 const COM1: u16 = 0x3F8;
-const THR: u16 = COM1 + 0; // transmit holding
+const THR: u16 = COM1; // +0 transmit holding
 const LSR: u16 = COM1 + 5; // line status
 const LSR_THR_EMPTY: u8 = 0x20;
 
@@ -32,7 +32,7 @@ fn inb(port: u16) -> u8 {
 pub fn init() {
     outb(COM1 + 1, 0x00); // disable interrupts
     outb(COM1 + 3, 0x80); // DLAB on
-    outb(COM1 + 0, 0x01); // divisor low (115200)
+    outb(COM1, 0x01); // +0 divisor low: DLL aliases THR while DLAB is set
     outb(COM1 + 1, 0x00); // divisor high
     outb(COM1 + 3, 0x03); // 8N1, DLAB off
     outb(COM1 + 2, 0xC7); // FIFO enable, clear, 14-byte threshold

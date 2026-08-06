@@ -30,7 +30,8 @@ pub const ALIGNMENT: u16 = 8;
 pub const PATH_ENTRY_SIZE: u32 = 16;
 pub const FILE_ENTRY_SIZE: u32 = 64;
 pub const DIGEST_BYTES: usize = 32;
-pub const ARCH_SPEC_VERSION: u32 = 0x0002_01; // packed '0.2.1'
+// Grouped by component: major_minor_patch (spec §2: ARCH_SPEC_VERSION 0x000201).
+pub const ARCH_SPEC_VERSION: u32 = 0x00_02_01;
 pub const BUILDER_VERSION: u32 = 1;
 
 pub const SRC_KIND_NONE: u8 = 0;
@@ -491,11 +492,10 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     // plain source-set digest (no OID algorithm).
     match h.source_identity_kind {
         SRC_KIND_GIT => {
-            let ok = match (h.source_oid_alg, h.source_oid_length) {
-                (OID_ALG_SHA1, OID_LEN_SHA1) => true,
-                (OID_ALG_SHA256, OID_LEN_SHA256) => true,
-                _ => false,
-            };
+            let ok = matches!(
+                (h.source_oid_alg, h.source_oid_length),
+                (OID_ALG_SHA1, OID_LEN_SHA1) | (OID_ALG_SHA256, OID_LEN_SHA256)
+            );
             if !ok {
                 return Err(CapsError::UnsupportedIdentityKind);
             }

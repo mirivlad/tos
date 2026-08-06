@@ -487,3 +487,34 @@ regression-прогон, немедленный push, после каждого 
   То есть проверена **и способность падать**, а не только зелёный путь.
 - Регрессия: `cargo test` → 56 passed / 0 failed; `check-spdx` → OK; позиционная
   форма прогона зелёная.
+
+### G2 — clippy-clean (условие для `-D warnings` в G3)
+
+- Статус: **готово**. Уровень: **Level 1** — предупреждения устранены по
+  существу, наблюдаемое поведение не менялось; страховка — RFC-векторы SHA-256,
+  56 тестов, фаззер и два QEMU-прогона.
+- Исправлено (host, 6): цикл загрузки message schedule в `tos-hash` переписан
+  через `zip(chunks_exact(4))` **без** `try_into().unwrap()` — в примитиве
+  trusted base не должно быть даже теоретического panic-пути; литерал версии
+  `0x0002_01` → `0x00_02_01` (группировка по компонентам major_minor_patch,
+  значение то же); два `match … => true/false` → `matches!`; `% MEM_DESC_SIZE
+  != 0` → `!is_multiple_of(…)`; `COM1 + 0` → именованные порты с комментарием
+  (DLL алиасит THR при DLAB=1).
+- Исправлено (целевые триплеты, 5): `RESULT_PORT as u16` (каст в тот же тип),
+  `(len + 0xfff) / 0x1000` → `div_ceil`, `desc_size % 8` → `is_multiple_of`,
+  лишний `use tos_serial;`.
+- Два `clippy::not_unsafe_ptr_arg_deref` (**deny-by-default**, то есть ошибки, а
+  не предупреждения) — на `efi_main` и `boot_entry`. Эти функции принципиально
+  не могут быть `unsafe fn`: их вызывает прошивка/загрузчик через ABI, а не Rust.
+  Добавлен точечный `#[allow]` **с safety-заявлением**, описывающим контракт
+  входа (кто поставляет указатель, по какому параграфу спецификации, что
+  проверяется до разыменования). Это первые настоящие `SAFETY:`-комментарии в
+  репозитории — общая расстановка на все 52 `unsafe` остаётся пунктом Priority 4.
+- Найдено попутно и важно для G3: `cargo clippy --all-targets` **нельзя**
+  применять к `tos-uefi-loader`/`tos-nucleus` — сборка их тестового харнесса
+  тянет `std` и падает на `duplicate lang item panic_impl`. В CI эти крейты
+  проверяются без `--all-targets`.
+- Проверки: `cargo clippy --all-targets -- -D warnings` → чисто; то же для
+  обоих целевых триплетов → чисто; `cargo test` → 56 passed / 0 failed;
+  обе release-сборки; fuzz 50 000 → PASS; QEMU success → PASS (exit 33),
+  QEMU negative (`invalid-kind-none.bin`, `--expect 67`) → PASS.
