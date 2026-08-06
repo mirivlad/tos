@@ -528,11 +528,19 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     unsafe {
         asm!("cli", options(nostack, preserves_flags));
     }
-    tos_serial::puts(b"HO nuc=");
+    // Boot-event log discipline (BOOT_ABI_V1 §7): every serial line is one
+    // `TOS.<EVENT>` identifier followed by structured `key=value` fields. The
+    // bring-up form of this trace was an ad-hoc `HO nuc=… stk=…` prefix with no
+    // line terminator, which glued a non-conforming line onto the front of
+    // TOS.BOOT.HANDOFF; the addresses it carried are kept here as fields of the
+    // event they describe.
+    tos_serial::puts(b"TOS.BOOT.HANDOFF nucleus=0x");
     tos_serial::put_hex64(nucleus_phys);
-    tos_serial::puts(b" stk=");
+    tos_serial::puts(b" stack=0x");
     tos_serial::put_hex64(stack_top);
-    tos_serial::puts(b"TOS.BOOT.HANDOFF\r\n");
+    tos_serial::puts(b" bootinfo=0x");
+    tos_serial::put_hex64(bi_phys);
+    tos_serial::puts(b"\r\n");
     let entry = nucleus_phys as *const ();
     unsafe {
         // Fixed registers: {stack} may take any caller-saved reg, but rdi
