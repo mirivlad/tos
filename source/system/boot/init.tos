@@ -1,0 +1,10 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+# TOS boot text — Stage 1
+
+This is the canonical boot text of the Stage 1 capsule. It is **illustrative**:
+TOS Core is not a language yet (see ADR-0015; a parser is gated at Stage 1.5).
+The lines below are read by the nucleus only to verify that the canonical boot
+file resolves and to expose its first logical line over serial.
+
+# TOS boot text
+print("hello from tos stage 1")

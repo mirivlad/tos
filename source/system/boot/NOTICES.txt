@@ -1,0 +1,15 @@
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
+SPDX-License-Identifier: GPL-3.0-or-later
+Implements code in this capsule (boot/, nucleus/, crates/, host-tools/)
+is distributed under the GNU General Public License v3.0 or later (GPL-3.0-or-later).
+
+The interface specifications in source/interfaces/ and these licence notices
+are distributed under the Apache License, Version 2.0 (Apache-2.0).
+
+The documentation (source/*.md, source/interfaces/**/*.md) is distributed
+under the Creative Commons Attribution-ShareAlike 4.0 International
+(CC-BY-SA-4.0).
+
+SHA-256 is reimplemented from the public FIPS 180-4 specification; constants
+and outputs are hardware facts, no third-party expressive code was copied.
+No other third-party components are present in this build.

@@ -1,0 +1,15 @@
+[package]
+name = "tos-capsule-tool"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Deterministic TOS capsule builder (host CLI): manifest -> capsule.bin + JSON metadata."
+publish = false
+
+[[bin]]
+name = "tos-capsule-tool"
+path = "src/main.rs"
+
+[dependencies]
+tos-capsule = { path = "../../crates/capsule", features = ["host"] }
+tos-hash = { path = "../../crates/tos-hash" }

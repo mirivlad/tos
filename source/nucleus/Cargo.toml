@@ -1,0 +1,17 @@
+[package]
+name = "tos-nucleus"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "TOS Stage 1 nucleus: validates boot ABI + capsule, emits serial boot events, halts with result code."
+publish = false
+
+[[bin]]
+name = "tos-nucleus"
+path = "src/main.rs"
+
+[dependencies]
+tos-boot-protocol = { path = "../crates/boot-protocol" }
+tos-capsule = { path = "../crates/capsule", default-features = false }
+tos-hash = { path = "../crates/tos-hash" }
+tos-serial = { path = "../crates/tos-serial" }

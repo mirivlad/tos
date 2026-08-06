@@ -1,0 +1,7 @@
+{
+  "capsule_sha256": "0a4a0d8f7f3c738b866f1cec22ec58a25b43602f533ba6345d348d5ac06a30c2",
+  "file_count": 2,
+  "boot_text_sha256": "175da945795b877db628ac063413099f36a0a482647536adc760dadc598650e4",
+  "architecture": "0.2.1",
+  "builder": 1
+}
