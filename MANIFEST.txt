@@ -1,9 +1,25 @@
 TOS — TextOS Development Documentation
 Version: 0.2.1
-Date: 2026-08-06
-Status: Accepted architecture, governance, licensing, security-model and implementation-gate baseline for Stage 1
+Status: Accepted architecture, governance, licensing, security-model and
+implementation-gate baseline for Stage 1
 
-Canonical entry points:
+GENERATED FILE — DO NOT EDIT.
+Regenerate with `python3 tools/build-release-manifest.py`; the release date
+and per-revision narrative belong to CHANGELOG.md.
+
+Scope of the release package
+----------------------------
+This manifest and SHA256SUMS describe the files distributed as the
+documentation and governance release package, and let a recipient verify
+them without Git.
+
+`source/` is intentionally excluded: the Git tree and commit identity, the
+capsule provenance record and the boot chain already establish a stronger
+identity for it. A second flat digest list over the source tree would be a
+weaker duplicate of Git and a competing source of truth.
+
+Canonical entry points
+----------------------
 - README.md
 - ARCHITECTURE.md
 - docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md
@@ -16,24 +32,35 @@ Canonical entry points:
 - GOVERNANCE.md
 - PATENTS.md
 
-Generated convenience view:
+Generated convenience view
+--------------------------
 - TOS_DEVELOPMENT_SPECIFICATION.md (non-normative; do not edit)
 
-This package includes:
-- architecture and subsystem specifications;
-- 21 active system invariants;
-- 15 accepted ADRs;
-- normative documentation hierarchy and generated-specification tooling;
-- architecture preservation, stage identity and conformance policy;
-- explicit threat model and security evidence rules;
-- quantitative performance contracts and benchmark methodology;
-- versioned Git-compatibility profiles;
-- GPL-3.0-or-later / Apache-2.0 / CC-BY-SA-4.0 licensing matrix;
-- full license texts;
-- DCO 1.1 and contribution provenance policy;
-- patent landscape and defensive publication protocol;
-- provisional naming and trademark policy;
-- release provenance, reproducibility and compliance gates;
-- first Codex Stage 1 implementation task.
+Composition (derived, not hand-maintained)
+------------------------------------------
+- files in the release package: 90
+- active system invariants: 21
+- architecture decision records: 17 (17 accepted)
 
-Legal note: project policy is not jurisdiction-specific legal advice or a freedom-to-operate opinion.
+Architecture decision records
+-----------------------------
+- docs/adr/0001-no-mvp-development.md — ADR-0001: No MVP or throwaway foundation [Accepted]
+- docs/adr/0002-canonical-text-source.md — ADR-0002: Text source is canonical [Accepted]
+- docs/adr/0003-microkernel-and-userspace-drivers.md — ADR-0003: Minimal nucleus and user-space textual drivers [Accepted]
+- docs/adr/0004-git-native-system-history.md — ADR-0004: Git-native system history [Accepted]
+- docs/adr/0005-qemu-x86_64-first.md — ADR-0005: QEMU x86_64 UEFI is the first platform [Accepted]
+- docs/adr/0006-rust-for-binary-foundation.md — ADR-0006: Rust for loader, nucleus, and host foundation [Accepted]
+- docs/adr/0007-licensing-model.md — ADR-0007: Multi-license model aligned with owner freedom [Accepted]
+- docs/adr/0008-architecture-preservation-governance.md — ADR-0008: Architecture preservation and architect-led governance [Accepted]
+- docs/adr/0009-defensive-publication-patent-policy.md — ADR-0009: Defensive publication and patent-risk management [Accepted]
+- docs/adr/0010-derived-artifact-provenance.md — ADR-0010: Derived artifacts carry verifiable source provenance [Accepted]
+- docs/adr/0011-external-implementations-as-oracles.md — ADR-0011: External implementations default to references or test oracles [Accepted]
+- docs/adr/0012-dco-without-copyright-assignment.md — ADR-0012: DCO contribution model without mandatory copyright assignment [Accepted]
+- docs/adr/0013-project-name-provisional.md — ADR-0013: TOS — TextOS remains a provisional name [Accepted]
+- docs/adr/0014-driver-source-reuse-and-clean-room.md — ADR-0014: Driver knowledge reuse without incompatible source copying [Accepted]
+- docs/adr/0015-language-foundation-decision-gate.md — ADR-0015: Require a language-foundation decision gate before Stage 2 [Accepted]
+- docs/adr/0016-capsule-git-raw-oid-identity.md — ADR-0016: Capsule git identity carries the raw object id [Accepted]
+- docs/adr/0017-capsule-v1-canonical-layout.md — ADR-0017: Capsule v1 canonical layout — packed arena, canonical index mapping, byte compatibility preserved [Accepted (owner-approved)]
+
+Legal note: project policy is not jurisdiction-specific legal advice or a
+freedom-to-operate opinion.
