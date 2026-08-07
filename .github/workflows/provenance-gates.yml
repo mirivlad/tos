@@ -30,3 +30,11 @@ jobs:
 
       - name: DCO sign-off
         run: sh scripts/check-dco.sh
+
+  spdx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: SPDX licence headers
+        run: sh scripts/check-spdx.sh
