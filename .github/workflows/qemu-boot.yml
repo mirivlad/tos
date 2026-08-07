@@ -1,0 +1,80 @@
+# SPDX-License-Identifier: CC-BY-SA-4.0
+name: QEMU boot gate
+
+# The Stage 1 boot evidence required by docs/30_COMPLIANCE_AND_RELEASE_GATES.md
+# ("Engineering gate": QEMU suites pass) and docs/37_STAGE_IDENTITY_GATES.md
+# (Stage 1: corruption and identity-mismatch tests fail closed).
+#
+# Kept separate from Source CI on purpose: a boot failure must read as a boot
+# failure, not as a compile job that went red somewhere near the end. This job
+# runs under TCG - GitHub runners have no KVM - exactly as the harness does
+# locally, so no acceleration-specific behaviour is involved.
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'claude/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: qemu-boot-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  boot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: source
+    steps:
+      # The capsule identity gate resolves repo-relative paths against HEAD and
+      # verifies each source file with `git cat-file blob HEAD:<path>`, so the
+      # commit object and its blobs must be present; checkout's default depth 1
+      # provides both.
+      - uses: actions/checkout@v4
+
+      - name: Firmware and tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf mtools
+          qemu-system-x86_64 --version | head -1
+          ls -l /usr/share/OVMF/ || true
+
+      - name: Toolchain and targets
+        run: |
+          rustup target add x86_64-unknown-uefi x86_64-unknown-none
+          rustc --version
+
+      - name: Build boot artifacts
+        run: |
+          cargo build --release -p tos-capsule-tool
+          cargo build --release -p tos-uefi-loader --target x86_64-unknown-uefi
+          cargo build --release -p tos-nucleus --target x86_64-unknown-none
+
+      # Success path: exit 33 (HALT_OK) plus the required boot events in order.
+      # The harness decides; this step just reports its verdict.
+      - name: Boot success gate
+        run: bash host-tools/qemu-test/run.sh --out target/qemu-ci/success --expect 33
+
+      # Every rejected fixture must fail closed in the loader with the rule its
+      # vectors.tsv row declares.
+      - name: Negative boot suite
+        run: bash host-tools/qemu-test/negative-suite.sh target/qemu-ci/negative
+
+      # Serial logs are the Stage 1 evidence; keep them for a failed run so the
+      # failure can be diagnosed without re-running the job.
+      - name: Upload boot evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-boot-evidence
+          path: |
+            source/target/qemu-ci/**/serial.log
+            source/target/qemu-ci/**/events.log
+            source/target/qemu-ci/**/capsule.meta.json
+            source/target/qemu-ci/*.log
+          if-no-files-found: warn
+          retention-days: 14
