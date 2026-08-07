@@ -624,3 +624,37 @@ regression-прогон, немедленный push, после каждого 
   расхождение перечня event ID в BOOT_ABI_V1 §7 с реализацией; мёртвый
   `CapsError::PayloadOverlap`; `actions/checkout@v4` → `@v5` (Node 20 deprecated);
   залипший прогон 31119928260 (оставлен висеть по решению владельца).
+
+### G4a — негативная загрузочная сюита как переиспользуемый скрипт
+
+- Статус: **готово**. Уровень: **Level 1** (инструментальный).
+- Добавлен `host-tools/qemu-test/negative-suite.sh`: берёт все строки
+  `reject:` из `tests/vectors/capsule-v1/vectors.tsv`, грузит каждый вектор в
+  QEMU и требует три вещи одновременно:
+  1. exit 67 (`RESULT_CAPSULE_INVALID`);
+  2. отсутствие `TOS.NUCLEUS.ENTRY` — управление не должно доходить до нуклеуса
+     (обеспечивается `run.sh --expect 67`);
+  3. **`capsule_err` в serial совпадает с правилом, объявленным в
+     `vectors.tsv`**.
+  Третья проверка — смысл сюиты: unit-тест доказывает, что *хостовый* парсер
+  отвергает вектор, но ничего не говорит о том, какое правило сработает внутри
+  реальной загрузки. Теперь они прибиты друг к другу.
+- `run.sh`: добавлен поиск прошивки парами CODE/VARS по кандидатам разных
+  дистрибутивов (Debian/Ubuntu `*_4M.fd`, старые `OVMF_CODE.fd`, edk2, qemu),
+  с сохранением приоритета переменных окружения и печатью выбранной пары.
+  Смешивать 4M-CODE с 2M-VARS нельзя — получается прошивка, которая грузится в
+  никуда, поэтому кандидаты именно парные. Нужно для G4b: имя файла OVMF
+  зависит от образа runner'а.
+- Результат прогона (12 негативных векторов, реальный QEMU):
+  все **PASS**, каждый со своим правилом — BadMagic, TotalLengthMismatch,
+  UnsupportedIdentityKind, MissingBootCanonical, BootCanonicalFlagMismatch,
+  LicenceTailMismatch, TraversalInPath, DuplicatePath, **NonCanonicalFileIndex**,
+  UnreferencedFile, BadPathFlags, NonZeroReservedEntry.
+  Это на три вектора больше, чем девять, записанные в STAGE1_REPORT, и включает
+  два правила, введённых в Priority 2.
+- Способность сюиты падать проверена: ожидание для `invalid-badmagic.bin`
+  временно подменено на `TotalLengthMismatch` → `FAIL … exit 67 but
+  capsule_err=BadMagic, vectors.tsv declares TotalLengthMismatch`, rc=1; таблица
+  восстановлена, дерево чистое.
+- Регрессия: `cargo test` → 56 passed / 0 failed; `check-spdx` → OK; позитивный
+  прогон `run.sh` → PASS (exit 33), выбранная прошивка печатается.
