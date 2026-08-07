@@ -82,8 +82,31 @@ fi
 TOOL="$ROOT/target/release/tos-capsule-tool"
 LOADER="$ROOT/target/x86_64-unknown-uefi/release/tos-uefi-loader.efi"
 NUCLEUS="$ROOT/target/x86_64-unknown-none/release/tos-nucleus"
+# Firmware discovery: the OVMF package installs its files under different names
+# per distribution and release (Debian/Ubuntu split CODE/VARS into *_4M.fd only
+# from the 2023 packages on). Search a candidate list of CODE/VARS *pairs* —
+# mixing a 4M CODE with a 2M VARS gives a firmware that boots to nothing — and
+# let the environment override it outright.
+if [ -z "${OVMF_CODE:-}" ] || [ -z "${OVMF_VARS:-}" ]; then
+    for cand in \
+        "/usr/share/OVMF/OVMF_CODE_4M.fd:/usr/share/OVMF/OVMF_VARS_4M.fd" \
+        "/usr/share/OVMF/OVMF_CODE.fd:/usr/share/OVMF/OVMF_VARS.fd" \
+        "/usr/share/edk2/x64/OVMF_CODE.4m.fd:/usr/share/edk2/x64/OVMF_VARS.4m.fd" \
+        "/usr/share/edk2/x64/OVMF_CODE.fd:/usr/share/edk2/x64/OVMF_VARS.fd" \
+        "/usr/share/edk2-ovmf/x64/OVMF_CODE.fd:/usr/share/edk2-ovmf/x64/OVMF_VARS.fd" \
+        "/usr/share/qemu/OVMF_CODE.fd:/usr/share/qemu/OVMF_VARS.fd"
+    do
+        c="${cand%%:*}"; v="${cand##*:}"
+        if [ -f "$c" ] && [ -f "$v" ]; then
+            OVMF_CODE="${OVMF_CODE:-$c}"
+            OVMF_VARS="${OVMF_VARS:-$v}"
+            break
+        fi
+    done
+fi
 OVMF_CODE="${OVMF_CODE:-/usr/share/OVMF/OVMF_CODE_4M.fd}"
 OVMF_VARS="${OVMF_VARS:-/usr/share/OVMF/OVMF_VARS_4M.fd}"
+echo "firmware: $OVMF_CODE + $OVMF_VARS"
 
 for f in "$TOOL" "$LOADER" "$NUCLEUS" "$OVMF_CODE" "$OVMF_VARS"; do
     [ -f "$f" ] || { echo "missing: $f" >&2; exit 2; }
