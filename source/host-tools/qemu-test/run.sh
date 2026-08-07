@@ -58,6 +58,10 @@ done
 
 OUT="${OUT:-$ROOT/target/qemu-test}"
 mkdir -p "$OUT"
+# Absolutise: the capsule build runs with `cd "$GITROOT"` for the identity gate,
+# so a relative --out would resolve against the repository root instead of the
+# caller's directory and the build would fail on a missing directory.
+OUT="$(cd "$OUT" && pwd)"
 
 # Default event expectations per result code. The identifiers are the stable
 # boot-event log contract (interfaces/boot/BOOT_ABI_V1.md §7); the harness
