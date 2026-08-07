@@ -1,0 +1,32 @@
+# SPDX-License-Identifier: CC-BY-SA-4.0
+name: Provenance gates
+
+# The provenance half of docs/30_COMPLIANCE_AND_RELEASE_GATES.md: DCO sign-off
+# and SPDX headers. The scripts existed but nothing ran them, so a commit
+# without a sign-off or a file without a licence header could reach main.
+
+on:
+  pull_request:
+  push:
+    branches: [main, 'claude/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provenance-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dco:
+    runs-on: ubuntu-latest
+    steps:
+      # Full history: the gate verifies every commit, and a shallow clone would
+      # silently reduce that to the tip commit - a gate that checks less than it
+      # claims is worse than no gate.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: DCO sign-off
+        run: sh scripts/check-dco.sh
