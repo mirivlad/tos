@@ -2,6 +2,35 @@
 
 # TOS — TextOS
 
+                                                                                                         aW                                
+                                                                                                       IWWWl                                
+                                                                                                      WWTYWl                                
+                                                                                                     aa   Wl                                
+                                                                                                    fW    nWn WWI                           
+                                                                                                 FJ pW      WTWkWz                          
+                                   lll  llCWWWll;                                               WWWupW       WW  aW                         
+                                 WWr  oMk      !kWWW;                                          Wo  oWk       w    MW                        
+                                WW       rWWWWW     WWw                                       aW      ;W   W,      Wk                       
+                               aWw      tCzaI  f   wWWWWn                                     ak     ak     ak     aM                       
+                             aWl        tWWiW      WWk  CWi                                   Wk     ak     ak      W                       
+                            Wv           WWt   Y   lWWWmttbWC                                 ok    WW       WW     W                       
+                            WF  .         !rrr              uWWqJJ     nJJJv                  jW     ok     aa     aa                       
+                            tWWY            uY                  fuuWuuuuuuuuuuuhWWWWWY;        WW    ak     ak    uW                        
+                              xWccLWWWWWWWWc:      :      xWWw fchW    jWWu lcbW,    jcWWc      JWm   WW   WW    LW,                        
+                                LWWr;              c      pWWWWq       LWWWWWT         rFIWWY     JWWr          WW                          
+                                   xLWWWWwF:        j       LLLL!        LWWWd!      LWWo L vWWT     CmWWW     rW!                          
+                                          uWWWh     ak               lll.    ;        oWWWQ    dWWl    WWj     Wh                           
+                                            pW;      Wq       .    ;WWW.;WWWWr    ;:     !        ckMkk       Wo                            
+                                              WW      tWW      WF  ;WWWWW      pWk             ;WWW          WW                             
+                                              ;WWWf     UW     .Wl    ,,,     MW               WWWa        wWk                              
+                                              ;W  wWWpU  Wb     WW           YW.       wdi       ,l,     pWW                                
+                                              Ww    ahtWWWW     Wl           YWi     LWf             wWWWt                                  
+                                          jWWnF    aW   jWl    dWWWWWWWWWWWWWWWQ     WcruWWWWWWWWWWWrr                                      
+                                         WL YM    bX ,WWLi    mW            YWWW.    Wl                                                     
+                                         !pWhWcWWwI ao IuJ  ,Wd           cWj fu.   tWl                                                     
+                                                     LWwWrWWJ             :mWWWcjWWWJ                                                       
+
+
 **Architecture documentation version: 0.2.1 — 2026-08-06**
 
 TOS is a text-centric operating system in which the canonical installed form of services, applications, language frontends, configuration and device drivers is human-readable source text. The unavoidable binary foundation is a deliberately small bootable nucleus and reproducible derived boot artifacts.
