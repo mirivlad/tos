@@ -13,6 +13,12 @@ jobs:
       - uses: actions/checkout@v4
       - name: Check generated consolidated specification
         run: python3 tools/build-specification.py --check
+      # Ordering matters: the consolidated specification is part of the release
+      # package, so it must be regenerated (and verified above) before the
+      # package digests are checked.
+      - name: Check generated release manifest and digests
+        run: python3 tools/build-release-manifest.py --check
+
       - name: Validate source manifest and accepted ADR coverage
         shell: python
         run: |

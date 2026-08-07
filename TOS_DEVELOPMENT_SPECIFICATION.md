@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `17619d8e7d8ac5e538f161c810c6d00e7a037fa5c90e441428e05b40313c3448`  
+Source-manifest SHA-256: `20d1ecd6da11e56dcbced49dcee7e055c6ba7b471b984bb90c4b996245eeeab8`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4993,6 +4993,29 @@ Stage identity reports record their source commit, architecture version, compati
 ## Archive retention
 
 Official source archives, manifests, signatures, SBOMs and release notes are retained permanently. Derived convenience images may be mirrored or regenerated, but at least one verified recovery artifact for every supported architecture generation is retained.
+
+## Integrity of the release package versus the source tree
+
+TOS keeps exactly one source of truth for each kind of integrity, so that two
+mechanisms can never disagree about what the project contains.
+
+- **Git object identity is canonical for the source tree.** A commit names a
+  tree, the capsule records that commit, and the boot chain re-verifies the
+  capsule digest. `source/` is therefore not covered by a flat digest list: a
+  second list would be a weaker duplicate of Git and a competing source of
+  truth.
+- **`SHA256SUMS` verifies the release-package files outside Git.** Its purpose
+  is to let a recipient who received the documentation and governance package
+  without a repository check that the files are intact. It covers exactly that
+  package.
+- **`MANIFEST.txt` describes the release baseline and is generated from its
+  actual composition.** Aggregate values — file counts, invariant counts, the
+  ADR list — are derived, never hand-maintained.
+
+Both files are produced by `python3 tools/build-release-manifest.py` and
+verified in CI with `--check`. A hand-edited count is not normative data; it is
+a defect waiting to be discovered, as the manifest's own "15 accepted ADRs"
+was while seventeen existed.
 
 <!-- END docs/28_RELEASE_PROVENANCE_AND_REPRODUCIBILITY.md -->
 
