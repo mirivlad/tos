@@ -1441,3 +1441,36 @@ boot architecture, DCO policy или опубликованной истории
   profile win. F-18 remains BLOCKER; a future proposal involving an excluded
   acceleration, CPU/profile, dependency, unsafe/assembly or validation-boundary
   change must receive a new architect-reviewed ADR before implementation.
+
+### F-18 architecture-evidence investigation
+
+- Per Project Architect direction, `c7fbd4e` adds a research-only native
+  release runner that uses the production capsule parser, not a benchmark
+  copy. Every timed sample uses the same deterministic 1,000-file/exactly-16-
+  MiB detached capsule and checked provenance sidecar as the QEMU runner, then
+  performs fresh `parse` → fresh `parse` → canonical
+  `/system/boot/init.tos` lookup. It transfers no parsed view, digest or
+  validation result between the two passes. Three warm-ups plus 21 samples at
+  that commit measured median 410.974 ms, p95 412.263 ms and p99 417.506 ms.
+- A fresh ordinary q35/qemu64/TCG 3+21 P1 series at the same commit measured
+  median 2696.835 ms, p95 2766.761 ms and p99 2900.514 ms. The raw reports,
+  fixture, sidecar and serial/event logs remain in the ignored
+  `source/target/stage1-*-research-c7fbd4e/` evidence directories. The p95
+  TCG/native ratio is 6.711×.
+- `/dev/kvm` was available, so an explicitly opt-in `--accel kvm` research
+  path was added to the existing `run.sh`; default conformance invocation still
+  supplies no acceleration option and remains TCG. The alternate profile uses
+  the same OVMF, ESP, capsule, loader, nucleus and event capture, but is not a
+  conformance gate. Its 3+21 result is median 789.481 ms, p95 835.063 ms and
+  p99 843.412 ms — still above 250 ms.
+- `e017527` makes serial-event decomposition reproducible from all 21 measured
+  samples, without guest instrumentation. TCG p95 segments are loader
+  validation 1509.776 ms, loader post-validation 49.696 ms, handoff 0.244 ms,
+  nucleus validation 1235.735 ms, canonical lookup 0.416 ms and
+  post-validation-to-halt 24.830 ms. These are host monotonic serial-arrival
+  intervals, not an added guest timing ABI.
+- The evidence establishes that TCG materially inflates the ordinary trace,
+  but it does **not** establish that exact native double validation satisfies
+  the current 250 ms budget. Consequently no Proposed ADR-0026 was written,
+  F-18 remains BLOCKER and no production optimization or contract change was
+  made. Architect review is required for any next architecture choice.
