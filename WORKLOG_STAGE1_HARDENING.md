@@ -956,3 +956,32 @@ boot architecture, DCO policy или опубликованной истории
 - `python3 tools/build-release-manifest.py` → 106 release files;
   последующий `--check` → **PASS**.
 - `sha256sum -c SHA256SUMS` → **106/106 OK**.
+- Default `./scripts/preflight.sh` после regeneration → **8/9 PASS**; единственный
+  failure — DCO. `cargo test`: 56 passed; fmt и три clippy invocation PASS.
+- `./scripts/preflight.sh --full` на `66c7381` → **14/15 PASS**: дополнительно
+  200,000 fuzz rounds PASS, release builds PASS, QEMU success exit 33 с
+  `source_digest=66c7381...`, QEMU negative 12/12 fail closed. Единственный
+  failure — DCO.
+
+## 2026-08-08 — Phase 0 stop gate: historical DCO
+
+- Без sign-off остаются ровно три mascot commits:
+  - `21975bba71b2be32d6222efbf0dcb4d43488bb0e` — “Add Official mascot Pyro…”;
+  - `dbd31813f3275b9ac773269035ccfbd808803778` — “add Pyro in RREADME.md”;
+  - `ed33c6ba862a6f446545a109b03ecf75f65c87dd` — “fixed ascii-art positioning”.
+- Для каждого `git merge-base --is-ancestor <commit> HEAD` вернул rc=0, а
+  `%(trailers:key=Signed-off-by)` пуст. `check-dco.sh` без range выполняет
+  `git rev-list HEAD` и требует author-matching trailer у каждого результата.
+  Поэтому любой новый descendant commit, даже signed, не может исправить
+  current-main verdict: старые commits останутся достижимыми.
+- Допустимые направления remediation, ни одно не выполнено без решения
+  владельца:
+  1. переписать эти три commits с author-matching DCO trailers и заменить
+     опубликованную ветку (history rewrite/force-push требует явного разрешения
+     и координации);
+  2. принять отдельный normative governance mechanism для ретроспективной
+     attestации и только затем изменить gate (это изменение DCO policy, также
+     требует отдельного решения; простое исключение недопустимо);
+  3. оставить историю как есть и признать `main` красным — Stage 1 тогда не
+     может быть закрыт.
+- Phase 1 не начата. Работа остановлена на обязательном owner checkpoint.
