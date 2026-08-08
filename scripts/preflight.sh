@@ -49,6 +49,12 @@ run_gate() {
 }
 
 specification() { python3 "$ROOT/tools/build-specification.py" --check; }
+interface_contract_authority() {
+    bash "$ROOT/scripts/tests/check-interface-contract-authority.sh"
+}
+boot_event_contract() {
+    bash "$ROOT/scripts/tests/check-boot-event-contract.sh"
+}
 release_manifest() { python3 "$ROOT/tools/build-release-manifest.py" --check; }
 spdx() { sh "$ROOT/scripts/check-spdx.sh"; }
 dco() { sh "$ROOT/scripts/check-dco.sh"; }
@@ -87,6 +93,8 @@ qemu_negative() {
 }
 
 run_gate "generated specification" specification
+run_gate "interface-contract authority" interface_contract_authority
+run_gate "Boot ABI event contract" boot_event_contract
 run_gate "release manifest and SHA256SUMS" release_manifest
 run_gate "SPDX licence inventory" spdx
 run_gate "DCO sign-off" dco

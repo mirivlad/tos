@@ -2,8 +2,11 @@
 
 # TOS Boot Capsule Format — Version 1
 
-Status: **proposed specification amendment for Stage 1** (accepted by code review; a
-format ADR may supersede it). Normative for all Stage 1 capsule implementations.
+Status: **Accepted Tier 2 interface contract.**
+
+Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, including
+ADR-0016 through ADR-0019 where they decide capsule v1 semantics.
 
 This document defines capsule v1 before any implementation exists. The parser is
 total over arbitrary bytes: every rule below has an exact rejection behaviour.
