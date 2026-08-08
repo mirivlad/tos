@@ -43,12 +43,14 @@ PY
 : > "$TMP/warmups.jsonl"
 : > "$TMP/measurements.jsonl"
 for index in 1 2 3; do
-    printf '{"event":"TOS.BOOT.ENTRY","monotonic_ns":100}\n{"event":"TOS.BOOTTEXT.PATH","monotonic_ns":%s}\n' "$((100 + index))" > "$TMP/timestamps.jsonl"
+    printf '{"event":"TOS.BOOT.ENTRY","monotonic_ns":100}\n{"event":"TOS.CAPSULE.OK","monotonic_ns":%s}\n{"event":"TOS.BOOT.HANDOFF","monotonic_ns":%s}\n{"event":"TOS.NUCLEUS.ENTRY","monotonic_ns":%s}\n{"event":"TOS.CAPSULE.OK","monotonic_ns":%s}\n{"event":"TOS.BOOTTEXT.PATH","monotonic_ns":%s}\n{"event":"TOS.HALT","monotonic_ns":%s}\n' \
+        "$((100 + index))" "$((100 + index))" "$((100 + index))" "$((100 + index))" "$((100 + index))" "$((100 + index))" > "$TMP/timestamps.jsonl"
     python3 "$WORKLOAD" sample --timestamps "$TMP/timestamps.jsonl" --phase warmup \
         --index "$index" --out "$TMP/warmups.jsonl"
 done
 for index in $(seq 1 21); do
-    printf '{"event":"TOS.BOOT.ENTRY","monotonic_ns":100}\n{"event":"TOS.BOOTTEXT.PATH","monotonic_ns":%s}\n' "$((100 + index))" > "$TMP/timestamps.jsonl"
+    printf '{"event":"TOS.BOOT.ENTRY","monotonic_ns":100}\n{"event":"TOS.CAPSULE.OK","monotonic_ns":%s}\n{"event":"TOS.BOOT.HANDOFF","monotonic_ns":%s}\n{"event":"TOS.NUCLEUS.ENTRY","monotonic_ns":%s}\n{"event":"TOS.CAPSULE.OK","monotonic_ns":%s}\n{"event":"TOS.BOOTTEXT.PATH","monotonic_ns":%s}\n{"event":"TOS.HALT","monotonic_ns":%s}\n' \
+        "$((100 + index))" "$((100 + index))" "$((100 + index))" "$((100 + index))" "$((100 + index))" "$((100 + index))" > "$TMP/timestamps.jsonl"
     python3 "$WORKLOAD" sample --timestamps "$TMP/timestamps.jsonl" --phase measurement \
         --index "$index" --out "$TMP/measurements.jsonl"
 done
@@ -87,18 +89,24 @@ python3 "$WORKLOAD" native-report --fixture "$TMP/fixture" --samples "$TMP/nativ
     --out "$TMP/native-report.json" --source-commit test --rustc-version fake-rustc
 python3 "$WORKLOAD" comparison --native "$TMP/native-report.json" --qemu "$TMP/report.json" \
     --out "$TMP/comparison.json"
-python3 - "$TMP/native-report.json" "$TMP/comparison.json" <<'PY'
+python3 "$WORKLOAD" decomposition --report "$TMP/report.json" --out "$TMP/decomposition.json"
+python3 - "$TMP/native-report.json" "$TMP/comparison.json" "$TMP/decomposition.json" <<'PY'
 import json
 import sys
 
 native = json.load(open(sys.argv[1], encoding="utf-8"))
 comparison = json.load(open(sys.argv[2], encoding="utf-8"))
+decomposition = json.load(open(sys.argv[3], encoding="utf-8"))
 if native["statistics"]["p95_ns"] != 120:
     raise SystemExit("FAIL: native report used incorrect nearest-rank p95")
 if native["measurement"]["logical_sequence"] != "fresh parse -> fresh parse -> canonical boot_file lookup":
     raise SystemExit("FAIL: native report omitted the exact logical validation sequence")
 if comparison["qemu_to_native_p95_ratio"] != 20 / 120:
     raise SystemExit("FAIL: comparison did not retain p95 ratio")
+if decomposition["sample_count"] != 21:
+    raise SystemExit("FAIL: decomposition did not retain every measured sample")
+if decomposition["segments"]["loader_validation"]["p95_ns"] != 20:
+    raise SystemExit("FAIL: decomposition used an incorrect loader-validation interval")
 PY
 
 echo 'stage1-performance-workload: PASS'
