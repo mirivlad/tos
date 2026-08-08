@@ -913,3 +913,27 @@ boot architecture, DCO policy или опубликованной истории
   маскирует текущий baseline.
 - `CONTRIBUTING.md` теперь явно показывает `git commit -s`, default preflight и
   критерий применения `--full`.
+
+## 2026-08-08 — Phase 0: human QEMU entrypoint
+
+- Добавлен root-level `run-tos.sh`: default — interactive human boot,
+  `--check` — headless self-check. Wrapper проверяет `cargo`, `rustup` и оба
+  Rust target, собирает три существующих release artifact и делегирует
+  `source/host-tools/qemu-test/run.sh`.
+- В authoritative harness добавлен изолированный `--interactive`. Capsule/ESP
+  preparation, OVMF pair, q35/qemu64/256 MiB profile, AHCI layout,
+  `isa-debug-exit`, timeout и event verdict общие с CI. Отличаются только
+  display и serial transport: default harness по-прежнему headless и пишет в
+  файл, interactive показывает QEMU window и одновременно выводит/сохраняет
+  serial.
+- TDD regression `scripts/tests/run-tos.sh`:
+  - RED: `missing run-tos.sh`;
+  - GREEN: help/unknown option, exact build/delegation arguments, отсутствующий
+    Rust target и headless interactive diagnostic → **PASS**.
+- Реальный `./run-tos.sh --check` → **QEMU-TEST PASS**, exit 33, 8 required
+  events in order, 1 forbidden absent. Evidence:
+  `source/target/run-tos/check/{serial.log,events.log}`.
+- Interactive window в текущей agent-сессии не запускалось: нет `DISPLAY` и
+  `WAYLAND_DISPLAY`. `env -u DISPLAY -u WAYLAND_DISPLAY ./run-tos.sh`
+  корректно завершился rc=2 и предложил headless `--check`; визуальная ручная
+  проверка остаётся ограничением среды, а не заявленным PASS.

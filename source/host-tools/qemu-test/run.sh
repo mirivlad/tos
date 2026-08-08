@@ -19,7 +19,7 @@
 #   bash host-tools/qemu-test/run.sh [OUT_DIR] [CAPSULE_FILE]
 #   bash host-tools/qemu-test/run.sh --out DIR [--capsule FILE] [--expect N]
 #                                    [--require "EV ..."] [--forbid "EV ..."]
-#                                    [--timeout SECONDS]
+#                                    [--timeout SECONDS] [--interactive]
 #
 # --expect defaults to 33 (HALT_OK). --require/--forbid default to the event
 # set implied by --expect (see below) and may be overridden for a new scenario.
@@ -38,6 +38,7 @@ EXPECT=33
 REQUIRE=""
 FORBID=""
 QEMU_TIMEOUT=90
+INTERACTIVE=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -47,6 +48,7 @@ while [ $# -gt 0 ]; do
         --require)  REQUIRE="$2"; shift 2 ;;
         --forbid)   FORBID="$2"; shift 2 ;;
         --timeout)  QEMU_TIMEOUT="$2"; shift 2 ;;
+        --interactive) INTERACTIVE=1; shift ;;
         -h|--help)  sed -n '3,28p' "$0"; exit 0 ;;
         --*)        echo "unknown option: $1" >&2; exit 2 ;;
         *)
@@ -148,21 +150,34 @@ cp "$OVMF_CODE" "$OUT/OVMF_CODE.fd"
 cp "$OVMF_VARS" "$OUT/OVMF_VARS.fd"
 chmod u+w "$OUT/OVMF_CODE.fd" "$OUT/OVMF_VARS.fd"
 rm -f "$OUT/serial.log"
+QEMU_ARGS=(
+    -machine q35
+    -cpu qemu64
+    -m 256M
+    -drive "if=pflash,format=raw,readonly=on,file=$OUT/OVMF_CODE.fd"
+    -drive "if=pflash,format=raw,file=$OUT/OVMF_VARS.fd"
+    -drive "if=none,id=esp0,format=raw,file=$ESP"
+    -device ahci,id=ahci0
+    -device ide-hd,bus=ahci0.0,drive=esp0
+    -device isa-debug-exit
+    -no-reboot
+    -monitor none
+)
 set +e
-timeout "$QEMU_TIMEOUT" qemu-system-x86_64 \
-    -machine q35 \
-    -cpu qemu64 \
-    -m 256M \
-    -drive if=pflash,format=raw,readonly=on,file="$OUT/OVMF_CODE.fd" \
-    -drive if=pflash,format=raw,file="$OUT/OVMF_VARS.fd" \
-    -drive if=none,id=esp0,format=raw,file="$ESP" \
-    -device ahci,id=ahci0 \
-    -device ide-hd,bus=ahci0.0,drive=esp0 \
-    -device isa-debug-exit \
-    -serial file:"$OUT/serial.log" \
-    -display none -no-reboot -monitor none \
-    > "$OUT/qemu.stdout" 2> "$OUT/qemu.stderr"
-RC=$?
+if [ "$INTERACTIVE" -eq 1 ]; then
+    # Keep the same image, firmware, machine and isa-debug-exit contract as the
+    # automated harness. Only expose the display and mirror serial to both the
+    # terminal and the evidence log.
+    timeout "$QEMU_TIMEOUT" qemu-system-x86_64 "${QEMU_ARGS[@]}" \
+        -chardev "stdio,id=tosserial,signal=off,logfile=$OUT/serial.log" \
+        -serial chardev:tosserial
+    RC=$?
+else
+    timeout "$QEMU_TIMEOUT" qemu-system-x86_64 "${QEMU_ARGS[@]}" \
+        -serial file:"$OUT/serial.log" -display none \
+        > "$OUT/qemu.stdout" 2> "$OUT/qemu.stderr"
+    RC=$?
+fi
 set -e
 
 # --- 4. boot-event log ---
