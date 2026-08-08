@@ -1104,3 +1104,27 @@ boot architecture, DCO policy или опубликованной истории
 - The ADR is added to the accepted specification source manifest. It authorizes
   ordinary detached implementation work, but F-22 still prohibits tracked
   binary-vector regeneration or a blanket binary-container licence decision.
+
+## 2026-08-09 — F-22 capsule-vector provenance/licensing proposal
+
+- Added the non-normative proposal
+  `docs/superpowers/specs/2026-08-09-capsule-vector-provenance-proposal.md`.
+  It inventories the controlling accepted ADRs and policy documents, separates
+  reusable vector metadata, generated binary fixtures and embedded materials,
+  and proposes a machine-verifiable set-level record. The proposed generator
+  path is repository-relative: `source/tests/vectors/gen/gen.sh`.
+- The proposal records that current `valid-001.bin` includes GPL-class
+  `source/system/boot/init.tos` and GPL `NOTICES.txt`, while current README and
+  `vectors.tsv` do not supply an explicit reusable-vector designation or a
+  per-binary provenance record. The `.bin` SPDX exemption is only an indexing
+  exemption, not a licence/provenance decision.
+- Existing authority requires input/licence/notice/generator/output provenance
+  but does not select a standalone single licence for a mixed-material binary
+  container. The proposal requests an owner choice between: (A, recommended)
+  an explicitly mixed-material generated container with no standalone SPDX
+  expression, (B) an explicit GPL-container policy with full material inventory,
+  or (C) an additional Apache-only synthetic fixture class paired with A or B
+  for the existing set.
+- No vector was added or regenerated; no parser/builder/production code,
+  `vectors.tsv`, vector README, SPDX gate or `PROGRESS.md` was changed. Work
+  stops at this owner decision before any tracked binary regeneration.
