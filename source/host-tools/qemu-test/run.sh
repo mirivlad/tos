@@ -20,7 +20,8 @@
 #   bash host-tools/qemu-test/run.sh --out DIR [--capsule FILE] [--loader FILE] [--nucleus FILE]
 #                                    [--expect N]
 #                                    [--require "EV ..."] [--forbid "EV ..."]
-#                                    [--timeout SECONDS] [--interactive --display gtk|sdl]
+#                                    [--timeout SECONDS] [--event-timestamps FILE]
+#                                    [--interactive --display gtk|sdl]
 #
 # --expect defaults to 33 (HALT_OK). --require/--forbid default to the event
 # set implied by --expect (see below) and may be overridden for a new scenario.
@@ -43,6 +44,7 @@ FORBID=""
 QEMU_TIMEOUT=90
 INTERACTIVE=0
 DISPLAY_BACKEND=""
+EVENT_TIMESTAMPS=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -54,6 +56,7 @@ while [ $# -gt 0 ]; do
         --require)  REQUIRE="$2"; shift 2 ;;
         --forbid)   FORBID="$2"; shift 2 ;;
         --timeout)  QEMU_TIMEOUT="$2"; shift 2 ;;
+        --event-timestamps) EVENT_TIMESTAMPS="$2"; shift 2 ;;
         --interactive) INTERACTIVE=1; shift ;;
         --display)  DISPLAY_BACKEND="$2"; shift 2 ;;
         -h|--help)  sed -n '3,28p' "$0"; exit 0 ;;
@@ -70,6 +73,10 @@ if [ "$INTERACTIVE" -eq 1 ]; then
         gtk|sdl) ;;
         *) echo "--interactive requires --display gtk or --display sdl" >&2; exit 2 ;;
     esac
+    if [ -n "$EVENT_TIMESTAMPS" ]; then
+        echo "--event-timestamps is not available with --interactive" >&2
+        exit 2
+    fi
 elif [ -n "$DISPLAY_BACKEND" ]; then
     echo "--display is valid only with --interactive" >&2
     exit 2
@@ -199,9 +206,22 @@ if [ "$INTERACTIVE" -eq 1 ]; then
         -serial chardev:tosserial
     RC=$?
 else
-    timeout "$QEMU_TIMEOUT" qemu-system-x86_64 "${QEMU_ARGS[@]}" \
-        -serial file:"$OUT/serial.log" -display none \
-        > "$OUT/qemu.stdout" 2> "$OUT/qemu.stderr"
+    if [ -n "$EVENT_TIMESTAMPS" ]; then
+        # This opt-in path retains the exact normal QEMU profile and verdict.
+        # The helper only observes serial-byte arrival times for existing
+        # events; it does not create a guest timing interface.
+        python3 "$ROOT/host-tools/qemu-test/capture-events.py" \
+            --serial-log "$OUT/serial.log" \
+            --stderr-log "$OUT/qemu.stderr" \
+            --timestamps "$EVENT_TIMESTAMPS" \
+            --timeout "$QEMU_TIMEOUT" \
+            -- qemu-system-x86_64 "${QEMU_ARGS[@]}" \
+            -serial stdio -display none
+    else
+        timeout "$QEMU_TIMEOUT" qemu-system-x86_64 "${QEMU_ARGS[@]}" \
+            -serial file:"$OUT/serial.log" -display none \
+            > "$OUT/qemu.stdout" 2> "$OUT/qemu.stderr"
+    fi
     RC=$?
 fi
 set -e

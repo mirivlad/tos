@@ -40,6 +40,9 @@ make_log_script "$TMP/repo/scripts/tests/check-capsule-provenance.sh" capsule-pr
 make_log_script "$TMP/repo/scripts/tests/check-embedded-artwork-provenance.sh" embedded-artwork-provenance
 make_log_script "$TMP/repo/scripts/tests/run-tos.sh" run-tos
 make_log_script "$TMP/repo/scripts/tests/qemu-interactive-mode.sh" qemu-interactive-mode
+make_log_script "$TMP/repo/scripts/tests/capture-qemu-events.sh" qemu-event-capture
+make_log_script "$TMP/repo/scripts/tests/qemu-timed-harness.sh" qemu-timed-harness
+make_log_script "$TMP/repo/scripts/tests/stage1-performance-workload.sh" stage1-performance-workload
 make_log_script "$TMP/repo/source/host-tools/qemu-test/run.sh" qemu-success
 make_log_script "$TMP/repo/source/host-tools/qemu-test/negative-suite.sh" qemu-negative
 make_log_script "$TMP/repo/source/host-tools/qemu-test/capsule-size-limit.sh" qemu-capsule-size-limit
@@ -82,6 +85,9 @@ capsule-provenance
 embedded-artwork-provenance
 run-tos
 qemu-interactive-mode
+qemu-event-capture
+qemu-timed-harness
+stage1-performance-workload
 release
 spdx
 dco

@@ -74,6 +74,15 @@ run_tos_launcher() {
 qemu_interactive_mode() {
     bash "$ROOT/scripts/tests/qemu-interactive-mode.sh"
 }
+qemu_event_capture() {
+    bash "$ROOT/scripts/tests/capture-qemu-events.sh"
+}
+qemu_timed_harness() {
+    bash "$ROOT/scripts/tests/qemu-timed-harness.sh"
+}
+stage1_performance_workload() {
+    bash "$ROOT/scripts/tests/stage1-performance-workload.sh"
+}
 release_manifest() { python3 "$ROOT/tools/build-release-manifest.py" --check; }
 spdx() { sh "$ROOT/scripts/check-spdx.sh"; }
 dco() { sh "$ROOT/scripts/check-dco.sh"; }
@@ -130,6 +139,9 @@ run_gate "capsule provenance sidecar" capsule_provenance
 run_gate "embedded artwork provenance" embedded_artwork_provenance
 run_gate "run-tos launcher" run_tos_launcher
 run_gate "interactive QEMU mode" qemu_interactive_mode
+run_gate "QEMU event timestamp capture" qemu_event_capture
+run_gate "timed QEMU harness" qemu_timed_harness
+run_gate "Stage 1 performance workload" stage1_performance_workload
 run_gate "release manifest and SHA256SUMS" release_manifest
 run_gate "SPDX licence inventory" spdx
 run_gate "DCO sign-off" dco
