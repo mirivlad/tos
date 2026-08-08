@@ -14,6 +14,8 @@ const LSR_THR_EMPTY: u8 = 0x20;
 
 #[inline]
 fn outb(port: u16, val: u8) {
+    // SAFETY: COM1 ports are part of the declared QEMU Stage 1 profile; this
+    // OUT has no memory operands and callers use only the fixed UART offsets.
     unsafe {
         asm!("out dx, al", in("dx") port, in("al") val, options(nomem, nostack, preserves_flags));
     }
@@ -22,6 +24,8 @@ fn outb(port: u16, val: u8) {
 #[inline]
 fn inb(port: u16) -> u8 {
     let v: u8;
+    // SAFETY: COM1's line-status port is a fixed polled UART register in the
+    // declared profile; this IN has no memory operands.
     unsafe {
         asm!("in al, dx", out("al") v, in("dx") port, options(nomem, nostack, preserves_flags));
     }

@@ -30,6 +30,8 @@ fn panic(_info: &PanicInfo) -> ! {
 
 /// Write an exit code to the QEMU isa-debug-exit port and stop.
 fn result_port(code: u8) -> ! {
+    // SAFETY: RESULT_PORT is the fixed QEMU isa-debug-exit I/O port in the
+    // declared Stage 1 profile; this single-byte OUT has no memory operands.
     unsafe {
         asm!(
             "out dx, al",
@@ -39,6 +41,8 @@ fn result_port(code: u8) -> ! {
         );
     }
     loop {
+        // SAFETY: interrupts remain disabled and this terminal path owns the
+        // CPU, so HLT cannot expose shared mutable state or resume Stage 1.
         unsafe {
             asm!("hlt", options(nomem, nostack, preserves_flags));
         }
@@ -99,16 +103,23 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // Install nucleus-owned exception containment before dereferencing or
     // trusting any loader-provided memory. The loader disabled maskable
     // interrupts before handoff; Stage 1 intentionally leaves them disabled.
+    // SAFETY: boot_entry runs exactly once before any BootInfo-controlled
+    // memory is read, and the loader left maskable interrupts disabled.
     unsafe { exception::install() };
 
     #[cfg(any(feature = "test-exception-ud2", feature = "test-exception-gp"))]
     exception::test_injection();
 
     // --- 1. validate the boot ABI record over raw bytes ---
+    // SAFETY: the loader's BOOT_ABI_V1 handoff places all 224 BootInfo bytes
+    // in its reserved identity-mapped pool allocation; bytes are validated
+    // before this pointer is reinterpreted as BootInfo below.
     let bi_bytes = unsafe { core::slice::from_raw_parts(bi_raw as *const u8, 224) };
     if BootInfo::validate_bytes(bi_bytes).is_err() {
         abi_fail();
     }
+    // SAFETY: the loader wrote a naturally aligned BootInfo into that pool;
+    // the preceding raw-byte validation accepted its exact ABI representation.
     let bi = unsafe { &*bi_raw };
 
     // --- 2. memory map ---
@@ -116,6 +127,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         mem_fail();
     }
     let desc_count = (bi.memory_map_length / 24) as usize;
+    // SAFETY: the trusted loader created this descriptor array in its reserved
+    // identity-mapped allocation; BootInfo bounds make `desc_count` integral.
     let descs: &[MemoryRange] = unsafe {
         core::slice::from_raw_parts(bi.memory_map_phys as *const MemoryRange, desc_count)
     };
@@ -134,6 +147,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     if bi.capsule_phys == 0 || bi.capsule_length == 0 || bi.capsule_length > usize::MAX as u64 {
         cap_fail();
     }
+    // SAFETY: the loader reserved the capsule range in the same identity map;
+    // the checked u64-to-usize conversion above bounds this borrowed slice.
     let cap_bytes = unsafe {
         core::slice::from_raw_parts(bi.capsule_phys as *const u8, bi.capsule_length as usize)
     };
@@ -213,6 +228,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // --- 6. best-effort human-facing diagnostic ---
     // All boot decisions, source identity checks and canonical boot-text work
     // above have succeeded. Rendering cannot affect the result.
+    // SAFETY: BootInfo validation and ADR-0022's loader checks established a
+    // mapped, reserved framebuffer range; rendering is best-effort only.
     unsafe { framebuffer::render_stage1_status(bi) };
 
     // --- 7. halt with success code ---

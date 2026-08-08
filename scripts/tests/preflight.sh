@@ -31,9 +31,11 @@ make_log_script "$TMP/repo/tools/build-specification.py" spec
 make_log_script "$TMP/repo/tools/build-release-manifest.py" release
 make_log_script "$TMP/repo/scripts/check-spdx.sh" spdx
 make_log_script "$TMP/repo/scripts/check-dco.sh" dco
+make_log_script "$TMP/repo/scripts/check-unsafe-safety.py" unsafe-safety-current
 make_log_script "$TMP/repo/scripts/tests/check-interface-contract-authority.sh" interface-authority
 make_log_script "$TMP/repo/scripts/tests/check-boot-event-contract.sh" boot-event-contract
 make_log_script "$TMP/repo/scripts/tests/check-nucleus-exception-foundation.sh" exception-foundation
+make_log_script "$TMP/repo/scripts/tests/check-unsafe-safety.sh" unsafe-safety
 make_log_script "$TMP/repo/scripts/tests/check-embedded-artwork-provenance.sh" embedded-artwork-provenance
 make_log_script "$TMP/repo/scripts/tests/run-tos.sh" run-tos
 make_log_script "$TMP/repo/scripts/tests/qemu-interactive-mode.sh" qemu-interactive-mode
@@ -73,6 +75,8 @@ spec
 interface-authority
 boot-event-contract
 exception-foundation
+unsafe-safety-current
+unsafe-safety
 embedded-artwork-provenance
 run-tos
 qemu-interactive-mode

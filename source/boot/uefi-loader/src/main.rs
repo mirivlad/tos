@@ -57,6 +57,13 @@ fn byte_sum_is_zero(bytes: &[u8]) -> bool {
     bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)) == 0
 }
 
+fn efi_output_is_valid<T>(status: EfiStatus, ptr: *mut T) -> bool {
+    efi_success(status) && !ptr.is_null()
+}
+
+/// SAFETY: `ptr` must designate at least `len` readable firmware-owned bytes
+/// in the UEFI identity map for the returned borrow's use; callers pass only
+/// fixed headers or validated declared lengths.
 unsafe fn firmware_bytes<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
     if ptr.is_null() || len > MAX_FIRMWARE_ENTRY_BYTES {
         return None;
@@ -67,11 +74,15 @@ unsafe fn firmware_bytes<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
     Some(unsafe { core::slice::from_raw_parts(ptr, len) })
 }
 
+/// SAFETY: `st` must be the firmware's live SystemTable while boot services
+/// remain active, including its bounded ConfigurationTable array.
 unsafe fn config_table(st: *mut SystemTable, wanted: Guid) -> Option<*mut c_void> {
+    // SAFETY: the caller upholds the live SystemTable contract above.
     let count = unsafe { (*st).number_of_table_entries };
     if count > MAX_CONFIGURATION_TABLES {
         return None;
     }
+    // SAFETY: the same SystemTable contract permits reading this table base.
     let tables = unsafe { (*st).configuration_table as *const ConfigurationTable };
     if tables.is_null() {
         return None;
@@ -87,7 +98,10 @@ unsafe fn config_table(st: *mut SystemTable, wanted: Guid) -> Option<*mut c_void
     None
 }
 
+/// SAFETY: `ptr` is a configuration-table address supplied by live firmware;
+/// this function bounds every read through firmware_bytes before inspection.
 unsafe fn validate_rsdp(ptr: *mut c_void, v2: bool) -> Option<u64> {
+    // SAFETY: the function contract limits this to the fixed ACPI v1 prefix.
     let base = unsafe { firmware_bytes(ptr as *const u8, 20) }?;
     if &base[..8] != b"RSD PTR " || !byte_sum_is_zero(base) {
         return None;
@@ -95,6 +109,7 @@ unsafe fn validate_rsdp(ptr: *mut c_void, v2: bool) -> Option<u64> {
     if !v2 {
         return Some(ptr as u64);
     }
+    // SAFETY: the function contract limits this to the fixed ACPI v2 prefix.
     let prefix = unsafe { firmware_bytes(ptr as *const u8, 24) }?;
     if prefix[15] < 2 {
         return None;
@@ -103,6 +118,8 @@ unsafe fn validate_rsdp(ptr: *mut c_void, v2: bool) -> Option<u64> {
     if len < 36 {
         return None;
     }
+    // SAFETY: `len` was read from the checked prefix and firmware_bytes caps
+    // it at MAX_FIRMWARE_ENTRY_BYTES before making the slice.
     let full = unsafe { firmware_bytes(ptr as *const u8, len) }?;
     if !byte_sum_is_zero(full) {
         return None;
@@ -110,7 +127,10 @@ unsafe fn validate_rsdp(ptr: *mut c_void, v2: bool) -> Option<u64> {
     Some(ptr as u64)
 }
 
+/// SAFETY: `ptr` is a configuration-table address supplied by live firmware;
+/// this function bounds every entry-point read before inspection.
 unsafe fn validate_smbios(ptr: *mut c_void, v3: bool) -> Option<u64> {
+    // SAFETY: the function contract limits this to the relevant fixed prefix.
     let head = unsafe { firmware_bytes(ptr as *const u8, if v3 { 24 } else { 31 }) }?;
     let (anchor, min_len) = if v3 {
         (b"_SM3_".as_slice(), 24)
@@ -124,6 +144,8 @@ unsafe fn validate_smbios(ptr: *mut c_void, v3: bool) -> Option<u64> {
     if len < min_len {
         return None;
     }
+    // SAFETY: `len` comes from the checked fixed prefix and is capped by
+    // firmware_bytes before the declared entry-point slice is formed.
     let full = unsafe { firmware_bytes(ptr as *const u8, len) }?;
     if !byte_sum_is_zero(full) {
         return None;
@@ -134,28 +156,56 @@ unsafe fn validate_smbios(ptr: *mut c_void, v3: bool) -> Option<u64> {
     Some(ptr as u64)
 }
 
+/// SAFETY: `st` is the live UEFI SystemTable for the whole configuration-table
+/// selection and any returned table pointer remains firmware-owned.
 unsafe fn select_acpi(st: *mut SystemTable) -> Option<(u64, u8)> {
+    // SAFETY: the function contract supplies the live SystemTable.
     match unsafe { config_table(st, GUID_ACPI_20) } {
-        Some(ptr) => Some((unsafe { validate_rsdp(ptr, true) }?, 2)),
-        None => match unsafe { config_table(st, GUID_ACPI_10) } {
-            Some(ptr) => Some((unsafe { validate_rsdp(ptr, false) }?, 1)),
-            None => Some((0, 0)),
-        },
+        Some(ptr) => {
+            // SAFETY: ptr came from the selected live firmware table.
+            Some((unsafe { validate_rsdp(ptr, true) }?, 2))
+        }
+        None => {
+            // SAFETY: the function contract supplies the live SystemTable.
+            match unsafe { config_table(st, GUID_ACPI_10) } {
+                Some(ptr) => {
+                    // SAFETY: ptr came from the selected live firmware table.
+                    Some((unsafe { validate_rsdp(ptr, false) }?, 1))
+                }
+                None => Some((0, 0)),
+            }
+        }
     }
 }
 
+/// SAFETY: `st` is the live UEFI SystemTable for the whole configuration-table
+/// selection and any returned table pointer remains firmware-owned.
 unsafe fn select_smbios(st: *mut SystemTable) -> Option<(u64, u8)> {
+    // SAFETY: the function contract supplies the live SystemTable.
     match unsafe { config_table(st, GUID_SMBIOS3) } {
-        Some(ptr) => Some((unsafe { validate_smbios(ptr, true) }?, 3)),
-        None => match unsafe { config_table(st, GUID_SMBIOS) } {
-            Some(ptr) => Some((unsafe { validate_smbios(ptr, false) }?, 2)),
-            None => Some((0, 0)),
-        },
+        Some(ptr) => {
+            // SAFETY: ptr came from the selected live firmware table.
+            Some((unsafe { validate_smbios(ptr, true) }?, 3))
+        }
+        None => {
+            // SAFETY: the function contract supplies the live SystemTable.
+            match unsafe { config_table(st, GUID_SMBIOS) } {
+                Some(ptr) => {
+                    // SAFETY: ptr came from the selected live firmware table.
+                    Some((unsafe { validate_smbios(ptr, false) }?, 2))
+                }
+                None => Some((0, 0)),
+            }
+        }
     }
 }
 
+/// SAFETY: `st` and `bt` are the live firmware tables for the duration of boot
+/// services; all protocol pointers are checked before dereference.
 unsafe fn collect_platform(st: *mut SystemTable, bt: *mut BootServices) -> Option<PlatformHandoff> {
     let mut raw: *mut c_void = ptr::null_mut();
+    // SAFETY: the function contract supplies the live BootServices table and
+    // writable local storage for LocateProtocol's output pointer.
     let status =
         unsafe { ((*bt).locate_protocol)(&GUID_GRAPHICS_OUTPUT, ptr::null_mut(), &mut raw) };
     let (fb_phys, fb_width, fb_height, fb_pitch, fb_format) = if status == EFI_NOT_FOUND {
@@ -164,10 +214,12 @@ unsafe fn collect_platform(st: *mut SystemTable, bt: *mut BootServices) -> Optio
         if efi_error(status) || raw.is_null() {
             return None;
         }
+        // SAFETY: successful LocateProtocol returned the non-null GOP pointer.
         let gop = unsafe { &*(raw as *const GraphicsOutputProtocol) };
         if gop.mode.is_null() {
             return None;
         }
+        // SAFETY: the non-null mode pointer belongs to the live GOP protocol.
         let mode = unsafe { &*gop.mode };
         if mode.info.is_null()
             || mode.size_of_info < core::mem::size_of::<GraphicsOutputModeInfo>()
@@ -175,6 +227,7 @@ unsafe fn collect_platform(st: *mut SystemTable, bt: *mut BootServices) -> Optio
         {
             return None;
         }
+        // SAFETY: size_of_info was checked before dereferencing GOP mode info.
         let info = unsafe { &*mode.info };
         let format = match info.pixel_format {
             PIXEL_RGBX8 => FB_FORMAT_RGBX8,
@@ -200,7 +253,9 @@ unsafe fn collect_platform(st: *mut SystemTable, bt: *mut BootServices) -> Optio
             format,
         )
     };
+    // SAFETY: the function contract supplies the live SystemTable.
     let (acpi_rsdp, acpi_version) = unsafe { select_acpi(st) }?;
+    // SAFETY: the function contract supplies the live SystemTable.
     let (smbios, smbios_version) = unsafe { select_smbios(st) }?;
     Some(PlatformHandoff {
         fb_phys,
@@ -223,6 +278,8 @@ struct PoolBuf {
 
 impl PoolBuf {
     fn as_slice(&self) -> &[u8] {
+        // SAFETY: PoolBuf is created only after successful AllocatePool with
+        // this exact size; it is never freed before ExitBootServices handoff.
         unsafe { core::slice::from_raw_parts(self.ptr, self.len) }
     }
 
@@ -240,6 +297,8 @@ fn panic(_info: &PanicInfo) -> ! {
 
 /// Write an exit code to the QEMU isa-debug-exit port and stop.
 fn result_port(code: u8) -> ! {
+    // SAFETY: RESULT_PORT is QEMU's fixed isa-debug-exit port in the declared
+    // profile; this byte OUT has no memory operands.
     unsafe {
         asm!(
             "out dx, al",
@@ -249,6 +308,8 @@ fn result_port(code: u8) -> ! {
         );
     }
     loop {
+        // SAFETY: this terminal path owns the CPU and external interrupts are
+        // not enabled by Stage 1, so HLT cannot resume normal loader work.
         unsafe {
             asm!("hlt", options(nomem, nostack, preserves_flags));
         }
@@ -273,6 +334,8 @@ fn capsule_fatal(error: CapsError) -> ! {
 /// SimpleTextOutput console message (ASCII -> UTF-16). Diagnostic only; a
 /// console failure is non-fatal (serial remains the authoritative channel).
 fn conout(st: *mut SystemTable, s: &str) {
+    // SAFETY: efi_main's firmware entry contract supplies a live SystemTable;
+    // null con_out is checked immediately below.
     let out = unsafe { (*st).con_out };
     if out.is_null() {
         return;
@@ -287,6 +350,8 @@ fn conout(st: *mut SystemTable, s: &str) {
         n += 1;
     }
     buf[n] = 0;
+    // SAFETY: non-null con_out is the firmware SimpleTextOutput protocol and
+    // buf is a NUL-terminated stack UTF-16 sequence for the duration of call.
     unsafe {
         ((*out).output_string)(out, buf.as_ptr());
     }
@@ -352,8 +417,10 @@ fn error_tag(e: CapsError) -> &'static [u8] {
 /// Allocate a pool buffer (RuntimeServicesData: survives ExitBootServices).
 fn alloc_pool(bt: *mut BootServices, size: usize) -> Option<PoolBuf> {
     let mut p: *mut c_void = ptr::null_mut();
+    // SAFETY: efi_main obtained this live BootServices table from firmware and
+    // `p` is writable local storage for AllocatePool's returned allocation.
     let st = unsafe { ((*bt).allocate_pool)(MEM_TYPE_RUNTIME_SERVICES_DATA, size, &mut p) };
-    if efi_error(st) {
+    if !efi_output_is_valid(st, p) {
         return None;
     }
     Some(PoolBuf {
@@ -375,8 +442,10 @@ fn open_ro(root: *mut FileProtocol, name: &str) -> Option<*mut FileProtocol> {
     }
     wide[n] = 0;
     let mut f: *mut FileProtocol = ptr::null_mut();
+    // SAFETY: root is a non-null protocol handle returned by OpenVolume, and
+    // wide is a NUL-terminated stack UTF-16 path valid for this call.
     let st = unsafe { ((*root).open)(root, &mut f, wide.as_ptr(), EFI_OPEN_FILE_READ, 0) };
-    if efi_success(st) {
+    if efi_output_is_valid(st, f) {
         Some(f)
     } else {
         None
@@ -397,20 +466,25 @@ fn read_file(
     max_bytes: Option<usize>,
 ) -> Result<PoolBuf, ReadFileError> {
     let file = open_ro(root, name).ok_or(ReadFileError::Missing)?;
+    // SAFETY: open_ro returns only a non-null live FileProtocol handle.
     unsafe {
         ((*file).set_position)(file, u64::MAX);
     }
     let mut size: u64 = 0;
+    // SAFETY: file is the live handle opened above and size is writable local
+    // storage required by GetPosition.
     unsafe {
         ((*file).get_position)(file, &mut size);
     }
     if size == 0 || size > usize::MAX as u64 {
+        // SAFETY: file remains the live handle opened above until Close.
         unsafe {
             ((*file).close)(file);
         }
         return Err(ReadFileError::Missing);
     }
     if max_bytes.is_some_and(|max| size > max as u64) {
+        // SAFETY: file remains the live handle opened above until Close.
         unsafe {
             ((*file).close)(file);
         }
@@ -418,11 +492,15 @@ fn read_file(
     }
     let size = usize::try_from(size).map_err(|_| ReadFileError::Missing)?;
     let buf = alloc_pool(bt, size).ok_or(ReadFileError::Missing)?;
+    // SAFETY: file is still live and SetPosition only updates its cursor.
     unsafe {
         ((*file).set_position)(file, 0);
     }
     let mut rd = size;
+    // SAFETY: file is live; PoolBuf owns exactly `size` writable pool bytes,
+    // and rd points to writable local storage for the UEFI read count.
     let st = unsafe { ((*file).read)(file, &mut rd, buf.ptr as *mut c_void) };
+    // SAFETY: file is live and no later operation uses it after this Close.
     unsafe {
         ((*file).close)(file);
     }
@@ -487,11 +565,14 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     tos_serial::init();
     tos_serial::puts(b"TOS.BOOT.ENTRY\r\n");
 
+    // SAFETY: efi_main's documented firmware entry contract supplies a live
+    // SystemTable; boot_services is checked for null before use.
     let bt = unsafe { (*sys_table).boot_services };
     if bt.is_null() {
         serial_fatal(b"TOS.BOOT.FAILI no-boot-services");
     }
     conout(sys_table, "TOS boot loader\r\n");
+    // SAFETY: sys_table and the non-null bt came from the live firmware entry.
     let platform = match unsafe { collect_platform(sys_table, bt) } {
         Some(platform) => platform,
         None => serial_fatal(b"TOS.BOOT.FAILI platform"),
@@ -499,6 +580,8 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
 
     // --- our device handle via the Loaded Image protocol ---
     let mut loaded: *mut LoadedImageProtocol = ptr::null_mut();
+    // SAFETY: bt is the live BootServices table; image_handle and the output
+    // slot are supplied by the UEFI entry contract and this stack frame.
     let st = unsafe {
         ((*bt).handle_protocol)(
             image_handle,
@@ -506,13 +589,16 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
             &mut loaded as *mut *mut LoadedImageProtocol as *mut *mut c_void,
         )
     };
-    if efi_error(st) {
+    if !efi_output_is_valid(st, loaded) {
         serial_fatal(b"TOS.BOOT.FAILI no-loaded-image");
     }
+    // SAFETY: successful HandleProtocol returned a non-null LoadedImageProtocol.
     let device = unsafe { (*loaded).device_handle };
 
     // --- file system on that device ---
     let mut fs: *mut SimpleFileSystemProtocol = ptr::null_mut();
+    // SAFETY: bt is live and device came from the live LoadedImage protocol;
+    // the output slot is writable local storage.
     let st = unsafe {
         ((*bt).handle_protocol)(
             device,
@@ -520,12 +606,14 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
             &mut fs as *mut *mut SimpleFileSystemProtocol as *mut *mut c_void,
         )
     };
-    if efi_error(st) {
+    if !efi_output_is_valid(st, fs) {
         serial_fatal(b"TOS.BOOT.FAILI no-fs");
     }
     let mut root: *mut FileProtocol = ptr::null_mut();
+    // SAFETY: successful HandleProtocol returned non-null fs and root is a
+    // writable local output slot for OpenVolume.
     let st = unsafe { ((*fs).open_volume)(fs, &mut root) };
-    if efi_error(st) {
+    if !efi_output_is_valid(st, root) {
         serial_fatal(b"TOS.BOOT.FAILI no-volume");
     }
 
@@ -538,6 +626,8 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
         Ok(b) => b,
         Err(_) => serial_fatal(b"TOS.BOOT.FAILI no-nucleus"),
     };
+    // SAFETY: root is the live FileProtocol handle returned by OpenVolume and
+    // is not used after this Close.
     unsafe {
         ((*root).close)(root);
     }
@@ -559,6 +649,8 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     // NUCLEUS_BASE. If the firmware cannot honour it, fail closed.
     let nucleus_pages = nucleus.len().div_ceil(0x1000);
     let mut nucleus_phys: u64 = NUCLEUS_BASE;
+    // SAFETY: bt is live and nucleus_phys is writable local storage; the
+    // fixed address/page count are checked before their raw copy below.
     let st = unsafe {
         ((*bt).allocate_pages)(
             ALLOCATE_ADDRESS,
@@ -570,12 +662,16 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     if efi_error(st) || nucleus_phys != NUCLEUS_BASE {
         serial_fatal(b"TOS.BOOT.FAILI alloc-nucleus");
     }
+    // SAFETY: AllocatePages returned the non-overlapping fixed destination;
+    // PoolBuf owns nucleus.len() initialized source bytes from ReadFile.
     unsafe {
         ptr::copy_nonoverlapping(nucleus.ptr, nucleus_phys as *mut u8, nucleus.len());
     }
 
     // --- stack pages (non-executable) ---
     let mut stack_phys: u64 = 0;
+    // SAFETY: bt is live and stack_phys is writable local storage for the
+    // bounded fixed number of loader-data pages.
     let st = unsafe {
         ((*bt).allocate_pages)(
             ALLOCATE_ANY_PAGES,
@@ -593,6 +689,8 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     let mut map_key: usize = 0;
     let mut desc_size: usize = 0;
     let mut desc_ver: u32 = 0;
+    // SAFETY: bt is live; the null descriptor buffer is the UEFI size-probe
+    // form, while all remaining pointers refer to writable local storage.
     let st = unsafe {
         ((*bt).get_memory_map)(
             &mut map_size,
@@ -612,13 +710,22 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     }
     // Slack so a map that grows between probe and fill still fits; also gives
     // the ExitBootServices retry loop headroom for one re-read.
-    let desc_cap = map_size + 0x8000;
+    let desc_cap = match map_size.checked_add(0x8000) {
+        Some(cap) => cap,
+        None => serial_fatal(b"TOS.BOOT.FAILI memmap-overflow"),
+    };
     let desc_buf = match alloc_pool(bt, desc_cap) {
         Some(b) => b,
         None => serial_fatal(b"TOS.BOOT.FAILI alloc-map"),
     };
-    let max_descs = desc_cap / desc_size + 8;
-    let range_cap = max_descs * core::mem::size_of::<MemoryRange>();
+    let max_descs = match (desc_cap / desc_size).checked_add(8) {
+        Some(count) => count,
+        None => serial_fatal(b"TOS.BOOT.FAILI memmap-overflow"),
+    };
+    let range_cap = match max_descs.checked_mul(core::mem::size_of::<MemoryRange>()) {
+        Some(bytes) => bytes,
+        None => serial_fatal(b"TOS.BOOT.FAILI memmap-overflow"),
+    };
     let range_buf = match alloc_pool(bt, range_cap) {
         Some(b) => b,
         None => serial_fatal(b"TOS.BOOT.FAILI alloc-ranges"),
@@ -639,6 +746,8 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     let mut exited = false;
     for _attempt in 0..3 {
         let mut got: usize = desc_cap;
+        // SAFETY: bt is live and desc_buf owns desc_cap writable bytes; all
+        // metadata outputs are writable locals supplied to GetMemoryMap.
         let st = unsafe {
             ((*bt).get_memory_map)(
                 &mut got,
@@ -651,6 +760,12 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
         if efi_error(st) {
             serial_fatal(b"TOS.BOOT.FAILI memmap-fill");
         }
+        if got > desc_cap {
+            serial_fatal(b"TOS.BOOT.FAILI memmap-toobig");
+        }
+        if !got.is_multiple_of(desc_size) {
+            serial_fatal(b"TOS.BOOT.FAILI memmap-stride");
+        }
         let n = got / desc_size;
         if n > max_descs {
             serial_fatal(b"TOS.BOOT.FAILI memmap-toomany");
@@ -660,9 +775,17 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
         let ranges = range_buf.ptr as *mut MemoryRange;
         let mut prev_end: u64 = 0;
         for i in 0..n {
-            let md = unsafe {
-                &*((desc_buf.ptr as usize + i * desc_size) as *const EfiMemoryDescriptor)
+            let offset = match i
+                .checked_mul(desc_size)
+                .and_then(|offset| (desc_buf.ptr as usize).checked_add(offset))
+            {
+                Some(offset) => offset,
+                None => serial_fatal(b"TOS.BOOT.FAILI memmap-overflow"),
             };
+            // SAFETY: UEFI returned got as a whole number of descriptor_size
+            // entries; desc_size is at least the 40-byte repr(C) descriptor
+            // and 8-byte aligned, while offset is checked within desc_buf.
+            let md = unsafe { &*(offset as *const EfiMemoryDescriptor) };
             let start1 = md.physical_start;
             let len1 = match md.number_of_pages.checked_mul(0x1000) {
                 Some(l) => l,
@@ -675,6 +798,8 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
             if start1 < prev_end {
                 serial_fatal(b"TOS.BOOT.FAILI unsorted-map");
             }
+            // SAFETY: n <= max_descs and range_buf owns max_descs contiguous
+            // MemoryRange slots, so ranges.add(i) is aligned and in bounds.
             unsafe {
                 ranges.add(i).write(MemoryRange {
                     phys_start: start1,
@@ -685,10 +810,15 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
             }
             prev_end = end1;
         }
-        range_len = n * core::mem::size_of::<MemoryRange>();
+        range_len = match n.checked_mul(core::mem::size_of::<MemoryRange>()) {
+            Some(bytes) => bytes,
+            None => serial_fatal(b"TOS.BOOT.FAILI memmap-overflow"),
+        };
 
         // --- explicit reservations of loader handoff structures ---
         // (also pins firmware runtime regions via tos_memory_type above)
+        // SAFETY: range_buf owns n initialized, aligned MemoryRange entries;
+        // each reservation length was checked when allocated or GOP-validated.
         unsafe {
             reserve_overlapping(
                 core::slice::from_raw_parts_mut(ranges, n),
@@ -722,6 +852,8 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
             );
         }
 
+        // SAFETY: bt and image_handle are still live UEFI entry values, and
+        // map_key was returned by the immediately preceding GetMemoryMap.
         let st = unsafe { ((*bt).exit_boot_services)(image_handle, map_key) };
         if efi_success(st) {
             exited = true;
@@ -765,13 +897,20 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     // `next` stays 0: BOOT_ABI_V1.md reserves it for extension; the nucleus
     // entry address is not an ABI field (control transfers via the entry
     // call, not via BootInfo).
+    // SAFETY: bi_buf is a successful native-aligned AllocatePool buffer whose
+    // exact size is BootInfo; no alias to a BootInfo exists before this write.
     unsafe {
         (bi_buf.ptr as *mut BootInfo).write(bi);
     }
     let bi_phys = bi_buf.ptr as u64;
 
     // --- handoff ---
-    let stack_top = stack_phys + (STACK_PAGES as u64 * 0x1000);
+    let stack_top = match stack_phys.checked_add((STACK_PAGES as u64) * 0x1000) {
+        Some(top) => top,
+        None => serial_fatal(b"TOS.BOOT.FAILI stack-overflow"),
+    };
+    // SAFETY: Stage 1 is about to transfer control and has no interrupt policy;
+    // disabling maskable interrupts prevents firmware handlers during handoff.
     unsafe {
         asm!("cli", options(nostack, preserves_flags));
     }
@@ -801,6 +940,9 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     tos_serial::put_u32_decimal(u32::from(platform.smbios_version));
     tos_serial::puts(b"\r\n");
     let entry = nucleus_phys as *const ();
+    // SAFETY: AllocatePages established the fixed nucleus image at entry, the
+    // stack page range is disjoint and bounded, and rdi names the initialized
+    // reserved BootInfo record required by the Boot ABI v1 entry convention.
     unsafe {
         // Fixed registers: {stack} may take any caller-saved reg, but rdi
         // and rax are pinned so the entry pointer can never be clobbered by
@@ -881,11 +1023,13 @@ mod tests {
             },
         ];
         let mut st = system_table(&mut entries);
-        assert_eq!(
-            unsafe { select_acpi(&mut st) },
-            Some((v2.as_ptr() as u64, 2))
-        );
+        // SAFETY: system_table points only at the live local configuration
+        // entries and v2 RSDP bytes initialized by this test fixture.
+        let selected = unsafe { select_acpi(&mut st) };
+        assert_eq!(selected, Some((v2.as_ptr() as u64, 2)));
         v2[0] = b'X';
+        // SAFETY: the local fixture remains live; this call exercises the
+        // malformed preferred ACPI entry rejection path.
         assert_eq!(unsafe { select_acpi(&mut st) }, None);
         entries[1].vendor_guid = Guid {
             data1: 0,
@@ -893,10 +1037,10 @@ mod tests {
             data3: 0,
             data4: [0; 8],
         };
-        assert_eq!(
-            unsafe { select_acpi(&mut st) },
-            Some((v1.as_ptr() as u64, 1))
-        );
+        // SAFETY: both local RSDP buffers and the edited entry array remain
+        // live; this call exercises the ACPI 1 fallback path.
+        let selected = unsafe { select_acpi(&mut st) };
+        assert_eq!(selected, Some((v1.as_ptr() as u64, 1)));
     }
 
     #[test]
@@ -914,11 +1058,13 @@ mod tests {
             },
         ];
         let mut st = system_table(&mut entries);
-        assert_eq!(
-            unsafe { select_smbios(&mut st) },
-            Some((v3.as_ptr() as u64, 3))
-        );
+        // SAFETY: system_table points only at the live local configuration
+        // entries and v3 SMBIOS bytes initialized by this test fixture.
+        let selected = unsafe { select_smbios(&mut st) };
+        assert_eq!(selected, Some((v3.as_ptr() as u64, 3)));
         v3[0] = b'X';
+        // SAFETY: the local fixture remains live; this call exercises the
+        // malformed preferred SMBIOS entry rejection path.
         assert_eq!(unsafe { select_smbios(&mut st) }, None);
         entries[1].vendor_guid = Guid {
             data1: 0,
@@ -926,9 +1072,20 @@ mod tests {
             data3: 0,
             data4: [0; 8],
         };
-        assert_eq!(
-            unsafe { select_smbios(&mut st) },
-            Some((v2.as_ptr() as u64, 2))
-        );
+        // SAFETY: both local SMBIOS buffers and the edited entry array remain
+        // live; this call exercises the SMBIOS 2 fallback path.
+        let selected = unsafe { select_smbios(&mut st) };
+        assert_eq!(selected, Some((v2.as_ptr() as u64, 2)));
+    }
+
+    #[test]
+    fn firmware_output_requires_success_and_non_null_pointer() {
+        let mut value = 0u8;
+        assert!(efi_output_is_valid(EFI_SUCCESS, &mut value));
+        assert!(!efi_output_is_valid(EFI_NOT_FOUND, &mut value));
+        assert!(!efi_output_is_valid(
+            EFI_SUCCESS,
+            core::ptr::null_mut::<u8>()
+        ));
     }
 }

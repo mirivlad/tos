@@ -44,6 +44,9 @@ jobs:
       - name: Formatting
         run: cargo fmt --all -- --check
 
+      - name: Unsafe safety evidence
+        run: python3 ../scripts/check-unsafe-safety.py --root ..
+
       - name: Clippy (host crates)
         run: cargo clippy --all-targets -- -D warnings
 
