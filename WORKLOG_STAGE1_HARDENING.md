@@ -1027,3 +1027,25 @@ boot architecture, DCO policy или опубликованной истории
 - `golden_valid_parses` явно доказывает, что second `content_offset` valid
   fixture равен 430, не кратен 8, и capsule принимается parser. Это сохраняет
   canonical byte-compatible unaligned content согласно ADR-0017.
+
+## 2026-08-09 — Phase 1: SHA-1 raw-OID padding (Level 1)
+
+- RED evidence до parser change: host-only unit test с SHA-1 identity и
+  ненулевым byte 20 completed with the expected assertion that parser accepted
+  malformed padding. The host feature is required because the deterministic
+  test builder is deliberately excluded from the `no_std` default build.
+- В соответствии с ADR-0016 parser теперь возвращает structured
+  `NonZeroOidPadding` только когда valid SHA-1 triple `(1, 20)` имеет ненулевой
+  byte в unused 12-byte tail. SHA-256 identity не получает нового tail rule.
+  Loader serializes the same tag before `RESULT_CAPSULE_INVALID`.
+- Regression evidence exists at both host layers: capsule unit test and
+  integration test mutate a digest-consistent copy and require exactly
+  `NonZeroOidPadding`; the pre-existing 12 committed negative fixtures remain
+  governed solely by `vectors.tsv`.
+- `host-tools/qemu-test/sha1-oid-padding.sh` derives its malformed capsule only
+  under ignored `source/target/qemu-negative-sha1-padding/`; no tracked binary
+  fixture or `vectors.tsv` row was added before the F-22 provenance decision.
+  Its observed QEMU log was `TOS.BOOT.FAILC
+  capsule_err=NonZeroOidPadding`, exit 67, and no nucleus entry. The loader's
+  actual fail-closed event is `TOS.BOOT.FAILC`; the plan was corrected from the
+  nucleus-only `TOS.CAPSULE.FAIL` expectation without changing boot semantics.

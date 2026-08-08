@@ -76,7 +76,7 @@ identity bytes, adds `/system/boot/init.tos`, and builds. Mutate byte
 assert!(parse(&bytes).is_err(), "non-zero SHA-1 OID padding was accepted");
 ```
 
-Run `cd source && cargo test -p tos-capsule sha1_oid_nonzero_padding_is_rejected`.
+Run `cd source && cargo test -p tos-capsule --features host sha1_oid_nonzero_padding_is_rejected`.
 Expected RED: assertion failure because `parse()` returns `Ok`.
 
 - [ ] **Step 3: Record absent BootInfo e2e mechanism**
@@ -193,7 +193,7 @@ derive the same malformed bytes from
 `source/tests/vectors/capsule-v1/valid-001.bin` into
 `source/target/qemu-negative-sha1-padding/invalid-sha1-oid-padding.bin`, then
 invoke the existing `run.sh` with that explicit capsule, `--expect 67`, require
-`TOS.CAPSULE.FAIL` and `capsule_err=NonZeroOidPadding`, and forbid
+`TOS.BOOT.FAILC` and `capsule_err=NonZeroOidPadding`, and forbid
 `TOS.NUCLEUS.ENTRY`. Its generated file must remain under ignored `target/` and
 must not be listed in `vectors.tsv`.
 
@@ -206,7 +206,7 @@ owner-approved provenance record can describe the derivation completely.
 Run:
 
 ```bash
-cd source && cargo test -p tos-capsule sha1_oid_nonzero_padding_is_rejected
+cd source && cargo test -p tos-capsule --features host sha1_oid_nonzero_padding_is_rejected
 cd source && cargo test -p tos-tests-integration every_vector_matches_its_declared_outcome
 cd source && cargo test -p tos-tests-integration sha1_oid_nonzero_padding_is_rejected
 cd source && bash host-tools/qemu-test/sha1-oid-padding.sh

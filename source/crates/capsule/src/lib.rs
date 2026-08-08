@@ -172,6 +172,9 @@ pub enum CapsError {
     BadDigest,
     BadWholeDigest,
     UnsupportedIdentityKind,
+    /// A SHA-1 Git OID uses only the first 20 bytes of the 32-byte identity
+    /// value; ADR-0016 requires its unused tail to be zero.
+    NonZeroOidPadding,
     LicenceOutOfBounds,
     MissingBootCanonical,
     DuplicateBootCanonical,
@@ -512,6 +515,13 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
             if !ok {
                 return Err(CapsError::UnsupportedIdentityKind);
             }
+            if h.source_oid_alg == OID_ALG_SHA1
+                && h.source_identity_value[OID_LEN_SHA1 as usize..]
+                    .iter()
+                    .any(|&b| b != 0)
+            {
+                return Err(CapsError::NonZeroOidPadding);
+            }
         }
         SRC_KIND_DETACHED => {
             if h.source_oid_alg != OID_ALG_NONE || h.source_oid_length != 0 {
@@ -808,6 +818,21 @@ mod tests {
         b
     }
 
+    fn sha1_capsule() -> std::vec::Vec<u8> {
+        let mut b = Builder::new();
+        b.source_identity_kind = SRC_KIND_GIT;
+        b.source_oid_alg = OID_ALG_SHA1;
+        b.source_oid_length = OID_LEN_SHA1;
+        for (i, byte) in b.source_identity_value[..OID_LEN_SHA1 as usize]
+            .iter_mut()
+            .enumerate()
+        {
+            *byte = i as u8;
+        }
+        b.add(FileSpec::new("/system/boot/init.tos", b"# boot\n"));
+        b.build().expect("build SHA-1 capsule")
+    }
+
     #[test]
     fn round_trip() {
         let b = sample_builder();
@@ -879,6 +904,14 @@ mod tests {
         b.source_identity_kind = SRC_KIND_NONE;
         let bytes = b.build().expect("build");
         assert_eq!(parse(&bytes), Err(CapsError::UnsupportedIdentityKind));
+    }
+
+    #[test]
+    fn sha1_oid_nonzero_padding_is_rejected() {
+        let mut bytes = sha1_capsule();
+        bytes[off::SRC_VALUE + OID_LEN_SHA1 as usize] = 0x01;
+        refix_whole_digest(&mut bytes);
+        assert_eq!(parse(&bytes), Err(CapsError::NonZeroOidPadding));
     }
 
     #[test]

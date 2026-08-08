@@ -188,7 +188,9 @@ Content constraints:
   length (20 or 32). `source_identity_value` holds the **raw commit object
   id**, left-aligned and zero-padded to 32 bytes. The id is stored directly
   (not hashed) so a capsule can be resolved back to its commit with
-  `git show <oid>`; see ADR-0016.
+  `git show <oid>`; see ADR-0016. A SHA-1 identity therefore has a 20-byte raw
+  id followed by a 12-byte all-zero unused tail; any non-zero tail byte is
+  rejected.
 - The pair `(source_oid_alg, source_oid_length)` must be consistent with the
   kind: git kind requires `(1, 20)` or `(2, 32)`; detached kind requires
   `(0, 0)`. Anything else is rejected by the parser.
