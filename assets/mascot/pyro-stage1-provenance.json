@@ -1,0 +1,19 @@
+{
+  "record_spdx_license": "CC-BY-SA-4.0",
+  "format": "TOS.embedded-artwork-provenance.v1",
+  "embeddings": [
+    {
+      "canonical_source": "assets/mascot/tos_ascii-art2.txt",
+      "canonical_source_spdx": "CC-BY-SA-4.0",
+      "canonical_source_sha256": "0641c303b486e1615250c09c1f597a25a2dab2e478062cb2d7ba4d9879bbea6f",
+      "canonical_source_commit": "21975bba71b2be32d6222efbf0dcb4d43488bb0e",
+      "consumer": "source/nucleus/src/framebuffer.rs",
+      "consumer_spdx": "GPL-3.0-or-later",
+      "embedding": "exact-include-bytes-ascii-grid-v1",
+      "representation": "Stage 1 nucleus build embeds exact artwork bytes and renders @ cells after successful validation.",
+      "licence_notice_retained": true,
+      "attribution_record": "assets/mascot/README.md",
+      "adapted_material_treatment": "CC-BY-SA-4.0-to-GPLv3-one-way-compatibility-if-adapted"
+    }
+  ]
+}

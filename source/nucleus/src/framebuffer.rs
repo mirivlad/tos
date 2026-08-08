@@ -9,6 +9,33 @@ use tos_boot_protocol::{BootInfo, FB_FORMAT_BGRX8, FB_FORMAT_NONE, FB_FORMAT_RGB
 
 type Color = (u8, u8, u8);
 
+// Canonical artwork/data: assets/mascot/tos_ascii-art2.txt is CC-BY-SA-4.0.
+// The checked provenance record retains its digest, attribution and licence
+// identity. This GPL renderer consumes those exact bytes; it does not relabel
+// the artwork or make a blanket licence claim about the nucleus.
+const PYRO_ART_WITH_NOTICE: &[u8] = include_bytes!("../../../assets/mascot/tos_ascii-art2.txt");
+
+fn pyro_art_body() -> &'static [u8] {
+    match PYRO_ART_WITH_NOTICE.iter().position(|&byte| byte == b'\n') {
+        Some(first_line_end) => &PYRO_ART_WITH_NOTICE[first_line_end + 1..],
+        None => &[],
+    }
+}
+
+fn ascii_dimensions(art: &[u8]) -> (usize, usize) {
+    let (mut col, mut max_col, mut rows) = (0usize, 0usize, 1usize);
+    for &byte in art {
+        if byte == b'\n' {
+            max_col = max_col.max(col);
+            col = 0;
+            rows = rows.saturating_add(1);
+        } else {
+            col = col.saturating_add(1);
+        }
+    }
+    (max_col.max(col), rows)
+}
+
 pub struct Framebuffer<'a> {
     bytes: &'a mut [u8],
     width: usize,
@@ -144,15 +171,23 @@ impl<'a> Framebuffer<'a> {
         let x = margin.saturating_add(8 * scale);
         let mut y = margin.saturating_add(8 * scale);
         self.draw_text(b"TOS", x, y, scale.saturating_mul(2), ACCENT);
-        // A neutral synthetic status marker exercises the generic grid path.
-        // It is not Pyro or any other separately licensed artwork.
-        self.draw_ascii_grid(
-            b"@@@\n@ @\n@@@",
-            self.width.saturating_sub(16 * scale),
-            margin.saturating_add(8 * scale),
-            scale,
-            ACCENT,
-        );
+        let pyro = pyro_art_body();
+        let (pyro_cols, pyro_rows) = ascii_dimensions(pyro);
+        let available_width = self.width.saturating_sub(self.width / 2 + margin);
+        let available_height = self.height.saturating_sub(margin.saturating_mul(2));
+        let pyro_scale = (available_width / pyro_cols.max(1))
+            .min(available_height / pyro_rows.max(1))
+            .min(scale);
+        if pyro_scale != 0 {
+            let pyro_width = pyro_cols.saturating_mul(pyro_scale);
+            self.draw_ascii_grid(
+                pyro,
+                self.width.saturating_sub(margin.saturating_add(pyro_width)),
+                margin.saturating_add(8 * scale),
+                pyro_scale,
+                ACCENT,
+            );
+        }
         y = y.saturating_add(20 * scale);
         self.draw_text(b"TRUSTED BOOT FOUNDATION", x, y, scale, TEXT);
         y = y.saturating_add(14 * scale);
@@ -313,6 +348,13 @@ mod tests {
         assert_eq!(&bytes[8..12], &[7, 8, 9, 0]);
         assert_eq!(&bytes[16..20], &[7, 8, 9, 0]);
         assert_eq!(&bytes[20..24], &[7, 8, 9, 0]);
+    }
+
+    #[test]
+    fn pyro_uses_the_canonical_spdx_prefixed_artwork_body() {
+        assert!(PYRO_ART_WITH_NOTICE.starts_with(b"# SPDX-License-Identifier: CC-BY-SA-4.0\n"));
+        assert!(pyro_art_body().contains(&b'@'));
+        assert_ne!(pyro_art_body(), PYRO_ART_WITH_NOTICE);
     }
 
     #[test]

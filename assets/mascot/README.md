@@ -15,9 +15,24 @@ project or imported third-party source for these files. Copyright remains with
 the contributor under the project's DCO model; no copyright assignment is
 made.
 
-The introducing commit currently lacks the DCO trailer required by ADR-0012.
-That history-level compliance failure is tracked separately in
-`source/STAGE1_CLOSURE_AUDIT.md` as F-07; this file does not waive or conceal it.
+The owner-authorized history remediation recorded in `bb15f20` added the
+author-matching DCO trailer without changing the artwork content. This file
+does not waive or conceal the repository-wide DCO requirement.
+
+## Stage 1 framebuffer embedding
+
+By the project owner and architect's licensing decision, the exact bytes of
+`assets/mascot/tos_ascii-art2.txt` may be embedded as separately identified
+CC-BY-SA-4.0 artwork/data for the post-validation Stage 1 framebuffer
+diagnostic. The renderer remains GPL-3.0-or-later code; this does not relabel
+the canonical artwork or make a blanket licence claim about the nucleus.
+
+`pyro-stage1-provenance.json` is the machine-checked record of the source
+digest, attribution, licence identity and exact embedding transformation. If
+the ASCII-grid rendering is Adapted Material, that record identifies the
+CC-BY-SA-4.0-to-GPLv3 one-way compatibility treatment authorized for the
+GPL-3.0-or-later nucleus. The canonical source and its licence notice remain
+in the repository unchanged.
 
 ## File inventory
 

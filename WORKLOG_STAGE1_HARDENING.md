@@ -1342,3 +1342,27 @@ boot architecture, DCO policy или опубликованной истории
   `TOS.HALT ok=0x10` and remained running for the full 12-second observation;
   QEMU ended only when the external test sent SIGINT (the same user-visible
   Ctrl-C action), not through `isa-debug-exit` or a self-judging timeout.
+
+## 2026-08-09 — Pyro framebuffer diagnostic and embedding provenance
+
+- The Project Owner/Architect authorized the exact canonical
+  `assets/mascot/tos_ascii-art2.txt` bytes to be embedded as separately
+  identified CC-BY-SA-4.0 artwork/data in the post-validation Stage 1 visual
+  diagnostic. The artwork SPDX remains unchanged; GPL-3.0-or-later renderer
+  code does not relabel the artwork or claim a uniform licence for the nucleus.
+- `assets/mascot/pyro-stage1-provenance.json` records the canonical source,
+  SHA-256, introducing commit, attribution, licence identity and exact
+  include-bytes/ASCII-grid transformation. It retains the conditional
+  CC-BY-SA-4.0-to-GPLv3 compatibility treatment specified by the owner for
+  Adapted Material without claiming that the entire nucleus changes licence.
+- `check-embedded-artwork-provenance.py` is invoked by the SPDX gate whenever
+  any part of this boundary is tracked. Its focused regression accepts the
+  exact source and rejects a tampered canonical-art digest. The renderer strips
+  only the SPDX header for the grid, uses checked bounded dimensions and draws
+  the real `@` cells only when the already-successful status page is rendered.
+- Real X11/GTK smoke: `timeout --preserve-status -s INT 12 ./run-tos.sh`
+  opened the graphical harness, emitted the complete success trace through
+  `TOS.HALT ok=0x10`, and remained live until that external SIGINT. QEMU
+  returned status 0 after handling the signal; no `isa-debug-exit` result or
+  interactive timeout terminated the guest. GTK theme warnings were host
+  diagnostics only and did not affect the guest evidence.

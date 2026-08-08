@@ -35,6 +35,19 @@ if [ -n "$vector_bins" ]; then
     fi
 fi
 
+# Stage 1 can embed separately licensed artwork as data only through a checked
+# record that retains the canonical source, attribution and licence identity.
+# Test repositories without this specific boundary do not need the record; a
+# partial or complete copy of the boundary must validate it.
+embedded_artwork_paths=$(git ls-files -- \
+    assets/mascot/pyro-stage1-provenance.json \
+    assets/mascot/tos_ascii-art2.txt \
+    source/nucleus/src/framebuffer.rs)
+if [ -n "$embedded_artwork_paths" ] \
+    && ! python3 scripts/check-embedded-artwork-provenance.py --root .; then
+    fail=1
+fi
+
 # Report an unrecognised path so a new file type cannot enter unnoticed.
 unclassified=''
 
