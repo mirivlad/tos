@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `20d1ecd6da11e56dcbced49dcee7e055c6ba7b471b984bb90c4b996245eeeab8`  
+Source-manifest SHA-256: `a3cb26199b71bdfe5cc93c4705e1e0e7dc06f9186d74caf78bd7992713691476`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -17,11 +17,80 @@ Generator: `tools/build-specification.py`
 
 # TOS — TextOS
 
+                                                                                   aW              
+                                                                                IWWWl              
+                                                                               WWTYWl              
+                                                                              aa   Wl              
+                                                                             fW    nWn WWI         
+                                                                          FJ pW      WTWkWz        
+            lll  llCWWWll;                                               WWWupW       WW  aW       
+          WWr  oMk      !kWWW;                                          Wo  oWk       w    MW      
+         WW       rWWWWW     WWw                                       aW      ;W   W,      Wk     
+        aWw      tCzaI  f   wWWWWn                                     ak     ak     ak     aM     
+      aWl        tWWiW      WWk  CWi                                   Wk     ak     ak      W     
+     Wv           WWt   Y   lWWWmttbWC                                 ok    WW       WW     W     
+     WF  .         !rrr              uWWqJJ     nJJJv                  jW     ok     aa     aa     
+     tWWY            uY                  fuuWuuuuuuuuuuuhWWWWWY;        WW    ak     ak    uW      
+       xWccLWWWWWWWWc:      :      xWWw fchW    jWWu lcbW,    jcWWc      JWm   WW   WW    LW,      
+         LWWr;              c      pWWWWq       LWWWWWT         rFIWWY     JWWr          WW        
+            xLWWWWwF:        j       LLLL!        LWWWd!      LWWo L vWWT     CmWWW     rW!        
+                   uWWWh     ak               lll.    ;        oWWWQ    dWWl    WWj     Wh         
+                     pW;      Wq       .    ;WWW.;WWWWr    ;:     !        ckMkk       Wo          
+                       WW      tWW      WF  ;WWWWW      pWk             ;WWW          WW           
+                       ;WWWf     UW     .Wl    ,,,     MW               WWWa        wWk            
+                       ;W  wWWpU  Wb     WW           YW.       wdi       ,l,     pWW              
+                       Ww    ahtWWWW     Wl           YWi     LWf             wWWWt                
+                   jWWnF    aW   jWl    dWWWWWWWWWWWWWWWQ     WcruWWWWWWWWWWWrr                    
+                  WL YM    bX ,WWLi    mW            YWWW.    Wl                                   
+                  !pWhWcWWwI ao IuJ  ,Wd           cWj fu.   tWl                                   
+                              LWwWrWWJ             :mWWWcjWWWJ                                                        
+
+
 **Architecture documentation version: 0.2.1 — 2026-08-06**
 
 TOS is a text-centric operating system in which the canonical installed form of services, applications, language frontends, configuration and device drivers is human-readable source text. The unavoidable binary foundation is a deliberately small bootable nucleus and reproducible derived boot artifacts.
 
 The name expands to **TextOS** and also carries the internal joke of the Russian abbreviation “ТОС”: a system intended to set conventional operating-system assumptions on fire. The public project name remains provisional pending trademark clearance.
+
+## Quick start
+
+The supported Stage 1 reference environment is x86_64 Linux with:
+
+- QEMU system emulation for x86_64;
+- a matching OVMF CODE/VARS firmware pair;
+- `mtools` (`mformat`, `mcopy` and `mmd`) and GNU `timeout`;
+- `rustup` and the toolchain declared by `source/rust-toolchain.toml`, with the
+  `x86_64-unknown-uefi` and `x86_64-unknown-none` targets.
+
+The launcher reports any missing command, firmware file or Rust target; it does
+not install software. From the repository root, start the human-facing boot:
+
+```sh
+./run-tos.sh
+```
+
+This builds the Stage 1 release artifacts, prepares the capsule and ESP through
+the same harness used by CI, opens the QEMU display and streams serial boot
+events in the terminal. A successful boot reaches `TOS.HALT ok=0x10`; QEMU then
+exits through the Stage 1 `isa-debug-exit` contract and the harness prints
+`QEMU-TEST PASS`.
+
+For a headless automated check, run:
+
+```sh
+./run-tos.sh --check
+```
+
+Serial and filtered event evidence is retained under
+`source/target/run-tos/interactive/` or `source/target/run-tos/check/`, in
+`serial.log` and `events.log`. The QEMU window is not yet evidence of a desktop:
+the reliable observable at this stage is the serial event sequence, and the
+framebuffer handoff remains part of the open Stage 1 closure work.
+
+Stage 1 is a bootable TOS foundation with source-bound capsule identity and
+fail-closed validation. It is not yet a user shell, application environment or
+desktop operating system, and Stage 1 is not declared closed while the formal
+closure findings remain open.
 
 ## Core thesis
 
@@ -373,6 +442,22 @@ Signed-off-by: Real Name <email@example.com>
 
 The sign-off certifies the Developer Certificate of Origin 1.1 in `DCO`. It is not a transfer of copyright.
 
+Create commits with Git's sign-off option so the trailer is not forgotten:
+
+```sh
+git commit -s
+```
+
+Before pushing, run the local repository gates from the repository root:
+
+```sh
+./scripts/preflight.sh
+```
+
+Use `./scripts/preflight.sh --full` when the change touches boot, capsule parsing
+or QEMU-visible behavior; it additionally runs fuzzing and both QEMU suites.
+Preflight reports all selected gate results and does not install missing tools.
+
 ## AI-assisted contributions
 
 AI tools may be used, but the human submitter remains responsible for:
@@ -391,6 +476,22 @@ An AI system cannot provide a DCO sign-off and cannot be listed as the legal aut
 Do not paste code merely because it is publicly visible. Record source, exact license, version or commit, modifications and compatibility in `THIRD_PARTY.toml` or the future equivalent inventory.
 
 In particular, the Linux kernel is generally GPL-2.0-only. GPL-2.0-only code cannot simply be copied into a GPL-3.0-or-later TOS component. Linux drivers are valuable sources of hardware knowledge, register behavior and references to specifications, but direct copying requires file-level license review and may be prohibited. Prefer public hardware specifications, permissively licensed code, GPL-2.0-or-later code, or a documented clean-room reimplementation.
+
+## Repository assets
+
+Text assets carry an SPDX identifier in the first five lines, using the
+existing `LICENSE.md` component class that applies to the material. Do not
+select a new licence merely because a file extension is new.
+
+Binary artwork cannot use a normal source comment. Its directory therefore
+contains a tracked `README.md` that lists each binary path, its licence under
+the existing matrix, its origin and the Git contribution that introduced it.
+The SPDX gate checks the record path-by-path. Adding a blanket extension
+exemption is not an acceptable substitute for provenance.
+
+Imported or adapted assets additionally follow
+`docs/23_CONTRIBUTION_PROVENANCE.md` and are recorded in `THIRD_PARTY.toml` when
+applicable. If origin or licensing cannot be established, the asset is blocked.
 
 ## Completion standard
 
