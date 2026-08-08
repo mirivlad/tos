@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `6fd3799c666a2cbd53d07e984024387791ba8ca9e601eac4ae897fe249016ea3`  
+Source-manifest SHA-256: `4dee288eb47c8b37da0724b06bdb2fbebba68c903bff3893cdb47ff2c4a2ce26`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -3231,11 +3231,12 @@ Release notes state the evidence level for security claims.
 
 ## Stage mapping
 
-- Stage 1: boot/capsule boundaries, recovery selection and source identity;
+- Stage 1: boot/capsule boundaries and source identity;
 - Stage 1.5–2: parser, language, verifier, resource and source-map threats;
 - Stage 3: capability, IPC and process isolation threats;
 - Stage 4: interrupt, MMIO, DMA and storage-corruption threats;
-- Stage 5: repository, refs, rollback, garbage collection and state migration threats;
+- Stage 5: repository, refs, protected candidate/current/last-known-good/recovery
+  selection, rollback, garbage collection and state migration threats;
 - Stage 7: remote, network, credential and time threats.
 
 A stage cannot close if its new boundary lacks a threat entry, negative tests and stated evidence level.
