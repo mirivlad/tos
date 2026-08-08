@@ -1144,3 +1144,25 @@ boot architecture, DCO policy или опубликованной истории
   is explicitly `unverifiable-legacy` and must be replaced from a known commit
   before Stage 1 evidence relies on it. A future explicitly Apache synthetic
   vector class remains separate and does not reclassify boot-material fixtures.
+
+## 2026-08-09 — F-22 provenance schema/checker (TDD)
+
+- RED: `scripts/tests/check-capsule-vector-provenance.sh` initially failed only
+  because `scripts/check-capsule-vector-provenance.py` did not exist. GREEN:
+  the standard-library checker validates the versioned JSON manifest contract,
+  tracked `.bin` enumeration, output/input/generator digests at declared Git
+  commits, mixed-material classification, generator SPDX provenance, retained
+  input roles, and derived base/recipe links.
+- `source/tests/vectors/capsule-v1/provenance.schema.json` supplies the
+  machine-readable structural schema; the checker verifies its format/version
+  metadata and enforces cross-file conditions that generic JSON Schema cannot.
+  JSON metadata files now use first-field `record_spdx_license`, a metadata-file
+  SPDX declaration distinct from any described binary container.
+- Regression coverage proves acceptance of a complete verified mixed-material
+  entry and rejection of an unrecorded fixture, non-null container SPDX and a
+  derived fixture without `base_sha256`. A second SPDX regression proves JSON
+  metadata is classified by `record_spdx_license` and fails if absent.
+- The checker is not yet called by `check-spdx.sh` for repository vectors:
+  current fixtures do not yet have `provenance.json`. The accepted final gate
+  replacement is coupled to the upcoming complete regenerated manifest, so no
+  interim main commit falsely declares legacy binaries verified.

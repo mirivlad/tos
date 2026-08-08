@@ -1,0 +1,119 @@
+{
+  "record_spdx_license": "GPL-3.0-or-later",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "tos-capsule-vector-provenance-v1.schema.json",
+  "title": "TOS capsule v1 vector provenance",
+  "type": "object",
+  "required": [
+    "record_spdx_license",
+    "format",
+    "schema_version",
+    "vectors"
+  ],
+  "properties": {
+    "record_spdx_license": {"const": "GPL-3.0-or-later"},
+    "format": {"const": "tos-capsule-vector-provenance-v1"},
+    "schema_version": {"const": 1},
+    "vectors": {
+      "type": "array",
+      "items": {"$ref": "#/$defs/vector"}
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "source_commit": {
+      "type": "object",
+      "required": ["kind", "algorithm", "value"],
+      "properties": {
+        "kind": {"const": "git"},
+        "algorithm": {"enum": ["sha1", "sha256"]},
+        "value": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"}
+      }
+    },
+    "generator": {
+      "type": "object",
+      "required": ["path", "version", "source_commit", "sha256", "spdx"],
+      "properties": {
+        "path": {"type": "string"},
+        "version": {"type": "integer", "minimum": 1},
+        "source_commit": {"type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "spdx": {"type": "string"}
+      }
+    },
+    "input": {
+      "type": "object",
+      "required": ["repository_path", "capsule_path", "sha256", "spdx", "role"],
+      "properties": {
+        "repository_path": {"type": "string"},
+        "capsule_path": {"type": ["string", "null"]},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "spdx": {"type": "array", "minItems": 1, "items": {"type": "string"}},
+        "role": {"type": "string", "minLength": 1}
+      }
+    },
+    "container_licensing": {
+      "type": "object",
+      "required": ["status", "spdx_expression"],
+      "properties": {
+        "status": {"const": "mixed-material-generated"},
+        "spdx_expression": {"type": "null"}
+      }
+    },
+    "derivation": {
+      "oneOf": [
+        {"type": "null"},
+        {
+          "type": "object",
+          "required": ["base_vector", "base_sha256", "transformation_recipe"],
+          "properties": {
+            "base_vector": {"type": "string"},
+            "base_sha256": {"$ref": "#/$defs/sha256"},
+            "transformation_recipe": {
+              "type": "object",
+              "required": ["kind", "operations"],
+              "properties": {
+                "kind": {"type": "string", "minLength": 1},
+                "operations": {
+                  "type": "array",
+                  "minItems": 1,
+                  "items": {
+                    "type": "object",
+                    "required": ["op"],
+                    "properties": {"op": {"type": "string", "minLength": 1}}
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    "vector": {
+      "type": "object",
+      "required": [
+        "vector",
+        "sha256",
+        "generated_artifact",
+        "provenance_status",
+        "generator",
+        "source_commit",
+        "inputs",
+        "container_licensing",
+        "derivation"
+      ],
+      "properties": {
+        "vector": {"type": "string", "pattern": "^[^/]+\\.bin$"},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "generated_artifact": {"const": true},
+        "provenance_status": {"enum": ["verified", "unverifiable-legacy"]},
+        "generator": {"oneOf": [{"$ref": "#/$defs/generator"}, {"type": "null"}]},
+        "source_commit": {"oneOf": [{"$ref": "#/$defs/source_commit"}, {"type": "null"}]},
+        "inputs": {"type": "array", "items": {"$ref": "#/$defs/input"}},
+        "container_licensing": {"$ref": "#/$defs/container_licensing"},
+        "derivation": {"$ref": "#/$defs/derivation"},
+        "legacy_reason": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

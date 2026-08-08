@@ -60,6 +60,20 @@ for f in $(git ls-files); do
             fi
             continue ;;
 
+        # --- JSON metadata: JSON has no comment syntax, so a project record
+        # licence lives in its first field.  This classifies the metadata file,
+        # not any generated binary described by it.
+        *.json)
+            checked=$((checked+1))
+            line=$(head -5 "$f" | grep -m1 '"record_spdx_license"' || true)
+            lic=$(printf '%s' "$line" | sed -n 's/.*"record_spdx_license"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p')
+            if [ -z "$lic" ]; then
+                echo "missing record_spdx_license: $f"; fail=1
+            elif ! printf '%s' "$lic" | grep -qE "^($allowed)$"; then
+                echo "licence not in the LICENSE.md matrix: $f ($lic)"; fail=1
+            fi
+            continue ;;
+
         # --- Cargo manifests: the licence belongs in the `license` field ---
         *Cargo.toml)
             if grep -q '^\[package\]' "$f"; then
