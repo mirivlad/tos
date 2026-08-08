@@ -243,7 +243,7 @@ The digest is verified over the exact bytes passed to the parser.
     decided canonically: `path_table_count != file_count`, or any
     `path_entry[i].file_index != i`;
 15. file table not sorted by content offset;
-16. file content out of payload bounds or misaligned;
+16. file content out of payload bounds;
 17. overlapping or non-covering payload content;
 18. per-file digest mismatch;
 19. whole-capsule digest mismatch;

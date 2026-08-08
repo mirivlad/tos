@@ -37,6 +37,21 @@ fn golden_valid_parses() {
     assert_eq!(v.content, b"0.2.1\n");
     // licence tail is the real NOTICES.txt
     let h = cap.header();
+    let second_content_offset_at = h.file_table_offset as usize + 64;
+    let second_content_offset = u64::from_le_bytes(
+        bytes[second_content_offset_at..second_content_offset_at + 8]
+            .try_into()
+            .expect("second content offset"),
+    );
+    assert_ne!(
+        second_content_offset % 8,
+        0,
+        "fixture must exercise unaligned content"
+    );
+    assert!(
+        parse(&bytes).is_ok(),
+        "canonical unaligned capsule must parse"
+    );
     assert!(h.licence_notice_length as usize == NOTICES.len());
     assert_eq!(
         &bytes[h.licence_notice_offset as usize..],
