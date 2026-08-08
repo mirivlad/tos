@@ -5,15 +5,14 @@
 #
 # valid-001 is built from the REAL source/system/boot/init.tos (not a
 # temporary placeholder) plus the real NOTICES.txt as the licence tail. The
-# artificial 0x42 identity is allowed for isolated format fixtures only; real
-# provenance builds use --git-commit (see host-tools/capsule/src/main.rs).
+# detached identities are calculated from canonical paths and content digests
+# (ADR-0018); real provenance builds use --git-commit.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 GEN="$ROOT/tests/vectors/gen"
 OUT="$ROOT/tests/vectors/capsule-v1"
 TOOL="$ROOT/target/release/tos-capsule-tool"
-IDENT="4242424242424242424242424242424242424242424242424242424242424242"
 INIT="$ROOT/system/boot/init.tos"
 NOTICES="$ROOT/system/boot/NOTICES.txt"
 
@@ -28,20 +27,20 @@ printf '0.2.1\n' > "$GEN/.version.txt"
 
 # --- valid-001 : canonical boot (real init.tos) + system/version + licence ---
 printf '/system/boot/init.tos\t%s\n/system/version\t%s\n' "$INIT" "$GEN/.version.txt" > "$GEN/.valid.manifest"
-$TOOL --identity "$IDENT" --licence "$NOTICES" \
+$TOOL --detached --licence "$NOTICES" \
     --out "$OUT/valid-001.bin" --meta "$GEN/.valid.meta" "$GEN/.valid.manifest"
 
 # --- invalid-missing-boot : no canonical boot file ---
 printf '/system/version\t%s\n' "$GEN/.version.txt" > "$GEN/.missing.manifest"
-$TOOL --identity "$IDENT" --out "$OUT/invalid-missing-boot.bin" "$GEN/.missing.manifest"
+$TOOL --detached --out "$OUT/invalid-missing-boot.bin" "$GEN/.missing.manifest"
 
 # --- invalid-traversal : path escapes root ---
 printf '/system/boot/init.tos\t%s\n/system/../etc/passwd\t%s\n' "$INIT" "$GEN/.version.txt" > "$GEN/.traversal.manifest"
-$TOOL --identity "$IDENT" --out "$OUT/invalid-traversal.bin" "$GEN/.traversal.manifest"
+$TOOL --detached --out "$OUT/invalid-traversal.bin" "$GEN/.traversal.manifest"
 
 # --- invalid-dup : duplicate canonical path ---
 printf '/system/boot/init.tos\t%s\n/system/boot/init.tos\t%s\n' "$INIT" "$INIT" > "$GEN/.dup.manifest"
-$TOOL --identity "$IDENT" --out "$OUT/invalid-dup.bin" "$GEN/.dup.manifest"
+$TOOL --detached --out "$OUT/invalid-dup.bin" "$GEN/.dup.manifest"
 
 # --- invalid-badmagic : magic byte flipped ---
 cp "$OUT/valid-001.bin" "$OUT/invalid-badmagic.bin"
@@ -86,7 +85,7 @@ printf '\x00\x00\x00\x00' | dd of="$OUT/invalid-dup-file-index.bin" bs=1 seek=$(
 # whole-capsule digest).
 printf '/system/boot/init.tos\t%s\n/system/version\t%s\n/system/etc/extra.tos\t%s\n' \
     "$INIT" "$GEN/.version.txt" "$GEN/.version.txt" > "$GEN/.unref.manifest"
-$TOOL --identity "$IDENT" --out "$GEN/.unref.bin" "$GEN/.unref.manifest"
+$TOOL --detached --out "$GEN/.unref.bin" "$GEN/.unref.manifest"
 python3 - "$GEN/.unref.bin" "$OUT/invalid-unreferenced-file.bin" <<'PY'
 import struct, sys
 src, dst = sys.argv[1], sys.argv[2]

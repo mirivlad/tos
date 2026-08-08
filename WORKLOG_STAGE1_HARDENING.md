@@ -1166,3 +1166,28 @@ boot architecture, DCO policy или опубликованной истории
   current fixtures do not yet have `provenance.json`. The accepted final gate
   replacement is coupled to the upcoming complete regenerated manifest, so no
   interim main commit falsely declares legacy binaries verified.
+
+## 2026-08-09 — ADR-0018 detached builder/CLI (first GREEN transaction)
+
+- RED evidence before implementation: a builder retaining its synthetic
+  `source_identity_value` failed the domain/path/digest expected-value test;
+  equal content under `/system/a.tos` and `/system/b.tos` produced the same
+  caller-selected value; a digest-consistent flip of the detached header was
+  accepted by the parser. The first two are GREEN in this transaction; the
+  parser-negative test is deliberately retained only locally until its parser
+  and vector regeneration transaction can be published green together.
+- `Builder::build()` now ignores `source_identity_value` for detached kind and
+  computes `SHA-256(b"TOS.DSI.v1\\0" || u32_le(path_length) || path ||
+  content_digest ...)` in canonical byte-path order. Git raw OID input remains
+  explicit and unchanged. Host CLI replaces arbitrary `--identity` with
+  `--detached`; `gen.sh` uses it but has not been run, so no tracked binary is
+  modified here.
+- The intermediate source commit provides the exact builder/generator source
+  revision which the forthcoming regenerated-vector provenance entries will
+  name. Existing detached fixtures remain unchanged and parser-accepted only
+  until the immediate enforcement/regeneration transaction; this commit does
+  not claim ADR-0018 closure.
+- Verification: all 60 workspace tests PASS; all required clippy invocations
+  PASS; `--identity` now fails with the explicit `--detached` usage; generator
+  shell syntax PASS. No dependency, runtime ABI, loader/nucleus trusted base,
+  `PROGRESS.md`, QEMU profile, Phase 2 or Stage 1.5 change occurred.

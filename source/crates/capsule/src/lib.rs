@@ -49,6 +49,10 @@ pub const OID_ALG_SHA256: u8 = 2;
 pub const OID_LEN_SHA1: u8 = 20;
 pub const OID_LEN_SHA256: u8 = 32;
 
+/// Fixed domain separator for ADR-0018 detached source-set identities.
+#[cfg(feature = "host")]
+pub(crate) const DETACHED_IDENTITY_DOMAIN: &[u8] = b"TOS.DSI.v1\0";
+
 pub const FLAG_BOOT_CANONICAL: u32 = 1 << 0;
 pub const FLAG_LICENCE_NOTICE: u32 = 1 << 1;
 /// Flag bits defined for v1 path entries: only boot-canonical is valid on a
@@ -59,6 +63,20 @@ pub const FILE_KNOWN_FLAGS: u32 = FLAG_BOOT_CANONICAL | FLAG_LICENCE_NOTICE;
 
 /// Canonical boot text path required by Stage 1.
 pub const BOOT_PATH: &[u8] = b"/system/boot/init.tos";
+
+/// Append one validated canonical path/content-digest pair to a detached
+/// source-set identity in the host builder.
+#[cfg(feature = "host")]
+pub(crate) fn update_detached_identity(
+    hasher: &mut Sha256,
+    path: &[u8],
+    path_length: u32,
+    content_digest: &[u8; DIGEST_BYTES],
+) {
+    hasher.update(&path_length.to_le_bytes());
+    hasher.update(path);
+    hasher.update(content_digest);
+}
 
 // Byte offsets within the 184-byte header.
 mod off {
@@ -833,6 +851,21 @@ mod tests {
         b.build().expect("build SHA-1 capsule")
     }
 
+    fn expected_detached_identity(entries: &[(&[u8], &[u8])]) -> [u8; DIGEST_BYTES] {
+        let mut entries = entries.to_vec();
+        entries.sort_by(|a, b| a.0.cmp(b.0));
+        let mut identity = Sha256::new();
+        identity.update(b"TOS.DSI.v1\0");
+        for (path, content) in entries {
+            identity.update(&(path.len() as u32).to_le_bytes());
+            identity.update(path);
+            let mut content_hash = Sha256::new();
+            content_hash.update(content);
+            identity.update(&content_hash.finalize());
+        }
+        identity.finalize()
+    }
+
     #[test]
     fn round_trip() {
         let b = sample_builder();
@@ -912,6 +945,44 @@ mod tests {
         bytes[off::SRC_VALUE + OID_LEN_SHA1 as usize] = 0x01;
         refix_whole_digest(&mut bytes);
         assert_eq!(parse(&bytes), Err(CapsError::NonZeroOidPadding));
+    }
+
+    #[test]
+    fn detached_builder_computes_canonical_path_digest_identity() {
+        let bytes = sample_builder().build().expect("build");
+        let expected = expected_detached_identity(&[
+            (
+                b"/system/boot/init.tos",
+                b"# TOS boot text\nprint(\"hello from boot\")\n",
+            ),
+            (b"/system/version", b"0.2.1\n"),
+        ]);
+        assert_eq!(
+            parse(&bytes).expect("parse").header().source_identity_value,
+            expected,
+            "builder must not retain a caller-supplied detached identity"
+        );
+    }
+
+    #[test]
+    fn detached_identity_binds_canonical_paths_not_only_contents() {
+        let mut left = Builder::new();
+        left.source_identity_value = [0x55; DIGEST_BYTES];
+        left.add(FileSpec::new("/system/boot/init.tos", b"same\n"));
+        left.add(FileSpec::new("/system/a.tos", b"same\n"));
+        let mut right = Builder::new();
+        right.source_identity_value = [0x55; DIGEST_BYTES];
+        right.add(FileSpec::new("/system/boot/init.tos", b"same\n"));
+        right.add(FileSpec::new("/system/b.tos", b"same\n"));
+        let left = parse(&left.build().expect("build left"))
+            .expect("parse left")
+            .header()
+            .source_identity_value;
+        let right = parse(&right.build().expect("build right"))
+            .expect("parse right")
+            .header()
+            .source_identity_value;
+        assert_ne!(left, right, "canonical paths must bind detached identity");
     }
 
     #[test]

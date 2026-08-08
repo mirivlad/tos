@@ -10,7 +10,7 @@
 #![cfg(test)]
 
 use tos_capsule::{parse, CapsError, FLAG_BOOT_CANONICAL, SRC_KIND_DETACHED};
-use tos_hash::{sha256, Sha256};
+use tos_hash::Sha256;
 
 const V: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../vectors/capsule-v1/");
 // Real sources (up two levels from tests/integration -> source/).
@@ -166,25 +166,31 @@ fn vector_table_covers_every_committed_fixture() {
 }
 
 #[test]
-fn deterministic_build_reproduces_golden() {
-    // Rebuilding the same real files must reproduce the committed golden
-    // vector byte-for-byte (this pins the whole format).
-    let mut b = tos_capsule::build::Builder::new();
-    b.source_identity_kind = SRC_KIND_DETACHED;
-    b.source_identity_value = [0x42; 32];
-    b.add(tos_capsule::build::FileSpec::new(
-        "/system/boot/init.tos",
-        INIT_TOS,
-    ));
-    b.add(tos_capsule::build::FileSpec::new(
-        "/system/version",
-        b"0.2.1\n",
-    ));
-    b.set_licence_notice(NOTICES.to_vec());
-    let rebuilt = b.build().expect("build");
-    let golden = vec("valid-001.bin");
-    assert_eq!(rebuilt, golden, "builder must reproduce the golden vector");
-    assert_eq!(sha256(&rebuilt), sha256(&golden), "digest must match");
+fn deterministic_build_computes_detached_identity() {
+    let build = || {
+        let mut b = tos_capsule::build::Builder::new();
+        b.source_identity_kind = SRC_KIND_DETACHED;
+        b.source_identity_value = [0x42; 32];
+        b.add(tos_capsule::build::FileSpec::new(
+            "/system/boot/init.tos",
+            INIT_TOS,
+        ));
+        b.add(tos_capsule::build::FileSpec::new(
+            "/system/version",
+            b"0.2.1\n",
+        ));
+        b.set_licence_notice(NOTICES.to_vec());
+        b.build().expect("build")
+    };
+    let first = build();
+    let second = build();
+    assert_eq!(first, second, "detached output must remain deterministic");
+    let capsule = parse(&first).expect("builder output must parse");
+    let header = capsule.header();
+    assert_ne!(
+        header.source_identity_value, [0x42; 32],
+        "builder must ignore synthetic caller identity"
+    );
 }
 
 #[test]
