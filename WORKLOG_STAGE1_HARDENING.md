@@ -893,3 +893,23 @@ boot architecture, DCO policy или опубликованной истории
 - `CONTRIBUTING.md` теперь требует direct SPDX для text assets и проверяемый
   per-directory licence/provenance record для binary artwork; blanket
   extension exemption запрещён.
+
+## 2026-08-08 — Phase 0: one-command local preflight
+
+- Добавлен `scripts/preflight.sh`. Это orchestration-only Level 1 tooling:
+  каждый шаг вызывает существующий script/tool/cargo gate, проверочная логика
+  не скопирована внутрь preflight.
+- Default запускает generated specification, release manifest/SHA256SUMS,
+  SPDX, DCO, fmt, tests и три обязательных clippy invocation. `--full`
+  добавляет существующий fuzz, release builds и QEMU success/negative scripts.
+- После отдельного failure выполнение продолжается, чтобы DCO не скрывал
+  состояние cargo/SPDX/docs; итог один — `PREFLIGHT PASS` или `PREFLIGHT FAIL`.
+- TDD regression `scripts/tests/preflight.sh`:
+  - RED: `missing scripts/preflight.sh`;
+  - GREEN: help/unknown option и точный порядок default/full calls → **PASS**.
+- Реальный `./scripts/preflight.sh` на незавершённом Phase 0 запустил все 9
+  gates: SPDX/fmt/tests/3×clippy зелёные; ожидаемо красные generated spec,
+  release manifest и DCO. Итог: **FAIL: 3 of 9**, то есть entrypoint не
+  маскирует текущий baseline.
+- `CONTRIBUTING.md` теперь явно показывает `git commit -s`, default preflight и
+  критерий применения `--full`.
