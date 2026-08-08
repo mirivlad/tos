@@ -1366,3 +1366,22 @@ boot architecture, DCO policy или опубликованной истории
   returned status 0 after handling the signal; no `isa-debug-exit` result or
   interactive timeout terminated the guest. GTK theme warnings were host
   diagnostics only and did not affect the guest evidence.
+
+## 2026-08-09 — F-20 Stage 1 unsafe-code evidence
+
+- Full inventory: `scripts/check-unsafe-safety.py --root .` covers all
+  non-generated Stage 1 Rust source and reports 89 unsafe blocks/functions/
+  extern declarations. `source/UNSAFE_STAGE1_INVENTORY.md` records each file's
+  concrete pointer, layout, FFI, physical-memory or privileged-instruction
+  preconditions and focused evidence.
+- Every operation now has a local, non-template `SAFETY:` rationale. The gate
+  rejects a missing rationale and accepts a documented unsafe function behind
+  an attribute and a rustfmt-wrapped documented operation; its regression also
+  proves an undocumented unsafe block fails with a focused diagnostic.
+- Avoidable duplication was removed: 18 test-only raw BootInfo byte views now
+  use one size-bounded helper. Loader hardening treats EFI success with a null
+  output pointer as failure, checks memory-map capacity/offset/length arithmetic
+  before raw pointer use and rejects a non-integral descriptor stride. Host
+  coverage proves the FFI output invariant; existing UEFI layout assertions,
+  BootInfo tests, QEMU success/negative paths and exception injection remain
+  the evidence for the remaining assumptions.

@@ -97,16 +97,16 @@ static mut TSS: TaskStateSegment = TaskStateSegment::EMPTY;
 static mut GDT: [u64; 5] = [0; 5];
 static mut IDT: [IdtEntry; EXCEPTION_VECTOR_COUNT] = [IdtEntry::EMPTY; EXCEPTION_VECTOR_COUNT];
 
+// SAFETY: exception.S defines this exact 32-entry, 8-byte-aligned table in the
+// same nucleus image, with one non-returning stub address per vector 0..31.
 unsafe extern "C" {
     static exception_stub_table: [u64; EXCEPTION_VECTOR_COUNT];
 }
 
 /// Establish the nucleus-owned GDT/TSS and all Stage 1 exception gates.
 ///
-/// # Safety
-///
-/// Called exactly once at nucleus entry while maskable interrupts are disabled
-/// by the loader. The static tables are then immutable for the rest of Stage 1.
+/// SAFETY: called exactly once at nucleus entry while maskable interrupts are
+/// disabled by the loader. The static tables are then immutable for Stage 1.
 pub unsafe fn install() {
     // The fixed static image is linked at 0x0200_0000 and this bounded stack
     // is 16 KiB, so this addition cannot overflow the x86_64 address space.
@@ -144,6 +144,9 @@ pub unsafe fn install() {
     asm!("lidt [{0}]", in(reg) &idt, options(readonly, nostack, preserves_flags));
 }
 
+/// SAFETY: `gdt` points to the initialized nucleus-owned five-entry GDT; the
+/// selectors and far-return target are the constants installed immediately
+/// before this call, while external interrupts remain disabled.
 unsafe fn load_gdt_and_segments(gdt: &DescriptorTablePointer) {
     asm!(
         "lgdt [{gdt}]",
@@ -164,6 +167,8 @@ unsafe fn load_gdt_and_segments(gdt: &DescriptorTablePointer) {
     );
 }
 
+/// SAFETY: `selector` is TSS_SELECTOR for the initialized available TSS
+/// descriptor in the active nucleus-owned GDT.
 unsafe fn load_task_register(selector: u16) {
     asm!("ltr ax", in("ax") selector, options(nostack, preserves_flags));
 }
@@ -180,6 +185,8 @@ extern "C" fn exception_fatal(vector: u64, error: u64, rip: u64) -> ! {
     tos_serial::puts(b" cr2=");
     if vector == 14 {
         let cr2: u64;
+        // SAFETY: reading CR2 is a privileged x86_64 register read performed
+        // only in the fatal page-fault handler; it has no memory operands.
         unsafe {
             asm!("mov {0}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
         }
@@ -195,6 +202,8 @@ extern "C" fn exception_fatal(vector: u64, error: u64, rip: u64) -> ! {
 #[cfg(feature = "test-exception-ud2")]
 #[inline(never)]
 pub fn test_injection() {
+    // SAFETY: this isolated test-only artifact deliberately executes UD2 only
+    // after install() loaded the Stage 1 IDT; the handler never returns.
     unsafe { asm!("ud2", options(nostack, preserves_flags)) }
 }
 
@@ -203,5 +212,7 @@ pub fn test_injection() {
 pub fn test_injection() {
     // Vector 0x80 has no gate in the Stage 1 IDT. INT therefore generates #GP
     // with the hardware-supplied IDT selector error code 0x402.
+    // SAFETY: this isolated test-only INT runs after install() loaded the IDT;
+    // the #GP handler is fatal and never resumes the instruction stream.
     unsafe { asm!("int 0x80", options(nostack, preserves_flags)) }
 }

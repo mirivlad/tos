@@ -452,6 +452,13 @@ const fn boot_protocol_src_kind() -> u8 {
 mod tests {
     use super::*;
 
+    fn boot_info_bytes(bi: &BootInfo, len: usize) -> &[u8] {
+        assert!(len <= core::mem::size_of::<BootInfo>());
+        // SAFETY: `bi` is a live, properly aligned local BootInfo and `len`
+        // is bounded by its exact repr(C) size before creating the byte view.
+        unsafe { core::slice::from_raw_parts((bi as *const BootInfo).cast(), len) }
+    }
+
     #[test]
     fn struct_size_is_224() {
         assert_eq!(core::mem::size_of::<BootInfo>(), 224);
@@ -461,8 +468,7 @@ mod tests {
     #[test]
     fn default_validates() {
         let bi = BootInfo::new();
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
     }
 
@@ -470,8 +476,7 @@ mod tests {
     fn bad_magic_rejected() {
         let mut bi = BootInfo::new();
         bi.magic = 0;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadMagic)
@@ -481,8 +486,7 @@ mod tests {
     #[test]
     fn truncated_rejected() {
         let bi = BootInfo::new();
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 223) };
+        let bytes = boot_info_bytes(&bi, 223);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::ShortTotalSize)
@@ -493,8 +497,7 @@ mod tests {
     fn bad_boot_mode_rejected() {
         let mut bi = BootInfo::new();
         bi.boot_mode = 1;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadBootMode)
@@ -505,8 +508,7 @@ mod tests {
     fn next_must_be_zero() {
         let mut bi = BootInfo::new();
         bi.next = 0x1234;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::NonZeroNext)
@@ -516,8 +518,7 @@ mod tests {
     #[test]
     fn framebuffer_absent_consistency() {
         let bi = BootInfo::new(); // all fb fields zero
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
     }
 
@@ -526,8 +527,7 @@ mod tests {
         let mut bi = BootInfo::new();
         bi.framebuffer_phys = 0;
         bi.framebuffer_width = 800; // width without phys -> inconsistent
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadFramebuffer)
@@ -542,13 +542,11 @@ mod tests {
         bi.framebuffer_height = 600;
         bi.framebuffer_pitch = 3200;
         bi.framebuffer_format = 1; // not FB_FORMAT_NONE
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
 
         bi.framebuffer_format = FB_FORMAT_NONE; // present but format none -> reject
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadFramebuffer)
@@ -564,18 +562,15 @@ mod tests {
         bi.framebuffer_pitch = 3200;
 
         bi.framebuffer_format = FB_FORMAT_RGBX8;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
 
         bi.framebuffer_format = FB_FORMAT_BGRX8;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
 
         bi.framebuffer_format = 3;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadFramebuffer)
@@ -583,8 +578,7 @@ mod tests {
 
         bi.framebuffer_format = FB_FORMAT_RGBX8;
         bi.framebuffer_pitch = 3199;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadFramebuffer)
@@ -592,8 +586,7 @@ mod tests {
 
         bi.framebuffer_width = u32::MAX;
         bi.framebuffer_pitch = u32::MAX;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadFramebuffer)
@@ -604,8 +597,7 @@ mod tests {
     fn identity_kind_must_be_git_or_detached() {
         let mut bi = BootInfo::new();
         bi.capsule_identity_kind = 0; // SRC_KIND_NONE not allowed
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::UnsupportedCapsuleIdentityKind)
@@ -613,8 +605,7 @@ mod tests {
 
         let mut bi = BootInfo::new();
         bi.capsule_identity_kind = 99;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::UnsupportedCapsuleIdentityKind)
@@ -625,8 +616,7 @@ mod tests {
     fn in_struct_reserved_rejected() {
         let mut bi = BootInfo::new();
         bi.reserved[0] = 1;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::NonZeroReservedFields)
@@ -634,8 +624,7 @@ mod tests {
 
         let mut bi = BootInfo::new();
         bi.reserved2[0] = 1;
-        let bytes =
-            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        let bytes = boot_info_bytes(&bi, 224);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::NonZeroReservedFields)

@@ -203,9 +203,7 @@ impl<'a> Framebuffer<'a> {
 
 /// Draw the final human-facing Stage 1 status without changing boot outcome.
 ///
-/// # Safety
-///
-/// The caller supplies only a validated BootInfo from the loader's verified
+/// SAFETY: the caller supplies a validated BootInfo from the verified loader
 /// handoff. ADR-0022 requires the present framebuffer range to be mapped and
 /// reserved; this function uses its checked pitch × height size and performs no
 /// allocation. Invalid/absent values return without writing.
