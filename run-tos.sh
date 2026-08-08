@@ -35,7 +35,12 @@ command -v rustup >/dev/null 2>&1 || {
     exit 2
 }
 
-installed_targets=$(rustup target list --installed)
+cd "$SOURCE"
+if ! installed_targets=$(rustup target list --installed 2>&1); then
+    echo "run-tos: required Rust toolchain from source/rust-toolchain.toml is unavailable" >&2
+    printf '%s\n' "$installed_targets" >&2
+    exit 2
+fi
 for target in x86_64-unknown-uefi x86_64-unknown-none; do
     printf '%s\n' "$installed_targets" | grep -Fxq "$target" || {
         echo "run-tos: missing Rust target: $target" >&2
@@ -50,7 +55,6 @@ if [ "$MODE" = interactive ] && [ -z "${DISPLAY-}" ] && [ -z "${WAYLAND_DISPLAY-
     exit 2
 fi
 
-cd "$SOURCE"
 cargo build --release -p tos-capsule-tool
 cargo build --release -p tos-uefi-loader --target x86_64-unknown-uefi
 cargo build --release -p tos-nucleus --target x86_64-unknown-none

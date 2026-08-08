@@ -45,6 +45,10 @@ chmod +x "$TMP/bin/cargo"
 
 cat > "$TMP/bin/rustup" <<'EOF'
 #!/bin/sh
+[ "${PWD##*/}" = source ] || {
+    echo "rustup target check was not run from source/" >&2
+    exit 9
+}
 if [ "${RUN_TOS_MISSING_TARGET-}" = 1 ]; then
     printf '%s\n' x86_64-unknown-uefi
 else
