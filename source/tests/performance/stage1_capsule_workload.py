@@ -141,14 +141,22 @@ def report(args: argparse.Namespace) -> bool:
         "guest": {"cpu": "qemu64", "memory_mib": 256, "vcpus": 1},
         "host": {
             "cpu": cpu_description(),
-            "virtualization_mode": "TCG (QEMU invoked without -enable-kvm)",
+            "virtualization_mode": (
+                "TCG (QEMU invoked without -enable-kvm)"
+                if args.accelerator == "tcg"
+                else "KVM research-only alternate backend"
+            ),
         },
         "measurement": {
             "end_event": "TOS.BOOTTEXT.PATH",
             "event_clock": "host monotonic serial-byte arrival",
             "start_event": "TOS.BOOT.ENTRY",
         },
-        "qemu": {"machine": "q35", "version": args.qemu_version},
+        "qemu": {
+            "accelerator": args.accelerator,
+            "machine": "q35",
+            "version": args.qemu_version,
+        },
         "raw_samples": {"measurements": measured, "warmups": warmups},
         "rustc_version": args.rustc_version,
         "source_commit": args.source_commit,
@@ -165,6 +173,85 @@ def report(args: argparse.Namespace) -> bool:
     }
     write_json(args.out, report_value)
     return p95 <= 250_000_000
+
+
+def native_report(args: argparse.Namespace) -> None:
+    records = timestamp_records(args.samples)
+    measured = [record for record in records if record.get("phase") == "measurement"]
+    warmups = [record for record in records if record.get("phase") == "warmup"]
+    if len(records) != len(measured) + len(warmups):
+        raise ValueError("native sample JSONL contains an unknown phase")
+    if len(measured) != 21 or len(warmups) != 3:
+        raise ValueError(
+            f"native report requires 3 warm-ups and 21 measurements, got {len(warmups)}/{len(measured)}"
+        )
+    if any(record.get("phase") != "measurement" for record in measured):
+        raise ValueError("native measurement JSONL contains a non-measurement sample")
+    if any(record.get("phase") != "warmup" for record in warmups):
+        raise ValueError("native warm-up JSONL contains a non-warmup sample")
+    all_records = warmups + measured
+    if any(record.get("validations") != 2 for record in all_records):
+        raise ValueError("native sample does not attest two fresh validations")
+    if any(record.get("lookup") != "/system/boot/init.tos" for record in all_records):
+        raise ValueError("native sample does not attest canonical boot lookup")
+    durations = sorted(record.get("duration_ns") for record in measured)
+    if any(not isinstance(value, int) or value <= 0 for value in durations):
+        raise ValueError("native measurement duration is not a positive integer")
+    p95_rank = math.ceil(len(durations) * 0.95)
+    p99_rank = math.ceil(len(durations) * 0.99)
+    p95 = durations[p95_rank - 1]
+    workload = json.loads(args.fixture.joinpath("workload.json").read_text(encoding="utf-8"))
+    write_json(
+        args.out,
+        {
+            "architecture": "x86_64 Stage 1 native logical validation research",
+            "evidence_status": "P1 research-only",
+            "host": {"cpu": cpu_description(), "os": platform.platform()},
+            "measurement": {
+                "logical_sequence": "fresh parse -> fresh parse -> canonical boot_file lookup",
+                "timer": "host monotonic Instant after capsule bytes are read once",
+            },
+            "raw_samples": {"measurements": measured, "warmups": warmups},
+            "rustc_version": args.rustc_version,
+            "source_commit": args.source_commit,
+            "statistics": {
+                "median_ns": durations[len(durations) // 2],
+                "p95_budget_ns": 250_000_000,
+                "p95_ns": p95,
+                "p95_rank": p95_rank,
+                "p99_ns": durations[p99_rank - 1],
+                "p99_rank": p99_rank,
+                "would_meet_existing_budget": p95 <= 250_000_000,
+            },
+            "workload": workload,
+        },
+    )
+
+
+def comparison(args: argparse.Namespace) -> None:
+    native = json.loads(args.native.read_text(encoding="utf-8"))
+    qemu = json.loads(args.qemu.read_text(encoding="utf-8"))
+    native_p95 = native["statistics"]["p95_ns"]
+    qemu_p95 = qemu["statistics"]["p95_ns"]
+    if not isinstance(native_p95, int) or not isinstance(qemu_p95, int) or native_p95 <= 0:
+        raise ValueError("comparison reports lack positive p95 values")
+    write_json(
+        args.out,
+        {
+            "native": {
+                "p95_ns": native_p95,
+                "source_commit": native["source_commit"],
+                "would_meet_existing_budget": native["statistics"]["would_meet_existing_budget"],
+            },
+            "qemu_tcg": {
+                "p95_ns": qemu_p95,
+                "source_commit": qemu["source_commit"],
+                "would_meet_existing_budget": qemu["statistics"]["budget_pass"],
+            },
+            "qemu_to_native_p95_ratio": qemu_p95 / native_p95,
+            "scope": "research-only comparison; neither result amends ADR-0025",
+        },
+    )
 
 
 def main() -> None:
@@ -188,14 +275,29 @@ def main() -> None:
     report_parser.add_argument("--ovmf-code", required=True, type=Path)
     report_parser.add_argument("--ovmf-vars", required=True, type=Path)
     report_parser.add_argument("--evidence-status", choices=("P1", "P2"), required=True)
+    report_parser.add_argument("--accelerator", choices=("tcg", "kvm"), required=True)
+    native_report_parser = subcommands.add_parser("native-report")
+    native_report_parser.add_argument("--fixture", required=True, type=Path)
+    native_report_parser.add_argument("--samples", required=True, type=Path)
+    native_report_parser.add_argument("--out", required=True, type=Path)
+    native_report_parser.add_argument("--source-commit", required=True)
+    native_report_parser.add_argument("--rustc-version", required=True)
+    comparison_parser = subcommands.add_parser("comparison")
+    comparison_parser.add_argument("--native", required=True, type=Path)
+    comparison_parser.add_argument("--qemu", required=True, type=Path)
+    comparison_parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     if args.command == "fixture":
         fixture(args.out)
     elif args.command == "sample":
         append_sample(args.timestamps, args.phase, args.index, args.out)
-    else:
+    elif args.command == "report":
         if not report(args):
             raise SystemExit("p95 exceeds the Stage 1 250 ms budget")
+    elif args.command == "native-report":
+        native_report(args)
+    else:
+        comparison(args)
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ printf vars > "$TMP/OVMF_VARS.fd"
 python3 "$WORKLOAD" report --fixture "$TMP/fixture" --measurements "$TMP/measurements.jsonl" \
     --warmups "$TMP/warmups.jsonl" --out "$TMP/report.json" --source-commit test \
     --qemu-version fake-qemu --rustc-version fake-rustc --ovmf-code "$TMP/OVMF_CODE.fd" \
-    --ovmf-vars "$TMP/OVMF_VARS.fd" --evidence-status P1
+    --ovmf-vars "$TMP/OVMF_VARS.fd" --evidence-status P1 --accelerator tcg
 python3 - "$TMP/report.json" <<'PY'
 import json
 import sys
@@ -70,6 +70,35 @@ if stats["p95_rank"] != 20 or stats["p99_rank"] != 21 or not stats["budget_pass"
     raise SystemExit(f"FAIL: report did not retain contract statistics: {stats!r}")
 if len(report["raw_samples"]["measurements"]) != 21:
     raise SystemExit("FAIL: report omitted raw measured samples")
+if report["qemu"]["accelerator"] != "tcg":
+    raise SystemExit("FAIL: report did not retain the default TCG profile")
+PY
+
+: > "$TMP/native-samples.jsonl"
+for index in 1 2 3; do
+    printf '{"duration_ns":%s,"index":%s,"lookup":"/system/boot/init.tos","phase":"warmup","validations":2}\n' \
+        "$((100 + index))" "$index" >> "$TMP/native-samples.jsonl"
+done
+for index in $(seq 1 21); do
+    printf '{"duration_ns":%s,"index":%s,"lookup":"/system/boot/init.tos","phase":"measurement","validations":2}\n' \
+        "$((100 + index))" "$index" >> "$TMP/native-samples.jsonl"
+done
+python3 "$WORKLOAD" native-report --fixture "$TMP/fixture" --samples "$TMP/native-samples.jsonl" \
+    --out "$TMP/native-report.json" --source-commit test --rustc-version fake-rustc
+python3 "$WORKLOAD" comparison --native "$TMP/native-report.json" --qemu "$TMP/report.json" \
+    --out "$TMP/comparison.json"
+python3 - "$TMP/native-report.json" "$TMP/comparison.json" <<'PY'
+import json
+import sys
+
+native = json.load(open(sys.argv[1], encoding="utf-8"))
+comparison = json.load(open(sys.argv[2], encoding="utf-8"))
+if native["statistics"]["p95_ns"] != 120:
+    raise SystemExit("FAIL: native report used incorrect nearest-rank p95")
+if native["measurement"]["logical_sequence"] != "fresh parse -> fresh parse -> canonical boot_file lookup":
+    raise SystemExit("FAIL: native report omitted the exact logical validation sequence")
+if comparison["qemu_to_native_p95_ratio"] != 20 / 120:
+    raise SystemExit("FAIL: comparison did not retain p95 ratio")
 PY
 
 echo 'stage1-performance-workload: PASS'

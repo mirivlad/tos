@@ -43,6 +43,7 @@ make_log_script "$TMP/repo/scripts/tests/qemu-interactive-mode.sh" qemu-interact
 make_log_script "$TMP/repo/scripts/tests/capture-qemu-events.sh" qemu-event-capture
 make_log_script "$TMP/repo/scripts/tests/qemu-timed-harness.sh" qemu-timed-harness
 make_log_script "$TMP/repo/scripts/tests/stage1-performance-workload.sh" stage1-performance-workload
+make_log_script "$TMP/repo/scripts/tests/stage1-native-validation-harness.sh" stage1-native-validation-harness
 make_log_script "$TMP/repo/source/host-tools/qemu-test/run.sh" qemu-success
 make_log_script "$TMP/repo/source/host-tools/qemu-test/negative-suite.sh" qemu-negative
 make_log_script "$TMP/repo/source/host-tools/qemu-test/capsule-size-limit.sh" qemu-capsule-size-limit
@@ -88,6 +89,7 @@ qemu-interactive-mode
 qemu-event-capture
 qemu-timed-harness
 stage1-performance-workload
+stage1-native-validation-harness
 release
 spdx
 dco

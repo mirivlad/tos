@@ -48,7 +48,7 @@ export QEMU_TIMED_ARGS="$TMP/qemu.args"
 (cd "$TMP/repo/source" && PATH="$TMP/bin:$PATH" \
     OVMF_CODE="$TMP/OVMF_CODE.fd" OVMF_VARS="$TMP/OVMF_VARS.fd" \
     bash host-tools/qemu-test/run.sh --out "$TMP/out" --capsule "$TMP/capsule.bin" \
-        --event-timestamps "$TMP/timestamps.jsonl" --expect 33)
+        --event-timestamps "$TMP/timestamps.jsonl" --accel kvm --expect 33)
 
 grep -Fq -- '-serial stdio' "$QEMU_TIMED_ARGS" || {
     echo 'FAIL: timed run did not route serial through the shared capture path' >&2
@@ -56,6 +56,10 @@ grep -Fq -- '-serial stdio' "$QEMU_TIMED_ARGS" || {
 }
 grep -Fq 'isa-debug-exit' "$QEMU_TIMED_ARGS" || {
     echo 'FAIL: timed run changed automated isa-debug-exit semantics' >&2
+    exit 1
+}
+grep -Fq -- '-accel kvm' "$QEMU_TIMED_ARGS" || {
+    echo 'FAIL: explicit research accelerator did not reach shared QEMU harness' >&2
     exit 1
 }
 python3 - "$TMP/timestamps.jsonl" <<'PY'

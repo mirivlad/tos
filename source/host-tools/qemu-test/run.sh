@@ -20,7 +20,7 @@
 #   bash host-tools/qemu-test/run.sh --out DIR [--capsule FILE] [--loader FILE] [--nucleus FILE]
 #                                    [--expect N]
 #                                    [--require "EV ..."] [--forbid "EV ..."]
-#                                    [--timeout SECONDS] [--event-timestamps FILE]
+#                                    [--timeout SECONDS] [--event-timestamps FILE] [--accel tcg|kvm]
 #                                    [--interactive --display gtk|sdl]
 #
 # --expect defaults to 33 (HALT_OK). --require/--forbid default to the event
@@ -45,6 +45,7 @@ QEMU_TIMEOUT=90
 INTERACTIVE=0
 DISPLAY_BACKEND=""
 EVENT_TIMESTAMPS=""
+QEMU_ACCEL=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -57,6 +58,7 @@ while [ $# -gt 0 ]; do
         --forbid)   FORBID="$2"; shift 2 ;;
         --timeout)  QEMU_TIMEOUT="$2"; shift 2 ;;
         --event-timestamps) EVENT_TIMESTAMPS="$2"; shift 2 ;;
+        --accel)    QEMU_ACCEL="$2"; shift 2 ;;
         --interactive) INTERACTIVE=1; shift ;;
         --display)  DISPLAY_BACKEND="$2"; shift 2 ;;
         -h|--help)  sed -n '3,28p' "$0"; exit 0 ;;
@@ -81,6 +83,11 @@ elif [ -n "$DISPLAY_BACKEND" ]; then
     echo "--display is valid only with --interactive" >&2
     exit 2
 fi
+
+case "$QEMU_ACCEL" in
+    ""|tcg|kvm) ;;
+    *) echo "--accel must be tcg or kvm" >&2; exit 2 ;;
+esac
 
 OUT="${OUT:-$ROOT/target/qemu-test}"
 mkdir -p "$OUT"
@@ -192,6 +199,13 @@ QEMU_ARGS=(
     -no-reboot
     -monitor none
 )
+# Acceleration is intentionally opt-in. The ordinary Stage 1 conformance
+# profile invokes QEMU without this option and therefore remains qemu64/TCG.
+# Research callers can select an alternate backend while retaining this exact
+# preparation, firmware, device and event-capture path.
+if [ -n "$QEMU_ACCEL" ]; then
+    QEMU_ARGS+=( -accel "$QEMU_ACCEL" )
+fi
 if [ "$INTERACTIVE" -eq 0 ]; then
     QEMU_ARGS+=( -device isa-debug-exit )
 fi

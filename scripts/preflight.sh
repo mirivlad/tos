@@ -83,6 +83,9 @@ qemu_timed_harness() {
 stage1_performance_workload() {
     bash "$ROOT/scripts/tests/stage1-performance-workload.sh"
 }
+stage1_native_validation_harness() {
+    bash "$ROOT/scripts/tests/stage1-native-validation-harness.sh"
+}
 release_manifest() { python3 "$ROOT/tools/build-release-manifest.py" --check; }
 spdx() { sh "$ROOT/scripts/check-spdx.sh"; }
 dco() { sh "$ROOT/scripts/check-dco.sh"; }
@@ -142,6 +145,7 @@ run_gate "interactive QEMU mode" qemu_interactive_mode
 run_gate "QEMU event timestamp capture" qemu_event_capture
 run_gate "timed QEMU harness" qemu_timed_harness
 run_gate "Stage 1 performance workload" stage1_performance_workload
+run_gate "Stage 1 native validation harness" stage1_native_validation_harness
 run_gate "release manifest and SHA256SUMS" release_manifest
 run_gate "SPDX licence inventory" spdx
 run_gate "DCO sign-off" dco
