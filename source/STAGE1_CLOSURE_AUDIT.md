@@ -5,11 +5,11 @@
 Status: working closure audit, non-normative. It records conformance findings;
 it does not amend any requirement or declare Stage 1 complete.
 
-Audit baseline: `main` at
+Phase 1 audit baseline: `main` at
 `63bb8f78b54c6e30ec01ed3b4aec4bf2d066512a` (2026-08-09). The original
 findings remain historical records; every “Current implementation/evidence”
-entry below describes this exact reachable HEAD, not the Phase 0 starting
-state.
+entry describes that baseline or names the later closure commit supplying the
+evidence, never the Phase 0 starting state.
 
 ## Classification rules
 
