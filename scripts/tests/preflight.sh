@@ -34,6 +34,8 @@ make_log_script "$TMP/repo/scripts/check-dco.sh" dco
 make_log_script "$TMP/repo/scripts/tests/check-interface-contract-authority.sh" interface-authority
 make_log_script "$TMP/repo/scripts/tests/check-boot-event-contract.sh" boot-event-contract
 make_log_script "$TMP/repo/scripts/tests/check-nucleus-exception-foundation.sh" exception-foundation
+make_log_script "$TMP/repo/scripts/tests/run-tos.sh" run-tos
+make_log_script "$TMP/repo/scripts/tests/qemu-interactive-mode.sh" qemu-interactive-mode
 make_log_script "$TMP/repo/source/host-tools/qemu-test/run.sh" qemu-success
 make_log_script "$TMP/repo/source/host-tools/qemu-test/negative-suite.sh" qemu-negative
 make_log_script "$TMP/repo/source/host-tools/qemu-test/capsule-size-limit.sh" qemu-capsule-size-limit
@@ -70,6 +72,8 @@ spec
 interface-authority
 boot-event-contract
 exception-foundation
+run-tos
+qemu-interactive-mode
 release
 spdx
 dco

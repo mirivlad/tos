@@ -1314,3 +1314,27 @@ boot architecture, DCO policy или опубликованной истории
   extended explicitly (not exempted), and `check-spdx-assembly.sh` now covers
   that boundary. Final `./scripts/preflight.sh --full` passed all 21 gates,
   including both injected-exception QEMU scenarios.
+
+## 2026-08-09 — Human QEMU launcher and framebuffer diagnostic (partial UX block)
+
+- `run-tos.sh` now probes the installed QEMU with `-display help`, chooses GTK
+  before SDL and gives the exact Debian/MX `qemu-system-gui` remedy when neither
+  graphical backend exists. It keeps `--check` as the ordinary self-judging
+  exit-33 path and passes the chosen backend to the existing QEMU harness.
+- The shared harness has an explicitly separate interactive terminal mode: it
+  retains the capsule, ESP, OVMF and Q35 preparation path but omits both the
+  `isa-debug-exit` device and timeout. The unchanged production nucleus writes
+  its result then remains in its HLT loop, leaving the display open until the
+  user closes QEMU or interrupts it. Serial output remains visible and is
+  mirrored to `serial.log`.
+- A no-allocation RGBX8/BGRX8 framebuffer diagnostic is drawn only after all
+  BootInfo, memory-map, capsule, source-identity and boot-text checks have
+  succeeded. It has checked/clip-safe pixel arithmetic, a small locally coded
+  status font and a generic `@` grid primitive; host integration tests cover
+  byte order, pitch, clipping, absence and grid rendering. Normal QEMU still
+  reaches `TOS.HALT` and raw exit 33.
+- Pyro itself remains deliberately absent from the nucleus: the requested
+  source art is CC-BY-SA-4.0 documentation/branding material and the current
+  policy does not resolve embedding it in the GPL nucleus binary. This is the
+  remaining owner licensing/provenance decision for the visual UX request; no
+  license claim was invented.

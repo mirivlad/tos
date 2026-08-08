@@ -58,6 +58,12 @@ boot_event_contract() {
 exception_foundation() {
     bash "$ROOT/scripts/tests/check-nucleus-exception-foundation.sh"
 }
+run_tos_launcher() {
+    bash "$ROOT/scripts/tests/run-tos.sh"
+}
+qemu_interactive_mode() {
+    bash "$ROOT/scripts/tests/qemu-interactive-mode.sh"
+}
 release_manifest() { python3 "$ROOT/tools/build-release-manifest.py" --check; }
 spdx() { sh "$ROOT/scripts/check-spdx.sh"; }
 dco() { sh "$ROOT/scripts/check-dco.sh"; }
@@ -109,6 +115,8 @@ run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
 run_gate "Boot ABI event contract" boot_event_contract
 run_gate "nucleus exception foundation" exception_foundation
+run_gate "run-tos launcher" run_tos_launcher
+run_gate "interactive QEMU mode" qemu_interactive_mode
 run_gate "release manifest and SHA256SUMS" release_manifest
 run_gate "SPDX licence inventory" spdx
 run_gate "DCO sign-off" dco

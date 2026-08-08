@@ -20,7 +20,7 @@
 #   bash host-tools/qemu-test/run.sh --out DIR [--capsule FILE] [--loader FILE] [--nucleus FILE]
 #                                    [--expect N]
 #                                    [--require "EV ..."] [--forbid "EV ..."]
-#                                    [--timeout SECONDS] [--interactive]
+#                                    [--timeout SECONDS] [--interactive --display gtk|sdl]
 #
 # --expect defaults to 33 (HALT_OK). --require/--forbid default to the event
 # set implied by --expect (see below) and may be overridden for a new scenario.
@@ -42,6 +42,7 @@ REQUIRE=""
 FORBID=""
 QEMU_TIMEOUT=90
 INTERACTIVE=0
+DISPLAY_BACKEND=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -54,6 +55,7 @@ while [ $# -gt 0 ]; do
         --forbid)   FORBID="$2"; shift 2 ;;
         --timeout)  QEMU_TIMEOUT="$2"; shift 2 ;;
         --interactive) INTERACTIVE=1; shift ;;
+        --display)  DISPLAY_BACKEND="$2"; shift 2 ;;
         -h|--help)  sed -n '3,28p' "$0"; exit 0 ;;
         --*)        echo "unknown option: $1" >&2; exit 2 ;;
         *)
@@ -62,6 +64,16 @@ while [ $# -gt 0 ]; do
             shift ;;
     esac
 done
+
+if [ "$INTERACTIVE" -eq 1 ]; then
+    case "$DISPLAY_BACKEND" in
+        gtk|sdl) ;;
+        *) echo "--interactive requires --display gtk or --display sdl" >&2; exit 2 ;;
+    esac
+elif [ -n "$DISPLAY_BACKEND" ]; then
+    echo "--display is valid only with --interactive" >&2
+    exit 2
+fi
 
 OUT="${OUT:-$ROOT/target/qemu-test}"
 mkdir -p "$OUT"
@@ -166,16 +178,19 @@ QEMU_ARGS=(
     -drive "if=none,id=esp0,format=raw,file=$ESP"
     -device ahci,id=ahci0
     -device ide-hd,bus=ahci0.0,drive=esp0
-    -device isa-debug-exit
     -no-reboot
     -monitor none
 )
+if [ "$INTERACTIVE" -eq 0 ]; then
+    QEMU_ARGS+=( -device isa-debug-exit )
+fi
 set +e
 if [ "$INTERACTIVE" -eq 1 ]; then
-    # Keep the same image, firmware, machine and isa-debug-exit contract as the
-    # automated harness. Only expose the display and mirror serial to both the
-    # terminal and the evidence log.
-    timeout "$QEMU_TIMEOUT" qemu-system-x86_64 "${QEMU_ARGS[@]}" \
+    # Preparation and machine profile are identical to the self-judging path.
+    # Deliberately omit isa-debug-exit and timeout: after the production nucleus
+    # writes RESULT_HALT_OK it remains in its HLT loop, so the human may inspect
+    # the screen and serial output until closing QEMU or pressing Ctrl-C.
+    qemu-system-x86_64 "${QEMU_ARGS[@]}" -display "$DISPLAY_BACKEND" \
         -chardev "stdio,id=tosserial,signal=off,logfile=$OUT/serial.log" \
         -serial chardev:tosserial
     RC=$?
@@ -186,6 +201,11 @@ else
     RC=$?
 fi
 set -e
+
+if [ "$INTERACTIVE" -eq 1 ]; then
+    echo "interactive QEMU session ended (status $RC); serial log: $OUT/serial.log"
+    exit "$RC"
+fi
 
 # --- 4. boot-event log ---
 # Strip terminal escape sequences written by the firmware, then keep only the

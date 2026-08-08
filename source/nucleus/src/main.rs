@@ -10,6 +10,7 @@
 #![no_main]
 
 mod exception;
+mod framebuffer;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -209,7 +210,12 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::put_hex32(&bi.capsule_digest);
     tos_serial::puts(b" arch=0.2.1 builder=1\r\n");
 
-    // --- 6. halt with success code ---
+    // --- 6. best-effort human-facing diagnostic ---
+    // All boot decisions, source identity checks and canonical boot-text work
+    // above have succeeded. Rendering cannot affect the result.
+    unsafe { framebuffer::render_stage1_status(bi) };
+
+    // --- 7. halt with success code ---
     tos_serial::puts(b"TOS.HALT ok=0x10\r\n");
     result_port(RESULT_HALT_OK)
 }
