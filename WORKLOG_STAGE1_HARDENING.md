@@ -1259,3 +1259,28 @@ boot architecture, DCO policy или опубликованной истории
   nine-event success trace and all thirteen declared negative fixtures;
   `./scripts/preflight.sh --full` passes 17 gates after the two new mandatory
   contract checks were added.
+
+## 2026-08-09 — F-12 capsule resource bounds
+
+- Project Architect accepted ADR-0021 as a Level 2 contract decision. It fixes
+  inclusive joint limits at 32 MiB capsule bytes, 4096 files, 1024 bytes per
+  path, 1 MiB name arena and 64 KiB licence notice. The decision also fixes
+  parser precedence, no-allocation parser behavior and a maximum of two linear
+  accepted-capsule hash traversals.
+- RED evidence observed before the implementation: a 32 MiB + 1 input reached
+  `TotalLengthMismatch` instead of a resource error, and a builder with 4097
+  files built successfully. GREEN in `32bf281` adds stable `CapsError` and
+  `BuildError` variants, checked builder limits, early parser limits and a UEFI
+  file-size check before capsule pool allocation or full-file reading.
+- The exact-MAX/MAX+1 unit coverage exercises every bound and deterministic
+  precedence. The accepted 1,000-file / 16 MiB integration workload remains
+  green. No large tracked vector was added: an ignored sparse 32 MiB + 1 file
+  is deterministically generated below `source/target/` for the QEMU scenario.
+- QEMU evidence under the normal loader, capsule/ESP preparation and OVMF
+  profile logs `TOS.BOOT.FAILC capsule_err=CapsuleTooLarge`, emits no nucleus
+  entry and exits 67. The scenario is an 18th full-preflight gate; the isolated
+  preflight orchestration regression was updated accordingly.
+- Verification on the transaction: generated specification and release
+  manifest checks, SPDX and DCO, formatting, 65 workspace tests, both target
+  clippy checks, 200,000 parser-fuzz rounds, QEMU success, all thirteen tracked
+  negative vectors and the new resource-boundary QEMU case: **18/18 PASS**.
