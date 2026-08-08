@@ -1338,3 +1338,7 @@ boot architecture, DCO policy или опубликованной истории
   policy does not resolve embedding it in the GPL nucleus binary. This is the
   remaining owner licensing/provenance decision for the visual UX request; no
   license claim was invented.
+- On the available X11/GTK reference host, an interactive smoke reached
+  `TOS.HALT ok=0x10` and remained running for the full 12-second observation;
+  QEMU ended only when the external test sent SIGINT (the same user-visible
+  Ctrl-C action), not through `isa-debug-exit` or a self-judging timeout.
