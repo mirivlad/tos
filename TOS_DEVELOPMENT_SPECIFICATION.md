@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `8275b4edee16981ab88f338da94d6f4387a1e5180db0ce142001cf15d22f3d20`  
+Source-manifest SHA-256: `af840544723311f4e7e96ccaaebb1bd2094cd4faf0bc000f3369f68c4decee7d`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -57,6 +57,8 @@ The name expands to **TextOS** and also carries the internal joke of the Russian
 The supported Stage 1 reference environment is x86_64 Linux with:
 
 - QEMU system emulation for x86_64;
+- a QEMU GTK backend (SDL is an automatic fallback; Debian/MX package:
+  `qemu-system-gui`) for the interactive window;
 - a matching OVMF CODE/VARS firmware pair;
 - `mtools` (`mformat`, `mcopy` and `mmd`) and GNU `timeout`;
 - `rustup` and the toolchain declared by `source/rust-toolchain.toml`, with the
@@ -70,10 +72,11 @@ not install software. From the repository root, start the human-facing boot:
 ```
 
 This builds the Stage 1 release artifacts, prepares the capsule and ESP through
-the same harness used by CI, opens the QEMU display and streams serial boot
-events in the terminal. A successful boot reaches `TOS.HALT ok=0x10`; QEMU then
-exits through the Stage 1 `isa-debug-exit` contract and the harness prints
-`QEMU-TEST PASS`.
+the same harness used by CI, opens a GTK (or SDL fallback) QEMU display and
+streams serial boot events in the terminal. A successful boot reaches
+`TOS.HALT ok=0x10`, then the production nucleus stays halted so the visual
+Stage 1 verification panel remains visible until you close QEMU or press
+Ctrl+C. Its serial log is retained alongside the image preparation evidence.
 
 For a headless automated check, run:
 
@@ -83,9 +86,15 @@ For a headless automated check, run:
 
 Serial and filtered event evidence is retained under
 `source/target/run-tos/interactive/` or `source/target/run-tos/check/`, in
-`serial.log` and `events.log`. The QEMU window is not yet evidence of a desktop:
-the reliable observable at this stage is the serial event sequence, and the
-framebuffer handoff remains part of the open Stage 1 closure work.
+`serial.log` and `events.log`. `--check` is the self-judging mode: it enables
+`isa-debug-exit`, returns raw QEMU exit 33 on success and prints
+`QEMU-TEST PASS`. The interactive display is a human-facing representation of
+the already-validated boot state; serial events remain the machine-readable
+evidence.
+
+The screen is not a desktop, shell or GUI subsystem. It is a best-effort
+Stage 1 diagnostic drawn directly to the validated RGBX8/BGRX8 framebuffer;
+when no framebuffer is available, boot evidence remains the serial log.
 
 Stage 1 is a bootable TOS foundation with source-bound capsule identity and
 fail-closed validation. It is not yet a user shell, application environment or

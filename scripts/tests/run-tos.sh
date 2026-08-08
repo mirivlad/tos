@@ -57,6 +57,17 @@ fi
 EOF
 chmod +x "$TMP/bin/rustup"
 
+cat > "$TMP/bin/qemu-system-x86_64" <<'EOF'
+#!/bin/sh
+if [ "$1" = -display ] && [ "$2" = help ]; then
+    printf '%b\n' "${RUN_TOS_DISPLAY_HELP-gtk\\nsdl}"
+    exit 0
+fi
+echo "unexpected QEMU invocation: $*" >&2
+exit 9
+EOF
+chmod +x "$TMP/bin/qemu-system-x86_64"
+
 export RUN_TOS_TEST_LOG="$TMP/check.log"
 (cd "$TMP/repo" && PATH="$TMP/bin:$PATH" sh ./run-tos.sh --check) >/dev/null
 cat > "$TMP/check.expected" <<'EOF'
@@ -75,11 +86,38 @@ export RUN_TOS_TEST_LOG="$TMP/interactive.log"
 (cd "$TMP/repo" && PATH="$TMP/bin:$PATH" DISPLAY=:1 \
     sh ./run-tos.sh) >/dev/null
 if ! tail -n 1 "$TMP/interactive.log" \
-        | grep -Fxq 'harness --out target/run-tos/interactive --expect 33 --interactive'; then
+        | grep -Fxq 'harness --out target/run-tos/interactive --interactive --display gtk'; then
     echo "FAIL: interactive mode did not delegate to the shared harness" >&2
     cat "$TMP/interactive.log" >&2
     exit 1
 fi
+
+export RUN_TOS_TEST_LOG="$TMP/sdl.log"
+(cd "$TMP/repo" && PATH="$TMP/bin:$PATH" DISPLAY=:1 RUN_TOS_DISPLAY_HELP='none\nsdl' \
+    sh ./run-tos.sh) >/dev/null
+if ! tail -n 1 "$TMP/sdl.log" \
+        | grep -Fxq 'harness --out target/run-tos/interactive --interactive --display sdl'; then
+    echo "FAIL: SDL fallback was not delegated to the shared harness" >&2
+    cat "$TMP/sdl.log" >&2
+    exit 1
+fi
+
+if (cd "$TMP/repo" && PATH="$TMP/bin:$PATH" DISPLAY=:1 RUN_TOS_DISPLAY_HELP='none\ncurses' \
+        sh ./run-tos.sh) >"$TMP/no-backend.out" 2>&1; then
+    echo "FAIL: interactive mode accepted QEMU without GTK or SDL" >&2
+    exit 1
+fi
+for line in \
+    'run-tos: QEMU has no graphical display backend' \
+    'run-tos: on Debian/MX install qemu-system-gui' \
+    'run-tos: use ./run-tos.sh --check for headless verification'
+do
+    if ! grep -Fxq "$line" "$TMP/no-backend.out"; then
+        echo "FAIL: no-backend error omitted: $line" >&2
+        cat "$TMP/no-backend.out" >&2
+        exit 1
+    fi
+done
 
 if (cd "$TMP/repo" && PATH="$TMP/bin:$PATH" RUN_TOS_MISSING_TARGET=1 \
         sh ./run-tos.sh --check) >"$TMP/missing.out" 2>&1; then

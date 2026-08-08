@@ -9,6 +9,9 @@
 
 #![cfg(test)]
 
+#[path = "../../../nucleus/src/framebuffer.rs"]
+mod framebuffer;
+
 use tos_capsule::{parse, CapsError, FLAG_BOOT_CANONICAL, SRC_KIND_DETACHED};
 use tos_hash::{sha256, Sha256};
 
