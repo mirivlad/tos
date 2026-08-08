@@ -1128,3 +1128,19 @@ boot architecture, DCO policy или опубликованной истории
 - No vector was added or regenerated; no parser/builder/production code,
   `vectors.tsv`, vector README, SPDX gate or `PROGRESS.md` was changed. Work
   stops at this owner decision before any tracked binary regeneration.
+
+## 2026-08-09 — ADR-0019 accepted: mixed-material capsule vector provenance
+
+- Project Architect accepted Option A as a Tier 1 decision. ADR-0019 defines
+  `mixed-material-generated` as an artifact/provenance classification, never an
+  SPDX identifier, and fixes the machine-readable
+  `container_licensing.status`/`spdx_expression: null` representation.
+- Every tracked capsule-v1 `.bin` must receive a checked provenance entry with
+  inputs, digests, roles, input SPDX identifiers, generator provenance and
+  retained notice role. Derived invalid fixtures additionally need base vector,
+  base digest and deterministic recipe. The existing wide `.bin` SPDX exemption
+  must be replaced by this validation.
+- Historic provenance may be recorded only if demonstrated. Otherwise a fixture
+  is explicitly `unverifiable-legacy` and must be replaced from a known commit
+  before Stage 1 evidence relies on it. A future explicitly Apache synthetic
+  vector class remains separate and does not reclassify boot-material fixtures.
