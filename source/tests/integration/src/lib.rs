@@ -9,16 +9,30 @@
 
 #![cfg(test)]
 
-use tos_capsule::{parse, FLAG_BOOT_CANONICAL, SRC_KIND_DETACHED};
-use tos_hash::sha256;
+use tos_capsule::{parse, CapsError, FLAG_BOOT_CANONICAL, SRC_KIND_DETACHED};
+use tos_hash::{sha256, Sha256};
 
 const V: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../vectors/capsule-v1/");
 // Real sources (up two levels from tests/integration -> source/).
 const INIT_TOS: &[u8] = include_bytes!("../../../system/boot/init.tos");
 const NOTICES: &[u8] = include_bytes!("../../../system/boot/NOTICES.txt");
+const SRC_KIND_OFFSET: usize = 96;
+const SRC_OID_ALG_OFFSET: usize = 97;
+const SRC_OID_LENGTH_OFFSET: usize = 98;
+const SRC_VALUE_OFFSET: usize = 100;
+const WHOLE_DIGEST_OFFSET: usize = 152;
+const CAPSULE_HEADER_SIZE: usize = 184;
 
 fn vec(name: &str) -> Vec<u8> {
     std::fs::read(format!("{V}{name}")).expect("read vector")
+}
+
+fn refix_whole_digest(bytes: &mut [u8]) {
+    let mut h = Sha256::new();
+    h.update(&bytes[..WHOLE_DIGEST_OFFSET]);
+    h.update(&[0u8; 32]);
+    h.update(&bytes[CAPSULE_HEADER_SIZE..]);
+    bytes[WHOLE_DIGEST_OFFSET..CAPSULE_HEADER_SIZE].copy_from_slice(&h.finalize());
 }
 
 #[test]
@@ -71,6 +85,24 @@ fn golden_valid_whole_digest_self_consistent() {
     hh.update(&[0u8; 32]);
     hh.update(&bytes[184..]);
     assert_eq!(hh.finalize(), h.whole_capsule_digest);
+}
+
+#[test]
+fn sha1_oid_nonzero_padding_is_rejected() {
+    let mut bytes = vec("valid-001.bin");
+    bytes[SRC_KIND_OFFSET] = 1;
+    bytes[SRC_OID_ALG_OFFSET] = 1;
+    bytes[SRC_OID_LENGTH_OFFSET] = 20;
+    bytes[SRC_VALUE_OFFSET..SRC_VALUE_OFFSET + 32].fill(0);
+    for (i, byte) in bytes[SRC_VALUE_OFFSET..SRC_VALUE_OFFSET + 20]
+        .iter_mut()
+        .enumerate()
+    {
+        *byte = i as u8;
+    }
+    bytes[SRC_VALUE_OFFSET + 20] = 0x01;
+    refix_whole_digest(&mut bytes);
+    assert_eq!(parse(&bytes), Err(CapsError::NonZeroOidPadding));
 }
 
 /// Parse `vectors.tsv` (CAPSULE_FORMAT_V1.md §10) into (file, outcome) rows.

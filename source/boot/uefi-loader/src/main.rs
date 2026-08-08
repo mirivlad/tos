@@ -143,6 +143,7 @@ fn error_tag(e: CapsError) -> &'static [u8] {
         CapsError::BadDigest => b"BadDigest",
         CapsError::BadWholeDigest => b"BadWholeDigest",
         CapsError::UnsupportedIdentityKind => b"UnsupportedIdentityKind",
+        CapsError::NonZeroOidPadding => b"NonZeroOidPadding",
         CapsError::LicenceOutOfBounds => b"LicenceOutOfBounds",
         CapsError::MissingBootCanonical => b"MissingBootCanonical",
         CapsError::DuplicateBootCanonical => b"DuplicateBootCanonical",

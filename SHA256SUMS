@@ -93,7 +93,7 @@ c8766b6e0716353052c44de01cc30f480c4de463892a372b8bf1dc8bc65df894  docs/adr/0017-
 9d163e5bb5cf3f3fdd2511abdc22512c6ff5853307253ca1d9d40df3db1ecc2d  docs/research/NAME_SEARCH_NOTES.md
 13198c3bce6537a8c39f55defdd2b7a6a0012f704244f0b5673e649a8e7c90b8  docs/research/PATENT_LANDSCAPE.md
 4f3f3bd3f3160e6dff7d21790804a668628ac7d6e705969ddabfbdcf1d088bba  docs/superpowers/plans/2026-08-08-stage1-phase0-closure.md
-a787ee541c7fa14e8337af21e57c5e4c29790ae8ee87b61a8eee3afd4b806775  docs/superpowers/plans/2026-08-09-stage1-phase1-capsule-identity.md
+d3f98f3be27a14be78f3b397040612a2be54317dec79f107cdebd38ec9d9c525  docs/superpowers/plans/2026-08-09-stage1-phase1-capsule-identity.md
 f678aa62b8032f5a8b633b041a8854a65043f958bef06da4cacec587f66d094e  docs/superpowers/specs/2026-08-08-stage1-phase0-closure-design.md
 ee46d3e3f161ab4cc7b3d3fe5b2e53c5b41030b209712a0953862ea011548318  docs/superpowers/specs/2026-08-08-stage1-phase1-capsule-identity-design.md
 2a48cd38b0ec0dae288d6359c5e9536a215656004b5e53f0aff38e3c89c975d9  run-tos.sh
