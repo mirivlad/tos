@@ -1014,3 +1014,16 @@ boot architecture, DCO policy или опубликованной истории
   `ed33c6b…` → `8560094…`; remote затем сверён. Этот Worklog commit является
   отдельной post-rewrite записью и не меняет содержание переписанных или
   последующих Phase 0 commits.
+
+## 2026-08-09 — Phase 1: alignment reconciliation (Level 0)
+
+- До изменения локальный `scripts/tests/check-capsule-format-alignment.sh`
+  завершился rc=1: rule 16 одновременно называл unaligned content reject
+  condition, тогда как ADR-0017 Decision 1 разрешает unaligned
+  `content_offset`. Это reconciliation нижестоящего interface text; authority
+  interface document не повышается (F-08 остаётся открытым).
+- Rule 16 теперь перечисляет только content outside payload bounds. Parser,
+  builder, capsule bytes и version не менялись.
+- `golden_valid_parses` явно доказывает, что second `content_offset` valid
+  fixture равен 430, не кратен 8, и capsule принимается parser. Это сохраняет
+  canonical byte-compatible unaligned content согласно ADR-0017.
