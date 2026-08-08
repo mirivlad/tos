@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `af840544723311f4e7e96ccaaebb1bd2094cd4faf0bc000f3369f68c4decee7d`  
+Source-manifest SHA-256: `862f18ef0b588222ac1330b327b6967ce89f15752960f8ffacba0b3b9e2f21e9`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -75,8 +75,9 @@ This builds the Stage 1 release artifacts, prepares the capsule and ESP through
 the same harness used by CI, opens a GTK (or SDL fallback) QEMU display and
 streams serial boot events in the terminal. A successful boot reaches
 `TOS.HALT ok=0x10`, then the production nucleus stays halted so the visual
-Stage 1 verification panel remains visible until you close QEMU or press
-Ctrl+C. Its serial log is retained alongside the image preparation evidence.
+Stage 1 Pyro diagnostic and verification panel remain visible until you close
+QEMU or press Ctrl+C. Its serial log is retained alongside the image
+preparation evidence.
 
 For a headless automated check, run:
 
@@ -94,7 +95,10 @@ evidence.
 
 The screen is not a desktop, shell or GUI subsystem. It is a best-effort
 Stage 1 diagnostic drawn directly to the validated RGBX8/BGRX8 framebuffer;
-when no framebuffer is available, boot evidence remains the serial log.
+it renders the separately identified CC-BY-SA-4.0 Pyro artwork only after a
+successful validation. Its checked source/provenance relationship is recorded
+in `assets/mascot/pyro-stage1-provenance.json`. When no framebuffer is
+available, boot evidence remains the serial log.
 
 Stage 1 is a bootable TOS foundation with source-bound capsule identity and
 fail-closed validation. It is not yet a user shell, application environment or
