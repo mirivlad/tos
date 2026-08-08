@@ -1284,3 +1284,33 @@ boot architecture, DCO policy или опубликованной истории
   manifest checks, SPDX and DCO, formatting, 65 workspace tests, both target
   clippy checks, 200,000 parser-fuzz rounds, QEMU success, all thirteen tracked
   negative vectors and the new resource-boundary QEMU case: **18/18 PASS**.
+
+## 2026-08-09 — F-15 Stage 1 exception baseline
+
+- Project Architect accepted ADR-0023 as a Level 2 additive Boot ABI v1 failure
+  contract. `acc9aa9` installs a nucleus-owned GDT/TSS and a present DPL-0
+  64-bit IDT for the complete architected exception range 0–31 before any
+  BootInfo-controlled memory is read. All handlers are fatal; external
+  interrupts remain disabled and are not made part of a Stage 1 interrupt ABI.
+- #DF (vector 8) has IST index 1, backed by a fixed 16 KiB nucleus-owned
+  emergency stack carried in the flat image; the safety assumptions are local
+  to `source/nucleus/src/exception.rs`. The mechanical foundation regression
+  checks the vector count, #DF IST assignment, TSS stack slot and task-register
+  load.
+- `TOS.EXCEPTION vector=<decimal> error=0x<hex> rip=0x<hex> cr2=<none|0xhex>`
+  and `RESULT_EXCEPTION=0x24` are accepted Boot ABI v1 failure additions.
+  The QEMU `isa-debug-exit` raw result is 73. `TOS.PANIC` remains distinct.
+- RED evidence: before the implementation, the requested feature build failed
+  because no test feature or exception foundation existed. GREEN evidence uses
+  the ordinary loader/capsule/ESP/OVMF profile and a separately named
+  `CARGO_TARGET_DIR` test nucleus: `UD2` emits vector 6 with normalized zero
+  error, while isolated `int 0x80` emits vector 13 with hardware error `0x402`.
+  Both exit 73 and omit `TOS.HALT`/`TOS.PANIC`; the production-nucleus SHA-256
+  is checked unchanged around each feature build. The unmodified success
+  nucleus continues to exit 33.
+- The full preflight initially rejected the new `.S` source as intentionally
+  unclassified. A RED regression demonstrated that an assembly file with a
+  valid GPL SPDX header was not accepted. The source-code classification was
+  extended explicitly (not exempted), and `check-spdx-assembly.sh` now covers
+  that boundary. Final `./scripts/preflight.sh --full` passed all 21 gates,
+  including both injected-exception QEMU scenarios.
