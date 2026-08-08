@@ -18,9 +18,15 @@ fi
 mkdir -p "$VECTOR_DIR" "$REPO/source/tests/vectors/gen" "$REPO/source/system/boot"
 cp "$ROOT/source/tests/vectors/capsule-v1/provenance.schema.json" \
     "$VECTOR_DIR/provenance.schema.json"
+mkdir -p "$REPO/scripts"
+cp "$ROOT/scripts/check-capsule-vector-provenance.py" \
+    "$REPO/scripts/check-capsule-vector-provenance.py"
+cp "$ROOT/scripts/check-spdx.sh" "$REPO/scripts/check-spdx.sh"
 printf 'valid capsule fixture\n' > "$VECTOR_DIR/valid-001.bin"
-printf 'canonical boot source\n' > "$REPO/source/system/boot/init.tos"
-printf 'retained licence notice\n' > "$REPO/source/system/boot/NOTICES.txt"
+printf '# SPDX-License-Identifier: GPL-3.0-or-later\ncanonical boot source\n' \
+    > "$REPO/source/system/boot/init.tos"
+printf '# SPDX-License-Identifier: GPL-3.0-or-later\nretained licence notice\n' \
+    > "$REPO/source/system/boot/NOTICES.txt"
 cat > "$REPO/source/tests/vectors/gen/gen.sh" <<'EOF'
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-or-later
@@ -31,7 +37,7 @@ chmod +x "$REPO/source/tests/vectors/gen/gen.sh"
 git -C "$REPO" init -q
 git -C "$REPO" config user.name provenance-test
 git -C "$REPO" config user.email provenance-test@example.invalid
-git -C "$REPO" add source
+git -C "$REPO" add scripts source
 git -C "$REPO" commit -qm 'fixture inputs'
 
 SOURCE_COMMIT="$(git -C "$REPO" rev-parse HEAD)"
@@ -122,6 +128,15 @@ write_valid_manifest
 printf 'unrecorded fixture\n' > "$VECTOR_DIR/unrecorded.bin"
 git -C "$REPO" add source/tests/vectors/capsule-v1/unrecorded.bin
 expect_fail 'unrecorded.bin'
+if (cd "$REPO" && sh scripts/check-spdx.sh > "$TMP/spdx.log" 2>&1); then
+    echo "FAIL: SPDX gate accepted an unrecorded vector fixture" >&2
+    exit 1
+fi
+if ! grep -Fq 'unrecorded.bin' "$TMP/spdx.log"; then
+    echo "FAIL: SPDX gate did not identify the unrecorded fixture" >&2
+    cat "$TMP/spdx.log" >&2
+    exit 1
+fi
 git -C "$REPO" rm -q --cached source/tests/vectors/capsule-v1/unrecorded.bin
 rm "$VECTOR_DIR/unrecorded.bin"
 
