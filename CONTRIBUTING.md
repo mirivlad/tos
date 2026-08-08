@@ -60,6 +60,22 @@ Do not paste code merely because it is publicly visible. Record source, exact li
 
 In particular, the Linux kernel is generally GPL-2.0-only. GPL-2.0-only code cannot simply be copied into a GPL-3.0-or-later TOS component. Linux drivers are valuable sources of hardware knowledge, register behavior and references to specifications, but direct copying requires file-level license review and may be prohibited. Prefer public hardware specifications, permissively licensed code, GPL-2.0-or-later code, or a documented clean-room reimplementation.
 
+## Repository assets
+
+Text assets carry an SPDX identifier in the first five lines, using the
+existing `LICENSE.md` component class that applies to the material. Do not
+select a new licence merely because a file extension is new.
+
+Binary artwork cannot use a normal source comment. Its directory therefore
+contains a tracked `README.md` that lists each binary path, its licence under
+the existing matrix, its origin and the Git contribution that introduced it.
+The SPDX gate checks the record path-by-path. Adding a blanket extension
+exemption is not an acceptable substitute for provenance.
+
+Imported or adapted assets additionally follow
+`docs/23_CONTRIBUTION_PROVENANCE.md` and are recorded in `THIRD_PARTY.toml` when
+applicable. If origin or licensing cannot be established, the asset is blocked.
+
 ## Completion standard
 
 A contribution is complete only when:

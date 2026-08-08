@@ -2,12 +2,13 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # TOS licence-header gate.
 #
-# Every tracked file is classified: it either must carry an SPDX identifier, or
-# it is exempt for a stated reason. A file that matches neither list is a
-# FAILURE, not a skip - the previous version listed '*.py' among the files to
-# scan but had no case arm for it, so Python files were silently unchecked, and
-# .toml, .ld, .md, .yml and .tsv were never covered at all. A gate that quietly
-# ignores what it does not recognise reports success it has not earned.
+# Every tracked file is classified: it either carries an SPDX identifier,
+# resolves through a checked binary-artwork record, or is exempt for a stated
+# reason. A file that matches none of those is a FAILURE, not a skip - the
+# previous version listed '*.py' among the files to scan but had no case arm for
+# it, so Python files were silently unchecked, and .toml, .ld, .md, .yml and
+# .tsv were never covered at all. A gate that quietly ignores what it does not
+# recognise reports success it has not earned.
 #
 # The gate checks that a licence is declared and that it is one of the three
 # licences of the LICENSE.md matrix. It deliberately does NOT decide which of
@@ -34,13 +35,31 @@ for f in $(git ls-files); do
         VERSION|SHA256SUMS)         exempt=$((exempt+1)); continue ;;  # single-value data files
         MANIFEST.txt)               exempt=$((exempt+1)); continue ;;  # package manifest, no comment syntax
         docs/SPECIFICATION_SOURCES.txt) exempt=$((exempt+1)); continue ;;  # generator input list
-        *.bin)                      exempt=$((exempt+1)); continue ;;  # binary test fixtures
+        source/tests/vectors/capsule-v1/*.bin)
+                                    exempt=$((exempt+1)); continue ;;  # versioned golden fixtures, indexed by vectors.tsv
         *.lock)                     exempt=$((exempt+1)); continue ;;  # generated dependency lock
         *.gitignore)                exempt=$((exempt+1)); continue ;;  # tooling config, no licensable content
         */rust-toolchain.toml)      exempt=$((exempt+1)); continue ;;  # toolchain pin, no comment convention
     esac
 
     case "$f" in
+        # --- binary artwork: licence/provenance lives in a tracked directory
+        # record because PNG has no repository-standard source-comment slot.
+        # This is deliberately path-by-path, not a global extension exemption:
+        # a new image that is not listed in its directory record fails.
+        *.png)
+            record="${f%/*}/README.md"
+            checked=$((checked+1))
+            if ! git ls-files --error-unmatch "$record" >/dev/null 2>&1; then
+                echo "missing binary artwork record: $f (expected $record)"
+                fail=1
+            elif ! grep -F "| \`$f\` |" "$record" \
+                    | grep -Fq '`CC-BY-SA-4.0`'; then
+                echo "binary artwork not licensed in $record: $f"
+                fail=1
+            fi
+            continue ;;
+
         # --- Cargo manifests: the licence belongs in the `license` field ---
         *Cargo.toml)
             if grep -q '^\[package\]' "$f"; then

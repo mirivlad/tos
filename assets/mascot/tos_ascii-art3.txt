@@ -1,4 +1,4 @@
-
+# SPDX-License-Identifier: CC-BY-SA-4.0
 
                                                                                    aW              
                                                                                 IWWWl              
@@ -27,7 +27,6 @@
                   WL YM    bX ,WWLi    mW            YWWW.    Wl                                   
                   !pWhWcWWwI ao IuJ  ,Wd           cWj fu.   tWl                                   
                               LWwWrWWJ             :mWWWcjWWWJ                                     
-
 
 
 
