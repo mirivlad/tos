@@ -1191,3 +1191,18 @@ boot architecture, DCO policy или опубликованной истории
   PASS; `--identity` now fails with the explicit `--detached` usage; generator
   shell syntax PASS. No dependency, runtime ABI, loader/nucleus trusted base,
   `PROGRESS.md`, QEMU profile, Phase 2 or Stage 1.5 change occurred.
+
+## 2026-08-09 — vector provenance generator source transaction
+
+- The provenance checker originally required a derived base to be another
+  tracked fixture. RED showed that this rejects an honestly named ephemeral
+  three-file base used only to derive `invalid-unreferenced-file.bin`. GREEN
+  now requires a base binary name, digest and deterministic recipe, verifies a
+  tracked base digest when one is named, and permits an explicitly named
+  ephemeral base when the entry also lists its canonical inputs.
+- `gen.sh` now uses tracked root `VERSION` for `/system/version` and is prepared
+  to emit the full ADR-0019 `provenance.json`, including generator source
+  commit/hash/licence, canonical inputs, mixed-material classification and
+  derivation recipes. It will also create the tracked SHA-1 padding fixture.
+  The script is committed before it is run so its exact Git revision can be
+  recorded honestly by the following vector transaction.

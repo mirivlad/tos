@@ -179,7 +179,13 @@ def check_container(record: Any, where: str, errors: list[str]) -> None:
         errors.append(f"{where}: container_licensing.spdx_expression must be null")
 
 
-def check_derivation(record: Any, names: dict[str, str], where: str, errors: list[str]) -> None:
+def check_derivation(
+    record: Any,
+    names: dict[str, str],
+    vector: Any,
+    where: str,
+    errors: list[str],
+) -> None:
     if record is None:
         return
     if not isinstance(record, dict):
@@ -188,8 +194,10 @@ def check_derivation(record: Any, names: dict[str, str], where: str, errors: lis
     base = record.get("base_vector")
     base_digest = record.get("base_sha256")
     recipe = record.get("transformation_recipe")
-    if not isinstance(base, str) or base not in names:
-        errors.append(f"{where}: derivation base_vector must name another manifest vector")
+    if not isinstance(base, str) or not base.endswith(".bin") or "/" in base:
+        errors.append(f"{where}: derivation base_vector must name a base binary")
+    elif base == vector:
+        errors.append(f"{where}: derivation base_vector must not name itself")
     if not is_sha256(base_digest):
         errors.append(f"{where}: derivation base_sha256 must be 64 lowercase hex")
     elif isinstance(base, str) and base in names and names[base] != base_digest:
@@ -295,7 +303,7 @@ def check_manifest(root: Path, manifest_path: Path) -> list[str]:
                 errors.append(f"{where}: unverifiable-legacy inputs must be an empty array")
         else:
             errors.append(f"{where}: provenance_status must be verified or unverifiable-legacy")
-        check_derivation(entry.get("derivation"), names, where, errors)
+        check_derivation(entry.get("derivation"), names, entry.get("vector"), where, errors)
     return errors
 
 

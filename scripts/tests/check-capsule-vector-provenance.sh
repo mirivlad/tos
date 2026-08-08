@@ -111,6 +111,14 @@ if ! python3 "$CHECKER" --root "$REPO"; then
     exit 1
 fi
 
+sed -i 's/"derivation": null/"derivation": {"base_vector": "ephemeral-base.bin", "base_sha256": "'"$VECTOR_SHA"'", "transformation_recipe": {"kind": "layout-rewrite", "operations": [{"op": "delete-path-entry"}]}}/' \
+    "$VECTOR_DIR/provenance.json"
+if ! python3 "$CHECKER" --root "$REPO"; then
+    echo "FAIL: an explicitly named ephemeral derivation base was rejected" >&2
+    exit 1
+fi
+write_valid_manifest
+
 printf 'unrecorded fixture\n' > "$VECTOR_DIR/unrecorded.bin"
 git -C "$REPO" add source/tests/vectors/capsule-v1/unrecorded.bin
 expect_fail 'unrecorded.bin'
