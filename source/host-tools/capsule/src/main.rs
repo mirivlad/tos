@@ -2,7 +2,7 @@
 //! Deterministic TOS capsule builder (host CLI).
 //!
 //! Usage:
-//!   tos-capsule-tool [--git-commit <commit-id> | --identity <64-hex-0x0>]
+//!   tos-capsule-tool [--git-commit <commit-id> | --detached]
 //!                   [--licence <notices.txt>] [--meta <out.json>]
 //!                   --out <capsule.bin> MANIFEST
 //!
@@ -24,9 +24,9 @@
 //!   - `--meta` then records commit, per-file source paths + content SHA-256,
 //!     builder version, ABI version and the output digest.
 //!
-//! `--identity <64-hex>`: detached-source-set identity (kind 2) for isolated
-//! format vectors. It is permitted for format fixtures but is NOT an identity
-//! gate; provenance for real builds must use `--git-commit`.
+//! `--detached`: computes the ADR-0018 detached-source-set identity from the
+//! canonical manifest paths and content digests. It never accepts a
+//! caller-selected detached digest.
 
 use std::fs;
 use std::process::Command;
@@ -40,7 +40,7 @@ use tos_hash::sha256;
 
 struct Args {
     git_commit: Option<String>,
-    identity: Option<String>,
+    detached: bool,
     out: String,
     licence: Option<String>,
     meta: Option<String>,
@@ -50,7 +50,7 @@ struct Args {
 fn parse_args() -> Args {
     let a: Vec<String> = std::env::args().skip(1).collect();
     let mut git_commit = None;
-    let mut identity = None;
+    let mut detached = false;
     let mut out = String::new();
     let mut licence = None;
     let mut meta = None;
@@ -62,9 +62,9 @@ fn parse_args() -> Args {
                 git_commit = Some(a[i + 1].clone());
                 i += 2;
             }
-            "--identity" => {
-                identity = Some(a[i + 1].clone());
-                i += 2;
+            "--detached" => {
+                detached = true;
+                i += 1;
             }
             "--out" => {
                 out = a[i + 1].clone();
@@ -86,21 +86,21 @@ fn parse_args() -> Args {
     }
     if out.is_empty() || manifest.is_none() {
         eprintln!(
-            "usage: tos-capsule-tool (--git-commit <id> | --identity <64hex>) --out <bin> [--licence f] [--meta f] MANIFEST"
+            "usage: tos-capsule-tool (--git-commit <id> | --detached) --out <bin> [--licence f] [--meta f] MANIFEST"
         );
         std::process::exit(2);
     }
-    if git_commit.is_none() && identity.is_none() {
-        eprintln!("error: requires either --git-commit or --identity");
+    if git_commit.is_none() && !detached {
+        eprintln!("error: requires either --git-commit or --detached");
         std::process::exit(2);
     }
-    if git_commit.is_some() && identity.is_some() {
-        eprintln!("error: --git-commit and --identity are mutually exclusive");
+    if git_commit.is_some() && detached {
+        eprintln!("error: --git-commit and --detached are mutually exclusive");
         std::process::exit(2);
     }
     Args {
         git_commit,
-        identity,
+        detached,
         out,
         licence,
         meta,
@@ -220,23 +220,13 @@ fn main() {
         b.source_identity_value = value;
         face = Some(f);
     } else {
-        let identity = args.identity.as_ref().expect("identity checked");
-        if identity.len() != 64 {
-            eprintln!("identity must be 32 bytes (64 hex)");
-            std::process::exit(2);
-        }
-        let bytes = hex_to_bytes(identity);
-        if bytes.len() != 32 {
-            eprintln!("identity must be 32 bytes (64 hex)");
-            std::process::exit(2);
-        }
-        let mut id_digest = [0u8; 32];
-        id_digest.copy_from_slice(&bytes);
-        // Detached identity: plain source-set digest, no OID algorithm.
+        // ADR-0018: `Builder::build()` derives the detached identity after it
+        // has canonicalised the manifest file-table order and content digests.
+        // No caller-selected detached value crosses this CLI boundary.
+        debug_assert!(args.detached, "parse_args validates detached mode");
         b.source_identity_kind = SRC_KIND_DETACHED;
         b.source_oid_alg = OID_ALG_NONE;
         b.source_oid_length = 0;
-        b.source_identity_value = id_digest;
         face = None;
     }
 

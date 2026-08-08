@@ -13,9 +13,10 @@ use std::vec::Vec;
 use tos_hash::Sha256;
 
 use crate::{
-    ALIGNMENT, ARCH_SPEC_VERSION, BOOT_PATH, BUILDER_VERSION, DIGEST_BYTES, FILE_ENTRY_SIZE,
-    FILE_KNOWN_FLAGS, FLAG_BOOT_CANONICAL, FORMAT_UUID, FORMAT_VERSION, HEADER_SIZE, MAGIC,
-    OID_ALG_NONE, PATH_ENTRY_SIZE, SRC_KIND_DETACHED,
+    update_detached_identity, ALIGNMENT, ARCH_SPEC_VERSION, BOOT_PATH, BUILDER_VERSION,
+    DETACHED_IDENTITY_DOMAIN, DIGEST_BYTES, FILE_ENTRY_SIZE, FILE_KNOWN_FLAGS, FLAG_BOOT_CANONICAL,
+    FORMAT_UUID, FORMAT_VERSION, HEADER_SIZE, MAGIC, OID_ALG_NONE, PATH_ENTRY_SIZE,
+    SRC_KIND_DETACHED,
 };
 
 /// One file to place in the capsule.
@@ -54,6 +55,9 @@ pub struct Builder {
     pub source_identity_kind: u8,
     pub source_oid_alg: u8,
     pub source_oid_length: u8,
+    /// Explicit raw Git OID input for `SRC_KIND_GIT`. For `SRC_KIND_DETACHED`,
+    /// `build()` ignores this compatibility field and computes the accepted
+    /// ADR-0018 source-set identity from the canonical file set.
     pub source_identity_value: [u8; 32],
     pub builder_version: u32,
     files: Vec<FileSpec>,
@@ -118,6 +122,27 @@ impl Builder {
             .try_fold(0usize, |acc, n| acc.checked_add(n))
             .ok_or(BuildError::Overflow)?;
 
+        let source_identity_value = if self.source_identity_kind == SRC_KIND_DETACHED {
+            let mut identity = Sha256::new();
+            identity.update(DETACHED_IDENTITY_DOMAIN);
+            for &fi in &sorted {
+                let spec = &self.files[fi];
+                let path_length =
+                    u32::try_from(spec.path.len()).map_err(|_| BuildError::Overflow)?;
+                let mut content_hash = Sha256::new();
+                content_hash.update(&spec.content);
+                update_detached_identity(
+                    &mut identity,
+                    &spec.path,
+                    path_length,
+                    &content_hash.finalize(),
+                );
+            }
+            identity.finalize()
+        } else {
+            self.source_identity_value
+        };
+
         let path_tbl_offset = HEADER_SIZE;
         let name_start = path_tbl_offset
             .checked_add(path_tbl_bytes)
@@ -157,7 +182,7 @@ impl Builder {
         out[96] = self.source_identity_kind;
         out[97] = self.source_oid_alg;
         out[98] = self.source_oid_length;
-        w_bytes(&mut out, 100, &self.source_identity_value);
+        w_bytes(&mut out, 100, &source_identity_value);
         if !self.licence_notice.is_empty() {
             w_u64(&mut out, 136, payload_end as u64);
             w_u64(&mut out, 144, self.licence_notice.len() as u64);
@@ -169,7 +194,8 @@ impl Builder {
             let spec = &self.files[fi];
             let at = path_tbl_offset + idx * PATH_ENTRY_SIZE as usize;
             w_u32(&mut out, at, name_cursor as u32);
-            w_u32(&mut out, at + 4, spec.path.len() as u32);
+            let path_length = u32::try_from(spec.path.len()).map_err(|_| BuildError::Overflow)?;
+            w_u32(&mut out, at + 4, path_length);
             w_u32(&mut out, at + 8, idx as u32);
             w_u32(&mut out, at + 12, spec.flags);
             out[name_start + name_cursor..name_start + name_cursor + spec.path.len()]
