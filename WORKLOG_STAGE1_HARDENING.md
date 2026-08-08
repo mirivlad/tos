@@ -985,3 +985,32 @@ boot architecture, DCO policy или опубликованной истории
   3. оставить историю как есть и признать `main` красным — Stage 1 тогда не
      может быть закрыт.
 - Phase 1 не начата. Работа остановлена на обязательном owner checkpoint.
+
+## 2026-08-08 — Phase 0: approved DCO history remediation
+
+- Владелец письменно подтвердил DCO 1.1 и право лицензировать материалы для
+  трёх mascot commits. До rewrite сохранены: local branch
+  `backup/pre-dco-rewrite-0e8d145`, полный проверенный bundle и copy/binary diff
+  пользовательского `PROGRESS.md` вне рабочего дерева в
+  `/home/mirivlad/tos-rewrite-backups/2026-08-08-pre-dco-rewrite-0e8d145/`.
+  SHA-256 bundle: `dcf9a8fe7e9060a6597840a1bad502f9b210b8f8622dcbd736267c25cc8c0452`.
+- Rewrite выполнен в отдельном clean worktree. Изменены только commit messages
+  трёх одобренных commits — добавлен author-matching trailer:
+  - `21975bba71b2be32d6222efbf0dcb4d43488bb0e` →
+    `d68917777960962e0b1094aa20989294fa163585`;
+  - `dbd31813f3275b9ac773269035ccfbd808803778` →
+    `290539f0f28380c548542f93cb24cbea0c0bf485`;
+  - `ed33c6ba862a6f446545a109b03ecf75f65c87dd` →
+    `8a9c22815d58d594b7cac5493c0663d1da4070fe`.
+- Все 10 commits rewrite range сохранили порядок, subject и tree. Tree rewritten
+  head `8560094787c559733c60edc759f34886ab526b14` равен tree исходного
+  `0e8d145d6cfacbd1af9d68209ad990f093d3b053`:
+  `1a26f79c5353a94bca00158c4ac42c77d290cfd3`. Пользовательский `PROGRESS.md`
+  остался побайтно равен сохранённой копии.
+- Перед push `./scripts/preflight.sh --full` на rewritten head дал **15/15
+  PASS**, включая DCO (44 reachable commits), fuzz и QEMU positive/negative.
+- `origin/main` обновлён только через
+  `--force-with-lease=refs/heads/main:ed33c6ba862a6f446545a109b03ecf75f65c87dd`:
+  `ed33c6b…` → `8560094…`; remote затем сверён. Этот Worklog commit является
+  отдельной post-rewrite записью и не меняет содержание переписанных или
+  последующих Phase 0 commits.
