@@ -40,6 +40,13 @@ name = "tos-serial"
 version = "0.1.0"
 
 [[package]]
+name = "tos-stage1-performance"
+version = "0.1.0"
+dependencies = [
+ "tos-capsule",
+]
+
+[[package]]
 name = "tos-tests-fuzz"
 version = "0.1.0"
 dependencies = [

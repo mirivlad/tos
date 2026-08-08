@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-stage1-performance"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Research-only native Stage 1 double-validation measurement harness."
+publish = false
+
+[dependencies]
+tos-capsule = { path = "../../crates/capsule", features = ["host"] }

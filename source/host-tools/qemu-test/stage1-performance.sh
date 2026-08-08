@@ -11,15 +11,21 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 GITROOT="$(cd "$ROOT/.." && pwd)"
 OUT="$ROOT/target/stage1-performance"
 EVIDENCE_STATUS="P1"
+PREPARE_ONLY=0
+ACCEL=""
 
 usage() {
     cat <<'EOF'
-Usage: bash host-tools/qemu-test/stage1-performance.sh [--out DIR] [--evidence-status P1|P2]
+Usage: bash host-tools/qemu-test/stage1-performance.sh [--out DIR] [--evidence-status P1|P2] [--prepare-only] [--accel tcg|kvm]
 
 Generates the deterministic 1,000-file / exactly-16-MiB detached capsule
 fixture under source/target/, performs 3 warm-ups and 21 QEMU measurements,
 and writes raw JSONL samples plus report.json. P2 is reserved for the declared
 GitHub Actions QEMU profile; local output is P1.
+--prepare-only stops after fixture/capsule/provenance preparation for the
+research-only native double-validation runner.
+--accel is research-only when explicitly set. Omitting it preserves the
+mandatory qemu64/TCG conformance profile.
 EOF
 }
 
@@ -27,12 +33,15 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --out) OUT="$2"; shift 2 ;;
         --evidence-status) EVIDENCE_STATUS="$2"; shift 2 ;;
+        --prepare-only) PREPARE_ONLY=1; shift ;;
+        --accel) ACCEL="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
 case "$EVIDENCE_STATUS" in P1|P2) ;; *) echo "invalid evidence status: $EVIDENCE_STATUS" >&2; exit 2 ;; esac
+case "$ACCEL" in ""|tcg|kvm) ;; *) echo "invalid accelerator: $ACCEL" >&2; exit 2 ;; esac
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 case "$OUT" in
@@ -77,13 +86,22 @@ python3 "$WORKLOAD" fixture --out "$FIXTURE"
 )
 python3 "$PROVENANCE" --root "$GITROOT" --capsule "$CAPSULE" --manifest "$META"
 
+if [ "$PREPARE_ONLY" -eq 1 ]; then
+    echo "STAGE1-PERFORMANCE PREPARED: fixture=$FIXTURE capsule=$CAPSULE"
+    exit 0
+fi
+
 : > "$WARMUPS"
 : > "$MEASUREMENTS"
 run_sample() {
     local phase=$1
     local index=$2
+    local accel_args=()
+    if [ -n "$ACCEL" ]; then
+        accel_args=(--accel "$ACCEL")
+    fi
     bash "$HARNESS" --out "$RUN" --capsule "$CAPSULE" --expect 33 \
-        --event-timestamps "$TIMESTAMPS"
+        --event-timestamps "$TIMESTAMPS" "${accel_args[@]}"
     python3 "$WORKLOAD" sample --timestamps "$TIMESTAMPS" --phase "$phase" \
         --index "$index" --out "$OUT/${phase}s.jsonl"
 }
@@ -105,7 +123,8 @@ python3 "$WORKLOAD" report \
     --rustc-version "$(rustc --version)" \
     --ovmf-code "$RUN/OVMF_CODE.fd" \
     --ovmf-vars "$RUN/OVMF_VARS.fd" \
-    --evidence-status "$EVIDENCE_STATUS"
+    --evidence-status "$EVIDENCE_STATUS" \
+    --accelerator "${ACCEL:-tcg}"
 
 python3 - "$REPORT" <<'PY'
 import json
