@@ -24,6 +24,8 @@ no Rust layout is authoritative; this byte layout is.
 | `ARCH_X86_64` | 1 | architecture id |
 | `BOOT_MODE_NORMAL` | 0 | boot mode |
 | `FB_FORMAT_NONE` | 0 | framebuffer absent |
+| `FB_FORMAT_RGBX8` | 1 | bytes `R,G,B,X`; X ignored |
+| `FB_FORMAT_BGRX8` | 2 | bytes `B,G,R,X`; X ignored |
 | `MEM_DESC_SIZE` | 24 | memory-range descriptor size |
 | `RESULT_PORT` | `0x501` | QEMU `isa-debug-exit` I/O port |
 | `RESULT_HALT_OK` | `0x10` | clean halt |
@@ -88,6 +90,21 @@ Result codes are written to `RESULT_PORT` as one `u8`; QEMU exits with
 The loader converts the UEFI memory map to this descriptor set: contiguous
 usable ranges are merged; the array is sorted by `phys_start`; entries do not
 overlap; `phys_length` is non-zero.
+
+### Platform handoff (ADR-0022)
+
+`framebuffer_pitch` is bytes per scanline. A present framebuffer has one of
+the two 32-bit formats above, non-zero base/width/height/pitch, pitch at least
+`width * 4`, and checked `pitch * height` bytes backed by GOP. The all-zero
+tuple with `FB_FORMAT_NONE` means GOP is absent. A present but malformed,
+PixelBitMask or PixelBltOnly GOP mode fails closed; it is never reported absent.
+
+`acpi_rsdp` is the physical selected RSDP, preferring the ACPI 2.0+ UEFI
+configuration table and falling back to ACPI 1.0 only when the preferred GUID
+is absent. `smbios` is the physical selected SMBIOS entry point, preferring
+SMBIOS 3 and falling back to SMBIOS 2 on the same condition. The loader
+validates selected anchors, lengths and checksums; a malformed preferred entry
+fails closed. Consumers revalidate firmware-owned data before use.
 
 ## 6. Capsule identity binding
 

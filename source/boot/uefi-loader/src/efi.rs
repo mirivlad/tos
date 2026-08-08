@@ -108,6 +108,42 @@ pub const GUID_SIMPLE_FILE_SYSTEM: Guid = Guid {
     data4: [0x8E, 0x39, 0x00, 0xA0, 0xC9, 0x69, 0x72, 0x3B],
 };
 
+pub const GUID_GRAPHICS_OUTPUT: Guid = Guid {
+    data1: 0x9042_A9DE,
+    data2: 0x23DC,
+    data3: 0x4A38,
+    data4: [0x96, 0xFB, 0x7A, 0xDE, 0xD0, 0x80, 0x51, 0x6A],
+};
+pub const GUID_ACPI_20: Guid = Guid {
+    data1: 0x8868_E871,
+    data2: 0xE4F1,
+    data3: 0x11D3,
+    data4: [0xBC, 0x22, 0x00, 0x80, 0xC7, 0x3C, 0x88, 0x81],
+};
+pub const GUID_ACPI_10: Guid = Guid {
+    data1: 0xEB9D_2D30,
+    data2: 0x2D88,
+    data3: 0x11D3,
+    data4: [0x9A, 0x16, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D],
+};
+pub const GUID_SMBIOS3: Guid = Guid {
+    data1: 0xF2FD_1544,
+    data2: 0x9794,
+    data3: 0x4A2C,
+    data4: [0x99, 0x2E, 0xE5, 0xBB, 0xCF, 0x20, 0xE3, 0x94],
+};
+pub const GUID_SMBIOS: Guid = Guid {
+    data1: 0xEB9D_2D31,
+    data2: 0x2D88,
+    data3: 0x11D3,
+    data4: [0x9A, 0x16, 0x00, 0x90, 0x27, 0x3F, 0xC1, 0x4D],
+};
+
+pub const PIXEL_RGBX8: u32 = 0;
+pub const PIXEL_BGRX8: u32 = 1;
+pub const PIXEL_BIT_MASK: u32 = 2;
+pub const PIXEL_BLT_ONLY: u32 = 3;
+
 // ---------------------------------------------------------------------------
 // EFI_TABLE_HEADER and EFI_MEMORY_DESCRIPTOR
 // ---------------------------------------------------------------------------
@@ -198,6 +234,41 @@ pub struct SimpleFileSystemProtocol {
     pub open_volume: extern "efiapi" fn(*mut Self, *mut *mut FileProtocol) -> EfiStatus,
 }
 
+#[repr(C)]
+pub struct GraphicsOutputProtocol {
+    pub query_mode: *mut c_void,
+    pub set_mode: *mut c_void,
+    pub blt: *mut c_void,
+    pub mode: *mut GraphicsOutputMode,
+}
+
+#[repr(C)]
+pub struct GraphicsOutputMode {
+    pub max_mode: u32,
+    pub mode: u32,
+    pub info: *const GraphicsOutputModeInfo,
+    pub size_of_info: usize,
+    pub framebuffer_base: u64,
+    pub framebuffer_size: usize,
+}
+
+#[repr(C)]
+pub struct GraphicsOutputModeInfo {
+    pub version: u32,
+    pub horizontal_resolution: u32,
+    pub vertical_resolution: u32,
+    pub pixel_format: u32,
+    pub pixel_information: [u32; 4],
+    pub pixels_per_scan_line: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ConfigurationTable {
+    pub vendor_guid: Guid,
+    pub vendor_table: *mut c_void,
+}
+
 // ---------------------------------------------------------------------------
 // Boot services function types
 // ---------------------------------------------------------------------------
@@ -214,6 +285,8 @@ pub type FnAllocatePool = extern "efiapi" fn(u32, usize, *mut *mut c_void) -> Ef
 pub type FnFreePool = extern "efiapi" fn(*mut c_void) -> EfiStatus;
 pub type FnHandleProtocol =
     extern "efiapi" fn(*mut c_void, *const Guid, *mut *mut c_void) -> EfiStatus;
+pub type FnLocateProtocol =
+    extern "efiapi" fn(*const Guid, *mut c_void, *mut *mut c_void) -> EfiStatus;
 pub type FnExitBootServices = extern "efiapi" fn(*mut c_void, usize) -> EfiStatus;
 pub type FnStall = extern "efiapi" fn(usize) -> EfiStatus;
 
@@ -265,7 +338,7 @@ pub struct BootServices {
     pub open_protocol_information: *mut c_void,
     pub protocols_per_handle: *mut c_void,
     pub locate_handle_buffer: *mut c_void,
-    pub locate_protocol: *mut c_void,
+    pub locate_protocol: FnLocateProtocol,
     pub install_multiple_protocol_interfaces: *mut c_void,
     pub uninstall_multiple_protocol_interfaces: *mut c_void,
     pub calculate_crc32: *mut c_void,

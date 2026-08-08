@@ -40,7 +40,7 @@ Composition (derived, not hand-maintained)
 ------------------------------------------
 - files in the release package: 121
 - active system invariants: 21
-- architecture decision records: 21 (21 accepted)
+- architecture decision records: 22 (22 accepted)
 
 Architecture decision records
 -----------------------------
@@ -65,6 +65,7 @@ Architecture decision records
 - docs/adr/0019-capsule-vector-provenance.md — ADR-0019: Capsule vector provenance and mixed-material containers [Accepted (Project Architect-approved)]
 - docs/adr/0020-versioned-interface-contract-authority.md — ADR-0020: Versioned interface-contract authority and Boot ABI v1 events [Accepted (Project Architect-approved)]
 - docs/adr/0021-capsule-v1-resource-bounds.md — ADR-0021: Capsule v1 resource bounds [Accepted (Project Architect-approved)]
+- docs/adr/0022-bootinfo-v1-platform-handoff.md — ADR-0022: BootInfo v1 platform handoff [Accepted (Project Architect-approved)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

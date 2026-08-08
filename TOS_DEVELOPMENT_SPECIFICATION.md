@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `dd585d44dd5bc189124b2fdb4d01aa6b4fb0bef4690f0acee7dab3f9e8e31dd2`  
+Source-manifest SHA-256: `b66c4f696a7812a1f708d5878ff0722d31d6cbaafc3a09888fbae9c47030046a`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1098,6 +1098,8 @@ no Rust layout is authoritative; this byte layout is.
 | `ARCH_X86_64` | 1 | architecture id |
 | `BOOT_MODE_NORMAL` | 0 | boot mode |
 | `FB_FORMAT_NONE` | 0 | framebuffer absent |
+| `FB_FORMAT_RGBX8` | 1 | bytes `R,G,B,X`; X ignored |
+| `FB_FORMAT_BGRX8` | 2 | bytes `B,G,R,X`; X ignored |
 | `MEM_DESC_SIZE` | 24 | memory-range descriptor size |
 | `RESULT_PORT` | `0x501` | QEMU `isa-debug-exit` I/O port |
 | `RESULT_HALT_OK` | `0x10` | clean halt |
@@ -1162,6 +1164,21 @@ Result codes are written to `RESULT_PORT` as one `u8`; QEMU exits with
 The loader converts the UEFI memory map to this descriptor set: contiguous
 usable ranges are merged; the array is sorted by `phys_start`; entries do not
 overlap; `phys_length` is non-zero.
+
+### Platform handoff (ADR-0022)
+
+`framebuffer_pitch` is bytes per scanline. A present framebuffer has one of
+the two 32-bit formats above, non-zero base/width/height/pitch, pitch at least
+`width * 4`, and checked `pitch * height` bytes backed by GOP. The all-zero
+tuple with `FB_FORMAT_NONE` means GOP is absent. A present but malformed,
+PixelBitMask or PixelBltOnly GOP mode fails closed; it is never reported absent.
+
+`acpi_rsdp` is the physical selected RSDP, preferring the ACPI 2.0+ UEFI
+configuration table and falling back to ACPI 1.0 only when the preferred GUID
+is absent. `smbios` is the physical selected SMBIOS entry point, preferring
+SMBIOS 3 and falling back to SMBIOS 2 on the same condition. The loader
+validates selected anchors, lengths and checksums; a malformed preferred entry
+fails closed. Consumers revalidate firmware-owned data before use.
 
 ## 6. Capsule identity binding
 
@@ -7346,6 +7363,57 @@ paths and content digests; it MUST NOT hash file contents again.
   remains required; QEMU proves the loader rejects 32 MiB + 1 before handoff.
 
 <!-- END docs/adr/0021-capsule-v1-resource-bounds.md -->
+
+---
+
+<!-- BEGIN docs/adr/0022-bootinfo-v1-platform-handoff.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0022: BootInfo v1 platform handoff
+
+- Status: Accepted (Project Architect-approved)
+- Date: 2026-08-09
+- Change level: **Level 2** — defines existing BootInfo v1 fields without
+  changing its layout, offsets, major/minor version or source identity
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-09
+
+## Decision
+
+`FB_FORMAT_NONE=0`, `FB_FORMAT_RGBX8=1` and `FB_FORMAT_BGRX8=2`. RGBX8 and
+BGRX8 name increasing framebuffer-memory byte order; X is ignored. GOP
+`PixelRedGreenBlueReserved8BitPerColor` maps to RGBX8 and
+`PixelBlueGreenRedReserved8BitPerColor` maps to BGRX8. PixelBitMask and
+PixelBltOnly fail closed. Pitch is bytes per scanline, exactly checked
+`PixelsPerScanLine * 4` for the supported formats.
+
+Framebuffer is absent only when GOP is absent, in which case its complete tuple
+is zero/`NONE`. A present but malformed, unbacked, unsupported, zero-sized or
+overflowing GOP mode fails closed. The loader validates base, geometry, minimum
+pitch, required bytes and base-plus-size; it reserves the handed-off range from
+ordinary usable memory.
+
+`acpi_rsdp` is the selected physical RSDP: ACPI 2.0+ configuration table is
+preferred, ACPI 1.0 is used only when it is absent. `smbios` is the selected
+physical SMBIOS entry point: SMBIOS 3 is preferred, SMBIOS 2 is used only when
+it is absent. A malformed preferred entry fails closed rather than falling back.
+The loader checks anchors, declared lengths and checksums (including ACPI v1
+and extended v2 checksums and SMBIOS 2 intermediate anchor/checksum). Zero
+means absent configuration table, not an ignored malformed one.
+
+The pointers remain physical and valid at handoff after ExitBootServices.
+Consumers validate firmware-owned structures before use and do not reclaim them
+until copied/read. This does not claim protection from malicious firmware (T7).
+
+## Architecture impact statement
+
+No Tier 0 invariant, trusted dependency, capsule format, recovery path or
+BootInfo byte layout changes. This makes the existing platform fields concrete,
+fail-closed and observable through optional `TOS.BOOT.HANDOFF` fields. Tests
+cover format/geometry and configuration-table selection; QEMU proves real
+OVMF values reach the existing handoff path.
+
+<!-- END docs/adr/0022-bootinfo-v1-platform-handoff.md -->
 
 ---
 

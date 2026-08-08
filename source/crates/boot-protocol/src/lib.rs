@@ -21,6 +21,8 @@ pub const STRUCT_SIZE: u32 = 224;
 pub const ARCH_X86_64: u32 = 1;
 pub const BOOT_MODE_NORMAL: u32 = 0;
 pub const FB_FORMAT_NONE: u32 = 0;
+pub const FB_FORMAT_RGBX8: u32 = 1;
+pub const FB_FORMAT_BGRX8: u32 = 2;
 /// Memory-range descriptor size (bytes).
 pub const MEM_DESC_SIZE: u64 = 24;
 
@@ -272,7 +274,15 @@ impl BootInfo {
         let fb_fmt = u32::from_le_bytes(bytes[84..88].try_into().unwrap());
         let fb_present = fb_phys != 0;
         if fb_present {
-            if fb_w == 0 || fb_h == 0 || fb_pitch == 0 || fb_fmt == FB_FORMAT_NONE {
+            if fb_w == 0
+                || fb_h == 0
+                || fb_pitch == 0
+                || !matches!(fb_fmt, FB_FORMAT_RGBX8 | FB_FORMAT_BGRX8)
+            {
+                return Err(BootInfoError::BadFramebuffer);
+            }
+            let min_pitch = fb_w.checked_mul(4).ok_or(BootInfoError::BadFramebuffer)?;
+            if fb_pitch < min_pitch || u64::from(fb_pitch).checked_mul(u64::from(fb_h)).is_none() {
                 return Err(BootInfoError::BadFramebuffer);
             }
         } else if fb_w != 0 || fb_h != 0 || fb_pitch != 0 || fb_fmt != FB_FORMAT_NONE {
@@ -536,6 +546,51 @@ mod tests {
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
 
         bi.framebuffer_format = FB_FORMAT_NONE; // present but format none -> reject
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::BadFramebuffer)
+        );
+    }
+
+    #[test]
+    fn framebuffer_v1_formats_and_byte_pitch_are_validated() {
+        let mut bi = BootInfo::new();
+        bi.framebuffer_phys = 0x1000;
+        bi.framebuffer_width = 800;
+        bi.framebuffer_height = 600;
+        bi.framebuffer_pitch = 3200;
+
+        bi.framebuffer_format = FB_FORMAT_RGBX8;
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
+
+        bi.framebuffer_format = FB_FORMAT_BGRX8;
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
+
+        bi.framebuffer_format = 3;
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::BadFramebuffer)
+        );
+
+        bi.framebuffer_format = FB_FORMAT_RGBX8;
+        bi.framebuffer_pitch = 3199;
+        let bytes =
+            unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
+        assert_eq!(
+            BootInfo::validate_bytes(bytes),
+            Err(BootInfoError::BadFramebuffer)
+        );
+
+        bi.framebuffer_width = u32::MAX;
+        bi.framebuffer_pitch = u32::MAX;
         let bytes =
             unsafe { core::slice::from_raw_parts(&bi as *const BootInfo as *const u8, 224) };
         assert_eq!(
