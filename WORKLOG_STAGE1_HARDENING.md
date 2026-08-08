@@ -812,3 +812,60 @@ G4 `fbd8003`+`1403955`, G5 `4d42d87`, G6 `729c305`, G7 — этот коммит
 `NOTICES.txt` против буквы §7; перечень event ID в BOOT_ABI_V1 §7 против
 реализации; мёртвый `CapsError::PayloadOverlap`; `actions/checkout@v4` → `@v5`;
 залипший прогон 31119928260 (оставлен по решению владельца).
+
+---
+
+# Priority 4 — formal Stage 1 closure
+
+## 2026-08-08 — closure audit baseline
+
+- Статус Stage 1: **open**. Аудит не является новой спецификацией и не
+  объявляет этап закрытым.
+- Проверяемый baseline: `main` @
+  `ed33c6ba862a6f446545a109b03ecf75f65c87dd`. До начала аудита в дереве уже
+  была пользовательская правка `PROGRESS.md`; она не изменялась и не
+  добавлялась в scope.
+- Формальная матрица записана в `source/STAGE1_CLOSURE_AUDIT.md`. Для каждого
+  finding указаны authoritative source/section, tier, evidence, статус,
+  severity, change-level/ADR и требуемая регрессия.
+- Отдельно подтверждён authority gap: Stage 1 interface-файлы сами называют
+  себя normative/proposed, но `docs/38` не назначает им tier. ADR-0016/0017
+  имеют Tier 1 только для явно принятых решений. На границах с этим пробелом
+  код не меняется до архитектурного разрешения.
+- В матрицу включён self-conflict capsule layout: ADR-0017 и
+  `CAPSULE_FORMAT_V1.md` §2.1/§4.2 разрешают unaligned `content_offset`, а
+  validation rule 16 называет misalignment причиной reject. По Tier 1 решение
+  уже принято в пользу byte-wise unaligned decoding; нижний текст требует
+  исправления до дальнейших parser changes.
+
+### Фактические прогоны baseline
+
+- `cargo test` из `source/` → **56 passed, 0 failed**.
+- host clippy и clippy для `x86_64-unknown-uefi`/
+  `x86_64-unknown-none` с `-D warnings` → **PASS**.
+- `cargo run --release -p tos-tests-fuzz -- 200000` → **FUZZ PASS**.
+- QEMU success → **PASS, exit 33**; source identity = audited HEAD.
+- QEMU negative suite → **PASS, 12 fixtures**, каждая rejected до nucleus с
+  заявленным `capsule_err`.
+- Отдельная воспроизводящая капсула с ненулевым байтом SHA-1 OID padding и
+  пересчитанным whole digest → ошибочно **PASS, exit 33**. Байты padding попали
+  в `TOS.IDENTITY`; это подтверждённый F-10, а не предположение по коду.
+- Detached golden identity = `42` × 32; вычисление по алгоритму, записанному в
+  §6, даёт `56daf5dbc0865b626200a1284100b7c4642f686b6d23978dc1050dfe8bc0b7ce`.
+  Поведение не меняется до решения F-08/F-11.
+
+### Красные current-main gates до Phase 0
+
+- `python3 tools/build-specification.py --check` → **FAIL**, generated spec
+  stale после README mascot commits.
+- `python3 tools/build-release-manifest.py --check` → **FAIL**, manifest stale.
+- `sh scripts/check-spdx.sh` → **FAIL**: три ASCII без SPDX, пять PNG
+  unclassified.
+- `sh scripts/check-dco.sh` → **FAIL** на трёх достижимых коммитах:
+  `21975bba71b2be32d6222efbf0dcb4d43488bb0e`,
+  `dbd31813f3275b9ac773269035ccfbd808803778`,
+  `ed33c6ba862a6f446545a109b03ecf75f65c87dd`.
+
+Phase 0 ограничен восстановлением compliance/operational gates без изменения
+boot architecture, DCO policy или опубликованной истории. Phase 1 и Stage 1.5
+не начаты.
