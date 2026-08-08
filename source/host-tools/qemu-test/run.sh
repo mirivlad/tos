@@ -17,7 +17,7 @@
 #
 # Usage:
 #   bash host-tools/qemu-test/run.sh [OUT_DIR] [CAPSULE_FILE]
-#   bash host-tools/qemu-test/run.sh --out DIR [--capsule FILE] [--loader FILE]
+#   bash host-tools/qemu-test/run.sh --out DIR [--capsule FILE] [--loader FILE] [--nucleus FILE]
 #                                    [--expect N]
 #                                    [--require "EV ..."] [--forbid "EV ..."]
 #                                    [--timeout SECONDS] [--interactive]
@@ -36,6 +36,7 @@ GITROOT="$(cd "$ROOT/.." && pwd)"
 OUT=""
 CAPSULE_IN=""
 LOADER_IN=""
+NUCLEUS_IN=""
 EXPECT=33
 REQUIRE=""
 FORBID=""
@@ -47,6 +48,7 @@ while [ $# -gt 0 ]; do
         --out)      OUT="$2"; shift 2 ;;
         --capsule)  CAPSULE_IN="$2"; shift 2 ;;
         --loader)   LOADER_IN="$2"; shift 2 ;;
+        --nucleus)  NUCLEUS_IN="$2"; shift 2 ;;
         --expect)   EXPECT="$2"; shift 2 ;;
         --require)  REQUIRE="$2"; shift 2 ;;
         --forbid)   FORBID="$2"; shift 2 ;;
@@ -92,6 +94,7 @@ TOOL="$ROOT/target/release/tos-capsule-tool"
 DEFAULT_LOADER="$ROOT/target/x86_64-unknown-uefi/release/tos-uefi-loader.efi"
 LOADER="${LOADER_IN:-$DEFAULT_LOADER}"
 NUCLEUS="$ROOT/target/x86_64-unknown-none/release/tos-nucleus"
+NUCLEUS="${NUCLEUS_IN:-$NUCLEUS}"
 # Firmware discovery: the OVMF package installs its files under different names
 # per distribution and release (Debian/Ubuntu split CODE/VARS into *_4M.fd only
 # from the 2023 packages on). Search a candidate list of CODE/VARS *pairs* —

@@ -76,3 +76,4 @@ docs/adr/0019-capsule-vector-provenance.md
 docs/adr/0020-versioned-interface-contract-authority.md
 docs/adr/0021-capsule-v1-resource-bounds.md
 docs/adr/0022-bootinfo-v1-platform-handoff.md
+docs/adr/0023-stage1-exception-baseline.md

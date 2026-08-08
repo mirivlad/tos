@@ -55,6 +55,9 @@ interface_contract_authority() {
 boot_event_contract() {
     bash "$ROOT/scripts/tests/check-boot-event-contract.sh"
 }
+exception_foundation() {
+    bash "$ROOT/scripts/tests/check-nucleus-exception-foundation.sh"
+}
 release_manifest() { python3 "$ROOT/tools/build-release-manifest.py" --check; }
 spdx() { sh "$ROOT/scripts/check-spdx.sh"; }
 dco() { sh "$ROOT/scripts/check-dco.sh"; }
@@ -95,10 +98,17 @@ qemu_capsule_size_limit() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/capsule-size-limit.sh \
         target/preflight-qemu/capsule-size-limit)
 }
+qemu_exception_ud2() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh ud2)
+}
+qemu_exception_gp() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh gp)
+}
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
 run_gate "Boot ABI event contract" boot_event_contract
+run_gate "nucleus exception foundation" exception_foundation
 run_gate "release manifest and SHA256SUMS" release_manifest
 run_gate "SPDX licence inventory" spdx
 run_gate "DCO sign-off" dco
@@ -116,6 +126,8 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU success boot" qemu_success
     run_gate "QEMU negative suite" qemu_negative
     run_gate "QEMU capsule size limit" qemu_capsule_size_limit
+    run_gate "QEMU exception #UD" qemu_exception_ud2
+    run_gate "QEMU exception #GP" qemu_exception_gp
 fi
 
 printf '\n'

@@ -33,9 +33,11 @@ make_log_script "$TMP/repo/scripts/check-spdx.sh" spdx
 make_log_script "$TMP/repo/scripts/check-dco.sh" dco
 make_log_script "$TMP/repo/scripts/tests/check-interface-contract-authority.sh" interface-authority
 make_log_script "$TMP/repo/scripts/tests/check-boot-event-contract.sh" boot-event-contract
+make_log_script "$TMP/repo/scripts/tests/check-nucleus-exception-foundation.sh" exception-foundation
 make_log_script "$TMP/repo/source/host-tools/qemu-test/run.sh" qemu-success
 make_log_script "$TMP/repo/source/host-tools/qemu-test/negative-suite.sh" qemu-negative
 make_log_script "$TMP/repo/source/host-tools/qemu-test/capsule-size-limit.sh" qemu-capsule-size-limit
+make_log_script "$TMP/repo/source/host-tools/qemu-test/exception-injection.sh" qemu-exception
 
 cat > "$TMP/bin/python3" <<'EOF'
 #!/bin/sh
@@ -67,6 +69,7 @@ cat > "$TMP/default.expected" <<'EOF'
 spec
 interface-authority
 boot-event-contract
+exception-foundation
 release
 spdx
 dco
@@ -92,8 +95,10 @@ cargo build --release -p tos-nucleus --target x86_64-unknown-none
 qemu-success
 qemu-negative
 qemu-capsule-size-limit
+qemu-exception
+qemu-exception
 EOF
-tail -n 7 "$TMP/full.log" > "$TMP/full.tail"
+tail -n 9 "$TMP/full.log" > "$TMP/full.tail"
 if ! cmp -s "$TMP/full.tail.expected" "$TMP/full.tail"; then
     echo "FAIL: full-only gate order differs" >&2
     diff -u "$TMP/full.tail.expected" "$TMP/full.tail" >&2 || true

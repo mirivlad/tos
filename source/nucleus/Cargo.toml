@@ -10,6 +10,10 @@ publish = false
 name = "tos-nucleus"
 path = "src/main.rs"
 
+[features]
+test-exception-ud2 = []
+test-exception-gp = []
+
 [dependencies]
 tos-boot-protocol = { path = "../crates/boot-protocol" }
 tos-capsule = { path = "../crates/capsule", default-features = false }

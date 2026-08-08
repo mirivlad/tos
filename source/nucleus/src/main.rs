@@ -9,6 +9,8 @@
 #![no_std]
 #![no_main]
 
+mod exception;
+
 use core::arch::asm;
 use core::panic::PanicInfo;
 
@@ -92,6 +94,14 @@ fn first_logical_line(content: &[u8]) -> Option<&[u8]> {
 pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::init();
     tos_serial::puts(b"TOS.NUCLEUS.ENTRY\r\n");
+
+    // Install nucleus-owned exception containment before dereferencing or
+    // trusting any loader-provided memory. The loader disabled maskable
+    // interrupts before handoff; Stage 1 intentionally leaves them disabled.
+    unsafe { exception::install() };
+
+    #[cfg(any(feature = "test-exception-ud2", feature = "test-exception-gp"))]
+    exception::test_injection();
 
     // --- 1. validate the boot ABI record over raw bytes ---
     let bi_bytes = unsafe { core::slice::from_raw_parts(bi_raw as *const u8, 224) };
