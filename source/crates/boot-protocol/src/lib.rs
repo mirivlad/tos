@@ -54,6 +54,7 @@ pub const RESULT_PANIC: u8 = 0x20;
 pub const RESULT_CAPSULE_INVALID: u8 = 0x21;
 pub const RESULT_ABI_INVALID: u8 = 0x22;
 pub const RESULT_MEMORY_INVALID: u8 = 0x23;
+pub const RESULT_EXCEPTION: u8 = 0x24;
 
 /// Memory-range descriptor (24 bytes, little-endian).
 #[repr(C)]

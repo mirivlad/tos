@@ -33,6 +33,7 @@ no Rust layout is authoritative; this byte layout is.
 | `RESULT_CAPSULE_INVALID` | `0x21` | capsule rejected |
 | `RESULT_ABI_INVALID` | `0x22` | boot ABI rejected |
 | `RESULT_MEMORY_INVALID` | `0x23` | memory map rejected |
+| `RESULT_EXCEPTION` | `0x24` | caught CPU exception |
 
 Result codes are written to `RESULT_PORT` as one `u8`; QEMU exits with
 `(value << 1) | 1` when `isa-debug-exit` is configured.
@@ -45,6 +46,14 @@ Result codes are written to `RESULT_PORT` as one `u8`; QEMU exits with
 - `rsp`: valid stack configured by the loader.
 - No other register contents are part of the ABI.
 - The nucleus must not return; it either halts via `RESULT_PORT` or panics.
+
+Before reading or trusting BootInfo-controlled memory, the nucleus MUST install
+its Stage 1 exception foundation: a nucleus-owned GDT/TSS and a present,
+DPL-0, 64-bit interrupt-gate IDT for CPU exception vectors 0 through 31.
+Maskable external interrupts remain disabled; vectors above 31 are not an
+interrupt ABI in v1. Every Stage 1 exception handler is fatal and MUST NOT
+resume through `iretq`. Vector 8 (#DF) MUST use a dedicated bounded
+nucleus-owned IST stack.
 
 ## 4. BootInfo layout (224 bytes, little-endian, 8-aligned)
 
@@ -156,6 +165,7 @@ The following identifiers are stable Boot ABI v1 failures:
 | `TOS.CAPSULE.FAIL` | none | Nucleus rejected capsule data after handoff. |
 | `TOS.IDENTITY.MISMATCH` | `bootinfo-vs-capsule-header` | Nucleus rejected the mirrored identity. |
 | `TOS.PANIC` | `<component>` | Trusted component stopped by panic. |
+| `TOS.EXCEPTION` | `vector=<decimal> error=0x<hex> rip=0x<hex> cr2=<none\|0xhex>` | Nucleus caught a CPU exception and terminates with `RESULT_EXCEPTION`. |
 
 `TOS.BOOT.FAILI` is a stable identifier. Existing reason tokens retain their
 meaning: `no-boot-services`, `no-loaded-image`, `no-fs`, `no-volume`,
@@ -169,6 +179,13 @@ Mandatory fields and raw payloads above are a stable prefix. An implementation
 MAY append optional fields in `key=value` form after that prefix; optional
 fields must not alter, remove or reinterpret mandatory fields, so parsers that
 consume the v1 prefix remain compatible.
+
+`TOS.EXCEPTION` has a fixed field order. `vector` is the exact x86_64 exception
+vector; `error` is the hardware-provided error code or normalized zero when the
+architecture supplies none; `rip` is the exception-frame instruction pointer;
+and `cr2` is the exact CR2 only for vector 14 (#PF), otherwise literal `none`.
+The terminal result is `RESULT_EXCEPTION`. A consumer MUST treat an unknown
+non-success `TOS.*` failure or result as failure, not as a successful boot.
 
 ### Identity record
 

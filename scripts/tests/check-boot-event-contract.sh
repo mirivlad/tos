@@ -9,6 +9,7 @@ HARNESS="$ROOT/source/host-tools/qemu-test/run.sh"
 PREFLIGHT="$ROOT/scripts/preflight.sh"
 LOADER="$ROOT/source/boot/uefi-loader/src/main.rs"
 NUCLEUS="$ROOT/source/nucleus/src/main.rs"
+EXCEPTION="$ROOT/source/nucleus/src/exception.rs"
 
 fail() {
     echo "check-boot-event-contract: FAIL: $*" >&2
@@ -31,10 +32,14 @@ for event in \
     TOS.BOOT.ENTRY TOS.CAPSULE.OK TOS.BOOT.HANDOFF TOS.NUCLEUS.ENTRY \
     TOS.BOOTTEXT.PATH TOS.BOOTTEXT.LINE TOS.BOOTTEXT.DIGEST \
     TOS.IDENTITY TOS.HALT TOS.BOOT.FAILC TOS.BOOT.FAILI TOS.ABI.FAIL \
-    TOS.MEM.FAIL TOS.CAPSULE.FAIL TOS.IDENTITY.MISMATCH TOS.PANIC
+    TOS.MEM.FAIL TOS.CAPSULE.FAIL TOS.IDENTITY.MISMATCH TOS.PANIC TOS.EXCEPTION
 do
     require_text "$event" "$ABI"
-    require_emitted "$event"
+    if [ "$event" = TOS.EXCEPTION ]; then
+        require_text "$event" "$EXCEPTION"
+    else
+        require_emitted "$event"
+    fi
 done
 
 for field in source_kind= source_digest= capsule_digest= arch= builder=
@@ -55,6 +60,8 @@ fi
 require_text '67) REQUIRE="TOS.BOOT.ENTRY TOS.BOOT.FAILC"' "$HARNESS"
 require_text 'run_gate "QEMU success boot" qemu_success' "$PREFLIGHT"
 require_text 'run_gate "QEMU negative suite" qemu_negative' "$PREFLIGHT"
+require_text 'run_gate "QEMU exception #UD" qemu_exception_ud2' "$PREFLIGHT"
+require_text 'run_gate "QEMU exception #GP" qemu_exception_gp' "$PREFLIGHT"
 
 case "${1-}" in
     '') ;;
