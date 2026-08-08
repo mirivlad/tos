@@ -79,3 +79,4 @@ docs/adr/0021-capsule-v1-resource-bounds.md
 docs/adr/0022-bootinfo-v1-platform-handoff.md
 docs/adr/0023-stage1-exception-baseline.md
 docs/adr/0024-capsule-provenance-sidecar.md
+docs/adr/0025-stage1-validation-performance.md
