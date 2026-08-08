@@ -528,6 +528,13 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     bi.capsule_oid_alg = cap.header().source_oid_alg;
     bi.capsule_oid_length = cap.header().source_oid_length;
     bi.capsule_source_identity = cap.header().source_identity_value;
+    // Test-only negative-path injection. It is excluded from the default
+    // artifact and built in target/test-corrupt-bootinfo/ by the QEMU scenario;
+    // production loader semantics copy the header identity unchanged.
+    #[cfg(feature = "test-corrupt-bootinfo-identity")]
+    {
+        bi.capsule_source_identity[0] ^= 0x01;
+    }
     bi.memory_map_phys = range_buf.ptr as u64;
     bi.memory_map_length = range_len as u64;
     bi.memory_desc_size = tos_boot_protocol::MEM_DESC_SIZE;

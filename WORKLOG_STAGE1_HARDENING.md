@@ -1049,3 +1049,30 @@ boot architecture, DCO policy или опубликованной истории
   capsule_err=NonZeroOidPadding`, exit 67, and no nucleus entry. The loader's
   actual fail-closed event is `TOS.BOOT.FAILC`; the plan was corrected from the
   nucleus-only `TOS.CAPSULE.FAIL` expectation without changing boot semantics.
+
+## 2026-08-09 — Phase 1: BootInfo identity-mismatch e2e (Level 1)
+
+- RED evidence before implementation: `run.sh --loader …` returned `unknown
+  option: --loader`; no prior test path could inject a different BootInfo mirror
+  into the real loader/nucleus handoff.
+- `test-corrupt-bootinfo-identity` is an opt-in loader feature with no default
+  feature membership. It flips one mirrored identity byte only after the normal
+  copy from the parsed capsule header. The normal loader code path and BootInfo
+  ABI layout are unchanged.
+- `run.sh --loader FILE` selects an explicit artifact while its ordinary path is
+  fixed to `target/x86_64-unknown-uefi/release/tos-uefi-loader.efi`.
+  `bootinfo-identity-mismatch.sh` accepts only the separate
+  `target/test-corrupt-bootinfo/.../tos-uefi-loader.efi` artifact and passes it
+  explicitly to the shared ESP/OVMF/q35/QEMU harness.
+- Actual isolation/e2e sequence: normal release loader SHA-256 was
+  `9e156d8e7a8a6e09623196f8429376360f4d22b775370f3aa8f34b4bc13b7d3b` before
+  and after `CARGO_TARGET_DIR=target/test-corrupt-bootinfo cargo build …
+  --features test-corrupt-bootinfo-identity`. The feature artifact existed only
+  under that separate target directory. Normal QEMU boot passed with exit 33
+  both before and after.
+- The feature artifact emitted the ordered real path `TOS.CAPSULE.OK`,
+  `TOS.BOOT.HANDOFF`, `TOS.NUCLEUS.ENTRY`,
+  `TOS.IDENTITY.MISMATCH bootinfo-vs-capsule-header`, `TOS.CAPSULE.FAIL` and
+  exit 67; `TOS.HALT` and `TOS.PANIC` were absent. This proves the nucleus,
+  rather than a second boot path or loader-only assertion, received the
+  corrupted mirror and failed closed.
