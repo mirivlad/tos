@@ -1419,3 +1419,25 @@ boot architecture, DCO policy или опубликованной истории
   semantics-preserving scalar hash/parser optimization. Any CPU extension,
   unsafe/assembly backend, dependency, profile change, validation reduction or
   metric/budget revision requires a new architect-reviewed ADR.
+
+### F-18 permitted scalar optimization investigation
+
+- `7674129` publishes the measurement infrastructure without turning a known
+  failing p95 result into a required local/CI gate: deterministic ignored
+  1,000-file/16-MiB fixture, checked detached provenance sidecar, 3+21 JSONL
+  runner, host-monotonic existing-event timestamps and report schema. Its fast
+  harness/fixture regressions are ordinary preflight gates; the p95 run remains
+  an explicit F-18 blocker until it passes.
+- Three isolated, no-unsafe/no-dependency/no-profile experiments were measured
+  and then fully reverted because none materially improved the controlling
+  profile. A 16-word rolling SHA schedule preserved KAT/vector results but
+  regressed host release smoke from the original approximately 210.7 ms to
+  232.4 ms. Direct full-block compression reached 205.7 ms on that host smoke,
+  but the actual qemu64/TCG trace remained 2628.8 ms end-to-end (loader
+  1378.1 ms; nucleus 1202.1 ms). A fused physical payload walk preserved all
+  parser/vector tests but regressed host smoke to 214.4 ms.
+- This exhausts the reasonable safe scalar/memory-walk changes admitted by
+  ADR-0025. No variant was committed to trusted code without a controlling
+  profile win. F-18 remains BLOCKER; a future proposal involving an excluded
+  acceleration, CPU/profile, dependency, unsafe/assembly or validation-boundary
+  change must receive a new architect-reviewed ADR before implementation.
