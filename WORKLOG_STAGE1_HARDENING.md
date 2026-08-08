@@ -869,3 +869,27 @@ G4 `fbd8003`+`1403955`, G5 `4d42d87`, G6 `729c305`, G7 — этот коммит
 Phase 0 ограничен восстановлением compliance/operational gates без изменения
 boot architecture, DCO policy или опубликованной истории. Phase 1 и Stage 1.5
 не начаты.
+
+## 2026-08-08 — Phase 0: mascot licence/provenance
+
+- Уровень: **Level 1 compliance**, применение принятой матрицы ADR-0007 без
+  новой лицензии и без изменения licence boundary. Mascot классифицирован как
+  documentation/branding artwork по существующему классу diagrams/docs →
+  `CC-BY-SA-4.0`.
+- `assets/mascot/README.md` фиксирует восемь путей, лицензию, introducing commit
+  и Git-author. Неизвестный creation tool или сторонний источник не выдуман:
+  записано только то, что подтверждается репозиторием. Отсутствующий DCO у
+  introducing commit явно оставлен отдельным F-07.
+- Три ASCII-файла получили прямой SPDX в первой строке.
+- PNG не добавлены в безусловный extension allow-list. `check-spdx.sh` требует
+  tracked `README.md` в каталоге и точную строку для каждого PNG. Общий `*.bin`
+  exemption одновременно сужен до существующих capsule golden vectors.
+- Добавлен regression `scripts/tests/check-spdx-assets.sh`:
+  - RED до реализации: recorded PNG → `unclassified file type`, rc=1;
+  - GREEN: recorded PNG принят, дополнительный unrecorded PNG отвергнут с
+    точным путём;
+  - `sh scripts/tests/check-spdx-assets.sh` → **PASS**;
+  - `sh scripts/check-spdx.sh` → **PASS: 132 checked, 26 exempt**.
+- `CONTRIBUTING.md` теперь требует direct SPDX для text assets и проверяемый
+  per-directory licence/provenance record для binary artwork; blanket
+  extension exemption запрещён.
