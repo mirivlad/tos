@@ -13,27 +13,30 @@ On 2026-08-09, an uncommitted local probe read the committed detached
 ```text
 file_count=2
 stored=4242424242424242424242424242424242424242424242424242424242424242
-computed=56daf5dbc0865b626200a1284100b7c4642f686b6d23978dc1050dfe8bc0b7ce
-RED: detached identity does not match SHA-256(concat(content_digest_i))
+computed=b07b6e58e9e3aa9716d4ad779529a2e7be6522aef1f3e67a16230e04a55c8c05
+RED: detached identity does not match ADR-0018 proposed path/digest encoding
 ```
 
-The calculation read each 32-byte `content_digest` at file-table offsets
-`file_table_offset + i * 64 + 16`, concatenated them in increasing file-table
-index order, and applied SHA-256. It did not write a vector or change builder
-or parser behavior.
+The proposed calculation uses `DOMAIN = b"TOS.DSI.v1\0"` (hex
+`544f532e4453492e763100`), then for each
+canonical path/file-table index appends `u32_le(path_length)`, exact canonical
+UTF-8 path bytes and the 32-byte `content_digest`, before applying SHA-256.
+It did not write a vector or change builder or parser behavior.
 
 ## Proposed post-acceptance regression set
 
 Only after ADR-0018 acceptance, add tests that prove all of the following:
 
-1. the builder computes the ordered digest concatenation and rejects an
-   arbitrary detached identity input;
+1. the builder computes the fixed-domain, length-delimited canonical
+   path/digest encoding and rejects an arbitrary detached identity input;
 2. a digest-consistent capsule with one changed detached identity byte is
    rejected as `DetachedIdentityMismatch` by both host parser and real loader;
-3. canonical file-table ordering is material — reordering digest input gives a
-   different identity and cannot validate the original capsule;
+3. canonical path/file-table ordering and exact path bytes are material — a
+   reordered entry or equal contents under a different canonical path produces
+   a different identity and cannot validate the original capsule;
 4. zero files remain rejected by the independent v1 zero-file rule, while the
-   formula itself has the unambiguous `SHA-256(empty)` mathematical value;
+   domain-separated formula itself has the unambiguous `SHA-256(DOMAIN)`
+   mathematical value;
 5. regenerated vectors reproduce deterministically and carry F-22-approved
    provenance records before becoming tracked binary fixtures; and
 6. QEMU evidence reaches the existing fail-closed loader path with exit 67 and
