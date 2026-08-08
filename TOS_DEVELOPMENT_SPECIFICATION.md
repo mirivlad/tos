@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `8a47911da0caf37368f587954e3cf9781d3fe4901bb059cdccf8f5171f98a769`  
+Source-manifest SHA-256: `f9142ee05fb5979f367021500d95956239058541981d9a1878e71f41388f32df`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -7720,15 +7720,13 @@ inventing a source commit.
 
 # ADR-0025: Stage 1 validation-performance conformance
 
-- Status: Proposed
+- Status: Accepted (Project Architect-approved)
 - Date: 2026-08-09
 - Change level: **Level 2** — fixes the reference performance-evidence
   contract and authorizes only semantics-preserving implementation hardening;
   capsule v1, BootInfo v1 and the source-to-runtime trust boundary do not
   change
-- Project Architect direction: preserve the qemu64/TCG profile, the approved
-  end-to-end interval and independent loader/nucleus validation; do not weaken
-  the 250 ms p95 budget
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-09
 
 ## Context
 
