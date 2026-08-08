@@ -41,6 +41,22 @@ Signed-off-by: Real Name <email@example.com>
 
 The sign-off certifies the Developer Certificate of Origin 1.1 in `DCO`. It is not a transfer of copyright.
 
+Create commits with Git's sign-off option so the trailer is not forgotten:
+
+```sh
+git commit -s
+```
+
+Before pushing, run the local repository gates from the repository root:
+
+```sh
+./scripts/preflight.sh
+```
+
+Use `./scripts/preflight.sh --full` when the change touches boot, capsule parsing
+or QEMU-visible behavior; it additionally runs fuzzing and both QEMU suites.
+Preflight reports all selected gate results and does not install missing tools.
+
 ## AI-assisted contributions
 
 AI tools may be used, but the human submitter remains responsible for:

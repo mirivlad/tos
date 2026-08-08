@@ -47,10 +47,12 @@ three missing DCO trailers remain a separate blocker.
 
 ## Local preflight
 
-`scripts/preflight.sh` calls existing tools in fail-fast order and prints a
-single final PASS/FAIL result. Default mode runs documentation/release, SPDX,
-DCO, formatting, tests and all mandatory clippy invocations. `--full` adds the
-existing deterministic fuzz target and existing QEMU success/negative suite.
+`scripts/preflight.sh` calls existing tools in a fixed order and prints a single
+final PASS/FAIL result. It continues after individual failures so one red gate
+does not hide the state of later gates. Default mode runs
+documentation/release, SPDX, DCO, formatting, tests and all mandatory clippy
+invocations. `--full` adds the existing deterministic fuzz target and existing
+QEMU success/negative suite.
 
 The script contains no alternate implementations of those checks. DCO remains
 red until the owner authorizes remediation of the historical commits.
