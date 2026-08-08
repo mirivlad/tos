@@ -1399,3 +1399,23 @@ boot architecture, DCO policy или опубликованной истории
 - QEMU's ordinary capsule preparation verifies the generated sidecar before it
   creates the ESP. The contract records only R0 described reproducibility; it
   makes no higher-grade claim.
+
+## 2026-08-09 — F-18 performance conformance decision
+
+- ADR-0025 was accepted by the Project Architect. It fixes the Stage 1
+  performance evidence to the ordinary q35/qemu64/one-vCPU/256-MiB/TCG QEMU
+  profile and the existing serial interval `TOS.BOOT.ENTRY` through
+  `TOS.BOOTTEXT.PATH`; no guest clock, serial ABI addition or second boot path
+  is permitted.
+- The first complete local P1 baseline on `5814697` is an explicit conformance
+  failure: three warm-ups plus 21 measurements yielded median 2765.027 ms,
+  p95 2842.450 ms and p99 2891.580 ms, versus the unchanged 250 ms p95
+  contract. Trace decomposition attributes approximately 1372 ms to loader
+  validation and 1189 ms to nucleus validation; post-validation lookup is
+  below 1 ms.
+- The accepted decision preserves two independent validations, qemu64/TCG,
+  capsule/Boot ABI bytes, structured errors, bounded logical hash traversals
+  and the 250 ms budget. It authorizes only dependency-free, safe,
+  semantics-preserving scalar hash/parser optimization. Any CPU extension,
+  unsafe/assembly backend, dependency, profile change, validation reduction or
+  metric/budget revision requires a new architect-reviewed ADR.

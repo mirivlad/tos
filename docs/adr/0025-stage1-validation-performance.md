@@ -2,15 +2,13 @@
 
 # ADR-0025: Stage 1 validation-performance conformance
 
-- Status: Proposed
+- Status: Accepted (Project Architect-approved)
 - Date: 2026-08-09
 - Change level: **Level 2** — fixes the reference performance-evidence
   contract and authorizes only semantics-preserving implementation hardening;
   capsule v1, BootInfo v1 and the source-to-runtime trust boundary do not
   change
-- Project Architect direction: preserve the qemu64/TCG profile, the approved
-  end-to-end interval and independent loader/nucleus validation; do not weaken
-  the 250 ms p95 budget
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-09
 
 ## Context
 
