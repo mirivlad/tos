@@ -6,7 +6,7 @@ Status: **Accepted Tier 2 interface contract.**
 
 Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
 contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, including
-ADR-0016 through ADR-0019 where they decide capsule v1 semantics.
+ADR-0016 through ADR-0021 where they decide capsule v1 semantics.
 
 This document defines capsule v1 before any implementation exists. The parser is
 total over arbitrary bytes: every rule below has an exact rejection behaviour.
@@ -34,6 +34,31 @@ must not claim to be a system update.
 | `BUILDER_VERSION` | 1 | capsule builder contract version |
 
 Byte order: all multi-byte integers are **little-endian**.
+
+### 2.2 Resource bounds (ADR-0021)
+
+All maxima are inclusive. `KiB = 1024` bytes and `MiB = 1024 * 1024` bytes.
+
+| Constant | Value |
+|---|---:|
+| `MAX_CAPSULE_BYTES` | 32 MiB |
+| `MAX_FILE_COUNT` | 4096 |
+| `MAX_PATH_BYTES` | 1024 bytes per path |
+| `MAX_NAME_ARENA_BYTES` | 1 MiB |
+| `MAX_LICENCE_NOTICE_BYTES` | 64 KiB |
+
+These limits apply jointly; satisfying one does not weaken any other limit.
+The UEFI loader MUST reject an EFI capsule file larger than
+`MAX_CAPSULE_BYTES` from its file-size metadata before allocating a pool buffer
+or reading the complete file. The parser remains allocation-free and applies
+gross limits before payload hashing or a full table walk where structurally
+possible. The builder applies the same maxima with checked conversions and
+MUST NOT silently truncate a field.
+
+An accepted capsule permits at most two linear hash traversals of capsule or
+payload bytes: one for `whole_capsule_digest` and one cumulative traversal for
+per-file `content_digest` values. Detached source identity uses those validated
+digest values and MUST NOT hash file contents again.
 
 ### 2.1 Alignment semantics (ADR-0017)
 
@@ -244,6 +269,25 @@ and is valid UTF-8 (§9 rule 21).
 The digest is verified over the exact bytes passed to the parser.
 
 ## 9. Validation summary (reject conditions)
+
+### 9.1 Resource-limit precedence
+
+The parser returns stable structured errors in this deterministic order for
+the five limits: `CapsuleTooLarge`, `FileCountTooLarge`, `PathTooLong`,
+`NameArenaTooLarge` and `LicenceNoticeTooLarge`.
+
+1. An input shorter than `HEADER_SIZE` is rejected before header decoding.
+2. A physical input longer than `MAX_CAPSULE_BYTES` is rejected before header
+   decoding, hashing or table traversal (`CapsuleTooLarge`).
+3. After magic, UUID, format version, header size and alignment are checked,
+   the declared total length, path/file counts and licence-notice length are
+   checked in that order.
+4. After checked table geometry establishes the name-arena bounds, its length
+   is checked before path-table iteration (`NameArenaTooLarge`).
+5. Each `name_length` is checked against `MAX_PATH_BYTES` before UTF-8 or
+   canonical-path processing (`PathTooLong`).
+
+### 9.2 Other reject conditions
 
 1. magic mismatch;
 2. format UUID mismatch;

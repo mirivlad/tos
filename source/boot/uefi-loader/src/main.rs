@@ -29,7 +29,7 @@ use tos_boot_protocol::{
     BootInfo, MemoryRange, MEM_ACPI_NVS, MEM_ACPI_RECLAIM, MEM_MMIO, MEM_RESERVED, MEM_USABLE,
     RESULT_CAPSULE_INVALID, RESULT_PANIC,
 };
-use tos_capsule::{parse, CapsError};
+use tos_capsule::{parse, CapsError, MAX_CAPSULE_BYTES};
 use tos_hash::sha256;
 
 const STACK_PAGES: usize = 8; // 32 KiB
@@ -83,6 +83,14 @@ fn serial_fatal(msg: &[u8]) -> ! {
     result_port(RESULT_PANIC)
 }
 
+/// Emit the stable loader capsule-rejection event before the nucleus can run.
+fn capsule_fatal(error: CapsError) -> ! {
+    tos_serial::puts(b"TOS.BOOT.FAILC capsule_err=");
+    tos_serial::puts(error_tag(error));
+    tos_serial::puts(b"\r\n");
+    result_port(RESULT_CAPSULE_INVALID)
+}
+
 /// SimpleTextOutput console message (ASCII -> UTF-16). Diagnostic only; a
 /// console failure is non-fatal (serial remains the authoritative channel).
 fn conout(st: *mut SystemTable, s: &str) {
@@ -108,6 +116,11 @@ fn conout(st: *mut SystemTable, s: &str) {
 fn error_tag(e: CapsError) -> &'static [u8] {
     match e {
         CapsError::InputTooShort => b"InputTooShort",
+        CapsError::CapsuleTooLarge => b"CapsuleTooLarge",
+        CapsError::FileCountTooLarge => b"FileCountTooLarge",
+        CapsError::PathTooLong => b"PathTooLong",
+        CapsError::NameArenaTooLarge => b"NameArenaTooLarge",
+        CapsError::LicenceNoticeTooLarge => b"LicenceNoticeTooLarge",
         CapsError::BadMagic => b"BadMagic",
         CapsError::BadUuid => b"BadUuid",
         CapsError::BadFormatVersion => b"BadFormatVersion",
@@ -191,9 +204,20 @@ fn open_ro(root: *mut FileProtocol, name: &str) -> Option<*mut FileProtocol> {
     }
 }
 
-/// Read a whole file from the ESP root into a pool buffer.
-fn read_file(bt: *mut BootServices, root: *mut FileProtocol, name: &str) -> Option<PoolBuf> {
-    let file = open_ro(root, name)?;
+enum ReadFileError {
+    Missing,
+    TooLarge,
+}
+
+/// Read a whole file from the ESP root into a pool buffer. A supplied maximum
+/// is checked from EFI metadata before allocation or full-file materialization.
+fn read_file(
+    bt: *mut BootServices,
+    root: *mut FileProtocol,
+    name: &str,
+    max_bytes: Option<usize>,
+) -> Result<PoolBuf, ReadFileError> {
+    let file = open_ro(root, name).ok_or(ReadFileError::Missing)?;
     unsafe {
         ((*file).set_position)(file, u64::MAX);
     }
@@ -205,21 +229,28 @@ fn read_file(bt: *mut BootServices, root: *mut FileProtocol, name: &str) -> Opti
         unsafe {
             ((*file).close)(file);
         }
-        return None;
+        return Err(ReadFileError::Missing);
     }
-    let buf = alloc_pool(bt, size as usize)?;
+    if max_bytes.is_some_and(|max| size > max as u64) {
+        unsafe {
+            ((*file).close)(file);
+        }
+        return Err(ReadFileError::TooLarge);
+    }
+    let size = usize::try_from(size).map_err(|_| ReadFileError::Missing)?;
+    let buf = alloc_pool(bt, size).ok_or(ReadFileError::Missing)?;
     unsafe {
         ((*file).set_position)(file, 0);
     }
-    let mut rd: usize = size as usize;
+    let mut rd = size;
     let st = unsafe { ((*file).read)(file, &mut rd, buf.ptr as *mut c_void) };
     unsafe {
         ((*file).close)(file);
     }
-    if efi_error(st) || rd != size as usize {
-        return None;
+    if efi_error(st) || rd != size {
+        return Err(ReadFileError::Missing);
     }
-    Some(buf)
+    Ok(buf)
 }
 
 // ---------------------------------------------------------------------------
@@ -314,13 +345,14 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
         serial_fatal(b"TOS.BOOT.FAILI no-volume");
     }
 
-    let capsule = match read_file(bt, root, "capsule.bin") {
-        Some(b) => b,
-        None => serial_fatal(b"TOS.BOOT.FAILI no-capsule"),
+    let capsule = match read_file(bt, root, "capsule.bin", Some(MAX_CAPSULE_BYTES)) {
+        Ok(b) => b,
+        Err(ReadFileError::TooLarge) => capsule_fatal(CapsError::CapsuleTooLarge),
+        Err(ReadFileError::Missing) => serial_fatal(b"TOS.BOOT.FAILI no-capsule"),
     };
-    let nucleus = match read_file(bt, root, "nucleus.bin") {
-        Some(b) => b,
-        None => serial_fatal(b"TOS.BOOT.FAILI no-nucleus"),
+    let nucleus = match read_file(bt, root, "nucleus.bin", None) {
+        Ok(b) => b,
+        Err(_) => serial_fatal(b"TOS.BOOT.FAILI no-nucleus"),
     };
     unsafe {
         ((*root).close)(root);
@@ -330,12 +362,7 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     let cd = sha256(capsule.as_slice());
     let cap = match parse(capsule.as_slice()) {
         Ok(c) => c,
-        Err(e) => {
-            tos_serial::puts(b"TOS.BOOT.FAILC capsule_err=");
-            tos_serial::puts(error_tag(e));
-            tos_serial::puts(b"\r\n");
-            result_port(RESULT_CAPSULE_INVALID)
-        }
+        Err(e) => capsule_fatal(e),
     };
     tos_serial::puts(b"TOS.CAPSULE.OK files=");
     tos_serial::put_u32_decimal(cap.file_count());

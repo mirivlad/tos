@@ -15,7 +15,8 @@ use tos_hash::Sha256;
 use crate::{
     update_detached_identity, ALIGNMENT, ARCH_SPEC_VERSION, BOOT_PATH, BUILDER_VERSION,
     DETACHED_IDENTITY_DOMAIN, DIGEST_BYTES, FILE_ENTRY_SIZE, FILE_KNOWN_FLAGS, FLAG_BOOT_CANONICAL,
-    FORMAT_UUID, FORMAT_VERSION, HEADER_SIZE, MAGIC, OID_ALG_NONE, PATH_ENTRY_SIZE,
+    FORMAT_UUID, FORMAT_VERSION, HEADER_SIZE, MAGIC, MAX_CAPSULE_BYTES, MAX_FILE_COUNT,
+    MAX_LICENCE_NOTICE_BYTES, MAX_NAME_ARENA_BYTES, MAX_PATH_BYTES, OID_ALG_NONE, PATH_ENTRY_SIZE,
     SRC_KIND_DETACHED,
 };
 
@@ -47,6 +48,11 @@ impl FileSpec {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BuildError {
     Overflow,
+    CapsuleTooLarge,
+    FileCountTooLarge,
+    PathTooLong,
+    NameArenaTooLarge,
+    LicenceNoticeTooLarge,
 }
 
 /// Capsule builder.
@@ -100,6 +106,19 @@ impl Builder {
             // an empty capsule can never validate; reject at build time
             return Err(BuildError::Overflow);
         }
+        if self.files.len() > MAX_FILE_COUNT as usize {
+            return Err(BuildError::FileCountTooLarge);
+        }
+        if self.licence_notice.len() > MAX_LICENCE_NOTICE_BYTES {
+            return Err(BuildError::LicenceNoticeTooLarge);
+        }
+        if self
+            .files
+            .iter()
+            .any(|spec| spec.path.len() > MAX_PATH_BYTES)
+        {
+            return Err(BuildError::PathTooLong);
+        }
         // Stable sort by path bytes (byte order, as the spec requires).
         let mut sorted: Vec<usize> = (0..self.files.len()).collect();
         sorted.sort_by(|&a, &b| self.files[a].path.cmp(&self.files[b].path));
@@ -113,6 +132,9 @@ impl Builder {
             .map(|&i| self.files[i].path.len())
             .try_fold(0usize, |acc, n| acc.checked_add(n))
             .ok_or(BuildError::Overflow)?;
+        if name_total > MAX_NAME_ARENA_BYTES {
+            return Err(BuildError::NameArenaTooLarge);
+        }
         let file_tbl_bytes = count
             .checked_mul(FILE_ENTRY_SIZE as usize)
             .ok_or(BuildError::Overflow)?;
@@ -159,6 +181,10 @@ impl Builder {
         let total_length = payload_end
             .checked_add(self.licence_notice.len())
             .ok_or(BuildError::Overflow)?;
+        if total_length > MAX_CAPSULE_BYTES {
+            return Err(BuildError::CapsuleTooLarge);
+        }
+        let count_u32 = u32::try_from(count).map_err(|_| BuildError::FileCountTooLarge)?;
 
         let mut out = std::vec![0u8; total_length];
 
@@ -170,10 +196,10 @@ impl Builder {
         w_u16(&mut out, 28, ALIGNMENT);
         w_u64(&mut out, 32, total_length as u64);
         w_u64(&mut out, 40, path_tbl_offset as u64);
-        w_u32(&mut out, 48, count as u32);
+        w_u32(&mut out, 48, count_u32);
         w_u32(&mut out, 52, PATH_ENTRY_SIZE);
         w_u64(&mut out, 56, file_tbl_offset as u64);
-        w_u32(&mut out, 64, count as u32);
+        w_u32(&mut out, 64, count_u32);
         w_u32(&mut out, 68, FILE_ENTRY_SIZE);
         w_u64(&mut out, 72, payload_offset as u64);
         w_u64(&mut out, 80, payload_bytes as u64);

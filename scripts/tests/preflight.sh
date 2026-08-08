@@ -35,6 +35,7 @@ make_log_script "$TMP/repo/scripts/tests/check-interface-contract-authority.sh" 
 make_log_script "$TMP/repo/scripts/tests/check-boot-event-contract.sh" boot-event-contract
 make_log_script "$TMP/repo/source/host-tools/qemu-test/run.sh" qemu-success
 make_log_script "$TMP/repo/source/host-tools/qemu-test/negative-suite.sh" qemu-negative
+make_log_script "$TMP/repo/source/host-tools/qemu-test/capsule-size-limit.sh" qemu-capsule-size-limit
 
 cat > "$TMP/bin/python3" <<'EOF'
 #!/bin/sh
@@ -90,8 +91,9 @@ cargo build --release -p tos-uefi-loader --target x86_64-unknown-uefi
 cargo build --release -p tos-nucleus --target x86_64-unknown-none
 qemu-success
 qemu-negative
+qemu-capsule-size-limit
 EOF
-tail -n 6 "$TMP/full.log" > "$TMP/full.tail"
+tail -n 7 "$TMP/full.log" > "$TMP/full.tail"
 if ! cmp -s "$TMP/full.tail.expected" "$TMP/full.tail"; then
     echo "FAIL: full-only gate order differs" >&2
     diff -u "$TMP/full.tail.expected" "$TMP/full.tail" >&2 || true
