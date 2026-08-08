@@ -1076,3 +1076,20 @@ boot architecture, DCO policy или опубликованной истории
   exit 67; `TOS.HALT` and `TOS.PANIC` were absent. This proves the nucleus,
   rather than a second boot path or loader-only assertion, received the
   corrupted mirror and failed closed.
+
+## 2026-08-09 — Phase 1 mandatory stop: detached identity ADR proposal
+
+- Local proposal-only RED calculation for `valid-001.bin` read its two file
+  digests in file-table order. Stored detached value was `42` repeated; proposed
+  `SHA-256(concat(content_digest_i))` was
+  `56daf5dbc0865b626200a1284100b7c4642f686b6d23978dc1050dfe8bc0b7ce`.
+  No active failing test, builder/parser change or vector regeneration remains
+  in the worktree.
+- `docs/adr/0018-detached-capsule-source-identity.md` is Status **Proposed**,
+  deliberately excluded from `docs/SPECIFICATION_SOURCES.txt`, and records the
+  required Level 3 formula, zero-file treatment, migration, architecture impact
+  statement and acceptance boundary. It is not Tier 1 until explicit architect
+  acceptance.
+- Work stops after this proposal is published and verified. F-22 vector
+  provenance/licensing proposal, detached implementation, Phase 2 and Stage 1.5
+  remain out of scope pending owner direction.
