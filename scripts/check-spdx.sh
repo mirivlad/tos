@@ -101,7 +101,7 @@ for f in $(git ls-files); do
             continue ;;
 
         # --- text formats that must carry an SPDX header ---
-        *.rs|*.sh|*.py|*.ld|*.md|*.yml|*.yaml|*.toml|*.tsv|*.tos|*.txt)
+        *.rs|*.S|*.sh|*.py|*.ld|*.md|*.yml|*.yaml|*.toml|*.tsv|*.tos|*.txt)
             checked=$((checked+1))
             # The identifier must appear in the first five lines: after a
             # shebang, an HTML comment opener or a short header block, but not
