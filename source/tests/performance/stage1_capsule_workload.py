@@ -254,6 +254,82 @@ def comparison(args: argparse.Namespace) -> None:
     )
 
 
+def nearest_rank_statistics(durations: list[int], *, allow_zero: bool = False) -> dict[str, int]:
+    if not durations:
+        raise ValueError("statistics require at least one duration")
+    if any(not isinstance(value, int) or value < (0 if allow_zero else 1) for value in durations):
+        raise ValueError("duration is not an allowed integer")
+    ordered = sorted(durations)
+    p95_rank = math.ceil(len(ordered) * 0.95)
+    p99_rank = math.ceil(len(ordered) * 0.99)
+    return {
+        "median_ns": ordered[len(ordered) // 2],
+        "p95_ns": ordered[p95_rank - 1],
+        "p95_rank": p95_rank,
+        "p99_ns": ordered[p99_rank - 1],
+        "p99_rank": p99_rank,
+    }
+
+
+def decomposition(args: argparse.Namespace) -> None:
+    report_value = json.loads(args.report.read_text(encoding="utf-8"))
+    measurements = report_value.get("raw_samples", {}).get("measurements")
+    if not isinstance(measurements, list) or len(measurements) != 21:
+        raise ValueError("decomposition requires exactly 21 measured QEMU samples")
+    segment_names = (
+        "loader_validation",
+        "loader_post_validation",
+        "handoff_transition",
+        "nucleus_validation",
+        "canonical_lookup",
+        "post_validation_to_halt",
+    )
+    segments = {name: [] for name in segment_names}
+    expected = (
+        "TOS.BOOT.ENTRY",
+        "TOS.CAPSULE.OK",
+        "TOS.BOOT.HANDOFF",
+        "TOS.NUCLEUS.ENTRY",
+        "TOS.CAPSULE.OK",
+        "TOS.BOOTTEXT.PATH",
+        "TOS.HALT",
+    )
+    for sample in measurements:
+        records = sample.get("event_timestamps")
+        if not isinstance(records, list):
+            raise ValueError("QEMU sample lacks event timestamp records")
+        events = [record.get("event") for record in records]
+        positions = []
+        after = -1
+        for event in expected:
+            try:
+                position = events.index(event, after + 1)
+            except ValueError as error:
+                raise ValueError(f"QEMU sample lacks ordered event {event}") from error
+            positions.append(position)
+            after = position
+        times = [records[position].get("monotonic_ns") for position in positions]
+        if any(not isinstance(value, int) or value <= 0 for value in times):
+            raise ValueError("QEMU event timestamp is not a positive integer")
+        intervals = [end - start for start, end in zip(times, times[1:])]
+        if any(value < 0 for value in intervals):
+            raise ValueError("QEMU events are not monotonic")
+        for name, interval in zip(segment_names, intervals):
+            segments[name].append(interval)
+    write_json(
+        args.out,
+        {
+            "event_clock": "host monotonic serial-byte arrival",
+            "report_source_commit": report_value.get("source_commit"),
+            "sample_count": len(measurements),
+            "segments": {
+                name: nearest_rank_statistics(values, allow_zero=True)
+                for name, values in segments.items()
+            },
+        },
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
@@ -286,6 +362,9 @@ def main() -> None:
     comparison_parser.add_argument("--native", required=True, type=Path)
     comparison_parser.add_argument("--qemu", required=True, type=Path)
     comparison_parser.add_argument("--out", required=True, type=Path)
+    decomposition_parser = subcommands.add_parser("decomposition")
+    decomposition_parser.add_argument("--report", required=True, type=Path)
+    decomposition_parser.add_argument("--out", required=True, type=Path)
     args = parser.parse_args()
     if args.command == "fixture":
         fixture(args.out)
@@ -296,8 +375,10 @@ def main() -> None:
             raise SystemExit("p95 exceeds the Stage 1 250 ms budget")
     elif args.command == "native-report":
         native_report(args)
-    else:
+    elif args.command == "comparison":
         comparison(args)
+    else:
+        decomposition(args)
 
 
 if __name__ == "__main__":

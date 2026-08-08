@@ -48,6 +48,12 @@ identity. The raw native report, the existing qemu64/TCG raw report and their
 event decomposition are compared in one research summary with an explicit
 ratio.
 
+`stage1_capsule_workload.py decomposition` derives loader validation, loader
+post-validation, handoff, nucleus validation, canonical lookup and terminal
+segments from every measured sample's existing ordered serial events. Its clock
+is therefore explicitly host monotonic serial-byte arrival, not a new guest
+timing interface.
+
 The native result is labelled research P1 and cannot mark F-18 PASS. The QEMU
 result remains the ADR-0025 functional/conformance evidence. An alternate
 QEMU profile, if host support exists, is recorded only as research evidence
