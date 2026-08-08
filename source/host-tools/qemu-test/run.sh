@@ -136,7 +136,7 @@ echo "firmware: $OVMF_CODE + $OVMF_VARS"
 for f in "$TOOL" "$LOADER" "$NUCLEUS" "$OVMF_CODE" "$OVMF_VARS"; do
     [ -f "$f" ] || { echo "missing: $f" >&2; exit 2; }
 done
-for t in qemu-system-x86_64 mformat mcopy mmd; do
+for t in qemu-system-x86_64 mformat mcopy mmd python3; do
     command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 2; }
 done
 
@@ -151,6 +151,10 @@ else
     printf '/system/boot/init.tos\tsource/system/boot/init.tos\n' > "$OUT/manifest.txt"
     ( cd "$GITROOT" && "$TOOL" --git-commit HEAD --licence source/system/boot/NOTICES.txt \
         --out "$OUT/capsule.bin" --meta "$OUT/capsule.meta.json" "$OUT/manifest.txt" )
+    # Provenance is release evidence, not a loader input: independently bind
+    # the exact capsule, Git blobs and retained notice before making the ESP.
+    python3 "$GITROOT/scripts/check-capsule-provenance.py" --root "$GITROOT" \
+        --capsule "$OUT/capsule.bin" --manifest "$OUT/capsule.meta.json"
 fi
 
 # --- 2. ESP image (FAT32, 64 MiB) ---

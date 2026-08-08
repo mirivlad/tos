@@ -1385,3 +1385,17 @@ boot architecture, DCO policy или опубликованной истории
   coverage proves the FFI output invariant; existing UEFI layout assertions,
   BootInfo tests, QEMU success/negative paths and exception injection remain
   the evidence for the remaining assumptions.
+
+## 2026-08-09 — F-17 capsule provenance sidecar
+
+- Project Architect approved the minimal sidecar approach: ADR-0024 establishes
+  the accepted `tos-capsule-provenance-v1` contract without changing capsule v1
+  bytes, BootInfo or the boot-time trusted base.
+- RED: the provenance regression initially failed because no independent
+  checker existed. GREEN: the host builder emits deterministic Git and detached
+  provenance records; the checker binds artifact digest, v1 header, source
+  identity, canonical material digests/SPDX, Git blobs where applicable and
+  retained licence-notice identifiers. It rejects a tampered artifact digest.
+- QEMU's ordinary capsule preparation verifies the generated sidecar before it
+  creates the ESP. The contract records only R0 described reproducibility; it
+  makes no higher-grade claim.

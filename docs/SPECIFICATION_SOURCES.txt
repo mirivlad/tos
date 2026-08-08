@@ -15,6 +15,7 @@ docs/02_SYSTEM_INVARIANTS.md
 docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md
 source/interfaces/boot/BOOT_ABI_V1.md
 source/interfaces/boot/CAPSULE_FORMAT_V1.md
+source/interfaces/boot/CAPSULE_PROVENANCE_V1.md
 docs/21_ARCHITECTURE_PRESERVATION_POLICY.md
 docs/37_STAGE_IDENTITY_GATES.md
 docs/03_ARCHITECTURE_OVERVIEW.md
@@ -77,3 +78,4 @@ docs/adr/0020-versioned-interface-contract-authority.md
 docs/adr/0021-capsule-v1-resource-bounds.md
 docs/adr/0022-bootinfo-v1-platform-handoff.md
 docs/adr/0023-stage1-exception-baseline.md
+docs/adr/0024-capsule-provenance-sidecar.md

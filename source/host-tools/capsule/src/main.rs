@@ -135,10 +135,50 @@ fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+fn spdx_expression(bytes: &[u8], path: &str) -> Result<String, String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| format!("source material '{path}' is not UTF-8 SPDX text"))?;
+    let marker = "SPDX-License-Identifier:";
+    let expression = text
+        .lines()
+        .find_map(|line| line.find(marker).map(|at| &line[at + marker.len()..]))
+        .map(|value| value.trim().trim_end_matches("-->").trim())
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("source material '{path}' has no SPDX-License-Identifier"))?;
+    Ok(expression.to_string())
+}
+
+fn notice_spdx_identifiers(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|_| "licence notice is not valid UTF-8 SPDX text".to_string())?;
+    let marker = "SPDX-License-Identifier:";
+    let mut identifiers: Vec<String> = text
+        .lines()
+        .filter_map(|line| line.find(marker).map(|at| &line[at + marker.len()..]))
+        .map(|value| value.trim().trim_end_matches("-->").trim())
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect();
+    identifiers.sort();
+    identifiers.dedup();
+    if identifiers.is_empty() {
+        return Err("licence notice has no SPDX-License-Identifier".to_string());
+    }
+    Ok(identifiers)
+}
+
 /// Resolved git identity for the capsule source.
 struct Face {
     commit: String,
     oid_bytes: Vec<u8>,
+}
+
+/// One source material and its deterministic provenance record.
+struct Material {
+    capsule_path: String,
+    repository_path: String,
+    content_sha256: [u8; 32],
+    spdx_expression: String,
 }
 
 /// Resolve and verify a git identity for the capsule source.
@@ -194,6 +234,11 @@ fn verify_committed(commit: &str, repo_path: &str, local: &[u8]) -> Result<(), S
 fn main() {
     let args = parse_args();
 
+    if args.meta.is_some() && args.licence.is_none() {
+        eprintln!("error: --meta requires --licence for v1 provenance");
+        std::process::exit(2);
+    }
+
     let mut b = Builder::new();
     let face: Option<Face>;
 
@@ -231,8 +276,9 @@ fn main() {
     }
 
     let ml = fs::read_to_string(&args.manifest).expect("read manifest");
-    // Track (repo_path, content_sha256) for provenance when in git mode.
-    let mut manifest_rows: Vec<(String, [u8; 32])> = Vec::new();
+    // The sidecar records canonical source materials in the same sorted order
+    // as Builder::build(). It never preserves local output paths or time.
+    let mut materials: Vec<Material> = Vec::new();
     for line in ml.lines() {
         let line = line.trim();
         if line.is_empty() || line.starts_with('#') {
@@ -248,12 +294,37 @@ fn main() {
                 std::process::exit(2);
             });
         }
-        manifest_rows.push((src.to_string(), sha256(&content)));
+        let spdx_expression = if args.meta.is_some() {
+            spdx_expression(&content, src).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            })
+        } else {
+            String::new()
+        };
+        materials.push(Material {
+            capsule_path: cpath.to_string(),
+            repository_path: src.to_string(),
+            content_sha256: sha256(&content),
+            spdx_expression,
+        });
         b.add(FileSpec::new(cpath, &content));
     }
 
-    if let Some(l) = &args.licence {
-        b.set_licence_notice(fs::read(l).expect("read licence notices"));
+    let licence_notice = args.licence.as_ref().map(|path| {
+        let bytes = fs::read(path).expect("read licence notices");
+        let identifiers = if args.meta.is_some() {
+            notice_spdx_identifiers(&bytes).unwrap_or_else(|e| {
+                eprintln!("error: {e}");
+                std::process::exit(2);
+            })
+        } else {
+            Vec::new()
+        };
+        (bytes, identifiers)
+    });
+    if let Some((bytes, _)) = &licence_notice {
+        b.set_licence_notice(bytes.clone());
     }
 
     let bytes = b.build().expect("build capsule");
@@ -271,12 +342,6 @@ fn main() {
     let cd = sha256(&bytes);
     let cd_hex = to_hex(&cd);
 
-    let boot = cap.boot_file().expect("boot file");
-    let mut h = tos_hash::Sha256::new();
-    h.update(boot.content);
-    let bd = h.finalize();
-    let bd_hex = to_hex(&bd);
-
     let arch = format!(
         "{}.{}.{}",
         (ARCH_SPEC_VERSION >> 16) & 0xff,
@@ -290,8 +355,32 @@ fn main() {
     );
 
     if let Some(m) = &args.meta {
+        materials.sort_by(|left, right| left.capsule_path.cmp(&right.capsule_path));
+        let (notice, notice_identifiers) = licence_notice
+            .as_ref()
+            .expect("--meta requires --licence above");
+        for material in &materials {
+            if !notice_identifiers
+                .iter()
+                .any(|id| id == &material.spdx_expression)
+            {
+                eprintln!(
+                    "error: source material '{}' SPDX '{}' is absent from licence notice",
+                    material.repository_path, material.spdx_expression
+                );
+                std::process::exit(2);
+            }
+        }
+
+        let header = cap.header();
         let mut json = String::new();
-        json.push_str(&format!("{{\n  \"capsule_sha256\": \"{cd_hex}\",\n  \"file_count\": {},\n  \"boot_text_sha256\": \"{bd_hex}\",\n  \"architecture\": \"{arch}\",\n  \"builder_version\": {BUILDER_VERSION},\n", cap.file_count()));
+        json.push_str(
+            "{\n  \"format\": \"tos-capsule-provenance-v1\",\n  \"schema_version\": 1,\n",
+        );
+        json.push_str(&format!(
+            "  \"artifact\": {{\n    \"sha256\": \"{cd_hex}\",\n    \"capsule_format\": {{\n      \"uuid\": \"2c4f78b3-9d1e-4b0a-9f2c-1a5c8e0d6f71\",\n      \"version\": {}\n    }},\n    \"architecture_spec_version\": \"{arch}\",\n    \"builder\": {{ \"implementation\": \"tos-capsule-tool\", \"version\": {} }},\n    \"target\": {{\n      \"architecture\": \"x86_64\",\n      \"loader_abi\": \"x86_64-unknown-uefi\",\n      \"nucleus_boot_abi\": {{\n        \"minimum\": {{ \"major\": 1, \"minor\": 0 }},\n        \"maximum\": {{ \"major\": 1, \"minor\": 0 }}\n      }}\n    }}\n  }},\n",
+            header.format_version, header.builder_version
+        ));
         if let Some(face) = &face {
             let alg_name = match b.source_oid_alg {
                 OID_ALG_SHA1 => "sha1",
@@ -299,27 +388,65 @@ fn main() {
                 _ => "unknown",
             };
             json.push_str(&format!(
-                "  \"identity\": {{\n    \"kind\": \"git-commit\",\n    \"commit\": \"{}\",\n    \"oid_algorithm\": \"{}\",\n    \"oid_length\": {},\n    \"raw_oid\": \"{}\"\n  }},\n",
+                "  \"source_identity\": {{\n    \"kind\": \"git-commit\",\n    \"source_commit\": \"{}\",\n    \"oid_algorithm\": \"{}\",\n    \"oid_length\": {},\n    \"raw_oid\": \"{}\"\n  }},\n",
                 face.commit,
                 alg_name,
                 b.source_oid_length,
                 to_hex(&b.source_identity_value[..b.source_oid_length as usize])
             ));
-        }
-        json.push_str("  \"sources\": [\n");
-        for (i, (path, ch)) in manifest_rows.iter().enumerate() {
+        } else {
             json.push_str(&format!(
-                "    {{\"repo_path\": \"{}\", \"content_sha256\": \"{}\"}}{}\n",
-                escape_json(path),
-                to_hex(ch),
-                if i + 1 == manifest_rows.len() {
+                "  \"source_identity\": {{\n    \"kind\": \"detached-source-set\",\n    \"digest_algorithm\": \"sha256\",\n    \"digest\": \"{}\"\n  }},\n",
+                to_hex(&header.source_identity_value)
+            ));
+        }
+        json.push_str("  \"materials\": [\n");
+        for (i, material) in materials.iter().enumerate() {
+            let repository_path = if face.is_some() {
+                format!(
+                    ", \"repository_path\": \"{}\"",
+                    escape_json(&material.repository_path)
+                )
+            } else {
+                String::new()
+            };
+            json.push_str(&format!(
+                "    {{\"role\": \"canonical-source\", \"capsule_path\": \"{}\"{}, \"content_sha256\": \"{}\", \"spdx_expression\": \"{}\"}}{}\n",
+                escape_json(&material.capsule_path),
+                repository_path,
+                to_hex(&material.content_sha256),
+                escape_json(&material.spdx_expression),
+                if i + 1 == materials.len() {
                     ""
                 } else {
                     ","
                 }
             ));
         }
-        json.push_str("  ]\n}\n");
+        json.push_str("  ],\n");
+        json.push_str("  \"build\": {\n    \"identity_mode\": ");
+        json.push_str(if face.is_some() {
+            "\"git-commit\""
+        } else {
+            "\"detached-source-set\""
+        });
+        json.push_str(",\n    \"licence_notice_included\": true,\n    \"reproducibility_grade\": \"R0\"\n  },\n");
+        json.push_str(&format!(
+            "  \"licence_notice\": {{\n    \"sha256\": \"{}\",\n    \"spdx_identifiers\": [",
+            to_hex(&sha256(notice))
+        ));
+        for (i, identifier) in notice_identifiers.iter().enumerate() {
+            json.push_str(&format!(
+                "\"{}\"{}",
+                escape_json(identifier),
+                if i + 1 == notice_identifiers.len() {
+                    ""
+                } else {
+                    ", "
+                }
+            ));
+        }
+        json.push_str("]\n  }\n}\n");
         fs::write(m, json).expect("write meta");
     }
 }
