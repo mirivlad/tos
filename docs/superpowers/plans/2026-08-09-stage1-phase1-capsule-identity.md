@@ -31,6 +31,9 @@ existing Python generator helpers, Cargo, QEMU, OVMF and mtools.
   before detached ADR approval.
 - Do not assign a blanket SPDX licence to `.bin` vectors. F-22 is resolved by
   provenance analysis, not inference from file location.
+- Do not add or regenerate a tracked binary vector before the owner accepts a
+  vector provenance/licensing model. An existing `.bin` exclusion in an SPDX
+  check is not authority to add a binary artifact.
 - Do not change default production loader behavior, ABI layout, trusted-base
   boundary, recovery behavior or G0 scope.
 - Use `git commit -s`; keep `PROGRESS.md` out of scope.
@@ -78,10 +81,12 @@ Expected RED: assertion failure because `parse()` returns `Ok`.
 
 - [ ] **Step 3: Record absent BootInfo e2e mechanism**
 
-Run this command before adding a custom loader option:
+Run this command before adding a custom loader option. The supplied path is
+intentionally in an isolated test target directory, not the default artifact
+path:
 
 ```bash
-cd source && bash host-tools/qemu-test/run.sh --out target/qemu-bootinfo-identity-mismatch --loader target/x86_64-unknown-uefi/release/tos-uefi-loader-test-identity.efi --expect 67 --require 'TOS.BOOT.ENTRY TOS.CAPSULE.OK TOS.BOOT.HANDOFF TOS.NUCLEUS.ENTRY TOS.IDENTITY.MISMATCH TOS.CAPSULE.FAIL' --forbid 'TOS.HALT TOS.PANIC'
+cd source && bash host-tools/qemu-test/run.sh --out target/qemu-bootinfo-identity-mismatch --loader target/test-corrupt-bootinfo/x86_64-unknown-uefi/release/tos-uefi-loader.efi --expect 67 --require 'TOS.BOOT.ENTRY TOS.CAPSULE.OK TOS.BOOT.HANDOFF TOS.NUCLEUS.ENTRY TOS.IDENTITY.MISMATCH TOS.CAPSULE.FAIL' --forbid 'TOS.HALT TOS.PANIC'
 ```
 
 Expected RED: explicit `unknown option: --loader`, proving no pre-existing e2e
@@ -142,14 +147,15 @@ new authority tier.
 
 - Modify: `source/crates/capsule/src/lib.rs`
 - Modify: `source/boot/uefi-loader/src/main.rs`
-- Modify: `source/tests/vectors/gen/gen.sh`
-- Create: `source/tests/vectors/capsule-v1/invalid-sha1-oid-padding.bin`
-- Modify: `source/tests/vectors/capsule-v1/vectors.tsv`
+- Modify: `source/tests/integration/src/lib.rs`
+- Create: `source/host-tools/qemu-test/sha1-oid-padding.sh`
 - Modify: `source/interfaces/boot/CAPSULE_FORMAT_V1.md`
 - Modify: `WORKLOG_STAGE1_HARDENING.md`
 
 **Produces:** Level 1 enforcement of ADR-0016's zero-padding representation
-with matching host and real-loader error evidence.
+with matching host and real-loader error evidence. The QEMU scenario creates
+its malformed capsule beneath ignored `source/target/`; it does not add a
+tracked `.bin` fixture before F-22 is resolved.
 
 - [ ] **Step 1: Restore/observe RED then add one error**
 
@@ -174,18 +180,26 @@ assert_eq!(parse(&bytes), Err(CapsError::NonZeroOidPadding));
 Do not apply a tail rule to SHA-256 OIDs. Add
 `CapsError::NonZeroOidPadding => b"NonZeroOidPadding"` to loader `error_tag`.
 
-- [ ] **Step 2: Add the committed negative vector**
+- [ ] **Step 2: Add in-memory integration and ephemeral QEMU evidence**
 
-Extend the existing generator to derive `invalid-sha1-oid-padding.bin` from
-`valid-001.bin`: set header bytes 96/97/98 to `1/1/20`, fill bytes 100..120
-with deterministic raw-OID bytes, set byte 120 to `0x01`, and recompute
-`whole_capsule_digest`. Add this exact vector row:
+Add an integration test that copies `valid-001.bin` in memory, writes the Git
+source identity header as SHA-1 (`kind=1`, `alg=1`, `len=20`), fills its first
+20 bytes with deterministic raw-OID bytes, sets the first unused tail byte to
+`0x01`, recomputes `whole_capsule_digest`, and asserts
+`Err(CapsError::NonZeroOidPadding)`. It must not write a fixture.
 
-```text
-invalid-sha1-oid-padding.bin	reject:NonZeroOidPadding
-```
+Create `source/host-tools/qemu-test/sha1-oid-padding.sh`. The script must
+derive the same malformed bytes from
+`source/tests/vectors/capsule-v1/valid-001.bin` into
+`source/target/qemu-negative-sha1-padding/invalid-sha1-oid-padding.bin`, then
+invoke the existing `run.sh` with that explicit capsule, `--expect 67`, require
+`TOS.CAPSULE.FAIL` and `capsule_err=NonZeroOidPadding`, and forbid
+`TOS.NUCLEUS.ENTRY`. Its generated file must remain under ignored `target/` and
+must not be listed in `vectors.tsv`.
 
-This changes no detached identity semantics.
+This changes no detached identity semantics and creates no committed binary
+vector. The transformation recipe is retained in the script so that a later,
+owner-approved provenance record can describe the derivation completely.
 
 - [ ] **Step 3: Prove GREEN at every layer**
 
@@ -194,18 +208,21 @@ Run:
 ```bash
 cd source && cargo test -p tos-capsule sha1_oid_nonzero_padding_is_rejected
 cd source && cargo test -p tos-tests-integration every_vector_matches_its_declared_outcome
-cd source && bash host-tools/qemu-test/negative-suite.sh target/qemu-negative-sha1-padding
+cd source && cargo test -p tos-tests-integration sha1_oid_nonzero_padding_is_rejected
+cd source && bash host-tools/qemu-test/sha1-oid-padding.sh
 ```
 
-Expected: host parser returns `NonZeroOidPadding`; QEMU prints this fixture with
-exit 67 and no `TOS.NUCLEUS.ENTRY`.
+Expected: host parser returns `NonZeroOidPadding`; all 12 existing committed
+negative fixtures retain their declared outcomes; the ephemeral QEMU capsule
+prints `NonZeroOidPadding`, exits 67, and never enters the nucleus.
 
 - [ ] **Step 4: Commit only GREEN state**
 
 State the already accepted zero-padding rule in the interface draft without
 claiming independent authority. Record observed evidence, commit all Task 3
 files with `capsule: reject nonzero SHA-1 OID padding`, then run
-`./scripts/preflight.sh --full`. Expected: 15/15 PASS with 13 negative vectors.
+`./scripts/preflight.sh --full`. Expected: 15/15 PASS with 12 committed
+negative vectors plus one direct ephemeral SHA-1-padding QEMU scenario.
 
 ### Task 4: Implement isolated BootInfo mismatch e2e evidence
 
@@ -248,25 +265,35 @@ header into `bi.capsule_source_identity`, add:
 
 Parse `--loader FILE` in `run.sh`; use the existing loader path only when it is
 absent. Keep capsule construction, ESP layout, OVMF discovery, q35/qemu64/256
-MiB and isa-debug-exit arguments unchanged. The e2e script builds with the
-feature and calls the Task 1 harness command. Supplying explicit `--forbid`
-prevents the ordinary exit-67 loader-rejection default from forbidding the
-required nucleus entry.
+MiB and isa-debug-exit arguments unchanged. The mismatch script must require
+one loader-path argument and fail before invoking QEMU when it is absent; it
+passes that argument to `run.sh --loader` and has no default-loader fallback.
+Supplying explicit `--forbid` prevents the ordinary exit-67 loader-rejection
+default from forbidding the required nucleus entry.
 
 - [ ] **Step 4: Verify isolation and failure path**
 
-The regression script runs, in order:
+The regression script runs, in order. It records the digest of the ordinary
+artifact before the feature build and proves that the feature build neither
+overwrites it nor becomes the implicit `run.sh` choice:
 
 ```bash
 cargo build --release -p tos-uefi-loader --target x86_64-unknown-uefi
+normal_loader=target/x86_64-unknown-uefi/release/tos-uefi-loader.efi
+normal_sha256_before=$(sha256sum "$normal_loader" | awk '{print $1}')
 bash host-tools/qemu-test/run.sh --out target/qemu-normal-control --expect 33
-cargo build --release -p tos-uefi-loader --target x86_64-unknown-uefi --features test-corrupt-bootinfo-identity
-bash host-tools/qemu-test/bootinfo-identity-mismatch.sh
+CARGO_TARGET_DIR=target/test-corrupt-bootinfo cargo build --release -p tos-uefi-loader --target x86_64-unknown-uefi --features test-corrupt-bootinfo-identity
+test "$(sha256sum "$normal_loader" | awk '{print $1}')" = "$normal_sha256_before"
+test -f target/test-corrupt-bootinfo/x86_64-unknown-uefi/release/tos-uefi-loader.efi
+bash host-tools/qemu-test/bootinfo-identity-mismatch.sh target/test-corrupt-bootinfo/x86_64-unknown-uefi/release/tos-uefi-loader.efi
+bash host-tools/qemu-test/run.sh --out target/qemu-normal-control-after --expect 33
 ```
 
 Expected: normal artifact emits `TOS.HALT`/exit 33; explicit feature reaches
 the real nucleus, emits `TOS.IDENTITY.MISMATCH`, never emits `TOS.HALT`, and
-exits 67.
+exits 67. The default artifact digest is unchanged, the test artifact exists
+only below `target/test-corrupt-bootinfo/`, and the final unqualified success
+path still exits 33.
 
 - [ ] **Step 5: Commit and full verification**
 
@@ -332,23 +359,31 @@ Use this exact per-vector shape:
   "format": "tos-capsule-vector-provenance-v1",
   "vector": "valid-001.bin",
   "sha256": "<64 lowercase hex>",
-  "generator": {"path": "tests/vectors/gen/gen.sh", "version": 1},
+  "generator": {"path": "source/tests/vectors/gen/gen.sh", "version": 1},
   "source_commit": "<full Git OID or detached declaration>",
   "inputs": [{"path": "system/boot/init.tos", "spdx": "GPL-3.0-or-later"}],
-  "generated_artifact": true
+  "generated_artifact": true,
+  "derivation": null
 }
 ```
 
 Separate reusable format/harness metadata from the mixed-material binary
-container. Ask the architect to identify existing authority for a single
-container classification; the proposal must not decide it.
+container. The schema must also support a derived invalid vector by replacing
+`derivation: null` with an object containing its `base_vector` and a precise
+`transformation_recipe`; for example, the future SHA-1 padding vector would
+name `valid-001.bin` and specify its SHA-1 header rewrite, non-zero unused-tail
+byte, and whole-digest recomputation. Ask the architect to identify existing
+authority for a single container classification; the proposal must not decide
+it.
 
 - [ ] **Step 3: Commit proposal and stop**
 
 Regenerate release metadata, commit `docs: propose capsule vector provenance`,
 run its check and checksum verification, then report the exact remaining policy
-decision. Do not regenerate vectors, edit their SPDX/provenance files, or begin
-detached implementation.
+decision. Do not add or regenerate vectors, edit their SPDX/provenance files,
+or begin detached implementation. After the owner accepts a provenance model,
+a separately approved continuation may add the SHA-1 fixture and its complete
+provenance record; this plan does not authorize that action.
 
 ## Plan self-review
 
