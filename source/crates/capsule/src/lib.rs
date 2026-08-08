@@ -34,6 +34,13 @@ pub const DIGEST_BYTES: usize = 32;
 pub const ARCH_SPEC_VERSION: u32 = 0x00_02_01;
 pub const BUILDER_VERSION: u32 = 1;
 
+/// Inclusive capsule-v1 resource limits accepted by ADR-0021.
+pub const MAX_CAPSULE_BYTES: usize = 32 * 1024 * 1024;
+pub const MAX_FILE_COUNT: u32 = 4096;
+pub const MAX_PATH_BYTES: usize = 1024;
+pub const MAX_NAME_ARENA_BYTES: usize = 1024 * 1024;
+pub const MAX_LICENCE_NOTICE_BYTES: usize = 64 * 1024;
+
 pub const SRC_KIND_NONE: u8 = 0;
 pub const SRC_KIND_GIT: u8 = 1;
 pub const SRC_KIND_DETACHED: u8 = 2;
@@ -140,6 +147,11 @@ pub struct Header {
 pub enum CapsError {
     /// Input shorter than the header, or `total_length` exceeds the slice.
     InputTooShort,
+    CapsuleTooLarge,
+    FileCountTooLarge,
+    PathTooLong,
+    NameArenaTooLarge,
+    LicenceNoticeTooLarge,
     BadMagic,
     BadUuid,
     BadFormatVersion,
@@ -486,6 +498,10 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     if bytes.len() < HEADER_SIZE {
         return Err(CapsError::InputTooShort);
     }
+    // Gross input bound comes before header decoding and every hash/table pass.
+    if bytes.len() > MAX_CAPSULE_BYTES {
+        return Err(CapsError::CapsuleTooLarge);
+    }
     let h = decode_header(bytes);
 
     // --- identity and framing ---
@@ -503,6 +519,17 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     }
     if h.alignment != ALIGNMENT {
         return Err(CapsError::BadAlignment);
+    }
+    // ADR-0021 precedence: after fixed header identity, reject gross declared
+    // limits before identity validation, table walks or payload hashing.
+    if h.total_length > MAX_CAPSULE_BYTES as u64 {
+        return Err(CapsError::CapsuleTooLarge);
+    }
+    if h.path_table_count > MAX_FILE_COUNT || h.file_count > MAX_FILE_COUNT {
+        return Err(CapsError::FileCountTooLarge);
+    }
+    if h.licence_notice_length > MAX_LICENCE_NOTICE_BYTES as u64 {
+        return Err(CapsError::LicenceNoticeTooLarge);
     }
     if bytes[off::RESERVED..off::RESERVED + 2]
         .iter()
@@ -550,7 +577,7 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
         }
         _ => return Err(CapsError::UnsupportedIdentityKind),
     }
-    if h.total_length as usize != bytes.len() {
+    if usize::try_from(h.total_length).map_err(|_| CapsError::RegionOverflow)? != bytes.len() {
         return Err(CapsError::TotalLengthMismatch);
     }
     if h.arch_spec_version != ARCH_SPEC_VERSION {
@@ -573,7 +600,8 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     // The path table begins immediately after the header: a capsule has no
     // undescribed bytes (spec §4, ADR-0017). A lower bound alone would let
     // arbitrary data sit between the header and the first path entry.
-    let path_tbl_start = h.path_table_offset as usize;
+    let path_tbl_start =
+        usize::try_from(h.path_table_offset).map_err(|_| CapsError::RegionOverflow)?;
     if path_tbl_start != HEADER_SIZE {
         return Err(CapsError::PathTableNotAfterHeader);
     }
@@ -583,10 +611,15 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     let name_start = path_tbl_start
         .checked_add(path_tbl_bytes)
         .ok_or(CapsError::RegionOverflow)?;
-    let file_tbl_start = h.file_table_offset as usize;
+    let file_tbl_start =
+        usize::try_from(h.file_table_offset).map_err(|_| CapsError::RegionOverflow)?;
     // name arena must be non-empty and end where the file table begins
     if file_tbl_start < name_start {
         return Err(CapsError::LayoutMismatch);
+    }
+    let name_arena_len = file_tbl_start - name_start;
+    if name_arena_len > MAX_NAME_ARENA_BYTES {
+        return Err(CapsError::NameArenaTooLarge);
     }
     let file_tbl_bytes = (h.file_count as usize)
         .checked_mul(FILE_ENTRY_SIZE as usize)
@@ -594,11 +627,11 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     let payload_start = file_tbl_start
         .checked_add(file_tbl_bytes)
         .ok_or(CapsError::RegionOverflow)?;
-    if payload_start != h.payload_offset as usize {
+    if payload_start != usize::try_from(h.payload_offset).map_err(|_| CapsError::RegionOverflow)? {
         return Err(CapsError::LayoutMismatch);
     }
     let payload_end = payload_start
-        .checked_add(h.payload_length as usize)
+        .checked_add(usize::try_from(h.payload_length).map_err(|_| CapsError::RegionOverflow)?)
         .ok_or(CapsError::RegionOverflow)?;
     if h.file_count == 0 {
         return Err(CapsError::ZeroFileCount);
@@ -609,7 +642,7 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
         return Err(CapsError::LayoutMismatch);
     }
     let tail = bytes.len() - payload_end;
-    if tail != h.licence_notice_length as usize {
+    if tail != usize::try_from(h.licence_notice_length).map_err(|_| CapsError::RegionOverflow)? {
         return Err(CapsError::LicenceOutOfBounds);
     }
     if h.licence_notice_length == 0 {
@@ -620,14 +653,16 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
     } else {
         // Present notice: it must cover exactly the tail of the capsule,
         // i.e. [payload_end, total_length).
-        if h.licence_notice_offset as usize != payload_end {
+        if usize::try_from(h.licence_notice_offset).map_err(|_| CapsError::RegionOverflow)?
+            != payload_end
+        {
             return Err(CapsError::LicenceTailMismatch);
         }
         let lic_end = h
             .licence_notice_offset
             .checked_add(h.licence_notice_length)
             .ok_or(CapsError::RegionOverflow)?;
-        if lic_end as usize != bytes.len() {
+        if usize::try_from(lic_end).map_err(|_| CapsError::RegionOverflow)? != bytes.len() {
             return Err(CapsError::LicenceTailMismatch);
         }
         // The block itself must be valid UTF-8 text (spec §7).
@@ -635,8 +670,6 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
             return Err(CapsError::LicenceTailMismatch);
         }
     }
-
-    let name_arena_len = file_tbl_start - name_start;
 
     // --- path table ---
     let mut prev_name: Option<&[u8]> = None;
@@ -655,6 +688,9 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
         }
         let name_off = pe.name_offset as usize;
         let name_len = pe.name_length as usize;
+        if name_len > MAX_PATH_BYTES {
+            return Err(CapsError::PathTooLong);
+        }
         if name_len == 0 {
             return Err(CapsError::EmptyComponent);
         }
@@ -848,7 +884,7 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
 #[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
-    use crate::build::{Builder, FileSpec};
+    use crate::build::{BuildError, Builder, FileSpec};
     use std::format;
 
     fn sample_builder() -> Builder {
@@ -1182,5 +1218,142 @@ mod tests {
             cap.find(b"/system/lib/file042.tos").unwrap().content,
             b"content 42\n"
         );
+    }
+
+    #[test]
+    fn resource_limit_precedence_is_stable() {
+        let mut too_large = sample_builder().build().expect("build");
+        too_large.resize(MAX_CAPSULE_BYTES + 1, 0);
+        assert_eq!(parse(&too_large), Err(CapsError::CapsuleTooLarge));
+
+        let mut too_many_files = sample_builder().build().expect("build");
+        too_many_files[off::PATH_TABLE_COUNT..off::PATH_TABLE_COUNT + 4]
+            .copy_from_slice(&(MAX_FILE_COUNT + 1).to_le_bytes());
+        too_many_files[off::FILE_COUNT..off::FILE_COUNT + 4]
+            .copy_from_slice(&(MAX_FILE_COUNT + 1).to_le_bytes());
+        refix_whole_digest(&mut too_many_files);
+        assert_eq!(parse(&too_many_files), Err(CapsError::FileCountTooLarge));
+
+        let mut long_path = sample_builder().build().expect("build");
+        let path_table = rd64(&long_path, off::PATH_TABLE_OFFSET) as usize;
+        long_path[path_table + 4..path_table + 8]
+            .copy_from_slice(&((MAX_PATH_BYTES + 1) as u32).to_le_bytes());
+        refix_whole_digest(&mut long_path);
+        assert_eq!(parse(&long_path), Err(CapsError::PathTooLong));
+
+        let mut large_name_arena = sample_builder().build().expect("build");
+        let path_start = rd64(&large_name_arena, off::PATH_TABLE_OFFSET);
+        let path_count = u64::from(u32::from_le_bytes(
+            large_name_arena[off::PATH_TABLE_COUNT..off::PATH_TABLE_COUNT + 4]
+                .try_into()
+                .expect("path count"),
+        ));
+        let file_start = path_start
+            + path_count * u64::from(PATH_ENTRY_SIZE)
+            + (MAX_NAME_ARENA_BYTES as u64 + 1);
+        large_name_arena[off::FILE_TABLE_OFFSET..off::FILE_TABLE_OFFSET + 8]
+            .copy_from_slice(&file_start.to_le_bytes());
+        refix_whole_digest(&mut large_name_arena);
+        assert_eq!(parse(&large_name_arena), Err(CapsError::NameArenaTooLarge));
+
+        let mut large_notice = sample_builder().build().expect("build");
+        large_notice[off::LICENCE_LENGTH..off::LICENCE_LENGTH + 8]
+            .copy_from_slice(&(MAX_LICENCE_NOTICE_BYTES as u64 + 1).to_le_bytes());
+        refix_whole_digest(&mut large_notice);
+        assert_eq!(parse(&large_notice), Err(CapsError::LicenceNoticeTooLarge));
+    }
+
+    #[test]
+    fn builder_rejects_resource_limit_excesses() {
+        let mut too_many_files = Builder::new();
+        too_many_files.add(FileSpec::new("/system/boot/init.tos", b"# boot\n"));
+        for i in 0..MAX_FILE_COUNT {
+            too_many_files.add(FileSpec::new(&format!("/system/lib/file{i:04}.tos"), b"x"));
+        }
+        assert_eq!(too_many_files.build(), Err(BuildError::FileCountTooLarge));
+
+        let mut long_path = Builder::new();
+        long_path.add(FileSpec::new("/system/boot/init.tos", b"# boot\n"));
+        long_path.add(FileSpec::new(
+            &format!("/{}", "a".repeat(MAX_PATH_BYTES)),
+            b"x",
+        ));
+        assert_eq!(long_path.build(), Err(BuildError::PathTooLong));
+
+        let mut large_name_arena = Builder::new();
+        for i in 0..1025 {
+            large_name_arena.add(FileSpec::new(
+                &format!("/{i:04}{}", "a".repeat(MAX_PATH_BYTES - 5)),
+                b"x",
+            ));
+        }
+        assert_eq!(large_name_arena.build(), Err(BuildError::NameArenaTooLarge));
+
+        let mut large_notice = Builder::new();
+        large_notice.add(FileSpec::new("/system/boot/init.tos", b"# boot\n"));
+        large_notice.set_licence_notice(std::vec![0; MAX_LICENCE_NOTICE_BYTES + 1]);
+        assert_eq!(large_notice.build(), Err(BuildError::LicenceNoticeTooLarge));
+
+        let path = b"/system/boot/init.tos";
+        let payload_bytes = MAX_CAPSULE_BYTES
+            - HEADER_SIZE
+            - PATH_ENTRY_SIZE as usize
+            - FILE_ENTRY_SIZE as usize
+            - path.len()
+            + 1;
+        let mut large_capsule = Builder::new();
+        large_capsule.add(FileSpec::new(
+            "/system/boot/init.tos",
+            &std::vec![0; payload_bytes],
+        ));
+        assert_eq!(large_capsule.build(), Err(BuildError::CapsuleTooLarge));
+    }
+
+    #[test]
+    fn builder_accepts_each_inclusive_resource_limit() {
+        let mut max_file_count = Builder::new();
+        max_file_count.add(FileSpec::new("/system/boot/init.tos", b"# boot\n"));
+        for i in 0..(MAX_FILE_COUNT - 1) {
+            max_file_count.add(FileSpec::new(&format!("/system/lib/file{i:04}.tos"), b"x"));
+        }
+        assert!(parse(&max_file_count.build().expect("max file count")).is_ok());
+
+        let mut max_path = Builder::new();
+        max_path.add(FileSpec::new("/system/boot/init.tos", b"# boot\n"));
+        max_path.add(FileSpec::new(
+            &format!("/{}", "a".repeat(MAX_PATH_BYTES - 1)),
+            b"x",
+        ));
+        assert!(parse(&max_path.build().expect("max path")).is_ok());
+
+        let mut max_name_arena = Builder::new();
+        for i in 0..1024 {
+            max_name_arena.add(FileSpec::new(
+                &format!("/{i:04}{}", "a".repeat(MAX_PATH_BYTES - 5)),
+                b"x",
+            ));
+        }
+        let max_name_arena = max_name_arena.build().expect("max name arena");
+        assert_eq!(parse(&max_name_arena), Err(CapsError::MissingBootCanonical));
+
+        let mut max_notice = Builder::new();
+        max_notice.add(FileSpec::new("/system/boot/init.tos", b"# boot\n"));
+        max_notice.set_licence_notice(std::vec![b'x'; MAX_LICENCE_NOTICE_BYTES]);
+        assert!(parse(&max_notice.build().expect("max notice")).is_ok());
+
+        let path = b"/system/boot/init.tos";
+        let payload_bytes = MAX_CAPSULE_BYTES
+            - HEADER_SIZE
+            - PATH_ENTRY_SIZE as usize
+            - FILE_ENTRY_SIZE as usize
+            - path.len();
+        let mut max_capsule = Builder::new();
+        max_capsule.add(FileSpec::new(
+            "/system/boot/init.tos",
+            &std::vec![0; payload_bytes],
+        ));
+        let bytes = max_capsule.build().expect("max capsule");
+        assert_eq!(bytes.len(), MAX_CAPSULE_BYTES);
+        assert!(parse(&bytes).is_ok());
     }
 }

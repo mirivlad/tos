@@ -91,6 +91,10 @@ qemu_negative() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/negative-suite.sh \
         target/preflight-qemu/negative)
 }
+qemu_capsule_size_limit() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/capsule-size-limit.sh \
+        target/preflight-qemu/capsule-size-limit)
+}
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
@@ -111,6 +115,7 @@ if [ "$MODE" = full ]; then
     run_gate "build nucleus" build_nucleus
     run_gate "QEMU success boot" qemu_success
     run_gate "QEMU negative suite" qemu_negative
+    run_gate "QEMU capsule size limit" qemu_capsule_size_limit
 fi
 
 printf '\n'
