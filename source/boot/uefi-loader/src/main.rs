@@ -14,8 +14,9 @@
 //! after `ExitBootServices` succeeds; `ExitBootServices` itself is retried with
 //! a freshly re-read memory map when the map key turns stale.
 
-#![no_main]
-#![no_std]
+#![cfg_attr(not(test), no_main)]
+#![cfg_attr(not(test), no_std)]
+#![cfg_attr(test, allow(dead_code, unused_assignments, unused_imports))]
 
 mod efi;
 
@@ -26,8 +27,8 @@ use core::ptr;
 
 use efi::*;
 use tos_boot_protocol::{
-    BootInfo, MemoryRange, MEM_ACPI_NVS, MEM_ACPI_RECLAIM, MEM_MMIO, MEM_RESERVED, MEM_USABLE,
-    RESULT_CAPSULE_INVALID, RESULT_PANIC,
+    BootInfo, MemoryRange, FB_FORMAT_BGRX8, FB_FORMAT_RGBX8, MEM_ACPI_NVS, MEM_ACPI_RECLAIM,
+    MEM_MMIO, MEM_RESERVED, MEM_USABLE, RESULT_CAPSULE_INVALID, RESULT_PANIC,
 };
 use tos_capsule::{parse, CapsError, MAX_CAPSULE_BYTES};
 use tos_hash::sha256;
@@ -36,6 +37,183 @@ const STACK_PAGES: usize = 8; // 32 KiB
 
 /// Fixed physical load address of the nucleus (must match nucleus/linker.ld).
 const NUCLEUS_BASE: u64 = 0x2_000_000;
+const MAX_FIRMWARE_ENTRY_BYTES: usize = 4096;
+const MAX_CONFIGURATION_TABLES: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct PlatformHandoff {
+    fb_phys: u64,
+    fb_width: u32,
+    fb_height: u32,
+    fb_pitch: u32,
+    fb_format: u32,
+    acpi_rsdp: u64,
+    acpi_version: u8,
+    smbios: u64,
+    smbios_version: u8,
+}
+
+fn byte_sum_is_zero(bytes: &[u8]) -> bool {
+    bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)) == 0
+}
+
+unsafe fn firmware_bytes<'a>(ptr: *const u8, len: usize) -> Option<&'a [u8]> {
+    if ptr.is_null() || len > MAX_FIRMWARE_ENTRY_BYTES {
+        return None;
+    }
+    // SAFETY: configuration-table pointers are physical under the UEFI ABI and
+    // ADR-0005's QEMU/OVMF identity-map assumption; every caller bounds the
+    // fixed/declared header before inspecting it.
+    Some(unsafe { core::slice::from_raw_parts(ptr, len) })
+}
+
+unsafe fn config_table(st: *mut SystemTable, wanted: Guid) -> Option<*mut c_void> {
+    let count = unsafe { (*st).number_of_table_entries };
+    if count > MAX_CONFIGURATION_TABLES {
+        return None;
+    }
+    let tables = unsafe { (*st).configuration_table as *const ConfigurationTable };
+    if tables.is_null() {
+        return None;
+    }
+    for i in 0..count {
+        // SAFETY: UEFI system table supplies exactly `count` configuration
+        // entries for the lifetime of boot services.
+        let entry = unsafe { &*tables.add(i) };
+        if entry.vendor_guid == wanted {
+            return Some(entry.vendor_table);
+        }
+    }
+    None
+}
+
+unsafe fn validate_rsdp(ptr: *mut c_void, v2: bool) -> Option<u64> {
+    let base = unsafe { firmware_bytes(ptr as *const u8, 20) }?;
+    if &base[..8] != b"RSD PTR " || !byte_sum_is_zero(base) {
+        return None;
+    }
+    if !v2 {
+        return Some(ptr as u64);
+    }
+    let prefix = unsafe { firmware_bytes(ptr as *const u8, 24) }?;
+    if prefix[15] < 2 {
+        return None;
+    }
+    let len = u32::from_le_bytes(prefix[20..24].try_into().ok()?) as usize;
+    if len < 36 {
+        return None;
+    }
+    let full = unsafe { firmware_bytes(ptr as *const u8, len) }?;
+    if !byte_sum_is_zero(full) {
+        return None;
+    }
+    Some(ptr as u64)
+}
+
+unsafe fn validate_smbios(ptr: *mut c_void, v3: bool) -> Option<u64> {
+    let head = unsafe { firmware_bytes(ptr as *const u8, if v3 { 24 } else { 31 }) }?;
+    let (anchor, min_len) = if v3 {
+        (b"_SM3_".as_slice(), 24)
+    } else {
+        (b"_SM_".as_slice(), 31)
+    };
+    if &head[..anchor.len()] != anchor {
+        return None;
+    }
+    let len = head[if v3 { 6 } else { 5 }] as usize;
+    if len < min_len {
+        return None;
+    }
+    let full = unsafe { firmware_bytes(ptr as *const u8, len) }?;
+    if !byte_sum_is_zero(full) {
+        return None;
+    }
+    if !v3 && (&full[16..21] != b"_DMI_" || !byte_sum_is_zero(&full[16..31])) {
+        return None;
+    }
+    Some(ptr as u64)
+}
+
+unsafe fn select_acpi(st: *mut SystemTable) -> Option<(u64, u8)> {
+    match unsafe { config_table(st, GUID_ACPI_20) } {
+        Some(ptr) => Some((unsafe { validate_rsdp(ptr, true) }?, 2)),
+        None => match unsafe { config_table(st, GUID_ACPI_10) } {
+            Some(ptr) => Some((unsafe { validate_rsdp(ptr, false) }?, 1)),
+            None => Some((0, 0)),
+        },
+    }
+}
+
+unsafe fn select_smbios(st: *mut SystemTable) -> Option<(u64, u8)> {
+    match unsafe { config_table(st, GUID_SMBIOS3) } {
+        Some(ptr) => Some((unsafe { validate_smbios(ptr, true) }?, 3)),
+        None => match unsafe { config_table(st, GUID_SMBIOS) } {
+            Some(ptr) => Some((unsafe { validate_smbios(ptr, false) }?, 2)),
+            None => Some((0, 0)),
+        },
+    }
+}
+
+unsafe fn collect_platform(st: *mut SystemTable, bt: *mut BootServices) -> Option<PlatformHandoff> {
+    let mut raw: *mut c_void = ptr::null_mut();
+    let status =
+        unsafe { ((*bt).locate_protocol)(&GUID_GRAPHICS_OUTPUT, ptr::null_mut(), &mut raw) };
+    let (fb_phys, fb_width, fb_height, fb_pitch, fb_format) = if status == EFI_NOT_FOUND {
+        (0, 0, 0, 0, 0)
+    } else {
+        if efi_error(status) || raw.is_null() {
+            return None;
+        }
+        let gop = unsafe { &*(raw as *const GraphicsOutputProtocol) };
+        if gop.mode.is_null() {
+            return None;
+        }
+        let mode = unsafe { &*gop.mode };
+        if mode.info.is_null()
+            || mode.size_of_info < core::mem::size_of::<GraphicsOutputModeInfo>()
+            || mode.framebuffer_base == 0
+        {
+            return None;
+        }
+        let info = unsafe { &*mode.info };
+        let format = match info.pixel_format {
+            PIXEL_RGBX8 => FB_FORMAT_RGBX8,
+            PIXEL_BGRX8 => FB_FORMAT_BGRX8,
+            PIXEL_BIT_MASK | PIXEL_BLT_ONLY => return None,
+            _ => return None,
+        };
+        let pitch = info.pixels_per_scan_line.checked_mul(4)?;
+        let required = (pitch as u64).checked_mul(info.vertical_resolution as u64)?;
+        if info.horizontal_resolution == 0
+            || info.vertical_resolution == 0
+            || pitch < info.horizontal_resolution.checked_mul(4)?
+            || usize::try_from(required).ok()? > mode.framebuffer_size
+            || mode.framebuffer_base.checked_add(required).is_none()
+        {
+            return None;
+        }
+        (
+            mode.framebuffer_base,
+            info.horizontal_resolution,
+            info.vertical_resolution,
+            pitch,
+            format,
+        )
+    };
+    let (acpi_rsdp, acpi_version) = unsafe { select_acpi(st) }?;
+    let (smbios, smbios_version) = unsafe { select_smbios(st) }?;
+    Some(PlatformHandoff {
+        fb_phys,
+        fb_width,
+        fb_height,
+        fb_pitch,
+        fb_format,
+        acpi_rsdp,
+        acpi_version,
+        smbios,
+        smbios_version,
+    })
+}
 
 /// A pool-allocated byte buffer. Never freed (we exit boot services).
 struct PoolBuf {
@@ -53,6 +231,7 @@ impl PoolBuf {
     }
 }
 
+#[cfg(not(test))]
 #[panic_handler]
 fn panic(_info: &PanicInfo) -> ! {
     tos_serial::puts(b"TOS.PANIC loader\r\n");
@@ -302,6 +481,7 @@ fn reserve_overlapping(ranges: &mut [MemoryRange], start: u64, len: u64) {
 // apply to it. Every dereference below is null-checked where the UEFI spec
 // permits a null field (`con_out`, `boot_services`).
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[cfg(not(test))]
 #[no_mangle]
 pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut SystemTable) -> usize {
     tos_serial::init();
@@ -312,6 +492,10 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
         serial_fatal(b"TOS.BOOT.FAILI no-boot-services");
     }
     conout(sys_table, "TOS boot loader\r\n");
+    let platform = match unsafe { collect_platform(sys_table, bt) } {
+        Some(platform) => platform,
+        None => serial_fatal(b"TOS.BOOT.FAILI platform"),
+    };
 
     // --- our device handle via the Loaded Image protocol ---
     let mut loaded: *mut LoadedImageProtocol = ptr::null_mut();
@@ -531,6 +715,11 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
                 bi_buf.ptr as u64,
                 core::mem::size_of::<BootInfo>() as u64,
             );
+            reserve_overlapping(
+                core::slice::from_raw_parts_mut(ranges, n),
+                platform.fb_phys,
+                u64::from(platform.fb_pitch) * u64::from(platform.fb_height),
+            );
         }
 
         let st = unsafe { ((*bt).exit_boot_services)(image_handle, map_key) };
@@ -549,6 +738,13 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
 
     // --- BootInfo record (no boot services after this point) ---
     let mut bi = BootInfo::new();
+    bi.framebuffer_phys = platform.fb_phys;
+    bi.framebuffer_width = platform.fb_width;
+    bi.framebuffer_height = platform.fb_height;
+    bi.framebuffer_pitch = platform.fb_pitch;
+    bi.framebuffer_format = platform.fb_format;
+    bi.acpi_rsdp = platform.acpi_rsdp;
+    bi.smbios = platform.smbios;
     bi.capsule_phys = capsule.ptr as u64;
     bi.capsule_length = capsule.len() as u64;
     bi.capsule_digest = cd;
@@ -591,6 +787,18 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     tos_serial::put_hex64(stack_top);
     tos_serial::puts(b" bootinfo=0x");
     tos_serial::put_hex64(bi_phys);
+    tos_serial::puts(b" fb_format=");
+    tos_serial::put_u32_decimal(platform.fb_format);
+    tos_serial::puts(b" fb_width=");
+    tos_serial::put_u32_decimal(platform.fb_width);
+    tos_serial::puts(b" fb_height=");
+    tos_serial::put_u32_decimal(platform.fb_height);
+    tos_serial::puts(b" fb_pitch=");
+    tos_serial::put_u32_decimal(platform.fb_pitch);
+    tos_serial::puts(b" acpi=");
+    tos_serial::put_u32_decimal(u32::from(platform.acpi_version));
+    tos_serial::puts(b" smbios=");
+    tos_serial::put_u32_decimal(u32::from(platform.smbios_version));
     tos_serial::puts(b"\r\n");
     let entry = nucleus_phys as *const ();
     unsafe {
@@ -607,6 +815,120 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
             in("rax") entry,
             in("rdi") bi_phys,
             options(noreturn)
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn checksum(bytes: &mut [u8], at: usize) {
+        bytes[at] = 0;
+        bytes[at] = 0u8.wrapping_sub(bytes.iter().fold(0u8, |sum, byte| sum.wrapping_add(*byte)));
+    }
+
+    fn rsdp(v2: bool) -> [u8; 36] {
+        let mut bytes = [0u8; 36];
+        bytes[..8].copy_from_slice(b"RSD PTR ");
+        bytes[15] = if v2 { 2 } else { 0 };
+        checksum(&mut bytes[..20], 8);
+        if v2 {
+            bytes[20..24].copy_from_slice(&36u32.to_le_bytes());
+            checksum(&mut bytes, 32);
+        }
+        bytes
+    }
+
+    fn smbios3() -> [u8; 24] {
+        let mut bytes = [0u8; 24];
+        bytes[..5].copy_from_slice(b"_SM3_");
+        bytes[6] = 24;
+        checksum(&mut bytes, 5);
+        bytes
+    }
+
+    fn smbios2() -> [u8; 31] {
+        let mut bytes = [0u8; 31];
+        bytes[..4].copy_from_slice(b"_SM_");
+        bytes[5] = 31;
+        bytes[16..21].copy_from_slice(b"_DMI_");
+        checksum(&mut bytes[16..31], 5);
+        checksum(&mut bytes, 4);
+        bytes
+    }
+
+    fn system_table(entries: &mut [ConfigurationTable]) -> SystemTable {
+        // SAFETY: test only reads the two fields initialized below.
+        let mut st: SystemTable = unsafe { core::mem::zeroed() };
+        st.number_of_table_entries = entries.len();
+        st.configuration_table = entries.as_mut_ptr().cast();
+        st
+    }
+
+    #[test]
+    fn acpi_prefers_v2_and_does_not_fallback_when_preferred_is_malformed() {
+        let mut v1 = rsdp(false);
+        let mut v2 = rsdp(true);
+        let mut entries = [
+            ConfigurationTable {
+                vendor_guid: GUID_ACPI_10,
+                vendor_table: v1.as_mut_ptr().cast(),
+            },
+            ConfigurationTable {
+                vendor_guid: GUID_ACPI_20,
+                vendor_table: v2.as_mut_ptr().cast(),
+            },
+        ];
+        let mut st = system_table(&mut entries);
+        assert_eq!(
+            unsafe { select_acpi(&mut st) },
+            Some((v2.as_ptr() as u64, 2))
+        );
+        v2[0] = b'X';
+        assert_eq!(unsafe { select_acpi(&mut st) }, None);
+        entries[1].vendor_guid = Guid {
+            data1: 0,
+            data2: 0,
+            data3: 0,
+            data4: [0; 8],
+        };
+        assert_eq!(
+            unsafe { select_acpi(&mut st) },
+            Some((v1.as_ptr() as u64, 1))
+        );
+    }
+
+    #[test]
+    fn smbios_prefers_v3_and_falls_back_to_v2_only_when_absent() {
+        let mut v2 = smbios2();
+        let mut v3 = smbios3();
+        let mut entries = [
+            ConfigurationTable {
+                vendor_guid: GUID_SMBIOS,
+                vendor_table: v2.as_mut_ptr().cast(),
+            },
+            ConfigurationTable {
+                vendor_guid: GUID_SMBIOS3,
+                vendor_table: v3.as_mut_ptr().cast(),
+            },
+        ];
+        let mut st = system_table(&mut entries);
+        assert_eq!(
+            unsafe { select_smbios(&mut st) },
+            Some((v3.as_ptr() as u64, 3))
+        );
+        v3[0] = b'X';
+        assert_eq!(unsafe { select_smbios(&mut st) }, None);
+        entries[1].vendor_guid = Guid {
+            data1: 0,
+            data2: 0,
+            data3: 0,
+            data4: [0; 8],
+        };
+        assert_eq!(
+            unsafe { select_smbios(&mut st) },
+            Some((v2.as_ptr() as u64, 2))
         );
     }
 }
