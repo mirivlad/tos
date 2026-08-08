@@ -50,7 +50,6 @@ pub const OID_LEN_SHA1: u8 = 20;
 pub const OID_LEN_SHA256: u8 = 32;
 
 /// Fixed domain separator for ADR-0018 detached source-set identities.
-#[cfg(feature = "host")]
 pub(crate) const DETACHED_IDENTITY_DOMAIN: &[u8] = b"TOS.DSI.v1\0";
 
 pub const FLAG_BOOT_CANONICAL: u32 = 1 << 0;
@@ -65,8 +64,8 @@ pub const FILE_KNOWN_FLAGS: u32 = FLAG_BOOT_CANONICAL | FLAG_LICENCE_NOTICE;
 pub const BOOT_PATH: &[u8] = b"/system/boot/init.tos";
 
 /// Append one validated canonical path/content-digest pair to a detached
-/// source-set identity in the host builder.
-#[cfg(feature = "host")]
+/// source-set identity. The host builder and `no_std` parser share this exact
+/// encoding so their byte-level interpretations cannot drift.
 pub(crate) fn update_detached_identity(
     hasher: &mut Sha256,
     path: &[u8],
@@ -193,6 +192,9 @@ pub enum CapsError {
     /// A SHA-1 Git OID uses only the first 20 bytes of the 32-byte identity
     /// value; ADR-0016 requires its unused tail to be zero.
     NonZeroOidPadding,
+    /// ADR-0018 detached identity does not match the canonical path/digest
+    /// sequence after every path and file digest has validated.
+    DetachedIdentityMismatch,
     LicenceOutOfBounds,
     MissingBootCanonical,
     DuplicateBootCanonical,
@@ -795,6 +797,31 @@ pub fn parse(bytes: &[u8]) -> Result<Capsule<'_>, CapsError> {
         return Err(CapsError::BootCanonicalFlagMismatch);
     }
 
+    // ADR-0018: a detached capsule must name exactly its validated canonical
+    // path/file-table sequence. This second allocation-free O(n) pass happens
+    // only after the earlier loops validated path canonicality/index mapping
+    // and each content digest, so it hashes trusted parsed fields rather than
+    // a caller-selected label.
+    if h.source_identity_kind == SRC_KIND_DETACHED {
+        let mut identity = Sha256::new();
+        identity.update(DETACHED_IDENTITY_DOMAIN);
+        for i in 0..h.file_count as usize {
+            let pe = decode_path_entry(bytes, path_tbl_start + i * PATH_ENTRY_SIZE as usize);
+            let name_start_at = name_start + pe.name_offset as usize;
+            let name_end_at = name_start_at + pe.name_length as usize;
+            let fe = decode_file_entry(bytes, file_tbl_start + i * FILE_ENTRY_SIZE as usize);
+            update_detached_identity(
+                &mut identity,
+                &bytes[name_start_at..name_end_at],
+                pe.name_length,
+                &fe.content_digest,
+            );
+        }
+        if identity.finalize() != h.source_identity_value {
+            return Err(CapsError::DetachedIdentityMismatch);
+        }
+    }
+
     // --- whole-capsule digest: bytes[0..152] || zeros[32] || bytes[184..] ---
     let mut hh = Sha256::new();
     hh.update(&bytes[0..off::WHOLE_DIGEST]);
@@ -983,6 +1010,14 @@ mod tests {
             .header()
             .source_identity_value;
         assert_ne!(left, right, "canonical paths must bind detached identity");
+    }
+
+    #[test]
+    fn digest_consistent_corrupt_detached_identity_is_rejected() {
+        let mut bytes = sample_builder().build().expect("build");
+        bytes[off::SRC_VALUE] ^= 0x01;
+        refix_whole_digest(&mut bytes);
+        assert_eq!(parse(&bytes), Err(CapsError::DetachedIdentityMismatch));
     }
 
     #[test]

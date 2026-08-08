@@ -24,6 +24,17 @@ fail=0
 checked=0
 exempt=0
 
+# Capsule fixtures are binary generated artifacts. Their licence obligations are
+# not inferable from an extension or a single SPDX expression: ADR-0019 requires
+# one checked provenance entry for every tracked fixture before this source-file
+# gate accepts the set.
+vector_bins=$(git ls-files -- 'source/tests/vectors/capsule-v1/*.bin')
+if [ -n "$vector_bins" ]; then
+    if ! python3 scripts/check-capsule-vector-provenance.py --root .; then
+        fail=1
+    fi
+fi
+
 # Report an unrecognised path so a new file type cannot enter unnoticed.
 unclassified=''
 
@@ -36,7 +47,7 @@ for f in $(git ls-files); do
         MANIFEST.txt)               exempt=$((exempt+1)); continue ;;  # package manifest, no comment syntax
         docs/SPECIFICATION_SOURCES.txt) exempt=$((exempt+1)); continue ;;  # generator input list
         source/tests/vectors/capsule-v1/*.bin)
-                                    exempt=$((exempt+1)); continue ;;  # versioned golden fixtures, indexed by vectors.tsv
+                                    checked=$((checked+1)); continue ;;  # validated above by ADR-0019 provenance manifest
         *.lock)                     exempt=$((exempt+1)); continue ;;  # generated dependency lock
         *.gitignore)                exempt=$((exempt+1)); continue ;;  # tooling config, no licensable content
         */rust-toolchain.toml)      exempt=$((exempt+1)); continue ;;  # toolchain pin, no comment convention

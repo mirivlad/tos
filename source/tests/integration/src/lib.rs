@@ -10,7 +10,7 @@
 #![cfg(test)]
 
 use tos_capsule::{parse, CapsError, FLAG_BOOT_CANONICAL, SRC_KIND_DETACHED};
-use tos_hash::Sha256;
+use tos_hash::{sha256, Sha256};
 
 const V: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../vectors/capsule-v1/");
 // Real sources (up two levels from tests/integration -> source/).
@@ -185,12 +185,23 @@ fn deterministic_build_computes_detached_identity() {
     let first = build();
     let second = build();
     assert_eq!(first, second, "detached output must remain deterministic");
+    let golden = vec("valid-001.bin");
+    assert_eq!(first, golden, "builder must reproduce the golden vector");
+    assert_eq!(sha256(&first), sha256(&golden), "digest must match");
     let capsule = parse(&first).expect("builder output must parse");
     let header = capsule.header();
     assert_ne!(
         header.source_identity_value, [0x42; 32],
         "builder must ignore synthetic caller identity"
     );
+}
+
+#[test]
+fn detached_identity_mismatch_is_rejected() {
+    let mut bytes = vec("valid-001.bin");
+    bytes[SRC_VALUE_OFFSET] ^= 0x01;
+    refix_whole_digest(&mut bytes);
+    assert_eq!(parse(&bytes), Err(CapsError::DetachedIdentityMismatch));
 }
 
 #[test]

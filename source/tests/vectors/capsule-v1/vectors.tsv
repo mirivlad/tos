@@ -13,6 +13,7 @@ valid-001.bin	accept
 invalid-badmagic.bin	reject:BadMagic
 invalid-truncated.bin	reject:TotalLengthMismatch
 invalid-kind-none.bin	reject:UnsupportedIdentityKind
+invalid-sha1-oid-padding.bin	reject:NonZeroOidPadding
 invalid-missing-boot.bin	reject:MissingBootCanonical
 invalid-bootcanon-mismatch.bin	reject:BootCanonicalFlagMismatch
 invalid-licence-tail.bin	reject:LicenceTailMismatch

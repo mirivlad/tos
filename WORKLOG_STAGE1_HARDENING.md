@@ -1206,3 +1206,37 @@ boot architecture, DCO policy или опубликованной истории
   derivation recipes. It will also create the tracked SHA-1 padding fixture.
   The script is committed before it is run so its exact Git revision can be
   recorded honestly by the following vector transaction.
+
+## 2026-08-09 — ADR-0018 enforcement and regenerated provenance evidence
+
+- RED evidence before the parser change: a digest-consistent capsule whose
+  detached identity header byte was corrupted was accepted. GREEN: the parser
+  now independently recomputes the accepted ADR-0018 domain-separated
+  path-and-content-digest identity and returns the structured
+  `DetachedIdentityMismatch` error before accepting the capsule. The UEFI
+  loader exposes that error in its fail-closed serial event.
+- The accepted lower-tier interface contract was reconciled with ADR-0018;
+  it specifies the exact byte encoding and zero-file semantics without
+  asserting independent authority over the ADR. The integration fixture now
+  asserts deterministic equality with the regenerated canonical valid vector.
+- The committed vector generator was run at `adc9292`, producing a complete
+  `provenance.json` for the fourteen fixture artifacts (one valid and thirteen
+  invalid). Every record is `verified` and `mixed-material-generated`; none
+  assigns a container SPDX expression. The new SHA-1 OID-padding fixture is a
+  tracked derived artifact with its base digest and deterministic mutation
+  recipe. No unverifiable legacy fixture is claimed as evidence.
+- `check-spdx.sh` now invokes the authoritative vector provenance checker for
+  every tracked capsule binary instead of accepting a broad `*.bin` exemption.
+  Its regression proves an unrecorded tracked fixture fails the SPDX/provenance
+  gate. The generator, parser, loader, vectors, checker and gate are one
+  atomic transaction: a strict parser is never published while its canonical
+  fixture remains stale.
+- Focused verification already observed: capsule host tests cover the
+  structured detached mismatch; integration tests pass 11 cases; the same
+  normal QEMU loader/nucleus profile rejects both the tracked SHA-1-padding
+  vector (`NonZeroOidPadding`, exit 67) and an ephemeral digest-consistent
+  detached-identity corruption (`DetachedIdentityMismatch`, exit 67), before
+  nucleus entry. The complete normal-profile QEMU negative suite passes all
+  thirteen declared rejected fixtures. `./scripts/preflight.sh --full` passes
+  all fifteen gates (including 200,000 fuzz rounds, QEMU success exit 33 and
+  the complete negative suite) on this staged transaction.

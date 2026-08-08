@@ -179,10 +179,25 @@ Content constraints:
 ## 6. Identity fields
 
 - `source_identity_kind = 2` (detached source set): `source_oid_alg = 0`,
-  `source_oid_length = 0`, and `source_identity_value` is the SHA-256 of the
-  concatenation of per-file `content_digest` values in file-table order. This
-  binds the capsule to the exact byte content of its source material without
-  a repository.
+  `source_oid_length = 0`, and `source_identity_value` is exactly the
+  ADR-0018 value:
+
+  ```text
+  SHA-256(
+      b"TOS.DSI.v1\0" ||
+      for each canonical path/file-table entry i:
+          u32_le(path_length_i) || path_bytes_i || content_digest_i
+  )
+  ```
+
+  Entries use the shared canonical path/file-table order. `path_bytes` are the
+  exact validated canonical UTF-8 path bytes; `content_digest` is the exact
+  validated 32-byte SHA-256 file digest. The fixed domain separator bytes are
+  `54 4f 53 2e 44 53 49 2e 76 31 00`. `file_count` is not additionally encoded:
+  the length-delimited path and fixed-size digest sequence is unambiguous.
+  Capsule v1 still rejects zero files, although the mathematical zero-entry
+  value is `SHA-256(b"TOS.DSI.v1\0")`. Builder and parser compute this value
+  independently; a caller-selected detached value or a mismatch is rejected.
 - `source_identity_kind = 1` (git commit): `source_oid_alg` names the OID
   algorithm (`1` = SHA-1, `2` = SHA-256) and `source_oid_length` its byte
   length (20 or 32). `source_identity_value` holds the **raw commit object
@@ -261,6 +276,8 @@ The digest is verified over the exact bytes passed to the parser.
     exactly at `file_table_offset` (§4.1, ADR-0017);
 26. `path_entry[i].file_index != i` — a non-canonical index mapping (§4.1,
     ADR-0017).
+27. detached source identity differs from the ADR-0018 canonical
+    path/digest encoding in §6.
 
 A parser must return a structured error naming the rule violated; it must never
 panic on malformed input.
@@ -277,8 +294,8 @@ panic on malformed input.
   `invalid-missing-boot.bin`, `invalid-bootcanon-mismatch.bin`,
   `invalid-licence-tail.bin`, `invalid-traversal.bin`, `invalid-dup.bin`,
   `invalid-dup-file-index.bin`, `invalid-unreferenced-file.bin`,
-  `invalid-path-flag.bin`, `invalid-file-reserved.bin` — each targeting one
-  rule from §9.
+  `invalid-path-flag.bin`, `invalid-file-reserved.bin`,
+  `invalid-sha1-oid-padding.bin` — each targeting one rule from §9.
 
 A fixture targets one rule, which is the rule its expected error names. Fixtures
 produced by patching a valid capsule in place also break the whole-capsule
@@ -288,4 +305,6 @@ reason", not as "violates exactly one rule".
 
 Every fixture records its expected parse outcome (accept, or reject with the
 error name) in `vectors.tsv`, which is the input of the vector-driven
-integration test.
+integration test. ADR-0019 requires every tracked binary fixture to have a
+machine-verifiable `provenance.json` record; its
+`mixed-material-generated` container status is not an SPDX expression.
