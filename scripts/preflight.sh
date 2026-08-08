@@ -62,6 +62,9 @@ unsafe_safety() {
     python3 "$ROOT/scripts/check-unsafe-safety.py" --root "$ROOT" || return
     bash "$ROOT/scripts/tests/check-unsafe-safety.sh"
 }
+capsule_provenance() {
+    bash "$ROOT/scripts/tests/check-capsule-provenance.sh"
+}
 embedded_artwork_provenance() {
     bash "$ROOT/scripts/tests/check-embedded-artwork-provenance.sh"
 }
@@ -123,6 +126,7 @@ run_gate "interface-contract authority" interface_contract_authority
 run_gate "Boot ABI event contract" boot_event_contract
 run_gate "nucleus exception foundation" exception_foundation
 run_gate "unsafe-code safety evidence" unsafe_safety
+run_gate "capsule provenance sidecar" capsule_provenance
 run_gate "embedded artwork provenance" embedded_artwork_provenance
 run_gate "run-tos launcher" run_tos_launcher
 run_gate "interactive QEMU mode" qemu_interactive_mode

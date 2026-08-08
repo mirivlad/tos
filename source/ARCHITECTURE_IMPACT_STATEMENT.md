@@ -45,7 +45,10 @@ isolated to the loader's UEFI FFI and given a `SAFETY:` justification.
 
 The nucleus reports `TOS.IDENTITY` binding result, source identity and capsule
 digest. `init.tos` content hash printed at boot is verified equal to the canonical
-input hash by an architecture test.
+input hash by an architecture test. The host-generated
+`tos-capsule-provenance-v1` sidecar independently binds that capsule digest to
+its format/ABI/target, source material blobs, retained licence notice and R0
+reproducibility statement; it is release evidence, not a nucleus input.
 
 ## Recovery and rollback impact
 
@@ -125,6 +128,11 @@ no signature-policy claim, no driver boundary touched.
   commit / sha256(commit-oid) / repo_path + content_sha256 / capsule_sha256.
   Proven negative: a tampered init.tos is refused (exit 2); deterministic
   rebuild yields the identical capsule_sha256.
+- Capsule provenance sidecar: ADR-0024 and
+  `interfaces/boot/CAPSULE_PROVENANCE_V1.md` define deterministic v1 metadata;
+  its independent host checker rejects a capsule, Git-blob, material, notice or
+  digest mismatch, and the ordinary QEMU preparation path runs it before ESP
+  creation.
 - SPDX, DCO, documentation-integrity `--check`, deterministic-builder tests.
 
 ## Known limitations (declared now, accepted)

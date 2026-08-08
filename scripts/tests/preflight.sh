@@ -36,6 +36,7 @@ make_log_script "$TMP/repo/scripts/tests/check-interface-contract-authority.sh" 
 make_log_script "$TMP/repo/scripts/tests/check-boot-event-contract.sh" boot-event-contract
 make_log_script "$TMP/repo/scripts/tests/check-nucleus-exception-foundation.sh" exception-foundation
 make_log_script "$TMP/repo/scripts/tests/check-unsafe-safety.sh" unsafe-safety
+make_log_script "$TMP/repo/scripts/tests/check-capsule-provenance.sh" capsule-provenance
 make_log_script "$TMP/repo/scripts/tests/check-embedded-artwork-provenance.sh" embedded-artwork-provenance
 make_log_script "$TMP/repo/scripts/tests/run-tos.sh" run-tos
 make_log_script "$TMP/repo/scripts/tests/qemu-interactive-mode.sh" qemu-interactive-mode
@@ -77,6 +78,7 @@ boot-event-contract
 exception-foundation
 unsafe-safety-current
 unsafe-safety
+capsule-provenance
 embedded-artwork-provenance
 run-tos
 qemu-interactive-mode
