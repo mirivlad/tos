@@ -2,12 +2,11 @@
 
 # ADR-0018: Detached capsule source identity
 
-- Status: Proposed — not an authority for implementation
+- Status: Accepted (Project Architect-approved)
 - Date: 2026-08-09
 - Change level: **Level 3** — source-identity semantics and existing detached
   capsule bytes change
-- Requires: Project Architect acceptance before any builder, parser, vector or
-  evidence change
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-09
 
 ## Context
 
@@ -21,8 +20,8 @@ source-set identity.
 
 `source/interfaces/boot/CAPSULE_FORMAT_V1.md` remains unassigned in the
 authority hierarchy (F-08). It is evidence of the intended contract, not an
-independent authority for this decision. If accepted, this ADR becomes the
-Tier 1 decision for detached-source-set identity.
+independent authority for this decision. This accepted ADR is the Tier 1
+decision for detached-source-set identity.
 
 ## Proposed decision
 
@@ -167,9 +166,10 @@ identity.
 - Accept an empty capsule with `SHA-256(DOMAIN)`: rejected because it weakens
   the existing zero-file validation rule.
 
-## Acceptance boundary
+## Implementation boundary
 
-Until this ADR is explicitly accepted by the Project Architect, it authorizes
-no production code, parser semantics, builder API change, golden-vector
-regeneration, generated-binary provenance declaration, Stage 1 closure claim,
-Phase 2 work or Stage 1.5 work.
+This accepted ADR authorizes the corresponding detached builder/parser work and
+ephemeral test evidence. It does not authorize tracked binary-vector
+regeneration or a generated-binary container classification before F-22 has an
+accepted provenance/licensing decision. It also does not close Stage 1, start
+Phase 2 or start Stage 1.5.

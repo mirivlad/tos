@@ -1094,3 +1094,13 @@ boot architecture, DCO policy или опубликованной истории
 - Work stops after this proposal is published and verified. F-22 vector
   provenance/licensing proposal, detached implementation, Phase 2 and Stage 1.5
   remain out of scope pending owner direction.
+
+## 2026-08-09 — ADR-0018 accepted by Project Architect
+
+- Project Architect Vladimir Tomashevskiy formally accepted ADR-0018 on
+  2026-08-09 at commit `892ac93cb4db4b037d262e0be13d2ada35d82b32`. The accepted
+  Tier 1 detached identity is the domain-separated canonical path/digest
+  encoding recorded in ADR-0018.
+- The ADR is added to the accepted specification source manifest. It authorizes
+  ordinary detached implementation work, but F-22 still prohibits tracked
+  binary-vector regeneration or a blanket binary-container licence decision.

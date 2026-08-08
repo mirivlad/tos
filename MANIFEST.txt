@@ -40,7 +40,7 @@ Composition (derived, not hand-maintained)
 ------------------------------------------
 - files in the release package: 112
 - active system invariants: 21
-- architecture decision records: 18 (17 accepted)
+- architecture decision records: 18 (18 accepted)
 
 Architecture decision records
 -----------------------------
@@ -61,7 +61,7 @@ Architecture decision records
 - docs/adr/0015-language-foundation-decision-gate.md — ADR-0015: Require a language-foundation decision gate before Stage 2 [Accepted]
 - docs/adr/0016-capsule-git-raw-oid-identity.md — ADR-0016: Capsule git identity carries the raw object id [Accepted]
 - docs/adr/0017-capsule-v1-canonical-layout.md — ADR-0017: Capsule v1 canonical layout — packed arena, canonical index mapping, byte compatibility preserved [Accepted (owner-approved)]
-- docs/adr/0018-detached-capsule-source-identity.md — ADR-0018: Detached capsule source identity [Proposed — not an authority for implementation]
+- docs/adr/0018-detached-capsule-source-identity.md — ADR-0018: Detached capsule source identity [Accepted (Project Architect-approved)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

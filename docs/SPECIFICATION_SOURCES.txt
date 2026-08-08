@@ -69,3 +69,4 @@ docs/adr/0014-driver-source-reuse-and-clean-room.md
 docs/adr/0015-language-foundation-decision-gate.md
 docs/adr/0016-capsule-git-raw-oid-identity.md
 docs/adr/0017-capsule-v1-canonical-layout.md
+docs/adr/0018-detached-capsule-source-identity.md
