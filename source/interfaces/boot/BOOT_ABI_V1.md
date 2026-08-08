@@ -2,8 +2,10 @@
 
 # TOS Boot ABI — Version 1
 
-Status: **proposed specification amendment for Stage 1**. Normative for the
-loader-to-nucleus handoff in Stage 1.
+Status: **Accepted Tier 2 interface contract.**
+
+Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs.
 
 ## 1. Role
 
@@ -97,21 +99,78 @@ re-verifies the capsule digest against the bytes at `capsule_phys`.
 
 ## 7. Stable diagnostic events
 
-Serial lines match `^TOS\.[A-Z0-9_.]+` with structured fields:
+Every serial event line begins with one stable identifier matching
+`^TOS\.[A-Z0-9_.]+`. Human-facing console text is outside this ABI.
+
+### Success order
+
+An ordinary successful boot emits the following identifiers in this exact
+order. `TOS.CAPSULE.OK` occurs exactly twice: first after loader validation,
+then after the nucleus independently validates the capsule.
 
 ```text
 TOS.BOOT.ENTRY
-TOS.BOOT.ABI_OK
-TOS.CAPSULE.VALID
-TOS.CAPSULE.INVALID
-TOS.SOURCE.INIT_FOUND
-TOS.BOOT.HALT_OK
-TOS.PANIC
-TOS.IDENTITY
+TOS.CAPSULE.OK files=<decimal>
+TOS.BOOT.HANDOFF nucleus=0x<hex> stack=0x<hex> bootinfo=0x<hex>
+TOS.NUCLEUS.ENTRY
+TOS.CAPSULE.OK files=<decimal>
+TOS.BOOTTEXT.PATH <canonical-absolute-path>
+[TOS.BOOTTEXT.LINE <first-logical-source-line>]
+TOS.BOOTTEXT.DIGEST <64-lowercase-hex-digits>
+TOS.IDENTITY source_kind=<git|detached> source_digest=<64-lowercase-hex-digits> capsule_digest=<64-lowercase-hex-digits> arch=0.2.1 builder=1
+TOS.HALT ok=0x10
 ```
 
-`TOS.IDENTITY` carries the machine-readable Stage 1 identity record:
-`kind=… digest=… capsule=… arch=… builder=…`.
+`TOS.BOOTTEXT.LINE is optional`: it is emitted only when the canonical boot
+text has a first logical line. The other success identifiers and the shown
+fields are mandatory. A consumer may rely on the listed identifier order,
+including both `TOS.CAPSULE.OK` events.
+
+### Failure vocabulary and extension rule
+
+The following identifiers are stable Boot ABI v1 failures:
+
+| Identifier | Required payload / fields | Meaning |
+|---|---|---|
+| `TOS.BOOT.FAILC` | `capsule_err=<CapsError>` | Loader rejected capsule bytes before handoff. |
+| `TOS.BOOT.FAILI` | `<reason-token>` | Loader infrastructure failure before handoff. |
+| `TOS.ABI.FAIL` | none | Nucleus rejected BootInfo ABI bytes. |
+| `TOS.MEM.FAIL` | none | Nucleus rejected memory-map data. |
+| `TOS.CAPSULE.FAIL` | none | Nucleus rejected capsule data after handoff. |
+| `TOS.IDENTITY.MISMATCH` | `bootinfo-vs-capsule-header` | Nucleus rejected the mirrored identity. |
+| `TOS.PANIC` | `<component>` | Trusted component stopped by panic. |
+
+`TOS.BOOT.FAILI` is a stable identifier. Existing reason tokens retain their
+meaning: `no-boot-services`, `no-loaded-image`, `no-fs`, `no-volume`,
+`no-capsule`, `no-nucleus`, `alloc-nucleus`, `alloc-stack`, `memmap-probe`,
+`memmap-descsize`, `alloc-map`, `alloc-ranges`, `alloc-bootinfo`,
+`memmap-fill`, `memmap-toomany`, `map-overflow`, `unsorted-map`, and `exit-bs`.
+An implementation MAY add a reason token in Boot ABI v1, but it MUST NOT change
+the meaning of an existing token.
+
+Mandatory fields and raw payloads above are a stable prefix. An implementation
+MAY append optional fields in `key=value` form after that prefix; optional
+fields must not alter, remove or reinterpret mandatory fields, so parsers that
+consume the v1 prefix remain compatible.
+
+### Identity record
+
+`TOS.IDENTITY` carries the machine-readable Stage 1 identity record. Its
+required fields are, in this order:
+
+```text
+source_kind=
+source_digest=
+capsule_digest=
+arch=
+builder=
+```
+
+`source_kind` is `git` or `detached`; `source_digest` is the exact 32-byte
+header identity rendered in lower-case hexadecimal (with zero padding for a
+raw SHA-1 OID); `capsule_digest` is the validated whole-capsule SHA-256;
+`arch` is the capsule architecture-spec version; and `builder` is the capsule
+builder version. Their spelling and semantics are part of Boot ABI v1.
 
 ## 8. Validation summary (reject conditions)
 

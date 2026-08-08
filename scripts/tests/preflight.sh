@@ -13,7 +13,7 @@ fi
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
-mkdir -p "$TMP/repo/scripts" "$TMP/repo/tools" \
+mkdir -p "$TMP/repo/scripts/tests" "$TMP/repo/tools" \
     "$TMP/repo/source/host-tools/qemu-test" "$TMP/bin"
 cp "$PREFLIGHT" "$TMP/repo/scripts/preflight.sh"
 
@@ -31,6 +31,8 @@ make_log_script "$TMP/repo/tools/build-specification.py" spec
 make_log_script "$TMP/repo/tools/build-release-manifest.py" release
 make_log_script "$TMP/repo/scripts/check-spdx.sh" spdx
 make_log_script "$TMP/repo/scripts/check-dco.sh" dco
+make_log_script "$TMP/repo/scripts/tests/check-interface-contract-authority.sh" interface-authority
+make_log_script "$TMP/repo/scripts/tests/check-boot-event-contract.sh" boot-event-contract
 make_log_script "$TMP/repo/source/host-tools/qemu-test/run.sh" qemu-success
 make_log_script "$TMP/repo/source/host-tools/qemu-test/negative-suite.sh" qemu-negative
 
@@ -62,6 +64,8 @@ export PREFLIGHT_TEST_LOG="$TMP/default.log"
 (cd "$TMP/repo" && PATH="$TMP/bin:$PATH" sh scripts/preflight.sh) >/dev/null
 cat > "$TMP/default.expected" <<'EOF'
 spec
+interface-authority
+boot-event-contract
 release
 spdx
 dco

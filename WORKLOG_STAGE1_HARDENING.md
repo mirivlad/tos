@@ -1240,3 +1240,22 @@ boot architecture, DCO policy или опубликованной истории
   thirteen declared rejected fixtures. `./scripts/preflight.sh --full` passes
   all fifteen gates (including 200,000 fuzz rounds, QEMU success exit 33 and
   the complete negative suite) on this staged transaction.
+
+## 2026-08-09 — F-08/F-13 contract authority and boot-event ABI
+
+- Project Architect accepted ADR-0020. It creates a narrow Tier 2 admission
+  rule for versioned contracts under `source/interfaces/`: explicit accepted
+  status, generated-spec source listing, `docs/38` reference and Tier 0/Tier 1
+  subordination are all required. A directory or manifest entry alone does not
+  grant authority.
+- RED: the authority checker found no accepted source-interface contract class,
+  and the event checker found the obsolete Boot ABI vocabulary and a QEMU
+  success expectation that omitted the nucleus's second `TOS.CAPSULE.OK`.
+  GREEN: both boot contracts are accepted and listed sources, the harness
+  requires the real two-validation sequence, and the machine checks cover
+  identifiers, identity fields, optional boot-text line, stable failures and
+  QEMU success/negative gate wiring.
+- Verification: `check-boot-event-contract.sh --qemu` observed the exact
+  nine-event success trace and all thirteen declared negative fixtures;
+  `./scripts/preflight.sh --full` passes 17 gates after the two new mandatory
+  contract checks were added.

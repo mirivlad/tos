@@ -26,6 +26,18 @@ A later accepted ADR may supersede an earlier ADR explicitly. Silent contradicti
 
 Numbered documents under `docs/` that define boot, language, execution, repository, state, IPC, drivers, security, stages, testing, legal policy and release gates.
 
+Accepted versioned interface contracts under `source/interfaces/` are also
+Tier 2 only when all of the following are true:
+
+- their status explicitly says `Accepted Tier 2 interface contract`;
+- they are listed in `docs/SPECIFICATION_SOURCES.txt`;
+- they explicitly reference this hierarchy; and
+- they acknowledge Tier 0 invariant and accepted Tier 1 ADR precedence.
+
+Listing a path in `docs/SPECIFICATION_SOURCES.txt` does not by itself grant
+Tier 2 authority to any other listed material. Directory placement, generated
+view inclusion and a contract's own “normative” claim are insufficient.
+
 A subsystem document must conform to Tier 0 and Tier 1. Where two Tier 2 documents overlap, the more specific subsystem contract governs only if it cites the general document and does not violate higher tiers.
 
 ### Tier 3 — Root operational documents
