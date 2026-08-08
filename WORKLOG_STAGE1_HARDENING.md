@@ -937,3 +937,22 @@ boot architecture, DCO policy или опубликованной истории
   `WAYLAND_DISPLAY`. `env -u DISPLAY -u WAYLAND_DISPLAY ./run-tos.sh`
   корректно завершился rc=2 и предложил headless `--check`; визуальная ручная
   проверка остаётся ограничением среды, а не заявленным PASS.
+- Target discovery скорректирован до документации: `rustup target list` теперь
+  выполняется из `source/`, поэтому проверяет именно toolchain 1.97.1 из
+  `source/rust-toolchain.toml`, а не случайный default toolchain. Regression
+  отвергает запуск проверки из другого каталога; повторный real QEMU check
+  также PASS.
+
+## 2026-08-08 — Phase 0: README Quick start and generated artifacts
+
+- `README.md` до большой карты документации получил Quick start с reference
+  prerequisites, `./run-tos.sh`, `--check`, ожидаемыми `TOS.HALT`/
+  `QEMU-TEST PASS`, путями `serial.log`/`events.log` и честной границей:
+  Stage 1 — bootable foundation, не shell/desktop; framebuffer closure открыт.
+- Formal closure matrix обновлена фактическим post-fix evidence: F-04..F-06 и
+  F-25..F-28 теперь PASS; это не влияет на F-07 и остальные blockers/conflicts.
+- `python3 tools/build-specification.py` → generated view из 69 sources;
+  последующий `--check` → **PASS**.
+- `python3 tools/build-release-manifest.py` → 106 release files;
+  последующий `--check` → **PASS**.
+- `sha256sum -c SHA256SUMS` → **106/106 OK**.

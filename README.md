@@ -37,6 +37,46 @@ TOS is a text-centric operating system in which the canonical installed form of 
 
 The name expands to **TextOS** and also carries the internal joke of the Russian abbreviation “ТОС”: a system intended to set conventional operating-system assumptions on fire. The public project name remains provisional pending trademark clearance.
 
+## Quick start
+
+The supported Stage 1 reference environment is x86_64 Linux with:
+
+- QEMU system emulation for x86_64;
+- a matching OVMF CODE/VARS firmware pair;
+- `mtools` (`mformat`, `mcopy` and `mmd`) and GNU `timeout`;
+- `rustup` and the toolchain declared by `source/rust-toolchain.toml`, with the
+  `x86_64-unknown-uefi` and `x86_64-unknown-none` targets.
+
+The launcher reports any missing command, firmware file or Rust target; it does
+not install software. From the repository root, start the human-facing boot:
+
+```sh
+./run-tos.sh
+```
+
+This builds the Stage 1 release artifacts, prepares the capsule and ESP through
+the same harness used by CI, opens the QEMU display and streams serial boot
+events in the terminal. A successful boot reaches `TOS.HALT ok=0x10`; QEMU then
+exits through the Stage 1 `isa-debug-exit` contract and the harness prints
+`QEMU-TEST PASS`.
+
+For a headless automated check, run:
+
+```sh
+./run-tos.sh --check
+```
+
+Serial and filtered event evidence is retained under
+`source/target/run-tos/interactive/` or `source/target/run-tos/check/`, in
+`serial.log` and `events.log`. The QEMU window is not yet evidence of a desktop:
+the reliable observable at this stage is the serial event sequence, and the
+framebuffer handoff remains part of the open Stage 1 closure work.
+
+Stage 1 is a bootable TOS foundation with source-bound capsule identity and
+fail-closed validation. It is not yet a user shell, application environment or
+desktop operating system, and Stage 1 is not declared closed while the formal
+closure findings remain open.
+
 ## Core thesis
 
 A conventional open-source operating system may publish source while installing binaries built elsewhere. TOS reverses the authority:
