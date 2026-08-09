@@ -27,6 +27,7 @@ def main() -> int:
     ir_path = root / "docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md"
     conformance_path = root / "docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md"
     adr_path = root / "docs/adr/0028-tos-core-v1-semantics-and-ir-contract.md"
+    unicode_adr_path = root / "docs/adr/0029-tos-core-v1-unicode-normalization-baseline.md"
     expectations_path = root / "docs/language/conformance/v1/EXPECTATIONS.md"
     guide_path = root / "docs/language/TOS_CORE_V1_GUIDE.md"
     tutorial_path = root / "docs/language/LEARNING_TOS_CORE.md"
@@ -37,6 +38,7 @@ def main() -> int:
     ir = ir_path.read_text(encoding="utf-8")
     conformance = conformance_path.read_text(encoding="utf-8")
     adr = adr_path.read_text(encoding="utf-8")
+    unicode_adr = unicode_adr_path.read_text(encoding="utf-8")
     expectations = expectations_path.read_text(encoding="utf-8")
     guide = guide_path.read_text(encoding="utf-8")
     tutorial = tutorial_path.read_text(encoding="utf-8")
@@ -50,6 +52,15 @@ def main() -> int:
         )
     require("- Status: Accepted" in adr, "ADR-0028 is not accepted", failures)
     require("Project Architect approval:" in adr, "ADR-0028 lacks Project Architect approval record", failures)
+    require("- Status: Accepted (Project Architect-approved)" in unicode_adr, "ADR-0029 is not accepted", failures)
+    require("Unicode Standard:                 17.0.0" in unicode_adr, "ADR-0029 lacks the Unicode 17.0.0 baseline", failures)
+    require("UAX #15, Revision 57" in unicode_adr, "ADR-0029 lacks the UAX #15 revision", failures)
+    require("Unicode 17.0.0" in grammar and "UAX #15 Revision 57" in grammar, "source grammar lacks the fixed Unicode baseline", failures)
+    require("Unicode 17.0.0 / UAX #15 Revision 57" in modules, "module/cache contract lacks the fixed Unicode baseline", failures)
+    require("UCD-17.0.0/UAX15-r57/NFC" in ir, "IR header lacks the fixed Unicode baseline", failures)
+    require("NormalizationTest.txt-derived" in conformance, "conformance contract lacks Unicode-data coverage", failures)
+    for lexical_case in ["L005", "L006", "L007", "L008", "L009"]:
+        require(lexical_case in expectations, f"missing Unicode normalization expectation: {lexical_case}", failures)
 
     inventory = re.search(
         r"<!-- stage2-word-inventory:start -->\n```text\n(.*?)\n```\n<!-- stage2-word-inventory:end -->",

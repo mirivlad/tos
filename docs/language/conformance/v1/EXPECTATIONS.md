@@ -64,7 +64,11 @@ test output, then asserts the listed primary error and byte offset:
 | L002 | replace the first ASCII source byte with `FF` | `E1001_INVALID_UTF8` at byte 0 |
 | L003 | insert bare `0D` between two tokens | `E1003_BARE_CR` at that byte |
 | L004 | replace one space outside a literal with `09` | `E1010_TAB_OUTSIDE_LITERAL` at that byte |
-| L005 | replace precomposed NFC `é` in an eligible comment with `65 CC 81` | `E1004_NOT_NFC` at the decomposed sequence |
+| L005 | replace precomposed NFC `é` in an eligible comment with `65 CC 81` | `E1004_NOT_NFC` at the decomposed sequence under UCD 17.0.0/UAX #15 Rev. 57 |
+| L006 | use precomposed NFC text in a comment and string literal | accepts unchanged under UCD 17.0.0/UAX #15 Rev. 57 |
+| L007 | use canonically decomposed text in a string literal | `E1004_NOT_NFC` at the decomposed sequence |
+| L008 | use a canonically out-of-order combining-mark sequence in a comment | `E1004_NOT_NFC` at that sequence |
+| L009 | run UCD 17.0.0 `NormalizationTest.txt`-derived NFC positive/negative cases | accepts NFC and rejects non-NFC with `E1004_NOT_NFC`; generated test record retains input hashes |
 
 ## Required generated/IR cases
 

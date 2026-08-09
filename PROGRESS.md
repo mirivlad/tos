@@ -20,8 +20,8 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   v1, UEFI loader, nucleus, source identity, fail-closed evidence, P2
   performance evidence и Project Architect approval заархивированы. **Stage
   1.5 формально закрыт**: ADR-0027 accepted, evidence/TCB/recovery analysis и
-  Project Architect approval заархивированы. **Stage 2 Part A остаётся
-  Part B авторизован**: ADR-0028 accepted. V1 surface contract фиксирует `[]`
+  Project Architect approval заархивированы. **Stage 2 Part B авторизован**:
+  ADR-0028 accepted. V1 surface contract фиксирует `[]`
   для data/declaration lists, `{}` только для executable blocks, `()` для
   arguments/grouping и explicit `return` без implicit tail values. Stage 2
   production implementation начинается с reference frontend; Stage 3 не начат.
@@ -236,6 +236,17 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 - После документальных gates начинается Stage 2 Part B production reference
   implementation. `./scripts/preflight.sh --full` → **31/31 PASS**; Stage 3
   по-прежнему не авторизован.
+
+### 2026-08-09 — Stage 2 Unicode normalization contract clarification
+
+- Project Architect accepted ADR-0029: TOS Core 1.0 canonical source is NFC
+  specifically under Unicode/UCD 17.0.0 and UAX #15 Revision 57. This fixes
+  source-identity, cache, IR and verifier behavior independently from host
+  Unicode/locale tables; identifiers remain ASCII-only.
+- The first frontend must retain reproducible UCD-data provenance, hashes and
+  generator identity and pass the Unicode conformance cases before claiming
+  lexer completion. This clarification admits no runtime Unicode dependency;
+  Stage 3 remains unauthorized.
 
 ## Граница закрытого Stage 1
 

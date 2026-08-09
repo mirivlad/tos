@@ -34,6 +34,7 @@ An IR module contains the following logical sections in canonical order:
 Header
   schema_id = "tos-ir/v1"
   language_version = "1.0"
+  unicode_normalization_baseline = "UCD-17.0.0/UAX15-r57/NFC"
   profile = bootstrap | full
   module name, source-set identity, path, normalized source content ID
   dependency-closure digest, frontend identity, source-map revision
@@ -45,7 +46,10 @@ Functions, ordered by fully qualified source name
 Source-map entries, ordered by source unit then byte start/end
 ```
 
-All strings are normalized UTF-8 and all identifiers/paths obey docs/39/42.
+All source strings are normalized UTF-8 according to the language version's
+fixed Unicode baseline; for V1 that is UCD 17.0.0/UAX #15 Revision 57 NFC.
+Runtime `string` values are not silently normalized. All identifiers/paths
+obey docs/39/42.
 Tables use explicit bounded indexes; no operation encodes a raw host pointer,
 host ABI symbol, implicit global capability, or untyped runtime object.
 Every table count, byte length, basic-block count, operand count, nesting
@@ -196,7 +200,8 @@ Representative stable errors are `V2001_LIMIT`, `V2002_SCHEMA`,
 
 Every IR operation has a source-map entry containing source-set identity,
 canonical path, normalized source content ID, frontend identity, language
-version/profile, byte start/end, and optional derivation parent span. Spawn,
+version/profile and Unicode-normalization baseline, byte start/end, and
+optional derivation parent span. Spawn,
 join, cancellation, synchronization, and atomic operations also carry a task
 or execution-context event identity at runtime; timing and CPU number are
 observations, not part of source identity.
@@ -209,6 +214,7 @@ source-set/commit or detached source-set identity
 canonical path/module identity
 frontend implementation and semantic-profile identity
 language version and feature revision
+Unicode normalization baseline
 IR schema and source-map revision
 verifier implementation identity
 backend implementation and target ABI identity
