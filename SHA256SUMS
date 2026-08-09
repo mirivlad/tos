@@ -14,7 +14,7 @@ c215706446d1ebdb2a95c531d25974994946d71845a425406e697b1948cae071  LICENSE.md
 cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  LICENSES/Apache-2.0.txt
 3b2890eacd851373001c4a14623458e3adaf1b1967939aa9c38a318e28d61c00  LICENSES/CC-BY-SA-4.0.txt
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986  LICENSES/GPL-3.0-or-later.txt
-57025ae7577f31133fc96ed11c395b7bf94bebf874b7fb1e46fca3d9b0457822  MANIFEST.txt
+b8accbf37a2f42ce0b3f9a320e9282cfc5dcb7de12445c5755d3a04a07911216  MANIFEST.txt
 1c71c427f14580bbbaffb08a16b12f602de7fc29df3b24590067f4c185c87b64  PATENTS.md
 2c773d75e8180e53fbb8b6d9a0b249b1b0dcf73385c29095e1d0de0938a155ff  README.md
 ad6e32b0b73e2509f52defe2e6ea113179d488c1b47cbebf4dcea0550fdc3aca  SECURITY.md
@@ -106,6 +106,7 @@ fe42acd3332992e5e02ab8d57edc0a9344b3fac72bb0f09651184f3e18c13332  docs/adr/0026-
 ca69ca74e2a3df34ee66c85f47a0b2d62609c2edf986ecbfab771634a2147dce  docs/superpowers/plans/2026-08-09-stage1-p2-performance-and-closure.md
 d3f98f3be27a14be78f3b397040612a2be54317dec79f107cdebd38ec9d9c525  docs/superpowers/plans/2026-08-09-stage1-phase1-capsule-identity.md
 df6517326e6b6daf64c8de5e4c15e8b83d675e416aad82113231d93bf1cbfe46  docs/superpowers/plans/2026-08-09-stage1-unavoidable-crypto-baseline.md
+80392a5a56701e671c6c2063d72b4d58f7ce28036d854465d2d4ba3d34e22213  docs/superpowers/plans/2026-08-09-stage15-language-foundation.md
 f678aa62b8032f5a8b633b041a8854a65043f958bef06da4cacec587f66d094e  docs/superpowers/specs/2026-08-08-stage1-phase0-closure-design.md
 ee46d3e3f161ab4cc7b3d3fe5b2e53c5b41030b209712a0953862ea011548318  docs/superpowers/specs/2026-08-08-stage1-phase1-capsule-identity-design.md
 fe0bde9319ce226e9fde851886ebf22ff7f6c736def8c604b484d3255ac25eae  docs/superpowers/specs/2026-08-09-capsule-vector-provenance-proposal.md
