@@ -21,10 +21,11 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   performance evidence и Project Architect approval заархивированы. **Stage
   1.5 формально закрыт**: ADR-0027 accepted, evidence/TCB/recovery analysis и
   Project Architect approval заархивированы. **Stage 2 Part A остаётся
-  Proposed**: после checkpoint review синхронизируются grammar/type/task
-  lifecycle, control-expression value model, Call-form, conversions, aggregate
-  Copy и canonical vectors; ADR-0028 по-прежнему ожидает единственный Project
-  Architect checkpoint. Stage 2 production implementation не начат.
+  Proposed**: ADR-0028 по-прежнему ожидает единственный Project Architect
+  checkpoint. Последняя синхронизация фиксирует простой V1 surface contract:
+  `[]` для data/declaration lists, `{}` только для executable blocks, `()` для
+  arguments/grouping и explicit `return` без implicit tail values. Stage 2
+  production implementation не начат.
 - Вся работа ведётся в `source/` (решение owner; docs/17-монобренч на корень
   приостановлен до Stage 1 — scope-решение, не изменение контрактов).
 
@@ -200,6 +201,21 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   canonical tail examples и отсутствие competing `enum_init` parse.
 - ADR-0028 остаётся Proposed; Part B production implementation и Stage 3 не
   начаты. `./scripts/preflight.sh --full` → **31/31 PASS**.
+
+### 2026-08-09 — Stage 2 Part A: final syntax simplification (pending verification)
+
+- Проектный surface contract ADR-0028 синхронизирован с readability decision:
+  `[]` описывает lists/declarations, `{}` выполняет statements, `()` содержит
+  parameters/arguments/grouping, list members используют `,`, simple actions
+  завершаются `;`, а normal value требует explicit `return`.
+- `if`/`match` вновь statement-only; match branches — executable blocks без
+  comma separator. Record construction — `Point(x: ..., y: ...)`; parser всё
+  ещё строит единый Call/Construct family без semantic backtracking. User
+  records/enums affine; только primitive roots, tuples и arrays имеют stated
+  Copy rule.
+- Обновлены proposed guide/tutorial/examples/conformance и expanded mechanical
+  gate. `./scripts/preflight.sh --full` → **31/31 PASS**; production
+  implementation и Stage 3 не начаты.
 
 ## Граница закрытого Stage 1
 

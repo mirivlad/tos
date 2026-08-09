@@ -1,28 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module examples.results version 1.0 profile bootstrap;
 
-resource {
-    fuel: 10000;
-    stack: 64KiB;
-    allocation: 4KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 0;
-}
+resource [
+    fuel: 10000,
+    stack: 64KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 16,
+    recursion: 8,
+    imports: 0,
+]
 
-enum ParseError {
+enum ParseError [
     Empty,
-}
+]
 
 pub fn first_or_error(items: [i32; 1]) -> Result<i32, ParseError> {
-    Ok(items[0B])
+    return Ok(items[0B]);
 }
 
 pub fn checked_value(items: [i32; 1]) -> Result<i32, ParseError> {
     let value = first_or_error(items)?;
-    Ok(value)
+    return Ok(value);
 }

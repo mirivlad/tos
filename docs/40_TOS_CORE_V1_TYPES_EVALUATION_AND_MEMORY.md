@@ -88,7 +88,7 @@ Full-profile closure, sent through a channel, or placed in a task. These
 restrictions make their region exactly the caller expression or callee body and
 avoid hidden lifetime inference.
 
-Functions are pure with respect to authority unless their `uses { ... }` set
+Functions are pure with respect to authority unless their `uses [ ... ]` set
 names imported capability parameters or capability values. An operation that
 requires a capability is type-correct only if its required capability name is
 present in the enclosing function's transitive effect set. An empty effect set
@@ -177,19 +177,33 @@ constructors use the same Call form and differ only at resolved-callee checking.
 right side after true. `?` evaluates its operand once and returns the
 containing function with the matching `Err` if it is not `Ok`.
 
-The tail expression of a block is its value; a block with no tail expression
-has type and value `unit`. A semicolon discards a statement expression's value.
-`if` and `match` are value-producing expressions. An `if` with `else` requires
-both branch blocks to have the same exact type and yields that type; an `if`
-without `else` yields `unit` after evaluating its selected block (if any).
-Every `match` arm's block/expression has the same exact type, and the match
-yields that type. `match` must be exhaustive for an enum, `Option`, or
+An executable block is a statement body, not a value container: it has no tail
+expression. `return expression;` is the only normal value return. Every
+reachable normal completion path of a function with a non-`unit` declared
+return type MUST execute an explicit `return` with that exact type; reaching
+the end of such a function is `E1221_MISSING_RETURN`. `return;` or a value of
+the wrong type is `E1222_RETURN_TYPE_MISMATCH`. A `unit` function may reach its
+end normally. A semicolon terminates a simple executable statement; it never
+silently changes a would-be return value into `unit`.
+
+A closure or spawned task body follows the same rule. Its body has result
+`unit` only when every normal path reaches its end without a value `return`.
+Otherwise every reachable normal completion path MUST explicitly return one
+inferred exact result type; mixing a value return with a normal fallthrough is
+`E1221_MISSING_RETURN`, and inconsistent returned types are
+`E1222_RETURN_TYPE_MISMATCH`. This makes task/closure result production visible
+without making their executable blocks expressions.
+
+`if`, `match`, `while`, `for`, `loop`, and `parallel` are statements, not
+expressions. An `if` branch, including `else`, is an executable block and has
+no value typing rule. A `match` arm is likewise an executable block; arms are
+not comma-separated. `match` must be exhaustive for an enum, `Option`, or
 `Result`; a missing case is `E1220_NONEXHAUSTIVE_MATCH`. An `_` arm is
-exhaustive. In statement position a bare `if` or `match` may omit its trailing
-semicolon; the resulting value is discarded. `while`, `for`, and `loop` are
-unit-valued statements, and V1 `break` has no value. Patterns bind by move
-unless the matched subject is an immutable `Copy` value; borrows must be made
-explicitly before match.
+exhaustive. `break` has no value. Patterns bind by move unless the matched
+subject is an immutable `Copy` value; borrows must be made explicitly before
+match. `?` remains an explicit Result-propagation operation: it evaluates its
+operand once and returns the containing function with the matching `Err`; it
+is not an implicit block-tail return mechanism.
 
 `Result` is the sole ordinary recoverable-error transport. A runtime trap is a
 defined language failure caused by a violated dynamic precondition. `panic`
@@ -210,17 +224,17 @@ unwinding.
 
 Safe non-`Copy` values are affine: every value has one owner and is moved when
 assigned, passed by an owning parameter, returned, put into an aggregate, or
-captured by a task/closure. Use after move is `E1301_USE_AFTER_MOVE`. Copy is
-automatic and structural in V1; there is no declaration marker, trait, or
-user override. Fixed-width numeric types, `size`, `duration`, `bool`, and
-`unit` are `Copy`. A tuple is `Copy` exactly when every element is `Copy`; an
-array is `Copy` exactly when its element type is `Copy`; and a record or enum
-is `Copy` exactly when every stored field/payload type is `Copy`. `Option<T>`,
-`Result<T,E>`, and `TaskResult<T>` follow that same transitive aggregate rule.
-`Shared<T>` is an explicitly documented immutable handle and is `Copy`; strings,
-bytes, capabilities, regions, DMA regions, tasks, locks, channels, events,
-semaphores, barriers, latches, atomics, slices, closures, and functions are
-not `Copy` unless an accepted later contract explicitly changes that type.
+captured by a task/closure. Use after move is `E1301_USE_AFTER_MOVE`. V1 has no
+Copy declaration marker, trait, derivation, or user override. Fixed-width
+numeric types, `size`, `duration`, `bool`, and `unit` are `Copy`. A tuple is `Copy`
+exactly when every element is `Copy`; an array is `Copy` exactly when its
+element type is `Copy`. User records and enums are always affine/non-Copy in V1,
+even when every field or payload is `Copy`. `Option<T>`, `Result<T,E>`, and
+`TaskResult<T>` are also affine V1 constructed values. `Shared<T>` is an
+explicitly documented immutable handle and is `Copy`; strings, bytes,
+capabilities, regions, DMA regions, tasks, locks, channels, events, semaphores,
+barriers, latches, atomics, slices, closures, and functions are not `Copy`
+unless an accepted later contract explicitly changes that type.
 
 At any program point, a value may have either any number of immutable borrows
 or exactly one mutable borrow, never both. An immutable borrow cannot mutate

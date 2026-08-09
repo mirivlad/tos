@@ -148,7 +148,7 @@ one-or-more. Literal tokens are quoted. `identifier`, `integer`, `string`,
 `bytes`, `size`, and `duration` refer to the lexical tokens above.
 
 The parser is deterministic. At a declaration-level error it synchronizes at
-the next top-level `;` or `}`. At a statement-level error it synchronizes at
+the next top-level `;` or `]`. At a statement-level error it synchronizes at
 the next `;` or the closing brace of the current block. At a comma-separated
 list error it synchronizes at `,` or the enclosing closer. It MUST emit the
 lowest-numbered applicable lexical error first; then the earliest unconsumed
@@ -177,14 +177,16 @@ item            = visibility? resource_decl
                 | visibility? function_decl
                 | visibility? extern_decl ;
 visibility      = "pub" ;
-resource_decl   = "resource" "{" resource_limit* "}" ;
-resource_limit  = identifier ":" literal ";" ;
-record_decl     = "record" identifier "{" field_decl* "}" ;
-field_decl      = visibility? identifier ":" type ";" ;
-enum_decl       = "enum" identifier "{" variant_decl ( "," variant_decl )*
-                  ","? "}" ;
+resource_decl   = "resource" "[" resource_limit_list? "]" ;
+resource_limit_list = resource_limit ( "," resource_limit )* ","? ;
+resource_limit  = identifier ":" literal ;
+record_decl     = "record" identifier "[" field_decl_list? "]" ;
+field_decl_list = field_decl ( "," field_decl )* ","? ;
+field_decl      = visibility? identifier ":" type ;
+enum_decl       = "enum" identifier "[" variant_decl_list? "]" ;
+variant_decl_list = variant_decl ( "," variant_decl )* ","? ;
 variant_decl    = identifier ( "(" type_list? ")" )?
-                | identifier "{" field_decl* "}" ;
+                | identifier "[" field_decl_list? "]" ;
 const_decl      = "const" identifier ":" type "=" expression ";" ;
 function_decl   = async_marker? "fn" identifier "(" parameter_list? ")"
                   "->" type effects? block ;
@@ -192,7 +194,7 @@ async_marker    = "async" ;
 parameter_list  = parameter ( "," parameter )* ","? ;
 parameter       = borrow_mode? identifier ":" type ;
 borrow_mode     = "borrow" ( "mut" )? ;
-effects         = "uses" "{" identifier ( "," identifier )* ","? "}" ;
+effects         = "uses" "[" identifier ( "," identifier )* ","? "]" ;
 extern_decl     = "extern" "fn" identifier "(" parameter_list? ")"
                   "->" type effects? ";" ;
 
@@ -221,18 +223,20 @@ tuple_type      = "(" type "," type ( "," type )* ","? ")" ;
 function_type   = "fn" "(" type_list? ")" "->" type ;
 type_list       = type ( "," type )* ","? ;
 
-block           = "{" statement* tail_expression? "}" ;
-tail_expression = expression ;
-statement       = let_stmt | assignment ";" | logical_or ";" | return_stmt
-                | break_stmt | continue_stmt | while_stmt | for_stmt
-                | loop_stmt | parallel_stmt | cancel_stmt
-                | defer_stmt | unsafe_stmt | control_expression_statement ;
-control_expression_statement = if_expression ";"? | match_expression ";"? ;
+block           = "{" statement* "}" ;
+statement       = let_stmt | assignment ";" | expression ";" | return_stmt
+                | break_stmt | continue_stmt | if_stmt | match_stmt
+                | while_stmt | for_stmt | loop_stmt | parallel_stmt
+                | cancel_stmt | defer_stmt | unsafe_stmt ;
 let_stmt        = "let" "mut"? pattern ( ":" type )? "=" expression ";" ;
 assignment      = place "=" expression ;
 return_stmt     = "return" expression? ";" ;
 break_stmt      = "break" ";" ;
 continue_stmt   = "continue" ";" ;
+if_stmt         = "if" "(" expression ")" block
+                ( "else" ( if_stmt | block ) )? ;
+match_stmt      = "match" "(" expression ")" "{" match_branch* "}" ;
+match_branch    = pattern "=>" block ;
 while_stmt      = "while" "(" expression ")" block ;
 for_stmt        = "for" pattern "in" "(" expression ")" block ;
 loop_stmt       = "loop" block ;
@@ -245,12 +249,7 @@ pattern         = "_" | pattern_name | pattern_name "(" pattern_list? ")"
                 | "(" pattern_list ")" ;
 pattern_name    = identifier | predeclared_value ;
 pattern_list    = pattern ( "," pattern )* ","? ;
-expression      = if_expression | match_expression | logical_or ;
-if_expression   = "if" "(" expression ")" block
-                ( "else" ( if_expression | block ) )? ;
-match_expression = "match" "(" expression ")" "{" match_arm_list? "}" ;
-match_arm_list  = match_arm ( "," match_arm )* ","? ;
-match_arm       = pattern "=>" ( block | expression ) ;
+expression      = logical_or ;
 logical_or      = logical_and ( "||" logical_and )* ;
 logical_and     = equality ( "&&" equality )* ;
 equality        = comparison ( ( "==" | "!=" ) comparison )* ;
@@ -264,14 +263,17 @@ product         = unary ( ( "*" | "/" | "%" ) unary )* ;
 unary           = ( "!" | "-" | "~" | "borrow" ( "mut" )? | "await" | "join" ) unary
                 | postfix ;
 postfix         = primary ( call_suffix | index | field | question | cast )* ;
-call_suffix     = "(" argument_list? ")" ;
-argument_list   = expression ( "," expression )* ","? ;
+call_suffix     = "(" call_arguments? ")" ;
+call_arguments  = positional_argument_list | named_argument_list ;
+positional_argument_list = expression ( "," expression )* ","? ;
+named_argument_list = named_argument ( "," named_argument )* ","? ;
+named_argument  = identifier ":" expression ;
 index           = "[" expression "]" ;
 field           = "." identifier ;
 question        = "?" ;
 cast            = "as" type ;
 primary         = literal | "true" | "false" | predeclared_value
-                | predeclared_function | qualified_name | tuple | array | record_init
+                | predeclared_function | qualified_name | tuple | array
                 | closure | spawn_expression | "(" expression ")" | block ;
 predeclared_value = "Some" | "None" | "Ok" | "Err" | "Completed" | "Cancelled" ;
 predeclared_function = "to_i8" | "to_i16" | "to_i32" | "to_i64"
@@ -279,11 +281,8 @@ predeclared_function = "to_i8" | "to_i16" | "to_i32" | "to_i64"
                 | "wrapping_add" | "wrapping_sub" | "wrapping_mul" ;
 literal         = integer | size | duration | string | bytes ;
 tuple           = "(" expression "," expression ( "," expression )* ","? ")" ;
-array           = "[" argument_list? "]" ;
-record_init     = qualified_name "{" field_init_list? "}" ;
-field_init_list = field_init ( "," field_init )* ","? ;
-field_init      = identifier ":" expression ;
-closure         = "|" closure_parameters? "|" expression ;
+array           = "[" positional_argument_list? "]" ;
+closure         = "|" closure_parameters? "|" block ;
 closure_parameters = parameter ( "," parameter )* ","? ;
 spawn_expression = "spawn" ( "async" | "parallel" ) block ;
 place           = identifier ( field | index )* ;
@@ -293,30 +292,42 @@ const_product   = const_primary ( ( "*" | "/" | "%" ) const_primary )* ;
 const_primary   = integer | size | identifier | "(" const_expression ")" ;
 ```
 
-Every control header has mandatory parentheses. The closing `)` therefore ends
-an `if`, `while`, `for`, or `match` head before the following block begins;
-`if ready { ... }` is `E1105_CONTROL_HEAD_PARENS_REQUIRED`. This deliberately
-prevents a parser from having to choose between a control block and a record
-initializer such as `Ready { ... }`. `if_expression` and `match_expression`
-are ordinary expressions, so they may bind with `let`, occur in a block tail,
-or be used as an expression statement followed by `;`. A bare `if`/`match`
-expression is also permitted in statement position without `;`; its value is
-discarded. `while`, `for`, and `loop` remain unit-valued statements in V1;
-`break` has no value.
+The surface punctuation has one human-facing rule: `()` groups expressions and
+contains parameters or call/constructor arguments; `[]` contains declarative
+or data lists; `{}` contains executable statements; commas separate list
+members; and semicolons terminate simple executable statements. A trailing
+comma is permitted in every comma-separated V1 list. A compound statement that
+ends in its own `}` takes no following semicolon.
 
-A `qualified_name` followed by `{` is `record_init`. A name followed by a call
-suffix is always one generic Call syntax node, whether resolution later finds a
-function, an `Option`/`Result` constructor, a user enum tuple variant, or a
-future callable V1 entity. The parser never chooses an enum-constructor parse
-instead of a function-call parse. Resolution validates the selected callee
-kind after that one syntax form is built; this is not semantic backtracking.
-An empty record initializer is syntactically valid. Fields are comma-separated,
-a final comma is permitted, and a repeated field name is the static named-field
-error `E1205_DUPLICATE_RECORD_FIELD`, not a parser error. Missing a comma
-between record fields is `E1106_RECORD_FIELD_SEPARATOR_REQUIRED`. Function
-calls, field access, indexing, propagation (`?`) and casts group left-to-right;
-binary precedence is listed from weakest to strongest. `&&` and `||`
-short-circuit. `await`, `join`, and `borrow` bind like other unary operators.
+Every control header has mandatory parentheses. The closing `)` therefore ends
+an `if`, `while`, `for`, or `match` head before the following executable block
+begins; `if ready { ... }` is `E1105_CONTROL_HEAD_PARENS_REQUIRED`. `if` and
+`match` are statement-only in V1. Their branches are executable blocks, their
+branches have no comma separators, and neither construct is an expression or
+an implicit value producer. `while`, `for`, `loop`, and `parallel` are likewise
+statement-only; `break` has no value.
+
+A name followed by a call suffix is always one unresolved Call/Construct syntax
+node, whether resolution later finds a function, an `Option`/`Result`
+constructor, a user enum tuple variant, or a nominal record constructor. The
+parser never chooses a constructor parse instead of a function-call parse.
+Resolution validates the selected callee kind after that one syntax form is
+built; this is not semantic backtracking. Call arguments are either all
+positional or all named; the first argument's `identifier ":"` form fixes named
+mode. Named arguments are accepted only for nominal record constructors, not
+ordinary functions or tuple enum variants. They name every declared field
+exactly once; an unknown name is `E1207_UNKNOWN_RECORD_FIELD`, a duplicate is
+`E1205_DUPLICATE_RECORD_FIELD`, and an omitted field is
+`E1206_MISSING_RECORD_FIELD`. Named argument expressions are evaluated in
+source order. `Point(x: 1i32, y: 2i32)` is therefore a record construction;
+`Point { x: 1i32, y: 2i32 }` is not V1 syntax. Missing a comma between list
+members is `E1106_LIST_SEPARATOR_REQUIRED`.
+
+Function calls, constructor calls, field access, indexing, propagation (`?`)
+and casts group left-to-right; binary precedence is listed from weakest to
+strongest. `&&` and `||` short-circuit. `await`, `join`, and `borrow` bind like
+other unary operators. A closure and a spawned task use an executable block;
+their normal produced value, if any, uses an explicit `return` in that block.
 
 `defer`, `unsafe`, closures, `async`, and `spawn async` are Full-profile
 constructs. `parallel`, `spawn parallel`, `join`, and `cancel` have defined

@@ -38,12 +38,16 @@ and defines cancellation as a request followed by a consuming
 checks these boundaries across docs/39–44, canonical examples, and the
 conformance corpus.
 
-The second resubmission additionally reconciles value-producing `if`/`match`
-with their canonical tail-expression examples; uses one Call AST form for
-functions and tuple constructors; replaces unexpressible generic conversion
-notation with fixed `to_*` standard calls; and makes aggregate Copy automatic
-and structural. These are Level 0 consistency corrections inside the proposed
-V1 semantic direction, not a new language foundation or Part B authorization.
+The final syntax correction deliberately replaces the prior proposed
+tail-value surface model. It makes `()` parameters/arguments/grouping, `[]`
+declarative and data lists, and `{}` executable statement bodies. `return`
+is the sole normal value-return operation. `if` and `match` are statement-only,
+record construction uses named constructor arguments, and all calls and
+constructors still have one parse family. It also retains fixed `to_*` checked
+conversion calls and fixes V1 Copy to primitive roots plus structural tuple and
+array Copy, with user records/enums affine. These are Level 0 consistency and
+learnability corrections inside the proposed V1 semantic direction, not a new
+language foundation or Part B authorization.
 
 ## Proposed decision
 
@@ -57,10 +61,12 @@ Accept TOS Core V1 as specified by docs/39–44:
   synchronization/atomic types have fixed documented arity; control heads are
   parenthesized and record fields are comma-separated so parser boundaries do
   not depend on type resolution;
-- `if`/`match` are value-producing expressions in both binding/tail and
-  statement use; function and constructor calls share a single syntactic Call
-  form; checked integer conversion uses fixed `to_*` calls; and aggregate Copy
-  is automatic from stored-component types;
+- `()` denotes grouping/parameters/call arguments, `[]` declarative/data lists,
+  and `{}` executable statement bodies; a non-unit function/task/closure body
+  returns only through explicit `return`; `if`/`match` are statement-only;
+  function and constructor calls share one syntactic Call form; nominal records
+  use exact named constructor arguments; checked integer conversion uses fixed
+  `to_*` calls; and only primitive roots plus structural tuples/arrays Copy;
 - static semantics provide nominal types, fixed-width arithmetic, typed
   Result-style errors, capability effects, affine ownership, lexical
   nonescaping borrows, typed regions, and no safe raw-pointer/physical-address

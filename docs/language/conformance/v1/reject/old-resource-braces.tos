@@ -1,0 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.old_resource_braces version 1.0 profile bootstrap;
+
+resource {
+    fuel: 1000;
+}

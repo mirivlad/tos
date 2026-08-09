@@ -74,15 +74,21 @@ def main() -> int:
         require('"nil"' not in grammar_body.group(1), "nil remains a V1 grammar terminal", failures)
         require("tuple_type" in grammar_body.group(1), "tuple_type missing from grammar", failures)
         require('"slice" "<" type ">"' in grammar_body.group(1), "slice<T> missing from grammar", failures)
-        require('if_expression   = "if" "(" expression ")" block' in grammar_body.group(1), "if is not a value-producing expression", failures)
+        require('resource_decl   = "resource" "[" resource_limit_list? "]" ;' in grammar_body.group(1), "resource declaration does not use a list", failures)
+        require('record_decl     = "record" identifier "[" field_decl_list? "]" ;' in grammar_body.group(1), "record declaration does not use a list", failures)
+        require('enum_decl       = "enum" identifier "[" variant_decl_list? "]" ;' in grammar_body.group(1), "enum declaration does not use a list", failures)
+        require('block           = "{" statement* "}" ;' in grammar_body.group(1), "executable block still has an implicit tail value", failures)
+        require("tail_expression" not in grammar_body.group(1), "implicit tail expression remains in grammar", failures)
+        require('if_stmt         = "if" "(" expression ")" block' in grammar_body.group(1), "if statement form missing", failures)
         require('while_stmt      = "while" "(" expression ")" block' in grammar_body.group(1), "while control head is not parenthesized", failures)
-        require('match_expression = "match" "(" expression ")" "{" match_arm_list? "}"' in grammar_body.group(1), "match is not a value-producing expression", failures)
-        require('expression      = if_expression | match_expression | logical_or ;' in grammar_body.group(1), "if/match are absent from expression grammar", failures)
-        require('call_suffix     = "(" argument_list? ")" ;' in grammar_body.group(1), "generic call/constructor-call syntax missing", failures)
-        require("enum_init" not in grammar_body.group(1), "enum constructor remains a competing parse", failures)
+        require('match_stmt      = "match" "(" expression ")" "{" match_branch* "}" ;' in grammar_body.group(1), "match statement form missing", failures)
+        require('match_branch    = pattern "=>" block ;' in grammar_body.group(1), "match branches are not executable blocks", failures)
+        require('expression      = logical_or ;' in grammar_body.group(1), "if/match remain value-producing expressions", failures)
+        require('call_suffix     = "(" call_arguments? ")" ;' in grammar_body.group(1), "unified call argument syntax missing", failures)
+        require('named_argument  = identifier ":" expression ;' in grammar_body.group(1), "named record constructor argument syntax missing", failures)
+        require("record_init" not in grammar_body.group(1), "record data construction still uses braces", failures)
         require('predeclared_function' in grammar_body.group(1), "checked conversion functions lack grammar representation", failures)
-        require("field_init_list" in grammar_body.group(1), "record initializer lacks a separated field list", failures)
-        require('field_init      = identifier ":" expression ;' in grammar_body.group(1), "record field unexpectedly owns a separator", failures)
+        require("named_argument_list" in grammar_body.group(1), "record constructor lacks a separated named argument list", failures)
 
     require("TaskResult<T>" in types, "TaskResult<T> semantics missing", failures)
     require("`AtomicU64`, and `ConversionError` are non-generic typed runtime contracts" in types, "fixed-arity predeclared types missing", failures)
@@ -93,11 +99,11 @@ def main() -> int:
     require("TaskResult<T>" in ir, "IR task result typing missing", failures)
     require("`to_i8` through `to_i64` and `to_u8` through `to_u64`" in types, "checked conversion source contract missing", failures)
     require("`convert<T>(x)`" not in types, "unexpressible generic conversion notation remains", failures)
-    require(re.search(r"Copy is\s+automatic and structural", types) is not None, "aggregate Copy rule is not explicit and automatic", failures)
+    require("User records and enums are always affine/non-Copy in V1" in types, "user aggregate Copy rule is not explicit", failures)
     require(
         all(
             re.search(pattern, types) is not None
-            for pattern in [r"tuple is `Copy`", r"array is `Copy`", r"record or enum\s+is `Copy`"]
+            for pattern in [r"tuple is `Copy`", r"array is `Copy`"]
         ),
         "aggregate Copy coverage is incomplete",
         failures,
@@ -110,7 +116,9 @@ def main() -> int:
         "accept/type-forms.tos",
         "accept/control-heads.tos",
         "accept/task-cancellation.tos",
-        "accept/control-values.tos",
+        "accept/explicit-control-return.tos",
+        "accept/async-explicit-return.tos",
+        "accept/named-record-constructor.tos",
         "accept/call-and-constructor.tos",
         "accept/checked-conversion.tos",
         "accept/copy-aggregates.tos",
@@ -121,6 +129,15 @@ def main() -> int:
         "reject/unjoined-task.tos",
         "reject/duplicate-record-field.tos",
         "reject/nil-absence.tos",
+        "reject/implicit-tail-return.tos",
+        "reject/missing-nonunit-return.tos",
+        "reject/old-resource-braces.tos",
+        "reject/old-enum-braces.tos",
+        "reject/old-record-braces.tos",
+        "reject/old-record-construction-braces.tos",
+        "reject/comma-match-branches.tos",
+        "reject/duplicate-record-constructor-field.tos",
+        "reject/missing-record-constructor-field.tos",
         "reject/unchecked-conversion.tos",
         "reject/noncopy-aggregate.tos",
     ]
@@ -132,15 +149,15 @@ def main() -> int:
         path = root / "docs/language/conformance/v1" / relative
         return path.read_text(encoding="utf-8") if path.is_file() else ""
 
-    control_values = vector_text("accept/control-values.tos")
-    require("let value = if (ready)" in control_values and "pub fn tail_if" in control_values, "if value conformance cases missing", failures)
-    require("let value = match (signal)" in control_values and "pub fn tail_match" in control_values, "match value conformance cases missing", failures)
+    control_values = vector_text("accept/explicit-control-return.tos")
+    require("if (ready)" in control_values and "return" in control_values, "if explicit-return conformance case missing", failures)
+    require("match (signal)" in control_values and "=> {" in control_values, "match block conformance case missing", failures)
     call_vector = vector_text("accept/call-and-constructor.tos")
     require(all(token in call_vector for token in ["zero()", "add(start, 2i32)", "Ok(", "Err(", "Pair(total, 3i32)"]), "call/constructor conformance coverage incomplete", failures)
     conversion_vector = vector_text("accept/checked-conversion.tos")
     require("to_u8(value)" in conversion_vector, "checked conversion conformance case missing", failures)
     copy_vector = vector_text("accept/copy-aggregates.tos")
-    require(all(token in copy_vector for token in ["let tuple", "let array", "let pair", "let choice"]), "aggregate Copy conformance coverage incomplete", failures)
+    require(all(token in copy_vector for token in ["let tuple", "let array"]), "aggregate Copy conformance coverage incomplete", failures)
 
     vector_root = root / "docs/language/conformance/v1"
     for vector in sorted(vector_root.glob("accept/*.tos")) + sorted(vector_root.glob("reject/*.tos")):
@@ -150,8 +167,8 @@ def main() -> int:
     data_example = (root / "docs/language/examples/data.tos").read_text(encoding="utf-8")
     first_example = (root / "docs/language/examples/first.tos").read_text(encoding="utf-8")
     require("-> (i32, i32)" in data_example, "tuple example unexpectedly changed", failures)
-    require("match (axis)" in data_example, "canonical data example no longer has tail match", failures)
-    require("if (answer == 42i32)" in first_example, "canonical first example no longer has tail if", failures)
+    require("match (axis)" in data_example and "return Point(" in data_example, "canonical data example does not use explicit match return", failures)
+    require("if (answer == 42i32)" in first_example and "return Ok(answer);" in first_example, "canonical first example does not use explicit if return", failures)
 
     allowed_unparenthesized = {
         "reject/if-identifier-control-head.tos",
@@ -171,6 +188,19 @@ def main() -> int:
                         f"unparenthesized control head in canonical source: {source.relative_to(root)}:{line_no}"
                     )
 
+    for source_dir in [
+        root / "docs/language/examples",
+        root / "docs/language/conformance/v1/accept",
+    ]:
+        for source in sorted(source_dir.glob("*.tos")):
+            source_text = source.read_text(encoding="utf-8")
+            require("resource {" not in source_text, f"old resource-brace syntax in canonical source: {source.relative_to(root)}", failures)
+            require(not re.search(r"\b(record|enum)\s+[A-Za-z_][A-Za-z0-9_]*\s*\{", source_text), f"old declaration-brace syntax in canonical source: {source.relative_to(root)}", failures)
+            require("uses {" not in source_text, f"old effect-brace syntax in canonical source: {source.relative_to(root)}", failures)
+            require(not re.search(r"\b(?:return|=)\s+[A-Z][A-Za-z0-9_]*(?:::[A-Za-z_][A-Za-z0-9_]*)?\s*\{", source_text), f"old record-construction braces in canonical source: {source.relative_to(root)}", failures)
+            for function in re.finditer(r"(?:async\s+)?fn\s+\w+\([^)]*\)\s*->(?!\s*unit\b)[^{]+\{(.*?)\n\}", source_text, flags=re.DOTALL):
+                require("return " in function.group(1), f"non-unit canonical function lacks explicit return: {source.relative_to(root)}", failures)
+
     language_docs = "\n".join([grammar, types, concurrency, modules, ir, conformance, guide, tutorial])
     require(not re.search(r"\b(Semaphore|Event|Barrier|Latch|AtomicBool|AtomicU32|AtomicU64)\s*<", language_docs), "zero-arity predeclared type is used as generic", failures)
     require(
@@ -178,6 +208,8 @@ def main() -> int:
         "call/constructor semantic unification missing",
         failures,
     )
+    require("Five syntax rules to remember" in tutorial, "tutorial lacks the punctuation model", failures)
+    require("[]` — lists, data, and declarations" in tutorial, "tutorial punctuation model omits declarative lists", failures)
 
     if failures:
         for failure in failures:

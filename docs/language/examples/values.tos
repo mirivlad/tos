@@ -1,25 +1,25 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module examples.values version 1.0 profile bootstrap;
 
-resource {
-    fuel: 10000;
-    stack: 64KiB;
-    allocation: 4KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 0;
-}
+resource [
+    fuel: 10000,
+    stack: 64KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 16,
+    recursion: 8,
+    imports: 0,
+]
 
 pub fn budget() -> size {
     let mut used: size = 4KiB;
     used = used + 512B;
-    used
+    return used;
 }
 
 pub fn retry_delay() -> duration {
-    250ms
+    return 250ms;
 }

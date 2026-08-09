@@ -1,32 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module conformance.call_and_constructor version 1.0 profile bootstrap;
 
-resource {
-    fuel: 10000;
-    stack: 64KiB;
-    allocation: 4KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 0;
-}
+resource [
+    fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1,
+    sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0,
+]
 
-enum CallError {
+enum CallError [
     Bad,
-}
+]
 
-enum Coordinate {
+enum Coordinate [
     Pair(i32, i32),
-}
+]
 
-pub fn zero() -> i32 { 0i32 }
-pub fn add(left: i32, right: i32) -> i32 { left + right }
+pub fn zero() -> i32 { return 0i32; }
+pub fn add(left: i32, right: i32) -> i32 { return left + right; }
 
 pub fn failed() -> Result<i32, CallError> {
-    Err(Bad)
+    return Err(Bad);
 }
 
 pub fn main() -> Result<i32, CallError> {
@@ -34,6 +26,8 @@ pub fn main() -> Result<i32, CallError> {
     let total = add(start, 2i32);
     let coordinate = Pair(total, 3i32);
     match (coordinate) {
-        Pair(x, y) => Ok(x + y),
+        Pair(x, y) => {
+            return Ok(x + y);
+        }
     }
 }

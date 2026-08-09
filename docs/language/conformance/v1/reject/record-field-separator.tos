@@ -1,24 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module conformance.record_field_separator version 1.0 profile bootstrap;
 
-resource {
-    fuel: 1000;
-    stack: 64KiB;
-    allocation: 4KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 0;
-}
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
 
-record Pair {
-    first: i32;
-    second: i32;
-}
+record Pair [first: i32, second: i32]
 
 pub fn main() -> Pair {
-    Pair { first: 1i32 second: 2i32 }
+    return Pair(first: 1i32 second: 2i32);
 }

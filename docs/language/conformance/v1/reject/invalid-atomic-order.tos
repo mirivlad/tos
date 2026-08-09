@@ -1,19 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module conformance.invalid_atomic_order version 1.0 profile full;
 
-resource {
-    fuel: 100000;
-    stack: 64KiB;
-    allocation: 8KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 1;
-    shared: 4KiB;
-    cleanup: 16;
-    recursion: 8;
-    imports: 0;
-}
+resource [fuel: 100000, stack: 64KiB, allocation: 8KiB, tasks: 1, workers: 1, sync: 1, shared: 4KiB, cleanup: 16, recursion: 8, imports: 0]
 
 pub fn invalid(borrow state: AtomicU32) -> u32 {
-    state.load(Release)
+    return state.load(Release);
 }
