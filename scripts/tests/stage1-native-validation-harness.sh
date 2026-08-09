@@ -45,6 +45,8 @@ if any(record["mode"] != "unavoidable_crypto" or record["validations"] != 2 for 
     raise SystemExit("FAIL: crypto sample does not attest two fresh hash passes")
 if any(record["crypto_bytes_per_boot"] <= 0 or record["crypto_hashes_per_boot"] <= 0 for record in crypto):
     raise SystemExit("FAIL: crypto sample lacks byte/hash accounting")
+if any(record["crypto_hashes_per_boot"] != 2007 for record in crypto):
+    raise SystemExit("FAIL: crypto accounting omitted the required boot-text digest")
 PY
 
 echo 'stage1-native-validation-harness: PASS'

@@ -228,6 +228,90 @@ def native_report(args: argparse.Namespace) -> None:
     )
 
 
+def crypto_report(args: argparse.Namespace) -> None:
+    records = timestamp_records(args.samples)
+    measured = [record for record in records if record.get("phase") == "measurement"]
+    warmups = [record for record in records if record.get("phase") == "warmup"]
+    if len(records) != len(measured) + len(warmups):
+        raise ValueError("crypto sample JSONL contains an unknown phase")
+    if len(measured) != 21 or len(warmups) != 3:
+        raise ValueError(
+            f"crypto report requires 3 warm-ups and 21 measurements, got {len(warmups)}/{len(measured)}"
+        )
+    all_records = warmups + measured
+    if any(record.get("mode") != "unavoidable_crypto" for record in all_records):
+        raise ValueError("crypto sample does not identify the unavoidable-crypto mode")
+    if any(record.get("validations") != 2 for record in all_records):
+        raise ValueError("crypto sample does not attest two fresh logical validators")
+    accounting_pairs = {
+        (record.get("crypto_bytes_per_boot"), record.get("crypto_hashes_per_boot"))
+        for record in all_records
+    }
+    if len(accounting_pairs) != 1:
+        raise ValueError("crypto accounting changed between samples")
+    bytes_per_boot, hashes_per_boot = accounting_pairs.pop()
+    if not isinstance(bytes_per_boot, int) or bytes_per_boot <= 0:
+        raise ValueError("crypto byte accounting is not positive")
+    if not isinstance(hashes_per_boot, int) or hashes_per_boot <= 0:
+        raise ValueError("crypto hash accounting is not positive")
+    stats = nearest_rank_statistics([record.get("duration_ns") for record in measured])
+    workload = json.loads(args.fixture.joinpath("workload.json").read_text(encoding="utf-8"))
+    write_json(
+        args.out,
+        {
+            "architecture": "x86_64 Stage 1 unavoidable crypto research",
+            "crypto_accounting": {
+                "bytes_per_boot": bytes_per_boot,
+                "hashes_per_boot": hashes_per_boot,
+            },
+            "evidence_status": "P1 research-only",
+            "host": {"cpu": cpu_description(), "os": platform.platform()},
+            "measurement": {
+                "logical_sequence": "two plain capsule mirrors -> two parser crypto replays -> boot-text digest",
+                "timer": "host monotonic Instant after structural fixture setup",
+            },
+            "raw_samples": {"measurements": measured, "warmups": warmups},
+            "rustc_version": args.rustc_version,
+            "source_commit": args.source_commit,
+            "statistics": stats,
+            "workload": workload,
+        },
+    )
+
+
+def validation_ratio(args: argparse.Namespace) -> None:
+    full = json.loads(args.full.read_text(encoding="utf-8"))
+    crypto = json.loads(args.crypto.read_text(encoding="utf-8"))
+    if full.get("source_commit") != crypto.get("source_commit"):
+        raise ValueError("full and crypto reports use different source commits")
+    if full.get("workload") != crypto.get("workload"):
+        raise ValueError("full and crypto reports use different workloads")
+    fields = ("median_ns", "p95_ns", "p99_ns")
+    full_stats = full.get("statistics", {})
+    crypto_stats = crypto.get("statistics", {})
+    if any(
+        not isinstance(full_stats.get(field), int)
+        or not isinstance(crypto_stats.get(field), int)
+        or crypto_stats[field] <= 0
+        for field in fields
+    ):
+        raise ValueError("full or crypto report lacks positive latency statistics")
+    write_json(
+        args.out,
+        {
+            "crypto_accounting": crypto.get("crypto_accounting"),
+            "full_over_unavoidable_crypto": {
+                "median_ratio": full_stats["median_ns"] / crypto_stats["median_ns"],
+                "p95_ratio": full_stats["p95_ns"] / crypto_stats["p95_ns"],
+                "p99_ratio": full_stats["p99_ns"] / crypto_stats["p99_ns"],
+            },
+            "scope": "research-only; ratio does not amend the Stage 1 performance contract",
+            "source_commit": full["source_commit"],
+            "workload": full["workload"],
+        },
+    )
+
+
 def comparison(args: argparse.Namespace) -> None:
     native = json.loads(args.native.read_text(encoding="utf-8"))
     qemu = json.loads(args.qemu.read_text(encoding="utf-8"))
@@ -358,6 +442,16 @@ def main() -> None:
     native_report_parser.add_argument("--out", required=True, type=Path)
     native_report_parser.add_argument("--source-commit", required=True)
     native_report_parser.add_argument("--rustc-version", required=True)
+    crypto_report_parser = subcommands.add_parser("crypto-report")
+    crypto_report_parser.add_argument("--fixture", required=True, type=Path)
+    crypto_report_parser.add_argument("--samples", required=True, type=Path)
+    crypto_report_parser.add_argument("--out", required=True, type=Path)
+    crypto_report_parser.add_argument("--source-commit", required=True)
+    crypto_report_parser.add_argument("--rustc-version", required=True)
+    validation_ratio_parser = subcommands.add_parser("validation-ratio")
+    validation_ratio_parser.add_argument("--full", required=True, type=Path)
+    validation_ratio_parser.add_argument("--crypto", required=True, type=Path)
+    validation_ratio_parser.add_argument("--out", required=True, type=Path)
     comparison_parser = subcommands.add_parser("comparison")
     comparison_parser.add_argument("--native", required=True, type=Path)
     comparison_parser.add_argument("--qemu", required=True, type=Path)
@@ -375,6 +469,10 @@ def main() -> None:
             raise SystemExit("p95 exceeds the Stage 1 250 ms budget")
     elif args.command == "native-report":
         native_report(args)
+    elif args.command == "crypto-report":
+        crypto_report(args)
+    elif args.command == "validation-ratio":
+        validation_ratio(args)
     elif args.command == "comparison":
         comparison(args)
     else:
