@@ -1,0 +1,85 @@
+{
+  "record_spdx_license": "GPL-3.0-or-later",
+  "format": "tos-stage15-common-cases-v1",
+  "scope": "non-production language-foundation research corpus",
+  "cases": [
+    {
+      "id": "parser.missing-block-end",
+      "category": "diagnostic",
+      "source": "module boot { service Init() {",
+      "expected": {"status": "reject", "code": "syntax.unclosed-block", "span": [31, 31]}
+    },
+    {
+      "id": "capability.declared-mmio",
+      "category": "capability",
+      "source": "requires mmio.map(device0); map_mmio(device0)",
+      "expected": {"status": "accept", "capabilities": ["mmio.map:device0"]}
+    },
+    {
+      "id": "capability.undeclared-mmio",
+      "category": "capability",
+      "source": "map_mmio(device0)",
+      "expected": {"status": "reject", "code": "capability.undeclared-mmio"}
+    },
+    {
+      "id": "driver.block-state-machine",
+      "category": "typed-ir",
+      "source": "Idle --submit--> Queued --irq--> Complete --ack--> Idle",
+      "expected": {"status": "accept", "ir": "driver.state-machine.v1"}
+    },
+    {
+      "id": "bootstrap.fuel-bound",
+      "category": "resource",
+      "source": "loop { work() }",
+      "expected": {"status": "reject", "code": "resource.fuel-exhausted", "fuel": 64}
+    },
+    {
+      "id": "sourcemap.optimized-add",
+      "category": "observability",
+      "source": "let z = 40 + 2",
+      "expected": {"status": "accept", "result": 42, "source_span": [8, 14]}
+    },
+    {
+      "id": "cache.dependency-change",
+      "category": "identity",
+      "source": "import lib.math@digest-a",
+      "expected": {"status": "invalidate", "replacement_dependency": "digest-b"}
+    },
+    {
+      "id": "engine.serial-parallel-equivalence",
+      "category": "engine-equivalence",
+      "source": "scope { a = spawn_parallel sum(0, 32); b = spawn_parallel sum(32, 64); await a + b }",
+      "expected": {"status": "accept", "result": 2016}
+    },
+    {
+      "id": "concurrency.unsynchronized-mutable-share",
+      "category": "concurrency-negative",
+      "source": "scope { spawn_parallel shared.counter += 1; shared.counter += 1 }",
+      "expected": {"status": "reject", "code": "concurrency.mutable-share-without-sync"}
+    },
+    {
+      "id": "concurrency.atomic-release-acquire",
+      "category": "concurrency",
+      "source": "publish(data); ready.store(true, release); await ready.load(acquire); observe(data)",
+      "expected": {"status": "accept", "result": "published-before-observed"}
+    },
+    {
+      "id": "concurrency.structured-cancel",
+      "category": "concurrency",
+      "source": "scope { child = spawn_parallel loop_work(); cancel(child); await child }",
+      "expected": {"status": "accept", "result": "cancelled-and-joined"}
+    },
+    {
+      "id": "concurrency.task-quota",
+      "category": "resource",
+      "source": "scope { repeat 65 { spawn_parallel work() } }",
+      "expected": {"status": "reject", "code": "resource.task-limit", "limit": 64}
+    },
+    {
+      "id": "multicore.partitioned-reduction",
+      "category": "multicore",
+      "source": "partition range(0, 1048576) into 64; map x*x; reduce add",
+      "expected": {"status": "accept", "result": "sum-square-0-1048575"}
+    }
+  ]
+}

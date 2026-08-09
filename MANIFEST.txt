@@ -38,7 +38,7 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 145
+- files in the release package: 153
 - active system invariants: 21
 - architecture decision records: 26 (26 accepted)
 
