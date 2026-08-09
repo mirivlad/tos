@@ -131,6 +131,16 @@ Accepted ADRs are immutable except spelling/link corrections. Superseding decisi
 
 Non-normative research records, including language evaluation, patent landscape and name search.
 
+### `docs/language/`
+
+Programmer-facing language guides, learning material, canonical proposed or
+implemented `.tos` examples, and conformance inputs. The numbered language
+contracts remain the normative source; this tree explains and exercises them.
+Every canonical example has an SPDX header and one tracked source of truth.
+Before a frontend exists, examples state their proposed/not-implemented status;
+afterward, documentation checks bind accepted examples to parser/checker/runtime
+evidence rather than maintaining duplicate Markdown snippets.
+
 ### `tools/build-specification.py`
 
 The only supported producer of `TOS_DEVELOPMENT_SPECIFICATION.md`. Output must be deterministic for identical sources.

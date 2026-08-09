@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module examples.resources version 1.0 profile bootstrap;
+
+resource {
+    fuel: 1000;
+    stack: 64KiB;
+    allocation: 4KiB;
+    tasks: 1;
+    workers: 1;
+    sync: 0;
+    shared: 0B;
+    cleanup: 16;
+    recursion: 8;
+    imports: 0;
+}
+
+pub fn count_to_three() -> i32 {
+    let mut count: i32 = 0i32;
+    while count < 3i32 {
+        count = count + 1i32;
+    }
+    count
+}

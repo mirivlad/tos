@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module examples.async version 1.0 profile full;
+
+resource {
+    fuel: 100000;
+    stack: 64KiB;
+    allocation: 8KiB;
+    tasks: 2;
+    workers: 1;
+    sync: 0;
+    shared: 0B;
+    cleanup: 32;
+    recursion: 8;
+    imports: 0;
+}
+
+async fn add_one(value: i32) -> i32 {
+    value + 1i32
+}
+
+async fn main() -> i32 {
+    let pending = spawn async { 42i32 };
+    await pending
+}

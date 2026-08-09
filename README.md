@@ -86,10 +86,11 @@ in `assets/mascot/pyro-stage1-provenance.json`. When no framebuffer is
 available, boot evidence remains the serial log.
 
 Stage 1 is formally closed as a bootable TOS foundation with source-bound
-capsule identity and fail-closed validation. It is not a user shell,
-application environment or desktop operating system. Stage 1.5 is now the
-evidence-based language-foundation decision; it has not started Stage 2
-runtime implementation.
+capsule identity and fail-closed validation. Stage 1.5 is formally closed with
+ADR-0027's bespoke TOS Core foundation selection. Stage 2 Part A is preparing
+the proposed semantic/IR contract and programmer documentation; production
+parser/runtime implementation has not started. TOS is not yet a user shell,
+application environment, or desktop operating system.
 
 ## Core thesis
 
@@ -166,6 +167,8 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 8. `docs/04_BOOT_AND_RECOVERY.md`
 9. `docs/05_TOS_CORE_LANGUAGE.md`
 10. `docs/06_EXECUTION_AND_IR.md`
+    - Proposed Stage 2 V1 contract: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`
+      through `docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md`
 11. `docs/07_LANGUAGE_FRONTENDS.md`
 12. `docs/08_GIT_NATIVE_SYSTEM.md`
 13. `docs/36_GIT_COMPATIBILITY_PROFILES.md`
@@ -208,6 +211,9 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 
 ## Status
 
-Version 0.2.1 closes the documentation gaps found in the first external architecture review: normative-document drift, missing threat model, deferred language-foundation decision, unmeasured driver performance, underspecified Git compatibility and the risk that early conventional OS work could lose TOS identity.
-
-The package is the accepted architecture and policy baseline for beginning Stage 1. No implementation decision may silently contradict it. Invariant changes require an identity-affecting ADR. Legal documents are project policy, not jurisdiction-specific legal advice.
+Stage 0, Stage 1, and Stage 1.5 are formally closed. The repository is in
+Stage 2 Part A: proposed TOS Core V1 semantic/IR contracts, documentation, and
+conformance corpus are under Architect review before the first production
+frontend/runtime implementation. No implementation decision may silently
+contradict an accepted ADR or invariant. Legal documents are project policy,
+not jurisdiction-specific legal advice.

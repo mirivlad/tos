@@ -1,0 +1,35 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.bootstrap_parallel version 1.0 profile bootstrap;
+
+resource {
+    fuel: 100000;
+    stack: 64KiB;
+    allocation: 8KiB;
+    tasks: 2;
+    workers: 1;
+    sync: 0;
+    shared: 0B;
+    cleanup: 32;
+    recursion: 8;
+    imports: 0;
+}
+
+pub fn sum(begin: i32, end: i32) -> i32 {
+    let mut current = begin;
+    let mut total = 0i32;
+    while current < end {
+        total = total + current;
+        current = current + 1i32;
+    }
+    total
+}
+
+pub fn main() -> i32 {
+    let mut total = 0i32;
+    parallel {
+        let left = spawn parallel { sum(0i32, 10i32) };
+        let right = spawn parallel { sum(10i32, 20i32) };
+        total = join left + join right;
+    }
+    total
+}

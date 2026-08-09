@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `43f54a7e9a532bab90faaf48c8d4b152e1ec4535a691100d5328a4d2f4d6a1db`  
+Source-manifest SHA-256: `ca84019874a1df745c859570989aa754ffd926cd1b4f263b77303f67e5e9c8e3`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -101,10 +101,11 @@ in `assets/mascot/pyro-stage1-provenance.json`. When no framebuffer is
 available, boot evidence remains the serial log.
 
 Stage 1 is formally closed as a bootable TOS foundation with source-bound
-capsule identity and fail-closed validation. It is not a user shell,
-application environment or desktop operating system. Stage 1.5 is now the
-evidence-based language-foundation decision; it has not started Stage 2
-runtime implementation.
+capsule identity and fail-closed validation. Stage 1.5 is formally closed with
+ADR-0027's bespoke TOS Core foundation selection. Stage 2 Part A is preparing
+the proposed semantic/IR contract and programmer documentation; production
+parser/runtime implementation has not started. TOS is not yet a user shell,
+application environment, or desktop operating system.
 
 ## Core thesis
 
@@ -181,6 +182,8 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 8. `docs/04_BOOT_AND_RECOVERY.md`
 9. `docs/05_TOS_CORE_LANGUAGE.md`
 10. `docs/06_EXECUTION_AND_IR.md`
+    - Proposed Stage 2 V1 contract: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`
+      through `docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md`
 11. `docs/07_LANGUAGE_FRONTENDS.md`
 12. `docs/08_GIT_NATIVE_SYSTEM.md`
 13. `docs/36_GIT_COMPATIBILITY_PROFILES.md`
@@ -223,9 +226,12 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 
 ## Status
 
-Version 0.2.1 closes the documentation gaps found in the first external architecture review: normative-document drift, missing threat model, deferred language-foundation decision, unmeasured driver performance, underspecified Git compatibility and the risk that early conventional OS work could lose TOS identity.
-
-The package is the accepted architecture and policy baseline for beginning Stage 1. No implementation decision may silently contradict it. Invariant changes require an identity-affecting ADR. Legal documents are project policy, not jurisdiction-specific legal advice.
+Stage 0, Stage 1, and Stage 1.5 are formally closed. The repository is in
+Stage 2 Part A: proposed TOS Core V1 semantic/IR contracts, documentation, and
+conformance corpus are under Architect review before the first production
+frontend/runtime implementation. No implementation decision may silently
+contradict an accepted ADR or invariant. Legal documents are project policy,
+not jurisdiction-specific legal advice.
 
 <!-- END README.md -->
 
@@ -2487,9 +2493,11 @@ Official developer and research profiles provide a documented path to boot an ow
 “TOS Core” is the accepted bespoke TOS-owned native textual language foundation
 under ADR-0027.
 
-The syntax in this document remains illustrative. Stage 2 defines the complete
-normative parser, grammar and runtime specification within ADR-0027's accepted
-semantic and trust boundary.
+The syntax in this document remains illustrative. The proposed complete V1
+contract is split across docs/39–44 and is governed by Proposed ADR-0028. It
+does not authorize implementation until the Project Architect accepts that
+contract. Stage 2 then implements the accepted parser, grammar, verifier, and
+runtime specification within ADR-0027's accepted semantic/trust boundary.
 
 This distinction is deliberate: TOS requires language properties, not a proprietary syntax for its own sake.
 
@@ -2566,8 +2574,8 @@ The Stage 1.5 selection ADR MUST establish the semantic/trust boundary for:
 - bounded bootstrap and SMP-capable full-profile direction; and
 - no safe-language data-race undefined behavior or hidden host-runtime ABI.
 
-Stage 2 MUST define the complete normative specification within that boundary,
-including:
+The Proposed Stage 2 V1 documents (docs/39–44) define the complete contract
+within that boundary, including:
 
 - lexical grammar and Unicode normalization;
 - complete syntactic grammar;
@@ -2619,13 +2627,13 @@ Required mechanisms include:
 
 The bootstrap contract must not require a stop-the-world collector. An implementation may use arenas, reference counting or another internal strategy only if observable semantics and pause/resource limits are specified.
 
-The selection ADR MUST also define the concurrency memory model: ownership,
-immutable sharing, mutable sharing, transfer of values and tasks between
-execution contexts, synchronization primitives, atomic types and memory
-orderings, visibility/happens-before rules, interaction between atomic and
-ordinary memory, shared memory regions and the unsafe concurrency boundary.
-It MUST NOT rely on a particular Rust, C++ or host-runtime memory model merely
-by implication.
+The V1 contract MUST define the concurrency memory model: ownership, immutable
+sharing, mutable sharing, transfer of values and tasks between execution
+contexts, synchronization primitives, atomic types and memory orderings,
+visibility/happens-before rules, interaction between atomic and ordinary
+memory, shared memory regions and the unsafe concurrency boundary. It MUST NOT
+rely on a particular Rust, C++ or host-runtime memory model merely by
+implication. Proposed docs/40–41 provide that definition pending ADR-0028.
 
 Safe TOS Core code MUST NOT have undefined behavior from an unsynchronized
 data race. The foundation MUST statically prevent unsafe unsynchronized mutable
@@ -2731,18 +2739,13 @@ Unrestricted textual macros are excluded from the bootstrap profile. Any future 
 
 Filesystems, networking, UI, Git operations and devices are services through versioned interfaces, not hidden language intrinsics.
 
-## Selection process
+## Foundation decision record
 
-ADR-0015 and `docs/research/LANGUAGE_FOUNDATION_EVALUATION_MATRIX.md` govern the comparison.
-
-Candidate classes include:
-
-- bespoke TOS Core;
-- TOS source over an existing formal execution core;
-- a restricted/extended existing language;
-- an unchanged existing language only if every blocking requirement is met honestly.
-
-Lua, Scheme, WebAssembly and other systems are research inputs, not pre-approved foundations. Wasm may be a backend while TOS text remains canonical.
+ADR-0015 required the comparison and ADR-0027 records its accepted result:
+bespoke TOS Core. The retained matrix/research remains evidence, not a language
+grammar. Lua, Scheme, WebAssembly and other systems are not pre-approved
+foundations; a later separately accepted ADR may admit one only as a derived
+backend while TOS text remains canonical.
 
 ## Licence of language assets
 
@@ -2759,8 +2762,10 @@ The official runtime and standard implementation are GPL-3.0-or-later. Public gr
 # Execution model and intermediate representation
 
 > ADR-0027 accepts bespoke TOS Core as the language foundation. This document
-> specifies the accepted execution boundary; Stage 2 defines the complete IR
-> schema and parser/lowering implementation within it.
+> specifies the accepted execution boundary. Proposed docs/39–44, especially
+> `docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`, define the complete V1 semantic IR
+> schema and verifier contract pending ADR-0028; implementation remains
+> prohibited until that decision is accepted.
 
 ## Principle
 
@@ -2780,7 +2785,9 @@ No generated stage becomes the authoritative installed program.
 
 ## TOS IR
 
-TOS IR is a versioned, typed, capability-aware intermediate representation shared by all supported language frontends.
+TOS IR is a versioned, typed, capability-aware intermediate representation
+shared by all supported language frontends. The detailed V1 contract is the
+proposed `tos-ir/v1` schema in docs/43; this role document does not override it.
 
 It must represent:
 
@@ -2921,6 +2928,1366 @@ The runtime refuses stale or ambiguous caches. Deleting all cache stores must le
 A backend such as an interpreter, bytecode VM, Wasm engine or native compiler may be used without becoming canonical. Backend adoption is reviewed separately from source-language adoption. External engines default to isolated services or test oracles until an ADR accepts their trust and dependency consequences.
 
 <!-- END docs/06_EXECUTION_AND_IR.md -->
+
+---
+
+<!-- BEGIN docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# TOS Core V1 — source model and grammar
+
+- Status: **Proposed Stage 2 contract — not implementation authority**
+- Language version: `TOS Core 1.0`
+- Authority on acceptance: Tier 2 under
+  `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`
+- Governing Tier 1 decision: ADR-0027
+- Companion contracts: `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`,
+  `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`,
+  `docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md`,
+  `docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`, and
+  `docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md`
+
+## Status and boundary
+
+This document is the proposed lexical and syntactic part of one TOS Core V1
+contract set. It is intentionally detailed enough to prevent a first parser
+from inventing language semantics. It becomes Tier 2 authority only if the
+Project Architect accepts ADR-0028. Until then it is a reviewable proposal and
+does **not** authorize a production parser, checker, IR, verifier, interpreter,
+cache, or runtime.
+
+TOS Core V1 is the TOS-owned textual language selected by ADR-0027. Canonical
+installed code is normalized UTF-8 `.tos` source. ASTs, typed IR, bytecode and
+native code are derived artifacts. This specification defines language syntax;
+it does not make an existing host compiler, C ABI, host thread API, LLVM, Rust,
+Wasm, libc or external VM part of the TOS contract.
+
+## 1. Canonical source unit
+
+A source unit is exactly one file with extension `.tos` and one `module`
+declaration. Its canonical identity consists of:
+
+```text
+source_set_identity
+canonical repository path
+sha256(normalized_source_bytes)
+language version (1.0)
+profile declaration
+```
+
+`source_set_identity` is the active commit identity or an explicitly accepted
+detached source-set identity; it is not a pathname, working directory, clock,
+network response, random value, or host environment variable. The SHA-256
+value is written `sha256:<lowercase-hex>` and identifies normalized source
+bytes, not an executable derivative.
+
+A canonical source unit MUST:
+
+- be valid UTF-8;
+- be Unicode NFC after newline normalization;
+- contain no UTF-8 BOM;
+- use LF (`U+000A`) line endings; and
+- contain no NUL scalar value.
+
+An input reader MAY accept CRLF as transport input only by replacing each CRLF
+with one LF before UTF-8/NFC validation and identity calculation. A bare CR is
+`E1003_BARE_CR`. The source object recorded in a repository and every cache
+key use the resulting normalized LF/NFC bytes. A BOM is
+`E1002_BOM_FORBIDDEN`; invalid UTF-8 is `E1001_INVALID_UTF8`; a non-NFC input
+is `E1004_NOT_NFC`. An implementation MUST report the earliest offending byte.
+
+The canonical repository path is a validated relative slash-separated path.
+It has no `.` or `..` segment, no empty segment, no NUL, and no path separator
+other than `/`. A module's declared name maps to this path as specified in
+`docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md`.
+
+## 2. Lexical rules
+
+Outside literals and line comments, only ASCII space (`U+0020`) and LF are
+whitespace. Horizontal tab is `E1010_TAB_OUTSIDE_LITERAL`; other Unicode
+whitespace is `E1011_NON_ASCII_WHITESPACE`. This deliberate restriction makes
+layout, source maps and review diffs unambiguous. Four spaces are the project
+style; indentation has no syntactic meaning.
+
+A line comment starts with `//` and continues through, but excluding, LF.
+Block comments and textual macros do not exist in V1. This makes comment
+termination and source-span accounting bounded and local. An SPDX line comment
+is ordinary comment text to the language.
+
+Identifiers are ASCII and match:
+
+```text
+[A-Za-z_][A-Za-z0-9_]*
+```
+
+They are case-sensitive. Unicode is permitted in string data and comments but
+not identifiers. A source reader reports `E1012_INVALID_IDENTIFIER` at the
+first nonmatching byte rather than applying case folding or confusable mapping.
+
+The reserved words are:
+
+```text
+as async atomic await bootstrap bool borrow break cancel capability const continue
+defer else enum error extern false for fn from if import in let loop match
+full module mut nil parallel profile pub record requires resource return self
+spawn string task true type unsafe use uses while
+```
+
+`Option`, `Result`, `Task`, `Shared`, `Region`, `DmaRegion`, `Mutex`,
+`RwLock`, `Channel`, `Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`,
+and `AtomicU64` are predeclared type names, not keywords. A program cannot
+shadow a reserved word or a predeclared type name. `Relaxed`, `Acquire`,
+`Release`, `AcqRel`, and `SeqCst` are predeclared atomic-order values and also
+cannot be shadowed.
+
+## 3. Literals
+
+Integer literals are decimal (`42`), hexadecimal (`0x2a`) or binary (`0b101010`)
+digits with optional single underscores between digits. A leading sign is an
+operator, not part of a literal. Invalid base digits, a leading/trailing
+underscore, or repeated underscores are `E1020_INVALID_INTEGER_LITERAL`.
+
+An integer suffix is one of `u8`, `u16`, `u32`, `u64`, `i8`, `i16`, `i32`, or
+`i64`. A suffix fixes the literal type and range-checks it. Unsuffixed literals
+are contextually typed by a fixed-width operand, parameter, binding annotation,
+or return annotation; otherwise they are `i32` and range-checked as `i32`.
+There is no target-dependent implicit integer type.
+
+Size literals are an integer literal followed without whitespace by `B`, `KiB`,
+`MiB`, or `GiB`; their type is `size`. `KiB = 1024`, `MiB = 1024^2`, and
+`GiB = 1024^3`. Duration literals similarly use `ns`, `us`, `ms`, `s`, `min`,
+or `h` and have type `duration`. Their represented nanoseconds MUST fit `u64`.
+
+Strings use double quotes and contain Unicode scalar values except unescaped
+LF, CR and NUL. Valid escapes are `\\`, `\"`, `\n`, `\r`, `\t`, `\0`, `\xNN`, and
+`\u{H...H}` with one to six hexadecimal digits naming a Unicode scalar value.
+`\xNN` inserts one byte whose value must form valid UTF-8 in the completed
+string. An invalid escape, invalid scalar, unterminated string, or unescaped
+line ending reports `E1030_INVALID_STRING`. A `bytes` literal begins `b"` and
+permits only ASCII graphic characters, space, and the byte escapes `\\`,
+`\"`, `\n`, `\r`, `\t`, `\0`, and `\xNN`; it reports
+`E1031_INVALID_BYTES` otherwise.
+
+## 4. Grammar notation and parser behavior
+
+The grammar uses EBNF. `X?`, `X*`, and `X+` mean optional, zero-or-more, and
+one-or-more. Literal tokens are quoted. `identifier`, `integer`, `string`,
+`bytes`, `size`, and `duration` refer to the lexical tokens above.
+
+The parser is deterministic. At a declaration-level error it synchronizes at
+the next top-level `;` or `}`. At a statement-level error it synchronizes at
+the next `;` or the closing brace of the current block. At a comma-separated
+list error it synchronizes at `,` or the enclosing closer. It MUST emit the
+lowest-numbered applicable lexical error first; then the earliest unconsumed
+syntax token; then one recovery diagnostic per synchronization region. It MUST
+not guess a missing declaration, capability, type, or operator.
+
+## 5. Complete V1 grammar
+
+```ebnf
+source          = module_header import_decl* item* EOF ;
+module_header   = "module" module_name "version" version
+                  "profile" profile ";" ;
+module_name     = identifier ( "." identifier )* ;
+qualified_name  = module_name ;
+version         = integer "." integer ;
+profile         = "bootstrap" | "full" ;
+
+import_decl     = "import" module_name ( "as" identifier )? ";"
+                | "import" "capability" module_name "." identifier
+                  "as" identifier ";" ;
+
+item            = visibility? resource_decl
+                | visibility? record_decl
+                | visibility? enum_decl
+                | visibility? const_decl
+                | visibility? function_decl
+                | visibility? extern_decl ;
+visibility      = "pub" ;
+resource_decl   = "resource" "{" resource_limit* "}" ;
+resource_limit  = identifier ":" literal ";" ;
+record_decl     = "record" identifier "{" field_decl* "}" ;
+field_decl      = visibility? identifier ":" type ";" ;
+enum_decl       = "enum" identifier "{" variant_decl ( "," variant_decl )*
+                  ","? "}" ;
+variant_decl    = identifier ( "(" type_list? ")" )?
+                | identifier "{" field_decl* "}" ;
+const_decl      = "const" identifier ":" type "=" expression ";" ;
+function_decl   = async_marker? "fn" identifier "(" parameter_list? ")"
+                  "->" type effects? block ;
+async_marker    = "async" ;
+parameter_list  = parameter ( "," parameter )* ","? ;
+parameter       = borrow_mode? identifier ":" type ;
+borrow_mode     = "borrow" ( "mut" )? ;
+effects         = "uses" "{" identifier ( "," identifier )* ","? "}" ;
+extern_decl     = "extern" "fn" identifier "(" parameter_list? ")"
+                  "->" type effects? ";" ;
+
+type            = primitive_type | named_type | constructed_type
+                | array_type | function_type ;
+primitive_type  = "bool" | "i8" | "i16" | "i32" | "i64"
+                | "u8" | "u16" | "u32" | "u64" | "size" | "duration"
+                | "string" | "bytes" | "unit" ;
+named_type      = qualified_name ;
+constructed_type = ( "Option" | "Result" | "Task" | "Shared" | "Region"
+                   | "DmaRegion" | "Mutex" | "RwLock" | "Channel" | "Semaphore" )
+                   "<" type_list ">" ;
+array_type      = "[" type ";" const_expression "]" ;
+function_type   = "fn" "(" type_list? ")" "->" type ;
+type_list       = type ( "," type )* ","? ;
+
+block           = "{" statement* tail_expression? "}" ;
+tail_expression = expression ;
+statement       = let_stmt | assignment ";" | expression ";" | return_stmt
+                | break_stmt | continue_stmt | if_stmt | while_stmt | for_stmt
+                | loop_stmt | match_stmt | parallel_stmt | cancel_stmt
+                | defer_stmt | unsafe_stmt ;
+let_stmt        = "let" "mut"? pattern ( ":" type )? "=" expression ";" ;
+assignment      = place "=" expression ;
+return_stmt     = "return" expression? ";" ;
+break_stmt      = "break" expression? ";" ;
+continue_stmt   = "continue" ";" ;
+if_stmt         = "if" expression block ( "else" ( if_stmt | block ) )? ;
+while_stmt      = "while" expression block ;
+for_stmt        = "for" pattern "in" expression block ;
+loop_stmt       = "loop" block ;
+match_stmt      = "match" expression "{" match_arm* "}" ;
+match_arm       = pattern "=>" ( block | expression "," ) ;
+parallel_stmt   = "parallel" block ;
+cancel_stmt     = "cancel" expression ";" ;
+defer_stmt      = "defer" block ;
+unsafe_stmt     = "unsafe" block ;
+
+pattern         = "_" | identifier | "nil" | identifier "(" pattern_list? ")"
+                | "(" pattern_list ")" ;
+pattern_list    = pattern ( "," pattern )* ","? ;
+expression      = logical_or ;
+logical_or      = logical_and ( "||" logical_and )* ;
+logical_and     = equality ( "&&" equality )* ;
+equality        = comparison ( ( "==" | "!=" ) comparison )* ;
+comparison      = bit_or ( ( "<" | "<=" | ">" | ">=" ) bit_or )* ;
+bit_or          = bit_xor ( "|" bit_xor )* ;
+bit_xor         = bit_and ( "^" bit_and )* ;
+bit_and         = shift ( "&" shift )* ;
+shift           = sum ( ( "<<" | ">>" ) sum )* ;
+sum             = product ( ( "+" | "-" ) product )* ;
+product         = unary ( ( "*" | "/" | "%" ) unary )* ;
+unary           = ( "!" | "-" | "~" | "borrow" ( "mut" )? | "await" | "join" ) unary
+                | postfix ;
+postfix         = primary ( call | index | field | question | cast )* ;
+call            = "(" argument_list? ")" ;
+argument_list   = expression ( "," expression )* ","? ;
+index           = "[" expression "]" ;
+field           = "." identifier ;
+question        = "?" ;
+cast            = "as" type ;
+primary         = literal | "true" | "false" | "nil" | qualified_name
+                | tuple | array | record_init | enum_init
+                | closure | spawn_expression | "(" expression ")" | block ;
+literal         = integer | size | duration | string | bytes ;
+tuple           = "(" expression "," expression ( "," expression )* ","? ")" ;
+array           = "[" argument_list? "]" ;
+record_init     = qualified_name "{" field_init* "}" ;
+field_init      = identifier ":" expression ","? ;
+enum_init       = qualified_name "(" argument_list? ")" ;
+closure         = "|" closure_parameters? "|" expression ;
+closure_parameters = parameter ( "," parameter )* ","? ;
+spawn_expression = "spawn" ( "async" | "parallel" ) block ;
+place           = identifier ( field | index )* ;
+const_expression = const_sum ;
+const_sum       = const_product ( ( "+" | "-" ) const_product )* ;
+const_product   = const_primary ( ( "*" | "/" | "%" ) const_primary )* ;
+const_primary   = integer | size | identifier | "(" const_expression ")" ;
+```
+
+`record_init` and `enum_init` are resolved only after parsing: a name followed
+by `{` or `(` is syntactically accepted, then type resolution decides whether
+it denotes a record or variant. This is a local deterministic disambiguation,
+not semantic backtracking. Function calls, field access, indexing, propagation
+(`?`) and casts group left-to-right; binary precedence is listed from weakest
+to strongest. `&&` and `||` short-circuit. `await`, `join`, and `borrow` bind
+like other unary operators.
+
+`defer`, `unsafe`, closures, `async`, and `spawn async` are Full-profile
+constructs. `parallel`, `spawn parallel`, `join`, and `cancel` have defined
+serialized Bootstrap semantics in `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
+An `extern` declaration is reserved by the grammar but rejected as
+`E1801_FFI_NOT_AVAILABLE` until a later accepted FFI contract supplies an
+interface identifier and capability rule.
+
+## 6. Deliberate exclusions
+
+V1 has no textual macros, implicit imports, wildcard imports, inheritance,
+user-defined generic declarations, traits, reflection, exceptions used for
+ordinary errors, implicit numeric widening, pointer literals, address casts,
+or syntax whose meaning depends on indentation. These exclusions reduce
+bootstrap parser and verifier complexity; a later version requires explicit
+version negotiation rather than silently reinterpreting V1 source.
+
+<!-- END docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md -->
+
+---
+
+<!-- BEGIN docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# TOS Core V1 — types, evaluation, ownership, and memory
+
+- Status: **Proposed Stage 2 contract — not implementation authority**
+- Language version: `TOS Core 1.0`
+- Governing Tier 1 decision: ADR-0027
+- Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`
+- Companion execution contract:
+  `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`
+
+## 1. Static model
+
+TOS Core is statically typed. A well-typed safe program has no type confusion,
+unbounded implicit coercion, arbitrary pointer access, or undefined behavior
+caused by a safe data race. Type checking is deterministic for identical
+normalized source, declared imports, language version, profile, and resource
+declarations. It has no ambient filesystem, network, clock, random, current
+directory, or environment input.
+
+V1 has nominal record, enum, capability, region, and module types. Primitive
+types are structural only within their exact name. The type of `A::T` is not
+identical to `B::T` merely because their fields match. A type name resolves
+through the declared import graph, never by host search paths.
+
+The primitive types are `bool`, `i8`, `i16`, `i32`, `i64`, `u8`, `u16`,
+`u32`, `u64`, `size`, `duration`, `string`, `bytes`, and `unit`. `size` is an
+unsigned target-ABI-sized value used only for in-memory indexing and allocation
+bounds. It MUST NOT be serialized in a persistent/public format. `duration` is
+an unsigned `u64` count of nanoseconds. Public and persistent forms use one of
+the explicit fixed-width integers.
+
+`Option<T>` has variants `Some(T)` and `None`; `Result<T,E>` has variants
+`Ok(T)` and `Err(E)`. `Task<T>` is a scoped task result. `Shared<T>` is an
+immutable shareable value. `Region<T>` and `DmaRegion<T>` are opaque
+nucleus-granted typed region handles. `Mutex<T>`, `RwLock<T>`, `Channel<T>`,
+`Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`, and `AtomicU64` are
+typed runtime contracts, not magic host APIs. Their exact dynamic semantics
+are in `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
+
+Arrays `[T; N]` have a compile-time nonnegative `N` that is representable as
+`size`. `slice<T>` means a borrowed view and cannot be stored or returned as an
+owned value in V1. A function type `fn(A, B) -> R` is a non-capturing callable
+type. Full-profile closures have a compiler-defined anonymous callable type and
+cannot cross a module boundary until a later version defines stable closure ABI.
+
+Enum variant names are local to their defining module and may be used
+unqualified there; an imported enum variant uses a qualified type/module name.
+`Some`, `None`, `Ok`, and `Err` are the fixed V1 constructors for `Option` and
+`Result`, not host-library names.
+
+There are no user-defined generic functions, traits, implicit interfaces, or
+ad-hoc overload resolution in V1. The listed library type constructors are the
+only parameterized types. This keeps type identity, diagnostics, and
+independent verification bounded.
+
+## 2. Bindings, functions, effects, and capabilities
+
+`let name = expression;` creates an immutable binding. `let mut name =
+expression;` creates a mutable binding. A binding annotation constrains the
+expression type. Assignment requires a mutable binding or a place reached
+through one active mutable borrow. Assigning to a nonmutable place is
+`E1201_ASSIGN_TO_IMMUTABLE`.
+
+Function parameters without `borrow` consume an owned argument unless its type
+is `Copy`. `borrow parameter: T` creates an immutable temporary borrow;
+`borrow mut parameter: T` creates an exclusive mutable temporary borrow. V1
+borrows cannot be returned, stored in records/enums/arrays, captured by a
+Full-profile closure, sent through a channel, or placed in a task. These
+restrictions make their region exactly the caller expression or callee body and
+avoid hidden lifetime inference.
+
+Functions are pure with respect to authority unless their `uses { ... }` set
+names imported capability parameters or capability values. An operation that
+requires a capability is type-correct only if its required capability name is
+present in the enclosing function's transitive effect set. An empty effect set
+is written by omission. Calling a function requires the caller effect set to
+include every effect the callee requires; otherwise the checker emits
+`E1501_UNDECLARED_CAPABILITY_EFFECT`. Capability values are opaque,
+nonconstructible, and non-comparable except for identity logging by a privileged
+runtime contract. An integer, string, cast, deserialization, record literal, or
+unsafe block cannot mint one.
+
+`async fn` returns `Task<Result<T, E>>` when its declared return type is
+`Result<T, E>` and `Task<T>` otherwise. `await task` obtains the successful
+task value or propagates its `Err`/cancellation according to `?`; it is
+Full-profile only. `spawn async` and `spawn parallel` capture values according
+to the ownership rules below. `spawn` has no detached form in V1.
+
+A Full-profile closure captures each free `Copy`/`Shared<T>` value by copy and
+each other permitted value by move at closure creation. It cannot capture a
+borrow, mutable binding by alias, lock guard, non-transferable capability, or
+plain mutable region. A closure is affine when any captured value is affine.
+It may be called within its owning scope but cannot be exported, serialized,
+stored in a public nominal type, or passed to an interface with a stable ABI in
+V1. An invalid capture is `E1305_INVALID_CLOSURE_CAPTURE`.
+
+## 3. Conversion, equality, and integer semantics
+
+No nonliteral numeric conversion is implicit. An integer literal may take the
+surrounding exact integer type if in range; otherwise an unsuffixed literal is
+`i32`. Assigning or passing values of different integer types is
+`E1210_INTEGER_TYPE_MISMATCH`. `as T` is permitted only for an integer
+widening conversion that preserves signedness, `u8` to `u16`/`u32`/`u64`, or
+the corresponding signed widening. All other conversion uses the typed
+standard contract `convert<T>(x) -> Result<T, ConversionError>`; it checks
+range and sign. Explicit wrapping arithmetic is only available through
+`wrapping_add`, `wrapping_sub`, and `wrapping_mul` contracts with exact
+fixed-width type arguments.
+
+An attempt to use `as` with a capability, region, DMA region, task,
+synchronization object, function, closure, or pointer-like host value is not a
+generic conversion error: it is `E1502_FORGED_CAPABILITY` for a capability and
+the corresponding nonconstructible-type error for the other opaque types.
+
+Normal integer `+`, `-`, `*`, `/`, `%`, unary `-`, and shifts are checked.
+Overflow, division/remainder by zero, an invalid shift count, or `MIN / -1`
+is a language trap with a stable `RUNTIME_*` code and terminates the current
+process; it is not host undefined behavior and cannot be caught as `Result`.
+For `uN`, `-x` is rejected statically. Shift counts must be nonnegative and
+strictly smaller than `N`. `size` arithmetic is checked in the target ABI;
+portable source must not assume its width.
+
+`==` and `!=` are available for primitive values, immutable records/enums whose
+members are comparable, and opaque handles only where the corresponding typed
+contract explicitly exposes equality. They are not available for mutable
+regions, mutable synchronization guards, tasks, capabilities, functions, or
+closures. Ordering exists for numeric, `size`, `duration`, `string`, and
+`bytes` values only. Strings compare lexicographically by their stored Unicode
+scalar sequence; source NFC is a source-identity rule, not an implicit runtime
+string-normalization pass. Bytes compare lexicographically by byte.
+
+Array, slice, and region indexes have exact type `size`; an integer literal may
+be contextually typed as `size` when nonnegative and representable. Other index
+types are `E1211_INDEX_TYPE_MISMATCH`. Every safe index operation performs a
+checked bounds operation and returns the declared typed bounds error where the
+interface exposes one; it never becomes host out-of-bounds access.
+
+## 4. Evaluation and dynamic semantics
+
+TOS evaluates expressions left-to-right. Specifically, a call evaluates its
+callee, then arguments left-to-right, then enters the call; a binary operator
+evaluates its left operand before its right; record/array/tuple fields evaluate
+in lexical source order; match subject evaluates before patterns; assignment
+evaluates its place base/index left-to-right before its right side. `&&` does
+not evaluate its right side after false; `||` does not evaluate its right side
+after true. `?` evaluates its operand once and returns the containing function
+with the matching `Err` if it is not `Ok`.
+
+The tail expression of a block is its value. A semicolon discards a statement
+expression's value. `if` expressions require both branches to have the same
+type; a missing `else` produces `unit`. `match` must be exhaustive for an enum,
+`Option`, or `Result`; a missing case is `E1220_NONEXHAUSTIVE_MATCH`. An `_`
+arm is exhaustive. Patterns bind by move unless the matched subject is an
+immutable `Copy` value; borrows must be made explicitly before match.
+
+`Result` is the sole ordinary recoverable-error transport. A runtime trap is a
+defined language failure caused by a violated dynamic precondition. `panic`
+denotes a violated language/runtime invariant and has the same process-ending
+effect as a trap but a distinct stable code family. Neither uses host exception
+unwinding. Details and diagnostic attribution are defined in docs/41.
+
+`defer` registers a lexically scoped cleanup block. Defers run in reverse
+registration order whenever their enclosing block exits normally, by `return`,
+by `?`, by `break`, or after cancellation reaches that block. A defer block
+cannot `return`, `break`, `continue`, `await`, `join`, spawn work, or acquire a
+new resource; violations are `E1225_INVALID_DEFER`. A trap/panic while running
+a defer records both the original and cleanup cause then terminates. This
+bounded rule gives cancellation deterministic cleanup without implicit general
+unwinding.
+
+## 5. Ownership and borrows
+
+Safe non-`Copy` values are affine: every value has one owner and is moved when
+assigned, passed by an owning parameter, returned, put into an aggregate, or
+captured by a task/closure. Use after move is `E1301_USE_AFTER_MOVE`. `Copy`
+types are fixed-width numeric types, `bool`, `duration`, `unit`, and explicitly
+documented immutable value handles; strings, bytes, capabilities, regions,
+tasks, locks, channels, arrays, records, and enums are non-`Copy` unless all
+members are `Copy` and their type declaration says so.
+
+At any program point, a value may have either any number of immutable borrows
+or exactly one mutable borrow, never both. An immutable borrow cannot mutate
+the value; a mutable borrow cannot be aliased. The checker determines a borrow
+region from the smallest enclosing expression/block required by use. Because
+V1 borrowed values neither escape nor enter a task/aggregate, no inferred
+cross-function lifetime notation is needed. A conflicting borrow is
+`E1302_CONFLICTING_BORROW`; mutation while immutably borrowed is
+`E1303_MUTATE_WHILE_BORROWED`.
+
+An owned record/array/enum may be partially moved only when the remaining value
+is never used except to move/drop its untouched fields. A mutable field borrow
+locks the containing path, not unrelated fields; indexed elements are treated
+as overlapping unless their indices are compile-time unequal constants. This
+conservative rule is deterministic and safe.
+
+Values leave scope in reverse binding order. Each type has a bounded `drop`
+contract defined by its standard/module declaration. `drop` may release a
+region, task reservation, synchronization object, or capability reference, but
+may not allocate, await, acquire authority, or execute user callbacks.
+Declaring a type whose cleanup does not have a finite documented bound is
+rejected from Bootstrap as `E1708_UNBOUNDED_CLEANUP`.
+
+## 6. Sharing, regions, and task transfer
+
+`Shared<T>` is created only by the typed `share` contract for a `T` whose full
+transitive contents are immutable and `Shareable`. It provides immutable
+borrows and can be copied into multiple scoped tasks. It never grants mutation.
+Controlled mutable sharing uses a `Mutex<T>`, `RwLock<T>`, atomic, channel, or
+typed shared `Region<T>` operation; ordinary `mut` does not become globally
+shareable.
+
+`Region<T>` is an opaque process-local/shared-memory grant with declared
+element type, byte length, alignment, access rights, and lifetime. Safe code
+may obtain it only from an authority-bearing typed service operation, access it
+only with checked `read`, `write`, or `slice` contracts, and never observe its
+physical address. `DmaRegion<T>` additionally records a nucleus-granted DMA
+mapping and device-domain authority; safe code may not construct, cast to, or
+serialize it as an integer. Whether a particular region is shareable/mutable
+is stated in its capability contract and independently checked in IR.
+
+A value may cross a task boundary only if it is `Transferable`: owned affine
+values transfer their sole ownership; immutable `Copy`/`Shared<T>` values are
+duplicated; opaque capabilities, mutable borrows, lock guards, and plain
+mutable regions are non-transferable unless their own contract exposes a
+specific attenuation/transfer operation. A closure/task with an invalid capture
+is `E1304_INVALID_TASK_CAPTURE`.
+
+There are no safe raw pointers, address literals, pointer arithmetic, address
+casts, layout reinterpretation, arbitrary physical addresses, or implicit FFI
+conversions. The TOS abstract address space is a set of typed regions, not a
+48-bit x86_64 number. This preserves a path to LA57 and non-x86 targets.
+
+## 7. Explicit unsafe boundary
+
+`unsafe { ... }` is Full-profile only and changes neither ownership nor
+capability authority. It only permits calls to an imported interface operation
+explicitly marked `unsafe` by an accepted future interface contract. The block
+MUST contain a leading line comment beginning `SAFETY:` that names the local
+preconditions. A missing rationale is `E1802_UNSAFE_RATIONALE_REQUIRED`.
+Unsafe code remains subject to declared capabilities, resource limits, source
+maps, and IR verification. An unsafe block cannot forge a capability or turn a
+safe caller's data race into undefined behavior; the unsafe operation's
+interface must state how it preserves safe caller guarantees.
+
+No V1 base operation currently requires `unsafe`; `extern` is rejected until a
+later accepted contract exists. This is an explicit boundary, not an ambient
+escape hatch or an invitation to inherit a Rust/C/host ABI.
+
+<!-- END docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md -->
+
+---
+
+<!-- BEGIN docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# TOS Core V1 — concurrency, resources, and diagnostics
+
+- Status: **Proposed Stage 2 contract — not implementation authority**
+- Language version: `TOS Core 1.0`
+- Governing Tier 1 decision: ADR-0027
+- Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` and
+  `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`
+
+## 1. Execution contexts and profiles
+
+TOS Core distinguishes three mechanisms:
+
+1. an **asynchronous task** waits for an explicit typed event/I/O contract and
+   need not occupy a CPU while suspended;
+2. a **parallel task** is independent language-level work that may execute
+   simultaneously with sibling work on several cores; and
+3. a low-level **execution context** is a nucleus/runtime resource, never an
+   ambient language thread API.
+
+The Full profile MUST have a production-capable path that executes independent
+parallel tasks from one process simultaneously on multiple cores sharing that
+process address space. Separate processes, IPC serialization, or manual queues
+are not required merely to use multiple cores. The Bootstrap profile is a
+strict subset of the same source/type/ownership/effect semantics. It MAY run
+all parallel scopes serially on one worker and has no asynchronous I/O task
+operation. Thus a valid Bootstrap parallel computation has the same permitted
+logical result under a Full runtime; only timing/overlap differ.
+
+Neither profile promises deterministic scheduling. Correctness MUST NOT depend
+on CPU number, worker count, task execution order, or topology. A deterministic
+computation whose effects are properly synchronized has the same logical
+result on one, two, or N workers. Operations whose result depends on external
+typed events, race-to-select, or cancellation expose that nondeterminism in
+their result contracts rather than silently changing ordinary memory semantics.
+
+## 2. Structured tasks, join, and cancellation
+
+`parallel { ... }` creates a lexical task scope. `spawn parallel { block }`
+inside it creates a child `Task<T>` owned by that scope. The child owns or
+immutably shares exactly the values captured under docs/40. The parent MUST
+`join` or `cancel` every child before scope exit; a child cannot outlive its
+scope, become detached, or outlive its source/capability/resource record.
+Leaving a scope with an unconsumed task is `E1401_UNJOINED_TASK`.
+
+`join task` waits for one child to reach either a normal result, an ordinary
+`Err`, or the terminal cancelled result. Joining consumes the task handle and
+establishes happens-before from all child actions before completion to actions
+after a successful parent join. A cancelled child returns
+`Err(TaskCancelled)` when its task result is a `Result`; otherwise joining a
+cancelled non-`Result` task traps with `RUNTIME_TASK_CANCELLED`.
+
+`cancel task;` requests cooperative cancellation and consumes no ownership.
+It is idempotent. The runtime delivers cancellation only at task creation,
+explicit cancellation check, `await`, `join`, channel/event wait, loop back
+edge, and other verifier-visible bounded safe points. A task that reaches a
+safe point after cancellation runs its registered `defer`/bounded drop cleanup,
+releases its resource reservation, and completes as cancelled. It may not start
+new child tasks after cancellation is observed. A parent still joins it.
+
+Full-profile `spawn async` is also scoped and produces a `Task<T>`, but its
+suspension points are explicit `await` calls to typed runtime contracts. It
+does not promise a dedicated worker. A V1 task cannot be detached. Future
+unscoped execution requires a new language version and an explicit supervisor,
+resource, cancellation, and provenance contract.
+
+## 3. Safe shared-memory rule
+
+Two conflicting accesses to the same non-atomic location, at least one a write,
+are a data race unless ordered by happens-before. Safe well-typed TOS Core
+cannot construct such a race: affine ownership and borrow rules deny a second
+mutable alias; immutable `Shared<T>` grants no mutation; mutable shared state
+requires a typed synchronization or atomic contract; tasks may not capture a
+mutable borrow. A frontend reports the earliest applicable ownership/capture
+error; a verifier rejects forged IR that would violate it. A safe data race is
+therefore never undefined behavior, arbitrary memory corruption, or a
+backend-dependent outcome.
+
+There is no safe "best effort" race detector mode. An unsafe operation must
+preserve the safe caller guarantee stated in docs/40. An execution engine that
+cannot implement a stated atomic/happens-before rule must reject the module;
+it cannot silently substitute host semantics.
+
+## 4. Synchronization and happens-before
+
+The standard/runtime contracts below are typed, resource-accounted, and
+verifier-visible. A future library may add convenience APIs only when it maps
+to one of these contracts or a later accepted version.
+
+| Contract | Safe use and ordering |
+|---|---|
+| `Mutex<T>` | `lock` grants an affine mutable guard; `unlock` releases it. An unlock synchronizes-with the next successful lock of the same mutex. A guard cannot await, cross a task boundary, or be dropped after its lock resource disappears. |
+| `RwLock<T>` | Multiple immutable read guards or one affine write guard. Releasing a write guard synchronizes-with a later successful read/write acquisition. Upgrade is not implicit. |
+| `Channel<T>` | Sending consumes/transfers `T`; receiving obtains it once. A completed send synchronizes-with the receive of that message. Closing is explicit and receives then return `Err(ChannelClosed)`. |
+| `Event` / `Semaphore` | `signal` synchronizes-with a successful `wait` that observes that signal. V1 `Event` is binary/coalescing; `Semaphore` has a declared nonnegative permit count, `release(n)` adds permits within its resource bound, and each successful `acquire` consumes one permit. |
+| `Barrier` / `Latch` | A successful barrier generation orders every participant's pre-barrier actions before every participant's post-barrier actions. A latch opens after its declared nonzero count reaches zero and then orders decrements before waiters. |
+| task spawn/join | Capture initialization is sequenced-before child entry; child completion is happens-before successful join. |
+| cancellation | Cancellation request is visible at a defined safe point. All cleanup/completion actions happen-before the join that observes cancellation. |
+
+An engine MAY serialize any of these operations when that preserves the same
+allowed result. It MUST still enforce the lock/guard/resource rules and must
+not treat serialized execution as permission for a source program with an
+illegal mutable alias.
+
+## 5. Atomics and memory order
+
+V1 provides `AtomicBool`, `AtomicU32`, and `AtomicU64`; all are naturally
+aligned opaque objects, never raw integer aliases. They expose:
+
+```text
+load(order) -> T
+store(value, order) -> unit
+swap(value, order) -> T
+fetch_add/sub/and/or/xor(value, order) -> T     # integer atomics only
+compare_exchange(expected, desired, success, failure) -> Result<T, T>
+```
+
+The only order values are `Relaxed`, `Acquire`, `Release`, `AcqRel`, and
+`SeqCst`. A load accepts `Relaxed`, `Acquire`, or `SeqCst`; a store accepts
+`Relaxed`, `Release`, or `SeqCst`; read-modify-write accepts all; the failure
+order of `compare_exchange` accepts `Relaxed`, `Acquire`, or `SeqCst` and may
+not be stronger than success. An invalid order is `E1410_INVALID_ATOMIC_ORDER`.
+
+`Relaxed` orders only the atomic modification order of that object. A release
+operation synchronizes-with an acquire operation that reads its value or a
+later release sequence value. `AcqRel` has both effects. `SeqCst` operations
+also participate in one total order consistent with happens-before and each
+atomic's modification order. Ordinary reads/writes sequenced-before a release
+become visible to ordinary reads/writes sequenced-after an acquire that reads
+from it. This is the TOS rule, not an adoption by reference of Rust/C++ or a
+host runtime.
+
+Atomicity does not make a non-atomic object safe to mutate concurrently. A
+program publishes a non-atomic immutable/initialized value through a release
+store and acquire load, a mutex, a channel, task join, or another stated
+synchronizer; it does not read/write it concurrently. Atomic operations have
+no implicit global fence beyond their declared order.
+
+## 6. Resource declarations and accounting
+
+Each module has exactly one `resource { ... }` item. It declares at least:
+
+```text
+fuel:        integer;      // maximum interpreter instructions/checkpoints
+stack:       size;         // maximum stack bytes per execution context
+allocation:  size;         // maximum live allocatable bytes
+tasks:       integer;      // maximum simultaneously live scoped tasks
+workers:     integer;      // maximum runnable execution contexts requested
+sync:        integer;      // maximum live synchronization objects/guards
+shared:      size;         // maximum bytes of shared-region grants
+cleanup:     integer;      // maximum bounded cleanup steps after cancellation
+recursion:   integer;      // maximum dynamic call depth
+imports:     integer;      // maximum transitive module dependencies
+```
+
+The values are compile-time constants and all maxima are inclusive. A module
+may declare stricter named limits, but cannot omit or silently inherit the
+required ones. The launcher grants an effective resource envelope no larger
+than the declaration. A call/spawn/import is permitted only when the checker
+and verifier can establish that its declared worst-case contract fits the
+caller envelope. A dynamic allocation/task/worker/synchronization operation
+checks the remaining envelope before it takes effect; exhaustion returns the
+typed error associated with that operation where one exists, otherwise traps
+with a stable `RUNTIME_RESOURCE_*` code. It never silently allocates an
+unbounded host thread or heap object.
+
+Missing a required resource key is `E1700_RESOURCE_DECLARATION_REQUIRED`; a
+duplicate declaration is `E1703_DUPLICATE_RESOURCE_DECLARATION`; an unknown
+key or wrong literal type is `E1704_UNKNOWN_RESOURCE_LIMIT`. The effective
+envelope also carries a launcher-granted `cpu_time` duration budget for the
+declared service interval. The runtime accounts the sum of CPU time consumed by
+all of the process's execution contexts, not elapsed wall time, and refuses to
+run further work when that budget is exhausted. Bootstrap fuel is the
+deterministic instruction-level counterpart; a Full runtime records and limits
+both where policy requires. This makes parallel CPU use accountably bounded
+without making correctness depend on a particular scheduler or core count.
+
+Recursive functions require a syntactic `recursion` budget. Bootstrap requires
+finite `fuel`, `stack`, `allocation`, `tasks`, `workers`, `sync`, `shared`,
+`cleanup`, `recursion`, and `imports`; it accepts `workers: 1` only. Full may
+declare more workers, but actual core count is a scheduling choice bounded by
+the lower of grant, process policy, and available runtime workers. This is
+accounting, not a guarantee of throughput or CPU affinity.
+
+Loop back edges consume fuel in Bootstrap. A verifier-visible loop may have a
+statically proven finite bound or consume fuel; an unmetered unknown loop is
+`E1701_UNMETERED_LOOP`. Full engines MAY schedule/preempt differently but MUST
+honor the module's observable resource limits. No V1 contract requires a
+stop-the-world garbage collector; an allocator strategy is internal only if it
+preserves the declared allocation and pause/fuel limits.
+
+## 7. Errors, traps, panic, and diagnostics
+
+Recoverable program conditions use `Result<T,E>`. Language/runtime traps are
+defined failures of a dynamic language precondition (for example checked
+overflow); a panic is a violated implementation/language invariant. Both end
+the current process through its supervisor policy. A task reports a typed
+`Err` or cancellation when its signature supports it; a trap/panic ends that
+task's process and is recorded as a terminal diagnostic.
+
+Every parser, checker, verifier, runtime, or resource diagnostic has:
+
+```text
+stable symbolic code
+severity (error, warning, note)
+stage (lex, parse, type, ownership, effect, resource, IR, runtime)
+module name and canonical repository path
+source-set identity and normalized source content ID
+byte start/end span and derived line/UTF-8-column
+structured key=value fields
+zero or more ordered causal diagnostics
+```
+
+Human wording may improve, but code, stage, primary span, field names, and
+causal ordering are stable for V1. A frontend must choose the earliest source
+span; at one span it chooses lexical before parse, parse before name/import,
+name/import before type, type before ownership/effect, ownership/effect before
+resource, then runtime only after successful static validation. The parser
+recovery rule in docs/39 may emit subsequent independent errors but cannot
+change this primary precedence.
+
+Representative stable code families are `E10xx` lexical/parser,
+`E12xx` type/evaluation, `E13xx` ownership, `E14xx` concurrency/atomic,
+`E15xx` capability/effect, `E16xx` module/version, `E17xx` resource/profile,
+`E18xx` unsafe/FFI, `V20xx` IR verifier, and `RUNTIME_*`/`PANIC_*` terminal
+events. A full registry and conformance expectations are in docs/44.
+
+<!-- END docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md -->
+
+---
+
+<!-- BEGIN docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# TOS Core V1 — modules, capabilities, and versioning
+
+- Status: **Proposed Stage 2 contract — not implementation authority**
+- Language version: `TOS Core 1.0`
+- Governing Tier 1 decision: ADR-0027
+- Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`,
+  `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`, and
+  `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`
+
+## 1. Module identity and deterministic resolution
+
+Every source begins with exactly one declaration:
+
+```tos
+module system.example version 1.0 profile bootstrap;
+```
+
+The version is the source-language major/minor version, not a module release
+number. For V1, it MUST be exactly `1.0`; any other major is
+`E1601_UNSUPPORTED_LANGUAGE_VERSION`, and an unknown minor is
+`E1602_UNSUPPORTED_LANGUAGE_MINOR`. A resolver maps module name
+`a.b.c` to canonical repository path `a/b/c.tos` relative to a declared module
+root in the active source set. A source whose path does not match its header is
+`E1603_MODULE_PATH_MISMATCH`.
+
+The resolver input is exactly:
+
+- the selected system commit or accepted detached source-set identity;
+- a declared ordered list of module roots and dependency source-set identities;
+- the importer module name, requested import, language version, and profile;
+- the declared dependency lock/manifest; and
+- the effective resource import limit.
+
+It MUST NOT inspect an ambient current directory, host filesystem outside those
+roots, network, clock, random source, or undeclared environment variable. A
+missing or ambiguous import is `E1604_IMPORT_NOT_FOUND` or
+`E1605_AMBIGUOUS_IMPORT`. An import never triggers a fetch. Any required fetch
+is a separate, source-identified system operation outside the language frontend.
+
+`import a.b as c;` imports exported types, functions, and constants under `c`.
+Without `as`, the final segment is the binding name. Imports are explicit; V1
+has no wildcard, relative, implicit prelude, or host-standard-library import.
+An import graph cycle is `E1606_IMPORT_CYCLE`, including a deterministic ordered
+cycle path in diagnostic fields. There is no top-level executable initialization:
+items declare types, constants, resources, and functions only. This makes
+module loading and cache identity independent of initialization order.
+
+`pub` exports an item. A non-`pub` item is module-private. A public function's
+parameter/return types and effect capabilities must be exported/reachable; an
+otherwise private ABI type is `E1607_PRIVATE_PUBLIC_TYPE`. A module has no
+binary ABI promise merely because an item is `pub`; source, IR schema, and
+runtime compatibility are governed below.
+
+## 2. Capability declarations, grants, and transfer
+
+Capability imports have the exact form:
+
+```tos
+import capability system.time.Clock as clock;
+```
+
+This declares that the module may receive one opaque value named `clock` whose
+nominal capability type is `system.time.Clock`. It is a request, not a grant.
+The process launcher/supervisor, not source text, maps the request to a concrete
+grant after policy/trust evaluation. An absent/denied request means module
+startup returns the typed launch error `CapabilityDenied`; it is not fabricated
+as `nil`, a global singleton, an integer, or a successful empty authority.
+
+The imported name can appear only as a value of its declared opaque type, a
+function parameter/effect name, or an argument to an operation that requires
+that same contract. It cannot be a `const`, record field, serialized value,
+numeric conversion, equality key, or deserialized replacement. Constructing or
+casting one is `E1502_FORGED_CAPABILITY`. A capability operation is valid only
+when the capability type, requested operation/right, resource range, and the
+enclosing `uses` effect all match a declared interface contract.
+
+The effective process grant is an explicit finite set of object-specific rights
+and resource constraints. A capability can move to one scoped task only if its
+interface declares it transferable. Delegation/attenuation is a typed interface
+operation: its output rights MUST be a subset of the input's rights, object
+scope, and lifetime. No source operation can widen a right, recreate a consumed
+linear capability, or transfer a handle by encoding its bits. Authority appears
+in process identity, source maps, IR imports, audit logs, and cache identity;
+the concrete secret/handle representation does not.
+
+`Region<T>`/`DmaRegion<T>` grants originate only through a capability operation
+whose accepted interface declares element type, alignment, access, size, DMA
+domain, lifetime, and transfer/share rules. The language V1 contract defines
+the nonforgeability boundary; actual PCI/MMIO/IRQ/DMA interfaces belong to
+later stages and must be separately versioned. Thus a Stage 2 example can
+declare capability intent without pretending that Stage 3/4 services exist.
+
+## 3. Profile compatibility
+
+`profile bootstrap` is a strict, executable subset of `profile full` source
+semantics. A Bootstrap module must conform to every Bootstrap restriction and
+may be loaded by a Full engine without changing its meaning. A Full module MUST
+NOT be silently accepted by a Bootstrap frontend/engine: it reports
+`E1702_PROFILE_NOT_SUPPORTED` with the first forbidden feature.
+
+Bootstrap permits the core scalar/aggregate/Result/ownership/capability syntax,
+metered loops, `parallel` scopes, `spawn parallel`, `join`, and `cancel`, but
+requires the resource bounds in docs/41 and `workers: 1`. It serializes child
+task execution in a deterministic order consistent with source creation order
+when more than one order would otherwise be observable. It forbids `async fn`,
+`spawn async`, `await`, closures, `defer`, `unsafe`, `extern`, dynamic module
+loading, a module graph above its declared import cap, and any interface whose
+cleanup/allocation/resource bound is absent.
+
+Full permits these constructs only when their typed interface, effect set,
+resource declaration, and verifier-visible IR operation are defined. Full does
+not remove safe-language constraints: it adds a true SMP-capable execution
+path, not a second memory model. Future Full-only standard libraries use a
+declared minimum language/profile version and cannot be implicitly pulled into
+Bootstrap recovery.
+
+## 4. Language, IR, runtime, and cache compatibility
+
+Language source declares `1.0`. A frontend declares the exact source versions,
+profiles, feature set, and conformance revision it implements. It rejects an
+unknown language major and rejects any minor feature it does not advertise. A
+source has no "best effort" downgrade path. Additive V1 minor extensions must
+use a reserved feature declaration and have an accepted contract; they cannot
+reinterpret existing token sequences.
+
+TOS IR has a separate schema ID/version and verifier compatibility range in
+docs/43. A runtime reports the language range, IR schema range, verifier ID,
+backend ID, target ABI, and execution profile. It MAY accept an older verified
+IR cache only when its verifier says the exact schema/source-map/capability
+contract is compatible; otherwise it regenerates from canonical source. TOS
+does not promise perpetual binary compatibility of IR or native cache objects.
+
+The cache key binds normalized source/dependency identities, source-set
+identity, frontend implementation identity, language/profile/feature revision,
+IR schema, verifier identity, backend/target ABI, optimization/safety policy,
+resource contract, and capability-interface digest. Changing any element
+invalidates reuse. Deleting every cache must leave all canonical sources and
+their declared dependencies sufficient for recovery/regeneration.
+
+## 5. FFI and external code boundary
+
+V1 reserves `extern` and `unsafe` syntax so the boundary is visible from the
+first implementation. It does **not** admit a C ABI, Rust ABI, libc, host
+threads, dynamic library loader, or arbitrary native extension as a TOS Core
+runtime contract. A frontend written in Rust is an implementation detail; its
+Rust FFI is not an FFI available to `.tos` programs.
+
+An accepted future FFI version must define a named interface schema, exact
+calling/ownership/region/capability rules, source-map/provenance, target ABI,
+resource/cancellation behavior, and safe-call guarantees. An `extern` item
+without that accepted interface is rejected by both checker and verifier. It
+cannot be enabled by a build flag, host library presence, or unsafe block.
+
+## 6. Module provenance and source maps
+
+The module dependency closure is ordered lexically by canonical module name.
+Each member contributes its source-set identity, canonical path, normalized
+content ID, declared language/profile version, and interface/capability digest
+to the frontend/lowering identity. A diagnostic and runtime event identify the
+originating source unit and exact byte span. A derived artifact must retain that
+mapping across import, lowering, optimization, task spawn/join/cancel, and
+runtime failure. Source paths are repository paths, not host paths.
+
+The source set remains canonical even if a derived cache was produced by an
+owner-authorized build. An owner may authorize modified source according to
+the repository/boot policy; that authorization grants no implicit module
+capability and does not make a derived artifact canonical.
+
+<!-- END docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md -->
+
+---
+
+<!-- BEGIN docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# TOS Core V1 — typed IR, verifier, and provenance
+
+- Status: **Proposed Stage 2 contract — not implementation authority**
+- IR semantic schema: `tos-ir/v1`
+- Governing Tier 1 decision: ADR-0027
+- Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` through
+  `docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md`
+
+## 1. Role and representation boundary
+
+TOS IR is a versioned, typed, verifier-visible **derived** representation of
+TOS Core source. It is never canonical installed source, a substitute recovery
+language, or a promise of permanent binary compatibility. A source frontend
+lowers normalized `.tos` source deterministically to `tos-ir/v1`; an
+independently built verifier validates that IR before any interpreter, bytecode
+engine, native backend, or cache executor uses it.
+
+This document defines the semantic schema. It deliberately does not freeze an
+on-disk byte encoding before a production cache exists. Any persisted `tos-ir`
+object must, before being introduced, receive a bounded versioned format
+specification with magic, schema/encoding version, length limits, canonical
+encoding, unknown-field behavior, digest, and parser tests under docs/18. That
+format is an implementation/storage detail only if it preserves this semantic
+schema and is checked by the independent verifier. The absence of a cache
+encoding cannot delay source execution or make a binary cache canonical.
+
+## 2. Module schema
+
+An IR module contains the following logical sections in canonical order:
+
+```text
+Header
+  schema_id = "tos-ir/v1"
+  language_version = "1.0"
+  profile = bootstrap | full
+  module name, source-set identity, path, normalized source content ID
+  dependency-closure digest, frontend identity, source-map revision
+  declared resource envelope and imported capability-interface digest
+Types
+Imports and exported signatures
+Constants
+Functions, ordered by fully qualified source name
+Source-map entries, ordered by source unit then byte start/end
+```
+
+All strings are normalized UTF-8 and all identifiers/paths obey docs/39/42.
+Tables use explicit bounded indexes; no operation encodes a raw host pointer,
+host ABI symbol, implicit global capability, or untyped runtime object.
+Every table count, byte length, basic-block count, operand count, nesting
+depth, and source-map span is bounded by the module resource contract and the
+frontend/verifier hard limits from docs/44.
+
+The type table represents exactly the primitive, nominal aggregate, function,
+task, capability, region, synchronization, atomic, and approved constructed
+types of TOS Core V1. A nominal type records its defining module content ID and
+export name. An IR type ID is not valid merely because its host representation
+has the same layout.
+
+## 3. Functions, values, and control flow
+
+Each function has an exact type/effect signature, ordered parameters, return
+type, source span, maximum declared stack/fuel/cleanup contribution, and a
+finite ordered sequence of basic blocks. A block has typed parameters and ends
+in exactly one terminator:
+
+```text
+return(value?)
+branch(target, arguments)
+branch_if(condition, true_target, false_target, arguments)
+match_enum(subject, complete variant-to-target map)
+propagate_error(result)
+trap(stable runtime code)
+```
+
+Values are typed SSA definitions or explicit affine ownership slots. An operand
+can only reference a dominating value/slot under the corresponding ownership
+state. There is no implicit fall-through, untyped jump, exception edge, host
+stack unwinding, or unbounded recursion edge. A call names a declared imported
+or local function signature and supplies an exact ordered operand list; it
+cannot resolve a host symbol dynamically.
+
+The semantic operation families are:
+
+| Family | Required verifier-visible properties |
+|---|---|
+| constants/aggregate construction | exact type, checked literal range, source map |
+| arithmetic/comparison/control | typed operands/results, checked/trap behavior, complete branch targets |
+| move/borrow/drop | affine state, borrow exclusivity, bounded cleanup/drop contract |
+| Result/error | declared `Ok`/`Err` construction and `?` propagation edge |
+| capability | declared imported capability, effect/right/interface match, no construction from scalar data |
+| region/DMA | typed grant, rights, checked range/alignment, transfer/share rule, no physical-address exposure |
+| resource | reserve/release/check fuel, stack, allocation, task, worker, sync, shared, cleanup, recursion/import bounds |
+| async/parallel | scoped spawn, typed captures, task token, await/join/cancel and scope completion |
+| synchronization | typed mutex/RW/channel/event/barrier/latch operation and guard lifetime |
+| atomic | exact atomic type, legal operation/order, source map and memory-order contract |
+| unsafe/extern | explicit unsafe marker, accepted interface ID, capability/effect/resource contract |
+
+An operation that lowers to a runtime call carries a versioned typed runtime
+contract ID and all semantic operands: capability/effect, ownership transfer,
+resource reservation, cancellation point, synchronization/atomic order, and
+source span. It MUST NOT hide task creation, locking, atomics, shared-memory
+access, resource allocation, privilege, or an external host ABI behind an
+opaque helper call.
+
+## 4. Lowering boundary
+
+The frontend proves syntactic well-formedness, name resolution, source-level
+type/effect checks, lexical ownership checks, profile eligibility, and source
+span attachment before it emits IR. Lowering is deterministic: identical
+declared inputs yield semantically identical ordered IR tables and mapping
+records. The frontend may optimize only when the resulting typed IR preserves
+the source evaluation, ownership, capability, resource, atomic, and source-map
+semantics.
+
+The verifier does not trust those claims. In particular, the verifier rechecks
+all table bounds/schema identity, nominal type references, control-flow targets,
+operand types, call/effect signatures, import/capability declarations, affine
+value/borrow state, region rights, profile restrictions, resource accounting,
+task scope/capture/join/cancel behavior, synchronization guard rules, atomic
+orders, unsafe interface IDs, and source-map identity/spans. A frontend cannot
+mark an arbitrary cache "verified." Only the verifier emits a verified-module
+receipt bound to the complete module digest and verifier identity.
+
+## 5. Independent verifier contract
+
+The verifier consumes untrusted IR bytes/in-memory structures plus a declared
+module-resolution and capability-interface snapshot. It produces either:
+
+```text
+VerifiedModule {
+  module digest, schema_id, verifier identity, source/dependency identities,
+  profile, effective resource envelope, capability-interface digest,
+  checked source-map digest
+}
+```
+
+or one deterministic primary `V20xx` diagnostic with optional causal entries.
+An engine accepts executable IR only with a receipt for the exact module digest,
+schema, source/dependency closure, effective resource envelope, capability
+contract digest, and engine compatibility range.
+
+Verifier independence is structural: it is a separately buildable component
+with its own parser/validation traversal and does not consume a frontend AST,
+type-checker success flag, or host compiler validation result as proof. A
+shared declarative type/interface table may be used only if its content digest
+is input to both components; no frontend callback participates in verifier
+acceptance. An alternate/optimized frontend remains untrusted at this boundary.
+
+Primary validation order is:
+
+1. envelope/byte/table-count limits;
+2. schema/version/header/source identity;
+3. canonical ordering and index/reference range;
+4. nominal types/signatures/imports/capability interfaces;
+5. control flow and typed operands;
+6. ownership/regions/effects/profile/resources;
+7. tasks/synchronization/atomics/unsafe contracts; then
+8. source maps and cache/provenance binding.
+
+Representative stable errors are `V2001_LIMIT`, `V2002_SCHEMA`,
+`V2003_SOURCE_IDENTITY`, `V2004_TABLE_ORDER`, `V2010_TYPE`, `V2011_CFG`,
+`V2012_IMPORT`, `V2013_CAPABILITY`, `V2020_OWNERSHIP`, `V2021_REGION`,
+`V2022_RESOURCE`, `V2023_PROFILE`, `V2030_TASK_SCOPE`, `V2031_SYNC`,
+`V2032_ATOMIC_ORDER`, `V2033_UNSAFE`, and `V2040_SOURCE_MAP`.
+
+## 6. Source maps, cache identity, and observability
+
+Every IR operation has a source-map entry containing source-set identity,
+canonical path, normalized source content ID, frontend identity, language
+version/profile, byte start/end, and optional derivation parent span. Spawn,
+join, cancellation, synchronization, and atomic operations also carry a task
+or execution-context event identity at runtime; timing and CPU number are
+observations, not part of source identity.
+
+A derived cache key contains at least:
+
+```text
+normalized source-content IDs and ordered dependency closure
+source-set/commit or detached source-set identity
+canonical path/module identity
+frontend implementation and semantic-profile identity
+language version and feature revision
+IR schema and source-map revision
+verifier implementation identity
+backend implementation and target ABI identity
+optimization and safety policy identity
+resource-envelope digest
+capability-interface contract digest
+```
+
+The runtime records this identity with a running component. An identity mismatch
+or missing source map rejects cache execution rather than trying a nearby source
+or host fallback. Removing all cache objects leaves the canonical source tree,
+declared dependencies, frontend/verifier/runtime, and recovery path able to
+regenerate functionality, subject only to declared bounded work and time.
+
+## 7. Execution engines and semantic equivalence
+
+The reference interpreter, a future bytecode engine, and a future native/JIT
+backend execute the same verified IR and TOS-owned memory semantics. The
+Bootstrap interpreter may serialize parallel scopes, but must produce an
+allowed result under docs/41 and retain each resource/cancellation rule. A
+production-capable Full engine has a real SMP mapping from runnable parallel
+tasks to bounded execution contexts. No engine may defer semantics to an
+undocumented host ABI or silently give atomics/races different behavior.
+
+Every engine must pass the same relevant conformance vectors. A backend,
+including Wasm/LLVM/Cranelift, can only be a derived cache/codegen mechanism
+after a separate accepted ADR admits its bounded role. It does not replace the
+frontend, verifier, source maps, capability contract, or recovery semantics.
+
+<!-- END docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md -->
+
+---
+
+<!-- BEGIN docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# TOS Core V1 — conformance, limits, and implementation review
+
+- Status: **Proposed Stage 2 contract — not implementation authority**
+- Language version: `TOS Core 1.0`
+- Governing Tier 1 decision: ADR-0027
+- Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` through
+  `docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`
+
+## 1. Conformance model
+
+TOS Core conformance is backend-neutral. A conforming frontend accepts/rejects
+the normalized source corpus with the specified primary code, stage, path,
+content ID, span, and required structured fields. A conforming lowerer emits
+semantically equivalent `tos-ir/v1`; a conforming verifier independently
+accepts valid IR and rejects forged/malformed IR; a conforming engine produces
+an allowed V1 outcome without relying on host language/ABI behavior.
+
+The initial corpus is retained under `docs/language/conformance/v1/`. It is
+proposed source/conformance evidence only until implementation begins. Each
+case has a stable identifier, canonical `.tos` input, profile, expected result
+or primary diagnostic, source span, and semantic rationale. An implementation
+MUST NOT change an expectation merely because its parser/checker finds a more
+convenient error.
+
+| Vector class | Required initial evidence |
+|---|---|
+| lexical/source | UTF-8, BOM, NFC, CRLF/bare-CR, tab, identifier, integer, string/bytes, and earliest-error precedence |
+| grammar | module/header/import, declaration/block recovery, precedence, complete match, reserved words, invalid profile syntax |
+| static type/evaluation | fixed-width literals, conversion, checked overflow/shift/division, Result `?`, evaluation order |
+| ownership | move/use-after-move, immutable/mutable conflict, borrow escape, indexed alias conservatism, task capture |
+| capabilities | undeclared effect, forged handle, denied request, invalid attenuation/transfer, untyped privileged operation |
+| resources | missing/invalid required limit, metered loop, recursion/import/task/worker/sync/shared/cleanup exhaustion |
+| concurrency | one/2/N-worker equivalent deterministic result, actual Full-engine overlap, safe mutable-share rejection, structured join/cancel, bounded task/worker behavior |
+| synchronization/atomics | mutex/channel/event/barrier ordering, valid/invalid memory order, release/acquire publication, no non-atomic race escape |
+| modules/provenance | deterministic import closure, cycle/ambiguity rejection, cache invalidation, source-map preservation through lowering/optimization |
+| IR verifier | malformed header/table/order/index/type/CFG/import/capability/region/resource/task/atomic/source-map negatives |
+| profiles/unsafe/FFI | Bootstrap reject Full-only constructs, serialized Bootstrap equivalence, unsafe rationale and unavailable FFI rejection |
+
+For Full engines, the required multicore exercise partitions a deterministic
+CPU-bound workload. It records 1-worker, 2-worker, and reasonable-N-worker
+correct results plus actual overlapping CPU work on multiple host cores. The
+same vector runs in serialized Bootstrap/reference mode. Speedup is evidence
+of viability, not a selection or correctness score. A negative shared-mutable
+case, atomics/synchronization case, structured join/cancel case, and bounded
+task/worker case are mandatory; overlap alone is insufficient.
+
+## 2. Frontend, verifier, and runtime hard limits
+
+The production implementation MUST publish exact numeric limits before it
+accepts untrusted source/IR. They may be no larger than this proposed V1
+ceiling without a contract extension:
+
+```text
+normalized source unit             256 KiB
+module dependency closure          256 modules
+module/import graph depth          64
+identifier bytes                   128
+string/bytes literal bytes         64 KiB
+delimiter nesting                  256
+record/enum fields or variants     1024
+function parameters                128
+diagnostics retained per module    256
+IR tables/blocks/instructions      bounded by declared module resource envelope
+```
+
+The frontend and verifier check gross byte/count/depth limits before expensive
+normalization, graph traversal, type work, lowering, or source-map copying
+where structurally possible. A limit error takes precedence over later
+semantic errors when its triggering bound is encountered first. Limits prevent
+attacker-controlled recursion, quadratic name/module work, unbounded source
+duplication, and cache amplification; they are not optional implementation
+quality targets.
+
+Any lower cap is allowed if reported in the implementation's declared
+conformance profile. Raising a ceiling, changing a rejection precedence, or
+accepting a new syntax/IR feature is a versioned contract change with vectors.
+The reference parser/verifier remains total over arbitrary bytes and returns
+structured errors rather than panicking.
+
+## 3. Required threat and adversarial evidence
+
+This contract extends the existing `docs/34_THREAT_MODEL.md` language/runtime
+boundary (T3 malicious frontend/cache producer and T1/T2 resource abuse). It
+adds no claim that a language checker defeats malicious firmware, a compromised
+nucleus, or all denial of service. Stage 2 implementation evidence MUST cover:
+
+- malformed UTF-8/source and malformed/forged IR fuzzing without parser panic;
+- source normalization/path/import ambiguity and cache-substitution negatives;
+- capability forgery/widening/ambient-authority negatives;
+- ownership/data-race/atomic-order invalid cases;
+- resource exhaustion before allocation/worker creation and cancellation
+  cleanup bounds;
+- source-map identity forgery/mismatch; and
+- cross-engine semantic differential testing for every supported engine.
+
+Evidence levels remain those in docs/34: the proposed documents are E0 design;
+implemented parser/verifier paths become E1; automated positives/negatives E2;
+fuzz/fault evidence E3. No Stage 2 closure claim may elevate a design contract
+without the corresponding implementation evidence.
+
+## 4. Performance and recovery evidence
+
+The Stage 1.5–2 contracts in `docs/35_PERFORMANCE_CONTRACTS.md` apply. The
+production reference profile must measure parse/type-check/lower/verify a
+256 KiB canonical module and the one-million-operation integer/control-flow
+benchmark with the required environment, warmups, raw samples, median/p95/p99,
+memory, source/build identity, and cache state. Measurements cannot move work
+into a host runtime, native cache, nucleus, or an unchecked frontend to claim a
+pass.
+
+The recovery/Bootstrap measurement records source size, parser/checker/verifier
+and interpreter binary/component sizes, dependencies, dynamic dependencies,
+peak memory, cold start, resource envelope, and all host/build tool identities.
+Rust may implement those components, but rustc/LLVM/libc/C ABI/host threads are
+not recovery/runtime dependencies unless a future ADR explicitly admits them.
+The system must be able to delete all derived caches and regenerate from source
+using the declared recovery components.
+
+## 5. Implementability review
+
+The contract makes the following deliberate complexity choices:
+
+| Risk | V1 containment |
+|---|---|
+| parser ambiguity / error recovery | ASCII identifiers, no indentation semantics, no block comments/macros, deterministic EBNF and fixed recovery tokens |
+| pathological source / graph | byte, nesting, identifier, diagnostic, closure and import limits with early rejection |
+| type/ownership complexity | nominal non-generic types; lexical nonescaping borrows; affine ownership; conservative indexed aliasing |
+| capability forgery | opaque nominal imports, effect checking, no scalar representation, independent IR checks |
+| concurrency complexity | no detached tasks; lexical scopes; ownership transfer; typed visible synchronization/atomics; Bootstrap serialization |
+| resource amplification | mandatory module envelope, reservation before action, bounded cleanup and worker/task count |
+| verifier capture | separate build/traversal, no frontend AST-success trust, typed runtime contracts visible in IR |
+| source-map loss | identity/span required in every IR operation/cache receipt, verifier checks |
+| future native backend | typed IR and explicit checked/atomic/capability semantics; backend cannot redefine them |
+
+Known non-goals are intentional: V1 has no user generics/traits, textual macros,
+reflection, implicit ambient prelude, unscoped tasks, stop-the-world collector,
+ordinary C ABI, or Stage 3 IPC/driver service API. Their absence does not mean
+the contract is temporary: extensions must be versioned, typed, source-mapped,
+resource-accounted, verifier-visible, and compatible with the established safe
+memory/concurrency boundary.
+
+## 6. Recommended Part B implementation order
+
+After explicit acceptance of ADR-0028, the production order is:
+
+1. bounded normalized source reader and lexer with lexical vectors/fuzzing;
+2. deterministic parser and recovery diagnostics;
+3. names/types/effects and stable diagnostic records;
+4. affine ownership/borrow and module/resource checks;
+5. deterministic lowering to the in-memory `tos-ir/v1` semantic schema;
+6. independently buildable verifier and forged-IR negatives;
+7. bounded serialized Bootstrap reference interpreter;
+8. source maps, cache identity/deletion/regeneration and resource accounting;
+9. corpus/fuzz/differential/performance evidence; then
+10. execute real `/system/boot/init.tos` only after its source conforms.
+
+This order does not authorize a second implementation path. The first parser,
+checker, IR, verifier, and interpreter are the intended long-term reference
+components; optimized backends remain subordinate derived engines.
+
+## 7. Open matters outside this proposal
+
+There are no unresolved semantic questions needed to begin the intended
+Bootstrap reference implementation if ADR-0028 is accepted. Deliberately
+deferred, separately versioned contracts are: persistent IR byte encoding;
+concrete Stage 3 capability/IPC/MMIO/IRQ/DMA interface schemas; the exact
+future FFI ABI; user generics/traits/macros; detached tasks/supervisor API;
+NUMA/affinity API; and bytecode/native backend admission. None is silently
+provided by a host implementation, and none blocks Bootstrap source semantics.
+
+<!-- END docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md -->
 
 ---
 
@@ -4781,6 +6148,12 @@ Identity exit: selected foundation preserves canonical text, capability semantic
 
 ## Stage 2 — Native textual reference runtime
 
+Stage 2 begins with a complete proposed semantic/IR specification and the
+single Project Architect acceptance checkpoint for that contract. No production
+parser, checker, IR verifier, interpreter, cache, or runtime begins before that
+acceptance. Programmer documentation and canonical language examples evolve
+with the specification and implementation; they are not end-stage cleanup.
+
 Deliverables:
 
 - normative lexical, syntax and semantic specification;
@@ -5043,6 +6416,16 @@ Accepted ADRs are immutable except spelling/link corrections. Superseding decisi
 ### `docs/research/`
 
 Non-normative research records, including language evaluation, patent landscape and name search.
+
+### `docs/language/`
+
+Programmer-facing language guides, learning material, canonical proposed or
+implemented `.tos` examples, and conformance inputs. The numbered language
+contracts remain the normative source; this tree explains and exercises them.
+Every canonical example has an SPDX header and one tracked source of truth.
+Before a frontend exists, examples state their proposed/not-implemented status;
+afterward, documentation checks bind accepted examples to parser/checker/runtime
+evidence rather than maintaining duplicate Markdown snippets.
 
 ### `tools/build-specification.py`
 
@@ -8357,6 +9740,115 @@ engines; acceptance authorizes Stage 2 to implement those contracts, not to
 skip them.
 
 <!-- END docs/adr/0027-language-foundation-selection.md -->
+
+---
+
+<!-- BEGIN docs/adr/0028-tos-core-v1-semantics-and-ir-contract.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0028: TOS Core V1 semantics and IR contract
+
+- Status: Proposed — ready for Project Architect decision
+- Date: 2026-08-09
+- Decision level: 2 — versioned language/IR contract within ADR-0027's
+  accepted Level 3 foundation boundary
+
+## Context
+
+ADR-0027 selected bespoke TOS Core and fixed its language/trust boundary. It
+explicitly assigned the complete lexical, syntactic, type/effect, ownership,
+concurrency, module, resource, diagnostic, IR, verifier, and compatibility
+contract to Stage 2. Implementing a parser first would make its incidental
+choices normative and would risk restoring a hidden Rust/LLVM/libc/C ABI/host
+runtime contract.
+
+The proposed numbered specification set is:
+
+- `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`;
+- `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`;
+- `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`;
+- `docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md`;
+- `docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`; and
+- `docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md`.
+
+They are one V1 contract: splitting prose does not split authority or allow an
+implementation to select only convenient portions.
+
+## Proposed decision
+
+Accept TOS Core V1 as specified by docs/39–44:
+
+- canonical source is normalized UTF-8 NFC/LF `.tos`, bound to source-set,
+  path, and SHA-256 source-content identity;
+- grammar is deterministic EBNF with explicit parser recovery and no macros,
+  ambient imports, pointer syntax, or target-dependent integer defaults;
+- static semantics provide nominal types, fixed-width arithmetic, typed
+  Result-style errors, capability effects, affine ownership, lexical
+  nonescaping borrows, typed regions, and no safe raw-pointer/physical-address
+  escape;
+- Full execution has structured async and true-SMP-capable structured parallel
+  tasks; Bootstrap is a bounded serialized subset of the same semantics;
+- safe data races are statically excluded and independently verifier-rejected;
+  atomics, synchronization, cancellation, happens-before, and resource
+  accounting have TOS-owned semantics;
+- module/import resolution is source-set-bound and deterministic; capabilities
+  are opaque requests/grants and cannot be forged or widened by source;
+- typed `tos-ir/v1` is derived/disposable, verifier-visible, source-mapped,
+  and independently validated before execution; and
+- diagnostics, provenance/cache identity, conformance, limits, fuzzing,
+  performance, and recovery evidence are specified before implementation.
+
+Acceptance authorizes the Part B production reference frontend/verifier/runtime
+work in the order stated by docs/44. It does not authorize Stage 3, a C/Rust
+FFI, a host runtime semantic shortcut, a persistent IR cache byte format, an
+optimized backend, user generics/macros, or a new dependency.
+
+## Architecture impact statement
+
+- **Invariants:** preserves I-01 canonical text, I-02 minimal binary base,
+  I-07 explicit authority, I-09 versioned boundaries, I-10 deterministic
+  identity, I-11/I-16 observability, I-12 no hidden runtime build dependency,
+  I-18 derived provenance, I-19 dependency containment, and I-21 no temporary
+  identity debt.
+- **Canonical representation:** normalized `.tos` source remains canonical;
+  AST/IR/cache/native code remain disposable derivatives.
+- **Trusted base:** defines the future TOS parser/checker, independent
+  verifier, Bootstrap interpreter, and minimal task runtime; no external
+  runtime enters it. Rust remains an implementation/build language only.
+- **Source-to-runtime and recovery:** exact source-set/path/content identity
+  flows through typed IR, verifier receipt, cache key, diagnostics, and runtime
+  events; cache deletion permits source regeneration through bounded recovery
+  components.
+- **Threat model:** elaborates existing docs/34 language/frontend/cache boundary
+  with bounded parsing, forged IR/capability, resource, race, source-map, and
+  cache-substitution negative evidence.
+- **Performance:** applies docs/35 Stage 1.5–2 parse/check/lower/verify and
+  Bootstrap execution measurements without weakening any established budget.
+- **Compatibility:** establishes V1 source/profile/IR/verifier versioning and
+  rejects unknown versions rather than guessing.
+- **Dependencies/licensing/patents:** adds no dependency or external code;
+  documents remain CC-BY-SA-4.0, canonical examples GPL-3.0-or-later, and no
+  patent-freedom claim is made.
+- **Tests:** docs/44 and `docs/language/conformance/v1/` specify backend-neutral
+  positives/negatives, forged-IR, multicore, resource, source-map, fuzz, and
+  performance evidence before Stage 2 closure.
+
+## Consequences and alternatives
+
+The reference implementation must implement the whole contract incrementally;
+it cannot call a host parser/runtime and call that TOS semantics. The narrow
+V1 omissions deliberately constrain the first implementation, but all future
+extensions remain versioned, verifier-visible, source-mapped, and
+resource-accounted.
+
+Keeping grammar/ownership/atomics unspecified until parser code exists was
+rejected because it would violate ADR-0015/0027 and make implementation the
+de facto language authority. Adopting Rust, Wasm, LLVM, C ABI, libc, or host
+threads as the contract was rejected by ADR-0027; they remain possible future
+implementation/build/backend tools only under their own accepted decisions.
+
+<!-- END docs/adr/0028-tos-core-v1-semantics-and-ir-contract.md -->
 
 ---
 

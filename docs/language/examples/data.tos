@@ -1,0 +1,36 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module examples.data version 1.0 profile bootstrap;
+
+resource {
+    fuel: 20000;
+    stack: 64KiB;
+    allocation: 8KiB;
+    tasks: 1;
+    workers: 1;
+    sync: 0;
+    shared: 0B;
+    cleanup: 16;
+    recursion: 8;
+    imports: 0;
+}
+
+record Point {
+    x: i32;
+    y: i32;
+}
+
+enum Axis {
+    Horizontal,
+    Vertical,
+}
+
+pub fn shift(point: Point, axis: Axis, amount: i32) -> Point {
+    match axis {
+        Horizontal => Point { x: point.x + amount, y: point.y },
+        Vertical => Point { x: point.x, y: point.y + amount },
+    }
+}
+
+pub fn coordinates(point: Point) -> (i32, i32) {
+    (point.x, point.y)
+}

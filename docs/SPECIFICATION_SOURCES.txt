@@ -22,6 +22,12 @@ docs/03_ARCHITECTURE_OVERVIEW.md
 docs/04_BOOT_AND_RECOVERY.md
 docs/05_TOS_CORE_LANGUAGE.md
 docs/06_EXECUTION_AND_IR.md
+docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md
+docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md
+docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md
+docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md
+docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md
+docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md
 docs/07_LANGUAGE_FRONTENDS.md
 docs/08_GIT_NATIVE_SYSTEM.md
 docs/36_GIT_COMPATIBILITY_PROFILES.md
@@ -82,3 +88,4 @@ docs/adr/0024-capsule-provenance-sidecar.md
 docs/adr/0025-stage1-validation-performance.md
 docs/adr/0026-stage1-validation-performance-metric.md
 docs/adr/0027-language-foundation-selection.md
+docs/adr/0028-tos-core-v1-semantics-and-ir-contract.md

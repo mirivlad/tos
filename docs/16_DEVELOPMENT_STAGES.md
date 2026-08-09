@@ -59,6 +59,12 @@ Identity exit: selected foundation preserves canonical text, capability semantic
 
 ## Stage 2 — Native textual reference runtime
 
+Stage 2 begins with a complete proposed semantic/IR specification and the
+single Project Architect acceptance checkpoint for that contract. No production
+parser, checker, IR verifier, interpreter, cache, or runtime begins before that
+acceptance. Programmer documentation and canonical language examples evolve
+with the specification and implementation; they are not end-stage cleanup.
+
 Deliverables:
 
 - normative lexical, syntax and semantic specification;

@@ -1,0 +1,28 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.borrow_escape version 1.0 profile bootstrap;
+
+resource {
+    fuel: 10000;
+    stack: 64KiB;
+    allocation: 4KiB;
+    tasks: 1;
+    workers: 1;
+    sync: 0;
+    shared: 0B;
+    cleanup: 16;
+    recursion: 8;
+    imports: 0;
+}
+
+record Counter {
+    value: i32;
+}
+
+pub fn read(borrow counter: Counter) -> i32 { counter.value }
+pub fn write(borrow mut counter: Counter) -> unit { counter.value = 1i32; }
+
+pub fn main() -> i32 {
+    let mut counter = Counter { value: 0i32 };
+    let view = borrow mut counter;
+    read(borrow counter)
+}
