@@ -13,6 +13,7 @@ TOS uses established licenses rather than a project-specific license. This repos
 | Architecture documents, specifications, tutorials, diagrams, governance and policy documents | Creative Commons Attribution-ShareAlike 4.0 International | `CC-BY-SA-4.0` |
 | Code fragments embedded in documentation, unless a fragment says otherwise | dual licensed | `GPL-3.0-or-later OR Apache-2.0` |
 | Network services intentionally designated in their own directory | GNU Affero General Public License version 3 or later | `AGPL-3.0-or-later` |
+| Vendored Unicode Character Database data and its generated normalization tables | Unicode License v3 | `Unicode-3.0` |
 
 No directory becomes AGPL-licensed merely because it communicates over a network. An AGPL component requires an explicit ADR and SPDX declaration.
 
@@ -57,6 +58,7 @@ The corresponding license texts are stored in `LICENSES/`:
 - `LICENSES/GPL-3.0-or-later.txt`
 - `LICENSES/Apache-2.0.txt`
 - `LICENSES/CC-BY-SA-4.0.txt`
+- `LICENSES/Unicode-3.0.txt` for the UCD material recorded in `THIRD_PARTY.toml`
 
 If an AGPL component is accepted, the repository must add the official AGPLv3 text before that component is merged.
 

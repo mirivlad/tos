@@ -1,13 +1,13 @@
 # SPDX-License-Identifier: Apache-2.0
-# This inventory begins empty. Add one table per vendored or imported component.
+# This inventory records each vendored or imported component.
 #
-# [[component]]
-# name = "example"
-# version = "1.2.3"
-# upstream = "https://example.invalid/repository"
-# source_revision = "commit-or-release"
-# license_expression = "Apache-2.0"
-# role = "host-tool" # reference | oracle | host-tool | isolated-service | trusted-dependency
-# modified = false
-# notice_files = []
-# review = "ADR or review reference"
+[[component]]
+name = "Unicode Character Database normalization inputs"
+version = "17.0.0"
+upstream = "https://www.unicode.org/Public/17.0.0/ucd/"
+source_revision = "Unicode 17.0.0; UAX #15 Revision 57"
+license_expression = "Unicode-3.0"
+role = "trusted-dependency"
+modified = false
+notice_files = ["LICENSES/Unicode-3.0.txt"]
+review = "ADR-0029; source/crates/tos-core/unicode/PROVENANCE.json"
