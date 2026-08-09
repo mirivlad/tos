@@ -9,7 +9,8 @@ mod parser;
 
 pub use parser::{
     Import, ImportKind, ModuleHeader, ModuleOutline, ModulePrefix, ParseError, ParseErrorCode,
-    Parser, Profile, ResourceDeclaration, ResourceLimit, Span,
+    Parser, Profile, RecordDeclaration, RecordField, ResourceDeclaration, ResourceLimit, Schema,
+    Span, TypeSyntax,
 };
 
 mod unicode {
@@ -807,6 +808,19 @@ mod tests {
             outline.resource().limits()[1].value().text(&source),
             "64KiB"
         );
+    }
+
+    #[test]
+    fn parser_builds_a_record_with_typed_fields() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] record Point [x: i32, y: i32,]",
+        )
+        .expect("transport-valid source");
+        let schema = Parser::parse_schema(&source).expect("record schema parses");
+        assert_eq!(schema.records().len(), 1);
+        assert_eq!(schema.records()[0].name().text(&source), "Point");
+        assert_eq!(schema.records()[0].fields().len(), 2);
+        assert_eq!(schema.records()[0].fields()[1].ty().text(&source), "i32");
     }
 
     #[test]
