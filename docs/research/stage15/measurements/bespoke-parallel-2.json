@@ -1,0 +1,45 @@
+{
+  "record_spdx_license": "GPL-3.0-or-later",
+  "format": "tos-stage15-measurement-v1",
+  "timestamp_utc": "2026-08-09T05:58:09.238691+00:00",
+  "label": "bespoke-parallel-2",
+  "command": [
+    "target/stage15/bespoke-model",
+    "--mode",
+    "parallel",
+    "--workers",
+    "2"
+  ],
+  "workers": 2,
+  "warmups": 3,
+  "samples": 21,
+  "samples_ns": [
+    7489656,
+    8528179,
+    8628469,
+    7962656,
+    8611146,
+    7524264,
+    7988287,
+    8087679,
+    8106988,
+    8333958,
+    8208165,
+    7930421,
+    7910985,
+    8117443,
+    8324018,
+    8706678,
+    8775189,
+    8406615,
+    7793428,
+    8589990,
+    8926335
+  ],
+  "result_digest": "stage15-common-v1-d000032aaaa80000",
+  "overlap_observed": true,
+  "host": {
+    "platform": "linux",
+    "cpu_count": 28
+  }
+}

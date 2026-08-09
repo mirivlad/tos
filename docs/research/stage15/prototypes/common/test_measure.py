@@ -40,7 +40,10 @@ class MeasureHarnessTests(unittest.TestCase):
             self.assertEqual(len(records["samples_ns"]), 2)
             self.assertEqual(records["result_digest"], "abc123")
             self.assertTrue(records["overlap_observed"])
-            self.assertEqual(json.loads(output.read_text(encoding="utf-8"))["label"], "unit")
+            persisted = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(persisted["label"], "unit")
+            self.assertEqual(persisted["record_spdx_license"], "GPL-3.0-or-later")
+            self.assertEqual(output.read_text(encoding="utf-8").splitlines()[1], '  "record_spdx_license": "GPL-3.0-or-later",')
 
 
 if __name__ == "__main__":

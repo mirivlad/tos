@@ -88,6 +88,7 @@ def measure(
         digest, overlap = found_digest, found_overlap
         elapsed_samples.append(elapsed)
     record: dict[str, Any] = {
+        "record_spdx_license": "GPL-3.0-or-later",
         "format": "tos-stage15-measurement-v1",
         "timestamp_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
         "label": label,
@@ -101,7 +102,7 @@ def measure(
         "host": {"platform": sys.platform, "cpu_count": os.cpu_count()},
     }
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    output.write_text(json.dumps(record, indent=2) + "\n", encoding="utf-8")
     return record
 
 
