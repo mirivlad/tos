@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `562fbbb3d7ddb2beae836a7fa986fa80a27773324e291e6a3cb7e639cb2cf8c3`  
+Source-manifest SHA-256: `d78b0a987af50b59db19a9dddfde2c87295460f0d0739862a26ca99da765c0de`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -3007,6 +3007,11 @@ Malformed UTF-8 is `E1001_INVALID_UTF8` and is rejected before normalization.
 The reference frontend's normalization data MUST be reproducible from the
 Unicode 17.0.0 UCD baseline; its exact input files, hashes, and generator
 identity are provenance inputs, not ambient host state. See ADR-0029.
+
+Before UTF-8 or normalization work, a raw input larger than the 256 KiB
+source-unit ceiling in docs/44 is `E1000_SOURCE_LIMIT` at the first excluded
+byte. A NUL scalar in otherwise valid source is `E1005_NUL_FORBIDDEN` at that
+byte. These checks do not change the existing `E1001`–`E1004` precedence.
 
 The canonical repository path is a validated relative slash-separated path.
 It has no `.` or `..` segment, no empty segment, no NUL, and no path separator
