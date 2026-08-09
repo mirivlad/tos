@@ -4,6 +4,7 @@
 //! This module owns syntax-tree construction only. Name, type, effect and
 //! resource decisions belong to later frontend stages.
 
+use std::boxed::Box;
 use std::vec::Vec;
 
 use crate::{LexError, Lexer, SourceUnit, Token, TokenKind};
@@ -162,17 +163,62 @@ pub struct ModuleOutline {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct TypeSyntax {
-    span: Span,
+pub enum TypeSyntaxForm {
+    Name,
+    Constructed,
+    Array,
+    Tuple,
+    Function,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum TypeSyntax {
+    Name {
+        path: Vec<Span>,
+        span: Span,
+    },
+    Constructed {
+        name: Span,
+        arguments: Vec<TypeSyntax>,
+        span: Span,
+    },
+    Array {
+        element: Box<TypeSyntax>,
+        length: Span,
+        span: Span,
+    },
+    Tuple {
+        elements: Vec<TypeSyntax>,
+        span: Span,
+    },
+    Function {
+        parameters: Vec<TypeSyntax>,
+        result: Box<TypeSyntax>,
+        span: Span,
+    },
 }
 
 impl TypeSyntax {
-    pub fn text(self, source: &SourceUnit) -> &str {
-        self.span.text(source)
+    pub fn form(&self) -> TypeSyntaxForm {
+        match self {
+            Self::Name { .. } => TypeSyntaxForm::Name,
+            Self::Constructed { .. } => TypeSyntaxForm::Constructed,
+            Self::Array { .. } => TypeSyntaxForm::Array,
+            Self::Tuple { .. } => TypeSyntaxForm::Tuple,
+            Self::Function { .. } => TypeSyntaxForm::Function,
+        }
     }
-
-    pub fn span(self) -> Span {
-        self.span
+    pub fn text<'source>(&self, source: &'source SourceUnit) -> &'source str {
+        self.span().text(source)
+    }
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Name { span, .. }
+            | Self::Constructed { span, .. }
+            | Self::Array { span, .. }
+            | Self::Tuple { span, .. }
+            | Self::Function { span, .. } => *span,
+        }
     }
 }
 
@@ -188,8 +234,8 @@ impl RecordField {
         self.name
     }
 
-    pub fn ty(&self) -> TypeSyntax {
-        self.ty
+    pub fn ty(&self) -> &TypeSyntax {
+        &self.ty
     }
 
     pub fn span(&self) -> Span {
@@ -622,7 +668,7 @@ impl<'source> TokenCursor<'source> {
             return Ok(types);
         }
         loop {
-            types.push(self.parse_simple_type()?);
+            types.push(self.parse_type()?);
             if self.consume_kind(TokenKind::Comma).is_some() {
                 if self.current().kind() == TokenKind::CloseParen {
                     break;
@@ -648,13 +694,14 @@ impl<'source> TokenCursor<'source> {
             }
             let name = self.expect_identifier()?;
             self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
-            let ty = self.parse_simple_type()?;
+            let ty = self.parse_type()?;
+            let type_end = ty.span().end();
             fields.push(RecordField {
                 name,
                 ty,
                 span: Span {
                     start: name.start(),
-                    end: ty.span().end(),
+                    end: type_end,
                 },
             });
             if self.consume_kind(TokenKind::Comma).is_some() {
@@ -671,14 +718,79 @@ impl<'source> TokenCursor<'source> {
         Ok(fields)
     }
 
-    fn parse_simple_type(&mut self) -> Result<TypeSyntax, ParseError> {
-        if self.current().kind() == TokenKind::Identifier {
-            Ok(TypeSyntax {
-                span: Span::from(self.advance()),
-            })
-        } else {
-            Err(self.error_here(ParseErrorCode::ExpectedIdentifier))
+    fn parse_type(&mut self) -> Result<TypeSyntax, ParseError> {
+        if self.consume_kind(TokenKind::OpenParen).is_some() {
+            let start = self.tokens[self.index - 1].start();
+            let elements = self.parse_tuple_type_list()?;
+            let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+            return Ok(TypeSyntax::Tuple {
+                elements,
+                span: Span {
+                    start,
+                    end: end.end(),
+                },
+            });
         }
+        if self.current_text() == "fn" {
+            let start = Span::from(self.advance());
+            self.expect_kind(TokenKind::OpenParen, ParseErrorCode::UnexpectedToken)?;
+            let parameters = self.parse_tuple_type_list()?;
+            self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+            self.expect_word("->", ParseErrorCode::UnexpectedToken)?;
+            let result = self.parse_type()?;
+            return Ok(TypeSyntax::Function {
+                parameters,
+                span: Span {
+                    start: start.start(),
+                    end: result.span().end(),
+                },
+                result: Box::new(result),
+            });
+        }
+        let path = self.parse_dotted_name()?;
+        let start = path[0].start();
+        let name = *path.last().expect("dotted type name is nonempty");
+        if self.current_text() != "<" {
+            return Ok(TypeSyntax::Name {
+                path,
+                span: Span {
+                    start,
+                    end: name.end(),
+                },
+            });
+        }
+        self.advance();
+        if name.text(self.source) == "array" {
+            let element = self.parse_type()?;
+            self.expect_kind(TokenKind::Comma, ParseErrorCode::ListSeparatorRequired)?;
+            let length = self.expect_literal()?;
+            let end = self.expect_word(">", ParseErrorCode::UnexpectedToken)?;
+            return Ok(TypeSyntax::Array {
+                element: Box::new(element),
+                length,
+                span: Span {
+                    start,
+                    end: end.end(),
+                },
+            });
+        }
+        let mut arguments = Vec::new();
+        loop {
+            arguments.push(self.parse_type()?);
+            if self.consume_kind(TokenKind::Comma).is_some() {
+                continue;
+            }
+            break;
+        }
+        let end = self.expect_word(">", ParseErrorCode::UnexpectedToken)?;
+        Ok(TypeSyntax::Constructed {
+            name,
+            arguments,
+            span: Span {
+                start,
+                end: end.end(),
+            },
+        })
     }
 
     fn parse_dotted_name(&mut self) -> Result<Vec<Span>, ParseError> {
