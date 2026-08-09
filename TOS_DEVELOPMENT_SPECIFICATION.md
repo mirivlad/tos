@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `ca84019874a1df745c859570989aa754ffd926cd1b4f263b77303f67e5e9c8e3`  
+Source-manifest SHA-256: `b585075e9ef9cbf267597919253b95c7e447da4637b67a33462c2afa33bf5afc`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -3025,21 +3025,27 @@ They are case-sensitive. Unicode is permitted in string data and comments but
 not identifiers. A source reader reports `E1012_INVALID_IDENTIFIER` at the
 first nonmatching byte rather than applying case folding or confusable mapping.
 
-The reserved words are:
+V1 has no contextual keywords. Every identifier-shaped language word belongs to
+exactly one class below. Reserved, primitive, predeclared type, and predeclared
+value names cannot be shadowed; every other matching identifier is ordinary.
+The inventory is deliberately machine-readable and is checked by
+`scripts/check-stage2-language-contract.py` against the EBNF terminals.
 
+<!-- stage2-word-inventory:start -->
 ```text
-as async atomic await bootstrap bool borrow break cancel capability const continue
-defer else enum error extern false for fn from if import in let loop match
-full module mut nil parallel profile pub record requires resource return self
-spawn string task true type unsafe use uses while
+reserved: as async await bootstrap borrow break cancel capability const continue defer else enum extern false fn for full if import in join let loop match module mut parallel profile pub record resource return spawn true unsafe uses version while
+primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes unit
+predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 slice
+atomic-order: Relaxed Acquire Release AcqRel SeqCst
+predeclared-value: Some None Ok Err Completed Cancelled
+special-token: _
 ```
+<!-- stage2-word-inventory:end -->
 
-`Option`, `Result`, `Task`, `Shared`, `Region`, `DmaRegion`, `Mutex`,
-`RwLock`, `Channel`, `Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`,
-and `AtomicU64` are predeclared type names, not keywords. A program cannot
-shadow a reserved word or a predeclared type name. `Relaxed`, `Acquire`,
-`Release`, `AcqRel`, and `SeqCst` are predeclared atomic-order values and also
-cannot be shadowed.
+`nil` is not a V1 keyword, literal, pattern, type, or absence model. An
+ordinary identifier spelled `nil` is allowed, subject to normal name resolution;
+unbound use receives `E1202_UNKNOWN_VALUE_NAME`. `Option<T>` is the only V1
+typed absence model.
 
 ## 3. Literals
 
@@ -3124,16 +3130,27 @@ effects         = "uses" "{" identifier ( "," identifier )* ","? "}" ;
 extern_decl     = "extern" "fn" identifier "(" parameter_list? ")"
                   "->" type effects? ";" ;
 
-type            = primitive_type | named_type | constructed_type
-                | array_type | function_type ;
+type            = primitive_type | predeclared_type | named_type | constructed_type
+                | array_type | tuple_type | function_type ;
 primitive_type  = "bool" | "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64" | "size" | "duration"
                 | "string" | "bytes" | "unit" ;
+predeclared_type = "Event" | "Semaphore" | "Barrier" | "Latch"
+                | "AtomicBool" | "AtomicU32" | "AtomicU64" ;
 named_type      = qualified_name ;
-constructed_type = ( "Option" | "Result" | "Task" | "Shared" | "Region"
-                   | "DmaRegion" | "Mutex" | "RwLock" | "Channel" | "Semaphore" )
-                   "<" type_list ">" ;
+constructed_type = "Option" "<" type ">"
+                | "Result" "<" type "," type ">"
+                | "Task" "<" type ">"
+                | "TaskResult" "<" type ">"
+                | "Shared" "<" type ">"
+                | "Region" "<" type ">"
+                | "DmaRegion" "<" type ">"
+                | "Mutex" "<" type ">"
+                | "RwLock" "<" type ">"
+                | "Channel" "<" type ">"
+                | "slice" "<" type ">" ;
 array_type      = "[" type ";" const_expression "]" ;
+tuple_type      = "(" type "," type ( "," type )* ","? ")" ;
 function_type   = "fn" "(" type_list? ")" "->" type ;
 type_list       = type ( "," type )* ","? ;
 
@@ -3148,18 +3165,18 @@ assignment      = place "=" expression ;
 return_stmt     = "return" expression? ";" ;
 break_stmt      = "break" expression? ";" ;
 continue_stmt   = "continue" ";" ;
-if_stmt         = "if" expression block ( "else" ( if_stmt | block ) )? ;
-while_stmt      = "while" expression block ;
-for_stmt        = "for" pattern "in" expression block ;
+if_stmt         = "if" "(" expression ")" block ( "else" ( if_stmt | block ) )? ;
+while_stmt      = "while" "(" expression ")" block ;
+for_stmt        = "for" pattern "in" "(" expression ")" block ;
 loop_stmt       = "loop" block ;
-match_stmt      = "match" expression "{" match_arm* "}" ;
+match_stmt      = "match" "(" expression ")" "{" match_arm* "}" ;
 match_arm       = pattern "=>" ( block | expression "," ) ;
 parallel_stmt   = "parallel" block ;
 cancel_stmt     = "cancel" expression ";" ;
 defer_stmt      = "defer" block ;
 unsafe_stmt     = "unsafe" block ;
 
-pattern         = "_" | identifier | "nil" | identifier "(" pattern_list? ")"
+pattern         = "_" | identifier | identifier "(" pattern_list? ")"
                 | "(" pattern_list ")" ;
 pattern_list    = pattern ( "," pattern )* ","? ;
 expression      = logical_or ;
@@ -3182,14 +3199,15 @@ index           = "[" expression "]" ;
 field           = "." identifier ;
 question        = "?" ;
 cast            = "as" type ;
-primary         = literal | "true" | "false" | "nil" | qualified_name
+primary         = literal | "true" | "false" | qualified_name
                 | tuple | array | record_init | enum_init
                 | closure | spawn_expression | "(" expression ")" | block ;
 literal         = integer | size | duration | string | bytes ;
 tuple           = "(" expression "," expression ( "," expression )* ","? ")" ;
 array           = "[" argument_list? "]" ;
-record_init     = qualified_name "{" field_init* "}" ;
-field_init      = identifier ":" expression ","? ;
+record_init     = qualified_name "{" field_init_list? "}" ;
+field_init_list = field_init ( "," field_init )* ","? ;
+field_init      = identifier ":" expression ;
 enum_init       = qualified_name "(" argument_list? ")" ;
 closure         = "|" closure_parameters? "|" expression ;
 closure_parameters = parameter ( "," parameter )* ","? ;
@@ -3201,13 +3219,22 @@ const_product   = const_primary ( ( "*" | "/" | "%" ) const_primary )* ;
 const_primary   = integer | size | identifier | "(" const_expression ")" ;
 ```
 
-`record_init` and `enum_init` are resolved only after parsing: a name followed
-by `{` or `(` is syntactically accepted, then type resolution decides whether
-it denotes a record or variant. This is a local deterministic disambiguation,
-not semantic backtracking. Function calls, field access, indexing, propagation
-(`?`) and casts group left-to-right; binary precedence is listed from weakest
-to strongest. `&&` and `||` short-circuit. `await`, `join`, and `borrow` bind
-like other unary operators.
+Every control header has mandatory parentheses.  The closing `)` therefore
+ends an `if`, `while`, `for`, or `match` head before the following block begins;
+`if ready { ... }` is `E1105_CONTROL_HEAD_PARENS_REQUIRED`.  This deliberately
+prevents a parser from having to choose between a control block and a record
+initializer such as `Ready { ... }`.  A `qualified_name` followed by `{` or
+`(` in an ordinary expression position is parsed as `record_init` or
+`enum_init` respectively; name resolution then checks that it denotes the
+corresponding nominal type or variant.  This local name check is not semantic
+backtracking.  An empty record initializer is syntactically valid. Fields are
+comma-separated, a final comma is permitted, and a repeated field name is the
+static named-field error `E1205_DUPLICATE_RECORD_FIELD`, not a parser error.
+Missing a comma between record fields is
+`E1106_RECORD_FIELD_SEPARATOR_REQUIRED`. Function calls, field access,
+indexing, propagation (`?`) and casts group left-to-right; binary precedence
+is listed from weakest to strongest. `&&` and `||` short-circuit. `await`,
+`join`, and `borrow` bind like other unary operators.
 
 `defer`, `unsafe`, closures, `async`, and `spawn async` are Full-profile
 constructs. `parallel`, `spawn parallel`, `join`, and `cancel` have defined
@@ -3264,12 +3291,17 @@ an unsigned `u64` count of nanoseconds. Public and persistent forms use one of
 the explicit fixed-width integers.
 
 `Option<T>` has variants `Some(T)` and `None`; `Result<T,E>` has variants
-`Ok(T)` and `Err(E)`. `Task<T>` is a scoped task result. `Shared<T>` is an
-immutable shareable value. `Region<T>` and `DmaRegion<T>` are opaque
+`Ok(T)` and `Err(E)`. `Task<T>` is an owned scoped task handle.
+`TaskResult<T>` has variants `Completed(T)` and `Cancelled`; it is the result
+of consuming a task handle through `join` or `await`. This keeps cancellation
+distinct from a child value of type `T`, including when `T` is itself
+`Result<U,E>`. `Shared<T>` is an immutable shareable value. `Region<T>` and
+`DmaRegion<T>` are opaque
 nucleus-granted typed region handles. `Mutex<T>`, `RwLock<T>`, `Channel<T>`,
-`Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`, and `AtomicU64` are
-typed runtime contracts, not magic host APIs. Their exact dynamic semantics
-are in `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
+`Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`, and
+`AtomicU64` are non-generic typed runtime contracts, not magic host APIs.
+Their exact dynamic semantics are in
+`docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
 
 Arrays `[T; N]` have a compile-time nonnegative `N` that is representable as
 `size`. `slice<T>` means a borrowed view and cannot be stored or returned as an
@@ -3286,6 +3318,15 @@ There are no user-defined generic functions, traits, implicit interfaces, or
 ad-hoc overload resolution in V1. The listed library type constructors are the
 only parameterized types. This keeps type identity, diagnostics, and
 independent verification bounded.
+
+The complete V1 constructed-type arity is fixed and is shared with docs/39 and
+docs/43: `Option<T>`, `Task<T>`, `TaskResult<T>`, `Shared<T>`, `Region<T>`,
+`DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, and `slice<T>` take one
+type argument; `Result<T,E>` takes two. `Event`, `Semaphore`, `Barrier`,
+`Latch`, `AtomicBool`, `AtomicU32`, and `AtomicU64` take no type arguments.
+Using another arity is a parse/type error, not an implementation-defined
+generic application. `slice<T>` is the only borrowed-view type form and
+retains the nonescaping restrictions above.
 
 ## 2. Bindings, functions, effects, and capabilities
 
@@ -3315,10 +3356,13 @@ runtime contract. An integer, string, cast, deserialization, record literal, or
 unsafe block cannot mint one.
 
 `async fn` returns `Task<Result<T, E>>` when its declared return type is
-`Result<T, E>` and `Task<T>` otherwise. `await task` obtains the successful
-task value or propagates its `Err`/cancellation according to `?`; it is
-Full-profile only. `spawn async` and `spawn parallel` capture values according
-to the ownership rules below. `spawn` has no detached form in V1.
+`Result<T, E>` and `Task<T>` otherwise. `await task` consumes `Task<T>` and
+has type `TaskResult<T>`; it is an asynchronous join and is Full-profile only.
+For example, awaiting `Task<Result<T,E>>` produces
+`TaskResult<Result<T,E>>`: `Completed(Err(e))` is the child program result,
+while `Cancelled` is task cancellation. `spawn async` and `spawn parallel`
+capture values according to the ownership rules below. `spawn` has no detached
+form in V1.
 
 A Full-profile closure captures each free `Copy`/`Shared<T>` value by copy and
 each other permitted value by move at closure creation. It cannot capture a
@@ -3527,29 +3571,35 @@ their result contracts rather than silently changing ordinary memory semantics.
 
 `parallel { ... }` creates a lexical task scope. `spawn parallel { block }`
 inside it creates a child `Task<T>` owned by that scope. The child owns or
-immutably shares exactly the values captured under docs/40. The parent MUST
-`join` or `cancel` every child before scope exit; a child cannot outlive its
-scope, become detached, or outlive its source/capability/resource record.
-Leaving a scope with an unconsumed task is `E1401_UNJOINED_TASK`.
+immutably shares exactly the values captured under docs/40. Every spawned
+child MUST ultimately be joined/consumed before scope exit. A child cannot
+outlive its scope, become detached, or outlive its source/capability/resource
+record. Leaving a scope with an unconsumed task is `E1401_UNJOINED_TASK`.
 
-`join task` waits for one child to reach either a normal result, an ordinary
-`Err`, or the terminal cancelled result. Joining consumes the task handle and
-establishes happens-before from all child actions before completion to actions
-after a successful parent join. A cancelled child returns
-`Err(TaskCancelled)` when its task result is a `Result`; otherwise joining a
-cancelled non-`Result` task traps with `RUNTIME_TASK_CANCELLED`.
+`join Task<T> -> TaskResult<T>` waits for a child and consumes its handle.
+It establishes happens-before from all child actions before completion to
+actions after the join. A normal child result becomes `Completed(value)`. A
+child whose result type is `Result<T,E>` therefore joins as
+`TaskResult<Result<T,E>>`: `Completed(Err(e))` preserves its ordinary error,
+and `Cancelled` records task cancellation. There is no implicit conversion
+between these two outcomes and no cancellation trap.
 
-`cancel task;` requests cooperative cancellation and consumes no ownership.
-It is idempotent. The runtime delivers cancellation only at task creation,
-explicit cancellation check, `await`, `join`, channel/event wait, loop back
-edge, and other verifier-visible bounded safe points. A task that reaches a
-safe point after cancellation runs its registered `defer`/bounded drop cleanup,
-releases its resource reservation, and completes as cancelled. It may not start
-new child tasks after cancellation is observed. A parent still joins it.
+`cancel task;` is an idempotent cooperative cancellation request and consumes
+no ownership. **cancel alone does not discharge** the task-scope obligation:
+the parent still joins and thereby consumes the cancelled task handle. If the
+child has already reached normal completion, cancellation has no effect and
+join returns `Completed(value)`; otherwise a child that observes the request
+at a defined safe point completes as `Cancelled`. The runtime delivers
+cancellation only at task creation, explicit cancellation check, `await`,
+`join`, channel/event wait, loop back edge, and other verifier-visible bounded
+safe points. A task that reaches a safe point after cancellation runs its
+registered `defer`/bounded drop cleanup, releases its resource reservation,
+and may not start new child tasks after cancellation is observed.
 
-Full-profile `spawn async` is also scoped and produces a `Task<T>`, but its
-suspension points are explicit `await` calls to typed runtime contracts. It
-does not promise a dedicated worker. A V1 task cannot be detached. Future
+Full-profile `spawn async` is also scoped and produces a `Task<T>`; `await
+Task<T> -> TaskResult<T>` consumes it with the same lifecycle as `join`.
+Its suspension points are explicit `await` calls to typed runtime contracts.
+It does not promise a dedicated worker. A V1 task cannot be detached. Future
 unscoped execution requires a new language version and an explicit supervisor,
 resource, cancellation, and provenance contract.
 
@@ -3788,7 +3838,8 @@ nominal capability type is `system.time.Clock`. It is a request, not a grant.
 The process launcher/supervisor, not source text, maps the request to a concrete
 grant after policy/trust evaluation. An absent/denied request means module
 startup returns the typed launch error `CapabilityDenied`; it is not fabricated
-as `nil`, a global singleton, an integer, or a successful empty authority.
+as an absence sentinel, a global singleton, an integer, or a successful empty
+authority. (`nil` is not a TOS Core V1 value.)
 
 The imported name can appear only as a value of its declared opaque type, a
 function parameter/effect name, or an argument to an operation that requires
@@ -3956,6 +4007,13 @@ types of TOS Core V1. A nominal type records its defining module content ID and
 export name. An IR type ID is not valid merely because its host representation
 has the same layout.
 
+For constructed types, IR records the same exact arity as docs/39/40:
+`Option`, `Task`, `TaskResult`, `Shared`, `Region`, `DmaRegion`, `Mutex`,
+`RwLock`, `Channel`, and `slice` have one type argument; `Result` has two;
+`Event`, `Semaphore`, `Barrier`, `Latch`, and the three V1 atomic types have
+none. The verifier rejects a forged or mismatched arity before control-flow or
+runtime-contract validation.
+
 ## 3. Functions, values, and control flow
 
 Each function has an exact type/effect signature, ordered parameters, return
@@ -3990,7 +4048,7 @@ The semantic operation families are:
 | capability | declared imported capability, effect/right/interface match, no construction from scalar data |
 | region/DMA | typed grant, rights, checked range/alignment, transfer/share rule, no physical-address exposure |
 | resource | reserve/release/check fuel, stack, allocation, task, worker, sync, shared, cleanup, recursion/import bounds |
-| async/parallel | scoped spawn, typed captures, task token, await/join/cancel and scope completion |
+| async/parallel | scoped spawn, typed captures, affine `Task<T>` token, `TaskResult<T>` await/join result, cancellation request, and scope completion |
 | synchronization | typed mutex/RW/channel/event/barrier/latch operation and guard lifetime |
 | atomic | exact atomic type, legal operation/order, source map and memory-order contract |
 | unsafe/extern | explicit unsafe marker, accepted interface ID, capability/effect/resource contract |
@@ -4016,7 +4074,7 @@ The verifier does not trust those claims. In particular, the verifier rechecks
 all table bounds/schema identity, nominal type references, control-flow targets,
 operand types, call/effect signatures, import/capability declarations, affine
 value/borrow state, region rights, profile restrictions, resource accounting,
-task scope/capture/join/cancel behavior, synchronization guard rules, atomic
+task scope/capture/join/cancel/`TaskResult<T>` behavior, synchronization guard rules, atomic
 orders, unsafe interface IDs, and source-map identity/spans. A frontend cannot
 mark an arbitrary cache "verified." Only the verifier emits a verified-module
 receipt bound to the complete module digest and verifier identity.
@@ -4144,12 +4202,12 @@ convenient error.
 | Vector class | Required initial evidence |
 |---|---|
 | lexical/source | UTF-8, BOM, NFC, CRLF/bare-CR, tab, identifier, integer, string/bytes, and earliest-error precedence |
-| grammar | module/header/import, declaration/block recovery, precedence, complete match, reserved words, invalid profile syntax |
-| static type/evaluation | fixed-width literals, conversion, checked overflow/shift/division, Result `?`, evaluation order |
+| grammar | module/header/import, declaration/block recovery, parenthesized control heads, comma-separated record fields, tuple/slice/predeclared-type arity, precedence, complete match, reserved words, invalid profile syntax |
+| static type/evaluation | fixed-width literals, conversion, checked overflow/shift/division, Result `?`, `Option` (not `nil`), evaluation order |
 | ownership | move/use-after-move, immutable/mutable conflict, borrow escape, indexed alias conservatism, task capture |
 | capabilities | undeclared effect, forged handle, denied request, invalid attenuation/transfer, untyped privileged operation |
 | resources | missing/invalid required limit, metered loop, recursion/import/task/worker/sync/shared/cleanup exhaustion |
-| concurrency | one/2/N-worker equivalent deterministic result, actual Full-engine overlap, safe mutable-share rejection, structured join/cancel, bounded task/worker behavior |
+| concurrency | one/2/N-worker equivalent deterministic result, actual Full-engine overlap, safe mutable-share rejection, `TaskResult` join/cancel lifecycle, bounded task/worker behavior |
 | synchronization/atomics | mutex/channel/event/barrier ordering, valid/invalid memory order, release/acquire publication, no non-atomic race escape |
 | modules/provenance | deterministic import closure, cycle/ambiguity rejection, cache invalidation, source-map preservation through lowering/optimization |
 | IR verifier | malformed header/table/order/index/type/CFG/import/capability/region/resource/task/atomic/source-map negatives |
@@ -9775,6 +9833,16 @@ The proposed numbered specification set is:
 They are one V1 contract: splitting prose does not split authority or allow an
 implementation to select only convenient portions.
 
+This resubmission resolves the checkpoint's internal-contract findings without
+changing the ADR-0027 foundation: it makes every V1 type form and constructor
+arity expressible in grammar; gives control heads an explicit parenthesized
+boundary from record initializers; fixes record field-list separation; removes
+`nil` as an absence syntax; inventories every identifier-shaped grammar word;
+and defines cancellation as a request followed by a consuming
+`TaskResult<T>` join/await lifecycle. The companion mechanical consistency gate
+checks these boundaries across docs/39–44, canonical examples, and the
+conformance corpus.
+
 ## Proposed decision
 
 Accept TOS Core V1 as specified by docs/39–44:
@@ -9783,12 +9851,18 @@ Accept TOS Core V1 as specified by docs/39–44:
   path, and SHA-256 source-content identity;
 - grammar is deterministic EBNF with explicit parser recovery and no macros,
   ambient imports, pointer syntax, or target-dependent integer defaults;
+- tuple types and borrowed `slice<T>` are explicit V1 forms; all predeclared
+  synchronization/atomic types have fixed documented arity; control heads are
+  parenthesized and record fields are comma-separated so parser boundaries do
+  not depend on type resolution;
 - static semantics provide nominal types, fixed-width arithmetic, typed
   Result-style errors, capability effects, affine ownership, lexical
   nonescaping borrows, typed regions, and no safe raw-pointer/physical-address
   escape;
 - Full execution has structured async and true-SMP-capable structured parallel
-  tasks; Bootstrap is a bounded serialized subset of the same semantics;
+  tasks; `join`/`await` consume `Task<T>` into `TaskResult<T>`, so cooperative
+  cancellation never conflates with a child `Result` value; Bootstrap is a
+  bounded serialized subset of the same semantics;
 - safe data races are statically excluded and independently verifier-rejected;
   atomics, synchronization, cancellation, happens-before, and resource
   accounting have TOS-owned semantics;

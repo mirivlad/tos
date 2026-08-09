@@ -17,21 +17,32 @@ resource {
 pub fn sum_range(begin: i32, end: i32) -> i32 {
     let mut value = begin;
     let mut total = 0i32;
-    while value < end {
+    while (value < end) {
         total = total + value;
         value = value + 1i32;
     }
     total
 }
 
-pub fn paired_sum() -> i32 {
+enum ParallelError {
+    ChildCancelled,
+}
+
+pub fn completed(result: TaskResult<i32>) -> Result<i32, ParallelError> {
+    match (result) {
+        Completed(value) => Ok(value),
+        Cancelled => Err(ChildCancelled),
+    }
+}
+
+pub fn paired_sum() -> Result<i32, ParallelError> {
     let mut total = 0i32;
     parallel {
         let left = spawn parallel { sum_range(0i32, 10i32) };
         let right = spawn parallel { sum_range(10i32, 20i32) };
-        let left_total = join left;
-        let right_total = join right;
+        let left_total = completed(join left)?;
+        let right_total = completed(join right)?;
         total = left_total + right_total;
     }
-    total
+    Ok(total)
 }

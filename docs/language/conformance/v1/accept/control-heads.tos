@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.control_heads version 1.0 profile bootstrap;
+
+resource {
+    fuel: 10000;
+    stack: 64KiB;
+    allocation: 4KiB;
+    tasks: 1;
+    workers: 1;
+    sync: 0;
+    shared: 0B;
+    cleanup: 16;
+    recursion: 8;
+    imports: 0;
+}
+
+record Flag {
+    ready: bool;
+}
+
+record Empty {
+}
+
+enum State {
+    Ready,
+    Stopped,
+}
+
+pub fn decide(ready: bool, state: State) -> Flag {
+    let mut repeats = 0i32;
+    if (ready) {
+        repeats = 1i32;
+    }
+    while (repeats < 2i32) {
+        repeats = repeats + 1i32;
+    }
+    let nearby = Flag { ready: ready, };
+    let _empty = Empty {};
+    match (state) {
+        Ready => nearby,
+        Stopped => Flag { ready: false, },
+    }
+}

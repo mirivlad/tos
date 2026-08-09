@@ -86,6 +86,9 @@ stage1_performance_workload() {
 stage1_native_validation_harness() {
     bash "$ROOT/scripts/tests/stage1-native-validation-harness.sh"
 }
+stage2_language_contract() {
+    bash "$ROOT/scripts/tests/check-stage2-language-contract.sh"
+}
 release_manifest() { python3 "$ROOT/tools/build-release-manifest.py" --check; }
 spdx() { sh "$ROOT/scripts/check-spdx.sh"; }
 dco() { sh "$ROOT/scripts/check-dco.sh"; }
@@ -146,6 +149,7 @@ run_gate "QEMU event timestamp capture" qemu_event_capture
 run_gate "timed QEMU harness" qemu_timed_harness
 run_gate "Stage 1 performance workload" stage1_performance_workload
 run_gate "Stage 1 native validation harness" stage1_native_validation_harness
+run_gate "Stage 2 language-contract consistency" stage2_language_contract
 run_gate "release manifest and SHA256SUMS" release_manifest
 run_gate "SPDX licence inventory" spdx
 run_gate "DCO sign-off" dco

@@ -18,7 +18,14 @@ async fn add_one(value: i32) -> i32 {
     value + 1i32
 }
 
-async fn main() -> i32 {
+enum AsyncError {
+    ChildCancelled,
+}
+
+async fn main() -> Result<i32, AsyncError> {
     let pending = spawn async { 42i32 };
-    await pending
+    match (await pending) {
+        Completed(value) => Ok(value),
+        Cancelled => Err(ChildCancelled),
+    }
 }

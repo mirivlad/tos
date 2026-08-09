@@ -20,10 +20,10 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   v1, UEFI loader, nucleus, source identity, fail-closed evidence, P2
   performance evidence и Project Architect approval заархивированы. **Stage
   1.5 формально закрыт**: ADR-0027 accepted, evidence/TCB/recovery analysis и
-  Project Architect approval заархивированы. **Stage 2 Part A опубликован**:
-  Proposed semantic/IR contract, guide/tutorial и conformance corpus ожидают
-  единственный Project Architect checkpoint. Stage 2 production implementation
-  не начат.
+  Project Architect approval заархивированы. **Stage 2 Part A остаётся
+  Proposed**: после checkpoint review синхронизируются grammar/type/task
+  lifecycle и canonical vectors; ADR-0028 по-прежнему ожидает единственный
+  Project Architect checkpoint. Stage 2 production implementation не начат.
 - Вся работа ведётся в `source/` (решение owner; docs/17-монобренч на корень
   приостановлен до Stage 1 — scope-решение, не изменение контрактов).
 
@@ -172,6 +172,22 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   `python3 tools/build-release-manifest.py --check` → PASS (211 files);
   `sh scripts/check-spdx.sh` → PASS (279 classified, 13 exempt);
   `./scripts/preflight.sh --full` → **30/30 PASS**.
+
+### 2026-08-09 — Stage 2 Part A: checkpoint-correction resubmission
+
+- Локальное RED evidence: новый `scripts/check-stage2-language-contract.py`
+  обнаружил отсутствующие tuple/slice grammar forms, незафиксированную
+  границу control-head/record-init, `nil`, противоречивую lifecycle task и
+  отсутствие required vectors.
+- ADR-0028 и docs/39–44 синхронизированы без изменения foundation: tuple и
+  `slice<T>` выражены в EBNF; `Semaphore` и прочие fixed-arity runtime types
+  больше не принимают type arguments; control heads parenthesized; record
+  fields comma-separated; `nil` не является V1 value; `cancel` остаётся
+  request, а `join`/`await` consume `Task<T>` into `TaskResult<T>`.
+- Добавлены C006–C008 и R009–R015, canonical examples/guide/tutorial/status
+  matrix обновлены; новый mechanical cross-contract gate включён в preflight.
+- Финальная верификация для этого состояния: `./scripts/preflight.sh --full`
+  → **31/31 PASS**; Stage 2 production implementation по-прежнему не начат.
 
 ## Граница закрытого Stage 1
 

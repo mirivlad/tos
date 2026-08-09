@@ -58,6 +58,13 @@ types of TOS Core V1. A nominal type records its defining module content ID and
 export name. An IR type ID is not valid merely because its host representation
 has the same layout.
 
+For constructed types, IR records the same exact arity as docs/39/40:
+`Option`, `Task`, `TaskResult`, `Shared`, `Region`, `DmaRegion`, `Mutex`,
+`RwLock`, `Channel`, and `slice` have one type argument; `Result` has two;
+`Event`, `Semaphore`, `Barrier`, `Latch`, and the three V1 atomic types have
+none. The verifier rejects a forged or mismatched arity before control-flow or
+runtime-contract validation.
+
 ## 3. Functions, values, and control flow
 
 Each function has an exact type/effect signature, ordered parameters, return
@@ -92,7 +99,7 @@ The semantic operation families are:
 | capability | declared imported capability, effect/right/interface match, no construction from scalar data |
 | region/DMA | typed grant, rights, checked range/alignment, transfer/share rule, no physical-address exposure |
 | resource | reserve/release/check fuel, stack, allocation, task, worker, sync, shared, cleanup, recursion/import bounds |
-| async/parallel | scoped spawn, typed captures, task token, await/join/cancel and scope completion |
+| async/parallel | scoped spawn, typed captures, affine `Task<T>` token, `TaskResult<T>` await/join result, cancellation request, and scope completion |
 | synchronization | typed mutex/RW/channel/event/barrier/latch operation and guard lifetime |
 | atomic | exact atomic type, legal operation/order, source map and memory-order contract |
 | unsafe/extern | explicit unsafe marker, accepted interface ID, capability/effect/resource contract |
@@ -118,7 +125,7 @@ The verifier does not trust those claims. In particular, the verifier rechecks
 all table bounds/schema identity, nominal type references, control-flow targets,
 operand types, call/effect signatures, import/capability declarations, affine
 value/borrow state, region rights, profile restrictions, resource accounting,
-task scope/capture/join/cancel behavior, synchronization guard rules, atomic
+task scope/capture/join/cancel/`TaskResult<T>` behavior, synchronization guard rules, atomic
 orders, unsafe interface IDs, and source-map identity/spans. A frontend cannot
 mark an arbitrary cache "verified." Only the verifier emits a verified-module
 receipt bound to the complete module digest and verifier identity.

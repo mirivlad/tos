@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-module examples.resources version 1.0 profile bootstrap;
+module conformance.duplicate_record_field version 1.0 profile bootstrap;
 
 resource {
     fuel: 1000;
@@ -14,10 +14,10 @@ resource {
     imports: 0;
 }
 
-pub fn count_to_three() -> i32 {
-    let mut count: i32 = 0i32;
-    while (count < 3i32) {
-        count = count + 1i32;
-    }
-    count
+record Flag {
+    ready: bool;
+}
+
+pub fn main() -> Flag {
+    Flag { ready: true, ready: false, }
 }

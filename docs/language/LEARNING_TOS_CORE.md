@@ -107,12 +107,14 @@ contract; [async.tos](examples/async.tos) shows scoped spawning and awaiting.
 The V1 source form is specified, but no Stage 2 implementation or Stage 3 I/O
 contract exists today. This chapter therefore teaches the boundary, not a fake
 runnable API: async is scoped, explicitly awaited, and does not promise a
-dedicated CPU thread.
+dedicated CPU thread. `await` consumes a `Task<T>` and yields
+`TaskResult<T>`; match `Completed(value)` and `Cancelled` explicitly.
 
 ## 16. Structured parallelism
 
 [parallel.tos](examples/parallel.tos) is the proposed CPU-parallel shape:
-children are created in one lexical scope and joined there. A Full engine must
+children are created in one lexical scope and joined there. A cancellation
+request still requires that final join. A Full engine must
 have a true multicore path; Bootstrap may serialize the same work. Correctness
 does not depend on which worker ran it.
 

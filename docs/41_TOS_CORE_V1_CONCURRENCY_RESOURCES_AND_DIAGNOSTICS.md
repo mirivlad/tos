@@ -39,29 +39,35 @@ their result contracts rather than silently changing ordinary memory semantics.
 
 `parallel { ... }` creates a lexical task scope. `spawn parallel { block }`
 inside it creates a child `Task<T>` owned by that scope. The child owns or
-immutably shares exactly the values captured under docs/40. The parent MUST
-`join` or `cancel` every child before scope exit; a child cannot outlive its
-scope, become detached, or outlive its source/capability/resource record.
-Leaving a scope with an unconsumed task is `E1401_UNJOINED_TASK`.
+immutably shares exactly the values captured under docs/40. Every spawned
+child MUST ultimately be joined/consumed before scope exit. A child cannot
+outlive its scope, become detached, or outlive its source/capability/resource
+record. Leaving a scope with an unconsumed task is `E1401_UNJOINED_TASK`.
 
-`join task` waits for one child to reach either a normal result, an ordinary
-`Err`, or the terminal cancelled result. Joining consumes the task handle and
-establishes happens-before from all child actions before completion to actions
-after a successful parent join. A cancelled child returns
-`Err(TaskCancelled)` when its task result is a `Result`; otherwise joining a
-cancelled non-`Result` task traps with `RUNTIME_TASK_CANCELLED`.
+`join Task<T> -> TaskResult<T>` waits for a child and consumes its handle.
+It establishes happens-before from all child actions before completion to
+actions after the join. A normal child result becomes `Completed(value)`. A
+child whose result type is `Result<T,E>` therefore joins as
+`TaskResult<Result<T,E>>`: `Completed(Err(e))` preserves its ordinary error,
+and `Cancelled` records task cancellation. There is no implicit conversion
+between these two outcomes and no cancellation trap.
 
-`cancel task;` requests cooperative cancellation and consumes no ownership.
-It is idempotent. The runtime delivers cancellation only at task creation,
-explicit cancellation check, `await`, `join`, channel/event wait, loop back
-edge, and other verifier-visible bounded safe points. A task that reaches a
-safe point after cancellation runs its registered `defer`/bounded drop cleanup,
-releases its resource reservation, and completes as cancelled. It may not start
-new child tasks after cancellation is observed. A parent still joins it.
+`cancel task;` is an idempotent cooperative cancellation request and consumes
+no ownership. **cancel alone does not discharge** the task-scope obligation:
+the parent still joins and thereby consumes the cancelled task handle. If the
+child has already reached normal completion, cancellation has no effect and
+join returns `Completed(value)`; otherwise a child that observes the request
+at a defined safe point completes as `Cancelled`. The runtime delivers
+cancellation only at task creation, explicit cancellation check, `await`,
+`join`, channel/event wait, loop back edge, and other verifier-visible bounded
+safe points. A task that reaches a safe point after cancellation runs its
+registered `defer`/bounded drop cleanup, releases its resource reservation,
+and may not start new child tasks after cancellation is observed.
 
-Full-profile `spawn async` is also scoped and produces a `Task<T>`, but its
-suspension points are explicit `await` calls to typed runtime contracts. It
-does not promise a dedicated worker. A V1 task cannot be detached. Future
+Full-profile `spawn async` is also scoped and produces a `Task<T>`; `await
+Task<T> -> TaskResult<T>` consumes it with the same lifecycle as `join`.
+Its suspension points are explicit `await` calls to typed runtime contracts.
+It does not promise a dedicated worker. A V1 task cannot be detached. Future
 unscoped execution requires a new language version and an explicit supervisor,
 resource, cancellation, and provenance contract.
 
