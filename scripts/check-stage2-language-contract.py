@@ -21,6 +21,8 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
     grammar_path = root / "docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md"
+    language_role_path = root / "docs/05_TOS_CORE_LANGUAGE.md"
+    execution_role_path = root / "docs/06_EXECUTION_AND_IR.md"
     types_path = root / "docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md"
     concurrency_path = root / "docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md"
     modules_path = root / "docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md"
@@ -32,6 +34,8 @@ def main() -> int:
     guide_path = root / "docs/language/TOS_CORE_V1_GUIDE.md"
     tutorial_path = root / "docs/language/LEARNING_TOS_CORE.md"
     grammar = grammar_path.read_text(encoding="utf-8")
+    language_role = language_role_path.read_text(encoding="utf-8")
+    execution_role = execution_role_path.read_text(encoding="utf-8")
     types = types_path.read_text(encoding="utf-8")
     concurrency = concurrency_path.read_text(encoding="utf-8")
     modules = modules_path.read_text(encoding="utf-8")
@@ -52,6 +56,8 @@ def main() -> int:
         )
     require("- Status: Accepted" in adr, "ADR-0028 is not accepted", failures)
     require("Project Architect approval:" in adr, "ADR-0028 lacks Project Architect approval record", failures)
+    require("accepted ADR-0028" in language_role, "language role document still treats ADR-0028 as proposed", failures)
+    require("Stage 2 Part B production\n> implementation is authorized." in execution_role, "execution role document still prohibits accepted Part B", failures)
     require("- Status: Accepted (Project Architect-approved)" in unicode_adr, "ADR-0029 is not accepted", failures)
     require("Unicode Standard:                 17.0.0" in unicode_adr, "ADR-0029 lacks the Unicode 17.0.0 baseline", failures)
     require("UAX #15, Revision 57" in unicode_adr, "ADR-0029 lacks the UAX #15 revision", failures)

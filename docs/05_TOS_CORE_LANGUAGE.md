@@ -7,11 +7,10 @@
 “TOS Core” is the accepted bespoke TOS-owned native textual language foundation
 under ADR-0027.
 
-The syntax in this document remains illustrative. The proposed complete V1
-contract is split across docs/39–44 and is governed by Proposed ADR-0028. It
-does not authorize implementation until the Project Architect accepts that
-contract. Stage 2 then implements the accepted parser, grammar, verifier, and
-runtime specification within ADR-0027's accepted semantic/trust boundary.
+The syntax in this document remains illustrative. The accepted complete V1
+contract is split across docs/39–44 and is governed by accepted ADR-0028.
+Stage 2 implements the accepted parser, grammar, verifier, and runtime
+specification within ADR-0027's accepted semantic/trust boundary.
 
 This distinction is deliberate: TOS requires language properties, not a proprietary syntax for its own sake.
 
@@ -141,13 +140,13 @@ Required mechanisms include:
 
 The bootstrap contract must not require a stop-the-world collector. An implementation may use arenas, reference counting or another internal strategy only if observable semantics and pause/resource limits are specified.
 
-The V1 contract MUST define the concurrency memory model: ownership, immutable
+The V1 contract defines the concurrency memory model: ownership, immutable
 sharing, mutable sharing, transfer of values and tasks between execution
 contexts, synchronization primitives, atomic types and memory orderings,
 visibility/happens-before rules, interaction between atomic and ordinary
 memory, shared memory regions and the unsafe concurrency boundary. It MUST NOT
 rely on a particular Rust, C++ or host-runtime memory model merely by
-implication. Proposed docs/40–41 provide that definition pending ADR-0028.
+implication. Accepted docs/40–41 provide that definition under ADR-0028.
 
 Safe TOS Core code MUST NOT have undefined behavior from an unsynchronized
 data race. The foundation MUST statically prevent unsafe unsynchronized mutable
