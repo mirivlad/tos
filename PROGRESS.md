@@ -20,10 +20,10 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   v1, UEFI loader, nucleus, source identity, fail-closed evidence, P2
   performance evidence и Project Architect approval заархивированы. **Stage
   1.5 формально закрыт**: ADR-0027 accepted, evidence/TCB/recovery analysis и
-  Project Architect approval заархивированы. Начат **Stage 2 Part A**:
-  Proposed semantic/IR contract, guide/tutorial и conformance corpus готовятся
-  к единственному Project Architect checkpoint. Stage 2 production
-  implementation не начат.
+  Project Architect approval заархивированы. **Stage 2 Part A опубликован**:
+  Proposed semantic/IR contract, guide/tutorial и conformance corpus ожидают
+  единственный Project Architect checkpoint. Stage 2 production implementation
+  не начат.
 - Вся работа ведётся в `source/` (решение owner; docs/17-монобренч на корень
   приостановлен до Stage 1 — scope-решение, не изменение контрактов).
 
