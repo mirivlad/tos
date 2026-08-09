@@ -8,11 +8,11 @@ use std::vec::Vec;
 mod parser;
 
 pub use parser::{
-    Block, BorrowMode, EnumDeclaration, EnumVariant, EnumVariantForm, FunctionDeclaration,
-    FunctionParameter, FunctionSignature, Import, ImportKind, ModuleHeader, ModuleOutline,
-    ModulePrefix, ParseError, ParseErrorCode, Parser, Profile, RecordDeclaration, RecordField,
-    ResourceDeclaration, ResourceLimit, Schema, Span, Statement, StatementForm, TypeSyntax,
-    TypeSyntaxForm,
+    Block, BorrowMode, EnumDeclaration, EnumVariant, EnumVariantForm, Expression, ExpressionForm,
+    FunctionDeclaration, FunctionParameter, FunctionSignature, Import, ImportKind, ModuleHeader,
+    ModuleOutline, ModulePrefix, ParseError, ParseErrorCode, Parser, Profile, RecordDeclaration,
+    RecordField, ResourceDeclaration, ResourceLimit, Schema, Span, Statement, StatementForm,
+    TypeSyntax, TypeSyntaxForm,
 };
 
 mod unicode {
@@ -886,6 +886,24 @@ mod tests {
         assert_eq!(
             module.functions()[0].body().statements()[0].form(),
             StatementForm::Return
+        );
+    }
+
+    #[test]
+    fn parser_preserves_binary_operator_precedence_in_return_expression() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { return a + b * c; }",
+        )
+        .expect("transport-valid source");
+        let module = Parser::parse_schema(&source).expect("function expression parses");
+        let expression = module.functions()[0].body().statements()[0]
+            .expression()
+            .expect("return value");
+        assert_eq!(expression.form(), ExpressionForm::Binary);
+        assert_eq!(expression.operator_text(&source), Some("+"));
+        assert_eq!(
+            expression.right().unwrap().operator_text(&source),
+            Some("*")
         );
     }
 

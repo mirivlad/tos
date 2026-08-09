@@ -396,14 +396,56 @@ impl Block {
 pub enum StatementForm {
     Return,
 }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExpressionForm {
+    Primary,
+    Binary,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Expression {
+    form: ExpressionForm,
+    left: Option<Box<Expression>>,
+    operator: Option<Span>,
+    right: Option<Box<Expression>>,
+    span: Span,
+}
+
+impl Expression {
+    pub fn form(&self) -> ExpressionForm {
+        self.form
+    }
+
+    pub fn left(&self) -> Option<&Expression> {
+        self.left.as_deref()
+    }
+
+    pub fn operator_text<'source>(&self, source: &'source SourceUnit) -> Option<&'source str> {
+        self.operator.map(|operator| operator.text(source))
+    }
+
+    pub fn right(&self) -> Option<&Expression> {
+        self.right.as_deref()
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct Statement {
     form: StatementForm,
+    expression: Option<Expression>,
     span: Span,
 }
 impl Statement {
     pub fn form(&self) -> StatementForm {
         self.form
+    }
+    pub fn expression(&self) -> Option<&Expression> {
+        self.expression.as_ref()
     }
     pub fn span(&self) -> Span {
         self.span
@@ -879,12 +921,15 @@ impl<'source> TokenCursor<'source> {
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
         let start = Span::from(self.current());
         self.expect_word("return", ParseErrorCode::UnexpectedToken)?;
-        if self.current().kind() != TokenKind::Semicolon {
-            self.parse_primary_expression()?;
-        }
+        let expression = if self.current().kind() == TokenKind::Semicolon {
+            None
+        } else {
+            Some(self.parse_expression()?)
+        };
         let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
         Ok(Statement {
             form: StatementForm::Return,
+            expression,
             span: Span {
                 start: start.start(),
                 end: end.end(),
@@ -892,7 +937,70 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
-    fn parse_primary_expression(&mut self) -> Result<Span, ParseError> {
+    fn parse_expression(&mut self) -> Result<Expression, ParseError> {
+        self.parse_binary_level(Self::parse_logical_and, &["||"])
+    }
+
+    fn parse_logical_and(&mut self) -> Result<Expression, ParseError> {
+        self.parse_binary_level(Self::parse_equality, &["&&"])
+    }
+
+    fn parse_equality(&mut self) -> Result<Expression, ParseError> {
+        self.parse_binary_level(Self::parse_comparison, &["==", "!="])
+    }
+
+    fn parse_comparison(&mut self) -> Result<Expression, ParseError> {
+        self.parse_binary_level(Self::parse_bit_or, &["<", "<=", ">", ">="])
+    }
+
+    fn parse_bit_or(&mut self) -> Result<Expression, ParseError> {
+        self.parse_binary_level(Self::parse_bit_xor, &["|"])
+    }
+
+    fn parse_bit_xor(&mut self) -> Result<Expression, ParseError> {
+        self.parse_binary_level(Self::parse_bit_and, &["^"])
+    }
+
+    fn parse_bit_and(&mut self) -> Result<Expression, ParseError> {
+        self.parse_binary_level(Self::parse_shift, &["&"])
+    }
+
+    fn parse_shift(&mut self) -> Result<Expression, ParseError> {
+        self.parse_binary_level(Self::parse_sum, &["<<", ">>"])
+    }
+
+    fn parse_sum(&mut self) -> Result<Expression, ParseError> {
+        self.parse_binary_level(Self::parse_product, &["+", "-"])
+    }
+
+    fn parse_product(&mut self) -> Result<Expression, ParseError> {
+        self.parse_binary_level(Self::parse_primary_expression, &["*", "/", "%"])
+    }
+
+    fn parse_binary_level(
+        &mut self,
+        parse_operand: fn(&mut Self) -> Result<Expression, ParseError>,
+        operators: &[&str],
+    ) -> Result<Expression, ParseError> {
+        let mut left = parse_operand(self)?;
+        while operators.contains(&self.current_text()) {
+            let operator = Span::from(self.advance());
+            let right = parse_operand(self)?;
+            left = Expression {
+                form: ExpressionForm::Binary,
+                span: Span {
+                    start: left.span.start(),
+                    end: right.span.end(),
+                },
+                left: Some(Box::new(left)),
+                operator: Some(operator),
+                right: Some(Box::new(right)),
+            };
+        }
+        Ok(left)
+    }
+
+    fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {
         if matches!(
             self.current().kind(),
             TokenKind::Boolean
@@ -903,7 +1011,14 @@ impl<'source> TokenCursor<'source> {
                 | TokenKind::Bytes
                 | TokenKind::Identifier
         ) {
-            Ok(Span::from(self.advance()))
+            let span = Span::from(self.advance());
+            Ok(Expression {
+                form: ExpressionForm::Primary,
+                left: None,
+                operator: None,
+                right: None,
+                span,
+            })
         } else {
             Err(self.error_here(ParseErrorCode::UnexpectedToken))
         }
