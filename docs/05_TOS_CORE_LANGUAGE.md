@@ -4,9 +4,12 @@
 
 ## Current status
 
-“TOS Core” names the required native textual language role of the system. The final language foundation is **not yet selected**.
+“TOS Core” is the accepted bespoke TOS-owned native textual language foundation
+under ADR-0027.
 
-The syntax in this document is illustrative. No parser, grammar or runtime becomes normative until Stage 1.5 completes and a selection ADR is accepted under ADR-0015.
+The syntax in this document remains illustrative. Stage 2 defines the complete
+normative parser, grammar and runtime specification within ADR-0027's accepted
+semantic and trust boundary.
 
 This distinction is deliberate: TOS requires language properties, not a proprietary syntax for its own sake.
 
@@ -75,7 +78,16 @@ This example expresses intent only. It must not be used as an accidental grammar
 
 ## Blocking semantic requirements
 
-The selection ADR must define or adopt:
+The Stage 1.5 selection ADR MUST establish the semantic/trust boundary for:
+
+- canonical source authority;
+- type/effect, ownership/region and concurrency direction;
+- verifier/IR/runtime relationship;
+- bounded bootstrap and SMP-capable full-profile direction; and
+- no safe-language data-race undefined behavior or hidden host-runtime ABI.
+
+Stage 2 MUST define the complete normative specification within that boundary,
+including:
 
 - lexical grammar and Unicode normalization;
 - complete syntactic grammar;

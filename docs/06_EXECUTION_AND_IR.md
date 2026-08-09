@@ -2,7 +2,9 @@
 
 # Execution model and intermediate representation
 
-> The exact language foundation and its lowering boundary remain subject to Stage 1.5 and ADR-0015. This document specifies required execution properties, not a preselected parser implementation.
+> ADR-0027 accepts bespoke TOS Core as the language foundation. This document
+> specifies the accepted execution boundary; Stage 2 defines the complete IR
+> schema and parser/lowering implementation within it.
 
 ## Principle
 

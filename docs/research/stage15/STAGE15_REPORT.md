@@ -11,17 +11,17 @@
 12–13. Future TCB comparison is in the finalist reports: bespoke owns parser/checker/verifier/interpreter/runtime; Rust requires that layer plus containment of its host toolchain/runtime.
 14–18. Both retain canonical text, typed IR verifier boundary, ownership/atomic model, unforgeable capabilities and driver operations; exact mappings are in the finalist reports. Class B is rejected because it leaves these semantics TOS-owned, not merely for host thread creation.
 19–24. Both prototypes preserve source maps/cache identity and show SMP viability, but only bespoke makes the whole semantic/host ABI boundary TOS-owned without an adapter becoming the real language.
-25. Proposed winner: bespoke TOS Core.
+25. Accepted winner: bespoke TOS Core (ADR-0027).
 26. It passes because canonical source, semantics, IR, verifier, bootstrap and full runtime relationship are one explicit TOS contract.
 27–28. Runner-up: adapted Rust; it loses on semantic authority, recovery/TCB and host ABI containment, not speed.
 29. Winner risk: ownership/concurrency/diagnostics/resource implementation is real Stage 2 work, explicitly not deferred from the contract.
-30. Strongest reject: Wasm Threads has host-created threads; Pony is actor-only; unchanged Rust/Go lack the required boundary.
-31–32. ADR-0027 contains the exact proposed docs/05/docs/16 reconciliation: Stage 1.5 fixes the semantic boundary; Stage 2 writes the complete specification. No source migration exists yet.
-33. Exact Proposed ADR: `docs/adr/0027-language-foundation-selection.md`.
+30. Strongest Class-B reject: Wasm lacks TOS canonical-source, capability, ownership/region, structured task/resource, identity and recovery semantics; adding them leaves TOS as the foundation. Host-created threads are supporting evidence only.
+31–32. ADR-0027 acceptance reconciles docs/05/docs/16: Stage 1.5 fixes the semantic boundary; Stage 2 writes the complete specification. No source migration exists yet.
+33. Accepted ADR: `docs/adr/0027-language-foundation-selection.md`.
 34. Research commits: `aee1786`, `3e4294b`, `9bd210b`, `f20b200`, `9dc84d7`.
 35. Commands: each prototype README plus `python3 -m unittest` and `measure.py` commands.
-36. Gate status: decision evidence complete; selection ADR remains Proposed.
+36. Gate status: decision evidence complete; ADR-0027 accepted.
 37. Residual risk: implementation complexity and future cross-engine conformance.
 38. After acceptance, Stage 2 first implements normative semantics, bounded frontend, typed IR verifier and reference interpreter.
 39. **Stage 2 production implementation has NOT begun.**
-40. **PROJECT ARCHITECT: ACCEPT / REJECT**
+40. Project Architect accepted ADR-0027 on 2026-08-09; Stage 2 production implementation has not begun.

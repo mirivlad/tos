@@ -19,9 +19,9 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 - Этап: Stage 0 завершён. **Stage 1 формально закрыт**: capsule v1, Boot ABI
   v1, UEFI loader, nucleus, source identity, fail-closed evidence, P2
   performance evidence и Project Architect approval заархивированы. Начат
-  Stage 1.5 — evidence-based выбор language foundation завершён до Proposed
-  ADR-0027; ожидается единственное решение Project Architect. Stage 2
-  production implementation не начат.
+  **Stage 1.5 формально закрыт**: ADR-0027 accepted, evidence/TCB/recovery
+  analysis и Project Architect approval заархивированы. Stage 2 production
+  implementation не начат.
 - Вся работа ведётся в `source/` (решение owner; docs/17-монобренч на корень
   приостановлен до Stage 1 — scope-решение, не изменение контрактов).
 
