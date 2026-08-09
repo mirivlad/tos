@@ -40,7 +40,7 @@ Composition (derived, not hand-maintained)
 ------------------------------------------
 - files in the release package: 142
 - active system invariants: 21
-- architecture decision records: 25 (25 accepted)
+- architecture decision records: 26 (25 accepted)
 
 Architecture decision records
 -----------------------------
@@ -69,6 +69,7 @@ Architecture decision records
 - docs/adr/0023-stage1-exception-baseline.md — ADR-0023: Stage 1 exception baseline [Accepted (Project Architect-approved)]
 - docs/adr/0024-capsule-provenance-sidecar.md — ADR-0024: Capsule provenance sidecar manifest v1 [Accepted (Project Architect-approved)]
 - docs/adr/0025-stage1-validation-performance.md — ADR-0025: Stage 1 validation-performance conformance [Accepted (Project Architect-approved)]
+- docs/adr/0026-stage1-validation-performance-metric.md — ADR-0026: Stage 1 validation-performance metric [Proposed]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
