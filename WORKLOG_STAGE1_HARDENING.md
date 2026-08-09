@@ -1540,3 +1540,22 @@ boot architecture, DCO policy или опубликованной истории
   This is P2 evidence; the earlier local P1 run remains corroborating research
   rather than the closure basis. F-18 is PASS; F-21 is the sole Stage 1
   closure blocker.
+
+### F-21 immutable evidence record submitted
+
+- `source/legal/release-manifests/f2206036e48c57b821f69d77bc72b16bfd18ee13-stage1-report.md`
+  is the commit-addressed Stage 1 evidence record for the exact source commit
+  that passed all four GitHub Actions gates.  It records the required docs/37
+  fields, G0/R0 scope, actual fixture/bounds and retained P2 artifact instead
+  of the stale interface-local report's moving `HEAD`, debug timing and
+  obsolete vector count.
+- QEMU run `31295609950` passed normal exit 33, all 13 declared capsule
+  negatives and ADR-0026 P2 conformance.  Its 90-day evidence artifact is
+  `9032910755`, SHA-256
+  `8ec1f5ae0946e712953235fef950c8b73a4b64bc593da5ceba5d9721e0a85d24`,
+  expiring 2026-11-07.  Documentation (`31295609953`), provenance
+  (`31295609955`) and source CI (`31295609951`) also passed for the same
+  `f220603` source commit.
+- The record does not claim final closure: a Project Architect decision is
+  still required.  F-21 therefore remains the sole BLOCKER and Stage 1 remains
+  open until an immutable approval/publication record is added.
