@@ -2,7 +2,7 @@
 
 # TOS Core V1 — types, evaluation, ownership, and memory
 
-- Status: **Proposed Stage 2 contract — not implementation authority**
+- Status: **Accepted Tier 2 contract — production implementation in progress**
 - Language version: `TOS Core 1.0`
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`
@@ -176,8 +176,8 @@ evaluates before patterns; assignment evaluates its place base/index
 left-to-right before its right side. Ordinary function calls and tuple-variant
 constructors use the same Call form and differ only at resolved-callee checking.
 `&&` does not evaluate its right side after false; `||` does not evaluate its
-right side after true. `?` evaluates its operand once and returns the
-containing function with the matching `Err` if it is not `Ok`.
+right side after true. `?` evaluates its operand once and propagates the
+matching `Err` from the nearest enclosing return scope if it is not `Ok`.
 
 An executable block is a statement body, not a value container: it has no tail
 expression. `return expression;` is the only normal value return. A function
@@ -208,8 +208,8 @@ not comma-separated. `match` must be exhaustive for an enum, `Option`, or
 exhaustive. `break` has no value. Patterns bind by move unless the matched
 subject is an immutable `Copy` value; borrows must be made explicitly before
 match. `?` remains an explicit Result-propagation operation: it evaluates its
-operand once and returns the containing function with the matching `Err`; it
-is not an implicit block-tail return mechanism.
+operand once and propagates the matching `Err` from the nearest enclosing
+return scope; it is not an implicit block-tail return mechanism.
 
 `Result` is the sole ordinary recoverable-error transport. A runtime trap is a
 defined language failure caused by a violated dynamic precondition. `panic`

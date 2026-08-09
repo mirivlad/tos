@@ -2,7 +2,7 @@
 
 # TOS Core V1 — source model and grammar
 
-- Status: **Proposed Stage 2 contract — not implementation authority**
+- Status: **Accepted Tier 2 contract — production implementation in progress**
 - Language version: `TOS Core 1.0`
 - Authority on acceptance: Tier 2 under
   `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`
@@ -15,12 +15,12 @@
 
 ## Status and boundary
 
-This document is the proposed lexical and syntactic part of one TOS Core V1
+This document is the accepted lexical and syntactic part of one TOS Core V1
 contract set. It is intentionally detailed enough to prevent a first parser
-from inventing language semantics. It becomes Tier 2 authority only if the
-Project Architect accepts ADR-0028. Until then it is a reviewable proposal and
-does **not** authorize a production parser, checker, IR, verifier, interpreter,
-cache, or runtime.
+from inventing language semantics. ADR-0028 accepts it as Tier 2 authority
+under the normative hierarchy. It authorizes the production reference
+implementation; implementation status remains separate and is recorded in the
+guide, tutorial, conformance evidence, and stage report.
 
 TOS Core V1 is the TOS-owned textual language selected by ADR-0027. Canonical
 installed code is normalized UTF-8 `.tos` source. ASTs, typed IR, bytecode and

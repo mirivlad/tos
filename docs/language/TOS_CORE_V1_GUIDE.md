@@ -2,11 +2,11 @@
 
 # TOS Core V1 programmer guide
 
-> **Status: proposed language, not implemented.** This guide describes the
-> Proposed TOS Core V1 contract in docs/39–44. No production frontend exists
-> yet; `.tos` files linked here are canonical proposed examples, not runnable
-> claims. If this guide conflicts with the numbered specification, the numbered
-> specification wins.
+> **Status: accepted language contract; production implementation in progress.**
+> This guide describes accepted TOS Core V1 in docs/39–44. No production
+> frontend exists yet; `.tos` files linked here are canonical examples, not
+> runnable claims. If this guide conflicts with the numbered specification, the
+> numbered specification wins.
 
 ## What a TOS Core program is
 
@@ -91,7 +91,7 @@ ordinary `{ ... }` block does not redirect it. The same scope determines where
 Use `Option<T>` for an expected absence and `Result<T, E>` for a recoverable
 failure. `?` returns the `Err` from the current function; it does not catch a
 language trap or panic. [results.tos](examples/results.tos) is the canonical
-proposed example.
+canonical example.
 
 Every diagnostic identifies its stable code, module, source-set/content IDs,
 repository path, byte span, line/column, and relevant structured fields. That
@@ -169,7 +169,7 @@ not grant simultaneous mutable access. `AtomicBool`, `AtomicU32`, and
 `AtomicU64` have explicit Relaxed/Acquire/Release/AcqRel/SeqCst orderings;
 their meanings are specified by TOS Core, not borrowed implicitly from Rust or
 C++. [atomic-publication.tos](examples/atomic-publication.tos) is the canonical
-proposed publication example.
+publication example.
 
 Atomics are not a shortcut for every shared object. Publishing data uses a
 release/acquire pair or another stated synchronizer; concurrent non-atomic
@@ -193,7 +193,7 @@ how it is safe, capability-gated, resource-bounded, and source-mapped.
 ## Where to look next
 
 [Learning TOS Core](LEARNING_TOS_CORE.md) is the sequential path. The
-[example status matrix](EXAMPLE_STATUS.md) says which proposed feature has a
+[example status matrix](EXAMPLE_STATUS.md) says which accepted feature has a
 specification, guide section, tutorial/example, and conformance vector. It is
-deliberately honest: all rows are specified-proposed and unimplemented until
-the Stage 2 contract is accepted and its production frontend exists.
+deliberately honest: all rows are specified and currently unimplemented while
+the production frontend is built.

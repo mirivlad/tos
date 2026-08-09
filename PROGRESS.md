@@ -21,11 +21,10 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   performance evidence и Project Architect approval заархивированы. **Stage
   1.5 формально закрыт**: ADR-0027 accepted, evidence/TCB/recovery analysis и
   Project Architect approval заархивированы. **Stage 2 Part A остаётся
-  Proposed**: ADR-0028 по-прежнему ожидает единственный Project Architect
-  checkpoint. Последняя синхронизация фиксирует простой V1 surface contract:
-  `[]` для data/declaration lists, `{}` только для executable blocks, `()` для
+  Part B авторизован**: ADR-0028 accepted. V1 surface contract фиксирует `[]`
+  для data/declaration lists, `{}` только для executable blocks, `()` для
   arguments/grouping и explicit `return` без implicit tail values. Stage 2
-  production implementation не начат.
+  production implementation начинается с reference frontend; Stage 3 не начат.
 - Вся работа ведётся в `source/` (решение owner; docs/17-монобренч на корень
   приостановлен до Stage 1 — scope-решение, не изменение контрактов).
 
@@ -227,6 +226,16 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   ordinary nested blocks его не создают. Добавлены conformance vectors и RED→GREEN
   expectations в mechanical gate. `./scripts/preflight.sh --full` → **31/31
   PASS**; Part B и Stage 3 не начаты.
+
+### 2026-08-09 — Stage 2 Part A accepted / Part B authorized (pending verification)
+
+- Project Architect accepted ADR-0028 at reviewed baseline `327fe5f…`.
+  Docs/39–44 становятся accepted Tier 2 contract; guide/tutorial сохраняют
+  отдельный implementation status. `?` редакционно reconciled к nearest
+  return scope for function/closure/spawn body.
+- После документальных gates начинается Stage 2 Part B production reference
+  implementation. `./scripts/preflight.sh --full` → **31/31 PASS**; Stage 3
+  по-прежнему не авторизован.
 
 ## Граница закрытого Stage 1
 

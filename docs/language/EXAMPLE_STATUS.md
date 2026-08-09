@@ -2,7 +2,7 @@
 
 # TOS Core V1 documentation-status matrix
 
-All rows below describe **Proposed** semantics. `Specified` means a precise rule
+All rows below describe **Accepted** semantics. `Specified` means a precise rule
 exists in docs/39–44; `Not implemented` means no production parser/checker/
 verifier/interpreter has executed it yet. This matrix prevents a reader from
 mistaking guide/tutorial material for completed Stage 2 functionality.

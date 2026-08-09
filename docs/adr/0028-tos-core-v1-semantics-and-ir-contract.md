@@ -2,10 +2,11 @@
 
 # ADR-0028: TOS Core V1 semantics and IR contract
 
-- Status: Proposed — ready for Project Architect decision
+- Status: Accepted
 - Date: 2026-08-09
 - Decision level: 2 — versioned language/IR contract within ADR-0027's
   accepted Level 3 foundation boundary
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-09
 
 ## Context
 
@@ -16,7 +17,7 @@ contract to Stage 2. Implementing a parser first would make its incidental
 choices normative and would risk restoring a hidden Rust/LLVM/libc/C ABI/host
 runtime contract.
 
-The proposed numbered specification set is:
+The accepted numbered specification set is:
 
 - `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`;
 - `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`;
@@ -49,7 +50,7 @@ array Copy, with user records/enums affine. These are Level 0 consistency and
 learnability corrections inside the proposed V1 semantic direction, not a new
 language foundation or Part B authorization.
 
-## Proposed decision
+## Decision
 
 Accept TOS Core V1 as specified by docs/39–44:
 

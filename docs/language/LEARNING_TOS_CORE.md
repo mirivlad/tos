@@ -2,8 +2,8 @@
 
 # Learning TOS Core
 
-> **Proposal status.** This is a learning path for Proposed TOS Core V1. It is
-> not a claim that a parser or runtime exists. Each linked `.tos` file is the
+> **Specification status.** This is a learning path for accepted TOS Core V1.
+> It is not a claim that a parser or runtime exists. Each linked `.tos` file is the
 > one canonical example source; this document intentionally does not duplicate
 > snippets that could drift from it.
 
@@ -132,7 +132,7 @@ dedicated CPU thread. `await` consumes a `Task<T>` and yields
 
 ## 16. Structured parallelism
 
-[parallel.tos](examples/parallel.tos) is the proposed CPU-parallel shape:
+[parallel.tos](examples/parallel.tos) is the accepted CPU-parallel shape:
 children are created in one lexical scope and joined there. A cancellation
 request still requires that final join. A Full engine must
 have a true multicore path; Bootstrap may serialize the same work. Correctness
@@ -174,5 +174,5 @@ After the Project Architect accepts the semantic/IR contract, this path will
 gain tested implementation status one slice at a time: lexer, parser,
 diagnostics, checker, ownership, IR/verifier, Bootstrap interpreter, and then
 examples that mechanically parse/type-check/execute. Until then, consult
-[EXAMPLE_STATUS.md](EXAMPLE_STATUS.md) rather than assuming a proposed example
+[EXAMPLE_STATUS.md](EXAMPLE_STATUS.md) rather than assuming a canonical example
 is executable.
