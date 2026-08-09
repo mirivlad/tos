@@ -8,9 +8,10 @@ use std::vec::Vec;
 mod parser;
 
 pub use parser::{
-    EnumDeclaration, EnumVariant, EnumVariantForm, Import, ImportKind, ModuleHeader, ModuleOutline,
-    ModulePrefix, ParseError, ParseErrorCode, Parser, Profile, RecordDeclaration, RecordField,
-    ResourceDeclaration, ResourceLimit, Schema, Span, TypeSyntax, TypeSyntaxForm,
+    BorrowMode, EnumDeclaration, EnumVariant, EnumVariantForm, FunctionParameter,
+    FunctionSignature, Import, ImportKind, ModuleHeader, ModuleOutline, ModulePrefix, ParseError,
+    ParseErrorCode, Parser, Profile, RecordDeclaration, RecordField, ResourceDeclaration,
+    ResourceLimit, Schema, Span, TypeSyntax, TypeSyntaxForm,
 };
 
 mod unicode {
@@ -852,6 +853,20 @@ mod tests {
         assert_eq!(fields[1].ty().form(), TypeSyntaxForm::Constructed);
         assert_eq!(fields[2].ty().form(), TypeSyntaxForm::Array);
         assert_eq!(fields[2].ty().text(&source), "array<u8, 16>");
+    }
+
+    #[test]
+    fn parser_builds_an_extern_function_signature_and_effect_list() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] extern fn now(borrow clock: Clock) -> duration uses [clock,];",
+        )
+        .expect("transport-valid source");
+        let schema = Parser::parse_schema(&source).expect("extern declaration parses");
+        let function = &schema.extern_functions()[0];
+        assert_eq!(function.name().text(&source), "now");
+        assert_eq!(function.parameters().len(), 1);
+        assert_eq!(function.parameters()[0].borrow_mode(), BorrowMode::Shared);
+        assert_eq!(function.effects()[0].text(&source), "clock");
     }
 
     #[test]
