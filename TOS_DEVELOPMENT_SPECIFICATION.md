@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `917d9e6212caac5142c41d47d7de956815c072be224cf46587ab283ace01a1c4`  
+Source-manifest SHA-256: `e890a29a611465015647dd1deea027232fdd70d486e4abeb574d8822f57a8666`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -6351,6 +6351,21 @@ The Stage 1.5 report must contain:
 
 This matrix does not presuppose that a bespoke language wins. It prevents convenience from masquerading as architecture.
 
+## Completed 2026-08-09 evaluation
+
+| Candidate | Blocking result | Evidence |
+|---|---|---|
+| A — bespoke TOS Core | PASS, proposed selection | `stage15/finalists/bespoke-tos-core.md`; common corpus and 1/2/4-worker records |
+| B — TOS surface over WebAssembly Threads formal core | FAIL | Wasm Threads requires host-created threads; a TOS surface would have to recreate task, capability, resource and source semantics. See `stage15/screening.md`, W1/W2. |
+| C — adapted restricted Rust | PASS, runner-up | `stage15/finalists/adapted-rust.md`; actual E0451/E0499 negatives and common worker records |
+| D — unchanged Rust, Pony, Go | FAIL | Ambient/unsafe/resource boundary; actor-only parallelism; or unsafe-race/capability failures respectively. See `stage15/screening.md`. |
+
+Both passing finalists demonstrate deterministic serial and parallel result,
+observed multicore overlap, static/data-race negative handling,
+atomics/synchronization, structured join/cancellation and bounded
+tasks/workers. The proposed winner is chosen for semantic/TCB/recovery fit, not
+speedup.
+
 <!-- END docs/research/LANGUAGE_FOUNDATION_EVALUATION_MATRIX.md -->
 
 ---
@@ -8232,6 +8247,73 @@ would retain the named reports and their raw JSONL rather than copying them
 into a mutable document.
 
 <!-- END docs/adr/0026-stage1-validation-performance-metric.md -->
+
+---
+
+<!-- BEGIN docs/adr/0027-language-foundation-selection.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0027: Select bespoke TOS Core language foundation
+
+- Status: Proposed — Ready for Project Architect decision
+- Date: 2026-08-09
+- Decision level: 3 — canonical language semantics, verifier and runtime trust boundary
+
+## Decision
+
+Select a **bespoke TOS Core foundation**, not an unchanged existing language or
+an external execution core. The selected boundary is:
+
+- canonical installed programs are normalized UTF-8 human-readable `.tos` text;
+- TOS owns lexical/syntactic/type/effect/ownership/concurrency semantics;
+- a versioned typed TOS IR is a disposable derivative, validated independently
+  before execution;
+- the verifier checks types, capabilities, region/ownership rules, resource
+  declarations, source maps, structured async/parallel operations, atomics and
+  memory-order contracts;
+- the bootstrap profile is a bounded serialized execution profile of these same
+  semantics; full profile adds bounded structured parallel execution;
+- the reference interpreter may serialize parallel tasks, while a
+  production-capable backend/runtime must execute them simultaneously on SMP;
+- TOS parser, checker, verifier, bootstrap interpreter and minimal task runtime
+  form the future language trusted base. rustc, LLVM, libc, C ABI, host thread
+  APIs and external VMs are build/research tools unless a later ADR separately
+  admits a narrowly defined role.
+
+## Rationale and alternatives
+
+The completed matrix and common 13-case corpus show the bespoke model can state
+capability non-forgeability, source maps, bounded resources, safe mutable-share
+rejection, atomics, join/cancel and 1/2/4-worker semantics explicitly. The
+adapted Rust runner-up demonstrates useful ownership and compiler rejections,
+but its necessary restriction/runtime/verifier layer recreates the TOS semantic
+boundary while retaining incomplete upstream memory-model and recovery/host ABI
+risks. WebAssembly Threads is rejected as a formal-core option because it
+requires host thread creation; Pony's actor-only model conflicts with direct
+parallel task requirements; unchanged Rust and Go fail their ambient/unsafe or
+safe-race/resource boundaries.
+
+## Impact statement
+
+The decision preserves I-01, I-02, I-07, I-10, I-11, I-12, I-16, I-18 and
+I-19. No persistent format, boot ABI or existing Stage 1 trusted code changes.
+Derived IR/caches remain regenerable and source-addressed. Stage 2 will first
+write the normative semantics and a bounded bootstrap frontend/verifier, with
+conformance/fuzz/resource tests before a production runtime. Licence remains
+GPL-3.0-or-later for official implementation; public schemas/conformance may be
+explicitly Apache-2.0. No patent-freedom claim is made.
+
+## Evidence and limitations
+
+Evidence is retained under `docs/research/stage15/`, including raw 3+21
+measurements, primary references, screening and both finalist prototypes. It is
+not Stage 2 code. The selected approach's main risk is the still-unimplemented
+complexity of complete ownership, diagnostics, resource accounting and multiple
+engines; acceptance authorizes Stage 2 to implement those contracts, not to
+skip them.
+
+<!-- END docs/adr/0027-language-foundation-selection.md -->
 
 ---
 

@@ -118,3 +118,18 @@ The Stage 1.5 report must contain:
 - accepted selection ADR.
 
 This matrix does not presuppose that a bespoke language wins. It prevents convenience from masquerading as architecture.
+
+## Completed 2026-08-09 evaluation
+
+| Candidate | Blocking result | Evidence |
+|---|---|---|
+| A — bespoke TOS Core | PASS, proposed selection | `stage15/finalists/bespoke-tos-core.md`; common corpus and 1/2/4-worker records |
+| B — TOS surface over WebAssembly Threads formal core | FAIL | Wasm Threads requires host-created threads; a TOS surface would have to recreate task, capability, resource and source semantics. See `stage15/screening.md`, W1/W2. |
+| C — adapted restricted Rust | PASS, runner-up | `stage15/finalists/adapted-rust.md`; actual E0451/E0499 negatives and common worker records |
+| D — unchanged Rust, Pony, Go | FAIL | Ambient/unsafe/resource boundary; actor-only parallelism; or unsafe-race/capability failures respectively. See `stage15/screening.md`. |
+
+Both passing finalists demonstrate deterministic serial and parallel result,
+observed multicore overlap, static/data-race negative handling,
+atomics/synchronization, structured join/cancellation and bounded
+tasks/workers. The proposed winner is chosen for semantic/TCB/recovery fit, not
+speedup.
