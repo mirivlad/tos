@@ -30,8 +30,9 @@ implicit prelude or ambient package search.
 ## 4. Values, bindings, and basic types
 
 [values.tos](examples/values.tos) introduces immutable `let`, mutable `let
-mut`, fixed-width integers, `size`, and `duration`. A missing or overflowing
-conversion is an explicit error, never a quietly target-dependent value.
+mut`, fixed-width integers, `size`, and `duration`. A checked conversion names
+its destination, for example `to_u8(value)`, and returns `Result`; a missing or
+overflowing conversion is never a quietly target-dependent value.
 
 ## 5. Functions
 
@@ -43,9 +44,11 @@ source, but it does not exist yet.
 ## 6. Records, tuples, and enums
 
 [data.tos](examples/data.tos) uses a record for named data, a tuple for a small
-fixed grouping, and an enum for alternatives. TOS Core V1 chooses nominal
+fixed grouping, and an enum for alternatives. Its final `match` is a value, as
+the first program's final `if` is a value. TOS Core V1 chooses nominal
 records/enums so that types from different modules are not accidentally
-interchangeable.
+interchangeable. Aggregates copy automatically only when all their stored
+components are Copy; otherwise they move.
 
 ## 7. Option and Result
 

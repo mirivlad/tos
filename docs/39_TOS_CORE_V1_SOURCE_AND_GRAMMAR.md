@@ -100,9 +100,10 @@ The inventory is deliberately machine-readable and is checked by
 ```text
 reserved: as async await bootstrap borrow break cancel capability const continue defer else enum extern false fn for full if import in join let loop match module mut parallel profile pub record resource return spawn true unsafe uses version while
 primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes unit
-predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 slice
+predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice
 atomic-order: Relaxed Acquire Release AcqRel SeqCst
 predeclared-value: Some None Ok Err Completed Cancelled
+predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul
 special-token: _
 ```
 <!-- stage2-word-inventory:end -->
@@ -201,7 +202,8 @@ primitive_type  = "bool" | "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64" | "size" | "duration"
                 | "string" | "bytes" | "unit" ;
 predeclared_type = "Event" | "Semaphore" | "Barrier" | "Latch"
-                | "AtomicBool" | "AtomicU32" | "AtomicU64" ;
+                | "AtomicBool" | "AtomicU32" | "AtomicU64"
+                | "ConversionError" ;
 named_type      = qualified_name ;
 constructed_type = "Option" "<" type ">"
                 | "Result" "<" type "," type ">"
@@ -221,30 +223,34 @@ type_list       = type ( "," type )* ","? ;
 
 block           = "{" statement* tail_expression? "}" ;
 tail_expression = expression ;
-statement       = let_stmt | assignment ";" | expression ";" | return_stmt
-                | break_stmt | continue_stmt | if_stmt | while_stmt | for_stmt
-                | loop_stmt | match_stmt | parallel_stmt | cancel_stmt
-                | defer_stmt | unsafe_stmt ;
+statement       = let_stmt | assignment ";" | logical_or ";" | return_stmt
+                | break_stmt | continue_stmt | while_stmt | for_stmt
+                | loop_stmt | parallel_stmt | cancel_stmt
+                | defer_stmt | unsafe_stmt | control_expression_statement ;
+control_expression_statement = if_expression ";"? | match_expression ";"? ;
 let_stmt        = "let" "mut"? pattern ( ":" type )? "=" expression ";" ;
 assignment      = place "=" expression ;
 return_stmt     = "return" expression? ";" ;
-break_stmt      = "break" expression? ";" ;
+break_stmt      = "break" ";" ;
 continue_stmt   = "continue" ";" ;
-if_stmt         = "if" "(" expression ")" block ( "else" ( if_stmt | block ) )? ;
 while_stmt      = "while" "(" expression ")" block ;
 for_stmt        = "for" pattern "in" "(" expression ")" block ;
 loop_stmt       = "loop" block ;
-match_stmt      = "match" "(" expression ")" "{" match_arm* "}" ;
-match_arm       = pattern "=>" ( block | expression "," ) ;
 parallel_stmt   = "parallel" block ;
 cancel_stmt     = "cancel" expression ";" ;
 defer_stmt      = "defer" block ;
 unsafe_stmt     = "unsafe" block ;
 
-pattern         = "_" | identifier | identifier "(" pattern_list? ")"
+pattern         = "_" | pattern_name | pattern_name "(" pattern_list? ")"
                 | "(" pattern_list ")" ;
+pattern_name    = identifier | predeclared_value ;
 pattern_list    = pattern ( "," pattern )* ","? ;
-expression      = logical_or ;
+expression      = if_expression | match_expression | logical_or ;
+if_expression   = "if" "(" expression ")" block
+                ( "else" ( if_expression | block ) )? ;
+match_expression = "match" "(" expression ")" "{" match_arm_list? "}" ;
+match_arm_list  = match_arm ( "," match_arm )* ","? ;
+match_arm       = pattern "=>" ( block | expression ) ;
 logical_or      = logical_and ( "||" logical_and )* ;
 logical_and     = equality ( "&&" equality )* ;
 equality        = comparison ( ( "==" | "!=" ) comparison )* ;
@@ -257,23 +263,26 @@ sum             = product ( ( "+" | "-" ) product )* ;
 product         = unary ( ( "*" | "/" | "%" ) unary )* ;
 unary           = ( "!" | "-" | "~" | "borrow" ( "mut" )? | "await" | "join" ) unary
                 | postfix ;
-postfix         = primary ( call | index | field | question | cast )* ;
-call            = "(" argument_list? ")" ;
+postfix         = primary ( call_suffix | index | field | question | cast )* ;
+call_suffix     = "(" argument_list? ")" ;
 argument_list   = expression ( "," expression )* ","? ;
 index           = "[" expression "]" ;
 field           = "." identifier ;
 question        = "?" ;
 cast            = "as" type ;
-primary         = literal | "true" | "false" | qualified_name
-                | tuple | array | record_init | enum_init
+primary         = literal | "true" | "false" | predeclared_value
+                | predeclared_function | qualified_name | tuple | array | record_init
                 | closure | spawn_expression | "(" expression ")" | block ;
+predeclared_value = "Some" | "None" | "Ok" | "Err" | "Completed" | "Cancelled" ;
+predeclared_function = "to_i8" | "to_i16" | "to_i32" | "to_i64"
+                | "to_u8" | "to_u16" | "to_u32" | "to_u64"
+                | "wrapping_add" | "wrapping_sub" | "wrapping_mul" ;
 literal         = integer | size | duration | string | bytes ;
 tuple           = "(" expression "," expression ( "," expression )* ","? ")" ;
 array           = "[" argument_list? "]" ;
 record_init     = qualified_name "{" field_init_list? "}" ;
 field_init_list = field_init ( "," field_init )* ","? ;
 field_init      = identifier ":" expression ;
-enum_init       = qualified_name "(" argument_list? ")" ;
 closure         = "|" closure_parameters? "|" expression ;
 closure_parameters = parameter ( "," parameter )* ","? ;
 spawn_expression = "spawn" ( "async" | "parallel" ) block ;
@@ -284,22 +293,30 @@ const_product   = const_primary ( ( "*" | "/" | "%" ) const_primary )* ;
 const_primary   = integer | size | identifier | "(" const_expression ")" ;
 ```
 
-Every control header has mandatory parentheses.  The closing `)` therefore
-ends an `if`, `while`, `for`, or `match` head before the following block begins;
-`if ready { ... }` is `E1105_CONTROL_HEAD_PARENS_REQUIRED`.  This deliberately
+Every control header has mandatory parentheses. The closing `)` therefore ends
+an `if`, `while`, `for`, or `match` head before the following block begins;
+`if ready { ... }` is `E1105_CONTROL_HEAD_PARENS_REQUIRED`. This deliberately
 prevents a parser from having to choose between a control block and a record
-initializer such as `Ready { ... }`.  A `qualified_name` followed by `{` or
-`(` in an ordinary expression position is parsed as `record_init` or
-`enum_init` respectively; name resolution then checks that it denotes the
-corresponding nominal type or variant.  This local name check is not semantic
-backtracking.  An empty record initializer is syntactically valid. Fields are
-comma-separated, a final comma is permitted, and a repeated field name is the
-static named-field error `E1205_DUPLICATE_RECORD_FIELD`, not a parser error.
-Missing a comma between record fields is
-`E1106_RECORD_FIELD_SEPARATOR_REQUIRED`. Function calls, field access,
-indexing, propagation (`?`) and casts group left-to-right; binary precedence
-is listed from weakest to strongest. `&&` and `||` short-circuit. `await`,
-`join`, and `borrow` bind like other unary operators.
+initializer such as `Ready { ... }`. `if_expression` and `match_expression`
+are ordinary expressions, so they may bind with `let`, occur in a block tail,
+or be used as an expression statement followed by `;`. A bare `if`/`match`
+expression is also permitted in statement position without `;`; its value is
+discarded. `while`, `for`, and `loop` remain unit-valued statements in V1;
+`break` has no value.
+
+A `qualified_name` followed by `{` is `record_init`. A name followed by a call
+suffix is always one generic Call syntax node, whether resolution later finds a
+function, an `Option`/`Result` constructor, a user enum tuple variant, or a
+future callable V1 entity. The parser never chooses an enum-constructor parse
+instead of a function-call parse. Resolution validates the selected callee
+kind after that one syntax form is built; this is not semantic backtracking.
+An empty record initializer is syntactically valid. Fields are comma-separated,
+a final comma is permitted, and a repeated field name is the static named-field
+error `E1205_DUPLICATE_RECORD_FIELD`, not a parser error. Missing a comma
+between record fields is `E1106_RECORD_FIELD_SEPARATOR_REQUIRED`. Function
+calls, field access, indexing, propagation (`?`) and casts group left-to-right;
+binary precedence is listed from weakest to strongest. `&&` and `||`
+short-circuit. `await`, `join`, and `borrow` bind like other unary operators.
 
 `defer`, `unsafe`, closures, `async`, and `spawn async` are Full-profile
 constructs. `parallel`, `spawn parallel`, `join`, and `cancel` have defined

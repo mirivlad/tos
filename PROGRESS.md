@@ -22,8 +22,9 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   1.5 формально закрыт**: ADR-0027 accepted, evidence/TCB/recovery analysis и
   Project Architect approval заархивированы. **Stage 2 Part A остаётся
   Proposed**: после checkpoint review синхронизируются grammar/type/task
-  lifecycle и canonical vectors; ADR-0028 по-прежнему ожидает единственный
-  Project Architect checkpoint. Stage 2 production implementation не начат.
+  lifecycle, control-expression value model, Call-form, conversions, aggregate
+  Copy и canonical vectors; ADR-0028 по-прежнему ожидает единственный Project
+  Architect checkpoint. Stage 2 production implementation не начат.
 - Вся работа ведётся в `source/` (решение owner; docs/17-монобренч на корень
   приостановлен до Stage 1 — scope-решение, не изменение контрактов).
 
@@ -188,6 +189,17 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   matrix обновлены; новый mechanical cross-contract gate включён в preflight.
 - Финальная верификация для этого состояния: `./scripts/preflight.sh --full`
   → **31/31 PASS**; Stage 2 production implementation по-прежнему не начат.
+
+### 2026-08-09 — Stage 2 Part A: second narrow contract resubmission
+
+- Не переоткрывая закрытые находки предыдущего review, contract получает один
+  value model для `if`/`match`, единый Call form для функций/constructors,
+  выражаемый `to_*` checked-conversion contract и automatic structural Copy
+  rule для V1 aggregates.
+- Добавлены C009–C012 и R016–R017; mechanical gate проверяет эти формы,
+  canonical tail examples и отсутствие competing `enum_init` parse.
+- ADR-0028 остаётся Proposed; Part B production implementation и Stage 3 не
+  начаты. `./scripts/preflight.sh --full` → **31/31 PASS**.
 
 ## Граница закрытого Stage 1
 

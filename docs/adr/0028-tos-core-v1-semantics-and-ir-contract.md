@@ -38,6 +38,13 @@ and defines cancellation as a request followed by a consuming
 checks these boundaries across docs/39–44, canonical examples, and the
 conformance corpus.
 
+The second resubmission additionally reconciles value-producing `if`/`match`
+with their canonical tail-expression examples; uses one Call AST form for
+functions and tuple constructors; replaces unexpressible generic conversion
+notation with fixed `to_*` standard calls; and makes aggregate Copy automatic
+and structural. These are Level 0 consistency corrections inside the proposed
+V1 semantic direction, not a new language foundation or Part B authorization.
+
 ## Proposed decision
 
 Accept TOS Core V1 as specified by docs/39–44:
@@ -50,6 +57,10 @@ Accept TOS Core V1 as specified by docs/39–44:
   synchronization/atomic types have fixed documented arity; control heads are
   parenthesized and record fields are comma-separated so parser boundaries do
   not depend on type resolution;
+- `if`/`match` are value-producing expressions in both binding/tail and
+  statement use; function and constructor calls share a single syntactic Call
+  form; checked integer conversion uses fixed `to_*` calls; and aggregate Copy
+  is automatic from stored-component types;
 - static semantics provide nominal types, fixed-width arithmetic, typed
   Result-style errors, capability effects, affine ownership, lexical
   nonescaping borrows, typed regions, and no safe raw-pointer/physical-address

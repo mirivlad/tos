@@ -74,19 +74,34 @@ def main() -> int:
         require('"nil"' not in grammar_body.group(1), "nil remains a V1 grammar terminal", failures)
         require("tuple_type" in grammar_body.group(1), "tuple_type missing from grammar", failures)
         require('"slice" "<" type ">"' in grammar_body.group(1), "slice<T> missing from grammar", failures)
-        require('if_stmt         = "if" "(" expression ")" block' in grammar_body.group(1), "if control head is not parenthesized", failures)
+        require('if_expression   = "if" "(" expression ")" block' in grammar_body.group(1), "if is not a value-producing expression", failures)
         require('while_stmt      = "while" "(" expression ")" block' in grammar_body.group(1), "while control head is not parenthesized", failures)
-        require('match_stmt      = "match" "(" expression ")" "{" match_arm* "}"' in grammar_body.group(1), "match control head is not parenthesized", failures)
+        require('match_expression = "match" "(" expression ")" "{" match_arm_list? "}"' in grammar_body.group(1), "match is not a value-producing expression", failures)
+        require('expression      = if_expression | match_expression | logical_or ;' in grammar_body.group(1), "if/match are absent from expression grammar", failures)
+        require('call_suffix     = "(" argument_list? ")" ;' in grammar_body.group(1), "generic call/constructor-call syntax missing", failures)
+        require("enum_init" not in grammar_body.group(1), "enum constructor remains a competing parse", failures)
+        require('predeclared_function' in grammar_body.group(1), "checked conversion functions lack grammar representation", failures)
         require("field_init_list" in grammar_body.group(1), "record initializer lacks a separated field list", failures)
         require('field_init      = identifier ":" expression ;' in grammar_body.group(1), "record field unexpectedly owns a separator", failures)
 
     require("TaskResult<T>" in types, "TaskResult<T> semantics missing", failures)
-    require("`Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`, and" in types, "fixed-arity predeclared types missing", failures)
+    require("`AtomicU64`, and `ConversionError` are non-generic typed runtime contracts" in types, "fixed-arity predeclared types missing", failures)
     require("`Result<T,E>` takes two" in types, "constructed type arity inventory missing", failures)
     require("cancel alone does not discharge" in concurrency, "cancel/join lifecycle remains ambiguous", failures)
     require("join Task<T> -> TaskResult<T>" in concurrency, "join Task<T> result missing", failures)
     require("TaskResult<Result<T,E>>" in concurrency, "join Task<Result<T,E>> result missing", failures)
     require("TaskResult<T>" in ir, "IR task result typing missing", failures)
+    require("`to_i8` through `to_i64` and `to_u8` through `to_u64`" in types, "checked conversion source contract missing", failures)
+    require("`convert<T>(x)`" not in types, "unexpressible generic conversion notation remains", failures)
+    require(re.search(r"Copy is\s+automatic and structural", types) is not None, "aggregate Copy rule is not explicit and automatic", failures)
+    require(
+        all(
+            re.search(pattern, types) is not None
+            for pattern in [r"tuple is `Copy`", r"array is `Copy`", r"record or enum\s+is `Copy`"]
+        ),
+        "aggregate Copy coverage is incomplete",
+        failures,
+    )
     require("`nil` is not a TOS Core V1 value" in modules, "module contract still implies a nil value", failures)
     require("`Option` (not `nil`)" in conformance, "conformance contract does not exclude nil", failures)
     require("TaskResult<T>" in guide and "TaskResult<T>" in tutorial, "programmer documentation misses TaskResult lifecycle", failures)
@@ -95,6 +110,10 @@ def main() -> int:
         "accept/type-forms.tos",
         "accept/control-heads.tos",
         "accept/task-cancellation.tos",
+        "accept/control-values.tos",
+        "accept/call-and-constructor.tos",
+        "accept/checked-conversion.tos",
+        "accept/copy-aggregates.tos",
         "reject/if-identifier-control-head.tos",
         "reject/while-identifier-control-head.tos",
         "reject/match-identifier-control-head.tos",
@@ -102,18 +121,37 @@ def main() -> int:
         "reject/unjoined-task.tos",
         "reject/duplicate-record-field.tos",
         "reject/nil-absence.tos",
+        "reject/unchecked-conversion.tos",
+        "reject/noncopy-aggregate.tos",
     ]
     for vector in required_vectors:
         require((root / "docs/language/conformance/v1" / vector).is_file(), f"missing vector: {vector}", failures)
         require(vector in expectations, f"missing expectation: {vector}", failures)
+
+    def vector_text(relative: str) -> str:
+        path = root / "docs/language/conformance/v1" / relative
+        return path.read_text(encoding="utf-8") if path.is_file() else ""
+
+    control_values = vector_text("accept/control-values.tos")
+    require("let value = if (ready)" in control_values and "pub fn tail_if" in control_values, "if value conformance cases missing", failures)
+    require("let value = match (signal)" in control_values and "pub fn tail_match" in control_values, "match value conformance cases missing", failures)
+    call_vector = vector_text("accept/call-and-constructor.tos")
+    require(all(token in call_vector for token in ["zero()", "add(start, 2i32)", "Ok(", "Err(", "Pair(total, 3i32)"]), "call/constructor conformance coverage incomplete", failures)
+    conversion_vector = vector_text("accept/checked-conversion.tos")
+    require("to_u8(value)" in conversion_vector, "checked conversion conformance case missing", failures)
+    copy_vector = vector_text("accept/copy-aggregates.tos")
+    require(all(token in copy_vector for token in ["let tuple", "let array", "let pair", "let choice"]), "aggregate Copy conformance coverage incomplete", failures)
 
     vector_root = root / "docs/language/conformance/v1"
     for vector in sorted(vector_root.glob("accept/*.tos")) + sorted(vector_root.glob("reject/*.tos")):
         rel = vector.relative_to(vector_root).as_posix()
         require(rel in expectations, f"conformance input lacks expectation: {rel}", failures)
 
-    example = (root / "docs/language/examples/data.tos").read_text(encoding="utf-8")
-    require("-> (i32, i32)" in example, "tuple example unexpectedly changed", failures)
+    data_example = (root / "docs/language/examples/data.tos").read_text(encoding="utf-8")
+    first_example = (root / "docs/language/examples/first.tos").read_text(encoding="utf-8")
+    require("-> (i32, i32)" in data_example, "tuple example unexpectedly changed", failures)
+    require("match (axis)" in data_example, "canonical data example no longer has tail match", failures)
+    require("if (answer == 42i32)" in first_example, "canonical first example no longer has tail if", failures)
 
     allowed_unparenthesized = {
         "reject/if-identifier-control-head.tos",
@@ -135,6 +173,11 @@ def main() -> int:
 
     language_docs = "\n".join([grammar, types, concurrency, modules, ir, conformance, guide, tutorial])
     require(not re.search(r"\b(Semaphore|Event|Barrier|Latch|AtomicBool|AtomicU32|AtomicU64)\s*<", language_docs), "zero-arity predeclared type is used as generic", failures)
+    require(
+        re.search(r"ordinary function calls and tuple-variant\s+constructors use the same Call form", types, flags=re.IGNORECASE) is not None,
+        "call/constructor semantic unification missing",
+        failures,
+    )
 
     if failures:
         for failure in failures:

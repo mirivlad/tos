@@ -27,9 +27,9 @@ convenient error.
 | Vector class | Required initial evidence |
 |---|---|
 | lexical/source | UTF-8, BOM, NFC, CRLF/bare-CR, tab, identifier, integer, string/bytes, and earliest-error precedence |
-| grammar | module/header/import, declaration/block recovery, parenthesized control heads, comma-separated record fields, tuple/slice/predeclared-type arity, precedence, complete match, reserved words, invalid profile syntax |
-| static type/evaluation | fixed-width literals, conversion, checked overflow/shift/division, Result `?`, `Option` (not `nil`), evaluation order |
-| ownership | move/use-after-move, immutable/mutable conflict, borrow escape, indexed alias conservatism, task capture |
+| grammar | module/header/import, declaration/block recovery, value-producing parenthesized `if`/`match`, one Call/constructor form, comma-separated record fields, tuple/slice/predeclared-type arity, precedence, complete match, reserved words, invalid profile syntax |
+| static type/evaluation | fixed-width literals, `to_*` checked conversion and invalid narrowing, checked overflow/shift/division, Result `?`, `Option` (not `nil`), evaluation order |
+| ownership | move/use-after-move, automatic structural aggregate Copy/non-Copy, immutable/mutable conflict, borrow escape, indexed alias conservatism, task capture |
 | capabilities | undeclared effect, forged handle, denied request, invalid attenuation/transfer, untyped privileged operation |
 | resources | missing/invalid required limit, metered loop, recursion/import/task/worker/sync/shared/cleanup exhaustion |
 | concurrency | one/2/N-worker equivalent deterministic result, actual Full-engine overlap, safe mutable-share rejection, `TaskResult` join/cancel lifecycle, bounded task/worker behavior |

@@ -21,8 +21,8 @@ pub fn cancellation_is_explicit() -> bool {
         cancel child;
         let outcome = join child;
         match (outcome) {
-            Completed(_) => { cancelled = false; }
-            Cancelled => { cancelled = true; }
+            Completed(_) => { cancelled = false; },
+            Cancelled => { cancelled = true; },
         }
     }
     cancelled

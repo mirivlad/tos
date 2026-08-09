@@ -11,10 +11,10 @@ mistaking guide/tutorial material for completed Stage 2 functionality.
 |---|---|---|---|---|---|---|
 | source normalization and module header | docs/39 §1–2 | Guide: What a program is | [first.tos](examples/first.tos) | BOM/NFC/tab: E1002/E1004/E1010 | L001–L005, C004 | Not implemented |
 | declarations, functions, expressions | docs/39 §5; docs/40 §4 | Guide: Values / Functions | [data.tos](examples/data.tos) | parse recovery primary code | C001 | Not implemented |
-| fixed-width values and units | docs/39 §3; docs/40 §1–3 | Guide: Values | [values.tos](examples/values.tos) | target-width assumption: E1210 | C001 | Not implemented |
-| records, tuples, enums, match | docs/39 §5; docs/40 §1/4 | Guide: Data | [data.tos](examples/data.tos), [control-heads.tos](conformance/v1/accept/control-heads.tos) | missing variant: E1220; unparenthesized head: E1105 | C006, C007, R009–R012, R014 | Not implemented |
+| fixed-width values and units | docs/39 §3/5; docs/40 §1–3 | Guide: Values | [values.tos](examples/values.tos), [checked-conversion.tos](conformance/v1/accept/checked-conversion.tos) | implicit/narrowing conversion: E1210/E1212 | C001, C011, R016 | Not implemented |
+| records, tuples, enums, match | docs/39 §5; docs/40 §1/4 | Guide: Data | [data.tos](examples/data.tos), [control-values.tos](conformance/v1/accept/control-values.tos), [call-and-constructor.tos](conformance/v1/accept/call-and-constructor.tos) | missing variant: E1220; unparenthesized head: E1105 | C006, C007, C009, C010, R009–R012, R014 | Not implemented |
 | Option, Result, `?` | docs/40 §1/4 | Guide: Option and Result | [results.tos](examples/results.tos) | treating trap as Result | C004 | Not implemented |
-| ownership and borrows | docs/40 §5 | Guide: Ownership | [ownership.tos](examples/ownership.tos) | moved/conflicting value: E1301/E1302 | R001, R002 | Not implemented |
+| ownership and borrows | docs/40 §5 | Guide: Ownership | [ownership.tos](examples/ownership.tos), [copy-aggregates.tos](conformance/v1/accept/copy-aggregates.tos) | moved/conflicting value: E1301/E1302 | C012, R001, R002, R017 | Not implemented |
 | imports and module identity | docs/39 §5; docs/42 §1 | Guide: Files/modules | [modules.tos](examples/modules.tos) | ambient/missing import: E1604 | C005, import graph cases | Not implemented |
 | capability effects/nonforgeability | docs/40 §2; docs/42 §2 | Guide: Regions/capabilities | [capability.tos](examples/capability.tos) | scalar authority: E1502 | R003, R008 | Not implemented |
 | resource envelope / metering | docs/41 §6 | Guide: Resources | [resources.tos](examples/resources.tos) | unmetered Bootstrap loop: E1701 | R005 | Not implemented |
