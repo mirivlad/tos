@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `18c72fb441f69a5a19ca67815717861ab1d58dcfe63d1ebf0f3299557398a949`  
+Source-manifest SHA-256: `917d9e6212caac5142c41d47d7de956815c072be224cf46587ab283ace01a1c4`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -100,10 +100,11 @@ successful validation. Its checked source/provenance relationship is recorded
 in `assets/mascot/pyro-stage1-provenance.json`. When no framebuffer is
 available, boot evidence remains the serial log.
 
-Stage 1 is a bootable TOS foundation with source-bound capsule identity and
-fail-closed validation. It is not yet a user shell, application environment or
-desktop operating system, and Stage 1 is not declared closed while the formal
-closure findings remain open.
+Stage 1 is formally closed as a bootable TOS foundation with source-bound
+capsule identity and fail-closed validation. It is not a user shell,
+application environment or desktop operating system. Stage 1.5 is now the
+evidence-based language-foundation decision; it has not started Stage 2
+runtime implementation.
 
 ## Core thesis
 
@@ -2511,10 +2512,12 @@ Canonical native source files are expected to use UTF-8 and the `.tos` extension
 
 The selected language has two profiles sharing compatible syntax and semantics:
 
-- **Bootstrap profile** — bounded allocation, no ambient dynamic module loading, minimal standard library, used during early boot and recovery.
-- **Full profile** — structured asynchronous tasks, richer collections, dynamic service discovery, frontend APIs and user applications.
+- **Bootstrap profile** — bounded allocation, no ambient dynamic module loading, minimal standard library, used during early boot and recovery. It MAY run on one worker/core, use deterministic serialized execution and restrict or prohibit parallel spawning.
+- **Full profile** — structured asynchronous and parallel tasks, richer collections, dynamic service discovery, frontend APIs and user applications.
 
-The bootstrap profile is a strict supported subset, not a temporary fake language.
+The bootstrap profile is a strict supported subset, not a temporary fake
+language or a second concurrency semantics. Its restrictions are profile
+restrictions on the same selected language foundation.
 
 ## Illustrative syntax
 
@@ -2604,6 +2607,27 @@ Required mechanisms include:
 
 The bootstrap contract must not require a stop-the-world collector. An implementation may use arenas, reference counting or another internal strategy only if observable semantics and pause/resource limits are specified.
 
+The selection ADR MUST also define the concurrency memory model: ownership,
+immutable sharing, mutable sharing, transfer of values and tasks between
+execution contexts, synchronization primitives, atomic types and memory
+orderings, visibility/happens-before rules, interaction between atomic and
+ordinary memory, shared memory regions and the unsafe concurrency boundary.
+It MUST NOT rely on a particular Rust, C++ or host-runtime memory model merely
+by implication.
+
+Safe TOS Core code MUST NOT have undefined behavior from an unsynchronized
+data race. The foundation MUST statically prevent unsafe unsynchronized mutable
+sharing, provide defined runtime/type semantics for it, or combine those
+methods. Ordinary safe code MUST NOT turn a race into arbitrary memory
+corruption or undefined behavior.
+
+The model MUST remain address-space independent. Ordinary safe code MUST NOT
+assume a fixed virtual-address width, a fixed page-table layout or a fixed
+process address-space size. Machine-sized indices and sizes MAY follow the
+declared target ABI when semantically necessary; persistent and public
+serialized formats use explicitly defined fixed-width types. Physical addresses
+remain privileged system-level concepts rather than ordinary language integers.
+
 ## Errors and diagnostics
 
 Recoverable failures use a typed result mechanism. Fatal invariant failure terminates the current process unless supervisor policy escalates it.
@@ -2633,15 +2657,59 @@ A module declares:
 
 Imports resolve against the active system commit and explicit overlays. Resolution cannot depend on ambient working directory, network, time or undeclared host state.
 
-## Concurrency
+## Concurrency, parallelism and execution contexts
 
-The required model is structured concurrency rather than unmanaged detached threads by default:
+TOS Core distinguishes three related but different mechanisms:
 
-- tasks belong to a scope;
-- cancellation propagates to children;
-- resource handles close deterministically;
-- drivers bind interrupts to explicit event streams;
-- blocking operations are visible in the type/effect or API contract.
+- **asynchronous tasks** await IPC, IRQs, timers, I/O and other events without necessarily occupying a CPU;
+- **parallel tasks** perform CPU-bound or independent work that MAY execute simultaneously on different CPU cores; and
+- **low-level execution contexts/threads** are runtime or nucleus mechanisms for cases that require direct control.
+
+An async event loop alone does not satisfy the TOS Core requirement.
+
+In the full profile, one process MUST be able to have multiple runnable
+execution contexts sharing its address space. Independent language-level work
+MUST have a path to simultaneous execution on different CPU cores. Channels,
+actors, IPC and queues MAY be important mechanisms, but they are not the only
+way for a process to use multiple cores. Ordinary CPU-parallel work MUST NOT
+require separate processes, serialization through IPC or manual queue
+construction solely to obtain multicore execution.
+
+The preferred safe-code model is structured concurrency and structured
+parallelism. Conceptually, a scope may spawn parallel child work and then join
+it; this is a semantic illustration, not accepted syntax. Parallel child tasks
+belong to their scope, have a defined join and lifetime, define cancellation
+behavior and cannot leave resources uncontrolled as orphans. Unscoped or
+detached execution, if provided, is an explicit lower-level facility.
+
+Program correctness MUST NOT depend on a CPU number, worker count or scheduler
+interleaving. A correct program remains semantically correct on one, two or N
+CPUs. The model MAY specify concurrency-related nondeterminism, but it MUST
+define permitted outcomes. A correctly synchronized deterministic computation
+MUST NOT change its logical result only because the runtime has a different
+number of workers.
+
+The language/runtime foundation MUST provide defined typed contracts, whether
+as language features or standard/runtime APIs, for mutexes, reader/writer
+synchronization where justified, semaphores or events, barriers or latches,
+atomics, channels/message passing and task join/cancellation. Their semantics
+MUST NOT depend on accidental host-runtime behavior.
+
+Parallel execution does not grant unbounded CPU authority. The process/resource
+model MUST be able to account for or limit total CPU time, runnable execution
+contexts, parallel workers/tasks, stacks, memory, synchronization resources,
+shared regions and cancellation cleanup cost. Spawning in a loop MUST NOT
+implicitly create an unbounded number of kernel threads.
+
+A reference or recovery interpreter MAY serialize parallel tasks for auditability
+if it preserves the specified language semantics and conformance tests prove
+that fact. At least one production-capable execution path MUST nevertheless
+support genuine simultaneous multicore execution. All execution modes retain
+the same language and memory semantics.
+
+The selected foundation MUST leave an architectural path for later CPU affinity,
+NUMA-aware scheduling and memory placement, heterogeneous cores and
+topology-aware scheduling. Stage 1.5 does not define their final APIs.
 
 ## Metaprogramming
 
@@ -2709,10 +2777,21 @@ It must represent:
 - IPC send/receive operations;
 - memory-region operations;
 - async suspension points;
+- structured task spawn, parallel task spawn, join and cancellation;
+- synchronization operations and atomic operations with their required memory-order semantics;
+- typed shared-memory-region access;
+- execution-context and resource-accounting operations;
 - source maps;
 - resource limits;
 - module imports and exports;
 - driver-specific operations only through typed service contracts.
+
+Parallel semantics MUST remain directly represented or pass through versioned,
+typed verifier-visible runtime contracts. They MUST NOT disappear into an opaque
+host runtime API that the verifier and resource model cannot understand. A
+lowered runtime call is acceptable only when its contract specifies the relevant
+task, cancellation, synchronization, atomic, shared-memory and resource
+semantics.
 
 TOS IR is not a public promise of permanent binary compatibility between arbitrary versions. Its schema is versioned, and caches state the exact runtime and verifier versions that produced them.
 
@@ -2758,12 +2837,18 @@ Generated artifacts live under `/cache/tos/` or another explicitly disposable ca
 
 The architecture supports several engines:
 
-1. **Reference interpreter** — simplest auditable semantics; mandatory for tests and recovery.
+1. **Reference interpreter** — simplest auditable semantics; mandatory for tests and recovery. It MAY execute otherwise-parallel work serially only when it preserves the specified semantics.
 2. **Bytecode engine** — compact efficient default.
 3. **JIT backend** — optional for long-running services and applications.
 4. **Ahead-of-use native cache** — generated locally or by a trusted builder, always verified against source identity.
 
-All engines must pass the same conformance suite. Wasm or another binary format may serve as a backend or cache profile only when canonical text, verifier independence and source identity remain authoritative.
+All engines must pass the same conformance suite, including concurrency,
+atomic and memory-model vectors. A production-capable backend/runtime MUST have
+a path to true simultaneous SMP execution; every engine MUST implement one
+language/IR memory semantics rather than silently giving races or atomics
+different behavior. Wasm or another binary format may serve as a backend or
+cache profile only when canonical text, verifier independence and source
+identity remain authoritative.
 
 ## Performance contract
 
@@ -2795,6 +2880,9 @@ Every executable instruction maps to:
 - optional macro expansion chain.
 
 Logs, traces, crashes, and profiling data use this mapping.
+For concurrently executing work, the mapping also identifies the originating
+task/execution context and the source span of spawned, joined, cancelled or
+synchronized work without making scheduler timing part of source identity.
 
 ## Determinism
 
@@ -6146,7 +6234,10 @@ Google Patents explicitly warns that displayed legal status is not a legal concl
 
 # Language foundation evaluation matrix
 
-**Status:** non-normative research template required by ADR-0015.
+**Status:** non-normative research template required by ADR-0015. Its blocking
+requirements implement the Tier 2 language and execution requirements in
+`docs/05_TOS_CORE_LANGUAGE.md` and `docs/06_EXECUTION_AND_IR.md`; it does not
+independently amend them.
 
 ## Decision to be made
 
@@ -6174,7 +6265,19 @@ A candidate is rejected if it cannot demonstrate:
 9. no undocumented C/host ABI becoming the real system ABI;
 10. compatible licence and acceptable patent/dependency profile;
 11. recovery implementation small enough to audit and fuzz;
-12. multiple execution backends cannot disagree silently on semantics.
+12. multiple execution backends cannot disagree silently on semantics;
+13. one process can use multiple runnable execution contexts for genuine
+    simultaneous multicore work, rather than only separate processes or IPC;
+14. safe shared-memory concurrency has defined data-race, synchronization,
+    atomic and memory-order semantics rather than undefined behavior or
+    undocumented host-runtime behavior;
+15. parallel workers, tasks, stacks, shared regions and synchronization
+    resources can be bounded and accounted for.
+
+A candidate also fails the multicore requirement if its async runtime only
+multiplexes tasks on one execution context, if it requires separate OS
+processes and IPC for ordinary CPU parallelism, or if it has no viable path
+from the selected semantics to real simultaneous multicore execution.
 
 ## Comparative criteria
 
@@ -6184,7 +6287,11 @@ For each candidate record evidence, not adjectives:
 - trusted implementation size and transitive dependencies;
 - parser/type-checker/verifier complexity;
 - memory safety and unsafe boundary;
-- concurrency semantics;
+- asynchronous, structured-concurrency and structured-parallelism semantics;
+- multicore execution model and task-to-thread/core mapping;
+- cost of parallel task creation and scalability with worker count;
+- safe shared-memory model, synchronization, atomic and memory-order semantics;
+- scheduler independence and future affinity/NUMA/topology compatibility;
 - deterministic behavior;
 - interrupt/IPC/DMA expression;
 - resource metering/preemption;
@@ -6210,7 +6317,22 @@ Each serious candidate must implement or model the same exercises:
 7. invalidate a cache after one source/dependency change;
 8. run the same semantic conformance vectors in two engines or interpreter modes;
 9. build in a documented recovery-sized configuration;
-10. report trusted-base and dependency inventory.
+10. report trusted-base and dependency inventory;
+11. run a deterministic CPU-bound partitioned workload with one worker,
+    two workers and a reasonable N-worker configuration, recording the same
+    logical result and actual simultaneous host-core execution when the
+    candidate runtime supports it;
+12. demonstrate safe handling or rejection of unsynchronized mutable sharing;
+13. exercise atomics/synchronization, structured join and cancellation;
+14. demonstrate bounded worker/task resource behavior;
+15. where a reference/interpreter mode exists, run the same concurrency
+    semantics in that mode and record any intentional serialized execution.
+
+For every multicore exercise, record hardware, operating system,
+compiler/runtime version, worker count, exact commands, raw measurements and
+observed result. No candidate receives credit for a speedup claim without
+evidence of actual simultaneous execution where its runtime claims to support
+it.
 
 ## Decision output
 

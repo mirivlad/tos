@@ -85,10 +85,11 @@ successful validation. Its checked source/provenance relationship is recorded
 in `assets/mascot/pyro-stage1-provenance.json`. When no framebuffer is
 available, boot evidence remains the serial log.
 
-Stage 1 is a bootable TOS foundation with source-bound capsule identity and
-fail-closed validation. It is not yet a user shell, application environment or
-desktop operating system, and Stage 1 is not declared closed while the formal
-closure findings remain open.
+Stage 1 is formally closed as a bootable TOS foundation with source-bound
+capsule identity and fail-closed validation. It is not a user shell,
+application environment or desktop operating system. Stage 1.5 is now the
+evidence-based language-foundation decision; it has not started Stage 2
+runtime implementation.
 
 ## Core thesis
 
