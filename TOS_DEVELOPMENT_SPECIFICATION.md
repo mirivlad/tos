@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `1bf6be05c9e5efa62b562fcfcaa7d9f472168461948c5c8d946f2e9e1324d574`  
+Source-manifest SHA-256: `d9b65b5016334f51fa66cbb422d4a22b450f027a0296ebbd83aad5533e73387e`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2493,11 +2493,10 @@ Official developer and research profiles provide a documented path to boot an ow
 “TOS Core” is the accepted bespoke TOS-owned native textual language foundation
 under ADR-0027.
 
-The syntax in this document remains illustrative. The proposed complete V1
-contract is split across docs/39–44 and is governed by Proposed ADR-0028. It
-does not authorize implementation until the Project Architect accepts that
-contract. Stage 2 then implements the accepted parser, grammar, verifier, and
-runtime specification within ADR-0027's accepted semantic/trust boundary.
+The syntax in this document remains illustrative. The accepted complete V1
+contract is split across docs/39–44 and is governed by accepted ADR-0028.
+Stage 2 implements the accepted parser, grammar, verifier, and runtime
+specification within ADR-0027's accepted semantic/trust boundary.
 
 This distinction is deliberate: TOS requires language properties, not a proprietary syntax for its own sake.
 
@@ -2627,13 +2626,13 @@ Required mechanisms include:
 
 The bootstrap contract must not require a stop-the-world collector. An implementation may use arenas, reference counting or another internal strategy only if observable semantics and pause/resource limits are specified.
 
-The V1 contract MUST define the concurrency memory model: ownership, immutable
+The V1 contract defines the concurrency memory model: ownership, immutable
 sharing, mutable sharing, transfer of values and tasks between execution
 contexts, synchronization primitives, atomic types and memory orderings,
 visibility/happens-before rules, interaction between atomic and ordinary
 memory, shared memory regions and the unsafe concurrency boundary. It MUST NOT
 rely on a particular Rust, C++ or host-runtime memory model merely by
-implication. Proposed docs/40–41 provide that definition pending ADR-0028.
+implication. Accepted docs/40–41 provide that definition under ADR-0028.
 
 Safe TOS Core code MUST NOT have undefined behavior from an unsynchronized
 data race. The foundation MUST statically prevent unsafe unsynchronized mutable
@@ -2762,10 +2761,10 @@ The official runtime and standard implementation are GPL-3.0-or-later. Public gr
 # Execution model and intermediate representation
 
 > ADR-0027 accepts bespoke TOS Core as the language foundation. This document
-> specifies the accepted execution boundary. Proposed docs/39–44, especially
+> specifies the accepted execution boundary. Accepted docs/39–44, especially
 > `docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`, define the complete V1 semantic IR
-> schema and verifier contract pending ADR-0028; implementation remains
-> prohibited until that decision is accepted.
+> schema and verifier contract under ADR-0028; Stage 2 Part B production
+> implementation is authorized.
 
 ## Principle
 
@@ -2787,7 +2786,7 @@ No generated stage becomes the authoritative installed program.
 
 TOS IR is a versioned, typed, capability-aware intermediate representation
 shared by all supported language frontends. The detailed V1 contract is the
-proposed `tos-ir/v1` schema in docs/43; this role document does not override it.
+accepted `tos-ir/v1` schema in docs/43; this role document does not override it.
 
 It must represent:
 
