@@ -400,6 +400,7 @@ pub enum StatementForm {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExpressionForm {
     Primary,
+    Group,
     Binary,
 }
 
@@ -409,6 +410,7 @@ pub struct Expression {
     left: Option<Box<Expression>>,
     operator: Option<Span>,
     right: Option<Box<Expression>>,
+    inner: Option<Box<Expression>>,
     span: Span,
 }
 
@@ -427,6 +429,10 @@ impl Expression {
 
     pub fn right(&self) -> Option<&Expression> {
         self.right.as_deref()
+    }
+
+    pub fn inner(&self) -> Option<&Expression> {
+        self.inner.as_deref()
     }
 
     pub fn span(&self) -> Span {
@@ -995,12 +1001,29 @@ impl<'source> TokenCursor<'source> {
                 left: Some(Box::new(left)),
                 operator: Some(operator),
                 right: Some(Box::new(right)),
+                inner: None,
             };
         }
         Ok(left)
     }
 
     fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {
+        if self.current().kind() == TokenKind::OpenParen {
+            let start = Span::from(self.advance());
+            let inner = self.parse_expression()?;
+            let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+            return Ok(Expression {
+                form: ExpressionForm::Group,
+                left: None,
+                operator: None,
+                right: None,
+                inner: Some(Box::new(inner)),
+                span: Span {
+                    start: start.start(),
+                    end: end.end(),
+                },
+            });
+        }
         if matches!(
             self.current().kind(),
             TokenKind::Boolean
@@ -1017,6 +1040,7 @@ impl<'source> TokenCursor<'source> {
                 left: None,
                 operator: None,
                 right: None,
+                inner: None,
                 span,
             })
         } else {
