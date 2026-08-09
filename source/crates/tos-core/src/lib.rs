@@ -8,9 +8,9 @@ use std::vec::Vec;
 mod parser;
 
 pub use parser::{
-    Import, ImportKind, ModuleHeader, ModuleOutline, ModulePrefix, ParseError, ParseErrorCode,
-    Parser, Profile, RecordDeclaration, RecordField, ResourceDeclaration, ResourceLimit, Schema,
-    Span, TypeSyntax,
+    EnumDeclaration, EnumVariant, EnumVariantForm, Import, ImportKind, ModuleHeader, ModuleOutline,
+    ModulePrefix, ParseError, ParseErrorCode, Parser, Profile, RecordDeclaration, RecordField,
+    ResourceDeclaration, ResourceLimit, Schema, Span, TypeSyntax,
 };
 
 mod unicode {
@@ -821,6 +821,23 @@ mod tests {
         assert_eq!(schema.records()[0].name().text(&source), "Point");
         assert_eq!(schema.records()[0].fields().len(), 2);
         assert_eq!(schema.records()[0].fields()[1].ty().text(&source), "i32");
+    }
+
+    #[test]
+    fn parser_builds_unit_tuple_and_named_field_enum_variants() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] \
+              enum Message [Empty, Pair(i32, i32), Rgb [red: u8, green: u8,],]",
+        )
+        .expect("transport-valid source");
+        let schema = Parser::parse_schema(&source).expect("enum schema parses");
+        assert_eq!(schema.enums().len(), 1);
+        let variants = schema.enums()[0].variants();
+        assert_eq!(variants.len(), 3);
+        assert_eq!(variants[0].form(), EnumVariantForm::Unit);
+        assert_eq!(variants[1].tuple_types().len(), 2);
+        assert_eq!(variants[2].fields().len(), 2);
+        assert_eq!(variants[2].fields()[0].name().text(&source), "red");
     }
 
     #[test]

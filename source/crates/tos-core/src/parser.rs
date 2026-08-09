@@ -218,10 +218,70 @@ impl RecordDeclaration {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnumVariantForm {
+    Unit,
+    Tuple,
+    NamedFields,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct EnumVariant {
+    name: Span,
+    form: EnumVariantForm,
+    tuple_types: Vec<TypeSyntax>,
+    fields: Vec<RecordField>,
+    span: Span,
+}
+
+impl EnumVariant {
+    pub fn name(&self) -> Span {
+        self.name
+    }
+
+    pub fn form(&self) -> EnumVariantForm {
+        self.form
+    }
+
+    pub fn tuple_types(&self) -> &[TypeSyntax] {
+        &self.tuple_types
+    }
+
+    pub fn fields(&self) -> &[RecordField] {
+        &self.fields
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct EnumDeclaration {
+    name: Span,
+    variants: Vec<EnumVariant>,
+    span: Span,
+}
+
+impl EnumDeclaration {
+    pub fn name(&self) -> Span {
+        self.name
+    }
+
+    pub fn variants(&self) -> &[EnumVariant] {
+        &self.variants
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct Schema {
     outline: ModuleOutline,
     records: Vec<RecordDeclaration>,
+    enums: Vec<EnumDeclaration>,
 }
 
 impl Schema {
@@ -231,6 +291,10 @@ impl Schema {
 
     pub fn records(&self) -> &[RecordDeclaration] {
         &self.records
+    }
+
+    pub fn enums(&self) -> &[EnumDeclaration] {
+        &self.enums
     }
 }
 
@@ -337,8 +401,13 @@ impl Parser {
         }
         let resource = parser.parse_resource_declaration()?;
         let mut records = Vec::new();
-        while parser.current_text() == "record" {
-            records.push(parser.parse_record_declaration()?);
+        let mut enums = Vec::new();
+        while matches!(parser.current_text(), "record" | "enum") {
+            if parser.current_text() == "record" {
+                records.push(parser.parse_record_declaration()?);
+            } else {
+                enums.push(parser.parse_enum_declaration()?);
+            }
         }
         parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
         Ok(Schema {
@@ -347,6 +416,7 @@ impl Parser {
                 resource,
             },
             records,
+            enums,
         })
     }
 }
@@ -474,6 +544,97 @@ impl<'source> TokenCursor<'source> {
                 end: end.end(),
             },
         })
+    }
+
+    fn parse_enum_declaration(&mut self) -> Result<EnumDeclaration, ParseError> {
+        let start = self.expect_word("enum", ParseErrorCode::UnexpectedToken)?;
+        let name = self.expect_identifier()?;
+        self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
+        let mut variants = Vec::new();
+        if self.current().kind() != TokenKind::CloseBracket {
+            loop {
+                variants.push(self.parse_enum_variant()?);
+                if self.consume_kind(TokenKind::Comma).is_some() {
+                    if self.current().kind() == TokenKind::CloseBracket {
+                        break;
+                    }
+                    continue;
+                }
+                if self.current().kind() != TokenKind::CloseBracket {
+                    return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
+                }
+                break;
+            }
+        }
+        let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
+        Ok(EnumDeclaration {
+            name,
+            variants,
+            span: Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        })
+    }
+
+    fn parse_enum_variant(&mut self) -> Result<EnumVariant, ParseError> {
+        let name = self.expect_identifier()?;
+        if self.consume_kind(TokenKind::OpenParen).is_some() {
+            let tuple_types = self.parse_tuple_type_list()?;
+            let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+            return Ok(EnumVariant {
+                name,
+                form: EnumVariantForm::Tuple,
+                tuple_types,
+                fields: Vec::new(),
+                span: Span {
+                    start: name.start(),
+                    end: end.end(),
+                },
+            });
+        }
+        if self.consume_kind(TokenKind::OpenBracket).is_some() {
+            let fields = self.parse_field_list()?;
+            let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
+            return Ok(EnumVariant {
+                name,
+                form: EnumVariantForm::NamedFields,
+                tuple_types: Vec::new(),
+                fields,
+                span: Span {
+                    start: name.start(),
+                    end: end.end(),
+                },
+            });
+        }
+        Ok(EnumVariant {
+            name,
+            form: EnumVariantForm::Unit,
+            tuple_types: Vec::new(),
+            fields: Vec::new(),
+            span: name,
+        })
+    }
+
+    fn parse_tuple_type_list(&mut self) -> Result<Vec<TypeSyntax>, ParseError> {
+        let mut types = Vec::new();
+        if self.current().kind() == TokenKind::CloseParen {
+            return Ok(types);
+        }
+        loop {
+            types.push(self.parse_simple_type()?);
+            if self.consume_kind(TokenKind::Comma).is_some() {
+                if self.current().kind() == TokenKind::CloseParen {
+                    break;
+                }
+                continue;
+            }
+            if self.current().kind() != TokenKind::CloseParen {
+                return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
+            }
+            break;
+        }
+        Ok(types)
     }
 
     fn parse_field_list(&mut self) -> Result<Vec<RecordField>, ParseError> {
