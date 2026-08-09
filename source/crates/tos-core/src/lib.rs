@@ -944,6 +944,22 @@ mod tests {
     }
 
     #[test]
+    fn parser_builds_a_single_call_construct_syntax_node() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { return add_one(41i32); }",
+        )
+        .expect("transport-valid source");
+        let module = Parser::parse_schema(&source).expect("call expression parses");
+        let expression = module.functions()[0].body().statements()[0]
+            .expression()
+            .expect("return value");
+        assert_eq!(expression.form(), ExpressionForm::Call);
+        assert_eq!(expression.callee().unwrap().span().text(&source), "add_one");
+        assert_eq!(expression.arguments().len(), 1);
+        assert_eq!(expression.arguments()[0].span().text(&source), "41i32");
+    }
+
+    #[test]
     fn parser_rejects_a_resource_list_without_a_comma() {
         let source = SourceReader::read(
             b"module system.boot version 1.0 profile bootstrap; resource [fuel: 1 stack: 1B]",
