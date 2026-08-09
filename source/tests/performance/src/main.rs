@@ -124,15 +124,22 @@ fn validate_twice_and_lookup(bytes: &[u8]) -> Result<(), String> {
     if boot.name != BOOT_PATH {
         return Err("second validation: canonical lookup returned a wrong path".to_string());
     }
+    // The production nucleus emits this fresh digest after canonical lookup.
+    // It is small for this fixture but still part of the real success path.
+    let _boot_digest = sha256(boot.content);
     Ok(())
 }
 
-fn sum_accounting(parser: CryptoAccounting, capsule_bytes: usize) -> CryptoAccounting {
+fn sum_accounting(
+    parser: CryptoAccounting,
+    capsule_bytes: usize,
+    boot_text_bytes: usize,
+) -> CryptoAccounting {
     CryptoAccounting {
         // Two parser passes plus the loader/nucleus plain-capsule SHA-256
         // mirror pair. The mirror pair is an existing required ABI operation.
-        bytes_hashed: parser.bytes_hashed * 2 + (capsule_bytes as u64) * 2,
-        hash_invocations: parser.hash_invocations * 2 + 2,
+        bytes_hashed: parser.bytes_hashed * 2 + (capsule_bytes as u64) * 2 + boot_text_bytes as u64,
+        hash_invocations: parser.hash_invocations * 2 + 3,
         file_hashes: parser.file_hashes * 2,
         detached_identity_hashes: parser.detached_identity_hashes * 2,
         whole_capsule_hashes: parser.whole_capsule_hashes * 2 + 2,
@@ -142,6 +149,7 @@ fn sum_accounting(parser: CryptoAccounting, capsule_bytes: usize) -> CryptoAccou
 fn validate_unavoidable_crypto_twice(
     bytes: &[u8],
     capsule: &Capsule<'_>,
+    boot_text: &[u8],
 ) -> Result<CryptoAccounting, String> {
     let loader_capsule_digest = sha256(bytes);
     let first =
@@ -155,7 +163,8 @@ fn validate_unavoidable_crypto_twice(
     if second != first {
         return Err("crypto baseline: pass accounting differs".to_string());
     }
-    Ok(sum_accounting(first, bytes.len()))
+    let _boot_digest = sha256(boot_text);
+    Ok(sum_accounting(first, bytes.len(), boot_text.len()))
 }
 
 fn record_full(
@@ -180,9 +189,10 @@ fn record_crypto(
     index: usize,
     bytes: &[u8],
     capsule: &Capsule<'_>,
+    boot_text: &[u8],
 ) -> Result<(), String> {
     let started = Instant::now();
-    let accounting = validate_unavoidable_crypto_twice(bytes, capsule)?;
+    let accounting = validate_unavoidable_crypto_twice(bytes, capsule, boot_text)?;
     let duration_ns = started.elapsed().as_nanos();
     writeln!(
         output,
@@ -207,15 +217,24 @@ fn main() {
         Mode::Full => None,
         // Setup establishes only a structural borrowed view outside the timer.
         // Its computed hashes are dropped; each timed crypto pass starts fresh.
-        Mode::Crypto => Some(parse(&bytes).unwrap_or_else(|error| {
-            eprintln!("crypto setup parse: {error:?}");
-            std::process::exit(1);
-        })),
+        Mode::Crypto => {
+            let capsule = parse(&bytes).unwrap_or_else(|error| {
+                eprintln!("crypto setup parse: {error:?}");
+                std::process::exit(1);
+            });
+            let boot_text = capsule.boot_file().unwrap_or_else(|| {
+                eprintln!("crypto setup: canonical boot file is absent");
+                std::process::exit(1);
+            });
+            Some((capsule, boot_text.content))
+        }
     };
     for (phase, count) in [("warmup", args.warmups), ("measurement", args.samples)] {
         for index in 1..=count {
             let result = match crypto_capsule.as_ref() {
-                Some(capsule) => record_crypto(&mut output, phase, index, &bytes, capsule),
+                Some((capsule, boot_text)) => {
+                    record_crypto(&mut output, phase, index, &bytes, capsule, boot_text)
+                }
                 None => record_full(&mut output, phase, index, &bytes),
             };
             result.unwrap_or_else(|error| {

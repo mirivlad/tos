@@ -85,24 +85,51 @@ for index in $(seq 1 21); do
     printf '{"duration_ns":%s,"index":%s,"lookup":"/system/boot/init.tos","phase":"measurement","validations":2}\n' \
         "$((100 + index))" "$index" >> "$TMP/native-samples.jsonl"
 done
+cp "$TMP/native-samples.jsonl" "$TMP/crypto-samples.jsonl"
+python3 - "$TMP/crypto-samples.jsonl" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+records = [json.loads(line) for line in open(path, encoding="utf-8")]
+for record in records:
+    record.pop("lookup")
+    record["mode"] = "unavoidable_crypto"
+    record["crypto_bytes_per_boot"] = 123456
+    record["crypto_hashes_per_boot"] = 2007
+with open(path, "w", encoding="utf-8") as output:
+    for record in records:
+        output.write(json.dumps(record, sort_keys=True))
+        output.write("\n")
+PY
 python3 "$WORKLOAD" native-report --fixture "$TMP/fixture" --samples "$TMP/native-samples.jsonl" \
     --out "$TMP/native-report.json" --source-commit test --rustc-version fake-rustc
+python3 "$WORKLOAD" crypto-report --fixture "$TMP/fixture" --samples "$TMP/crypto-samples.jsonl" \
+    --out "$TMP/crypto-report.json" --source-commit test --rustc-version fake-rustc
+python3 "$WORKLOAD" validation-ratio --full "$TMP/native-report.json" --crypto "$TMP/crypto-report.json" \
+    --out "$TMP/ratio.json"
 python3 "$WORKLOAD" comparison --native "$TMP/native-report.json" --qemu "$TMP/report.json" \
     --out "$TMP/comparison.json"
 python3 "$WORKLOAD" decomposition --report "$TMP/report.json" --out "$TMP/decomposition.json"
-python3 - "$TMP/native-report.json" "$TMP/comparison.json" "$TMP/decomposition.json" <<'PY'
+python3 - "$TMP/native-report.json" "$TMP/crypto-report.json" "$TMP/ratio.json" "$TMP/comparison.json" "$TMP/decomposition.json" <<'PY'
 import json
 import sys
 
 native = json.load(open(sys.argv[1], encoding="utf-8"))
-comparison = json.load(open(sys.argv[2], encoding="utf-8"))
-decomposition = json.load(open(sys.argv[3], encoding="utf-8"))
+crypto = json.load(open(sys.argv[2], encoding="utf-8"))
+ratio = json.load(open(sys.argv[3], encoding="utf-8"))
+comparison = json.load(open(sys.argv[4], encoding="utf-8"))
+decomposition = json.load(open(sys.argv[5], encoding="utf-8"))
 if native["statistics"]["p95_ns"] != 120:
     raise SystemExit("FAIL: native report used incorrect nearest-rank p95")
 if native["measurement"]["logical_sequence"] != "fresh parse -> fresh parse -> canonical boot_file lookup":
     raise SystemExit("FAIL: native report omitted the exact logical validation sequence")
 if comparison["qemu_to_native_p95_ratio"] != 20 / 120:
     raise SystemExit("FAIL: comparison did not retain p95 ratio")
+if crypto["crypto_accounting"]["bytes_per_boot"] != 123456:
+    raise SystemExit("FAIL: crypto report did not retain byte accounting")
+if ratio["full_over_unavoidable_crypto"]["p95_ratio"] != 1:
+    raise SystemExit("FAIL: validation ratio used incorrect p95 inputs")
 if decomposition["sample_count"] != 21:
     raise SystemExit("FAIL: decomposition did not retain every measured sample")
 if decomposition["segments"]["loader_validation"]["p95_ns"] != 20:
