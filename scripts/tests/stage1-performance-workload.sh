@@ -108,6 +108,10 @@ python3 "$WORKLOAD" crypto-report --fixture "$TMP/fixture" --samples "$TMP/crypt
     --out "$TMP/crypto-report.json" --source-commit test --rustc-version fake-rustc
 python3 "$WORKLOAD" validation-ratio --full "$TMP/native-report.json" --crypto "$TMP/crypto-report.json" \
     --out "$TMP/ratio.json"
+printf '{"event":"TOS.TEST.CRYPTO.BASELINE.START","monotonic_ns":100}\n{"event":"TOS.TEST.CRYPTO.BASELINE.DONE","monotonic_ns":130}\n' > "$TMP/crypto-timestamps.jsonl"
+python3 "$WORKLOAD" crypto-qemu-sample --timestamps "$TMP/crypto-timestamps.jsonl" \
+    --phase measurement --index 1 --crypto-bytes 123456 --crypto-hashes 2007 \
+    --out "$TMP/crypto-qemu-samples.jsonl"
 python3 "$WORKLOAD" comparison --native "$TMP/native-report.json" --qemu "$TMP/report.json" \
     --out "$TMP/comparison.json"
 python3 "$WORKLOAD" decomposition --report "$TMP/report.json" --out "$TMP/decomposition.json"

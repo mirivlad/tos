@@ -20,6 +20,10 @@ use tos_boot_protocol::{
     RESULT_MEMORY_INVALID, RESULT_PANIC, RESULT_PORT, SRC_KIND_DETACHED, SRC_KIND_GIT,
 };
 use tos_capsule::parse;
+#[cfg(feature = "test-crypto-baseline")]
+use tos_capsule::test_crypto_baseline::verify as verify_parser_crypto;
+#[cfg(feature = "test-crypto-baseline")]
+use tos_capsule::Capsule;
 use tos_hash::{sha256, Sha256};
 
 #[panic_handler]
@@ -64,6 +68,52 @@ fn cap_fail() -> ! {
     result_port(RESULT_CAPSULE_INVALID)
 }
 
+/// Test-only baseline for the exact SHA-256 operations on a successful boot.
+/// The preceding production `parse` supplies only a structural borrowed view;
+/// every timed digest below starts from fresh `Sha256` state.
+#[cfg(feature = "test-crypto-baseline")]
+fn crypto_baseline(cap_bytes: &[u8], capsule: &Capsule<'_>) -> ! {
+    let boot = match capsule.boot_file() {
+        Some(file) => file,
+        None => cap_fail(),
+    };
+    tos_serial::puts(b"TOS.TEST.CRYPTO.BASELINE.START\r\n");
+
+    // This is the existing loader->BootInfo->nucleus mirror: its one carried
+    // digest is an explicit ABI value, while both parser crypto passes remain
+    // freshly recomputed below.
+    let loader_capsule_digest = sha256(cap_bytes);
+    let first = match verify_parser_crypto(capsule) {
+        Ok(accounting) => accounting,
+        Err(_) => cap_fail(),
+    };
+    let nucleus_capsule_digest = sha256(cap_bytes);
+    if nucleus_capsule_digest != loader_capsule_digest {
+        cap_fail();
+    }
+    let second = match verify_parser_crypto(capsule) {
+        Ok(accounting) => accounting,
+        Err(_) => cap_fail(),
+    };
+    if second != first {
+        cap_fail();
+    }
+    // The normal nucleus emits this post-lookup digest too.
+    let _boot_digest = sha256(boot.content);
+
+    let bytes = first.bytes_hashed * 2 + (cap_bytes.len() as u64) * 2 + boot.content.len() as u64;
+    let hashes = first.hash_invocations * 2 + 3;
+    if bytes > u32::MAX as u64 {
+        cap_fail();
+    }
+    tos_serial::puts(b"TOS.TEST.CRYPTO.BASELINE.DONE bytes=");
+    tos_serial::put_u32_decimal(bytes as u32);
+    tos_serial::puts(b" hashes=");
+    tos_serial::put_u32_decimal(hashes);
+    tos_serial::puts(b"\r\n");
+    result_port(RESULT_HALT_OK)
+}
+
 /// First logical line of boot text: the first line that is non-empty and not
 /// a comment (`#` after leading whitespace). Returns the trimmed line.
 fn first_logical_line(content: &[u8]) -> Option<&[u8]> {
@@ -94,6 +144,7 @@ fn first_logical_line(content: &[u8]) -> Option<&[u8]> {
 // cannot be an `unsafe fn`: the loader transfers control to it with a machine
 // `call`, not a Rust call, so `clippy::not_unsafe_ptr_arg_deref` does not apply.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
+#[cfg_attr(feature = "test-crypto-baseline", allow(unreachable_code))]
 #[no_mangle]
 #[link_section = ".text.boot_entry"]
 pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
@@ -159,6 +210,9 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         Ok(c) => c,
         Err(_) => cap_fail(),
     };
+
+    #[cfg(feature = "test-crypto-baseline")]
+    crypto_baseline(cap_bytes, &cap);
 
     // The handoff record only mirrors the capsule's identity fields
     // (BOOT_ABI_V1 §6); it does not prove them. Verify the mirror against the
