@@ -87,7 +87,7 @@ The Stage 1.5 selection ADR MUST establish the semantic/trust boundary for:
 - bounded bootstrap and SMP-capable full-profile direction; and
 - no safe-language data-race undefined behavior or hidden host-runtime ABI.
 
-The Proposed Stage 2 V1 documents (docs/39–44) define the complete contract
+The accepted Stage 2 V1 documents (docs/39–44) define the complete contract
 within that boundary, including:
 
 - lexical grammar and Unicode normalization;
