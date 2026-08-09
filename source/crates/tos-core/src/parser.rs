@@ -403,6 +403,7 @@ pub enum ExpressionForm {
     Group,
     Unary,
     Binary,
+    Call,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -412,6 +413,8 @@ pub struct Expression {
     operator: Option<Span>,
     right: Option<Box<Expression>>,
     inner: Option<Box<Expression>>,
+    callee: Option<Box<Expression>>,
+    arguments: Vec<Expression>,
     span: Span,
 }
 
@@ -434,6 +437,14 @@ impl Expression {
 
     pub fn inner(&self) -> Option<&Expression> {
         self.inner.as_deref()
+    }
+
+    pub fn callee(&self) -> Option<&Expression> {
+        self.callee.as_deref()
+    }
+
+    pub fn arguments(&self) -> &[Expression] {
+        &self.arguments
     }
 
     pub fn span(&self) -> Span {
@@ -1003,6 +1014,8 @@ impl<'source> TokenCursor<'source> {
                 operator: Some(operator),
                 right: Some(Box::new(right)),
                 inner: None,
+                callee: None,
+                arguments: Vec::new(),
             };
         }
         Ok(left)
@@ -1034,13 +1047,58 @@ impl<'source> TokenCursor<'source> {
                 operator: Some(operator),
                 right: None,
                 inner: Some(Box::new(inner)),
+                callee: None,
+                arguments: Vec::new(),
                 span: Span {
                     start: operator.start(),
                     end,
                 },
             });
         }
-        self.parse_primary_expression()
+        self.parse_postfix_expression()
+    }
+
+    fn parse_postfix_expression(&mut self) -> Result<Expression, ParseError> {
+        let mut callee = self.parse_primary_expression()?;
+        while self.consume_kind(TokenKind::OpenParen).is_some() {
+            let arguments = self.parse_call_arguments()?;
+            let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+            callee = Expression {
+                form: ExpressionForm::Call,
+                left: None,
+                operator: None,
+                right: None,
+                inner: None,
+                span: Span {
+                    start: callee.span.start(),
+                    end: end.end(),
+                },
+                callee: Some(Box::new(callee)),
+                arguments,
+            };
+        }
+        Ok(callee)
+    }
+
+    fn parse_call_arguments(&mut self) -> Result<Vec<Expression>, ParseError> {
+        let mut arguments = Vec::new();
+        if self.current().kind() == TokenKind::CloseParen {
+            return Ok(arguments);
+        }
+        loop {
+            arguments.push(self.parse_expression()?);
+            if self.consume_kind(TokenKind::Comma).is_some() {
+                if self.current().kind() == TokenKind::CloseParen {
+                    break;
+                }
+                continue;
+            }
+            if self.current().kind() != TokenKind::CloseParen {
+                return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
+            }
+            break;
+        }
+        Ok(arguments)
     }
 
     fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {
@@ -1054,6 +1112,8 @@ impl<'source> TokenCursor<'source> {
                 operator: None,
                 right: None,
                 inner: Some(Box::new(inner)),
+                callee: None,
+                arguments: Vec::new(),
                 span: Span {
                     start: start.start(),
                     end: end.end(),
@@ -1077,6 +1137,8 @@ impl<'source> TokenCursor<'source> {
                 operator: None,
                 right: None,
                 inner: None,
+                callee: None,
+                arguments: Vec::new(),
                 span,
             })
         } else {
