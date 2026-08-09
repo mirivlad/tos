@@ -1474,3 +1474,33 @@ boot architecture, DCO policy или опубликованной истории
   the current 250 ms budget. Consequently no Proposed ADR-0026 was written,
   F-18 remains BLOCKER and no production optimization or contract change was
   made. Architect review is required for any next architecture choice.
+
+### F-18 unavoidable-crypto architecture evidence
+
+- Per the subsequent Project Architect direction, `9188099`, `44c4a81` and
+  `73d7b42` add a test-only exact unavoidable-crypto baseline. It uses the
+  production `tos-hash` implementation and capsule representation, makes no
+  production artifact select the feature, and checks the ordinary production
+  nucleus hash before/after every isolated QEMU-nucleus build. The accounting
+  corrected the earlier native logical runner: the real success path contains
+  not only two parser whole digests, two per-file sequences and two detached
+  identities, but also the loader/nucleus BootInfo mirror digest pair and the
+  post-lookup boot-text digest.
+- The deterministic 1,000-file/exactly-16-MiB detached fixture at
+  `73d7b423d4e534e405a6abbe7c842e1902cbf099` therefore requires exactly
+  101,203,198 bytes across 2,007 fresh SHA-256 invocations per boot. It hashes
+  four capsule streams, two payload streams, two ADR-0018 identity streams
+  and the boot text; it does not cache a parser/digest result across logical
+  validators.
+- Fresh P1 3-warmup/21-sample results pair full exact work with that baseline:
+  native p95 658.231 ms / 622.467 ms = 1.057; mandatory q35/qemu64/TCG p95
+  2766.213 ms / 2395.122 ms = 1.155; opt-in KVM research p95 826.389 ms /
+  701.056 ms = 1.179. Unavoidable crypto is respectively 94.567%, 86.585%
+  and 84.834% of full p95. KVM remains research only.
+- The evidence supports a metric proposal rather than an optimization: the
+  proposed ADR-0026 preserves all validation/hard bounds and makes the
+  qemu64/TCG full-to-unavoidable-crypto p95 ratio the proposed architecture
+  metric while retaining absolute native/TCG data. It explicitly calls the
+  former 250 ms rule an empirically falsified initial estimate. ADR-0026 is
+  **Proposed**, docs/35 remains unchanged, F-18 remains BLOCKER and F-21 has
+  not started pending Project Architect review.
