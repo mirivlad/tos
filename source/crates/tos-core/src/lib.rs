@@ -924,6 +924,26 @@ mod tests {
     }
 
     #[test]
+    fn parser_binds_unary_operators_tighter_than_product_operators() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { return -a * !b; }",
+        )
+        .expect("transport-valid source");
+        let module = Parser::parse_schema(&source).expect("unary expression parses");
+        let expression = module.functions()[0].body().statements()[0]
+            .expression()
+            .expect("return value");
+        assert_eq!(expression.operator_text(&source), Some("*"));
+        assert_eq!(expression.left().unwrap().form(), ExpressionForm::Unary);
+        assert_eq!(expression.left().unwrap().operator_text(&source), Some("-"));
+        assert_eq!(expression.right().unwrap().form(), ExpressionForm::Unary);
+        assert_eq!(
+            expression.right().unwrap().operator_text(&source),
+            Some("!")
+        );
+    }
+
+    #[test]
     fn parser_rejects_a_resource_list_without_a_comma() {
         let source = SourceReader::read(
             b"module system.boot version 1.0 profile bootstrap; resource [fuel: 1 stack: 1B]",
