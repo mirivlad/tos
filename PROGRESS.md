@@ -248,6 +248,16 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   lexer completion. This clarification admits no runtime Unicode dependency;
   Stage 3 remains unauthorized.
 
+### 2026-08-09 — Stage 2 Part B source reader and lexer
+
+- The production `tos-core` crate now has a bounded SourceReader and lexer.
+  The source reader enforces the 256 KiB input ceiling, UTF-8/BOM/CRLF/NUL
+  precedence and UCD 17.0.0 NFC with locally generated tables; the lexer
+  produces bounded spanned tokens and documents lexical error offsets for
+  whitespace, identifier, integer, string and byte-literal input. Parser,
+  checker, IR, verifier and interpreter remain unimplemented. Stage 3 remains
+  unauthorized.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5
