@@ -89,14 +89,21 @@ def main() -> int:
         require("record_init" not in grammar_body.group(1), "record data construction still uses braces", failures)
         require('predeclared_function' in grammar_body.group(1), "checked conversion functions lack grammar representation", failures)
         require("named_argument_list" in grammar_body.group(1), "record constructor lacks a separated named argument list", failures)
+        require("| block ;" not in grammar_body.group(1), "executable block remains a primary expression", failures)
+        require('closure         = "fn" "(" closure_parameters? ")" block ;' in grammar_body.group(1), "closure parameters do not use the V1 parenthesized form", failures)
+        require('array_type      = "array" "<" type "," const_expression ">" ;' in grammar_body.group(1), "fixed array type still uses a semicolon separator", failures)
+        require('variant_decl    = identifier ( "(" type_list? ")" )?' in grammar_body.group(1), "enum variant grammar missing", failures)
 
     require("TaskResult<T>" in types, "TaskResult<T> semantics missing", failures)
     require("`AtomicU64`, and `ConversionError` are non-generic typed runtime contracts" in types, "fixed-arity predeclared types missing", failures)
     require("`Result<T,E>` takes two" in types, "constructed type arity inventory missing", failures)
+    require("`array<T, N>` takes one type argument and one compile-time `size` constant" in types, "fixed-array type arity contract missing", failures)
     require("cancel alone does not discharge" in concurrency, "cancel/join lifecycle remains ambiguous", failures)
     require("join Task<T> -> TaskResult<T>" in concurrency, "join Task<T> result missing", failures)
     require("TaskResult<Result<T,E>>" in concurrency, "join Task<Result<T,E>> result missing", failures)
     require("TaskResult<T>" in ir, "IR task result typing missing", failures)
+    require("nearest enclosing return scope" in types, "return-scope semantics missing from type/evaluation contract", failures)
+    require("return scope" in ir, "return-scope lowering/verifier rule missing", failures)
     require("`to_i8` through `to_i64` and `to_u8` through `to_u64`" in types, "checked conversion source contract missing", failures)
     require("`convert<T>(x)`" not in types, "unexpressible generic conversion notation remains", failures)
     require("User records and enums are always affine/non-Copy in V1" in types, "user aggregate Copy rule is not explicit", failures)
@@ -119,6 +126,8 @@ def main() -> int:
         "accept/explicit-control-return.tos",
         "accept/async-explicit-return.tos",
         "accept/named-record-constructor.tos",
+        "accept/named-enum-variant.tos",
+        "accept/return-scopes.tos",
         "accept/call-and-constructor.tos",
         "accept/checked-conversion.tos",
         "accept/copy-aggregates.tos",
@@ -140,6 +149,8 @@ def main() -> int:
         "reject/missing-record-constructor-field.tos",
         "reject/unchecked-conversion.tos",
         "reject/noncopy-aggregate.tos",
+        "reject/standalone-block-expression.tos",
+        "reject/old-array-semicolon-type.tos",
     ]
     for vector in required_vectors:
         require((root / "docs/language/conformance/v1" / vector).is_file(), f"missing vector: {vector}", failures)
@@ -158,6 +169,10 @@ def main() -> int:
     require("to_u8(value)" in conversion_vector, "checked conversion conformance case missing", failures)
     copy_vector = vector_text("accept/copy-aggregates.tos")
     require(all(token in copy_vector for token in ["let tuple", "let array"]), "aggregate Copy conformance coverage incomplete", failures)
+    enum_vector = vector_text("accept/named-enum-variant.tos")
+    require("Rgb(red:" in enum_vector, "named-field enum construction conformance case missing", failures)
+    return_scope_vector = vector_text("accept/return-scopes.tos")
+    require("spawn async" in return_scope_vector and "fn (value: i32)" in return_scope_vector, "nested task/closure return-scope conformance case missing", failures)
 
     vector_root = root / "docs/language/conformance/v1"
     for vector in sorted(vector_root.glob("accept/*.tos")) + sorted(vector_root.glob("reject/*.tos")):
@@ -210,6 +225,7 @@ def main() -> int:
     )
     require("Five syntax rules to remember" in tutorial, "tutorial lacks the punctuation model", failures)
     require("[]` — lists, data, and declarations" in tutorial, "tutorial punctuation model omits declarative lists", failures)
+    require("fn (value: i32) { ... }" in tutorial, "tutorial does not teach parenthesized closure syntax", failures)
 
     if failures:
         for failure in failures:

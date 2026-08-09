@@ -18,11 +18,11 @@ enum ParseError [
     Empty,
 ]
 
-pub fn first_or_error(items: [i32; 1]) -> Result<i32, ParseError> {
+pub fn first_or_error(items: array<i32, 1>) -> Result<i32, ParseError> {
     return Ok(items[0B]);
 }
 
-pub fn checked_value(items: [i32; 1]) -> Result<i32, ParseError> {
+pub fn checked_value(items: array<i32, 1>) -> Result<i32, ParseError> {
     let value = first_or_error(items)?;
     return Ok(value);
 }

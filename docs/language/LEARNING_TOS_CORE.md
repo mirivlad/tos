@@ -26,6 +26,10 @@ These rules are deliberate: a record is declared with `[]`, constructed with
 named `()`, and code always lives in `{}`. A final expression does not quietly
 become a return value.
 
+The same `()` rule applies to a small anonymous closure: `fn (value: i32) { ... }`.
+Fixed array types are written `array<T, N>`, so `;` remains
+the marker for an executable action rather than a hidden type-list separator.
+
 ## 2. First program
 
 Open [first.tos](examples/first.tos). Notice three things before its function:

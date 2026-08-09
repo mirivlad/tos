@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `b461b290ebcbe86edd8827ef171decfa2b44b73fb8264485e5c7c9dbb0e533a8`  
+Source-manifest SHA-256: `b5d52905748fa39d98a83a888ae1e3325490c957dfc9554c10e37611b1bafb86`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -3035,7 +3035,7 @@ The inventory is deliberately machine-readable and is checked by
 ```text
 reserved: as async await bootstrap borrow break cancel capability const continue defer else enum extern false fn for full if import in join let loop match module mut parallel profile pub record resource return spawn true unsafe uses version while
 primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes unit
-predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice
+predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice array
 atomic-order: Relaxed Acquire Release AcqRel SeqCst
 predeclared-value: Some None Ok Err Completed Cancelled
 predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul
@@ -3153,7 +3153,7 @@ constructed_type = "Option" "<" type ">"
                 | "RwLock" "<" type ">"
                 | "Channel" "<" type ">"
                 | "slice" "<" type ">" ;
-array_type      = "[" type ";" const_expression "]" ;
+array_type      = "array" "<" type "," const_expression ">" ;
 tuple_type      = "(" type "," type ( "," type )* ","? ")" ;
 function_type   = "fn" "(" type_list? ")" "->" type ;
 type_list       = type ( "," type )* ","? ;
@@ -3209,7 +3209,7 @@ question        = "?" ;
 cast            = "as" type ;
 primary         = literal | "true" | "false" | predeclared_value
                 | predeclared_function | qualified_name | tuple | array
-                | closure | spawn_expression | "(" expression ")" | block ;
+                | closure | spawn_expression | "(" expression ")" ;
 predeclared_value = "Some" | "None" | "Ok" | "Err" | "Completed" | "Cancelled" ;
 predeclared_function = "to_i8" | "to_i16" | "to_i32" | "to_i64"
                 | "to_u8" | "to_u16" | "to_u32" | "to_u64"
@@ -3217,7 +3217,7 @@ predeclared_function = "to_i8" | "to_i16" | "to_i32" | "to_i64"
 literal         = integer | size | duration | string | bytes ;
 tuple           = "(" expression "," expression ( "," expression )* ","? ")" ;
 array           = "[" positional_argument_list? "]" ;
-closure         = "|" closure_parameters? "|" block ;
+closure         = "fn" "(" closure_parameters? ")" block ;
 closure_parameters = parameter ( "," parameter )* ","? ;
 spawn_expression = "spawn" ( "async" | "parallel" ) block ;
 place           = identifier ( field | index )* ;
@@ -3249,12 +3249,15 @@ parser never chooses a constructor parse instead of a function-call parse.
 Resolution validates the selected callee kind after that one syntax form is
 built; this is not semantic backtracking. Call arguments are either all
 positional or all named; the first argument's `identifier ":"` form fixes named
-mode. Named arguments are accepted only for nominal record constructors, not
-ordinary functions or tuple enum variants. They name every declared field
-exactly once; an unknown name is `E1207_UNKNOWN_RECORD_FIELD`, a duplicate is
-`E1205_DUPLICATE_RECORD_FIELD`, and an omitted field is
+mode. Named arguments are accepted only for nominal record constructors and
+named-field enum variants, not ordinary functions or tuple enum variants. They
+name every declared field exactly once; an unknown name is
+`E1207_UNKNOWN_RECORD_FIELD`, a duplicate is `E1205_DUPLICATE_RECORD_FIELD`,
+and an omitted field is
 `E1206_MISSING_RECORD_FIELD`. Named argument expressions are evaluated in
 source order. `Point(x: 1i32, y: 2i32)` is therefore a record construction;
+`Rgb(red: 1u8, green: 2u8, blue: 3u8)` similarly constructs a named-field enum
+variant;
 `Point { x: 1i32, y: 2i32 }` is not V1 syntax. Missing a comma between list
 members is `E1106_LIST_SEPARATOR_REQUIRED`.
 
@@ -3263,6 +3266,9 @@ and casts group left-to-right; binary precedence is listed from weakest to
 strongest. `&&` and `||` short-circuit. `await`, `join`, and `borrow` bind like
 other unary operators. A closure and a spawned task use an executable block;
 their normal produced value, if any, uses an explicit `return` in that block.
+An anonymous closure is `fn (parameters) { ... }`; it uses ordinary typed
+parameters in `()` and has an inferred result under docs/40. A plain `{ ... }`
+is never an expression and cannot follow `=` or occur as a call argument.
 
 `defer`, `unsafe`, closures, `async`, and `spawn async` are Full-profile
 constructs. `parallel`, `spawn parallel`, `join`, and `cancel` have defined
@@ -3334,7 +3340,7 @@ not magic host APIs.
 Their exact dynamic semantics are in
 `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
 
-Arrays `[T; N]` have a compile-time nonnegative `N` that is representable as
+Arrays `array<T, N>` have a compile-time nonnegative `N` that is representable as
 `size`. `slice<T>` means a borrowed view and cannot be stored or returned as an
 owned value in V1. A function type `fn(A, B) -> R` is a non-capturing callable
 type. Full-profile closures have a compiler-defined anonymous callable type and
@@ -3356,9 +3362,11 @@ docs/43: `Option<T>`, `Task<T>`, `TaskResult<T>`, `Shared<T>`, `Region<T>`,
 type argument; `Result<T,E>` takes two. `Event`, `Semaphore`, `Barrier`,
 `Latch`, `AtomicBool`, `AtomicU32`, `AtomicU64`, and `ConversionError` take no
 type arguments.
-Using another arity is a parse/type error, not an implementation-defined
-generic application. `slice<T>` is the only borrowed-view type form and
-retains the nonescaping restrictions above.
+`array<T, N>` takes one type argument and one compile-time `size` constant;
+its comma is a declarative type-parameter separator, not a statement
+terminator. Using another arity is a parse/type error, not an
+implementation-defined generic application. `slice<T>` is the only borrowed-view
+type form and retains the nonescaping restrictions above.
 
 ## 2. Bindings, functions, effects, and capabilities
 
@@ -3466,7 +3474,11 @@ right side after true. `?` evaluates its operand once and returns the
 containing function with the matching `Err` if it is not `Ok`.
 
 An executable block is a statement body, not a value container: it has no tail
-expression. `return expression;` is the only normal value return. Every
+expression. `return expression;` is the only normal value return. A function
+body, closure body, and `spawn async`/`spawn parallel` body each establish a
+**return scope**. Ordinary nested `{ ... }` blocks do not establish one.
+`return` targets the nearest enclosing return scope, and `?` propagates `Err`
+from that same nearest return scope. Every
 reachable normal completion path of a function with a non-`unit` declared
 return type MUST execute an explicit `return` with that exact type; reaching
 the end of such a function is `E1221_MISSING_RETURN`. `return;` or a value of
@@ -3640,8 +3652,9 @@ their result contracts rather than silently changing ordinary memory semantics.
 `parallel { ... }` creates a lexical task scope. `spawn parallel { ... }`
 inside it creates a child `Task<T>` owned by that scope. The child owns or
 immutably shares exactly the values captured under docs/40. Every spawned
-child MUST ultimately be joined/consumed before scope exit. A child body uses
-an explicit `return` to produce `T`; reaching its end produces only `unit`.
+child MUST ultimately be joined/consumed before scope exit. A child body is its
+own return scope and uses an explicit `return` to produce `T`; reaching its end
+produces only `unit`.
 A child cannot
 outlive its scope, become detached, or outlive its source/capability/resource
 record. Leaving a scope with an unconsumed task is `E1401_UNJOINED_TASK`.
@@ -4093,8 +4106,9 @@ For constructed types, IR records the same exact arity as docs/39/40:
 `Option`, `Task`, `TaskResult`, `Shared`, `Region`, `DmaRegion`, `Mutex`,
 `RwLock`, `Channel`, and `slice` have one type argument; `Result` has two;
 `Event`, `Semaphore`, `Barrier`, `Latch`, and the three V1 atomic types have
-none, as does `ConversionError`. The verifier rejects a forged or mismatched
-arity before control-flow or runtime-contract validation.
+none, as does `ConversionError`. `array<T, N>` has one type argument and one
+compile-time `size` constant. The verifier rejects a forged or mismatched arity
+before control-flow or runtime-contract validation.
 
 ## 3. Functions, values, and control flow
 
@@ -4120,12 +4134,16 @@ or local function signature and supplies an exact ordered operand list; it
 cannot resolve a host symbol dynamically.
 
 The frontend lowers every source `name(...)` through one resolved call or
-construction family. For a nominal record constructor it first validates the
-source-order named arguments against the declared ordered field set, then emits
-the corresponding ordered aggregate operands; ordinary functions and tuple
-variants accept positional operands only. An IR `return(value)` is the only
-normal non-unit function/task/closure result; source blocks, `if`, and `match`
-do not lower as value-producing expressions.
+construction family. For a nominal record constructor or named-field enum
+variant it first validates the source-order named arguments against the
+declared ordered field set, then emits the corresponding ordered aggregate
+operands; ordinary functions and tuple variants accept positional operands
+only. An IR `return(value)` is the only normal non-unit function/task/closure
+result; source blocks, `if`, and `match` do not lower as value-producing
+expressions. Each IR function or child/closure body is a return scope. The
+lowerer binds source `return` and `propagate_error` to the nearest enclosing
+return scope; ordinary IR blocks cannot capture or retarget them. The verifier
+rejects a return or propagation edge that crosses that boundary.
 
 The semantic operation families are:
 
@@ -4292,7 +4310,7 @@ convenient error.
 | Vector class | Required initial evidence |
 |---|---|
 | lexical/source | UTF-8, BOM, NFC, CRLF/bare-CR, tab, identifier, integer, string/bytes, and earliest-error precedence |
-| grammar | module/header/import, declaration/block recovery, parenthesized statement-only `if`/`match`, one Call/constructor form, `[]` declarative lists, named record constructors, tuple/slice/predeclared-type arity, precedence, complete match, reserved words, invalid profile syntax |
+| grammar | module/header/import, declaration/block recovery, parenthesized statement-only `if`/`match`, one Call/constructor form, `[]` declarative lists, named record/named-variant constructors, `fn (...) { ... }` closures, `array<T, N>`, no standalone block expression, precedence, complete match, reserved words, invalid profile syntax |
 | static type/evaluation | fixed-width literals, `to_*` checked conversion and invalid narrowing, checked overflow/shift/division, Result `?`, `Option` (not `nil`), evaluation order |
 | ownership | move/use-after-move, primitive/tuple/array Copy and affine nominal aggregate rule, immutable/mutable conflict, borrow escape, indexed alias conservatism, task capture |
 | capabilities | undeclared effect, forged handle, denied request, invalid attenuation/transfer, untyped privileged operation |
@@ -9960,8 +9978,11 @@ Accept TOS Core V1 as specified by docs/39–44:
   and `{}` executable statement bodies; a non-unit function/task/closure body
   returns only through explicit `return`; `if`/`match` are statement-only;
   function and constructor calls share one syntactic Call form; nominal records
-  use exact named constructor arguments; checked integer conversion uses fixed
-  `to_*` calls; and only primitive roots plus structural tuples/arrays Copy;
+  and named-field enum variants use exact named constructor arguments; closures
+  use `fn (...) { ... }`; fixed arrays use `array<T, N>`; checked integer
+  conversion uses fixed `to_*` calls; and only primitive roots plus structural
+  tuples/arrays Copy; plain executable blocks are never expressions; and
+  return targets the nearest function/closure/spawn return scope;
 - static semantics provide nominal types, fixed-width arithmetic, typed
   Result-style errors, capability effects, affine ownership, lexical
   nonescaping borrows, typed regions, and no safe raw-pointer/physical-address

@@ -217,6 +217,17 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   gate. `./scripts/preflight.sh --full` → **31/31 PASS**; production
   implementation и Stage 3 не начаты.
 
+### 2026-08-09 — Stage 2 Part A: final contract-consistency correction (pending verification)
+
+- ADR-0028 остаётся Proposed. Убрано последнее противоречие про executable
+  blocks: plain `{ ... }` не expression. Closure использует `fn (...) { ... }`,
+  array type — `array<T, N>`, а named-field enum variants constructible через
+  тот же named Call/Construct form, что records.
+- Return scope теперь явно определяется для function/closure/spawn body;
+  ordinary nested blocks его не создают. Добавлены conformance vectors и RED→GREEN
+  expectations в mechanical gate. `./scripts/preflight.sh --full` → **31/31
+  PASS**; Part B и Stage 3 не начаты.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5

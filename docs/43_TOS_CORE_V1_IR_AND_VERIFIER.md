@@ -69,8 +69,9 @@ For constructed types, IR records the same exact arity as docs/39/40:
 `Option`, `Task`, `TaskResult`, `Shared`, `Region`, `DmaRegion`, `Mutex`,
 `RwLock`, `Channel`, and `slice` have one type argument; `Result` has two;
 `Event`, `Semaphore`, `Barrier`, `Latch`, and the three V1 atomic types have
-none, as does `ConversionError`. The verifier rejects a forged or mismatched
-arity before control-flow or runtime-contract validation.
+none, as does `ConversionError`. `array<T, N>` has one type argument and one
+compile-time `size` constant. The verifier rejects a forged or mismatched arity
+before control-flow or runtime-contract validation.
 
 ## 3. Functions, values, and control flow
 
@@ -96,12 +97,16 @@ or local function signature and supplies an exact ordered operand list; it
 cannot resolve a host symbol dynamically.
 
 The frontend lowers every source `name(...)` through one resolved call or
-construction family. For a nominal record constructor it first validates the
-source-order named arguments against the declared ordered field set, then emits
-the corresponding ordered aggregate operands; ordinary functions and tuple
-variants accept positional operands only. An IR `return(value)` is the only
-normal non-unit function/task/closure result; source blocks, `if`, and `match`
-do not lower as value-producing expressions.
+construction family. For a nominal record constructor or named-field enum
+variant it first validates the source-order named arguments against the
+declared ordered field set, then emits the corresponding ordered aggregate
+operands; ordinary functions and tuple variants accept positional operands
+only. An IR `return(value)` is the only normal non-unit function/task/closure
+result; source blocks, `if`, and `match` do not lower as value-producing
+expressions. Each IR function or child/closure body is a return scope. The
+lowerer binds source `return` and `propagate_error` to the nearest enclosing
+return scope; ordinary IR blocks cannot capture or retarget them. The verifier
+rejects a return or propagation edge that crosses that boundary.
 
 The semantic operation families are:
 

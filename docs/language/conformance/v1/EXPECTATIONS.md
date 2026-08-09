@@ -20,6 +20,8 @@
 | C012 | `accept/copy-aggregates.tos` | Bootstrap | tuple and array values remain usable after assignment; nominal record/enum values remain affine | bounded aggregate Copy rule |
 | C013 | `accept/async-explicit-return.tos` | Full | async function and spawned task return through explicit `return` | no implicit task tail value |
 | C014 | `accept/named-record-constructor.tos` | Bootstrap | `Point(x: ..., y: ...)` supplies each exact field once | named record constructor arguments |
+| C015 | `accept/named-enum-variant.tos` | Bootstrap | `Rgb(red: ..., green: ..., blue: ...)` supplies each exact field once | named-field enum construction through Call/Construct |
+| C016 | `accept/return-scopes.tos` | Full | nested ordinary block, closure, and spawned task return to their own nearest scope | explicit return-scope boundary |
 | R001 | `reject/use-after-move.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | affine ownership negative |
 | R002 | `reject/borrow-escape.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` | a mutable borrow cannot coexist with later borrow/use |
 | R003 | `reject/forged-capability.tos` | Bootstrap | `E1502_FORGED_CAPABILITY` | scalar value cannot become authority |
@@ -46,6 +48,8 @@
 | R024 | `reject/comma-match-branches.tos` | Bootstrap | parse error | executable match branches do not use commas |
 | R025 | `reject/duplicate-record-constructor-field.tos` | Bootstrap | `E1205_DUPLICATE_RECORD_FIELD` | named constructor field is exact-once |
 | R026 | `reject/missing-record-constructor-field.tos` | Bootstrap | `E1206_MISSING_RECORD_FIELD` | named constructor cannot omit a field |
+| R027 | `reject/standalone-block-expression.tos` | Bootstrap | parse error | executable block is not an expression |
+| R028 | `reject/old-array-semicolon-type.tos` | Bootstrap | parse error | fixed array type uses `array<T, N>` |
 
 ## Byte/source transport cases
 
