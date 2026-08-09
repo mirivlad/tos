@@ -10,7 +10,7 @@ mod parser;
 pub use parser::{
     EnumDeclaration, EnumVariant, EnumVariantForm, Import, ImportKind, ModuleHeader, ModuleOutline,
     ModulePrefix, ParseError, ParseErrorCode, Parser, Profile, RecordDeclaration, RecordField,
-    ResourceDeclaration, ResourceLimit, Schema, Span, TypeSyntax,
+    ResourceDeclaration, ResourceLimit, Schema, Span, TypeSyntax, TypeSyntaxForm,
 };
 
 mod unicode {
@@ -838,6 +838,20 @@ mod tests {
         assert_eq!(variants[1].tuple_types().len(), 2);
         assert_eq!(variants[2].fields().len(), 2);
         assert_eq!(variants[2].fields()[0].name().text(&source), "red");
+    }
+
+    #[test]
+    fn parser_builds_constructed_tuple_and_array_type_syntax() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] record Forms [pair: (i32, bool), result: Result<i32, Error>, buffer: array<u8, 16>,]",
+        )
+        .expect("transport-valid source");
+        let schema = Parser::parse_schema(&source).expect("type forms parse");
+        let fields = schema.records()[0].fields();
+        assert_eq!(fields[0].ty().form(), TypeSyntaxForm::Tuple);
+        assert_eq!(fields[1].ty().form(), TypeSyntaxForm::Constructed);
+        assert_eq!(fields[2].ty().form(), TypeSyntaxForm::Array);
+        assert_eq!(fields[2].ty().text(&source), "array<u8, 16>");
     }
 
     #[test]
