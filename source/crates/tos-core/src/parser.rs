@@ -71,6 +71,54 @@ impl ModuleHeader {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ImportKind {
+    Module,
+    Capability,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Import {
+    kind: ImportKind,
+    path: Vec<Span>,
+    binding: Span,
+    span: Span,
+}
+
+impl Import {
+    pub fn kind(&self) -> ImportKind {
+        self.kind
+    }
+
+    pub fn path(&self) -> &[Span] {
+        &self.path
+    }
+
+    pub fn binding(&self) -> Span {
+        self.binding
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ModulePrefix {
+    header: ModuleHeader,
+    imports: Vec<Import>,
+}
+
+impl ModulePrefix {
+    pub fn header(&self) -> &ModuleHeader {
+        &self.header
+    }
+
+    pub fn imports(&self) -> &[Import] {
+        &self.imports
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParseErrorCode {
     Lexical,
     ExpectedModuleHeader,
@@ -109,6 +157,22 @@ impl Parser {
         let header = parser.parse_header()?;
         parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
         Ok(header)
+    }
+
+    pub fn parse_prefix(source: &SourceUnit) -> Result<ModulePrefix, ParseError> {
+        let tokens = Lexer::lex(source).map_err(lexical_error)?;
+        let mut parser = TokenCursor {
+            source,
+            tokens,
+            index: 0,
+        };
+        let header = parser.parse_header()?;
+        let mut imports = Vec::new();
+        while parser.current_text() == "import" {
+            imports.push(parser.parse_import()?);
+        }
+        parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
+        Ok(ModulePrefix { header, imports })
     }
 }
 
@@ -151,6 +215,43 @@ impl<'source> TokenCursor<'source> {
                 end: end.end(),
             },
         })
+    }
+
+    fn parse_import(&mut self) -> Result<Import, ParseError> {
+        let start = self.expect_word("import", ParseErrorCode::UnexpectedToken)?;
+        let kind = if self.current_text() == "capability" {
+            self.advance();
+            ImportKind::Capability
+        } else {
+            ImportKind::Module
+        };
+        let path = self.parse_dotted_name()?;
+        let binding = if self.current_text() == "as" {
+            self.advance();
+            self.expect_identifier()?
+        } else if kind == ImportKind::Module {
+            *path.last().expect("dotted name has one component")
+        } else {
+            return Err(self.error_here(ParseErrorCode::ExpectedIdentifier));
+        };
+        let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
+        Ok(Import {
+            kind,
+            path,
+            binding,
+            span: Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        })
+    }
+
+    fn parse_dotted_name(&mut self) -> Result<Vec<Span>, ParseError> {
+        let mut name = vec![self.expect_identifier()?];
+        while self.consume_kind(TokenKind::Dot).is_some() {
+            name.push(self.expect_identifier()?);
+        }
+        Ok(name)
     }
 
     fn expect_identifier(&mut self) -> Result<Span, ParseError> {

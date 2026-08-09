@@ -7,7 +7,10 @@ use std::vec::Vec;
 
 mod parser;
 
-pub use parser::{ModuleHeader, ParseError, ParseErrorCode, Parser, Profile, Span};
+pub use parser::{
+    Import, ImportKind, ModuleHeader, ModulePrefix, ParseError, ParseErrorCode, Parser, Profile,
+    Span,
+};
 
 mod unicode {
     include!(concat!(env!("OUT_DIR"), "/unicode_tables.rs"));
@@ -772,6 +775,22 @@ mod tests {
             "system",
             "name component keeps its canonical source span"
         );
+    }
+
+    #[test]
+    fn parser_builds_ordinary_and_capability_import_syntax() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap;\n\
+              import system.text;\n\
+              import capability system.time.Clock as clock;\n",
+        )
+        .expect("transport-valid source");
+        let prefix = Parser::parse_prefix(&source).expect("module prefix parses");
+        assert_eq!(prefix.imports().len(), 2);
+        assert_eq!(prefix.imports()[0].kind(), ImportKind::Module);
+        assert_eq!(prefix.imports()[0].binding().text(&source), "text");
+        assert_eq!(prefix.imports()[1].kind(), ImportKind::Capability);
+        assert_eq!(prefix.imports()[1].binding().text(&source), "clock");
     }
     #[test]
     fn source_reader_accepts_ascii_without_changing_bytes() {
