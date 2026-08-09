@@ -14,6 +14,9 @@ default = []
 # Enables the deterministic builder (requires std + alloc); used by host tools
 # and host tests only. Never enabled in the loader/nucleus.
 host = []
+# Enables a test-only replay of the parser's mandatory cryptographic checks.
+# It is never selected by the production loader or nucleus artifacts.
+test-crypto-baseline = []
 
 [lib]
 name = "tos_capsule"

@@ -44,6 +44,7 @@ name = "tos-stage1-performance"
 version = "0.1.0"
 dependencies = [
  "tos-capsule",
+ "tos-hash",
 ]
 
 [[package]]

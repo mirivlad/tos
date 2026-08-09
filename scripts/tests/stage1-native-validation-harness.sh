@@ -24,6 +24,9 @@ python3 "$CHECKER" --root "$ROOT" --capsule "$TMP/capsule.bin" --manifest "$TMP/
 
 (cd "$SOURCE" && cargo run --release -p tos-stage1-performance -- \
     --capsule "$TMP/capsule.bin" --out "$TMP/samples.jsonl" --warmups 1 --samples 2)
+(cd "$SOURCE" && cargo run --release -p tos-stage1-performance -- \
+    --mode crypto --capsule "$TMP/capsule.bin" --out "$TMP/crypto-samples.jsonl" \
+    --warmups 1 --samples 2)
 
 python3 - "$TMP/samples.jsonl" <<'PY'
 import json
@@ -36,6 +39,12 @@ if any(record["duration_ns"] <= 0 for record in records):
     raise SystemExit("FAIL: native harness recorded a non-positive duration")
 if any(record["validations"] != 2 or record["lookup"] != "/system/boot/init.tos" for record in records):
     raise SystemExit("FAIL: sample does not attest two validations and canonical lookup")
+
+crypto = [json.loads(line) for line in open(sys.argv[1].replace("samples.jsonl", "crypto-samples.jsonl"), encoding="utf-8")]
+if any(record["mode"] != "unavoidable_crypto" or record["validations"] != 2 for record in crypto):
+    raise SystemExit("FAIL: crypto sample does not attest two fresh hash passes")
+if any(record["crypto_bytes_per_boot"] <= 0 or record["crypto_hashes_per_boot"] <= 0 for record in crypto):
+    raise SystemExit("FAIL: crypto sample lacks byte/hash accounting")
 PY
 
 echo 'stage1-native-validation-harness: PASS'
