@@ -5,6 +5,10 @@ use std::boxed::Box;
 use std::string::String;
 use std::vec::Vec;
 
+mod parser;
+
+pub use parser::{ModuleHeader, ParseError, ParseErrorCode, Parser, Profile, Span};
+
 mod unicode {
     include!(concat!(env!("OUT_DIR"), "/unicode_tables.rs"));
 }
@@ -752,6 +756,21 @@ mod tests {
                 "||", "i", "<<", "j", ">>", "k", "+", "-", "*", "/", "%", "!", "~", "<", ">", "&",
                 "|", "^", "(", ")", "[", "]", "{", "}", ",", ":", ".", "?", ";", ""
             ]
+        );
+    }
+
+    #[test]
+    fn parser_builds_the_declared_module_header_with_source_spans() {
+        let source = SourceReader::read(b"module system.boot version 1.0 profile bootstrap;")
+            .expect("transport-valid source");
+        let header = Parser::parse_header(&source).expect("module header parses");
+        assert_eq!(header.name().len(), 2);
+        assert_eq!(header.version(), (1, 0));
+        assert_eq!(header.profile(), Profile::Bootstrap);
+        assert_eq!(
+            header.name()[0].text(&source),
+            "system",
+            "name component keeps its canonical source span"
         );
     }
     #[test]
