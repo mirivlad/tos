@@ -18,7 +18,7 @@ set -eu
 cd "$(dirname "$0")/.."
 
 # Identifiers permitted by LICENSE.md.
-allowed='GPL-3.0-or-later|Apache-2.0|CC-BY-SA-4.0|GPL-3.0-or-later OR Apache-2.0'
+allowed='GPL-3.0-or-later|Apache-2.0|CC-BY-SA-4.0|Unicode-3.0|GPL-3.0-or-later OR Apache-2.0'
 
 fail=0
 checked=0
@@ -33,6 +33,12 @@ if [ -n "$vector_bins" ]; then
     if ! python3 scripts/check-capsule-vector-provenance.py --root .; then
         fail=1
     fi
+fi
+
+unicode_data_paths=$(git ls-files -- 'source/crates/tos-core/unicode/ucd-17.0.0/*.txt')
+if [ -n "$unicode_data_paths" ] \
+    && ! python3 scripts/check-tos-core-unicode-provenance.py --root .; then
+    fail=1
 fi
 
 # Stage 1 can embed separately licensed artwork as data only through a checked
@@ -61,6 +67,8 @@ for f in $(git ls-files); do
         docs/SPECIFICATION_SOURCES.txt) exempt=$((exempt+1)); continue ;;  # generator input list
         source/tests/vectors/capsule-v1/*.bin)
                                     checked=$((checked+1)); continue ;;  # validated above by ADR-0019 provenance manifest
+        source/crates/tos-core/unicode/ucd-17.0.0/*.txt)
+                                    checked=$((checked+1)); continue ;;  # exact UCD set validated above by ADR-0029 provenance
         *.lock)                     exempt=$((exempt+1)); continue ;;  # generated dependency lock
         *.gitignore)                exempt=$((exempt+1)); continue ;;  # tooling config, no licensable content
         */rust-toolchain.toml)      exempt=$((exempt+1)); continue ;;  # toolchain pin, no comment convention
