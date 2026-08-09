@@ -26,6 +26,15 @@ def main() -> int:
         if record.get(key) != expected:
             print(f"unicode-provenance: FAIL: {key}", file=sys.stderr)
             return 1
+    generator = record.get("generator")
+    if generator != {
+        "identity": "tos-core-unicode-gen",
+        "version": 1,
+        "path": "source/crates/tos-core/build.rs",
+        "status": "enabled at build time; generated tables remain disposable",
+    } or not (root / "source/crates/tos-core/build.rs").is_file():
+        print("unicode-provenance: FAIL: generator identity", file=sys.stderr)
+        return 1
     inputs = record.get("inputs")
     if not isinstance(inputs, list) or len(inputs) != 4:
         print("unicode-provenance: FAIL: input set", file=sys.stderr)
