@@ -1,0 +1,45 @@
+{
+  "record_spdx_license": "GPL-3.0-or-later",
+  "format": "tos-stage15-measurement-v1",
+  "timestamp_utc": "2026-08-09T05:58:10.253419+00:00",
+  "label": "adapted-rust-parallel-4",
+  "command": [
+    "target/stage15/adapted-rust-profile",
+    "--mode",
+    "parallel",
+    "--workers",
+    "4"
+  ],
+  "workers": 4,
+  "warmups": 3,
+  "samples": 21,
+  "samples_ns": [
+    6084211,
+    5102129,
+    4949850,
+    5709900,
+    6170421,
+    5997881,
+    5740870,
+    5319845,
+    4940510,
+    6053714,
+    5089765,
+    4651234,
+    5582611,
+    5207813,
+    5521579,
+    5770296,
+    6222399,
+    5213683,
+    6128333,
+    4737056,
+    5253082
+  ],
+  "result_digest": "stage15-common-v1-d000032aaaa80000",
+  "overlap_observed": true,
+  "host": {
+    "platform": "linux",
+    "cpu_count": 28
+  }
+}
