@@ -61,7 +61,8 @@ evidence, never the Phase 0 starting state.
 
 ## Closure conclusion
 
-Stage 1 is **open**. Phase 0, Phase 1 and F-12 through F-17 plus F-20 have
-closed F-04 through F-17, F-19, F-20 and F-22 without weakening their
-requirements. The current blockers are F-18 and F-21. No PASS row overrides
-those blockers or declares the stage complete.
+Stage 1 is **open**. Phase 0, Phase 1 and F-12 through F-20 have closed
+F-04 through F-20 and F-22 without weakening their requirements. F-21 is the
+remaining Stage 1 closure blocker. No PASS row declares the stage complete
+until the immutable final report is generated from a green, commit-addressed
+evidence set.
