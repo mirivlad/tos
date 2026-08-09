@@ -65,8 +65,11 @@ Accept TOS Core V1 as specified by docs/39–44:
   and `{}` executable statement bodies; a non-unit function/task/closure body
   returns only through explicit `return`; `if`/`match` are statement-only;
   function and constructor calls share one syntactic Call form; nominal records
-  use exact named constructor arguments; checked integer conversion uses fixed
-  `to_*` calls; and only primitive roots plus structural tuples/arrays Copy;
+  and named-field enum variants use exact named constructor arguments; closures
+  use `fn (...) { ... }`; fixed arrays use `array<T, N>`; checked integer
+  conversion uses fixed `to_*` calls; and only primitive roots plus structural
+  tuples/arrays Copy; plain executable blocks are never expressions; and
+  return targets the nearest function/closure/spawn return scope;
 - static semantics provide nominal types, fixed-width arithmetic, typed
   Result-style errors, capability effects, affine ownership, lexical
   nonescaping borrows, typed regions, and no safe raw-pointer/physical-address

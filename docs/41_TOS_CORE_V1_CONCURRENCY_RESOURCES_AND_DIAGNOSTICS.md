@@ -40,8 +40,9 @@ their result contracts rather than silently changing ordinary memory semantics.
 `parallel { ... }` creates a lexical task scope. `spawn parallel { ... }`
 inside it creates a child `Task<T>` owned by that scope. The child owns or
 immutably shares exactly the values captured under docs/40. Every spawned
-child MUST ultimately be joined/consumed before scope exit. A child body uses
-an explicit `return` to produce `T`; reaching its end produces only `unit`.
+child MUST ultimately be joined/consumed before scope exit. A child body is its
+own return scope and uses an explicit `return` to produce `T`; reaching its end
+produces only `unit`.
 A child cannot
 outlive its scope, become detached, or outlive its source/capability/resource
 record. Leaving a scope with an unconsumed task is `E1401_UNJOINED_TASK`.

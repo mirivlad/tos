@@ -100,7 +100,7 @@ The inventory is deliberately machine-readable and is checked by
 ```text
 reserved: as async await bootstrap borrow break cancel capability const continue defer else enum extern false fn for full if import in join let loop match module mut parallel profile pub record resource return spawn true unsafe uses version while
 primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes unit
-predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice
+predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice array
 atomic-order: Relaxed Acquire Release AcqRel SeqCst
 predeclared-value: Some None Ok Err Completed Cancelled
 predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul
@@ -218,7 +218,7 @@ constructed_type = "Option" "<" type ">"
                 | "RwLock" "<" type ">"
                 | "Channel" "<" type ">"
                 | "slice" "<" type ">" ;
-array_type      = "[" type ";" const_expression "]" ;
+array_type      = "array" "<" type "," const_expression ">" ;
 tuple_type      = "(" type "," type ( "," type )* ","? ")" ;
 function_type   = "fn" "(" type_list? ")" "->" type ;
 type_list       = type ( "," type )* ","? ;
@@ -274,7 +274,7 @@ question        = "?" ;
 cast            = "as" type ;
 primary         = literal | "true" | "false" | predeclared_value
                 | predeclared_function | qualified_name | tuple | array
-                | closure | spawn_expression | "(" expression ")" | block ;
+                | closure | spawn_expression | "(" expression ")" ;
 predeclared_value = "Some" | "None" | "Ok" | "Err" | "Completed" | "Cancelled" ;
 predeclared_function = "to_i8" | "to_i16" | "to_i32" | "to_i64"
                 | "to_u8" | "to_u16" | "to_u32" | "to_u64"
@@ -282,7 +282,7 @@ predeclared_function = "to_i8" | "to_i16" | "to_i32" | "to_i64"
 literal         = integer | size | duration | string | bytes ;
 tuple           = "(" expression "," expression ( "," expression )* ","? ")" ;
 array           = "[" positional_argument_list? "]" ;
-closure         = "|" closure_parameters? "|" block ;
+closure         = "fn" "(" closure_parameters? ")" block ;
 closure_parameters = parameter ( "," parameter )* ","? ;
 spawn_expression = "spawn" ( "async" | "parallel" ) block ;
 place           = identifier ( field | index )* ;
@@ -314,12 +314,15 @@ parser never chooses a constructor parse instead of a function-call parse.
 Resolution validates the selected callee kind after that one syntax form is
 built; this is not semantic backtracking. Call arguments are either all
 positional or all named; the first argument's `identifier ":"` form fixes named
-mode. Named arguments are accepted only for nominal record constructors, not
-ordinary functions or tuple enum variants. They name every declared field
-exactly once; an unknown name is `E1207_UNKNOWN_RECORD_FIELD`, a duplicate is
-`E1205_DUPLICATE_RECORD_FIELD`, and an omitted field is
+mode. Named arguments are accepted only for nominal record constructors and
+named-field enum variants, not ordinary functions or tuple enum variants. They
+name every declared field exactly once; an unknown name is
+`E1207_UNKNOWN_RECORD_FIELD`, a duplicate is `E1205_DUPLICATE_RECORD_FIELD`,
+and an omitted field is
 `E1206_MISSING_RECORD_FIELD`. Named argument expressions are evaluated in
 source order. `Point(x: 1i32, y: 2i32)` is therefore a record construction;
+`Rgb(red: 1u8, green: 2u8, blue: 3u8)` similarly constructs a named-field enum
+variant;
 `Point { x: 1i32, y: 2i32 }` is not V1 syntax. Missing a comma between list
 members is `E1106_LIST_SEPARATOR_REQUIRED`.
 
@@ -328,6 +331,9 @@ and casts group left-to-right; binary precedence is listed from weakest to
 strongest. `&&` and `||` short-circuit. `await`, `join`, and `borrow` bind like
 other unary operators. A closure and a spawned task use an executable block;
 their normal produced value, if any, uses an explicit `return` in that block.
+An anonymous closure is `fn (parameters) { ... }`; it uses ordinary typed
+parameters in `()` and has an inferred result under docs/40. A plain `{ ... }`
+is never an expression and cannot follow `=` or occur as a call argument.
 
 `defer`, `unsafe`, closures, `async`, and `spawn async` are Full-profile
 constructs. `parallel`, `spawn parallel`, `join`, and `cancel` have defined

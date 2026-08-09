@@ -60,6 +60,8 @@ expression grouping; `[]` holds declarations, data lists, and collections;
 executable action. `return` explicitly returns a normal value. This means a
 record declaration is `record Point [x: i32, y: i32]`, while a record value is
 `Point(x: 1i32, y: 2i32)`. Braces never mean a record value in V1.
+Fixed array types use `array<T, N>`, so `;` never separates declarative type
+members. An anonymous closure is `fn (value: i32) { return value; }`.
 
 ## Functions, records, tuples, and enums
 
@@ -71,13 +73,18 @@ nominal types make diagnostics and verifier checks smaller. See
 
 Function calls, enum tuple-variant construction, and nominal record
 construction use the same `name(...)` parse family and evaluate arguments
-left-to-right. Only records accept named arguments, and they require every
-field exactly once. `if` and `match` are statement-oriented: each branch is an
+left-to-right. Records and named-field enum variants accept named arguments,
+and they require every field exactly once. `if` and `match` are
+statement-oriented: each branch is an
 executable `{ ... }` block, branches are not comma-separated, and a non-unit
 function returns through explicit `return value;` on every normal path. There
 is no hidden tail expression or semicolon-dependent return rule. `match` must
 handle every enum/`Option`/`Result` case; an omitted case receives
 `E1220_NONEXHAUSTIVE_MATCH`, rather than becoming a runtime surprise.
+
+`return` targets the nearest function, closure, or spawned-task body. A nested
+ordinary `{ ... }` block does not redirect it. The same scope determines where
+`?` propagates an `Err`.
 
 ## Option, Result, errors, and diagnostics
 

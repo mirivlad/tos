@@ -46,7 +46,7 @@ not magic host APIs.
 Their exact dynamic semantics are in
 `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
 
-Arrays `[T; N]` have a compile-time nonnegative `N` that is representable as
+Arrays `array<T, N>` have a compile-time nonnegative `N` that is representable as
 `size`. `slice<T>` means a borrowed view and cannot be stored or returned as an
 owned value in V1. A function type `fn(A, B) -> R` is a non-capturing callable
 type. Full-profile closures have a compiler-defined anonymous callable type and
@@ -68,9 +68,11 @@ docs/43: `Option<T>`, `Task<T>`, `TaskResult<T>`, `Shared<T>`, `Region<T>`,
 type argument; `Result<T,E>` takes two. `Event`, `Semaphore`, `Barrier`,
 `Latch`, `AtomicBool`, `AtomicU32`, `AtomicU64`, and `ConversionError` take no
 type arguments.
-Using another arity is a parse/type error, not an implementation-defined
-generic application. `slice<T>` is the only borrowed-view type form and
-retains the nonescaping restrictions above.
+`array<T, N>` takes one type argument and one compile-time `size` constant;
+its comma is a declarative type-parameter separator, not a statement
+terminator. Using another arity is a parse/type error, not an
+implementation-defined generic application. `slice<T>` is the only borrowed-view
+type form and retains the nonescaping restrictions above.
 
 ## 2. Bindings, functions, effects, and capabilities
 
@@ -178,7 +180,11 @@ right side after true. `?` evaluates its operand once and returns the
 containing function with the matching `Err` if it is not `Ok`.
 
 An executable block is a statement body, not a value container: it has no tail
-expression. `return expression;` is the only normal value return. Every
+expression. `return expression;` is the only normal value return. A function
+body, closure body, and `spawn async`/`spawn parallel` body each establish a
+**return scope**. Ordinary nested `{ ... }` blocks do not establish one.
+`return` targets the nearest enclosing return scope, and `?` propagates `Err`
+from that same nearest return scope. Every
 reachable normal completion path of a function with a non-`unit` declared
 return type MUST execute an explicit `return` with that exact type; reaching
 the end of such a function is `E1221_MISSING_RETURN`. `return;` or a value of
