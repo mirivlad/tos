@@ -7,7 +7,12 @@
   "license_expression": "Unicode-3.0",
   "license_notice": "LICENSES/Unicode-3.0.txt",
   "upstream_base_url": "https://www.unicode.org/Public/17.0.0/ucd/",
-  "generator": {"identity": "tos-core-unicode-gen", "version": 1, "status": "required before generated tables are enabled"},
+  "generator": {
+    "identity": "tos-core-unicode-gen",
+    "version": 1,
+    "path": "source/crates/tos-core/build.rs",
+    "status": "enabled at build time; generated tables remain disposable"
+  },
   "inputs": [
     {"file": "UnicodeData.txt", "sha256": "2e1efc1dcb59c575eedf5ccae60f95229f706ee6d031835247d843c11d96470c"},
     {"file": "CompositionExclusions.txt", "sha256": "2f239196ef3b5b61db5cc476e9bd80f534d15aa1b74e1be1dea5d042a344c85f"},
