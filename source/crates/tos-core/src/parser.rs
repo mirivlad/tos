@@ -161,6 +161,79 @@ pub struct ModuleOutline {
     resource: ResourceDeclaration,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TypeSyntax {
+    span: Span,
+}
+
+impl TypeSyntax {
+    pub fn text(self, source: &SourceUnit) -> &str {
+        self.span.text(source)
+    }
+
+    pub fn span(self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct RecordField {
+    name: Span,
+    ty: TypeSyntax,
+    span: Span,
+}
+
+impl RecordField {
+    pub fn name(&self) -> Span {
+        self.name
+    }
+
+    pub fn ty(&self) -> TypeSyntax {
+        self.ty
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct RecordDeclaration {
+    name: Span,
+    fields: Vec<RecordField>,
+    span: Span,
+}
+
+impl RecordDeclaration {
+    pub fn name(&self) -> Span {
+        self.name
+    }
+
+    pub fn fields(&self) -> &[RecordField] {
+        &self.fields
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Schema {
+    outline: ModuleOutline,
+    records: Vec<RecordDeclaration>,
+}
+
+impl Schema {
+    pub fn outline(&self) -> &ModuleOutline {
+        &self.outline
+    }
+
+    pub fn records(&self) -> &[RecordDeclaration] {
+        &self.records
+    }
+}
+
 impl ModuleOutline {
     pub fn prefix(&self) -> &ModulePrefix {
         &self.prefix
@@ -247,6 +320,33 @@ impl Parser {
         Ok(ModuleOutline {
             prefix: ModulePrefix { header, imports },
             resource,
+        })
+    }
+
+    pub fn parse_schema(source: &SourceUnit) -> Result<Schema, ParseError> {
+        let tokens = Lexer::lex(source).map_err(lexical_error)?;
+        let mut parser = TokenCursor {
+            source,
+            tokens,
+            index: 0,
+        };
+        let header = parser.parse_header()?;
+        let mut imports = Vec::new();
+        while parser.current_text() == "import" {
+            imports.push(parser.parse_import()?);
+        }
+        let resource = parser.parse_resource_declaration()?;
+        let mut records = Vec::new();
+        while parser.current_text() == "record" {
+            records.push(parser.parse_record_declaration()?);
+        }
+        parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
+        Ok(Schema {
+            outline: ModuleOutline {
+                prefix: ModulePrefix { header, imports },
+                resource,
+            },
+            records,
         })
     }
 }
@@ -358,6 +458,66 @@ impl<'source> TokenCursor<'source> {
                 end: end.end(),
             },
         })
+    }
+
+    fn parse_record_declaration(&mut self) -> Result<RecordDeclaration, ParseError> {
+        let start = self.expect_word("record", ParseErrorCode::UnexpectedToken)?;
+        let name = self.expect_identifier()?;
+        self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
+        let fields = self.parse_field_list()?;
+        let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
+        Ok(RecordDeclaration {
+            name,
+            fields,
+            span: Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        })
+    }
+
+    fn parse_field_list(&mut self) -> Result<Vec<RecordField>, ParseError> {
+        let mut fields = Vec::new();
+        if self.current().kind() == TokenKind::CloseBracket {
+            return Ok(fields);
+        }
+        loop {
+            if self.current_text() == "pub" {
+                self.advance();
+            }
+            let name = self.expect_identifier()?;
+            self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
+            let ty = self.parse_simple_type()?;
+            fields.push(RecordField {
+                name,
+                ty,
+                span: Span {
+                    start: name.start(),
+                    end: ty.span().end(),
+                },
+            });
+            if self.consume_kind(TokenKind::Comma).is_some() {
+                if self.current().kind() == TokenKind::CloseBracket {
+                    break;
+                }
+                continue;
+            }
+            if self.current().kind() != TokenKind::CloseBracket {
+                return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
+            }
+            break;
+        }
+        Ok(fields)
+    }
+
+    fn parse_simple_type(&mut self) -> Result<TypeSyntax, ParseError> {
+        if self.current().kind() == TokenKind::Identifier {
+            Ok(TypeSyntax {
+                span: Span::from(self.advance()),
+            })
+        } else {
+            Err(self.error_here(ParseErrorCode::ExpectedIdentifier))
+        }
     }
 
     fn parse_dotted_name(&mut self) -> Result<Vec<Span>, ParseError> {
