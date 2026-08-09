@@ -7,10 +7,11 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 GITROOT="$(cd "$ROOT/.." && pwd)"
 OUT="$ROOT/target/stage1-crypto-baseline"
 ACCEL=""
+EVIDENCE_STATUS="P1"
 
 usage() {
     cat <<'EOF'
-Usage: bash host-tools/qemu-test/crypto-baseline.sh [--out DIR] [--accel tcg|kvm]
+Usage: bash host-tools/qemu-test/crypto-baseline.sh [--out DIR] [--accel tcg|kvm] [--evidence-status P1|P2]
 
 Builds an isolated test nucleus below target/test-crypto-baseline and measures
 only two fresh unavoidable-crypto validator passes over the same deterministic
@@ -23,11 +24,13 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --out) OUT="$2"; shift 2 ;;
         --accel) ACCEL="$2"; shift 2 ;;
+        --evidence-status) EVIDENCE_STATUS="$2"; shift 2 ;;
         -h|--help) usage; exit 0 ;;
         *) echo "unknown option: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 case "$ACCEL" in ""|tcg|kvm) ;; *) echo "invalid accelerator: $ACCEL" >&2; exit 2 ;; esac
+case "$EVIDENCE_STATUS" in P1|P2) ;; *) echo "invalid evidence status: $EVIDENCE_STATUS" >&2; exit 2 ;; esac
 
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
@@ -91,7 +94,7 @@ python3 "$WORKLOAD" qemu-crypto-report \
     --rustc-version "$(rustc --version)" \
     --qemu-version "$(qemu-system-x86_64 --version | head -n 1)" \
     --ovmf-code "$RUN/OVMF_CODE.fd" --ovmf-vars "$RUN/OVMF_VARS.fd" \
-    --accelerator "${ACCEL:-tcg}"
+    --accelerator "${ACCEL:-tcg}" --evidence-status "$EVIDENCE_STATUS"
 
 python3 - "$REPORT" <<'PY'
 import json

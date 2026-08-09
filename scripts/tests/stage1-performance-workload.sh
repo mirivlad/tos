@@ -59,7 +59,7 @@ printf vars > "$TMP/OVMF_VARS.fd"
 python3 "$WORKLOAD" report --fixture "$TMP/fixture" --measurements "$TMP/measurements.jsonl" \
     --warmups "$TMP/warmups.jsonl" --out "$TMP/report.json" --source-commit test \
     --qemu-version fake-qemu --rustc-version fake-rustc --ovmf-code "$TMP/OVMF_CODE.fd" \
-    --ovmf-vars "$TMP/OVMF_VARS.fd" --evidence-status P1 --accelerator tcg
+    --ovmf-vars "$TMP/OVMF_VARS.fd" --evidence-status P2 --accelerator tcg
 python3 - "$TMP/report.json" <<'PY'
 import json
 import sys
@@ -68,8 +68,10 @@ report = json.load(open(sys.argv[1], encoding="utf-8"))
 stats = report["statistics"]
 if (stats["median_ns"], stats["p95_ns"], stats["p99_ns"]) != (11, 20, 21):
     raise SystemExit(f"FAIL: nearest-rank statistics are wrong: {stats!r}")
-if stats["p95_rank"] != 20 or stats["p99_rank"] != 21 or not stats["budget_pass"]:
-    raise SystemExit(f"FAIL: report did not retain contract statistics: {stats!r}")
+if stats["p95_rank"] != 20 or stats["p99_rank"] != 21:
+    raise SystemExit(f"FAIL: report did not retain nearest-rank statistics: {stats!r}")
+if report["evidence_status"] != "P2":
+    raise SystemExit("FAIL: report did not retain the requested P2 evidence status")
 if len(report["raw_samples"]["measurements"]) != 21:
     raise SystemExit("FAIL: report omitted raw measured samples")
 if report["qemu"]["accelerator"] != "tcg":
@@ -95,7 +97,7 @@ records = [json.loads(line) for line in open(path, encoding="utf-8")]
 for record in records:
     record.pop("lookup")
     record["mode"] = "unavoidable_crypto"
-    record["crypto_bytes_per_boot"] = 123456
+    record["crypto_bytes_per_boot"] = 101203198
     record["crypto_hashes_per_boot"] = 2007
 with open(path, "w", encoding="utf-8") as output:
     for record in records:
@@ -103,11 +105,28 @@ with open(path, "w", encoding="utf-8") as output:
         output.write("\n")
 PY
 python3 "$WORKLOAD" native-report --fixture "$TMP/fixture" --samples "$TMP/native-samples.jsonl" \
-    --out "$TMP/native-report.json" --source-commit test --rustc-version fake-rustc
+    --out "$TMP/native-report.json" --source-commit test --rustc-version fake-rustc \
+    --evidence-status P2
 python3 "$WORKLOAD" crypto-report --fixture "$TMP/fixture" --samples "$TMP/crypto-samples.jsonl" \
-    --out "$TMP/crypto-report.json" --source-commit test --rustc-version fake-rustc
+    --out "$TMP/crypto-report.json" --source-commit test --rustc-version fake-rustc \
+    --evidence-status P2
 python3 "$WORKLOAD" validation-ratio --full "$TMP/native-report.json" --crypto "$TMP/crypto-report.json" \
-    --out "$TMP/ratio.json"
+    --out "$TMP/ratio.json" --max-p95-ratio 1.30
+python3 - "$TMP/crypto-report.json" "$TMP/crypto-too-slow.json" <<'PY'
+import json
+import sys
+
+report = json.load(open(sys.argv[1], encoding="utf-8"))
+report["statistics"]["p95_ns"] = 100
+with open(sys.argv[2], "w", encoding="utf-8") as output:
+    json.dump(report, output)
+PY
+if python3 "$WORKLOAD" validation-ratio --full "$TMP/native-report.json" \
+    --crypto "$TMP/crypto-too-slow.json" --out "$TMP/too-slow-ratio.json" \
+    --max-p95-ratio 1.10 >/dev/null 2>&1; then
+    echo "FAIL: validation-ratio accepted a p95 ratio over its bound" >&2
+    exit 1
+fi
 printf '{"event":"TOS.TEST.CRYPTO.BASELINE.START","monotonic_ns":100}\n{"event":"TOS.TEST.CRYPTO.BASELINE.DONE","monotonic_ns":130}\n' > "$TMP/crypto-timestamps.jsonl"
 python3 "$WORKLOAD" crypto-qemu-sample --timestamps "$TMP/crypto-timestamps.jsonl" \
     --phase measurement --index 1 --crypto-bytes 123456 --crypto-hashes 2007 \
@@ -130,10 +149,14 @@ if native["measurement"]["logical_sequence"] != "fresh parse -> fresh parse -> c
     raise SystemExit("FAIL: native report omitted the exact logical validation sequence")
 if comparison["qemu_to_native_p95_ratio"] != 20 / 120:
     raise SystemExit("FAIL: comparison did not retain p95 ratio")
-if crypto["crypto_accounting"]["bytes_per_boot"] != 123456:
+if crypto["crypto_accounting"]["bytes_per_boot"] != 101203198:
     raise SystemExit("FAIL: crypto report did not retain byte accounting")
+if native["evidence_status"] != "P2" or crypto["evidence_status"] != "P2":
+    raise SystemExit("FAIL: reports did not retain the requested P2 evidence status")
 if ratio["full_over_unavoidable_crypto"]["p95_ratio"] != 1:
     raise SystemExit("FAIL: validation ratio used incorrect p95 inputs")
+if ratio["evidence_status"] != "P2" or ratio["max_p95_ratio"] != 1.3:
+    raise SystemExit("FAIL: ratio did not retain its P2 status and bound")
 if decomposition["sample_count"] != 21:
     raise SystemExit("FAIL: decomposition did not retain every measured sample")
 if decomposition["segments"]["loader_validation"]["p95_ns"] != 20:

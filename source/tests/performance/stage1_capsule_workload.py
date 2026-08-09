@@ -16,6 +16,8 @@ from pathlib import Path
 FILE_COUNT = 1_000
 PAYLOAD_BYTES = 16 * 1024 * 1024
 SPDX = b"# SPDX-License-Identifier: GPL-3.0-or-later\n"
+STAGE1_CRYPTO_BYTES = 101_203_198
+STAGE1_CRYPTO_HASHES = 2_007
 
 
 def sha256_file(path: Path) -> str:
@@ -108,7 +110,7 @@ def cpu_description() -> str:
     return platform.processor() or "unknown"
 
 
-def report(args: argparse.Namespace) -> bool:
+def report(args: argparse.Namespace) -> None:
     measured = timestamp_records(args.measurements)
     warmups = timestamp_records(args.warmups)
     if len(measured) != 21:
@@ -161,9 +163,7 @@ def report(args: argparse.Namespace) -> bool:
         "rustc_version": args.rustc_version,
         "source_commit": args.source_commit,
         "statistics": {
-            "budget_pass": p95 <= 250_000_000,
             "median_ns": median,
-            "p95_budget_ns": 250_000_000,
             "p95_ns": p95,
             "p95_rank": p95_rank,
             "p99_ns": p99,
@@ -172,7 +172,6 @@ def report(args: argparse.Namespace) -> bool:
         "workload": workload,
     }
     write_json(args.out, report_value)
-    return p95 <= 250_000_000
 
 
 def native_report(args: argparse.Namespace) -> None:
@@ -204,8 +203,8 @@ def native_report(args: argparse.Namespace) -> None:
     write_json(
         args.out,
         {
-            "architecture": "x86_64 Stage 1 native logical validation research",
-            "evidence_status": "P1 research-only",
+            "architecture": "x86_64 Stage 1 native exact validation",
+            "evidence_status": args.evidence_status,
             "host": {"cpu": cpu_description(), "os": platform.platform()},
             "measurement": {
                 "logical_sequence": "fresh parse -> fresh parse -> canonical boot_file lookup",
@@ -216,12 +215,10 @@ def native_report(args: argparse.Namespace) -> None:
             "source_commit": args.source_commit,
             "statistics": {
                 "median_ns": durations[len(durations) // 2],
-                "p95_budget_ns": 250_000_000,
                 "p95_ns": p95,
                 "p95_rank": p95_rank,
                 "p99_ns": durations[p99_rank - 1],
                 "p99_rank": p99_rank,
-                "would_meet_existing_budget": p95 <= 250_000_000,
             },
             "workload": workload,
         },
@@ -259,12 +256,12 @@ def crypto_report(args: argparse.Namespace) -> None:
     write_json(
         args.out,
         {
-            "architecture": "x86_64 Stage 1 unavoidable crypto research",
+            "architecture": "x86_64 Stage 1 unavoidable crypto",
             "crypto_accounting": {
                 "bytes_per_boot": bytes_per_boot,
                 "hashes_per_boot": hashes_per_boot,
             },
-            "evidence_status": "P1 research-only",
+            "evidence_status": args.evidence_status,
             "host": {"cpu": cpu_description(), "os": platform.platform()},
             "measurement": {
                 "logical_sequence": "two plain capsule mirrors -> two parser crypto replays -> boot-text digest",
@@ -286,6 +283,8 @@ def validation_ratio(args: argparse.Namespace) -> None:
         raise ValueError("full and crypto reports use different source commits")
     if full.get("workload") != crypto.get("workload"):
         raise ValueError("full and crypto reports use different workloads")
+    if full.get("evidence_status") != crypto.get("evidence_status"):
+        raise ValueError("full and crypto reports use different evidence statuses")
     fields = ("median_ns", "p95_ns", "p99_ns")
     full_stats = full.get("statistics", {})
     crypto_stats = crypto.get("statistics", {})
@@ -296,16 +295,30 @@ def validation_ratio(args: argparse.Namespace) -> None:
         for field in fields
     ):
         raise ValueError("full or crypto report lacks positive latency statistics")
+    accounting = crypto.get("crypto_accounting")
+    expected_accounting = {
+        "bytes_per_boot": STAGE1_CRYPTO_BYTES,
+        "hashes_per_boot": STAGE1_CRYPTO_HASHES,
+    }
+    if accounting != expected_accounting:
+        raise ValueError("crypto report does not attest the exact Stage 1 workload accounting")
+    p95_ratio = full_stats["p95_ns"] / crypto_stats["p95_ns"]
+    if p95_ratio > args.max_p95_ratio:
+        raise ValueError(
+            f"full/crypto p95 ratio {p95_ratio:.9f} exceeds {args.max_p95_ratio:.9f}"
+        )
     write_json(
         args.out,
         {
-            "crypto_accounting": crypto.get("crypto_accounting"),
+            "crypto_accounting": accounting,
+            "evidence_status": full["evidence_status"],
             "full_over_unavoidable_crypto": {
                 "median_ratio": full_stats["median_ns"] / crypto_stats["median_ns"],
-                "p95_ratio": full_stats["p95_ns"] / crypto_stats["p95_ns"],
+                "p95_ratio": p95_ratio,
                 "p99_ratio": full_stats["p99_ns"] / crypto_stats["p99_ns"],
             },
-            "scope": "research-only; ratio does not amend the Stage 1 performance contract",
+            "max_p95_ratio": args.max_p95_ratio,
+            "scope": "accepted ADR-0026 Stage 1 validation performance conformance",
             "source_commit": full["source_commit"],
             "workload": full["workload"],
         },
@@ -386,15 +399,13 @@ def comparison(args: argparse.Namespace) -> None:
             "native": {
                 "p95_ns": native_p95,
                 "source_commit": native["source_commit"],
-                "would_meet_existing_budget": native["statistics"]["would_meet_existing_budget"],
             },
             "qemu_tcg": {
                 "p95_ns": qemu_p95,
                 "source_commit": qemu["source_commit"],
-                "would_meet_existing_budget": qemu["statistics"]["budget_pass"],
             },
             "qemu_to_native_p95_ratio": qemu_p95 / native_p95,
-            "scope": "research-only comparison; neither result amends ADR-0025",
+            "scope": "observational comparison; ratio conformance is reported separately",
         },
     )
 
@@ -503,16 +514,19 @@ def main() -> None:
     native_report_parser.add_argument("--out", required=True, type=Path)
     native_report_parser.add_argument("--source-commit", required=True)
     native_report_parser.add_argument("--rustc-version", required=True)
+    native_report_parser.add_argument("--evidence-status", choices=("P1", "P2"), required=True)
     crypto_report_parser = subcommands.add_parser("crypto-report")
     crypto_report_parser.add_argument("--fixture", required=True, type=Path)
     crypto_report_parser.add_argument("--samples", required=True, type=Path)
     crypto_report_parser.add_argument("--out", required=True, type=Path)
     crypto_report_parser.add_argument("--source-commit", required=True)
     crypto_report_parser.add_argument("--rustc-version", required=True)
+    crypto_report_parser.add_argument("--evidence-status", choices=("P1", "P2"), required=True)
     validation_ratio_parser = subcommands.add_parser("validation-ratio")
     validation_ratio_parser.add_argument("--full", required=True, type=Path)
     validation_ratio_parser.add_argument("--crypto", required=True, type=Path)
     validation_ratio_parser.add_argument("--out", required=True, type=Path)
+    validation_ratio_parser.add_argument("--max-p95-ratio", required=True, type=float)
     crypto_qemu_sample_parser = subcommands.add_parser("crypto-qemu-sample")
     crypto_qemu_sample_parser.add_argument("--timestamps", required=True, type=Path)
     crypto_qemu_sample_parser.add_argument("--phase", choices=("warmup", "measurement"), required=True)
@@ -530,6 +544,7 @@ def main() -> None:
     qemu_crypto_report_parser.add_argument("--ovmf-code", required=True, type=Path)
     qemu_crypto_report_parser.add_argument("--ovmf-vars", required=True, type=Path)
     qemu_crypto_report_parser.add_argument("--accelerator", choices=("tcg", "kvm"), required=True)
+    qemu_crypto_report_parser.add_argument("--evidence-status", choices=("P1", "P2"), required=True)
     comparison_parser = subcommands.add_parser("comparison")
     comparison_parser.add_argument("--native", required=True, type=Path)
     comparison_parser.add_argument("--qemu", required=True, type=Path)
@@ -543,8 +558,7 @@ def main() -> None:
     elif args.command == "sample":
         append_sample(args.timestamps, args.phase, args.index, args.out)
     elif args.command == "report":
-        if not report(args):
-            raise SystemExit("p95 exceeds the Stage 1 250 ms budget")
+        report(args)
     elif args.command == "native-report":
         native_report(args)
     elif args.command == "crypto-report":

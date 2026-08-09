@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Reproducible QEMU evidence for the existing Stage 1 capsule p95 budget.
+# Reproducible QEMU full-path evidence for the Stage 1 capsule contract.
 #
 # This script deliberately delegates every boot to run.sh. It only generates
 # the approved detached fixture, collects its existing serial boundaries and
@@ -133,7 +133,7 @@ import sys
 report = json.load(open(sys.argv[1], encoding="utf-8"))
 stats = report["statistics"]
 print(
-    "STAGE1-PERFORMANCE PASS: "
+    "STAGE1-PERFORMANCE MEASURED: "
     f"median={stats['median_ns'] / 1_000_000:.3f}ms "
     f"p95={stats['p95_ns'] / 1_000_000:.3f}ms "
     f"p99={stats['p99_ns'] / 1_000_000:.3f}ms "
