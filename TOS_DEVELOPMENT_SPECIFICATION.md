@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `b7212fd5ef81399f1027f461b2207573357fcb4806ae51ae1ae8394ab786f4a5`  
+Source-manifest SHA-256: `43f54a7e9a532bab90faaf48c8d4b152e1ec4535a691100d5328a4d2f4d6a1db`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2484,9 +2484,12 @@ Official developer and research profiles provide a documented path to boot an ow
 
 ## Current status
 
-“TOS Core” names the required native textual language role of the system. The final language foundation is **not yet selected**.
+“TOS Core” is the accepted bespoke TOS-owned native textual language foundation
+under ADR-0027.
 
-The syntax in this document is illustrative. No parser, grammar or runtime becomes normative until Stage 1.5 completes and a selection ADR is accepted under ADR-0015.
+The syntax in this document remains illustrative. Stage 2 defines the complete
+normative parser, grammar and runtime specification within ADR-0027's accepted
+semantic and trust boundary.
 
 This distinction is deliberate: TOS requires language properties, not a proprietary syntax for its own sake.
 
@@ -2555,7 +2558,16 @@ This example expresses intent only. It must not be used as an accidental grammar
 
 ## Blocking semantic requirements
 
-The selection ADR must define or adopt:
+The Stage 1.5 selection ADR MUST establish the semantic/trust boundary for:
+
+- canonical source authority;
+- type/effect, ownership/region and concurrency direction;
+- verifier/IR/runtime relationship;
+- bounded bootstrap and SMP-capable full-profile direction; and
+- no safe-language data-race undefined behavior or hidden host-runtime ABI.
+
+Stage 2 MUST define the complete normative specification within that boundary,
+including:
 
 - lexical grammar and Unicode normalization;
 - complete syntactic grammar;
@@ -2746,7 +2758,9 @@ The official runtime and standard implementation are GPL-3.0-or-later. Public gr
 
 # Execution model and intermediate representation
 
-> The exact language foundation and its lowering boundary remain subject to Stage 1.5 and ADR-0015. This document specifies required execution properties, not a preselected parser implementation.
+> ADR-0027 accepts bespoke TOS Core as the language foundation. This document
+> specifies the accepted execution boundary; Stage 2 defines the complete IR
+> schema and parser/lowering implementation within it.
 
 ## Principle
 
@@ -6355,7 +6369,7 @@ This matrix does not presuppose that a bespoke language wins. It prevents conven
 
 | Candidate | Blocking result | Evidence |
 |---|---|---|
-| A — bespoke TOS Core | PASS, proposed selection | `stage15/finalists/bespoke-tos-core.md`; common corpus and 1/2/4-worker records |
+| A — bespoke TOS Core | PASS, accepted selection (ADR-0027) | `stage15/finalists/bespoke-tos-core.md`; common corpus and 1/2/4-worker records |
 | B — TOS surface over WebAssembly Threads formal core | FAIL | Wasm supplies validated binary execution/shared memory/atomics, but lacks TOS canonical source, capability, ownership/region, structured task/resource, identity and recovery semantics. Adding them makes TOS the foundation; Wasm remains a possible derived backend. Host-created threads are supporting evidence only. |
 | C — adapted restricted Rust | PASS, runner-up | `stage15/finalists/adapted-rust.md`; actual E0451/E0499 negatives and common worker records |
 | D — unchanged Rust, Pony, Go | FAIL | Ambient/unsafe/resource boundary; actor-only parallelism; or unsafe-race/capability failures respectively. See `stage15/screening.md`. |
@@ -8256,9 +8270,10 @@ into a mutable document.
 
 # ADR-0027: Select bespoke TOS Core language foundation
 
-- Status: Proposed — Ready for Project Architect decision
+- Status: Accepted
 - Date: 2026-08-09
 - Decision level: 3 — canonical language semantics, verifier and runtime trust boundary
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-09
 
 ## Decision
 
@@ -8298,12 +8313,11 @@ normative grammar, detailed static/dynamic/evaluation/overflow/borrow/error
 rules, module algorithm, exact atomic model, FFI and versioning within those
 accepted boundaries.
 
-If accepted, this ADR authorizes a Level 0 reconciliation of docs/05's stale
-phrase “selection ADR must define or adopt” to “selection ADR MUST establish
+This ADR authorizes a Level 0 reconciliation of docs/05's stale phrase
+“selection ADR must define or adopt” to “selection ADR MUST establish
 the Stage 1.5 semantic boundary; Stage 2 MUST define the complete normative
 specification within it.” docs/16 remains unchanged in substance: Stage 2 owns
-the normative lexical/syntax/semantic specification. This proposed text is not
-applied while this ADR is Proposed.
+the normative lexical/syntax/semantic specification.
 
 ## Rationale and alternatives
 

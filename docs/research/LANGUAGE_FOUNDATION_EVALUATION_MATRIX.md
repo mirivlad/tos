@@ -123,7 +123,7 @@ This matrix does not presuppose that a bespoke language wins. It prevents conven
 
 | Candidate | Blocking result | Evidence |
 |---|---|---|
-| A — bespoke TOS Core | PASS, proposed selection | `stage15/finalists/bespoke-tos-core.md`; common corpus and 1/2/4-worker records |
+| A — bespoke TOS Core | PASS, accepted selection (ADR-0027) | `stage15/finalists/bespoke-tos-core.md`; common corpus and 1/2/4-worker records |
 | B — TOS surface over WebAssembly Threads formal core | FAIL | Wasm supplies validated binary execution/shared memory/atomics, but lacks TOS canonical source, capability, ownership/region, structured task/resource, identity and recovery semantics. Adding them makes TOS the foundation; Wasm remains a possible derived backend. Host-created threads are supporting evidence only. |
 | C — adapted restricted Rust | PASS, runner-up | `stage15/finalists/adapted-rust.md`; actual E0451/E0499 negatives and common worker records |
 | D — unchanged Rust, Pony, Go | FAIL | Ambient/unsafe/resource boundary; actor-only parallelism; or unsafe-race/capability failures respectively. See `stage15/screening.md`. |

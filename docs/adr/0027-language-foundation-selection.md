@@ -2,9 +2,10 @@
 
 # ADR-0027: Select bespoke TOS Core language foundation
 
-- Status: Proposed — Ready for Project Architect decision
+- Status: Accepted
 - Date: 2026-08-09
 - Decision level: 3 — canonical language semantics, verifier and runtime trust boundary
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-09
 
 ## Decision
 
@@ -44,12 +45,11 @@ normative grammar, detailed static/dynamic/evaluation/overflow/borrow/error
 rules, module algorithm, exact atomic model, FFI and versioning within those
 accepted boundaries.
 
-If accepted, this ADR authorizes a Level 0 reconciliation of docs/05's stale
-phrase “selection ADR must define or adopt” to “selection ADR MUST establish
+This ADR authorizes a Level 0 reconciliation of docs/05's stale phrase
+“selection ADR must define or adopt” to “selection ADR MUST establish
 the Stage 1.5 semantic boundary; Stage 2 MUST define the complete normative
 specification within it.” docs/16 remains unchanged in substance: Stage 2 owns
-the normative lexical/syntax/semantic specification. This proposed text is not
-applied while this ADR is Proposed.
+the normative lexical/syntax/semantic specification.
 
 ## Rationale and alternatives
 
