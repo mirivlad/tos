@@ -323,11 +323,67 @@ impl EnumDeclaration {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum BorrowMode {
+    Owned,
+    Shared,
+    Mutable,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct FunctionParameter {
+    name: Span,
+    ty: TypeSyntax,
+    borrow_mode: BorrowMode,
+    span: Span,
+}
+impl FunctionParameter {
+    pub fn name(&self) -> Span {
+        self.name
+    }
+    pub fn ty(&self) -> &TypeSyntax {
+        &self.ty
+    }
+    pub fn borrow_mode(&self) -> BorrowMode {
+        self.borrow_mode
+    }
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct FunctionSignature {
+    name: Span,
+    parameters: Vec<FunctionParameter>,
+    result: TypeSyntax,
+    effects: Vec<Span>,
+    span: Span,
+}
+impl FunctionSignature {
+    pub fn name(&self) -> Span {
+        self.name
+    }
+    pub fn parameters(&self) -> &[FunctionParameter] {
+        &self.parameters
+    }
+    pub fn result(&self) -> &TypeSyntax {
+        &self.result
+    }
+    pub fn effects(&self) -> &[Span] {
+        &self.effects
+    }
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct Schema {
     outline: ModuleOutline,
     records: Vec<RecordDeclaration>,
     enums: Vec<EnumDeclaration>,
+    extern_functions: Vec<FunctionSignature>,
 }
 
 impl Schema {
@@ -341,6 +397,9 @@ impl Schema {
 
     pub fn enums(&self) -> &[EnumDeclaration] {
         &self.enums
+    }
+    pub fn extern_functions(&self) -> &[FunctionSignature] {
+        &self.extern_functions
     }
 }
 
@@ -448,11 +507,14 @@ impl Parser {
         let resource = parser.parse_resource_declaration()?;
         let mut records = Vec::new();
         let mut enums = Vec::new();
-        while matches!(parser.current_text(), "record" | "enum") {
+        let mut extern_functions = Vec::new();
+        while matches!(parser.current_text(), "record" | "enum" | "extern") {
             if parser.current_text() == "record" {
                 records.push(parser.parse_record_declaration()?);
-            } else {
+            } else if parser.current_text() == "enum" {
                 enums.push(parser.parse_enum_declaration()?);
+            } else {
+                extern_functions.push(parser.parse_extern_function()?);
             }
         }
         parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
@@ -463,6 +525,7 @@ impl Parser {
             },
             records,
             enums,
+            extern_functions,
         })
     }
 }
@@ -716,6 +779,100 @@ impl<'source> TokenCursor<'source> {
             break;
         }
         Ok(fields)
+    }
+
+    fn parse_extern_function(&mut self) -> Result<FunctionSignature, ParseError> {
+        let start = self.expect_word("extern", ParseErrorCode::UnexpectedToken)?;
+        self.expect_word("fn", ParseErrorCode::UnexpectedToken)?;
+        let name = self.expect_identifier()?;
+        self.expect_kind(TokenKind::OpenParen, ParseErrorCode::UnexpectedToken)?;
+        let parameters = self.parse_parameters()?;
+        self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+        self.expect_word("->", ParseErrorCode::UnexpectedToken)?;
+        let result = self.parse_type()?;
+        let effects = self.parse_effects()?;
+        let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
+        Ok(FunctionSignature {
+            name,
+            parameters,
+            result,
+            effects,
+            span: Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        })
+    }
+
+    fn parse_parameters(&mut self) -> Result<Vec<FunctionParameter>, ParseError> {
+        let mut parameters = Vec::new();
+        if self.current().kind() == TokenKind::CloseParen {
+            return Ok(parameters);
+        }
+        loop {
+            let start = Span::from(self.current());
+            let borrow_mode = if self.current_text() == "borrow" {
+                self.advance();
+                if self.current_text() == "mut" {
+                    self.advance();
+                    BorrowMode::Mutable
+                } else {
+                    BorrowMode::Shared
+                }
+            } else {
+                BorrowMode::Owned
+            };
+            let name = self.expect_identifier()?;
+            self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
+            let ty = self.parse_type()?;
+            let end = ty.span().end();
+            parameters.push(FunctionParameter {
+                name,
+                ty,
+                borrow_mode,
+                span: Span {
+                    start: start.start(),
+                    end,
+                },
+            });
+            if self.consume_kind(TokenKind::Comma).is_some() {
+                if self.current().kind() == TokenKind::CloseParen {
+                    break;
+                }
+                continue;
+            }
+            if self.current().kind() != TokenKind::CloseParen {
+                return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
+            }
+            break;
+        }
+        Ok(parameters)
+    }
+
+    fn parse_effects(&mut self) -> Result<Vec<Span>, ParseError> {
+        if self.current_text() != "uses" {
+            return Ok(Vec::new());
+        }
+        self.advance();
+        self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
+        let mut effects = Vec::new();
+        if self.current().kind() != TokenKind::CloseBracket {
+            loop {
+                effects.push(self.expect_identifier()?);
+                if self.consume_kind(TokenKind::Comma).is_some() {
+                    if self.current().kind() == TokenKind::CloseBracket {
+                        break;
+                    }
+                    continue;
+                }
+                if self.current().kind() != TokenKind::CloseBracket {
+                    return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
+                }
+                break;
+            }
+        }
+        self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
+        Ok(effects)
     }
 
     fn parse_type(&mut self) -> Result<TypeSyntax, ParseError> {
