@@ -34,7 +34,12 @@ jobs:
   spdx:
     runs-on: ubuntu-latest
     steps:
+      # Capsule-vector provenance binds generated fixtures to their historical
+      # source and generator commits.  The SPDX gate verifies those bindings,
+      # so a shallow checkout would turn valid provenance into a false failure.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: SPDX licence headers
         run: sh scripts/check-spdx.sh
