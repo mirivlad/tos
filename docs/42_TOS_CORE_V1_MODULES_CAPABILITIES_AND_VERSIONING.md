@@ -66,7 +66,8 @@ nominal capability type is `system.time.Clock`. It is a request, not a grant.
 The process launcher/supervisor, not source text, maps the request to a concrete
 grant after policy/trust evaluation. An absent/denied request means module
 startup returns the typed launch error `CapabilityDenied`; it is not fabricated
-as `nil`, a global singleton, an integer, or a successful empty authority.
+as an absence sentinel, a global singleton, an integer, or a successful empty
+authority. (`nil` is not a TOS Core V1 value.)
 
 The imported name can appear only as a value of its declared opaque type, a
 function parameter/effect name, or an argument to an operation that requires

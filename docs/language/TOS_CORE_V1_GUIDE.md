@@ -121,14 +121,18 @@ process gets one instead of four workers.
 
 `spawn async`/`await` represent event-driven work in Full profile; see
 [async.tos](examples/async.tos). `parallel` creates a lexical scope, and
-`spawn parallel` creates children that must be joined or cancelled before that
-scope ends. A Full runtime can run independent children simultaneously on
+`spawn parallel` creates children that must ultimately be joined before that
+scope ends. `cancel` only requests cooperative cancellation; it does not
+consume the child. `join`/`await` consumes `Task<T>` and returns
+`TaskResult<T>`: `Completed(value)` preserves the child result and `Cancelled`
+records cancellation. A Full runtime can run independent children simultaneously on
 several cores; Bootstrap executes the same valid parallel scope serially. See
 [parallel.tos](examples/parallel.tos).
 
 There are no detached V1 tasks. `E1401_UNJOINED_TASK` prevents accidentally
 leaving a child and its resources behind. `cancel` is cooperative and cleanup
-is bounded; joining makes a child's completed work visible to its parent.
+is bounded; joining makes a child's completion or cancellation visible to its
+parent.
 
 ## Shared data, synchronization, and atomics
 

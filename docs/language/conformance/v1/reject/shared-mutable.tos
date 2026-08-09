@@ -23,7 +23,7 @@ pub fn main() -> unit {
     parallel {
         let first = spawn parallel { counter.value = 1i32; };
         let second = spawn parallel { counter.value = 2i32; };
-        join first;
-        join second;
+        let _first_outcome = join first;
+        let _second_outcome = join second;
     }
 }

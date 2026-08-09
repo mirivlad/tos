@@ -16,7 +16,7 @@ resource {
 
 pub fn count_to_three() -> i32 {
     let mut count: i32 = 0i32;
-    while count < 3i32 {
+    while (count < 3i32) {
         count = count + 1i32;
     }
     count

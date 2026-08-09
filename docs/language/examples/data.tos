@@ -25,7 +25,7 @@ enum Axis {
 }
 
 pub fn shift(point: Point, axis: Axis, amount: i32) -> Point {
-    match axis {
+    match (axis) {
         Horizontal => Point { x: point.x + amount, y: point.y },
         Vertical => Point { x: point.x, y: point.y + amount },
     }

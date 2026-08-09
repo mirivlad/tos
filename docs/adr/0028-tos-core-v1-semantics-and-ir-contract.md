@@ -28,6 +28,16 @@ The proposed numbered specification set is:
 They are one V1 contract: splitting prose does not split authority or allow an
 implementation to select only convenient portions.
 
+This resubmission resolves the checkpoint's internal-contract findings without
+changing the ADR-0027 foundation: it makes every V1 type form and constructor
+arity expressible in grammar; gives control heads an explicit parenthesized
+boundary from record initializers; fixes record field-list separation; removes
+`nil` as an absence syntax; inventories every identifier-shaped grammar word;
+and defines cancellation as a request followed by a consuming
+`TaskResult<T>` join/await lifecycle. The companion mechanical consistency gate
+checks these boundaries across docs/39–44, canonical examples, and the
+conformance corpus.
+
 ## Proposed decision
 
 Accept TOS Core V1 as specified by docs/39–44:
@@ -36,12 +46,18 @@ Accept TOS Core V1 as specified by docs/39–44:
   path, and SHA-256 source-content identity;
 - grammar is deterministic EBNF with explicit parser recovery and no macros,
   ambient imports, pointer syntax, or target-dependent integer defaults;
+- tuple types and borrowed `slice<T>` are explicit V1 forms; all predeclared
+  synchronization/atomic types have fixed documented arity; control heads are
+  parenthesized and record fields are comma-separated so parser boundaries do
+  not depend on type resolution;
 - static semantics provide nominal types, fixed-width arithmetic, typed
   Result-style errors, capability effects, affine ownership, lexical
   nonescaping borrows, typed regions, and no safe raw-pointer/physical-address
   escape;
 - Full execution has structured async and true-SMP-capable structured parallel
-  tasks; Bootstrap is a bounded serialized subset of the same semantics;
+  tasks; `join`/`await` consume `Task<T>` into `TaskResult<T>`, so cooperative
+  cancellation never conflates with a child `Result` value; Bootstrap is a
+  bounded serialized subset of the same semantics;
 - safe data races are statically excluded and independently verifier-rejected;
   atomics, synchronization, cancellation, happens-before, and resource
   accounting have TOS-owned semantics;

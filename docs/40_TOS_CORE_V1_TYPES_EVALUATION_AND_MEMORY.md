@@ -31,12 +31,17 @@ an unsigned `u64` count of nanoseconds. Public and persistent forms use one of
 the explicit fixed-width integers.
 
 `Option<T>` has variants `Some(T)` and `None`; `Result<T,E>` has variants
-`Ok(T)` and `Err(E)`. `Task<T>` is a scoped task result. `Shared<T>` is an
-immutable shareable value. `Region<T>` and `DmaRegion<T>` are opaque
+`Ok(T)` and `Err(E)`. `Task<T>` is an owned scoped task handle.
+`TaskResult<T>` has variants `Completed(T)` and `Cancelled`; it is the result
+of consuming a task handle through `join` or `await`. This keeps cancellation
+distinct from a child value of type `T`, including when `T` is itself
+`Result<U,E>`. `Shared<T>` is an immutable shareable value. `Region<T>` and
+`DmaRegion<T>` are opaque
 nucleus-granted typed region handles. `Mutex<T>`, `RwLock<T>`, `Channel<T>`,
-`Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`, and `AtomicU64` are
-typed runtime contracts, not magic host APIs. Their exact dynamic semantics
-are in `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
+`Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`, and
+`AtomicU64` are non-generic typed runtime contracts, not magic host APIs.
+Their exact dynamic semantics are in
+`docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
 
 Arrays `[T; N]` have a compile-time nonnegative `N` that is representable as
 `size`. `slice<T>` means a borrowed view and cannot be stored or returned as an
@@ -53,6 +58,15 @@ There are no user-defined generic functions, traits, implicit interfaces, or
 ad-hoc overload resolution in V1. The listed library type constructors are the
 only parameterized types. This keeps type identity, diagnostics, and
 independent verification bounded.
+
+The complete V1 constructed-type arity is fixed and is shared with docs/39 and
+docs/43: `Option<T>`, `Task<T>`, `TaskResult<T>`, `Shared<T>`, `Region<T>`,
+`DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, and `slice<T>` take one
+type argument; `Result<T,E>` takes two. `Event`, `Semaphore`, `Barrier`,
+`Latch`, `AtomicBool`, `AtomicU32`, and `AtomicU64` take no type arguments.
+Using another arity is a parse/type error, not an implementation-defined
+generic application. `slice<T>` is the only borrowed-view type form and
+retains the nonescaping restrictions above.
 
 ## 2. Bindings, functions, effects, and capabilities
 
@@ -82,10 +96,13 @@ runtime contract. An integer, string, cast, deserialization, record literal, or
 unsafe block cannot mint one.
 
 `async fn` returns `Task<Result<T, E>>` when its declared return type is
-`Result<T, E>` and `Task<T>` otherwise. `await task` obtains the successful
-task value or propagates its `Err`/cancellation according to `?`; it is
-Full-profile only. `spawn async` and `spawn parallel` capture values according
-to the ownership rules below. `spawn` has no detached form in V1.
+`Result<T, E>` and `Task<T>` otherwise. `await task` consumes `Task<T>` and
+has type `TaskResult<T>`; it is an asynchronous join and is Full-profile only.
+For example, awaiting `Task<Result<T,E>>` produces
+`TaskResult<Result<T,E>>`: `Completed(Err(e))` is the child program result,
+while `Cancelled` is task cancellation. `spawn async` and `spawn parallel`
+capture values according to the ownership rules below. `spawn` has no detached
+form in V1.
 
 A Full-profile closure captures each free `Copy`/`Shared<T>` value by copy and
 each other permitted value by move at closure creation. It cannot capture a

@@ -90,21 +90,27 @@ They are case-sensitive. Unicode is permitted in string data and comments but
 not identifiers. A source reader reports `E1012_INVALID_IDENTIFIER` at the
 first nonmatching byte rather than applying case folding or confusable mapping.
 
-The reserved words are:
+V1 has no contextual keywords. Every identifier-shaped language word belongs to
+exactly one class below. Reserved, primitive, predeclared type, and predeclared
+value names cannot be shadowed; every other matching identifier is ordinary.
+The inventory is deliberately machine-readable and is checked by
+`scripts/check-stage2-language-contract.py` against the EBNF terminals.
 
+<!-- stage2-word-inventory:start -->
 ```text
-as async atomic await bootstrap bool borrow break cancel capability const continue
-defer else enum error extern false for fn from if import in let loop match
-full module mut nil parallel profile pub record requires resource return self
-spawn string task true type unsafe use uses while
+reserved: as async await bootstrap borrow break cancel capability const continue defer else enum extern false fn for full if import in join let loop match module mut parallel profile pub record resource return spawn true unsafe uses version while
+primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes unit
+predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 slice
+atomic-order: Relaxed Acquire Release AcqRel SeqCst
+predeclared-value: Some None Ok Err Completed Cancelled
+special-token: _
 ```
+<!-- stage2-word-inventory:end -->
 
-`Option`, `Result`, `Task`, `Shared`, `Region`, `DmaRegion`, `Mutex`,
-`RwLock`, `Channel`, `Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`,
-and `AtomicU64` are predeclared type names, not keywords. A program cannot
-shadow a reserved word or a predeclared type name. `Relaxed`, `Acquire`,
-`Release`, `AcqRel`, and `SeqCst` are predeclared atomic-order values and also
-cannot be shadowed.
+`nil` is not a V1 keyword, literal, pattern, type, or absence model. An
+ordinary identifier spelled `nil` is allowed, subject to normal name resolution;
+unbound use receives `E1202_UNKNOWN_VALUE_NAME`. `Option<T>` is the only V1
+typed absence model.
 
 ## 3. Literals
 
@@ -189,16 +195,27 @@ effects         = "uses" "{" identifier ( "," identifier )* ","? "}" ;
 extern_decl     = "extern" "fn" identifier "(" parameter_list? ")"
                   "->" type effects? ";" ;
 
-type            = primitive_type | named_type | constructed_type
-                | array_type | function_type ;
+type            = primitive_type | predeclared_type | named_type | constructed_type
+                | array_type | tuple_type | function_type ;
 primitive_type  = "bool" | "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64" | "size" | "duration"
                 | "string" | "bytes" | "unit" ;
+predeclared_type = "Event" | "Semaphore" | "Barrier" | "Latch"
+                | "AtomicBool" | "AtomicU32" | "AtomicU64" ;
 named_type      = qualified_name ;
-constructed_type = ( "Option" | "Result" | "Task" | "Shared" | "Region"
-                   | "DmaRegion" | "Mutex" | "RwLock" | "Channel" | "Semaphore" )
-                   "<" type_list ">" ;
+constructed_type = "Option" "<" type ">"
+                | "Result" "<" type "," type ">"
+                | "Task" "<" type ">"
+                | "TaskResult" "<" type ">"
+                | "Shared" "<" type ">"
+                | "Region" "<" type ">"
+                | "DmaRegion" "<" type ">"
+                | "Mutex" "<" type ">"
+                | "RwLock" "<" type ">"
+                | "Channel" "<" type ">"
+                | "slice" "<" type ">" ;
 array_type      = "[" type ";" const_expression "]" ;
+tuple_type      = "(" type "," type ( "," type )* ","? ")" ;
 function_type   = "fn" "(" type_list? ")" "->" type ;
 type_list       = type ( "," type )* ","? ;
 
@@ -213,18 +230,18 @@ assignment      = place "=" expression ;
 return_stmt     = "return" expression? ";" ;
 break_stmt      = "break" expression? ";" ;
 continue_stmt   = "continue" ";" ;
-if_stmt         = "if" expression block ( "else" ( if_stmt | block ) )? ;
-while_stmt      = "while" expression block ;
-for_stmt        = "for" pattern "in" expression block ;
+if_stmt         = "if" "(" expression ")" block ( "else" ( if_stmt | block ) )? ;
+while_stmt      = "while" "(" expression ")" block ;
+for_stmt        = "for" pattern "in" "(" expression ")" block ;
 loop_stmt       = "loop" block ;
-match_stmt      = "match" expression "{" match_arm* "}" ;
+match_stmt      = "match" "(" expression ")" "{" match_arm* "}" ;
 match_arm       = pattern "=>" ( block | expression "," ) ;
 parallel_stmt   = "parallel" block ;
 cancel_stmt     = "cancel" expression ";" ;
 defer_stmt      = "defer" block ;
 unsafe_stmt     = "unsafe" block ;
 
-pattern         = "_" | identifier | "nil" | identifier "(" pattern_list? ")"
+pattern         = "_" | identifier | identifier "(" pattern_list? ")"
                 | "(" pattern_list ")" ;
 pattern_list    = pattern ( "," pattern )* ","? ;
 expression      = logical_or ;
@@ -247,14 +264,15 @@ index           = "[" expression "]" ;
 field           = "." identifier ;
 question        = "?" ;
 cast            = "as" type ;
-primary         = literal | "true" | "false" | "nil" | qualified_name
+primary         = literal | "true" | "false" | qualified_name
                 | tuple | array | record_init | enum_init
                 | closure | spawn_expression | "(" expression ")" | block ;
 literal         = integer | size | duration | string | bytes ;
 tuple           = "(" expression "," expression ( "," expression )* ","? ")" ;
 array           = "[" argument_list? "]" ;
-record_init     = qualified_name "{" field_init* "}" ;
-field_init      = identifier ":" expression ","? ;
+record_init     = qualified_name "{" field_init_list? "}" ;
+field_init_list = field_init ( "," field_init )* ","? ;
+field_init      = identifier ":" expression ;
 enum_init       = qualified_name "(" argument_list? ")" ;
 closure         = "|" closure_parameters? "|" expression ;
 closure_parameters = parameter ( "," parameter )* ","? ;
@@ -266,13 +284,22 @@ const_product   = const_primary ( ( "*" | "/" | "%" ) const_primary )* ;
 const_primary   = integer | size | identifier | "(" const_expression ")" ;
 ```
 
-`record_init` and `enum_init` are resolved only after parsing: a name followed
-by `{` or `(` is syntactically accepted, then type resolution decides whether
-it denotes a record or variant. This is a local deterministic disambiguation,
-not semantic backtracking. Function calls, field access, indexing, propagation
-(`?`) and casts group left-to-right; binary precedence is listed from weakest
-to strongest. `&&` and `||` short-circuit. `await`, `join`, and `borrow` bind
-like other unary operators.
+Every control header has mandatory parentheses.  The closing `)` therefore
+ends an `if`, `while`, `for`, or `match` head before the following block begins;
+`if ready { ... }` is `E1105_CONTROL_HEAD_PARENS_REQUIRED`.  This deliberately
+prevents a parser from having to choose between a control block and a record
+initializer such as `Ready { ... }`.  A `qualified_name` followed by `{` or
+`(` in an ordinary expression position is parsed as `record_init` or
+`enum_init` respectively; name resolution then checks that it denotes the
+corresponding nominal type or variant.  This local name check is not semantic
+backtracking.  An empty record initializer is syntactically valid. Fields are
+comma-separated, a final comma is permitted, and a repeated field name is the
+static named-field error `E1205_DUPLICATE_RECORD_FIELD`, not a parser error.
+Missing a comma between record fields is
+`E1106_RECORD_FIELD_SEPARATOR_REQUIRED`. Function calls, field access,
+indexing, propagation (`?`) and casts group left-to-right; binary precedence
+is listed from weakest to strongest. `&&` and `||` short-circuit. `await`,
+`join`, and `borrow` bind like other unary operators.
 
 `defer`, `unsafe`, closures, `async`, and `spawn async` are Full-profile
 constructs. `parallel`, `spawn parallel`, `join`, and `cancel` have defined

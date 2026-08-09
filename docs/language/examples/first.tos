@@ -20,7 +20,7 @@ enum FirstError {
 
 pub fn main() -> Result<i32, FirstError> {
     let answer: i32 = 42i32;
-    if answer == 42i32 {
+    if (answer == 42i32) {
         Ok(answer)
     } else {
         Err(Unexpected)
