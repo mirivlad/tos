@@ -312,6 +312,67 @@ def validation_ratio(args: argparse.Namespace) -> None:
     )
 
 
+def crypto_qemu_sample(args: argparse.Namespace) -> None:
+    records = timestamp_records(args.timestamps)
+    events = [record.get("event") for record in records]
+    start_event = "TOS.TEST.CRYPTO.BASELINE.START"
+    end_event = "TOS.TEST.CRYPTO.BASELINE.DONE"
+    if events.count(start_event) != 1 or events.count(end_event) != 1:
+        raise ValueError(f"crypto QEMU boundaries must occur exactly once, got {events!r}")
+    start = records[events.index(start_event)].get("monotonic_ns")
+    end = records[events.index(end_event)].get("monotonic_ns")
+    if not isinstance(start, int) or not isinstance(end, int) or start <= 0 or end <= start:
+        raise ValueError("crypto QEMU timestamps must be strictly increasing positive nanoseconds")
+    if args.crypto_bytes <= 0 or args.crypto_hashes <= 0:
+        raise ValueError("crypto QEMU accounting must be positive")
+    record = {
+        "crypto_bytes_per_boot": args.crypto_bytes,
+        "crypto_hashes_per_boot": args.crypto_hashes,
+        "duration_ns": end - start,
+        "event_timestamps": records,
+        "index": args.index,
+        "mode": "unavoidable_crypto",
+        "phase": args.phase,
+        "validations": 2,
+    }
+    with args.out.open("a", encoding="utf-8") as destination:
+        destination.write(json.dumps(record, sort_keys=True, separators=(",", ":")))
+        destination.write("\n")
+
+
+def qemu_crypto_report(args: argparse.Namespace) -> None:
+    crypto_report(args)
+    report_value = json.loads(args.out.read_text(encoding="utf-8"))
+    report_value["architecture"] = "x86_64 Stage 1 QEMU unavoidable crypto research"
+    report_value["firmware"] = {
+        "code_path": str(args.ovmf_code),
+        "code_sha256": sha256_file(args.ovmf_code),
+        "vars_path": str(args.ovmf_vars),
+        "vars_sha256": sha256_file(args.ovmf_vars),
+    }
+    report_value["guest"] = {"cpu": "qemu64", "memory_mib": 256, "vcpus": 1}
+    report_value["host"] = {
+        "cpu": cpu_description(),
+        "virtualization_mode": (
+            "TCG (QEMU invoked without -enable-kvm)"
+            if args.accelerator == "tcg"
+            else "KVM research-only alternate backend"
+        ),
+    }
+    report_value["measurement"] = {
+        "end_event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+        "event_clock": "host monotonic serial-byte arrival",
+        "logical_sequence": "two plain capsule mirrors -> two parser crypto replays -> boot-text digest",
+        "start_event": "TOS.TEST.CRYPTO.BASELINE.START",
+    }
+    report_value["qemu"] = {
+        "accelerator": args.accelerator,
+        "machine": "q35",
+        "version": args.qemu_version,
+    }
+    write_json(args.out, report_value)
+
+
 def comparison(args: argparse.Namespace) -> None:
     native = json.loads(args.native.read_text(encoding="utf-8"))
     qemu = json.loads(args.qemu.read_text(encoding="utf-8"))
@@ -452,6 +513,23 @@ def main() -> None:
     validation_ratio_parser.add_argument("--full", required=True, type=Path)
     validation_ratio_parser.add_argument("--crypto", required=True, type=Path)
     validation_ratio_parser.add_argument("--out", required=True, type=Path)
+    crypto_qemu_sample_parser = subcommands.add_parser("crypto-qemu-sample")
+    crypto_qemu_sample_parser.add_argument("--timestamps", required=True, type=Path)
+    crypto_qemu_sample_parser.add_argument("--phase", choices=("warmup", "measurement"), required=True)
+    crypto_qemu_sample_parser.add_argument("--index", type=int, required=True)
+    crypto_qemu_sample_parser.add_argument("--crypto-bytes", type=int, required=True)
+    crypto_qemu_sample_parser.add_argument("--crypto-hashes", type=int, required=True)
+    crypto_qemu_sample_parser.add_argument("--out", required=True, type=Path)
+    qemu_crypto_report_parser = subcommands.add_parser("qemu-crypto-report")
+    qemu_crypto_report_parser.add_argument("--fixture", required=True, type=Path)
+    qemu_crypto_report_parser.add_argument("--samples", required=True, type=Path)
+    qemu_crypto_report_parser.add_argument("--out", required=True, type=Path)
+    qemu_crypto_report_parser.add_argument("--source-commit", required=True)
+    qemu_crypto_report_parser.add_argument("--rustc-version", required=True)
+    qemu_crypto_report_parser.add_argument("--qemu-version", required=True)
+    qemu_crypto_report_parser.add_argument("--ovmf-code", required=True, type=Path)
+    qemu_crypto_report_parser.add_argument("--ovmf-vars", required=True, type=Path)
+    qemu_crypto_report_parser.add_argument("--accelerator", choices=("tcg", "kvm"), required=True)
     comparison_parser = subcommands.add_parser("comparison")
     comparison_parser.add_argument("--native", required=True, type=Path)
     comparison_parser.add_argument("--qemu", required=True, type=Path)
@@ -473,6 +551,10 @@ def main() -> None:
         crypto_report(args)
     elif args.command == "validation-ratio":
         validation_ratio(args)
+    elif args.command == "crypto-qemu-sample":
+        crypto_qemu_sample(args)
+    elif args.command == "qemu-crypto-report":
+        qemu_crypto_report(args)
     elif args.command == "comparison":
         comparison(args)
     else:
