@@ -26,6 +26,7 @@ def main() -> int:
     modules_path = root / "docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md"
     ir_path = root / "docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md"
     conformance_path = root / "docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md"
+    adr_path = root / "docs/adr/0028-tos-core-v1-semantics-and-ir-contract.md"
     expectations_path = root / "docs/language/conformance/v1/EXPECTATIONS.md"
     guide_path = root / "docs/language/TOS_CORE_V1_GUIDE.md"
     tutorial_path = root / "docs/language/LEARNING_TOS_CORE.md"
@@ -35,6 +36,7 @@ def main() -> int:
     modules = modules_path.read_text(encoding="utf-8")
     ir = ir_path.read_text(encoding="utf-8")
     conformance = conformance_path.read_text(encoding="utf-8")
+    adr = adr_path.read_text(encoding="utf-8")
     expectations = expectations_path.read_text(encoding="utf-8")
     guide = guide_path.read_text(encoding="utf-8")
     tutorial = tutorial_path.read_text(encoding="utf-8")
@@ -42,10 +44,12 @@ def main() -> int:
 
     for document in [grammar, types, concurrency, modules, ir, conformance]:
         require(
-            "Status: **Proposed Stage 2 contract — not implementation authority**" in document,
-            "a numbered Stage 2 contract lost its proposed/not-implemented status",
+            "Status: **Accepted Tier 2 contract — production implementation in progress**" in document,
+            "a numbered Stage 2 contract is not accepted for production implementation",
             failures,
         )
+    require("- Status: Accepted" in adr, "ADR-0028 is not accepted", failures)
+    require("Project Architect approval:" in adr, "ADR-0028 lacks Project Architect approval record", failures)
 
     inventory = re.search(
         r"<!-- stage2-word-inventory:start -->\n```text\n(.*?)\n```\n<!-- stage2-word-inventory:end -->",

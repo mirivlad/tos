@@ -2,7 +2,7 @@
 
 # TOS Core V1 — typed IR, verifier, and provenance
 
-- Status: **Proposed Stage 2 contract — not implementation authority**
+- Status: **Accepted Tier 2 contract — production implementation in progress**
 - IR semantic schema: `tos-ir/v1`
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` through

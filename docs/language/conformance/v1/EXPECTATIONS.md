@@ -1,6 +1,6 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 
-# Proposed TOS Core V1 conformance expectations
+# Accepted TOS Core V1 conformance expectations
 
 ## Source-level cases
 

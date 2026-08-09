@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `b5d52905748fa39d98a83a888ae1e3325490c957dfc9554c10e37611b1bafb86`  
+Source-manifest SHA-256: `446b5c3085bd7f7433b0e98f4bac2972125af149ba1dbe3da9539c42b73bb44f`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2937,7 +2937,7 @@ A backend such as an interpreter, bytecode VM, Wasm engine or native compiler ma
 
 # TOS Core V1 — source model and grammar
 
-- Status: **Proposed Stage 2 contract — not implementation authority**
+- Status: **Accepted Tier 2 contract — production implementation in progress**
 - Language version: `TOS Core 1.0`
 - Authority on acceptance: Tier 2 under
   `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`
@@ -2950,12 +2950,12 @@ A backend such as an interpreter, bytecode VM, Wasm engine or native compiler ma
 
 ## Status and boundary
 
-This document is the proposed lexical and syntactic part of one TOS Core V1
+This document is the accepted lexical and syntactic part of one TOS Core V1
 contract set. It is intentionally detailed enough to prevent a first parser
-from inventing language semantics. It becomes Tier 2 authority only if the
-Project Architect accepts ADR-0028. Until then it is a reviewable proposal and
-does **not** authorize a production parser, checker, IR, verifier, interpreter,
-cache, or runtime.
+from inventing language semantics. ADR-0028 accepts it as Tier 2 authority
+under the normative hierarchy. It authorizes the production reference
+implementation; implementation status remains separate and is recorded in the
+guide, tutorial, conformance evidence, and stage report.
 
 TOS Core V1 is the TOS-owned textual language selected by ADR-0027. Canonical
 installed code is normalized UTF-8 `.tos` source. ASTs, typed IR, bytecode and
@@ -3296,7 +3296,7 @@ version negotiation rather than silently reinterpreting V1 source.
 
 # TOS Core V1 — types, evaluation, ownership, and memory
 
-- Status: **Proposed Stage 2 contract — not implementation authority**
+- Status: **Accepted Tier 2 contract — production implementation in progress**
 - Language version: `TOS Core 1.0`
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`
@@ -3470,8 +3470,8 @@ evaluates before patterns; assignment evaluates its place base/index
 left-to-right before its right side. Ordinary function calls and tuple-variant
 constructors use the same Call form and differ only at resolved-callee checking.
 `&&` does not evaluate its right side after false; `||` does not evaluate its
-right side after true. `?` evaluates its operand once and returns the
-containing function with the matching `Err` if it is not `Ok`.
+right side after true. `?` evaluates its operand once and propagates the
+matching `Err` from the nearest enclosing return scope if it is not `Ok`.
 
 An executable block is a statement body, not a value container: it has no tail
 expression. `return expression;` is the only normal value return. A function
@@ -3502,8 +3502,8 @@ not comma-separated. `match` must be exhaustive for an enum, `Option`, or
 exhaustive. `break` has no value. Patterns bind by move unless the matched
 subject is an immutable `Copy` value; borrows must be made explicitly before
 match. `?` remains an explicit Result-propagation operation: it evaluates its
-operand once and returns the containing function with the matching `Err`; it
-is not an implicit block-tail return mechanism.
+operand once and propagates the matching `Err` from the nearest enclosing
+return scope; it is not an implicit block-tail return mechanism.
 
 `Result` is the sole ordinary recoverable-error transport. A runtime trap is a
 defined language failure caused by a violated dynamic precondition. `panic`
@@ -3614,7 +3614,7 @@ escape hatch or an invitation to inherit a Rust/C/host ABI.
 
 # TOS Core V1 — concurrency, resources, and diagnostics
 
-- Status: **Proposed Stage 2 contract — not implementation authority**
+- Status: **Accepted Tier 2 contract — production implementation in progress**
 - Language version: `TOS Core 1.0`
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` and
@@ -3857,7 +3857,7 @@ events. A full registry and conformance expectations are in docs/44.
 
 # TOS Core V1 — modules, capabilities, and versioning
 
-- Status: **Proposed Stage 2 contract — not implementation authority**
+- Status: **Accepted Tier 2 contract — production implementation in progress**
 - Language version: `TOS Core 1.0`
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`,
@@ -4039,7 +4039,7 @@ capability and does not make a derived artifact canonical.
 
 # TOS Core V1 — typed IR, verifier, and provenance
 
-- Status: **Proposed Stage 2 contract — not implementation authority**
+- Status: **Accepted Tier 2 contract — production implementation in progress**
 - IR semantic schema: `tos-ir/v1`
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` through
@@ -4285,7 +4285,7 @@ frontend, verifier, source maps, capability contract, or recovery semantics.
 
 # TOS Core V1 — conformance, limits, and implementation review
 
-- Status: **Proposed Stage 2 contract — not implementation authority**
+- Status: **Accepted Tier 2 contract — production implementation in progress**
 - Language version: `TOS Core 1.0`
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` through
@@ -4301,7 +4301,7 @@ accepts valid IR and rejects forged/malformed IR; a conforming engine produces
 an allowed V1 outcome without relying on host language/ABI behavior.
 
 The initial corpus is retained under `docs/language/conformance/v1/`. It is
-proposed source/conformance evidence only until implementation begins. Each
+accepted source/conformance contract evidence until implementation begins. Each
 case has a stable identifier, canonical `.tos` input, profile, expected result
 or primary diagnostic, source span, and semantic rationale. An implementation
 MUST NOT change an expectation merely because its parser/checker finds a more
@@ -4332,7 +4332,7 @@ task/worker case are mandatory; overlap alone is insufficient.
 ## 2. Frontend, verifier, and runtime hard limits
 
 The production implementation MUST publish exact numeric limits before it
-accepts untrusted source/IR. They may be no larger than this proposed V1
+accepts untrusted source/IR. They may be no larger than this accepted V1
 ceiling without a contract extension:
 
 ```text
@@ -4378,7 +4378,7 @@ nucleus, or all denial of service. Stage 2 implementation evidence MUST cover:
 - source-map identity forgery/mismatch; and
 - cross-engine semantic differential testing for every supported engine.
 
-Evidence levels remain those in docs/34: the proposed documents are E0 design;
+Evidence levels remain those in docs/34: the accepted documents are E0 design;
 implemented parser/verifier paths become E1; automated positives/negatives E2;
 fuzz/fault evidence E3. No Stage 2 closure claim may elevate a design contract
 without the corresponding implementation evidence.
@@ -9915,10 +9915,11 @@ skip them.
 
 # ADR-0028: TOS Core V1 semantics and IR contract
 
-- Status: Proposed — ready for Project Architect decision
+- Status: Accepted
 - Date: 2026-08-09
 - Decision level: 2 — versioned language/IR contract within ADR-0027's
   accepted Level 3 foundation boundary
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-09
 
 ## Context
 
@@ -9929,7 +9930,7 @@ contract to Stage 2. Implementing a parser first would make its incidental
 choices normative and would risk restoring a hidden Rust/LLVM/libc/C ABI/host
 runtime contract.
 
-The proposed numbered specification set is:
+The accepted numbered specification set is:
 
 - `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`;
 - `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`;
@@ -9962,7 +9963,7 @@ array Copy, with user records/enums affine. These are Level 0 consistency and
 learnability corrections inside the proposed V1 semantic direction, not a new
 language foundation or Part B authorization.
 
-## Proposed decision
+## Decision
 
 Accept TOS Core V1 as specified by docs/39–44:
 

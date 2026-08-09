@@ -2,7 +2,7 @@
 
 # TOS Core V1 — conformance, limits, and implementation review
 
-- Status: **Proposed Stage 2 contract — not implementation authority**
+- Status: **Accepted Tier 2 contract — production implementation in progress**
 - Language version: `TOS Core 1.0`
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` through
@@ -18,7 +18,7 @@ accepts valid IR and rejects forged/malformed IR; a conforming engine produces
 an allowed V1 outcome without relying on host language/ABI behavior.
 
 The initial corpus is retained under `docs/language/conformance/v1/`. It is
-proposed source/conformance evidence only until implementation begins. Each
+accepted source/conformance contract evidence until implementation begins. Each
 case has a stable identifier, canonical `.tos` input, profile, expected result
 or primary diagnostic, source span, and semantic rationale. An implementation
 MUST NOT change an expectation merely because its parser/checker finds a more
@@ -49,7 +49,7 @@ task/worker case are mandatory; overlap alone is insufficient.
 ## 2. Frontend, verifier, and runtime hard limits
 
 The production implementation MUST publish exact numeric limits before it
-accepts untrusted source/IR. They may be no larger than this proposed V1
+accepts untrusted source/IR. They may be no larger than this accepted V1
 ceiling without a contract extension:
 
 ```text
@@ -95,7 +95,7 @@ nucleus, or all denial of service. Stage 2 implementation evidence MUST cover:
 - source-map identity forgery/mismatch; and
 - cross-engine semantic differential testing for every supported engine.
 
-Evidence levels remain those in docs/34: the proposed documents are E0 design;
+Evidence levels remain those in docs/34: the accepted documents are E0 design;
 implemented parser/verifier paths become E1; automated positives/negatives E2;
 fuzz/fault evidence E3. No Stage 2 closure claim may elevate a design contract
 without the corresponding implementation evidence.

@@ -1,8 +1,8 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 
-# Proposed TOS Core V1 conformance corpus
+# Accepted TOS Core V1 conformance corpus
 
-This tree contains backend-neutral canonical `.tos` inputs for Proposed TOS
+This tree contains backend-neutral canonical `.tos` inputs for accepted TOS
 Core V1. The inputs are GPL-3.0-or-later reusable implementation/conformance
 sources; the corpus documentation is CC-BY-SA-4.0. They become mechanically
 executed only after the accepted Stage 2 frontend/verifier exists. Until then,
