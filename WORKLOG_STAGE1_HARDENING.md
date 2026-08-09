@@ -1559,3 +1559,13 @@ boot architecture, DCO policy или опубликованной истории
 - The record does not claim final closure: a Project Architect decision is
   still required.  F-21 therefore remains the sole BLOCKER and Stage 1 remains
   open until an immutable approval/publication record is added.
+
+### 2026-08-09 — formal Stage 1 closure approval
+
+- The Project Architect formally approved Stage 1 closure.  The immutable
+  approval record is
+  `source/legal/publication-records/b84dbb9b1d7cb1503f737f0cc0ec66631571e02b-stage1-closure-approval.md`;
+  it references rather than rewrites the evidence report for `f220603`.
+- F-21 is PASS.  The final closure audit records Stage 1 as formally closed;
+  F-23/F-24 remain expressly deferred non-Stage-1 maintenance and do not
+  weaken or reopen any Stage 1 contract.

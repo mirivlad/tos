@@ -13,10 +13,13 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 
 ## Текущая позиция
 
-- Базовая линия: TOS v0.2.1, коммит `c5b818c` (Establish TOS architecture baseline).
-- Этап: Stage 0 завершён (архитектура/право, ADR-005 QEMU x86_64 first,
-  ADR-006 Rust no_std). Идёт Stage 1: capsule v1 + boot ABI v1 + загрузчик +
-  нуклеус + первый QEMU-прогон.
+- Базовая линия: TOS v0.2.1. Исторический bootstrap-коммит `c5b818c` остаётся
+  началом Stage 1; актуальное closure evidence зафиксировано отдельными
+  commit-addressed records в `source/legal/`.
+- Этап: Stage 0 завершён. **Stage 1 формально закрыт**: capsule v1, Boot ABI
+  v1, UEFI loader, nucleus, source identity, fail-closed evidence, P2
+  performance evidence и Project Architect approval заархивированы. Stage 1.5
+  не начат.
 - Вся работа ведётся в `source/` (решение owner; docs/17-монобренч на корень
   приостановлен до Stage 1 — scope-решение, не изменение контрактов).
 
@@ -27,25 +30,26 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 | 1 | Дерево `source/` по docs/17 | done | каталоги crates/, boot/, nucleus/, host-tools/, tests/, system/, interfaces/ |
 | 2 | Спека CAPSULE_FORMAT_V1.md | done | source/interfaces/boot/CAPSULE_FORMAT_V1.md |
 | 3 | Спека BOOT_ABI_V1.md | done | source/interfaces/boot/BOOT_ABI_V1.md (§6 serial boot-event log) |
-| 4 | crates/tos-hash (SHA-256 no_std) | done | RFC 4231, 7/7 тестов |
-| 5 | crates/boot-protocol (BootInfo v1) | done | 6/6 тестов (структура 224 B, map, containment) |
-| 6 | crates/capsule: парсер (no_std, тотальный) | done | 11/11 lib-тестов; split flags, reserved 12 B, биекция, boot-canonical cross-check, licence tail |
+| 4 | crates/tos-hash (SHA-256 no_std) | done | SHA KAT/streaming, 7/7 host-тестов |
+| 5 | crates/boot-protocol (BootInfo v1) | done | 24 host-теста: 224-B layout, map/containment, framebuffer tuple/geometry |
+| 6 | crates/capsule: parser (no_std, total) | done | 24 host-теста: flags/reserved, canonical tables, SHA-1 padding, detached identity, limits/precedence |
 | 7 | crates/capsule: host-билдер (feature="host") | done | детерминизм: builder == golden vector |
 | 8 | crates/tos-serial (16550 COM1, no_std) | done | используется loader + nucleus |
 | 9 | boot/uefi-loader (EFI app, рукописные биндинги) | done | PE32+ EFI app x86_64 собран, 0 warnings; release 14848 B |
 | 10 | nucleus (freestanding, boot ABI v1, serial, halt-код) | done | raw-binary собран (entry первой, `sub rsp`); release 10520 B |
 | 11 | system/boot/init.tos + NOTICES.txt | done | source/system/boot/ |
 | 12 | host-tools/capsule (CLI-билдер) | done | регенерация векторов через него |
-| 13 | Golden-векторы (13 .bin, коммитимые) | done | source/tests/vectors/capsule-v1/; valid-001 из реального init.tos + licence |
-| 14 | tests/integration | done | 8/8 (golden, tamper, determinism, truncation, perf) |
-| 15 | tests/fuzz (детерминированный мутационный) | done | FUZZ PASS rounds=300000 |
-| 16 | Сборка всех таргетов (host + uefi + none) | done | host: 31/31 тестов; uefi loader: PE32+ EFI app 0 warnings; none nucleus: raw binary (entry first) |
+| 13 | Capsule-v1 fixtures/provenance | done | 14 `.bin`: 1 accept + 13 declared fail-closed; each binary checked by ADR-0019 provenance |
+| 14 | tests/integration | done | 19 host integration tests: vectors, tamper, deterministic detached identity, framebuffer renderer |
+| 15 | tests/fuzz (детерминированный мутационный) | done | `FUZZ PASS rounds=200000` in full preflight/Source CI |
+| 16 | Сборка всех таргетов (host + UEFI + none) | done | format, host tests/clippy; UEFI loader PE32+; freestanding nucleus raw binary |
 | 17 | host-tools/qemu-test (ESP-образ + OVMF) | done | run.sh: identity gate `--git-commit HEAD`, manifest repo-relative |
-| 18 | QEMU-прогоны: success + corrupted capsule | done | exit code **33 (HALT_OK)**; 9 negative-векторов → 67 (CAPSULE_INVALID) |
-| 19 | scripts/check-spdx, check-dco | done | оба OK на всех tracked files / всех 11 коммитах |
+| 18 | QEMU-прогоны: success + corruption + exceptions | done | normal **33**; 13 capsule negatives/mismatch **67**; #UD/#GP **73** (`TOS.EXCEPTION`) |
+| 19 | SPDX/DCO + provenance | done | SPDX checks every tracked vector provenance; every reachable commit carries a DCO sign-off |
 | 20 | Архитектур-импакт-стейтмент (AGENTS.md §5, Level 2) | done | source/ARCHITECTURE_IMPACT_STATEMENT.md, коммит dc16726 |
-| 21 | Stage 1 отчёт + identity record | done | source/interfaces/boot/STAGE1_REPORT.md |
-| 22 | Коммит source/ + PROGRESS.md (DCO) | pending | текущие правки (raw OID, QEMU-фиксы) в рабочем дереве |
+| 21 | Immutable Stage 1 report + identity record | done | `source/legal/release-manifests/f220603…-stage1-report.md` (G0/R0, P2 artifact, actual scope) |
+| 22 | Formal closure + DCO | done | immutable Project Architect approval record; current reachable history passes DCO |
+| 23 | ADR-0026 P2 performance conformance | done | CI raw native/TCG full+crypto 3+21 series; 101,203,198 B / 2,007 hashes; TCG ratio ≤ 1.30 |
 
 ## Журнал верификации (append-only)
 
@@ -142,11 +146,18 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   (kind=1, alg=1, len=0x14, raw OID f59a14d…); QEMU `TOS.IDENTITY` печатает
   тот же raw OID.
 
-## Открытые вопросы / риски
+### 2026-08-09 — Stage 1 closure
 
-- Нормативные документы не перестроены после правок интерфейсов (BOOT_ABI_V1.md,
-  CAPSULE_FORMAT_V1.md — см. §2 AGENTS.md). Переносится в отдельный коммит
-  вместе с `python3 tools/build-specification.py`.
-- OVMF: нужен пакет/файл OVMF.fd для QEMU (проверить наличие на хосте).
-- Подпись DCO: `mirivlad <mirvtop@yandex.ru>` (совпадает с git config и базовым
-  коммитом c5b818c; вопрос про mir@yandex.ru закрыт — в историю не вносим).
+- `./scripts/preflight.sh --full` на archive-record baseline → **30/30 PASS**.
+- GitHub Actions evidence: Documentation integrity, Provenance, Source CI и
+  QEMU/P2 прошли на `b84dbb9`.  P2 artifact и exact source evidence описаны в
+  immutable Stage 1 report; final approval находится в publication record.
+
+## Граница закрытого Stage 1
+
+- Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5
+  language runtime и не persistent Git implementation: заявлен только G0.
+- Recovery selection/rollback остаются Stage 5; external IRQ/APIC policy,
+  drivers и general platform support не заявляются Stage 1 deliverables.
+- F-23 (dead `CapsError::PayloadOverlap`) и F-24 (`actions/checkout@v4`
+  maintenance warning) — явные non-Stage-1 deferred maintenance items.
