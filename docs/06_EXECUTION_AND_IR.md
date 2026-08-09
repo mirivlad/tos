@@ -33,10 +33,21 @@ It must represent:
 - IPC send/receive operations;
 - memory-region operations;
 - async suspension points;
+- structured task spawn, parallel task spawn, join and cancellation;
+- synchronization operations and atomic operations with their required memory-order semantics;
+- typed shared-memory-region access;
+- execution-context and resource-accounting operations;
 - source maps;
 - resource limits;
 - module imports and exports;
 - driver-specific operations only through typed service contracts.
+
+Parallel semantics MUST remain directly represented or pass through versioned,
+typed verifier-visible runtime contracts. They MUST NOT disappear into an opaque
+host runtime API that the verifier and resource model cannot understand. A
+lowered runtime call is acceptable only when its contract specifies the relevant
+task, cancellation, synchronization, atomic, shared-memory and resource
+semantics.
 
 TOS IR is not a public promise of permanent binary compatibility between arbitrary versions. Its schema is versioned, and caches state the exact runtime and verifier versions that produced them.
 
@@ -82,12 +93,18 @@ Generated artifacts live under `/cache/tos/` or another explicitly disposable ca
 
 The architecture supports several engines:
 
-1. **Reference interpreter** — simplest auditable semantics; mandatory for tests and recovery.
+1. **Reference interpreter** — simplest auditable semantics; mandatory for tests and recovery. It MAY execute otherwise-parallel work serially only when it preserves the specified semantics.
 2. **Bytecode engine** — compact efficient default.
 3. **JIT backend** — optional for long-running services and applications.
 4. **Ahead-of-use native cache** — generated locally or by a trusted builder, always verified against source identity.
 
-All engines must pass the same conformance suite. Wasm or another binary format may serve as a backend or cache profile only when canonical text, verifier independence and source identity remain authoritative.
+All engines must pass the same conformance suite, including concurrency,
+atomic and memory-model vectors. A production-capable backend/runtime MUST have
+a path to true simultaneous SMP execution; every engine MUST implement one
+language/IR memory semantics rather than silently giving races or atomics
+different behavior. Wasm or another binary format may serve as a backend or
+cache profile only when canonical text, verifier independence and source
+identity remain authoritative.
 
 ## Performance contract
 
@@ -119,6 +136,9 @@ Every executable instruction maps to:
 - optional macro expansion chain.
 
 Logs, traces, crashes, and profiling data use this mapping.
+For concurrently executing work, the mapping also identifies the originating
+task/execution context and the source span of spawned, joined, cancelled or
+synchronized work without making scheduler timing part of source identity.
 
 ## Determinism
 

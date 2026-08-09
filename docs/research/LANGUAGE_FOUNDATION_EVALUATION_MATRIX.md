@@ -2,7 +2,10 @@
 
 # Language foundation evaluation matrix
 
-**Status:** non-normative research template required by ADR-0015.
+**Status:** non-normative research template required by ADR-0015. Its blocking
+requirements implement the Tier 2 language and execution requirements in
+`docs/05_TOS_CORE_LANGUAGE.md` and `docs/06_EXECUTION_AND_IR.md`; it does not
+independently amend them.
 
 ## Decision to be made
 
@@ -30,7 +33,19 @@ A candidate is rejected if it cannot demonstrate:
 9. no undocumented C/host ABI becoming the real system ABI;
 10. compatible licence and acceptable patent/dependency profile;
 11. recovery implementation small enough to audit and fuzz;
-12. multiple execution backends cannot disagree silently on semantics.
+12. multiple execution backends cannot disagree silently on semantics;
+13. one process can use multiple runnable execution contexts for genuine
+    simultaneous multicore work, rather than only separate processes or IPC;
+14. safe shared-memory concurrency has defined data-race, synchronization,
+    atomic and memory-order semantics rather than undefined behavior or
+    undocumented host-runtime behavior;
+15. parallel workers, tasks, stacks, shared regions and synchronization
+    resources can be bounded and accounted for.
+
+A candidate also fails the multicore requirement if its async runtime only
+multiplexes tasks on one execution context, if it requires separate OS
+processes and IPC for ordinary CPU parallelism, or if it has no viable path
+from the selected semantics to real simultaneous multicore execution.
 
 ## Comparative criteria
 
@@ -40,7 +55,11 @@ For each candidate record evidence, not adjectives:
 - trusted implementation size and transitive dependencies;
 - parser/type-checker/verifier complexity;
 - memory safety and unsafe boundary;
-- concurrency semantics;
+- asynchronous, structured-concurrency and structured-parallelism semantics;
+- multicore execution model and task-to-thread/core mapping;
+- cost of parallel task creation and scalability with worker count;
+- safe shared-memory model, synchronization, atomic and memory-order semantics;
+- scheduler independence and future affinity/NUMA/topology compatibility;
 - deterministic behavior;
 - interrupt/IPC/DMA expression;
 - resource metering/preemption;
@@ -66,7 +85,22 @@ Each serious candidate must implement or model the same exercises:
 7. invalidate a cache after one source/dependency change;
 8. run the same semantic conformance vectors in two engines or interpreter modes;
 9. build in a documented recovery-sized configuration;
-10. report trusted-base and dependency inventory.
+10. report trusted-base and dependency inventory;
+11. run a deterministic CPU-bound partitioned workload with one worker,
+    two workers and a reasonable N-worker configuration, recording the same
+    logical result and actual simultaneous host-core execution when the
+    candidate runtime supports it;
+12. demonstrate safe handling or rejection of unsynchronized mutable sharing;
+13. exercise atomics/synchronization, structured join and cancellation;
+14. demonstrate bounded worker/task resource behavior;
+15. where a reference/interpreter mode exists, run the same concurrency
+    semantics in that mode and record any intentional serialized execution.
+
+For every multicore exercise, record hardware, operating system,
+compiler/runtime version, worker count, exact commands, raw measurements and
+observed result. No candidate receives credit for a speedup claim without
+evidence of actual simultaneous execution where its runtime claims to support
+it.
 
 ## Decision output
 
