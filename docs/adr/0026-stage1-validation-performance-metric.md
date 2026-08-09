@@ -2,12 +2,12 @@
 
 # ADR-0026: Stage 1 validation-performance metric
 
-- Status: Proposed
+- Status: Accepted (Project Architect-approved)
 - Date: 2026-08-09
 - Change level: **Level 2** — revises the Stage 1 performance-conformance
   metric only if accepted; it does not change capsule v1, BootInfo v1, the
   validation algorithm, or either trust boundary
-- Project Architect approval: pending
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-09
 
 ## Context
 
@@ -118,9 +118,9 @@ nucleus validation 1243.351 ms; canonical lookup 0.512 ms; and
 post-validation-to-halt 23.147 ms.  These are host-monotonic serial-arrival
 intervals, not guest instrumentation or a new Boot ABI event.
 
-## Proposed decision
+## Decision
 
-If accepted, replace the initial absolute 250 ms Stage 1 reference-platform
+This ADR replaces the initial absolute 250 ms Stage 1 reference-platform
 budget with a paired functional and relative-conformance contract:
 
 1. **Hard architectural budgets remain unchanged.**  Parsing remains bounded
@@ -165,12 +165,11 @@ subtracting neither a check nor a byte that accepted semantics make
 unavoidable.  It therefore detects pathological structural overhead without
 pretending that one emulator's scalar-SHA wall clock is a physical CPU budget.
 
-## Exact proposed Tier 2 amendment
+## Applied Tier 2 amendment
 
-`docs/35_PERFORMANCE_CONTRACTS.md` remains unchanged until this ADR is
-accepted.  If accepted, replace only its current Stage 1
-“Reference-platform budget” paragraph with the following text; no other
-Stage 1 hard budget or the document-wide regression policy changes.
+The following change is applied to `docs/35_PERFORMANCE_CONTRACTS.md`. It
+replaces only its former Stage 1 “Reference-platform budget” paragraph; no
+other Stage 1 hard budget or the document-wide regression policy changes.
 
 ```diff
  Reference-platform budget:
@@ -227,9 +226,10 @@ evidence of the falsified initial estimate; it is not erased from history.
 
 ## Consequences and review boundary
 
-Until accepted, ADR-0025 and the existing `docs/35` 250 ms requirement remain
-authoritative.  F-18 remains a BLOCKER.  This proposal does not mark its local
-ratios as passing Stage 1 and does not authorize F-21 or Stage 1.5 work.
+ADR-0026 supersedes ADR-0025's 250 ms p95 threshold while retaining its exact
+q35/qemu64/TCG functional profile and all validation constraints. F-18 remains
+a BLOCKER until retained P2 CI evidence satisfies this accepted contract. This
+decision does not itself authorize F-21 or Stage 1.5 work.
 
 If later evidence materially fails the relative bound, TOS must profile and
 explain the residual overhead.  It may not make the result pass by changing

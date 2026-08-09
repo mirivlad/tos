@@ -1504,3 +1504,19 @@ boot architecture, DCO policy или опубликованной истории
   former 250 ms rule an empirically falsified initial estimate. ADR-0026 is
   **Proposed**, docs/35 remains unchanged, F-18 remains BLOCKER and F-21 has
   not started pending Project Architect review.
+
+### F-18 ADR-0026 acceptance
+
+- The Project Architect accepted ADR-0026 at `bda3016`. Its status is now
+  Accepted, it is an admitted Tier 1 decision, and its exact Stage 1 Tier 2
+  amendment is applied to `docs/35_PERFORMANCE_CONTRACTS.md`. The former
+  250-ms threshold is retained as an empirically falsified initial estimate;
+  it was not silently erased.
+- Acceptance preserves the q35/qemu64/TCG functional profile, absolute
+  native/TCG regression evidence, two independent validations and every
+  resource/trust/capsule constraint. It authorizes neither unsafe/assembly/
+  CPU-extension SHA nor a dependency, format, BootInfo or trust-boundary
+  change.
+- F-18 remains BLOCKER until an actual retained P2 CI series proves the
+  accepted full-to-unavoidable-crypto p95 ratio ≤1.30 with 3 warmups plus 21
+  measurements, exact fixture/accounting identity and serial decomposition.

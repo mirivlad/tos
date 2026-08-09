@@ -50,11 +50,31 @@ Hard budgets:
 - parser performs no allocation proportional to attacker-declared count before validating total bounds;
 - lookup of one canonical path does not require copying every payload.
 
-Reference-platform budget:
+Reference-platform evidence and conformance:
 
-- a capsule fixture containing 1,000 files and 16 MiB total payload validates and locates `/system/boot/init.tos` in no more than 250 ms p95 in release mode under the declared QEMU CI profile.
+- the mandatory q35/qemu64/one-vCPU/256-MiB/TCG functional profile runs the
+  exact ordinary production boot path for a capsule fixture containing 1,000
+  files and exactly 16 MiB total payload. It retains raw 3-warmup/21-sample
+  median/p95/p99 wall-clock data, serial/event logs and segment decomposition;
+  its wall-clock latency is a retained regression metric, not a physical-CPU
+  absolute-latency assertion;
+- a declared native release/reference profile records the same exact two fresh
+  validations and canonical `/system/boot/init.tos` lookup, including raw
+  3-warmup/21-sample median/p95/p99 data and environment/build identities;
+- each profile also measures the unavoidable SHA-256 baseline with the same
+  fixture/source/provenance identity: two parser whole-capsule traversals, two
+  loader/nucleus BootInfo-mirror whole-capsule traversals, two cumulative
+  per-file traversals, two detached-identity traversals where applicable and
+  the post-lookup boot-text digest. No result may be cached or shared between
+  logical validators; and
+- on the mandatory qemu64/TCG profile,
+  full-exact-validation-p95 / unavoidable-crypto-p95 is no more than 1.30.
+  This relative gate constrains validation-architecture overhead without
+  weakening the required validations or hard architectural budgets.
 
-The threshold is deliberately loose for the first stage but prevents accidental quadratic design.
+The former 250 ms threshold was an empirically falsified initial reference
+estimate. ADR-0026 records the measurements and rationale; the absolute native
+and TCG series remain retained regression evidence.
 
 ## Stage 1.5–2 — Language frontend and runtime
 
