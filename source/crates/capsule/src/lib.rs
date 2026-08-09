@@ -488,6 +488,92 @@ impl<'a> Iterator for FileIter<'a> {
     }
 }
 
+/// Test-only replay of exactly the SHA-256 operations an accepted parser pass
+/// must perform. This isolates cryptographic cost from structural validation;
+/// it is not a parser entry point and is unavailable in default artifacts.
+#[cfg(feature = "test-crypto-baseline")]
+pub mod test_crypto_baseline {
+    use super::*;
+
+    /// Exact SHA-256 work performed by one successful parser validation.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct CryptoAccounting {
+        pub bytes_hashed: u64,
+        pub hash_invocations: u32,
+        pub file_hashes: u32,
+        pub detached_identity_hashes: u32,
+        pub whole_capsule_hashes: u32,
+    }
+
+    impl CryptoAccounting {
+        fn charge(&mut self, bytes: usize) {
+            // Every accepted capsule is capped at 32 MiB, so this conversion
+            // and accumulated count cannot overflow u64 in this test helper.
+            self.bytes_hashed += bytes as u64;
+        }
+
+        fn invocation(&mut self) {
+            self.hash_invocations += 1;
+        }
+    }
+
+    /// Recompute and compare every digest that `parse` performs after the
+    /// structural view is valid. No prior digest result is accepted: each call
+    /// creates fresh hash state for every file, detached identity and whole
+    /// capsule digest.
+    pub fn verify(capsule: &Capsule<'_>) -> Result<CryptoAccounting, CapsError> {
+        let mut accounting = CryptoAccounting {
+            bytes_hashed: 0,
+            hash_invocations: 0,
+            file_hashes: 0,
+            detached_identity_hashes: 0,
+            whole_capsule_hashes: 0,
+        };
+
+        for file in capsule.files() {
+            let mut hash = Sha256::new();
+            hash.update(file.content);
+            accounting.charge(file.content.len());
+            accounting.invocation();
+            accounting.file_hashes += 1;
+            if hash.finalize() != file.digest {
+                return Err(CapsError::BadDigest);
+            }
+        }
+
+        let header = capsule.header();
+        if header.source_identity_kind == SRC_KIND_DETACHED {
+            let mut identity = Sha256::new();
+            identity.update(DETACHED_IDENTITY_DOMAIN);
+            accounting.charge(DETACHED_IDENTITY_DOMAIN.len());
+            for file in capsule.files() {
+                let path_length =
+                    u32::try_from(file.name.len()).map_err(|_| CapsError::RegionOverflow)?;
+                update_detached_identity(&mut identity, file.name, path_length, &file.digest);
+                accounting.charge(core::mem::size_of::<u32>() + file.name.len() + DIGEST_BYTES);
+            }
+            accounting.invocation();
+            accounting.detached_identity_hashes += 1;
+            if identity.finalize() != header.source_identity_value {
+                return Err(CapsError::DetachedIdentityMismatch);
+            }
+        }
+
+        let mut whole = Sha256::new();
+        whole.update(&capsule.bytes[0..off::WHOLE_DIGEST]);
+        whole.update(&[0u8; DIGEST_BYTES]);
+        whole.update(&capsule.bytes[HEADER_SIZE..]);
+        accounting.charge(capsule.bytes.len());
+        accounting.invocation();
+        accounting.whole_capsule_hashes += 1;
+        if whole.finalize() != header.whole_capsule_digest {
+            return Err(CapsError::BadWholeDigest);
+        }
+
+        Ok(accounting)
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Parser
 // ---------------------------------------------------------------------------

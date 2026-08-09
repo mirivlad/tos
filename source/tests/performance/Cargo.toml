@@ -8,4 +8,5 @@ description = "Research-only native Stage 1 double-validation measurement harnes
 publish = false
 
 [dependencies]
-tos-capsule = { path = "../../crates/capsule", features = ["host"] }
+tos-capsule = { path = "../../crates/capsule", features = ["host", "test-crypto-baseline"] }
+tos-hash = { path = "../../crates/tos-hash" }

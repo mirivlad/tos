@@ -10,18 +10,26 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Instant;
 
-use tos_capsule::{parse, BOOT_PATH};
+use tos_capsule::test_crypto_baseline::{verify as verify_parser_crypto, CryptoAccounting};
+use tos_capsule::{parse, Capsule, BOOT_PATH};
+use tos_hash::sha256;
+
+enum Mode {
+    Full,
+    Crypto,
+}
 
 struct Args {
     capsule: PathBuf,
     output: PathBuf,
     warmups: usize,
     samples: usize,
+    mode: Mode,
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: tos-stage1-performance --capsule FILE --out FILE [--warmups N] [--samples N]"
+        "usage: tos-stage1-performance --capsule FILE --out FILE [--mode full|crypto] [--warmups N] [--samples N]"
     );
     std::process::exit(2);
 }
@@ -42,6 +50,7 @@ fn args() -> Args {
     let mut output = None;
     let mut warmups = 3;
     let mut samples = 21;
+    let mut mode = Mode::Full;
     let mut index = 0;
     while index < values.len() {
         match values[index].as_str() {
@@ -61,6 +70,17 @@ fn args() -> Args {
                 samples = parse_positive(values.get(index + 1), "--samples");
                 index += 2;
             }
+            "--mode" => {
+                mode = match values.get(index + 1).map(String::as_str) {
+                    Some("full") => Mode::Full,
+                    Some("crypto") => Mode::Crypto,
+                    _ => {
+                        eprintln!("--mode must be full or crypto");
+                        usage();
+                    }
+                };
+                index += 2;
+            }
             "-h" | "--help" => usage(),
             other => {
                 eprintln!("unknown option: {other}");
@@ -73,16 +93,26 @@ fn args() -> Args {
         output: output.unwrap_or_else(|| usage()),
         warmups,
         samples,
+        mode,
     }
 }
 
 fn validate_twice_and_lookup(bytes: &[u8]) -> Result<(), String> {
+    // The loader computes the plain capsule digest for BootInfo before its
+    // parser validation. The nucleus recomputes it before its own parser
+    // validation, comparing the explicit ABI mirror rather than a cache.
+    let loader_capsule_digest = sha256(bytes);
     // First pass models the loader's fresh capsule validation. Dropping the
     // parsed view before the second call ensures no parsed object/digest is
     // carried across the boundary.
     {
         let first = parse(bytes).map_err(|error| format!("first validation: {error:?}"))?;
         let _first_files = first.file_count();
+    }
+
+    let nucleus_capsule_digest = sha256(bytes);
+    if nucleus_capsule_digest != loader_capsule_digest {
+        return Err("nucleus validation: BootInfo capsule digest mismatch".to_string());
     }
 
     // Second pass models the nucleus's independent validation and canonical
@@ -97,13 +127,68 @@ fn validate_twice_and_lookup(bytes: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
-fn record(output: &mut fs::File, phase: &str, index: usize, bytes: &[u8]) -> Result<(), String> {
+fn sum_accounting(parser: CryptoAccounting, capsule_bytes: usize) -> CryptoAccounting {
+    CryptoAccounting {
+        // Two parser passes plus the loader/nucleus plain-capsule SHA-256
+        // mirror pair. The mirror pair is an existing required ABI operation.
+        bytes_hashed: parser.bytes_hashed * 2 + (capsule_bytes as u64) * 2,
+        hash_invocations: parser.hash_invocations * 2 + 2,
+        file_hashes: parser.file_hashes * 2,
+        detached_identity_hashes: parser.detached_identity_hashes * 2,
+        whole_capsule_hashes: parser.whole_capsule_hashes * 2 + 2,
+    }
+}
+
+fn validate_unavoidable_crypto_twice(
+    bytes: &[u8],
+    capsule: &Capsule<'_>,
+) -> Result<CryptoAccounting, String> {
+    let loader_capsule_digest = sha256(bytes);
+    let first =
+        verify_parser_crypto(capsule).map_err(|error| format!("first crypto pass: {error:?}"))?;
+    let nucleus_capsule_digest = sha256(bytes);
+    if nucleus_capsule_digest != loader_capsule_digest {
+        return Err("crypto baseline: BootInfo capsule digest mismatch".to_string());
+    }
+    let second =
+        verify_parser_crypto(capsule).map_err(|error| format!("second crypto pass: {error:?}"))?;
+    if second != first {
+        return Err("crypto baseline: pass accounting differs".to_string());
+    }
+    Ok(sum_accounting(first, bytes.len()))
+}
+
+fn record_full(
+    output: &mut fs::File,
+    phase: &str,
+    index: usize,
+    bytes: &[u8],
+) -> Result<(), String> {
     let started = Instant::now();
     validate_twice_and_lookup(bytes)?;
     let duration_ns = started.elapsed().as_nanos();
     writeln!(
         output,
-        "{{\"duration_ns\":{duration_ns},\"index\":{index},\"lookup\":\"/system/boot/init.tos\",\"phase\":\"{phase}\",\"validations\":2}}"
+        "{{\"duration_ns\":{duration_ns},\"index\":{index},\"lookup\":\"/system/boot/init.tos\",\"mode\":\"full\",\"phase\":\"{phase}\",\"validations\":2}}"
+    )
+    .map_err(|error| format!("write sample: {error}"))
+}
+
+fn record_crypto(
+    output: &mut fs::File,
+    phase: &str,
+    index: usize,
+    bytes: &[u8],
+    capsule: &Capsule<'_>,
+) -> Result<(), String> {
+    let started = Instant::now();
+    let accounting = validate_unavoidable_crypto_twice(bytes, capsule)?;
+    let duration_ns = started.elapsed().as_nanos();
+    writeln!(
+        output,
+        "{{\"crypto_bytes_per_boot\":{},\"crypto_hashes_per_boot\":{},\"duration_ns\":{duration_ns},\"index\":{index},\"mode\":\"unavoidable_crypto\",\"phase\":\"{phase}\",\"validations\":2}}",
+        accounting.bytes_hashed,
+        accounting.hash_invocations,
     )
     .map_err(|error| format!("write sample: {error}"))
 }
@@ -118,17 +203,26 @@ fn main() {
         eprintln!("create output {}: {error}", args.output.display());
         std::process::exit(2);
     });
-    for index in 1..=args.warmups {
-        record(&mut output, "warmup", index, &bytes).unwrap_or_else(|error| {
-            eprintln!("native warm-up {index}: {error}");
+    let crypto_capsule = match args.mode {
+        Mode::Full => None,
+        // Setup establishes only a structural borrowed view outside the timer.
+        // Its computed hashes are dropped; each timed crypto pass starts fresh.
+        Mode::Crypto => Some(parse(&bytes).unwrap_or_else(|error| {
+            eprintln!("crypto setup parse: {error:?}");
             std::process::exit(1);
-        });
-    }
-    for index in 1..=args.samples {
-        record(&mut output, "measurement", index, &bytes).unwrap_or_else(|error| {
-            eprintln!("native measurement {index}: {error}");
-            std::process::exit(1);
-        });
+        })),
+    };
+    for (phase, count) in [("warmup", args.warmups), ("measurement", args.samples)] {
+        for index in 1..=count {
+            let result = match crypto_capsule.as_ref() {
+                Some(capsule) => record_crypto(&mut output, phase, index, &bytes, capsule),
+                None => record_full(&mut output, phase, index, &bytes),
+            };
+            result.unwrap_or_else(|error| {
+                eprintln!("native {phase} {index}: {error}");
+                std::process::exit(1);
+            });
+        }
     }
 }
 
@@ -146,5 +240,26 @@ mod tests {
         builder.add(FileSpec::new("/system/version", b"0.2.1\n"));
         let bytes = builder.build().expect("build fixture");
         validate_twice_and_lookup(&bytes).expect("two production validations and lookup");
+    }
+
+    #[test]
+    fn crypto_baseline_rehashes_one_parser_pass_without_cached_results() {
+        let mut builder = Builder::new();
+        builder.source_identity_kind = SRC_KIND_DETACHED;
+        builder.add(FileSpec::new("/system/boot/init.tos", b"# boot\n"));
+        builder.add(FileSpec::new("/system/version", b"0.2.1\n"));
+        let bytes = builder.build().expect("build fixture");
+        let capsule = parse(&bytes).expect("parse fixture");
+        let first = verify_parser_crypto(&capsule).expect("first crypto replay");
+        let second = verify_parser_crypto(&capsule).expect("second crypto replay");
+        assert_eq!(first, second);
+        assert_eq!(first.file_hashes, 2);
+        assert_eq!(first.detached_identity_hashes, 1);
+        assert_eq!(first.whole_capsule_hashes, 1);
+        assert_eq!(first.hash_invocations, 4);
+        assert_eq!(
+            first.bytes_hashed,
+            7 + 6 + 11 + 2 * (4 + 32) + 36 + bytes.len() as u64
+        );
     }
 }
