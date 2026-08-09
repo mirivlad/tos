@@ -401,6 +401,7 @@ pub enum StatementForm {
 pub enum ExpressionForm {
     Primary,
     Group,
+    Unary,
     Binary,
 }
 
@@ -980,7 +981,7 @@ impl<'source> TokenCursor<'source> {
     }
 
     fn parse_product(&mut self) -> Result<Expression, ParseError> {
-        self.parse_binary_level(Self::parse_primary_expression, &["*", "/", "%"])
+        self.parse_binary_level(Self::parse_unary_expression, &["*", "/", "%"])
     }
 
     fn parse_binary_level(
@@ -1005,6 +1006,41 @@ impl<'source> TokenCursor<'source> {
             };
         }
         Ok(left)
+    }
+
+    fn parse_unary_expression(&mut self) -> Result<Expression, ParseError> {
+        let operator = if matches!(self.current_text(), "!" | "-" | "~" | "await" | "join") {
+            Some(Span::from(self.advance()))
+        } else if self.current_text() == "borrow" {
+            let start = Span::from(self.advance());
+            let end = if self.current_text() == "mut" {
+                Span::from(self.advance())
+            } else {
+                start
+            };
+            Some(Span {
+                start: start.start(),
+                end: end.end(),
+            })
+        } else {
+            None
+        };
+        if let Some(operator) = operator {
+            let inner = self.parse_unary_expression()?;
+            let end = inner.span.end();
+            return Ok(Expression {
+                form: ExpressionForm::Unary,
+                left: None,
+                operator: Some(operator),
+                right: None,
+                inner: Some(Box::new(inner)),
+                span: Span {
+                    start: operator.start(),
+                    end,
+                },
+            });
+        }
+        self.parse_primary_expression()
     }
 
     fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {
