@@ -8,10 +8,11 @@ use std::vec::Vec;
 mod parser;
 
 pub use parser::{
-    BorrowMode, EnumDeclaration, EnumVariant, EnumVariantForm, FunctionParameter,
-    FunctionSignature, Import, ImportKind, ModuleHeader, ModuleOutline, ModulePrefix, ParseError,
-    ParseErrorCode, Parser, Profile, RecordDeclaration, RecordField, ResourceDeclaration,
-    ResourceLimit, Schema, Span, TypeSyntax, TypeSyntaxForm,
+    Block, BorrowMode, EnumDeclaration, EnumVariant, EnumVariantForm, FunctionDeclaration,
+    FunctionParameter, FunctionSignature, Import, ImportKind, ModuleHeader, ModuleOutline,
+    ModulePrefix, ParseError, ParseErrorCode, Parser, Profile, RecordDeclaration, RecordField,
+    ResourceDeclaration, ResourceLimit, Schema, Span, Statement, StatementForm, TypeSyntax,
+    TypeSyntaxForm,
 };
 
 mod unicode {
@@ -867,6 +868,25 @@ mod tests {
         assert_eq!(function.parameters().len(), 1);
         assert_eq!(function.parameters()[0].borrow_mode(), BorrowMode::Shared);
         assert_eq!(function.effects()[0].text(&source), "clock");
+    }
+
+    #[test]
+    fn parser_builds_a_function_body_with_an_explicit_return() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { return 42i32; }",
+        )
+        .expect("transport-valid source");
+        let module = Parser::parse_schema(&source).expect("function body parses");
+        assert_eq!(module.functions().len(), 1);
+        assert_eq!(
+            module.functions()[0].signature().name().text(&source),
+            "main"
+        );
+        assert_eq!(module.functions()[0].body().statements().len(), 1);
+        assert_eq!(
+            module.functions()[0].body().statements()[0].form(),
+            StatementForm::Return
+        );
     }
 
     #[test]

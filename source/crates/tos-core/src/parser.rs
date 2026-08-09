@@ -379,11 +379,58 @@ impl FunctionSignature {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub struct Block {
+    statements: Vec<Statement>,
+    span: Span,
+}
+impl Block {
+    pub fn statements(&self) -> &[Statement] {
+        &self.statements
+    }
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StatementForm {
+    Return,
+}
+#[derive(Debug, Eq, PartialEq)]
+pub struct Statement {
+    form: StatementForm,
+    span: Span,
+}
+impl Statement {
+    pub fn form(&self) -> StatementForm {
+        self.form
+    }
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct FunctionDeclaration {
+    signature: FunctionSignature,
+    body: Block,
+}
+impl FunctionDeclaration {
+    pub fn signature(&self) -> &FunctionSignature {
+        &self.signature
+    }
+    pub fn body(&self) -> &Block {
+        &self.body
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub struct Schema {
     outline: ModuleOutline,
     records: Vec<RecordDeclaration>,
     enums: Vec<EnumDeclaration>,
     extern_functions: Vec<FunctionSignature>,
+    functions: Vec<FunctionDeclaration>,
 }
 
 impl Schema {
@@ -400,6 +447,9 @@ impl Schema {
     }
     pub fn extern_functions(&self) -> &[FunctionSignature] {
         &self.extern_functions
+    }
+    pub fn functions(&self) -> &[FunctionDeclaration] {
+        &self.functions
     }
 }
 
@@ -508,13 +558,18 @@ impl Parser {
         let mut records = Vec::new();
         let mut enums = Vec::new();
         let mut extern_functions = Vec::new();
-        while matches!(parser.current_text(), "record" | "enum" | "extern") {
+        let mut functions = Vec::new();
+        while matches!(parser.current_text(), "record" | "enum" | "extern" | "fn") {
             if parser.current_text() == "record" {
                 records.push(parser.parse_record_declaration()?);
             } else if parser.current_text() == "enum" {
                 enums.push(parser.parse_enum_declaration()?);
             } else {
-                extern_functions.push(parser.parse_extern_function()?);
+                if parser.current_text() == "extern" {
+                    extern_functions.push(parser.parse_extern_function()?);
+                } else {
+                    functions.push(parser.parse_function()?);
+                }
             }
         }
         parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
@@ -526,6 +581,7 @@ impl Parser {
             records,
             enums,
             extern_functions,
+            functions,
         })
     }
 }
@@ -779,6 +835,78 @@ impl<'source> TokenCursor<'source> {
             break;
         }
         Ok(fields)
+    }
+
+    fn parse_function(&mut self) -> Result<FunctionDeclaration, ParseError> {
+        let start = self.expect_word("fn", ParseErrorCode::UnexpectedToken)?;
+        let name = self.expect_identifier()?;
+        self.expect_kind(TokenKind::OpenParen, ParseErrorCode::UnexpectedToken)?;
+        let parameters = self.parse_parameters()?;
+        self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+        self.expect_word("->", ParseErrorCode::UnexpectedToken)?;
+        let result = self.parse_type()?;
+        let effects = self.parse_effects()?;
+        let body = self.parse_block()?;
+        let signature = FunctionSignature {
+            name,
+            parameters,
+            result,
+            effects,
+            span: Span {
+                start: start.start(),
+                end: body.span.start(),
+            },
+        };
+        Ok(FunctionDeclaration { signature, body })
+    }
+
+    fn parse_block(&mut self) -> Result<Block, ParseError> {
+        let start = self.expect_kind(TokenKind::OpenBrace, ParseErrorCode::UnexpectedToken)?;
+        let mut statements = Vec::new();
+        while self.current().kind() != TokenKind::CloseBrace {
+            statements.push(self.parse_statement()?);
+        }
+        let end = self.expect_kind(TokenKind::CloseBrace, ParseErrorCode::UnexpectedToken)?;
+        Ok(Block {
+            statements,
+            span: Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        })
+    }
+
+    fn parse_statement(&mut self) -> Result<Statement, ParseError> {
+        let start = Span::from(self.current());
+        self.expect_word("return", ParseErrorCode::UnexpectedToken)?;
+        if self.current().kind() != TokenKind::Semicolon {
+            self.parse_primary_expression()?;
+        }
+        let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
+        Ok(Statement {
+            form: StatementForm::Return,
+            span: Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        })
+    }
+
+    fn parse_primary_expression(&mut self) -> Result<Span, ParseError> {
+        if matches!(
+            self.current().kind(),
+            TokenKind::Boolean
+                | TokenKind::Integer
+                | TokenKind::Size
+                | TokenKind::Duration
+                | TokenKind::String
+                | TokenKind::Bytes
+                | TokenKind::Identifier
+        ) {
+            Ok(Span::from(self.advance()))
+        } else {
+            Err(self.error_here(ParseErrorCode::UnexpectedToken))
+        }
     }
 
     fn parse_extern_function(&mut self) -> Result<FunctionSignature, ParseError> {
