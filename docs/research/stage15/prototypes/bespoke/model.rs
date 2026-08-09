@@ -233,7 +233,7 @@ fn run_partitioned_work(workers: usize) -> ParallelEvidence {
     let max_active = max_active.load(Ordering::Acquire);
     let cpu_count = cpus.lock().expect("research CPU set lock").len();
     ParallelEvidence {
-        digest: format!("bespoke-v1-{reduction:016x}"),
+        digest: format!("stage15-common-v1-{reduction:016x}"),
         max_active,
         cpus: cpu_count,
         overlap: workers > 1 && max_active >= 2 && cpu_count >= 2,
