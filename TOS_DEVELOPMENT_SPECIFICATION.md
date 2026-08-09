@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `09331a7d71f6243c2890a96765f2b369ed84f14b067b9ec0bbd700dd45ae7fdd`  
+Source-manifest SHA-256: `562fbbb3d7ddb2beae836a7fa986fa80a27773324e291e6a3cb7e639cb2cf8c3`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2575,7 +2575,7 @@ The Stage 1.5 selection ADR MUST establish the semantic/trust boundary for:
 - bounded bootstrap and SMP-capable full-profile direction; and
 - no safe-language data-race undefined behavior or hidden host-runtime ABI.
 
-The Proposed Stage 2 V1 documents (docs/39–44) define the complete contract
+The accepted Stage 2 V1 documents (docs/39–44) define the complete contract
 within that boundary, including:
 
 - lexical grammar and Unicode normalization;
