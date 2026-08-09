@@ -14,6 +14,10 @@
 | C006 | `accept/type-forms.tos` | Full | accepts tuple, `slice<T>`, `TaskResult<T>`, and every fixed-arity predeclared synchronization/atomic type | grammar/type constructor parity |
 | C007 | `accept/control-heads.tos` | Bootstrap | accepts parenthesized `if`/`while`/`match` heads plus empty and trailing-comma record initialization | deterministic control/record boundary |
 | C008 | `accept/task-cancellation.tos` | Bootstrap | accepts `cancel` followed by consuming `join`; outcome is `Completed(i32)` or `Cancelled` under scheduling/cancellation rules | cancellation request is distinct from task consumption |
+| C009 | `accept/control-values.tos` | Bootstrap | accepts `if`/`match` in `let`, tail, and semicolon-free statement position | one value model for control expressions |
+| C010 | `accept/call-and-constructor.tos` | Bootstrap | accepts zero/argument function calls, `Ok`, `Err`, and a user tuple variant through one Call form | deterministic call/constructor syntax |
+| C011 | `accept/checked-conversion.tos` | Bootstrap | `to_u8(i32)` has type `Result<u8, ConversionError>` | explicit checked narrowing source form |
+| C012 | `accept/copy-aggregates.tos` | Bootstrap | tuple, array, record, and enum values with Copy components remain usable after assignment | automatic structural aggregate Copy |
 | R001 | `reject/use-after-move.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | affine ownership negative |
 | R002 | `reject/borrow-escape.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` | a mutable borrow cannot coexist with later borrow/use |
 | R003 | `reject/forged-capability.tos` | Bootstrap | `E1502_FORGED_CAPABILITY` | scalar value cannot become authority |
@@ -29,6 +33,8 @@
 | R013 | `reject/unjoined-task.tos` | Bootstrap | `E1401_UNJOINED_TASK` | cancellation does not replace consuming join and every child is consumed |
 | R014 | `reject/duplicate-record-field.tos` | Bootstrap | `E1205_DUPLICATE_RECORD_FIELD` | duplicate record field is a static named-field error |
 | R015 | `reject/nil-absence.tos` | Bootstrap | `E1202_UNKNOWN_VALUE_NAME` | `nil` is an ordinary unbound identifier, not a second absence model |
+| R016 | `reject/unchecked-conversion.tos` | Bootstrap | `E1212_INVALID_AS_CONVERSION` | narrowing/sign-changing conversion must use `to_*` |
+| R017 | `reject/noncopy-aggregate.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | an aggregate containing `bytes` remains affine |
 
 ## Byte/source transport cases
 

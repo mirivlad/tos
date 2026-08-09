@@ -58,12 +58,20 @@ types of TOS Core V1. A nominal type records its defining module content ID and
 export name. An IR type ID is not valid merely because its host representation
 has the same layout.
 
+The IR does not trust a frontend-supplied `Copy` annotation. For every type it
+recomputes the docs/40 structural rule from the ordered type graph: primitive
+Copy roots and `Shared<T>` are Copy; tuple/array/record/enum and
+`Option`/`Result`/`TaskResult` are Copy only when all stored components are
+Copy; all other V1 types are non-Copy. A cyclic nominal type is non-Copy unless
+a later accepted language version supplies a finite proof rule. This check is
+part of affine operand validation.
+
 For constructed types, IR records the same exact arity as docs/39/40:
 `Option`, `Task`, `TaskResult`, `Shared`, `Region`, `DmaRegion`, `Mutex`,
 `RwLock`, `Channel`, and `slice` have one type argument; `Result` has two;
 `Event`, `Semaphore`, `Barrier`, `Latch`, and the three V1 atomic types have
-none. The verifier rejects a forged or mismatched arity before control-flow or
-runtime-contract validation.
+none, as does `ConversionError`. The verifier rejects a forged or mismatched
+arity before control-flow or runtime-contract validation.
 
 ## 3. Functions, values, and control flow
 

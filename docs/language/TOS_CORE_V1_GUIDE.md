@@ -46,9 +46,11 @@ duration literals are typed units. The basic example is
 [values.tos](examples/values.tos).
 
 Arithmetic is checked. Overflow, division by zero, and invalid shifts are
-defined language traps, not whatever a backend happens to do. Use the explicit
-typed conversion contract for a narrowing conversion and explicit wrapping
-operations only where wrapping is genuinely intended.
+defined language traps, not whatever a backend happens to do. A checked
+narrowing/sign-changing conversion uses its spelled destination function, such
+as `to_u8(value)`, and returns `Result<u8, ConversionError>`. It is not a
+generic cast. Explicit wrapping operations are only for code that genuinely
+needs wrapping.
 
 ## Functions, records, tuples, and enums
 
@@ -58,9 +60,12 @@ language deliberately has no user-defined generics or inheritance in V1: clear
 nominal types make diagnostics and verifier checks smaller. See
 [data.tos](examples/data.tos).
 
-Function calls evaluate left-to-right. `if`, `match`, and block tail
-expressions give a value. `match` must handle every enum/`Option`/`Result` case;
-an omitted case receives `E1220_NONEXHAUSTIVE_MATCH`, rather than becoming a
+Function calls and enum tuple-variant construction use the same `name(...)`
+source form and evaluate arguments left-to-right. `if`, `match`, and block tail
+expressions give a value, so they can appear after `let` or as a function's last
+expression. A standalone `if`/`match` may omit its semicolon when its value is
+being discarded. `match` must handle every enum/`Option`/`Result` case; an
+omitted case receives `E1220_NONEXHAUSTIVE_MATCH`, rather than becoming a
 runtime surprise.
 
 ## Option, Result, errors, and diagnostics
@@ -79,7 +84,10 @@ event. An invalid source and its intended primary diagnostic live in
 ## Ownership and borrowing
 
 Most nontrivial values have one owner. Assigning, returning, or passing one to
-an owning parameter moves it. Use `borrow value` to lend an immutable view and
+an owning parameter moves it. Simple aggregate values copy automatically when
+all their stored components are Copy: tuples, arrays, records, enums, and
+`Option`/`Result`/`TaskResult` follow that structural rule. A string, region,
+task, lock, channel, or capability still moves. Use `borrow value` to lend an immutable view and
 `borrow mut value` to lend the only mutable view for a small lexical scope.
 V1 deliberately does not let borrows escape a function, be stored, or be sent
 to a task; that keeps the first checker auditable. See

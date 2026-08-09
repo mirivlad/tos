@@ -31,7 +31,9 @@ an unsigned `u64` count of nanoseconds. Public and persistent forms use one of
 the explicit fixed-width integers.
 
 `Option<T>` has variants `Some(T)` and `None`; `Result<T,E>` has variants
-`Ok(T)` and `Err(E)`. `Task<T>` is an owned scoped task handle.
+`Ok(T)` and `Err(E)`. `ConversionError` is the fixed V1 standard error type
+returned by checked numeric conversions; ordinary code receives it only through
+those `Result` values. `Task<T>` is an owned scoped task handle.
 `TaskResult<T>` has variants `Completed(T)` and `Cancelled`; it is the result
 of consuming a task handle through `join` or `await`. This keeps cancellation
 distinct from a child value of type `T`, including when `T` is itself
@@ -39,7 +41,8 @@ distinct from a child value of type `T`, including when `T` is itself
 `DmaRegion<T>` are opaque
 nucleus-granted typed region handles. `Mutex<T>`, `RwLock<T>`, `Channel<T>`,
 `Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`, and
-`AtomicU64` are non-generic typed runtime contracts, not magic host APIs.
+`AtomicU64`, and `ConversionError` are non-generic typed runtime contracts,
+not magic host APIs.
 Their exact dynamic semantics are in
 `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
 
@@ -63,7 +66,8 @@ The complete V1 constructed-type arity is fixed and is shared with docs/39 and
 docs/43: `Option<T>`, `Task<T>`, `TaskResult<T>`, `Shared<T>`, `Region<T>`,
 `DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, and `slice<T>` take one
 type argument; `Result<T,E>` takes two. `Event`, `Semaphore`, `Barrier`,
-`Latch`, `AtomicBool`, `AtomicU32`, and `AtomicU64` take no type arguments.
+`Latch`, `AtomicBool`, `AtomicU32`, `AtomicU64`, and `ConversionError` take no
+type arguments.
 Using another arity is a parse/type error, not an implementation-defined
 generic application. `slice<T>` is the only borrowed-view type form and
 retains the nonescaping restrictions above.
@@ -119,9 +123,16 @@ surrounding exact integer type if in range; otherwise an unsuffixed literal is
 `i32`. Assigning or passing values of different integer types is
 `E1210_INTEGER_TYPE_MISMATCH`. `as T` is permitted only for an integer
 widening conversion that preserves signedness, `u8` to `u16`/`u32`/`u64`, or
-the corresponding signed widening. All other conversion uses the typed
-standard contract `convert<T>(x) -> Result<T, ConversionError>`; it checks
-range and sign. Explicit wrapping arithmetic is only available through
+the corresponding signed widening. Any other `as` conversion is
+`E1212_INVALID_AS_CONVERSION`.
+
+Checked conversion has no generic-call syntax. The fixed V1 standard functions
+`to_i8` through `to_i64` and `to_u8` through `to_u64` are ordinary Call-form
+callees defined in docs/39. Each accepts any fixed-width integer or `size`,
+checks sign and range, and returns `Result<D, ConversionError>` for its
+spelled destination `D`. Thus `to_u8(value)` is the source form for a checked
+narrowing/sign-changing conversion; callers use its `Result` rather than
+depending on host casts. Explicit wrapping arithmetic is only available through
 `wrapping_add`, `wrapping_sub`, and `wrapping_mul` contracts with exact
 fixed-width type arguments.
 
@@ -155,21 +166,30 @@ interface exposes one; it never becomes host out-of-bounds access.
 
 ## 4. Evaluation and dynamic semantics
 
-TOS evaluates expressions left-to-right. Specifically, a call evaluates its
-callee, then arguments left-to-right, then enters the call; a binary operator
-evaluates its left operand before its right; record/array/tuple fields evaluate
-in lexical source order; match subject evaluates before patterns; assignment
-evaluates its place base/index left-to-right before its right side. `&&` does
-not evaluate its right side after false; `||` does not evaluate its right side
-after true. `?` evaluates its operand once and returns the containing function
-with the matching `Err` if it is not `Ok`.
+TOS evaluates expressions left-to-right. Specifically, a Call evaluates its
+callee, then arguments left-to-right, then enters the resolved function or
+constructor; a binary operator evaluates its left operand before its right;
+record/array/tuple fields evaluate in lexical source order; match subject
+evaluates before patterns; assignment evaluates its place base/index
+left-to-right before its right side. Ordinary function calls and tuple-variant
+constructors use the same Call form and differ only at resolved-callee checking.
+`&&` does not evaluate its right side after false; `||` does not evaluate its
+right side after true. `?` evaluates its operand once and returns the
+containing function with the matching `Err` if it is not `Ok`.
 
-The tail expression of a block is its value. A semicolon discards a statement
-expression's value. `if` expressions require both branches to have the same
-type; a missing `else` produces `unit`. `match` must be exhaustive for an enum,
-`Option`, or `Result`; a missing case is `E1220_NONEXHAUSTIVE_MATCH`. An `_`
-arm is exhaustive. Patterns bind by move unless the matched subject is an
-immutable `Copy` value; borrows must be made explicitly before match.
+The tail expression of a block is its value; a block with no tail expression
+has type and value `unit`. A semicolon discards a statement expression's value.
+`if` and `match` are value-producing expressions. An `if` with `else` requires
+both branch blocks to have the same exact type and yields that type; an `if`
+without `else` yields `unit` after evaluating its selected block (if any).
+Every `match` arm's block/expression has the same exact type, and the match
+yields that type. `match` must be exhaustive for an enum, `Option`, or
+`Result`; a missing case is `E1220_NONEXHAUSTIVE_MATCH`. An `_` arm is
+exhaustive. In statement position a bare `if` or `match` may omit its trailing
+semicolon; the resulting value is discarded. `while`, `for`, and `loop` are
+unit-valued statements, and V1 `break` has no value. Patterns bind by move
+unless the matched subject is an immutable `Copy` value; borrows must be made
+explicitly before match.
 
 `Result` is the sole ordinary recoverable-error transport. A runtime trap is a
 defined language failure caused by a violated dynamic precondition. `panic`
@@ -190,11 +210,17 @@ unwinding.
 
 Safe non-`Copy` values are affine: every value has one owner and is moved when
 assigned, passed by an owning parameter, returned, put into an aggregate, or
-captured by a task/closure. Use after move is `E1301_USE_AFTER_MOVE`. `Copy`
-types are fixed-width numeric types, `bool`, `duration`, `unit`, and explicitly
-documented immutable value handles; strings, bytes, capabilities, regions,
-tasks, locks, channels, arrays, records, and enums are non-`Copy` unless all
-members are `Copy` and their type declaration says so.
+captured by a task/closure. Use after move is `E1301_USE_AFTER_MOVE`. Copy is
+automatic and structural in V1; there is no declaration marker, trait, or
+user override. Fixed-width numeric types, `size`, `duration`, `bool`, and
+`unit` are `Copy`. A tuple is `Copy` exactly when every element is `Copy`; an
+array is `Copy` exactly when its element type is `Copy`; and a record or enum
+is `Copy` exactly when every stored field/payload type is `Copy`. `Option<T>`,
+`Result<T,E>`, and `TaskResult<T>` follow that same transitive aggregate rule.
+`Shared<T>` is an explicitly documented immutable handle and is `Copy`; strings,
+bytes, capabilities, regions, DMA regions, tasks, locks, channels, events,
+semaphores, barriers, latches, atomics, slices, closures, and functions are
+not `Copy` unless an accepted later contract explicitly changes that type.
 
 At any program point, a value may have either any number of immutable borrows
 or exactly one mutable borrow, never both. An immutable borrow cannot mutate

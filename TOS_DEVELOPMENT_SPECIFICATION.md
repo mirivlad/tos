@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `b585075e9ef9cbf267597919253b95c7e447da4637b67a33462c2afa33bf5afc`  
+Source-manifest SHA-256: `2928b45a404cff25334dd533f8bd385d8f6ad5d6a8c621473aa63448975f2322`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -3035,9 +3035,10 @@ The inventory is deliberately machine-readable and is checked by
 ```text
 reserved: as async await bootstrap borrow break cancel capability const continue defer else enum extern false fn for full if import in join let loop match module mut parallel profile pub record resource return spawn true unsafe uses version while
 primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes unit
-predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 slice
+predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice
 atomic-order: Relaxed Acquire Release AcqRel SeqCst
 predeclared-value: Some None Ok Err Completed Cancelled
+predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul
 special-token: _
 ```
 <!-- stage2-word-inventory:end -->
@@ -3136,7 +3137,8 @@ primitive_type  = "bool" | "i8" | "i16" | "i32" | "i64"
                 | "u8" | "u16" | "u32" | "u64" | "size" | "duration"
                 | "string" | "bytes" | "unit" ;
 predeclared_type = "Event" | "Semaphore" | "Barrier" | "Latch"
-                | "AtomicBool" | "AtomicU32" | "AtomicU64" ;
+                | "AtomicBool" | "AtomicU32" | "AtomicU64"
+                | "ConversionError" ;
 named_type      = qualified_name ;
 constructed_type = "Option" "<" type ">"
                 | "Result" "<" type "," type ">"
@@ -3156,30 +3158,34 @@ type_list       = type ( "," type )* ","? ;
 
 block           = "{" statement* tail_expression? "}" ;
 tail_expression = expression ;
-statement       = let_stmt | assignment ";" | expression ";" | return_stmt
-                | break_stmt | continue_stmt | if_stmt | while_stmt | for_stmt
-                | loop_stmt | match_stmt | parallel_stmt | cancel_stmt
-                | defer_stmt | unsafe_stmt ;
+statement       = let_stmt | assignment ";" | logical_or ";" | return_stmt
+                | break_stmt | continue_stmt | while_stmt | for_stmt
+                | loop_stmt | parallel_stmt | cancel_stmt
+                | defer_stmt | unsafe_stmt | control_expression_statement ;
+control_expression_statement = if_expression ";"? | match_expression ";"? ;
 let_stmt        = "let" "mut"? pattern ( ":" type )? "=" expression ";" ;
 assignment      = place "=" expression ;
 return_stmt     = "return" expression? ";" ;
-break_stmt      = "break" expression? ";" ;
+break_stmt      = "break" ";" ;
 continue_stmt   = "continue" ";" ;
-if_stmt         = "if" "(" expression ")" block ( "else" ( if_stmt | block ) )? ;
 while_stmt      = "while" "(" expression ")" block ;
 for_stmt        = "for" pattern "in" "(" expression ")" block ;
 loop_stmt       = "loop" block ;
-match_stmt      = "match" "(" expression ")" "{" match_arm* "}" ;
-match_arm       = pattern "=>" ( block | expression "," ) ;
 parallel_stmt   = "parallel" block ;
 cancel_stmt     = "cancel" expression ";" ;
 defer_stmt      = "defer" block ;
 unsafe_stmt     = "unsafe" block ;
 
-pattern         = "_" | identifier | identifier "(" pattern_list? ")"
+pattern         = "_" | pattern_name | pattern_name "(" pattern_list? ")"
                 | "(" pattern_list ")" ;
+pattern_name    = identifier | predeclared_value ;
 pattern_list    = pattern ( "," pattern )* ","? ;
-expression      = logical_or ;
+expression      = if_expression | match_expression | logical_or ;
+if_expression   = "if" "(" expression ")" block
+                ( "else" ( if_expression | block ) )? ;
+match_expression = "match" "(" expression ")" "{" match_arm_list? "}" ;
+match_arm_list  = match_arm ( "," match_arm )* ","? ;
+match_arm       = pattern "=>" ( block | expression ) ;
 logical_or      = logical_and ( "||" logical_and )* ;
 logical_and     = equality ( "&&" equality )* ;
 equality        = comparison ( ( "==" | "!=" ) comparison )* ;
@@ -3192,23 +3198,26 @@ sum             = product ( ( "+" | "-" ) product )* ;
 product         = unary ( ( "*" | "/" | "%" ) unary )* ;
 unary           = ( "!" | "-" | "~" | "borrow" ( "mut" )? | "await" | "join" ) unary
                 | postfix ;
-postfix         = primary ( call | index | field | question | cast )* ;
-call            = "(" argument_list? ")" ;
+postfix         = primary ( call_suffix | index | field | question | cast )* ;
+call_suffix     = "(" argument_list? ")" ;
 argument_list   = expression ( "," expression )* ","? ;
 index           = "[" expression "]" ;
 field           = "." identifier ;
 question        = "?" ;
 cast            = "as" type ;
-primary         = literal | "true" | "false" | qualified_name
-                | tuple | array | record_init | enum_init
+primary         = literal | "true" | "false" | predeclared_value
+                | predeclared_function | qualified_name | tuple | array | record_init
                 | closure | spawn_expression | "(" expression ")" | block ;
+predeclared_value = "Some" | "None" | "Ok" | "Err" | "Completed" | "Cancelled" ;
+predeclared_function = "to_i8" | "to_i16" | "to_i32" | "to_i64"
+                | "to_u8" | "to_u16" | "to_u32" | "to_u64"
+                | "wrapping_add" | "wrapping_sub" | "wrapping_mul" ;
 literal         = integer | size | duration | string | bytes ;
 tuple           = "(" expression "," expression ( "," expression )* ","? ")" ;
 array           = "[" argument_list? "]" ;
 record_init     = qualified_name "{" field_init_list? "}" ;
 field_init_list = field_init ( "," field_init )* ","? ;
 field_init      = identifier ":" expression ;
-enum_init       = qualified_name "(" argument_list? ")" ;
 closure         = "|" closure_parameters? "|" expression ;
 closure_parameters = parameter ( "," parameter )* ","? ;
 spawn_expression = "spawn" ( "async" | "parallel" ) block ;
@@ -3219,22 +3228,30 @@ const_product   = const_primary ( ( "*" | "/" | "%" ) const_primary )* ;
 const_primary   = integer | size | identifier | "(" const_expression ")" ;
 ```
 
-Every control header has mandatory parentheses.  The closing `)` therefore
-ends an `if`, `while`, `for`, or `match` head before the following block begins;
-`if ready { ... }` is `E1105_CONTROL_HEAD_PARENS_REQUIRED`.  This deliberately
+Every control header has mandatory parentheses. The closing `)` therefore ends
+an `if`, `while`, `for`, or `match` head before the following block begins;
+`if ready { ... }` is `E1105_CONTROL_HEAD_PARENS_REQUIRED`. This deliberately
 prevents a parser from having to choose between a control block and a record
-initializer such as `Ready { ... }`.  A `qualified_name` followed by `{` or
-`(` in an ordinary expression position is parsed as `record_init` or
-`enum_init` respectively; name resolution then checks that it denotes the
-corresponding nominal type or variant.  This local name check is not semantic
-backtracking.  An empty record initializer is syntactically valid. Fields are
-comma-separated, a final comma is permitted, and a repeated field name is the
-static named-field error `E1205_DUPLICATE_RECORD_FIELD`, not a parser error.
-Missing a comma between record fields is
-`E1106_RECORD_FIELD_SEPARATOR_REQUIRED`. Function calls, field access,
-indexing, propagation (`?`) and casts group left-to-right; binary precedence
-is listed from weakest to strongest. `&&` and `||` short-circuit. `await`,
-`join`, and `borrow` bind like other unary operators.
+initializer such as `Ready { ... }`. `if_expression` and `match_expression`
+are ordinary expressions, so they may bind with `let`, occur in a block tail,
+or be used as an expression statement followed by `;`. A bare `if`/`match`
+expression is also permitted in statement position without `;`; its value is
+discarded. `while`, `for`, and `loop` remain unit-valued statements in V1;
+`break` has no value.
+
+A `qualified_name` followed by `{` is `record_init`. A name followed by a call
+suffix is always one generic Call syntax node, whether resolution later finds a
+function, an `Option`/`Result` constructor, a user enum tuple variant, or a
+future callable V1 entity. The parser never chooses an enum-constructor parse
+instead of a function-call parse. Resolution validates the selected callee
+kind after that one syntax form is built; this is not semantic backtracking.
+An empty record initializer is syntactically valid. Fields are comma-separated,
+a final comma is permitted, and a repeated field name is the static named-field
+error `E1205_DUPLICATE_RECORD_FIELD`, not a parser error. Missing a comma
+between record fields is `E1106_RECORD_FIELD_SEPARATOR_REQUIRED`. Function
+calls, field access, indexing, propagation (`?`) and casts group left-to-right;
+binary precedence is listed from weakest to strongest. `&&` and `||`
+short-circuit. `await`, `join`, and `borrow` bind like other unary operators.
 
 `defer`, `unsafe`, closures, `async`, and `spawn async` are Full-profile
 constructs. `parallel`, `spawn parallel`, `join`, and `cancel` have defined
@@ -3291,7 +3308,9 @@ an unsigned `u64` count of nanoseconds. Public and persistent forms use one of
 the explicit fixed-width integers.
 
 `Option<T>` has variants `Some(T)` and `None`; `Result<T,E>` has variants
-`Ok(T)` and `Err(E)`. `Task<T>` is an owned scoped task handle.
+`Ok(T)` and `Err(E)`. `ConversionError` is the fixed V1 standard error type
+returned by checked numeric conversions; ordinary code receives it only through
+those `Result` values. `Task<T>` is an owned scoped task handle.
 `TaskResult<T>` has variants `Completed(T)` and `Cancelled`; it is the result
 of consuming a task handle through `join` or `await`. This keeps cancellation
 distinct from a child value of type `T`, including when `T` is itself
@@ -3299,7 +3318,8 @@ distinct from a child value of type `T`, including when `T` is itself
 `DmaRegion<T>` are opaque
 nucleus-granted typed region handles. `Mutex<T>`, `RwLock<T>`, `Channel<T>`,
 `Event`, `Semaphore`, `Barrier`, `Latch`, `AtomicBool`, `AtomicU32`, and
-`AtomicU64` are non-generic typed runtime contracts, not magic host APIs.
+`AtomicU64`, and `ConversionError` are non-generic typed runtime contracts,
+not magic host APIs.
 Their exact dynamic semantics are in
 `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
 
@@ -3323,7 +3343,8 @@ The complete V1 constructed-type arity is fixed and is shared with docs/39 and
 docs/43: `Option<T>`, `Task<T>`, `TaskResult<T>`, `Shared<T>`, `Region<T>`,
 `DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, and `slice<T>` take one
 type argument; `Result<T,E>` takes two. `Event`, `Semaphore`, `Barrier`,
-`Latch`, `AtomicBool`, `AtomicU32`, and `AtomicU64` take no type arguments.
+`Latch`, `AtomicBool`, `AtomicU32`, `AtomicU64`, and `ConversionError` take no
+type arguments.
 Using another arity is a parse/type error, not an implementation-defined
 generic application. `slice<T>` is the only borrowed-view type form and
 retains the nonescaping restrictions above.
@@ -3379,9 +3400,16 @@ surrounding exact integer type if in range; otherwise an unsuffixed literal is
 `i32`. Assigning or passing values of different integer types is
 `E1210_INTEGER_TYPE_MISMATCH`. `as T` is permitted only for an integer
 widening conversion that preserves signedness, `u8` to `u16`/`u32`/`u64`, or
-the corresponding signed widening. All other conversion uses the typed
-standard contract `convert<T>(x) -> Result<T, ConversionError>`; it checks
-range and sign. Explicit wrapping arithmetic is only available through
+the corresponding signed widening. Any other `as` conversion is
+`E1212_INVALID_AS_CONVERSION`.
+
+Checked conversion has no generic-call syntax. The fixed V1 standard functions
+`to_i8` through `to_i64` and `to_u8` through `to_u64` are ordinary Call-form
+callees defined in docs/39. Each accepts any fixed-width integer or `size`,
+checks sign and range, and returns `Result<D, ConversionError>` for its
+spelled destination `D`. Thus `to_u8(value)` is the source form for a checked
+narrowing/sign-changing conversion; callers use its `Result` rather than
+depending on host casts. Explicit wrapping arithmetic is only available through
 `wrapping_add`, `wrapping_sub`, and `wrapping_mul` contracts with exact
 fixed-width type arguments.
 
@@ -3415,21 +3443,30 @@ interface exposes one; it never becomes host out-of-bounds access.
 
 ## 4. Evaluation and dynamic semantics
 
-TOS evaluates expressions left-to-right. Specifically, a call evaluates its
-callee, then arguments left-to-right, then enters the call; a binary operator
-evaluates its left operand before its right; record/array/tuple fields evaluate
-in lexical source order; match subject evaluates before patterns; assignment
-evaluates its place base/index left-to-right before its right side. `&&` does
-not evaluate its right side after false; `||` does not evaluate its right side
-after true. `?` evaluates its operand once and returns the containing function
-with the matching `Err` if it is not `Ok`.
+TOS evaluates expressions left-to-right. Specifically, a Call evaluates its
+callee, then arguments left-to-right, then enters the resolved function or
+constructor; a binary operator evaluates its left operand before its right;
+record/array/tuple fields evaluate in lexical source order; match subject
+evaluates before patterns; assignment evaluates its place base/index
+left-to-right before its right side. Ordinary function calls and tuple-variant
+constructors use the same Call form and differ only at resolved-callee checking.
+`&&` does not evaluate its right side after false; `||` does not evaluate its
+right side after true. `?` evaluates its operand once and returns the
+containing function with the matching `Err` if it is not `Ok`.
 
-The tail expression of a block is its value. A semicolon discards a statement
-expression's value. `if` expressions require both branches to have the same
-type; a missing `else` produces `unit`. `match` must be exhaustive for an enum,
-`Option`, or `Result`; a missing case is `E1220_NONEXHAUSTIVE_MATCH`. An `_`
-arm is exhaustive. Patterns bind by move unless the matched subject is an
-immutable `Copy` value; borrows must be made explicitly before match.
+The tail expression of a block is its value; a block with no tail expression
+has type and value `unit`. A semicolon discards a statement expression's value.
+`if` and `match` are value-producing expressions. An `if` with `else` requires
+both branch blocks to have the same exact type and yields that type; an `if`
+without `else` yields `unit` after evaluating its selected block (if any).
+Every `match` arm's block/expression has the same exact type, and the match
+yields that type. `match` must be exhaustive for an enum, `Option`, or
+`Result`; a missing case is `E1220_NONEXHAUSTIVE_MATCH`. An `_` arm is
+exhaustive. In statement position a bare `if` or `match` may omit its trailing
+semicolon; the resulting value is discarded. `while`, `for`, and `loop` are
+unit-valued statements, and V1 `break` has no value. Patterns bind by move
+unless the matched subject is an immutable `Copy` value; borrows must be made
+explicitly before match.
 
 `Result` is the sole ordinary recoverable-error transport. A runtime trap is a
 defined language failure caused by a violated dynamic precondition. `panic`
@@ -3450,11 +3487,17 @@ unwinding.
 
 Safe non-`Copy` values are affine: every value has one owner and is moved when
 assigned, passed by an owning parameter, returned, put into an aggregate, or
-captured by a task/closure. Use after move is `E1301_USE_AFTER_MOVE`. `Copy`
-types are fixed-width numeric types, `bool`, `duration`, `unit`, and explicitly
-documented immutable value handles; strings, bytes, capabilities, regions,
-tasks, locks, channels, arrays, records, and enums are non-`Copy` unless all
-members are `Copy` and their type declaration says so.
+captured by a task/closure. Use after move is `E1301_USE_AFTER_MOVE`. Copy is
+automatic and structural in V1; there is no declaration marker, trait, or
+user override. Fixed-width numeric types, `size`, `duration`, `bool`, and
+`unit` are `Copy`. A tuple is `Copy` exactly when every element is `Copy`; an
+array is `Copy` exactly when its element type is `Copy`; and a record or enum
+is `Copy` exactly when every stored field/payload type is `Copy`. `Option<T>`,
+`Result<T,E>`, and `TaskResult<T>` follow that same transitive aggregate rule.
+`Shared<T>` is an explicitly documented immutable handle and is `Copy`; strings,
+bytes, capabilities, regions, DMA regions, tasks, locks, channels, events,
+semaphores, barriers, latches, atomics, slices, closures, and functions are
+not `Copy` unless an accepted later contract explicitly changes that type.
 
 At any program point, a value may have either any number of immutable borrows
 or exactly one mutable borrow, never both. An immutable borrow cannot mutate
@@ -4007,12 +4050,20 @@ types of TOS Core V1. A nominal type records its defining module content ID and
 export name. An IR type ID is not valid merely because its host representation
 has the same layout.
 
+The IR does not trust a frontend-supplied `Copy` annotation. For every type it
+recomputes the docs/40 structural rule from the ordered type graph: primitive
+Copy roots and `Shared<T>` are Copy; tuple/array/record/enum and
+`Option`/`Result`/`TaskResult` are Copy only when all stored components are
+Copy; all other V1 types are non-Copy. A cyclic nominal type is non-Copy unless
+a later accepted language version supplies a finite proof rule. This check is
+part of affine operand validation.
+
 For constructed types, IR records the same exact arity as docs/39/40:
 `Option`, `Task`, `TaskResult`, `Shared`, `Region`, `DmaRegion`, `Mutex`,
 `RwLock`, `Channel`, and `slice` have one type argument; `Result` has two;
 `Event`, `Semaphore`, `Barrier`, `Latch`, and the three V1 atomic types have
-none. The verifier rejects a forged or mismatched arity before control-flow or
-runtime-contract validation.
+none, as does `ConversionError`. The verifier rejects a forged or mismatched
+arity before control-flow or runtime-contract validation.
 
 ## 3. Functions, values, and control flow
 
@@ -4202,9 +4253,9 @@ convenient error.
 | Vector class | Required initial evidence |
 |---|---|
 | lexical/source | UTF-8, BOM, NFC, CRLF/bare-CR, tab, identifier, integer, string/bytes, and earliest-error precedence |
-| grammar | module/header/import, declaration/block recovery, parenthesized control heads, comma-separated record fields, tuple/slice/predeclared-type arity, precedence, complete match, reserved words, invalid profile syntax |
-| static type/evaluation | fixed-width literals, conversion, checked overflow/shift/division, Result `?`, `Option` (not `nil`), evaluation order |
-| ownership | move/use-after-move, immutable/mutable conflict, borrow escape, indexed alias conservatism, task capture |
+| grammar | module/header/import, declaration/block recovery, value-producing parenthesized `if`/`match`, one Call/constructor form, comma-separated record fields, tuple/slice/predeclared-type arity, precedence, complete match, reserved words, invalid profile syntax |
+| static type/evaluation | fixed-width literals, `to_*` checked conversion and invalid narrowing, checked overflow/shift/division, Result `?`, `Option` (not `nil`), evaluation order |
+| ownership | move/use-after-move, automatic structural aggregate Copy/non-Copy, immutable/mutable conflict, borrow escape, indexed alias conservatism, task capture |
 | capabilities | undeclared effect, forged handle, denied request, invalid attenuation/transfer, untyped privileged operation |
 | resources | missing/invalid required limit, metered loop, recursion/import/task/worker/sync/shared/cleanup exhaustion |
 | concurrency | one/2/N-worker equivalent deterministic result, actual Full-engine overlap, safe mutable-share rejection, `TaskResult` join/cancel lifecycle, bounded task/worker behavior |
@@ -9843,6 +9894,13 @@ and defines cancellation as a request followed by a consuming
 checks these boundaries across docs/39–44, canonical examples, and the
 conformance corpus.
 
+The second resubmission additionally reconciles value-producing `if`/`match`
+with their canonical tail-expression examples; uses one Call AST form for
+functions and tuple constructors; replaces unexpressible generic conversion
+notation with fixed `to_*` standard calls; and makes aggregate Copy automatic
+and structural. These are Level 0 consistency corrections inside the proposed
+V1 semantic direction, not a new language foundation or Part B authorization.
+
 ## Proposed decision
 
 Accept TOS Core V1 as specified by docs/39–44:
@@ -9855,6 +9913,10 @@ Accept TOS Core V1 as specified by docs/39–44:
   synchronization/atomic types have fixed documented arity; control heads are
   parenthesized and record fields are comma-separated so parser boundaries do
   not depend on type resolution;
+- `if`/`match` are value-producing expressions in both binding/tail and
+  statement use; function and constructor calls share a single syntactic Call
+  form; checked integer conversion uses fixed `to_*` calls; and aggregate Copy
+  is automatic from stored-component types;
 - static semantics provide nominal types, fixed-width arithmetic, typed
   Result-style errors, capability effects, affine ownership, lexical
   nonescaping borrows, typed regions, and no safe raw-pointer/physical-address
