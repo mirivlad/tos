@@ -3,23 +3,23 @@ module examples.capability version 1.0 profile bootstrap;
 
 import capability system.time.Clock as clock;
 
-resource {
-    fuel: 10000;
-    stack: 64KiB;
-    allocation: 4KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 1;
-}
+resource [
+    fuel: 10000,
+    stack: 64KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 16,
+    recursion: 8,
+    imports: 1,
+]
 
-enum ClockError {
+enum ClockError [
     Unavailable,
-}
+]
 
-pub fn sample() -> Result<duration, ClockError> uses { clock } {
-    clock.now()
+pub fn sample() -> Result<duration, ClockError> uses [clock] {
+    return clock.now();
 }

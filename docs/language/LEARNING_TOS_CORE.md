@@ -13,6 +13,19 @@ TOS Core is the textual language whose source, rather than a cache or binary,
 is the installed program. Read the [programmer guide](TOS_CORE_V1_GUIDE.md)
 first for terminology and the numbered specification for exact rules.
 
+## Five syntax rules to remember
+
+- `()` — parameters, arguments, and grouping.
+- `[]` — lists, data, and declarations.
+- `{}` — executable code.
+- `,` — separates list items.
+- `;` — ends a simple action.
+- `return` — returns a normal value explicitly.
+
+These rules are deliberate: a record is declared with `[]`, constructed with
+named `()`, and code always lives in `{}`. A final expression does not quietly
+become a return value.
+
 ## 2. First program
 
 Open [first.tos](examples/first.tos). Notice three things before its function:
@@ -44,11 +57,11 @@ source, but it does not exist yet.
 ## 6. Records, tuples, and enums
 
 [data.tos](examples/data.tos) uses a record for named data, a tuple for a small
-fixed grouping, and an enum for alternatives. Its final `match` is a value, as
-the first program's final `if` is a value. TOS Core V1 chooses nominal
-records/enums so that types from different modules are not accidentally
-interchangeable. Aggregates copy automatically only when all their stored
-components are Copy; otherwise they move.
+fixed grouping, and an enum for alternatives. Its `match` branches contain
+explicit `return` actions; neither `match` nor `if` quietly produces a value.
+TOS Core V1 chooses nominal records/enums so that types from different modules
+are not accidentally interchangeable. Primitive values, suitable tuples, and
+arrays Copy; user records/enums otherwise move.
 
 ## 7. Option and Result
 

@@ -1,28 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module examples.ownership version 1.0 profile bootstrap;
 
-resource {
-    fuel: 10000;
-    stack: 64KiB;
-    allocation: 4KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 0;
-}
+resource [
+    fuel: 10000,
+    stack: 64KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 16,
+    recursion: 8,
+    imports: 0,
+]
 
-record Packet {
-    id: u32;
-    payload: bytes;
-}
+record Packet [
+    id: u32,
+    payload: bytes,
+]
 
 pub fn id_of(borrow packet: Packet) -> u32 {
-    packet.id
+    return packet.id;
 }
 
 pub fn consume(packet: Packet) -> u32 {
-    id_of(borrow packet)
+    return id_of(borrow packet);
 }

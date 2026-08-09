@@ -1,29 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module conformance.task_cancellation version 1.0 profile bootstrap;
 
-resource {
-    fuel: 10000;
-    stack: 64KiB;
-    allocation: 4KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 0;
-}
+resource [
+    fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1,
+    sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0,
+]
 
 pub fn cancellation_is_explicit() -> bool {
     let mut cancelled = false;
     parallel {
-        let child = spawn parallel { 7i32 };
+        let child = spawn parallel { return 7i32; };
         cancel child;
         let outcome = join child;
         match (outcome) {
-            Completed(_) => { cancelled = false; },
-            Cancelled => { cancelled = true; },
+            Completed(_) => { cancelled = false; }
+            Cancelled => { cancelled = true; }
         }
     }
-    cancelled
+    return cancelled;
 }

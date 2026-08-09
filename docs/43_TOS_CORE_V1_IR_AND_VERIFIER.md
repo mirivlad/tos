@@ -58,13 +58,12 @@ types of TOS Core V1. A nominal type records its defining module content ID and
 export name. An IR type ID is not valid merely because its host representation
 has the same layout.
 
-The IR does not trust a frontend-supplied `Copy` annotation. For every type it
-recomputes the docs/40 structural rule from the ordered type graph: primitive
-Copy roots and `Shared<T>` are Copy; tuple/array/record/enum and
-`Option`/`Result`/`TaskResult` are Copy only when all stored components are
-Copy; all other V1 types are non-Copy. A cyclic nominal type is non-Copy unless
-a later accepted language version supplies a finite proof rule. This check is
-part of affine operand validation.
+The IR does not trust a frontend-supplied `Copy` annotation. It recomputes the
+docs/40 rule from the ordered type graph: primitive Copy roots and `Shared<T>`
+are Copy; tuple/array types are Copy only when every component is Copy; user
+records, user enums, `Option`, `Result`, and `TaskResult` are non-Copy in V1.
+All other V1 types are non-Copy. This check is part of affine operand
+validation.
 
 For constructed types, IR records the same exact arity as docs/39/40:
 `Option`, `Task`, `TaskResult`, `Shared`, `Region`, `DmaRegion`, `Mutex`,
@@ -95,6 +94,14 @@ state. There is no implicit fall-through, untyped jump, exception edge, host
 stack unwinding, or unbounded recursion edge. A call names a declared imported
 or local function signature and supplies an exact ordered operand list; it
 cannot resolve a host symbol dynamically.
+
+The frontend lowers every source `name(...)` through one resolved call or
+construction family. For a nominal record constructor it first validates the
+source-order named arguments against the declared ordered field set, then emits
+the corresponding ordered aggregate operands; ordinary functions and tuple
+variants accept positional operands only. An IR `return(value)` is the only
+normal non-unit function/task/closure result; source blocks, `if`, and `match`
+do not lower as value-producing expressions.
 
 The semantic operation families are:
 

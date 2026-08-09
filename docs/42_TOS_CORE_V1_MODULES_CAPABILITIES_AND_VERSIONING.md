@@ -47,6 +47,11 @@ cycle path in diagnostic fields. There is no top-level executable initialization
 items declare types, constants, resources, and functions only. This makes
 module loading and cache identity independent of initialization order.
 
+The module resource declaration is `resource [ ... ]`, and a function's
+capability-effect declaration is `uses [ ... ]`: both are comma-separated
+declarative lists, never executable brace blocks. Their meaning and required
+keys remain in docs/40–41.
+
 `pub` exports an item. A non-`pub` item is module-private. A public function's
 parameter/return types and effect capabilities must be exported/reachable; an
 otherwise private ABI type is `E1607_PRIVATE_PUBLIC_TYPE`. A module has no

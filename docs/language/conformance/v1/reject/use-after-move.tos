@@ -1,27 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module conformance.use_after_move version 1.0 profile bootstrap;
 
-resource {
-    fuel: 10000;
-    stack: 64KiB;
-    allocation: 4KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 0;
-}
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
 
-record Message {
-    payload: bytes;
-}
+record Message [payload: bytes]
 
 pub fn take(message: Message) -> unit { }
 
 pub fn main() -> unit {
-    let message = Message { payload: b"hello" };
+    let message = Message(payload: b"hello");
     take(message);
     take(message);
 }

@@ -1,28 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module examples.first version 1.0 profile bootstrap;
 
-resource {
-    fuel: 10000;
-    stack: 64KiB;
-    allocation: 4KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 0;
-}
+resource [
+    fuel: 10000,
+    stack: 64KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 16,
+    recursion: 8,
+    imports: 0,
+]
 
-enum FirstError {
+enum FirstError [
     Unexpected,
-}
+]
 
 pub fn main() -> Result<i32, FirstError> {
     let answer: i32 = 42i32;
     if (answer == 42i32) {
-        Ok(answer)
+        return Ok(answer);
     } else {
-        Err(Unexpected)
+        return Err(Unexpected);
     }
 }

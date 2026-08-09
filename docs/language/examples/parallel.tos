@@ -1,18 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module examples.parallel version 1.0 profile bootstrap;
 
-resource {
-    fuel: 100000;
-    stack: 64KiB;
-    allocation: 8KiB;
-    tasks: 2;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 32;
-    recursion: 8;
-    imports: 0;
-}
+resource [
+    fuel: 100000,
+    stack: 64KiB,
+    allocation: 8KiB,
+    tasks: 2,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 32,
+    recursion: 8,
+    imports: 0,
+]
 
 pub fn sum_range(begin: i32, end: i32) -> i32 {
     let mut value = begin;
@@ -21,28 +21,32 @@ pub fn sum_range(begin: i32, end: i32) -> i32 {
         total = total + value;
         value = value + 1i32;
     }
-    total
+    return total;
 }
 
-enum ParallelError {
+enum ParallelError [
     ChildCancelled,
-}
+]
 
 pub fn completed(result: TaskResult<i32>) -> Result<i32, ParallelError> {
     match (result) {
-        Completed(value) => Ok(value),
-        Cancelled => Err(ChildCancelled),
+        Completed(value) => {
+            return Ok(value);
+        }
+        Cancelled => {
+            return Err(ChildCancelled);
+        }
     }
 }
 
 pub fn paired_sum() -> Result<i32, ParallelError> {
     let mut total = 0i32;
     parallel {
-        let left = spawn parallel { sum_range(0i32, 10i32) };
-        let right = spawn parallel { sum_range(10i32, 20i32) };
+        let left = spawn parallel { return sum_range(0i32, 10i32); };
+        let right = spawn parallel { return sum_range(10i32, 20i32); };
         let left_total = completed(join left)?;
         let right_total = completed(join right)?;
         total = left_total + right_total;
     }
-    Ok(total)
+    return Ok(total);
 }

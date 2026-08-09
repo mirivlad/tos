@@ -52,6 +52,15 @@ as `to_u8(value)`, and returns `Result<u8, ConversionError>`. It is not a
 generic cast. Explicit wrapping operations are only for code that genuinely
 needs wrapping.
 
+## The punctuation model
+
+V1 uses five syntax rules consistently: `()` holds parameters, arguments, and
+expression grouping; `[]` holds declarations, data lists, and collections;
+`{}` holds executable code; `,` separates list members; and `;` ends a simple
+executable action. `return` explicitly returns a normal value. This means a
+record declaration is `record Point [x: i32, y: i32]`, while a record value is
+`Point(x: 1i32, y: 2i32)`. Braces never mean a record value in V1.
+
 ## Functions, records, tuples, and enums
 
 Functions state parameter and return types. Records have named fields; tuples
@@ -60,13 +69,15 @@ language deliberately has no user-defined generics or inheritance in V1: clear
 nominal types make diagnostics and verifier checks smaller. See
 [data.tos](examples/data.tos).
 
-Function calls and enum tuple-variant construction use the same `name(...)`
-source form and evaluate arguments left-to-right. `if`, `match`, and block tail
-expressions give a value, so they can appear after `let` or as a function's last
-expression. A standalone `if`/`match` may omit its semicolon when its value is
-being discarded. `match` must handle every enum/`Option`/`Result` case; an
-omitted case receives `E1220_NONEXHAUSTIVE_MATCH`, rather than becoming a
-runtime surprise.
+Function calls, enum tuple-variant construction, and nominal record
+construction use the same `name(...)` parse family and evaluate arguments
+left-to-right. Only records accept named arguments, and they require every
+field exactly once. `if` and `match` are statement-oriented: each branch is an
+executable `{ ... }` block, branches are not comma-separated, and a non-unit
+function returns through explicit `return value;` on every normal path. There
+is no hidden tail expression or semicolon-dependent return rule. `match` must
+handle every enum/`Option`/`Result` case; an omitted case receives
+`E1220_NONEXHAUSTIVE_MATCH`, rather than becoming a runtime surprise.
 
 ## Option, Result, errors, and diagnostics
 
@@ -84,10 +95,11 @@ event. An invalid source and its intended primary diagnostic live in
 ## Ownership and borrowing
 
 Most nontrivial values have one owner. Assigning, returning, or passing one to
-an owning parameter moves it. Simple aggregate values copy automatically when
-all their stored components are Copy: tuples, arrays, records, enums, and
-`Option`/`Result`/`TaskResult` follow that structural rule. A string, region,
-task, lock, channel, or capability still moves. Use `borrow value` to lend an immutable view and
+an owning parameter moves it. Primitive values are Copy; tuples and arrays copy
+only when all their elements Copy. User records and enums remain affine in V1,
+even when their fields are primitive. `Option`, `Result`, and `TaskResult` also
+move. A string, region, task, lock, channel, or capability still moves. Use
+`borrow value` to lend an immutable view and
 `borrow mut value` to lend the only mutable view for a small lexical scope.
 V1 deliberately does not let borrows escape a function, be stored, or be sent
 to a task; that keeps the first checker auditable. See
@@ -103,7 +115,7 @@ code has neither raw pointers nor physical-address integers.
 A capability is an opaque authority value issued by the launcher, not a number
 that source can invent. A module requests it with `import capability`; the
 launcher may grant or deny it. A function that uses it declares that fact in a
-`uses { ... }` effect set. [capability.tos](examples/capability.tos) shows the
+`uses [ ... ]` effect set. [capability.tos](examples/capability.tos) shows the
 shape without pretending that the future clock service exists today.
 
 Typed `Region<T>` and `DmaRegion<T>` are similarly granted through later

@@ -3,29 +3,29 @@ module examples.counter_service version 1.0 profile bootstrap;
 
 import capability system.audit.Logger as logger;
 
-resource {
-    fuel: 50000;
-    stack: 64KiB;
-    allocation: 8KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 1;
-}
+resource [
+    fuel: 50000,
+    stack: 64KiB,
+    allocation: 8KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 16,
+    recursion: 8,
+    imports: 1,
+]
 
-record Counter {
-    value: u32;
-}
+record Counter [
+    value: u32,
+]
 
-enum CounterError {
+enum CounterError [
     Overflow,
-}
+]
 
-pub fn increment(counter: Counter) -> Result<Counter, CounterError> uses { logger } {
+pub fn increment(counter: Counter) -> Result<Counter, CounterError> uses [logger] {
     let next = counter.value + 1u32;
     logger.notice("counter incremented");
-    Ok(Counter { value: next })
+    return Ok(Counter(value: next));
 }

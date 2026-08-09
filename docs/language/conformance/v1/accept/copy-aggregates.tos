@@ -1,39 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 module conformance.copy_aggregates version 1.0 profile bootstrap;
 
-resource {
-    fuel: 10000;
-    stack: 64KiB;
-    allocation: 4KiB;
-    tasks: 1;
-    workers: 1;
-    sync: 0;
-    shared: 0B;
-    cleanup: 16;
-    recursion: 8;
-    imports: 0;
-}
+resource [
+    fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1,
+    sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0,
+]
 
-record Pair {
-    left: i32;
-    right: i32;
-}
+record Pair [
+    left: i32,
+    right: i32,
+]
 
-enum Choice {
+enum Choice [
     Number(i32),
     Flag(bool),
-}
+]
 
 pub fn main() -> i32 {
     let tuple = (1i32, true);
     let _tuple_copy = tuple;
     let _tuple_again = tuple;
     let array = [2i32, 3i32];
-    let array_copy = array;
-    let pair = Pair { left: 4i32, right: 5i32 };
-    let pair_copy = pair;
+    let _array_copy = array;
+    let _array_again = array;
+    let pair = Pair(left: 4i32, right: 5i32);
     let choice = Number(6i32);
-    let _choice_copy = choice;
-    let _choice_again = choice;
-    pair.left + pair_copy.right + array[0] + array_copy[1]
+    return pair.left + choice;
 }

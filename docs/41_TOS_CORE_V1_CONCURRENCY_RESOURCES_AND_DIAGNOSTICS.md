@@ -37,10 +37,12 @@ their result contracts rather than silently changing ordinary memory semantics.
 
 ## 2. Structured tasks, join, and cancellation
 
-`parallel { ... }` creates a lexical task scope. `spawn parallel { block }`
+`parallel { ... }` creates a lexical task scope. `spawn parallel { ... }`
 inside it creates a child `Task<T>` owned by that scope. The child owns or
 immutably shares exactly the values captured under docs/40. Every spawned
-child MUST ultimately be joined/consumed before scope exit. A child cannot
+child MUST ultimately be joined/consumed before scope exit. A child body uses
+an explicit `return` to produce `T`; reaching its end produces only `unit`.
+A child cannot
 outlive its scope, become detached, or outlive its source/capability/resource
 record. Leaving a scope with an unconsumed task is `E1401_UNJOINED_TASK`.
 
@@ -145,19 +147,19 @@ no implicit global fence beyond their declared order.
 
 ## 6. Resource declarations and accounting
 
-Each module has exactly one `resource { ... }` item. It declares at least:
+Each module has exactly one `resource [ ... ]` item. It declares at least:
 
 ```text
-fuel:        integer;      // maximum interpreter instructions/checkpoints
-stack:       size;         // maximum stack bytes per execution context
-allocation:  size;         // maximum live allocatable bytes
-tasks:       integer;      // maximum simultaneously live scoped tasks
-workers:     integer;      // maximum runnable execution contexts requested
-sync:        integer;      // maximum live synchronization objects/guards
-shared:      size;         // maximum bytes of shared-region grants
-cleanup:     integer;      // maximum bounded cleanup steps after cancellation
-recursion:   integer;      // maximum dynamic call depth
-imports:     integer;      // maximum transitive module dependencies
+fuel:        integer,     // maximum interpreter instructions/checkpoints
+stack:       size,        // maximum stack bytes per execution context
+allocation:  size,        // maximum live allocatable bytes
+tasks:       integer,     // maximum simultaneously live scoped tasks
+workers:     integer,     // maximum runnable execution contexts requested
+sync:        integer,     // maximum live synchronization objects/guards
+shared:      size,        // maximum bytes of shared-region grants
+cleanup:     integer,     // maximum bounded cleanup steps after cancellation
+recursion:   integer,     // maximum dynamic call depth
+imports:     integer,     // maximum transitive module dependencies
 ```
 
 The values are compile-time constants and all maxima are inclusive. A module
