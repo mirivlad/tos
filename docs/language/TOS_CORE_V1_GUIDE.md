@@ -17,6 +17,11 @@ file starts by naming one module, language version, and profile, then gives the
 resource envelope the module needs. Start with
 [first.tos](examples/first.tos).
 
+For TOS Core 1.0, the whole source file is NFC under the fixed Unicode 17.0.0
+and UAX #15 Revision 57 baseline. Unicode is welcome in comments and strings,
+but identifiers remain ASCII-only. This is a source identity rule, not a
+request to normalize values while a program runs.
+
 The `bootstrap` profile is a deliberately small, bounded subset for recovery
 and the first reference runtime. `full` has the same core meanings but permits
 the richer async, closure, unsafe, and real-SMP execution path. It is not a
@@ -89,7 +94,7 @@ ordinary `{ ... }` block does not redirect it. The same scope determines where
 ## Option, Result, errors, and diagnostics
 
 Use `Option<T>` for an expected absence and `Result<T, E>` for a recoverable
-failure. `?` returns the `Err` from the current function; it does not catch a
+failure. `?` propagates the `Err` from the nearest enclosing return scope; it does not catch a
 language trap or panic. [results.tos](examples/results.tos) is the canonical
 canonical example.
 

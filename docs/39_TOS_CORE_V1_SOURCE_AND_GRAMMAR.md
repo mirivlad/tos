@@ -55,12 +55,22 @@ A canonical source unit MUST:
 - use LF (`U+000A`) line endings; and
 - contain no NUL scalar value.
 
+For TOS Core 1.0, **Unicode NFC** means NFC exactly under Unicode Standard and
+Unicode Character Database (UCD) **17.0.0**, using UAX #15 Revision 57. This
+fixed normalization baseline is part of the source-language version, not a
+host-library, locale, operating-system, or implementation choice. A newer
+Unicode release MUST NOT silently change TOS Core 1.0 source acceptance.
+
 An input reader MAY accept CRLF as transport input only by replacing each CRLF
 with one LF before UTF-8/NFC validation and identity calculation. A bare CR is
 `E1003_BARE_CR`. The source object recorded in a repository and every cache
 key use the resulting normalized LF/NFC bytes. A BOM is
 `E1002_BOM_FORBIDDEN`; invalid UTF-8 is `E1001_INVALID_UTF8`; a non-NFC input
 is `E1004_NOT_NFC`. An implementation MUST report the earliest offending byte.
+Malformed UTF-8 is `E1001_INVALID_UTF8` and is rejected before normalization.
+The reference frontend's normalization data MUST be reproducible from the
+Unicode 17.0.0 UCD baseline; its exact input files, hashes, and generator
+identity are provenance inputs, not ambient host state. See ADR-0029.
 
 The canonical repository path is a validated relative slash-separated path.
 It has no `.` or `..` segment, no empty segment, no NUL, and no path separator

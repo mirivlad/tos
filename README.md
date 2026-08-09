@@ -88,9 +88,9 @@ available, boot evidence remains the serial log.
 Stage 1 is formally closed as a bootable TOS foundation with source-bound
 capsule identity and fail-closed validation. Stage 1.5 is formally closed with
 ADR-0027's bespoke TOS Core foundation selection. Stage 2 Part A is preparing
-the proposed semantic/IR contract and programmer documentation; production
-parser/runtime implementation has not started. TOS is not yet a user shell,
-application environment, or desktop operating system.
+the accepted semantic/IR contract and programmer documentation; Stage 2 Part B
+production reference implementation is authorized but has not started. TOS is
+not yet a user shell, application environment, or desktop operating system.
 
 ## Core thesis
 
@@ -167,7 +167,7 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 8. `docs/04_BOOT_AND_RECOVERY.md`
 9. `docs/05_TOS_CORE_LANGUAGE.md`
 10. `docs/06_EXECUTION_AND_IR.md`
-    - Proposed Stage 2 V1 contract: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`
+    - Accepted Stage 2 V1 contract: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`
       through `docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md`
 11. `docs/07_LANGUAGE_FRONTENDS.md`
 12. `docs/08_GIT_NATIVE_SYSTEM.md`

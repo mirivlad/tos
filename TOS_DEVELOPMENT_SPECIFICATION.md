@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `446b5c3085bd7f7433b0e98f4bac2972125af149ba1dbe3da9539c42b73bb44f`  
+Source-manifest SHA-256: `1bf6be05c9e5efa62b562fcfcaa7d9f472168461948c5c8d946f2e9e1324d574`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -103,9 +103,9 @@ available, boot evidence remains the serial log.
 Stage 1 is formally closed as a bootable TOS foundation with source-bound
 capsule identity and fail-closed validation. Stage 1.5 is formally closed with
 ADR-0027's bespoke TOS Core foundation selection. Stage 2 Part A is preparing
-the proposed semantic/IR contract and programmer documentation; production
-parser/runtime implementation has not started. TOS is not yet a user shell,
-application environment, or desktop operating system.
+the accepted semantic/IR contract and programmer documentation; Stage 2 Part B
+production reference implementation is authorized but has not started. TOS is
+not yet a user shell, application environment, or desktop operating system.
 
 ## Core thesis
 
@@ -182,7 +182,7 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 8. `docs/04_BOOT_AND_RECOVERY.md`
 9. `docs/05_TOS_CORE_LANGUAGE.md`
 10. `docs/06_EXECUTION_AND_IR.md`
-    - Proposed Stage 2 V1 contract: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`
+    - Accepted Stage 2 V1 contract: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`
       through `docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md`
 11. `docs/07_LANGUAGE_FRONTENDS.md`
 12. `docs/08_GIT_NATIVE_SYSTEM.md`
@@ -2990,12 +2990,22 @@ A canonical source unit MUST:
 - use LF (`U+000A`) line endings; and
 - contain no NUL scalar value.
 
+For TOS Core 1.0, **Unicode NFC** means NFC exactly under Unicode Standard and
+Unicode Character Database (UCD) **17.0.0**, using UAX #15 Revision 57. This
+fixed normalization baseline is part of the source-language version, not a
+host-library, locale, operating-system, or implementation choice. A newer
+Unicode release MUST NOT silently change TOS Core 1.0 source acceptance.
+
 An input reader MAY accept CRLF as transport input only by replacing each CRLF
 with one LF before UTF-8/NFC validation and identity calculation. A bare CR is
 `E1003_BARE_CR`. The source object recorded in a repository and every cache
 key use the resulting normalized LF/NFC bytes. A BOM is
 `E1002_BOM_FORBIDDEN`; invalid UTF-8 is `E1001_INVALID_UTF8`; a non-NFC input
 is `E1004_NOT_NFC`. An implementation MUST report the earliest offending byte.
+Malformed UTF-8 is `E1001_INVALID_UTF8` and is rejected before normalization.
+The reference frontend's normalization data MUST be reproducible from the
+Unicode 17.0.0 UCD baseline; its exact input files, hashes, and generator
+identity are provenance inputs, not ambient host state. See ADR-0029.
 
 The canonical repository path is a validated relative slash-separated path.
 It has no `.` or `..` segment, no empty segment, no NUL, and no path separator
@@ -3986,6 +3996,12 @@ source has no "best effort" downgrade path. Additive V1 minor extensions must
 use a reserved feature declaration and have an accepted contract; they cannot
 reinterpret existing token sequences.
 
+For declared language version `1.0`, canonical-source NFC validation uses the
+fixed Unicode 17.0.0 / UAX #15 Revision 57 baseline from docs/39 and ADR-0029.
+The normalization baseline is selected by language version, never by the host
+Unicode database. A future language version that changes it requires an
+explicit compatibility decision.
+
 TOS IR has a separate schema ID/version and verifier compatibility range in
 docs/43. A runtime reports the language range, IR schema range, verifier ID,
 backend ID, target ABI, and execution profile. It MAY accept an older verified
@@ -3999,6 +4015,10 @@ IR schema, verifier identity, backend/target ABI, optimization/safety policy,
 resource contract, and capability-interface digest. Changing any element
 invalidates reuse. Deleting every cache must leave all canonical sources and
 their declared dependencies sufficient for recovery/regeneration.
+
+The language version in that key selects its fixed Unicode normalization
+baseline. A cache producer cannot substitute a host-dependent normalization
+result for the declared source version.
 
 ## 5. FFI and external code boundary
 
@@ -4018,7 +4038,8 @@ cannot be enabled by a build flag, host library presence, or unsafe block.
 
 The module dependency closure is ordered lexically by canonical module name.
 Each member contributes its source-set identity, canonical path, normalized
-content ID, declared language/profile version, and interface/capability digest
+content ID, declared language/profile version and its Unicode-normalization
+baseline, and interface/capability digest
 to the frontend/lowering identity. A diagnostic and runtime event identify the
 originating source unit and exact byte span. A derived artifact must retain that
 mapping across import, lowering, optimization, task spawn/join/cancel, and
@@ -4071,6 +4092,7 @@ An IR module contains the following logical sections in canonical order:
 Header
   schema_id = "tos-ir/v1"
   language_version = "1.0"
+  unicode_normalization_baseline = "UCD-17.0.0/UAX15-r57/NFC"
   profile = bootstrap | full
   module name, source-set identity, path, normalized source content ID
   dependency-closure digest, frontend identity, source-map revision
@@ -4082,7 +4104,10 @@ Functions, ordered by fully qualified source name
 Source-map entries, ordered by source unit then byte start/end
 ```
 
-All strings are normalized UTF-8 and all identifiers/paths obey docs/39/42.
+All source strings are normalized UTF-8 according to the language version's
+fixed Unicode baseline; for V1 that is UCD 17.0.0/UAX #15 Revision 57 NFC.
+Runtime `string` values are not silently normalized. All identifiers/paths
+obey docs/39/42.
 Tables use explicit bounded indexes; no operation encodes a raw host pointer,
 host ABI symbol, implicit global capability, or untyped runtime object.
 Every table count, byte length, basic-block count, operand count, nesting
@@ -4233,7 +4258,8 @@ Representative stable errors are `V2001_LIMIT`, `V2002_SCHEMA`,
 
 Every IR operation has a source-map entry containing source-set identity,
 canonical path, normalized source content ID, frontend identity, language
-version/profile, byte start/end, and optional derivation parent span. Spawn,
+version/profile and Unicode-normalization baseline, byte start/end, and
+optional derivation parent span. Spawn,
 join, cancellation, synchronization, and atomic operations also carry a task
 or execution-context event identity at runtime; timing and CPU number are
 observations, not part of source identity.
@@ -4246,6 +4272,7 @@ source-set/commit or detached source-set identity
 canonical path/module identity
 frontend implementation and semantic-profile identity
 language version and feature revision
+Unicode normalization baseline
 IR schema and source-map revision
 verifier implementation identity
 backend implementation and target ABI identity
@@ -4309,7 +4336,7 @@ convenient error.
 
 | Vector class | Required initial evidence |
 |---|---|
-| lexical/source | UTF-8, BOM, NFC, CRLF/bare-CR, tab, identifier, integer, string/bytes, and earliest-error precedence |
+| lexical/source | UTF-8, BOM, Unicode 17.0.0/UAX #15 Revision 57 NFC, CRLF/bare-CR, tab, identifier, integer, string/bytes, and earliest-error precedence |
 | grammar | module/header/import, declaration/block recovery, parenthesized statement-only `if`/`match`, one Call/constructor form, `[]` declarative lists, named record/named-variant constructors, `fn (...) { ... }` closures, `array<T, N>`, no standalone block expression, precedence, complete match, reserved words, invalid profile syntax |
 | static type/evaluation | fixed-width literals, `to_*` checked conversion and invalid narrowing, checked overflow/shift/division, Result `?`, `Option` (not `nil`), evaluation order |
 | ownership | move/use-after-move, primitive/tuple/array Copy and affine nominal aggregate rule, immutable/mutable conflict, borrow escape, indexed alias conservatism, task capture |
@@ -4370,6 +4397,8 @@ adds no claim that a language checker defeats malicious firmware, a compromised
 nucleus, or all denial of service. Stage 2 implementation evidence MUST cover:
 
 - malformed UTF-8/source and malformed/forged IR fuzzing without parser panic;
+- Unicode 17.0.0/UAX #15 Revision 57 NFC conformance, including generated-data
+  provenance/hash verification and NormalizationTest.txt-derived cases;
 - source normalization/path/import ambiguity and cache-substitution negatives;
 - capability forgery/widening/ambient-authority negatives;
 - ownership/data-race/atomic-order invalid cases;
@@ -10052,6 +10081,111 @@ threads as the contract was rejected by ADR-0027; they remain possible future
 implementation/build/backend tools only under their own accepted decisions.
 
 <!-- END docs/adr/0028-tos-core-v1-semantics-and-ir-contract.md -->
+
+---
+
+<!-- BEGIN docs/adr/0029-tos-core-v1-unicode-normalization-baseline.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0029: TOS Core V1 Unicode normalization baseline
+
+- Status: Accepted (Project Architect-approved)
+- Date: 2026-08-09
+- Decision level: 2 — fixes the versioned TOS Core 1.0 source-identity and
+  normalization contract within ADR-0028's accepted language boundary
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-09
+
+## Context
+
+ADR-0028 and docs/39 require canonical `.tos` source to be UTF-8, LF, and
+Unicode NFC. Unicode is deliberately permitted in comments and string data,
+although identifiers remain ASCII-only. The earlier wording did not pin the
+Unicode data against which NFC is determined. Letting the host OS, libc, ICU,
+Rust, Python, locale, or a newer Unicode release choose that data would make
+canonical-source acceptance and `E1004_NOT_NFC` implementation-dependent.
+
+Because normalized source bytes participate in source-content identity, module
+resolution, source maps, IR receipts, and cache keys, this is a Level 2
+determinism gap rather than a library-selection detail.
+
+## Decision
+
+TOS Core 1.0 uses exactly this Unicode normalization baseline:
+
+```text
+Unicode Standard:                 17.0.0
+Unicode Character Database:       17.0.0
+Normalization specification:      UAX #15, Revision 57
+Normalization form:               NFC
+```
+
+After the existing CRLF-to-LF transport normalization, canonical `.tos` input
+MUST be valid NFC under that exact baseline. This preserves the existing
+ASCII-only identifier grammar, Unicode-permitted comments/string data, and
+`E1004_NOT_NFC` diagnostic. It does not normalize runtime `string` values.
+
+The reference frontend MUST derive its normalization data reproducibly from
+the accepted UCD release. It MUST NOT take host Unicode tables, locale, ICU,
+libc, Rust/Python library release, or a newer Unicode release as semantic
+authority. A host tool may assist generation only when the generated result is
+independently pinned to this baseline.
+
+Before the frontend enables the generated tables, its checked-in provenance
+record MUST state the Unicode/UCD/UAX versions, exact upstream UCD files,
+their integrity hashes, and the generator identity/version. The required
+inputs are the minimum applicable subset of `UnicodeData.txt`,
+`CompositionExclusions.txt`, `DerivedNormalizationProps.txt`, and
+`NormalizationTest.txt`. Any imported or generated material follows the
+third-party licence, notice, provenance, and reproducible-build requirements.
+No runtime Unicode-library dependency is admitted by this ADR.
+
+The conformance corpus MUST cover NFC acceptance, decomposed and
+combining-order rejection in comments and strings, ASCII byte identity, UTF-8
+precedence before normalization, and sufficient NormalizationTest.txt-derived
+positive/negative cases to prove the fixed baseline. The same normalized source
+bytes MUST result in the same source-content identity independently of host
+Unicode version.
+
+Unicode normalization data is part of the TOS Core 1.0 language contract. A
+future Unicode/UCD baseline cannot silently alter V1 acceptance or identity;
+it requires an explicit versioned language and compatibility decision. An
+implementation supporting multiple language versions selects the normalization
+baseline from the declared TOS language version, never from the host.
+
+## Architecture impact statement
+
+- **Invariants/canonical representation:** canonical human-readable source and
+  its source-content identity remain unchanged; this fixes which NFC predicate
+  determines those existing bytes.
+- **Trusted base/dependencies:** no runtime dependency or host Unicode service
+  enters the frontend, verifier, recovery path, or TOS semantic contract.
+- **Source-to-runtime/recovery:** source maps, IR receipts, module closure and
+  disposable-cache identities now bind an explicit normalization baseline;
+  deleting caches still regenerates from canonical source.
+- **Threat model:** hostile source cannot select a locale or host Unicode table
+  to change validation; malformed UTF-8 precedes normalization; bounded input
+  limits remain in docs/44.
+- **Performance/compatibility:** the accepted 256-KiB source bound remains;
+  normalization data and conformance costs are measured as part of Stage 2,
+  not delegated to a host library. TOS Core 1.0 is permanently compatible with
+  Unicode 17.0.0/UAX #15 Revision 57 only.
+- **Licence/patent:** no material is imported by this documentation decision.
+  Future UCD inputs/tables require exact licence/notice/provenance records
+  under docs/22, docs/27, and docs/28 before use.
+- **Evidence:** deterministic Unicode-17 normalization vectors, generated-data
+  provenance/hash checks, source-identity equality across host environments,
+  and malformed-UTF-8 precedence tests are required before frontend closure.
+
+## Consequences
+
+The first Stage 2 source reader/lexer must implement or use only reproducible,
+version-pinned Unicode 17.0.0 NFC data. It may not claim a partial ASCII-only
+normalizer as TOS Core V1 conformance. ADR-0028 remains accepted and its
+language foundation, grammar, ownership, IR, verifier, and runtime decisions
+are not reopened.
+
+<!-- END docs/adr/0029-tos-core-v1-unicode-normalization-baseline.md -->
 
 ---
 

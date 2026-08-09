@@ -131,6 +131,12 @@ source has no "best effort" downgrade path. Additive V1 minor extensions must
 use a reserved feature declaration and have an accepted contract; they cannot
 reinterpret existing token sequences.
 
+For declared language version `1.0`, canonical-source NFC validation uses the
+fixed Unicode 17.0.0 / UAX #15 Revision 57 baseline from docs/39 and ADR-0029.
+The normalization baseline is selected by language version, never by the host
+Unicode database. A future language version that changes it requires an
+explicit compatibility decision.
+
 TOS IR has a separate schema ID/version and verifier compatibility range in
 docs/43. A runtime reports the language range, IR schema range, verifier ID,
 backend ID, target ABI, and execution profile. It MAY accept an older verified
@@ -144,6 +150,10 @@ IR schema, verifier identity, backend/target ABI, optimization/safety policy,
 resource contract, and capability-interface digest. Changing any element
 invalidates reuse. Deleting every cache must leave all canonical sources and
 their declared dependencies sufficient for recovery/regeneration.
+
+The language version in that key selects its fixed Unicode normalization
+baseline. A cache producer cannot substitute a host-dependent normalization
+result for the declared source version.
 
 ## 5. FFI and external code boundary
 
@@ -163,7 +173,8 @@ cannot be enabled by a build flag, host library presence, or unsafe block.
 
 The module dependency closure is ordered lexically by canonical module name.
 Each member contributes its source-set identity, canonical path, normalized
-content ID, declared language/profile version, and interface/capability digest
+content ID, declared language/profile version and its Unicode-normalization
+baseline, and interface/capability digest
 to the frontend/lowering identity. A diagnostic and runtime event identify the
 originating source unit and exact byte span. A derived artifact must retain that
 mapping across import, lowering, optimization, task spawn/join/cancel, and

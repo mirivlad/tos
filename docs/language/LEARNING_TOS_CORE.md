@@ -12,6 +12,9 @@
 TOS Core is the textual language whose source, rather than a cache or binary,
 is the installed program. Read the [programmer guide](TOS_CORE_V1_GUIDE.md)
 first for terminology and the numbered specification for exact rules.
+TOS Core 1.0 checks each source file as Unicode 17.0.0 / UAX #15 Revision 57
+NFC after newline normalization. That makes the bytes named by source identity
+the same on every supported host; it does not make identifiers Unicode.
 
 ## Five syntax rules to remember
 

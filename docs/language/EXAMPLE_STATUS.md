@@ -9,7 +9,7 @@ mistaking guide/tutorial material for completed Stage 2 functionality.
 
 | Feature | Normative specification | Guide | Tutorial / canonical example | Common mistake / diagnostic | Conformance vector | Implementation status |
 |---|---|---|---|---|---|---|
-| source normalization and module header | docs/39 §1–2 | Guide: What a program is | [first.tos](examples/first.tos) | BOM/NFC/tab: E1002/E1004/E1010 | L001–L005, C004 | Not implemented |
+| source normalization and module header | docs/39 §1–2; ADR-0029 | Guide: What a program is | [first.tos](examples/first.tos) | BOM/NFC/tab: E1002/E1004/E1010 | L001–L009, C004 | Not implemented |
 | declarations, functions, statements | docs/39 §5; docs/40 §4 | Guide: Values / Functions | [data.tos](examples/data.tos) | explicit non-unit return: E1221 | C001, C009, R018–R024 | Not implemented |
 | fixed-width values and units | docs/39 §3/5; docs/40 §1–3 | Guide: Values | [values.tos](examples/values.tos), [checked-conversion.tos](conformance/v1/accept/checked-conversion.tos) | implicit/narrowing conversion: E1210/E1212 | C001, C011, R016 | Not implemented |
 | records, tuples, enums, match | docs/39 §5; docs/40 §1/4 | Guide: Data | [data.tos](examples/data.tos), [explicit-control-return.tos](conformance/v1/accept/explicit-control-return.tos), [named-record-constructor.tos](conformance/v1/accept/named-record-constructor.tos), [named-enum-variant.tos](conformance/v1/accept/named-enum-variant.tos), [call-and-constructor.tos](conformance/v1/accept/call-and-constructor.tos) | missing variant: E1220; malformed head/list: E1105/E1106 | C006, C007, C009, C010, C014–C016, R009–R012, R014, R023–R028 | Not implemented |
