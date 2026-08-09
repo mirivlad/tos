@@ -908,6 +908,22 @@ mod tests {
     }
 
     #[test]
+    fn parser_preserves_parenthesized_expression_grouping() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { return (a + b) * c; }",
+        )
+        .expect("transport-valid source");
+        let module = Parser::parse_schema(&source).expect("grouped expression parses");
+        let expression = module.functions()[0].body().statements()[0]
+            .expression()
+            .expect("return value");
+        assert_eq!(expression.operator_text(&source), Some("*"));
+        let group = expression.left().expect("left operand");
+        assert_eq!(group.form(), ExpressionForm::Group);
+        assert_eq!(group.inner().unwrap().operator_text(&source), Some("+"));
+    }
+
+    #[test]
     fn parser_rejects_a_resource_list_without_a_comma() {
         let source = SourceReader::read(
             b"module system.boot version 1.0 profile bootstrap; resource [fuel: 1 stack: 1B]",
