@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module examples.modules version 1.0 profile bootstrap;
+
+import examples.math as math;
+
+resource {
+    fuel: 10000;
+    stack: 64KiB;
+    allocation: 4KiB;
+    tasks: 1;
+    workers: 1;
+    sync: 0;
+    shared: 0B;
+    cleanup: 16;
+    recursion: 8;
+    imports: 1;
+}
+
+pub fn answer() -> i32 {
+    math.twice(21i32)
+}

@@ -7,9 +7,11 @@
 “TOS Core” is the accepted bespoke TOS-owned native textual language foundation
 under ADR-0027.
 
-The syntax in this document remains illustrative. Stage 2 defines the complete
-normative parser, grammar and runtime specification within ADR-0027's accepted
-semantic and trust boundary.
+The syntax in this document remains illustrative. The proposed complete V1
+contract is split across docs/39–44 and is governed by Proposed ADR-0028. It
+does not authorize implementation until the Project Architect accepts that
+contract. Stage 2 then implements the accepted parser, grammar, verifier, and
+runtime specification within ADR-0027's accepted semantic/trust boundary.
 
 This distinction is deliberate: TOS requires language properties, not a proprietary syntax for its own sake.
 
@@ -86,8 +88,8 @@ The Stage 1.5 selection ADR MUST establish the semantic/trust boundary for:
 - bounded bootstrap and SMP-capable full-profile direction; and
 - no safe-language data-race undefined behavior or hidden host-runtime ABI.
 
-Stage 2 MUST define the complete normative specification within that boundary,
-including:
+The Proposed Stage 2 V1 documents (docs/39–44) define the complete contract
+within that boundary, including:
 
 - lexical grammar and Unicode normalization;
 - complete syntactic grammar;
@@ -139,13 +141,13 @@ Required mechanisms include:
 
 The bootstrap contract must not require a stop-the-world collector. An implementation may use arenas, reference counting or another internal strategy only if observable semantics and pause/resource limits are specified.
 
-The selection ADR MUST also define the concurrency memory model: ownership,
-immutable sharing, mutable sharing, transfer of values and tasks between
-execution contexts, synchronization primitives, atomic types and memory
-orderings, visibility/happens-before rules, interaction between atomic and
-ordinary memory, shared memory regions and the unsafe concurrency boundary.
-It MUST NOT rely on a particular Rust, C++ or host-runtime memory model merely
-by implication.
+The V1 contract MUST define the concurrency memory model: ownership, immutable
+sharing, mutable sharing, transfer of values and tasks between execution
+contexts, synchronization primitives, atomic types and memory orderings,
+visibility/happens-before rules, interaction between atomic and ordinary
+memory, shared memory regions and the unsafe concurrency boundary. It MUST NOT
+rely on a particular Rust, C++ or host-runtime memory model merely by
+implication. Proposed docs/40–41 provide that definition pending ADR-0028.
 
 Safe TOS Core code MUST NOT have undefined behavior from an unsynchronized
 data race. The foundation MUST statically prevent unsafe unsynchronized mutable
@@ -251,18 +253,13 @@ Unrestricted textual macros are excluded from the bootstrap profile. Any future 
 
 Filesystems, networking, UI, Git operations and devices are services through versioned interfaces, not hidden language intrinsics.
 
-## Selection process
+## Foundation decision record
 
-ADR-0015 and `docs/research/LANGUAGE_FOUNDATION_EVALUATION_MATRIX.md` govern the comparison.
-
-Candidate classes include:
-
-- bespoke TOS Core;
-- TOS source over an existing formal execution core;
-- a restricted/extended existing language;
-- an unchanged existing language only if every blocking requirement is met honestly.
-
-Lua, Scheme, WebAssembly and other systems are research inputs, not pre-approved foundations. Wasm may be a backend while TOS text remains canonical.
+ADR-0015 required the comparison and ADR-0027 records its accepted result:
+bespoke TOS Core. The retained matrix/research remains evidence, not a language
+grammar. Lua, Scheme, WebAssembly and other systems are not pre-approved
+foundations; a later separately accepted ADR may admit one only as a derived
+backend while TOS text remains canonical.
 
 ## Licence of language assets
 

@@ -18,9 +18,11 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   commit-addressed records в `source/legal/`.
 - Этап: Stage 0 завершён. **Stage 1 формально закрыт**: capsule v1, Boot ABI
   v1, UEFI loader, nucleus, source identity, fail-closed evidence, P2
-  performance evidence и Project Architect approval заархивированы. Начат
-  **Stage 1.5 формально закрыт**: ADR-0027 accepted, evidence/TCB/recovery
-  analysis и Project Architect approval заархивированы. Stage 2 production
+  performance evidence и Project Architect approval заархивированы. **Stage
+  1.5 формально закрыт**: ADR-0027 accepted, evidence/TCB/recovery analysis и
+  Project Architect approval заархивированы. Начат **Stage 2 Part A**:
+  Proposed semantic/IR contract, guide/tutorial и conformance corpus готовятся
+  к единственному Project Architect checkpoint. Stage 2 production
   implementation не начат.
 - Вся работа ведётся в `source/` (решение owner; docs/17-монобренч на корень
   приостановлен до Stage 1 — scope-решение, не изменение контрактов).
@@ -154,6 +156,22 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 - GitHub Actions evidence: Documentation integrity, Provenance, Source CI и
   QEMU/P2 прошли на `b84dbb9`.  P2 artifact и exact source evidence описаны в
   immutable Stage 1 report; final approval находится в publication record.
+
+### 2026-08-09 — Stage 2 Part A: proposed semantic/IR contract
+
+- Подготовлен единый Proposed TOS Core V1 contract (docs/39–44) и Proposed
+  ADR-0028: нормализованный `.tos` source model/grammar, nominal type/effect,
+  affine ownership/regions, structured async/parallelism, TOS-owned atomics,
+  resources, modules/capabilities, typed IR и independent verifier. Это не
+  production implementation и ожидает единственный Project Architect
+  checkpoint.
+- Добавлены non-normative programmer guide/tutorial, 23 canonical GPL `.tos`
+  examples/conformance inputs и status matrix; каждый пример явно marked
+  proposed/not implemented.
+- `python3 tools/build-specification.py --check` → PASS;
+  `python3 tools/build-release-manifest.py --check` → PASS (211 files);
+  `sh scripts/check-spdx.sh` → PASS (279 classified, 13 exempt);
+  `./scripts/preflight.sh --full` → **30/30 PASS**.
 
 ## Граница закрытого Stage 1
 

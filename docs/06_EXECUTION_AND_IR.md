@@ -3,8 +3,10 @@
 # Execution model and intermediate representation
 
 > ADR-0027 accepts bespoke TOS Core as the language foundation. This document
-> specifies the accepted execution boundary; Stage 2 defines the complete IR
-> schema and parser/lowering implementation within it.
+> specifies the accepted execution boundary. Proposed docs/39–44, especially
+> `docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`, define the complete V1 semantic IR
+> schema and verifier contract pending ADR-0028; implementation remains
+> prohibited until that decision is accepted.
 
 ## Principle
 
@@ -24,7 +26,9 @@ No generated stage becomes the authoritative installed program.
 
 ## TOS IR
 
-TOS IR is a versioned, typed, capability-aware intermediate representation shared by all supported language frontends.
+TOS IR is a versioned, typed, capability-aware intermediate representation
+shared by all supported language frontends. The detailed V1 contract is the
+proposed `tos-ir/v1` schema in docs/43; this role document does not override it.
 
 It must represent:
 

@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module examples.atomic_publication version 1.0 profile full;
+
+resource {
+    fuel: 100000;
+    stack: 64KiB;
+    allocation: 8KiB;
+    tasks: 2;
+    workers: 2;
+    sync: 2;
+    shared: 4KiB;
+    cleanup: 32;
+    recursion: 8;
+    imports: 0;
+}
+
+pub fn publish(borrow state: AtomicU32) -> unit {
+    state.store(1u32, Release);
+}
+
+pub fn observe(borrow state: AtomicU32) -> bool {
+    state.load(Acquire) == 1u32
+}
