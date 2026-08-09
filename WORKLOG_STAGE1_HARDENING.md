@@ -1520,3 +1520,23 @@ boot architecture, DCO policy или опубликованной истории
 - F-18 remains BLOCKER until an actual retained P2 CI series proves the
   accepted full-to-unavoidable-crypto p95 ratio ≤1.30 with 3 warmups plus 21
   measurements, exact fixture/accounting identity and serial decomposition.
+
+### F-18 P2 conformance evidence
+
+- GitHub Actions QEMU boot run `31295124892` on
+  `af0acf236d158f46e3f1797af27f6e768b967150` completed successfully. It
+  passed the normal exit-33 gate, all existing negative vectors and the new
+  `Stage 1 ADR-0026 performance conformance` step on the mandatory
+  q35/qemu64/TCG profile.
+- The retained 90-day `qemu-boot-evidence` artifact is `9032755867`, with
+  published SHA-256
+  `f2b59c401221d862cab2ff1cb9b110d1973cb03b0b365c3f8a79caf3c52a8172`
+  and expiry 2026-11-07. The workflow uploads raw native/full+crypto and
+  TCG/full+crypto samples, reports, deterministic fixture/provenance sidecar,
+  ratio, serial logs and decomposition beneath one evidence directory.
+- Before upload, the passed orchestrator enforces 3 warmups plus 21 measured
+  samples in every required series, equal source/workload/evidence identities,
+  the exact 101,203,198-byte / 2,007-hash accounting and TCG p95 ratio ≤1.30.
+  This is P2 evidence; the earlier local P1 run remains corroborating research
+  rather than the closure basis. F-18 is PASS; F-21 is the sole Stage 1
+  closure blocker.
