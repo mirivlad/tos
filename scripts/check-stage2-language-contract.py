@@ -65,7 +65,7 @@ def main() -> int:
     require("Unicode 17.0.0 / UAX #15 Revision 57" in modules, "module/cache contract lacks the fixed Unicode baseline", failures)
     require("UCD-17.0.0/UAX15-r57/NFC" in ir, "IR header lacks the fixed Unicode baseline", failures)
     require("NormalizationTest.txt-derived" in conformance, "conformance contract lacks Unicode-data coverage", failures)
-    for lexical_case in ["L005", "L006", "L007", "L008", "L009"]:
+    for lexical_case in ["L005", "L006", "L007", "L008", "L009", "L010", "L011"]:
         require(lexical_case in expectations, f"missing Unicode normalization expectation: {lexical_case}", failures)
 
     inventory = re.search(

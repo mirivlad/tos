@@ -72,6 +72,11 @@ The reference frontend's normalization data MUST be reproducible from the
 Unicode 17.0.0 UCD baseline; its exact input files, hashes, and generator
 identity are provenance inputs, not ambient host state. See ADR-0029.
 
+Before UTF-8 or normalization work, a raw input larger than the 256 KiB
+source-unit ceiling in docs/44 is `E1000_SOURCE_LIMIT` at the first excluded
+byte. A NUL scalar in otherwise valid source is `E1005_NUL_FORBIDDEN` at that
+byte. These checks do not change the existing `E1001`–`E1004` precedence.
+
 The canonical repository path is a validated relative slash-separated path.
 It has no `.` or `..` segment, no empty segment, no NUL, and no path separator
 other than `/`. A module's declared name maps to this path as specified in

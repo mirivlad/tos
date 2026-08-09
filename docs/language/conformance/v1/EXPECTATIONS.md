@@ -69,6 +69,8 @@ test output, then asserts the listed primary error and byte offset:
 | L007 | use canonically decomposed text in a string literal | `E1004_NOT_NFC` at the decomposed sequence |
 | L008 | use a canonically out-of-order combining-mark sequence in a comment | `E1004_NOT_NFC` at that sequence |
 | L009 | run UCD 17.0.0 `NormalizationTest.txt`-derived NFC positive/negative cases | accepts NFC and rejects non-NFC with `E1004_NOT_NFC`; generated test record retains input hashes |
+| L010 | source input of 256 KiB + 1 byte | `E1000_SOURCE_LIMIT` at byte 262144 before UTF-8/NFC work |
+| L011 | insert `00` NUL in otherwise valid UTF-8 source | `E1005_NUL_FORBIDDEN` at that byte |
 
 ## Required generated/IR cases
 
