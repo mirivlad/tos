@@ -8,8 +8,8 @@ use std::vec::Vec;
 mod parser;
 
 pub use parser::{
-    Import, ImportKind, ModuleHeader, ModulePrefix, ParseError, ParseErrorCode, Parser, Profile,
-    Span,
+    Import, ImportKind, ModuleHeader, ModuleOutline, ModulePrefix, ParseError, ParseErrorCode,
+    Parser, Profile, ResourceDeclaration, ResourceLimit, Span,
 };
 
 mod unicode {
@@ -792,6 +792,34 @@ mod tests {
         assert_eq!(prefix.imports()[1].kind(), ImportKind::Capability);
         assert_eq!(prefix.imports()[1].binding().text(&source), "clock");
     }
+
+    #[test]
+    fn parser_builds_a_bracketed_resource_declaration() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap;\n\
+              resource [fuel: 1000, stack: 64KiB, imports: 0,]",
+        )
+        .expect("transport-valid source");
+        let outline = Parser::parse_outline(&source).expect("resource declaration parses");
+        assert_eq!(outline.resource().limits().len(), 3);
+        assert_eq!(outline.resource().limits()[1].name().text(&source), "stack");
+        assert_eq!(
+            outline.resource().limits()[1].value().text(&source),
+            "64KiB"
+        );
+    }
+
+    #[test]
+    fn parser_rejects_a_resource_list_without_a_comma() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [fuel: 1 stack: 1B]",
+        )
+        .expect("transport-valid source");
+        let error = Parser::parse_outline(&source).expect_err("list separator is mandatory");
+        assert_eq!(error.code(), ParseErrorCode::ListSeparatorRequired);
+        assert_eq!(error.span().text(&source), "stack");
+    }
+
     #[test]
     fn source_reader_accepts_ascii_without_changing_bytes() {
         let b = b"module system.test version 1.0 profile bootstrap;\n";

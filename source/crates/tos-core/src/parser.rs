@@ -118,6 +118,59 @@ impl ModulePrefix {
     }
 }
 
+#[derive(Debug, Eq, PartialEq)]
+pub struct ResourceLimit {
+    name: Span,
+    value: Span,
+    span: Span,
+}
+
+impl ResourceLimit {
+    pub fn name(&self) -> Span {
+        self.name
+    }
+
+    pub fn value(&self) -> Span {
+        self.value
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ResourceDeclaration {
+    limits: Vec<ResourceLimit>,
+    span: Span,
+}
+
+impl ResourceDeclaration {
+    pub fn limits(&self) -> &[ResourceLimit] {
+        &self.limits
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct ModuleOutline {
+    prefix: ModulePrefix,
+    resource: ResourceDeclaration,
+}
+
+impl ModuleOutline {
+    pub fn prefix(&self) -> &ModulePrefix {
+        &self.prefix
+    }
+
+    pub fn resource(&self) -> &ResourceDeclaration {
+        &self.resource
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ParseErrorCode {
     Lexical,
@@ -126,6 +179,8 @@ pub enum ParseErrorCode {
     ExpectedVersionComponent,
     ExpectedProfile,
     UnexpectedToken,
+    ExpectedLiteral,
+    ListSeparatorRequired,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -173,6 +228,26 @@ impl Parser {
         }
         parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
         Ok(ModulePrefix { header, imports })
+    }
+
+    pub fn parse_outline(source: &SourceUnit) -> Result<ModuleOutline, ParseError> {
+        let tokens = Lexer::lex(source).map_err(lexical_error)?;
+        let mut parser = TokenCursor {
+            source,
+            tokens,
+            index: 0,
+        };
+        let header = parser.parse_header()?;
+        let mut imports = Vec::new();
+        while parser.current_text() == "import" {
+            imports.push(parser.parse_import()?);
+        }
+        let resource = parser.parse_resource_declaration()?;
+        parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
+        Ok(ModuleOutline {
+            prefix: ModulePrefix { header, imports },
+            resource,
+        })
     }
 }
 
@@ -246,6 +321,45 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
+    fn parse_resource_declaration(&mut self) -> Result<ResourceDeclaration, ParseError> {
+        let start = self.expect_word("resource", ParseErrorCode::UnexpectedToken)?;
+        self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
+        let mut limits = Vec::new();
+        if self.current().kind() != TokenKind::CloseBracket {
+            loop {
+                let name = self.expect_identifier()?;
+                self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
+                let value = self.expect_literal()?;
+                limits.push(ResourceLimit {
+                    name,
+                    value,
+                    span: Span {
+                        start: name.start(),
+                        end: value.end(),
+                    },
+                });
+                if self.consume_kind(TokenKind::Comma).is_some() {
+                    if self.current().kind() == TokenKind::CloseBracket {
+                        break;
+                    }
+                    continue;
+                }
+                if self.current().kind() != TokenKind::CloseBracket {
+                    return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
+                }
+                break;
+            }
+        }
+        let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
+        Ok(ResourceDeclaration {
+            limits,
+            span: Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        })
+    }
+
     fn parse_dotted_name(&mut self) -> Result<Vec<Span>, ParseError> {
         let mut name = vec![self.expect_identifier()?];
         while self.consume_kind(TokenKind::Dot).is_some() {
@@ -259,6 +373,22 @@ impl<'source> TokenCursor<'source> {
             Ok(Span::from(self.advance()))
         } else {
             Err(self.error_here(ParseErrorCode::ExpectedIdentifier))
+        }
+    }
+
+    fn expect_literal(&mut self) -> Result<Span, ParseError> {
+        if matches!(
+            self.current().kind(),
+            TokenKind::Boolean
+                | TokenKind::Integer
+                | TokenKind::Size
+                | TokenKind::Duration
+                | TokenKind::String
+                | TokenKind::Bytes
+        ) {
+            Ok(Span::from(self.advance()))
+        } else {
+            Err(self.error_here(ParseErrorCode::ExpectedLiteral))
         }
     }
 
