@@ -960,6 +960,21 @@ mod tests {
     }
 
     #[test]
+    fn parser_builds_a_typed_mutable_let_binding() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { let mut count: i32 = 41i32; return count; }",
+        )
+        .expect("transport-valid source");
+        let module = Parser::parse_schema(&source).expect("let binding parses");
+        let binding = &module.functions()[0].body().statements()[0];
+        assert_eq!(binding.form(), StatementForm::Let);
+        assert!(binding.is_mutable());
+        assert_eq!(binding.binding().unwrap().text(&source), "count");
+        assert_eq!(binding.declared_type().unwrap().text(&source), "i32");
+        assert_eq!(binding.expression().unwrap().span().text(&source), "41i32");
+    }
+
+    #[test]
     fn parser_rejects_a_resource_list_without_a_comma() {
         let source = SourceReader::read(
             b"module system.boot version 1.0 profile bootstrap; resource [fuel: 1 stack: 1B]",

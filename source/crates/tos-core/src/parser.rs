@@ -394,6 +394,7 @@ impl Block {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatementForm {
+    Let,
     Return,
 }
 
@@ -455,12 +456,24 @@ impl Expression {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Statement {
     form: StatementForm,
+    mutable: bool,
+    binding: Option<Span>,
+    declared_type: Option<TypeSyntax>,
     expression: Option<Expression>,
     span: Span,
 }
 impl Statement {
     pub fn form(&self) -> StatementForm {
         self.form
+    }
+    pub fn is_mutable(&self) -> bool {
+        self.mutable
+    }
+    pub fn binding(&self) -> Option<Span> {
+        self.binding
+    }
+    pub fn declared_type(&self) -> Option<&TypeSyntax> {
+        self.declared_type.as_ref()
     }
     pub fn expression(&self) -> Option<&Expression> {
         self.expression.as_ref()
@@ -937,6 +950,9 @@ impl<'source> TokenCursor<'source> {
     }
 
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
+        if self.current_text() == "let" {
+            return self.parse_let_statement();
+        }
         let start = Span::from(self.current());
         self.expect_word("return", ParseErrorCode::UnexpectedToken)?;
         let expression = if self.current().kind() == TokenKind::Semicolon {
@@ -947,6 +963,39 @@ impl<'source> TokenCursor<'source> {
         let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
         Ok(Statement {
             form: StatementForm::Return,
+            mutable: false,
+            binding: None,
+            declared_type: None,
+            expression,
+            span: Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        })
+    }
+
+    fn parse_let_statement(&mut self) -> Result<Statement, ParseError> {
+        let start = self.expect_word("let", ParseErrorCode::UnexpectedToken)?;
+        let mutable = if self.current_text() == "mut" {
+            self.advance();
+            true
+        } else {
+            false
+        };
+        let binding = self.expect_identifier()?;
+        let declared_type = if self.consume_kind(TokenKind::Colon).is_some() {
+            Some(self.parse_type()?)
+        } else {
+            None
+        };
+        self.expect_kind(TokenKind::Equal, ParseErrorCode::UnexpectedToken)?;
+        let expression = Some(self.parse_expression()?);
+        let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
+        Ok(Statement {
+            form: StatementForm::Let,
+            mutable,
+            binding: Some(binding),
+            declared_type,
             expression,
             span: Span {
                 start: start.start(),
