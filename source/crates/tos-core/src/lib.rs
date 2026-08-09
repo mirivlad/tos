@@ -975,6 +975,22 @@ mod tests {
     }
 
     #[test]
+    fn parser_builds_an_assignment_statement() {
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { let mut count: i32 = 41i32; count = count + 1i32; return count; }",
+        )
+        .expect("transport-valid source");
+        let module = Parser::parse_schema(&source).expect("assignment parses");
+        let assignment = &module.functions()[0].body().statements()[1];
+        assert_eq!(assignment.form(), StatementForm::Assignment);
+        assert_eq!(assignment.target().unwrap().span().text(&source), "count");
+        assert_eq!(
+            assignment.expression().unwrap().operator_text(&source),
+            Some("+")
+        );
+    }
+
+    #[test]
     fn parser_rejects_a_resource_list_without_a_comma() {
         let source = SourceReader::read(
             b"module system.boot version 1.0 profile bootstrap; resource [fuel: 1 stack: 1B]",

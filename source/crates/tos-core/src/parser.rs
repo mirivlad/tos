@@ -396,6 +396,8 @@ impl Block {
 pub enum StatementForm {
     Let,
     Return,
+    Assignment,
+    Expression,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -459,6 +461,7 @@ pub struct Statement {
     mutable: bool,
     binding: Option<Span>,
     declared_type: Option<TypeSyntax>,
+    target: Option<Expression>,
     expression: Option<Expression>,
     span: Span,
 }
@@ -474,6 +477,9 @@ impl Statement {
     }
     pub fn declared_type(&self) -> Option<&TypeSyntax> {
         self.declared_type.as_ref()
+    }
+    pub fn target(&self) -> Option<&Expression> {
+        self.target.as_ref()
     }
     pub fn expression(&self) -> Option<&Expression> {
         self.expression.as_ref()
@@ -953,6 +959,9 @@ impl<'source> TokenCursor<'source> {
         if self.current_text() == "let" {
             return self.parse_let_statement();
         }
+        if self.current_text() != "return" {
+            return self.parse_assignment_or_expression_statement();
+        }
         let start = Span::from(self.current());
         self.expect_word("return", ParseErrorCode::UnexpectedToken)?;
         let expression = if self.current().kind() == TokenKind::Semicolon {
@@ -966,6 +975,7 @@ impl<'source> TokenCursor<'source> {
             mutable: false,
             binding: None,
             declared_type: None,
+            target: None,
             expression,
             span: Span {
                 start: start.start(),
@@ -996,7 +1006,42 @@ impl<'source> TokenCursor<'source> {
             mutable,
             binding: Some(binding),
             declared_type,
+            target: None,
             expression,
+            span: Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        })
+    }
+
+    fn parse_assignment_or_expression_statement(&mut self) -> Result<Statement, ParseError> {
+        let start = Span::from(self.current());
+        let target_or_expression = self.parse_expression()?;
+        if self.consume_kind(TokenKind::Equal).is_some() {
+            let expression = self.parse_expression()?;
+            let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
+            return Ok(Statement {
+                form: StatementForm::Assignment,
+                mutable: false,
+                binding: None,
+                declared_type: None,
+                target: Some(target_or_expression),
+                expression: Some(expression),
+                span: Span {
+                    start: start.start(),
+                    end: end.end(),
+                },
+            });
+        }
+        let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
+        Ok(Statement {
+            form: StatementForm::Expression,
+            mutable: false,
+            binding: None,
+            declared_type: None,
+            target: None,
+            expression: Some(target_or_expression),
             span: Span {
                 start: start.start(),
                 end: end.end(),
