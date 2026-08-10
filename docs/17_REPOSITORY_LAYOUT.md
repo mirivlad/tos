@@ -114,7 +114,14 @@ Developer/release tooling and external oracles. Runtime restoration cannot depen
 ### `system/`
 
 Canonical textual system tree, and the canonical input for the runtime
-`/system` tree of an installed machine.
+`/system` tree of an installed machine. The mapping is direct and unrenamed:
+`system/boot/init.tos` here is `/system/boot/init.tos` there. Its internal
+structure is defined by `docs/45_SYSTEM_SOURCE_HIERARCHY.md`; this document
+remains authoritative for the rest of the repository.
+
+The tree above is written relative to the implementation root. The implemented
+repository nests that root under `source/`, so this subtree is `source/system/`
+on disk and `docs/45_SYSTEM_SOURCE_HIERARCHY.md` names it that way.
 
 No generated executable caches or binary packages are committed here.
 

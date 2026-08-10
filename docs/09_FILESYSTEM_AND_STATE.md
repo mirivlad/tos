@@ -112,6 +112,22 @@ separate `/firmware` root.
 This namespace is defined by ADR-0030. No implementation is required
 before the stage that first needs physical-hardware firmware.
 
+## Namespace classes at a glance
+
+| Namespace | Class | Deleting it means |
+|---|---|---|
+| `/system` | canonical source | not possible while active |
+| `/work` | source overlay | discards proposals |
+| `/config` | configuration | changes machine behavior |
+| `/state`, `/home`, `/secrets` | mutable state | data loss |
+| `/cache` | derived cache | regeneration only |
+| `/run` | ephemeral | nothing |
+| `/dev` | capability namespace | not applicable |
+| `/vendor` | external material | reacquisition from vendor |
+
+The internal structure of `/system` and the full classification rules are in
+`docs/45_SYSTEM_SOURCE_HIERARCHY.md`.
+
 ## State schema versions
 
 Every service with durable state declares:

@@ -80,5 +80,7 @@
 
 **`/vendor`** — root namespace holding vendor-controlled opaque material, outside the canonical `/system` tree and outside the system commit.
 
+**Namespace class** — the single category a runtime path belongs to — canonical source, source overlay, configuration, mutable state, derived cache, ephemeral, capability namespace or external material — determining what deletion and rollback mean for it.
+
 **Vendor declaration** — canonical source text in `/system` naming a required `/vendor` object by vendor, identity, version, hash, placement and behavior on absence or mismatch; a reference, never an embedded payload.
 

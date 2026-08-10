@@ -109,6 +109,9 @@ presented as TOS source. `/system` may declare that it requires a vendor object
 by identity, version and hash; the opaque bytes themselves stay in `/vendor`.
 See ADR-0030.
 
+The internal structure of the runtime `/system` tree is defined by
+`docs/45_SYSTEM_SOURCE_HIERARCHY.md`.
+
 ## Process model
 
 Every service and driver is a process with:
