@@ -176,6 +176,7 @@ def main() -> int:
             ("E1205_DUPLICATE_RECORD_FIELD", "type"),
             ("E1206_MISSING_RECORD_FIELD", "type"),
             ("E1207_UNKNOWN_RECORD_FIELD", "type"),
+            ("E1210_INTEGER_TYPE_MISMATCH", "type"),
             ("E1212_INVALID_AS_CONVERSION", "type"),
             ("E1220_NONEXHAUSTIVE_MATCH", "type"),
             ("E1221_MISSING_RETURN", "type"),
@@ -259,6 +260,7 @@ def main() -> int:
         failures,
     )
     for vector in [
+        "reject/integer-type-mismatch.tos",
         "reject/return-type-mismatch.tos",
         "reject/type-unknown-local.tos",
         "reject/type-unknown-qualified.tos",
