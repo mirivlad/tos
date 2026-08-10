@@ -335,6 +335,34 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   is unregistered, a registry entry lacks stage or condition, docs/39 names an
   unregistered frontend code, or a "parse error" cell reappears.
 
+### 2026-08-10 — Stage 2 Part B: parser diagnostic model and recovery
+
+- Public parser API moved from single-error `Result<_, ParseError>` to
+  `ParseOutcome<T>`: structured diagnostics plus the partial tree. No second
+  parsing path exists — `ParseError` is an internal signal and `ParseErrorCode`
+  is no longer exported. `into_accepted()` yields a tree only when no error
+  diagnostic was produced.
+- New `diagnostic.rs` implements docs/41 §7: stable symbolic code, severity,
+  stage, byte span, derived line/UTF-8 column, structured key/value fields and
+  ordered causal diagnostics. Module name, canonical repository path,
+  source-set identity and normalized source content ID are deliberately absent:
+  their owner is the compilation driver of docs/42, which does not exist yet,
+  and the record carries no placeholder values.
+- All three docs/39 §4 synchronization regions implemented — declaration
+  (next top-level `;`/`]`, or the `}` closing a declaration body per ADR-0032),
+  statement (next `;`, or the block's closing brace left unconsumed) and list
+  (next `,` or the list closer, including `>` for type-argument lists). One
+  diagnostic per region; nothing missing is guessed.
+- A lexical failure is reported alone, with no parse diagnostics, as the docs/39
+  ordering requires. Lexer split for E1013 per ADR-0032.
+- Tests 26 → 37: recovery at all three regions, a valid declaration surviving a
+  damaged function, lexical isolation, E1012/E1013 precedence, R029/R030 span
+  and column, line/UTF-8 columns, withheld accepted output, and R020–R022 read
+  directly from the conformance corpus.
+- Fixed a type-parsing defect from cf4224f: `Option<Option<i32>>` did not parse
+  because the lexer emits `>>` as one shift token while `parse_type` expected
+  the word `>`. Added `expect_close_angle`, which splits the token.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5
