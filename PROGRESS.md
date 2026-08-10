@@ -757,6 +757,17 @@ decision, а не выбор реализации.
   `E1210_INTEGER_TYPE_MISMATCH` внесён в реестр docs/44 §7 со stage `type`.
 - Тестов 128 → 132. `./scripts/preflight.sh --full` → **31/31 PASS**.
 
+### 2026-08-10 — Stage 2 Part B: index type
+
+- Реализовано правило docs/40 §3: индекс массива, slice и region имеет точный
+  тип `size`; целочисленный литерал контекстно типизируется как `size`. Любой
+  другой тип индекса — `E1211_INDEX_TYPE_MISMATCH` с полями expected/actual.
+- Индексация даёт тип элемента: `array<T, N>` и `slice<T>` → `T`, что
+  подхватывается остальной типизацией.
+- Новый вектор R040 (`index-type-mismatch`) связан с реализацией;
+  `E1211_INDEX_TYPE_MISMATCH` внесён в реестр docs/44 §7 со stage `type`.
+- Тестов 132 → 134. `./scripts/preflight.sh --full` → **31/31 PASS**.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5

@@ -62,6 +62,7 @@
 | R037 | `reject/type-unknown-before-arity.tos` | Bootstrap | `E1203_UNKNOWN_TYPE_NAME` at `Missing` | an unresolved name precedes any arity finding (ADR-0034) |
 | R038 | `reject/return-type-mismatch.tos` | Bootstrap | `E1222_RETURN_TYPE_MISMATCH` with `expected=i32`, `actual=bool` | a returned value must have the declared result type |
 | R039 | `reject/integer-type-mismatch.tos` | Bootstrap | `E1210_INTEGER_TYPE_MISMATCH` with `expected=i32`, `actual=i64`, `position=argument` | no implicit numeric conversion when passing a value |
+| R040 | `reject/index-type-mismatch.tos` | Bootstrap | `E1211_INDEX_TYPE_MISMATCH` with `expected=size`, `actual=i32` | an index has exact type `size` |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 

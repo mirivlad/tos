@@ -2806,6 +2806,41 @@ mod tests {
     }
 
     #[test]
+    fn an_index_has_exact_type_size() {
+        let (_, diagnostics) = check(
+            "fn main(values: array<i32, 2>, position: i32, offset: size) -> i32 { \
+             let a: i32 = values[0]; let b: i32 = values[offset]; \
+             let c: i32 = values[position]; return a; }",
+        );
+        let mismatches: Vec<(&str, &str)> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1211_INDEX_TYPE_MISMATCH")
+            .map(|d| {
+                (
+                    d.field("expected").unwrap_or_default(),
+                    d.field("actual").unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            mismatches,
+            [("size", "i32")],
+            "a literal and a size index are both accepted"
+        );
+    }
+
+    #[test]
+    fn indexing_yields_the_element_type() {
+        let (_, diagnostics) =
+            check("fn main(values: array<bool, 2>) -> i32 { return values[0]; }");
+        let mismatch = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1222_RETURN_TYPE_MISMATCH")
+            .expect("the element type flows out of the index");
+        assert_eq!(mismatch.field("actual"), Some("bool"));
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.
