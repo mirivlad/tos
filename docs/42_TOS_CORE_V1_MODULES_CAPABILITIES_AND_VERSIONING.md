@@ -62,9 +62,33 @@ keys remain in docs/40–41.
 
 `pub` exports an item. A non-`pub` item is module-private. A public function's
 parameter/return types and effect capabilities must be exported/reachable; an
-otherwise private ABI type is `E1607_PRIVATE_PUBLIC_TYPE`. A module has no
-binary ABI promise merely because an item is `pub`; source, IR schema, and
-runtime compatibility are governed below.
+otherwise private ABI type is `E1607_PRIVATE_PUBLIC_TYPE`.
+
+The rule covers the **transitive public type surface**, not just the outermost
+name. A type is reachable when it is primitive or predeclared, imported (and so
+reachable at the module that declares it), or a `pub` local nominal type whose
+own publicly necessary surface is itself reachable. The publicly necessary
+surface of an exported record is the types of its fields, and of an exported
+enum the payload types of its variants, because a consumer cannot construct or
+match one without naming them. So
+
+```tos
+pub record Wrapper [ value: PrivateType ]
+pub fn get() -> Wrapper
+```
+
+is `E1607_PRIVATE_PUBLIC_TYPE` even though `Wrapper` is itself `pub`. A type
+used only inside a function body, or only by a module-private item, is an
+implementation detail and is not part of that surface.
+
+`pub` states a public **source-level** interface: the importing module must be
+able to name and resolve those types. A module has no binary ABI promise merely
+because an item is `pub`; source, IR schema, and runtime compatibility are
+governed below. The two are separate — the absence of a binary ABI promise does
+not weaken the visibility rule. Permitting a private nominal type in a public
+signature would require a model of opaque or private type leakage across a
+module boundary, which TOS Core V1 does not define and does not introduce
+implicitly.
 
 ## 2. Capability declarations, grants, and transfer
 

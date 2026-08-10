@@ -14,7 +14,7 @@ resource [
     imports: 0,
 ]
 
-enum ParseError [
+pub enum ParseError [
     Empty,
 ]
 

@@ -6,7 +6,7 @@ resource [
     sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0,
 ]
 
-enum Signal [
+pub enum Signal [
     Low,
     High,
 ]

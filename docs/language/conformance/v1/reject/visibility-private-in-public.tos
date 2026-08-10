@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.visibility_private_in_public version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+record Hidden [
+    value: i32,
+]
+
+// An importing module cannot name `Hidden`, so it cannot use this signature.
+pub fn leak(hidden: Hidden) -> i32 {
+    return hidden.value;
+}

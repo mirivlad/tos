@@ -16,11 +16,11 @@ resource [
     imports: 1,
 ]
 
-record Counter [
+pub record Counter [
     value: u32,
 ]
 
-enum CounterError [
+pub enum CounterError [
     Overflow,
 ]
 

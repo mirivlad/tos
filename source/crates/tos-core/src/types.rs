@@ -17,12 +17,23 @@
 //! `array<T, N>` is not one of the parameterized constructors: its second
 //! argument is a compile-time constant rather than a type, and the parser keeps
 //! it in its own form.
+//!
+//! This module also enforces the visibility rule of docs/42 section 1. `pub`
+//! states a public source-level interface, so an importing module must be able
+//! to name and resolve every type in it. A module-private nominal type in that
+//! surface is `E1607_PRIVATE_PUBLIC_TYPE`.
+//!
+//! The surface is transitive: an exported record contributes its field types
+//! and an exported enum its variant payload types, because a consumer cannot
+//! construct or match one without naming them. A type used only inside a
+//! function body, or only by a module-private item, is an implementation detail
+//! and is not part of it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::string::String;
 use std::vec::Vec;
 
-use crate::parser::{Schema, TypeSyntax};
+use crate::parser::{Schema, TypeSyntax, Visibility};
 use crate::{Diagnostic, Severity, SourceUnit, Stage};
 
 /// Primitive type names (docs/40 section 1).
@@ -58,6 +69,141 @@ const PARAMETERIZED_TYPES: [(&str, usize); 11] = [
     ("slice", 1),
     ("Result", 2),
 ];
+
+/// What a local nominal type contributes to a public surface.
+struct Nominal<'source> {
+    exported: bool,
+    surface: Vec<&'source TypeSyntax>,
+}
+
+/// Checks that no `pub` signature exposes a module-private nominal type.
+pub(crate) fn check_public_signatures(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> {
+    let mut nominals: BTreeMap<&str, Nominal> = BTreeMap::new();
+    for declaration in schema.records() {
+        nominals.insert(
+            declaration.name().text(source),
+            Nominal {
+                exported: declaration.visibility() == Visibility::Public,
+                surface: declaration
+                    .fields()
+                    .iter()
+                    .map(|field| field.ty())
+                    .collect(),
+            },
+        );
+    }
+    for declaration in schema.enums() {
+        let mut surface: Vec<&TypeSyntax> = Vec::new();
+        for variant in declaration.variants() {
+            surface.extend(variant.tuple_types());
+            surface.extend(variant.fields().iter().map(|field| field.ty()));
+        }
+        nominals.insert(
+            declaration.name().text(source),
+            Nominal {
+                exported: declaration.visibility() == Visibility::Public,
+                surface,
+            },
+        );
+    }
+
+    let mut walker = SurfaceWalker {
+        source,
+        nominals,
+        diagnostics: Vec::new(),
+    };
+    for signature in schema.extern_functions() {
+        walker.check_signature(signature);
+    }
+    for function in schema.functions() {
+        walker.check_signature(function.signature());
+    }
+    walker.diagnostics
+}
+
+struct SurfaceWalker<'source> {
+    source: &'source SourceUnit,
+    nominals: BTreeMap<&'source str, Nominal<'source>>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl<'source> SurfaceWalker<'source> {
+    fn check_signature(&mut self, signature: &'source crate::parser::FunctionSignature) {
+        if signature.visibility() != Visibility::Public {
+            return;
+        }
+        let exported = signature.name().text(self.source);
+        let mut visited: BTreeSet<&str> = BTreeSet::new();
+        for parameter in signature.parameters() {
+            self.walk(parameter.ty(), exported, &mut visited);
+        }
+        let result = signature.result();
+        self.walk(result, exported, &mut visited);
+    }
+
+    fn walk(
+        &mut self,
+        ty: &'source TypeSyntax,
+        exported: &'source str,
+        visited: &mut BTreeSet<&'source str>,
+    ) {
+        match ty {
+            TypeSyntax::Name { path, span } => {
+                // An imported type is reachable at the module that declares it.
+                if path.len() > 1 {
+                    return;
+                }
+                let Some(name) = path.last().map(|segment| segment.text(self.source)) else {
+                    return;
+                };
+                let Some(nominal) = self.nominals.get(name) else {
+                    return;
+                };
+                if !nominal.exported {
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            "E1607_PRIVATE_PUBLIC_TYPE",
+                            Severity::Error,
+                            Stage::Type,
+                            *span,
+                            self.source,
+                        )
+                        .with_field("type", name)
+                        .with_field("exported_by", exported),
+                    );
+                    return;
+                }
+                if !visited.insert(name) {
+                    return;
+                }
+                // An exported nominal type carries its own surface with it.
+                let surface = nominal.surface.clone();
+                for member in surface {
+                    self.walk(member, exported, visited);
+                }
+            }
+            TypeSyntax::Constructed { arguments, .. } => {
+                for argument in arguments {
+                    self.walk(argument, exported, visited);
+                }
+            }
+            TypeSyntax::Array { element, .. } => self.walk(element, exported, visited),
+            TypeSyntax::Tuple { elements, .. } => {
+                for element in elements {
+                    self.walk(element, exported, visited);
+                }
+            }
+            TypeSyntax::Function {
+                parameters, result, ..
+            } => {
+                for parameter in parameters {
+                    self.walk(parameter, exported, visited);
+                }
+                self.walk(result, exported, visited);
+            }
+        }
+    }
+}
 
 pub(crate) fn check_types(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> {
     let mut resolver = TypeResolver {

@@ -24,7 +24,7 @@ pub fn sum_range(begin: i32, end: i32) -> i32 {
     return total;
 }
 
-enum ParallelError [
+pub enum ParallelError [
     ChildCancelled,
 ]
 

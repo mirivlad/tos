@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `19359b4a456556f43924cfaae55b06ba965f04e70e2ffe73b073084ecd7b98cc`  
+Source-manifest SHA-256: `45d90a9d37103d64968b386e74ab9de68ccb24beee6ea3070bda2dfef6f4163e`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4115,9 +4115,33 @@ keys remain in docs/40–41.
 
 `pub` exports an item. A non-`pub` item is module-private. A public function's
 parameter/return types and effect capabilities must be exported/reachable; an
-otherwise private ABI type is `E1607_PRIVATE_PUBLIC_TYPE`. A module has no
-binary ABI promise merely because an item is `pub`; source, IR schema, and
-runtime compatibility are governed below.
+otherwise private ABI type is `E1607_PRIVATE_PUBLIC_TYPE`.
+
+The rule covers the **transitive public type surface**, not just the outermost
+name. A type is reachable when it is primitive or predeclared, imported (and so
+reachable at the module that declares it), or a `pub` local nominal type whose
+own publicly necessary surface is itself reachable. The publicly necessary
+surface of an exported record is the types of its fields, and of an exported
+enum the payload types of its variants, because a consumer cannot construct or
+match one without naming them. So
+
+```tos
+pub record Wrapper [ value: PrivateType ]
+pub fn get() -> Wrapper
+```
+
+is `E1607_PRIVATE_PUBLIC_TYPE` even though `Wrapper` is itself `pub`. A type
+used only inside a function body, or only by a module-private item, is an
+implementation detail and is not part of that surface.
+
+`pub` states a public **source-level** interface: the importing module must be
+able to name and resolve those types. A module has no binary ABI promise merely
+because an item is `pub`; source, IR schema, and runtime compatibility are
+governed below. The two are separate — the absence of a binary ABI promise does
+not weaken the visibility rule. Permitting a private nominal type in a public
+signature would require a model of opaque or private type leakage across a
+module boundary, which TOS Core V1 does not define and does not introduce
+implicitly.
 
 ## 2. Capability declarations, grants, and transfer
 
@@ -4542,6 +4566,7 @@ convenient error.
 | resources | missing/invalid required limit, metered loop, recursion/import/task/worker/sync/shared/cleanup exhaustion |
 | concurrency | one/2/N-worker equivalent deterministic result, actual Full-engine overlap, safe mutable-share rejection, `TaskResult` join/cancel lifecycle, bounded task/worker behavior |
 | synchronization/atomics | mutex/channel/event/barrier ordering, valid/invalid memory order, release/acquire publication, no non-atomic race escape |
+| visibility | an exported type in a public signature, an imported exported type across a real module boundary, private types confined to a body or a private item, a private type named directly by a `pub fn`, and a private type reached transitively through an exported wrapper |
 | modules/provenance | deterministic import closure, cycle/ambiguity rejection, cache invalidation, source-map preservation through lowering/optimization |
 | IR verifier | malformed header/table/order/index/type/CFG/import/capability/region/resource/task/atomic/source-map negatives |
 | profiles/unsafe/FFI | Bootstrap reject Full-only constructs, serialized Bootstrap equivalence, unsafe rationale and unavailable FFI rejection |
@@ -4756,6 +4781,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1603_MODULE_PATH_MISMATCH` | a source unit's canonical repository path is not the path its declared module name maps to |
 | `E1604_IMPORT_NOT_FOUND` | an import names no module in the declared source set |
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
+| `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
 
 ### Unsafe and FFI boundary (stage `effect`)
 

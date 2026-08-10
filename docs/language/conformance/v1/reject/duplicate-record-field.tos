@@ -3,7 +3,7 @@ module conformance.duplicate_record_field version 1.0 profile bootstrap;
 
 resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
 
-record Flag [ready: bool]
+pub record Flag [ready: bool]
 
 pub fn main() -> Flag {
     return Flag(ready: true, ready: false,);

@@ -2841,6 +2841,79 @@ mod tests {
     }
 
     #[test]
+    fn a_public_signature_may_not_name_a_private_type() {
+        let (source, diagnostics) = check(
+            "record Hidden [value: i32] \
+             pub fn leak(hidden: Hidden) -> i32 { return hidden.value; }",
+        );
+        let private = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1607_PRIVATE_PUBLIC_TYPE")
+            .expect("an importing module could not name Hidden");
+        assert_eq!(private.stage(), Stage::Type);
+        assert_eq!(private.field("type"), Some("Hidden"));
+        assert_eq!(private.field("exported_by"), Some("leak"));
+        assert_eq!(private.span().text(&source), "Hidden");
+    }
+
+    #[test]
+    fn an_exported_wrapper_does_not_hide_a_private_type() {
+        // docs/42 section 1 covers the transitive surface: a consumer cannot
+        // construct Wrapper without naming Hidden.
+        let (_, diagnostics) = check(
+            "record Hidden [value: i32] pub record Wrapper [inner: Hidden] \
+             pub fn get(seed: i32) -> Wrapper { return Wrapper(inner: Hidden(value: seed)); }",
+        );
+        let private = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1607_PRIVATE_PUBLIC_TYPE")
+            .expect("the private type is still in the public surface");
+        assert_eq!(private.field("type"), Some("Hidden"));
+        assert_eq!(private.field("exported_by"), Some("get"));
+    }
+
+    #[test]
+    fn private_types_stay_legal_outside_a_public_surface() {
+        let (_, diagnostics) = check(
+            "record Scratch [tally: i32] pub record Reading [sample: i32] \
+             fn helper(scratch: Scratch) -> Scratch { return scratch; } \
+             pub fn observe(reading: Reading) -> Reading { \
+             let working: Scratch = Scratch(tally: reading.sample); \
+             return Reading(sample: working.tally); }",
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code() != "E1607_PRIVATE_PUBLIC_TYPE"),
+            "a body and a private function are implementation details"
+        );
+    }
+
+    #[test]
+    fn an_imported_type_is_reachable_in_a_public_signature() {
+        let text = "module app.client version 1.0 profile bootstrap; import app.upstream as up; \
+             resource [fuel: 1000] pub fn relay(reading: up.Reading) -> up.Reading { return reading; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1607_PRIVATE_PUBLIC_TYPE"));
+    }
+
+    #[test]
+    fn a_recursive_exported_type_terminates() {
+        let (_, diagnostics) = check(
+            "pub record Node [next: Option<Node>] pub fn head(node: Node) -> Node { return node; }",
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1607_PRIVATE_PUBLIC_TYPE"));
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.

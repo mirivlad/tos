@@ -25,6 +25,9 @@
 | C017 | `accept/pattern-local-variants.tos` | Bootstrap | accepts bare `Low`/`High` against `Signal` and against `Power`, plus qualified `Power.High` | expected type disambiguates a shared variant name, and a local variant may be written qualified |
 | C018 | `accept/pattern-bindings.tos` | Bootstrap | `Low` binds where the expected type is `i32`; `Sample(amount)` destructures; `_` is a catch-all | a bare name binds when the expected type has no such variant, independently of capitalization |
 | C019 | `accept/pattern-qualified-import.tos` | Bootstrap | accepts `upstream.Signal.Low` and `upstream.Signal.High` | an imported variant is reached as a qualified constructor path |
+| C020 | `accept/visibility-exported-surface.tos` | Bootstrap | accepts an exported record in a public signature while a private record stays inside a body and a private function | `pub` covers the public surface only |
+| C021 | `accept/visibility-imported-surface.tos` plus `accept/visibility-exported-surface.tos` | Bootstrap | accepts an imported exported type in this module's public signature | a type exported by its own module is reachable for downstream consumers |
+| C022 | `accept/visibility-private-internals.tos` | Bootstrap | accepts private nominal types used by a private function and inside a public function's body | implementation details are not a public surface |
 | R001 | `reject/use-after-move.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | affine ownership negative |
 | R002 | `reject/borrow-escape.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` | a mutable borrow cannot coexist with later borrow/use |
 | R003 | `reject/forged-capability.tos` | Bootstrap | `E1502_FORGED_CAPABILITY` | scalar value cannot become authority |
@@ -63,6 +66,8 @@
 | R038 | `reject/return-type-mismatch.tos` | Bootstrap | `E1222_RETURN_TYPE_MISMATCH` with `expected=i32`, `actual=bool` | a returned value must have the declared result type |
 | R039 | `reject/integer-type-mismatch.tos` | Bootstrap | `E1210_INTEGER_TYPE_MISMATCH` with `expected=i32`, `actual=i64`, `position=argument` | no implicit numeric conversion when passing a value |
 | R040 | `reject/index-type-mismatch.tos` | Bootstrap | `E1211_INDEX_TYPE_MISMATCH` with `expected=size`, `actual=i32` | an index has exact type `size` |
+| R041 | `reject/visibility-private-in-public.tos` | Bootstrap | `E1607_PRIVATE_PUBLIC_TYPE` with `type=Hidden`, `exported_by=leak` | a `pub fn` may not name a module-private type |
+| R042 | `reject/visibility-private-transitively.tos` | Bootstrap | `E1607_PRIVATE_PUBLIC_TYPE` with `type=Hidden`, `exported_by=get` | an exported wrapper does not hide a private type in its own surface |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 

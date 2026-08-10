@@ -14,7 +14,7 @@ resource [
     imports: 0,
 ]
 
-enum FirstError [
+pub enum FirstError [
     Unexpected,
 ]
 

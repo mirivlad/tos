@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.visibility_private_transitively version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+record Hidden [
+    value: i32,
+]
+
+// `Wrapper` is exported, but a consumer cannot construct or read it without
+// naming `Hidden`, so the private type is still in the public surface.
+pub record Wrapper [
+    inner: Hidden,
+]
+
+pub fn get(seed: i32) -> Wrapper {
+    return Wrapper(inner: Hidden(value: seed));
+}
