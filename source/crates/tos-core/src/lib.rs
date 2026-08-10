@@ -1316,6 +1316,81 @@ mod tests {
     }
 
     #[test]
+    fn parser_builds_tuple_and_array_literals() {
+        let (source, outcome) = parse(
+            "fn main() -> i32 { let pair: (i32, i32) = (1i32, 2i32,); \
+             let values: array<i32, 2> = [3i32, 4i32]; let empty: array<i32, 0> = []; return 0i32; }",
+        );
+        let schema = outcome
+            .into_accepted()
+            .expect("tuple and array literals parse");
+        let statements = schema.functions()[0].body().statements();
+
+        let tuple = statements[0].expression().unwrap();
+        assert_eq!(tuple.form(), ExpressionForm::Tuple);
+        assert_eq!(tuple.elements().len(), 2);
+        assert_eq!(tuple.elements()[1].span().text(&source), "2i32");
+
+        let array = statements[1].expression().unwrap();
+        assert_eq!(array.form(), ExpressionForm::Array);
+        assert_eq!(array.elements().len(), 2);
+
+        let empty = statements[2].expression().unwrap();
+        assert_eq!(empty.form(), ExpressionForm::Array);
+        assert!(empty.elements().is_empty());
+    }
+
+    #[test]
+    fn a_parenthesized_expression_stays_a_group() {
+        let (source, outcome) = parse("fn main() -> i32 { return (1i32 + 2i32) * 3i32; }");
+        let schema = outcome.into_accepted().expect("grouping parses");
+        let product = schema.functions()[0].body().statements()[0]
+            .expression()
+            .unwrap();
+        let group = product.left().unwrap();
+        assert_eq!(group.form(), ExpressionForm::Group);
+        assert_eq!(group.inner().unwrap().span().text(&source), "1i32 + 2i32");
+    }
+
+    #[test]
+    fn a_one_element_tuple_is_not_a_v1_form() {
+        // docs/39 section 5 requires at least two tuple elements, so `(a,)` is
+        // neither a tuple nor a group.
+        let (_, outcome) = parse("fn main() -> i32 { let pair: i32 = (1i32,); return 0i32; }");
+        assert!(outcome.has_errors());
+        assert!(outcome.into_accepted().is_none());
+    }
+
+    #[test]
+    fn parser_builds_closures_and_spawned_blocks() {
+        let (source, outcome) = parse(
+            "fn main() -> i32 { let step: fn (i32) -> i32 = fn (value: i32) { return value; }; \
+             let task: Task<i32> = spawn async { return 1i32; }; return 0i32; }",
+        );
+        let schema = outcome.into_accepted().expect("closure and spawn parse");
+        let statements = schema.functions()[0].body().statements();
+
+        let closure = statements[0].expression().unwrap();
+        assert_eq!(closure.form(), ExpressionForm::Closure);
+        assert_eq!(closure.parameters().len(), 1);
+        assert_eq!(closure.parameters()[0].name().text(&source), "value");
+        assert_eq!(closure.body().unwrap().statements().len(), 1);
+
+        let spawn = statements[1].expression().unwrap();
+        assert_eq!(spawn.form(), ExpressionForm::Spawn);
+        assert_eq!(spawn.operator_text(&source), Some("async"));
+        assert_eq!(spawn.body().unwrap().statements().len(), 1);
+    }
+
+    #[test]
+    fn spawn_requires_an_explicit_mode() {
+        let (_, outcome) =
+            parse("fn main() -> i32 { let task: i32 = spawn { return 1i32; }; return 0i32; }");
+        assert!(outcome.has_errors());
+        assert!(outcome.into_accepted().is_none());
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.
