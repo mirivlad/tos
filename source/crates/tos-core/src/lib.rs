@@ -7,6 +7,7 @@ use std::vec::Vec;
 
 mod boundary;
 mod checker;
+mod defer;
 mod diagnostic;
 mod mutability;
 mod parser;
@@ -2138,6 +2139,65 @@ mod tests {
              fn main() -> unit { let value: i32 = helper(1i32); }",
         );
         assert!(diagnostics.iter().all(|d| !d.code().starts_with("E120")));
+    }
+
+    fn check_full(body: &str) -> (SourceUnit, Vec<Diagnostic>) {
+        let text = std::format!(
+            "module system.boot version 1.0 profile full; resource [fuel: 1000] {body}"
+        );
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        (source, diagnostics)
+    }
+
+    #[test]
+    fn a_defer_body_may_not_divert_control_or_start_work() {
+        let (_, diagnostics) = check_full(
+            "fn main(task: Task<i32>) -> unit { defer {\n    // SAFETY: unused here.\n    return; } \
+             defer { let value: i32 = join task; } \
+             defer { let started: Task<i32> = spawn async { return 1i32; }; } }",
+        );
+        let operations: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1225_INVALID_DEFER")
+            .filter_map(|d| d.field("operation"))
+            .collect();
+        assert_eq!(operations, ["return", "join", "spawn"]);
+        assert!(diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1225_INVALID_DEFER")
+            .all(|d| d.stage() == Stage::Type));
+    }
+
+    #[test]
+    fn a_break_inside_a_loop_of_the_defer_body_is_allowed() {
+        // The break targets that loop, not the cleanup block.
+        let (_, diagnostics) = check_full("fn main() -> unit { defer { loop { break; } } }");
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1225_INVALID_DEFER"));
+
+        let (_, bare) = check_full("fn main() -> unit { defer { break; } }");
+        assert_eq!(
+            bare.iter()
+                .filter(|d| d.code() == "E1225_INVALID_DEFER")
+                .filter_map(|d| d.field("operation"))
+                .collect::<Vec<_>>(),
+            ["break"]
+        );
+    }
+
+    #[test]
+    fn a_closure_inside_a_defer_body_keeps_its_own_return_scope() {
+        let (_, diagnostics) = check_full(
+            "fn main() -> unit { defer { let step: fn () -> i32 = fn () { return 1i32; }; } }",
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1225_INVALID_DEFER"));
     }
 
     #[test]

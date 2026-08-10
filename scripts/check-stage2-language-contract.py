@@ -175,6 +175,7 @@ def main() -> int:
             ("E1206_MISSING_RECORD_FIELD", "type"),
             ("E1207_UNKNOWN_RECORD_FIELD", "type"),
             ("E1221_MISSING_RETURN", "type"),
+            ("E1225_INVALID_DEFER", "type"),
             ("E1601_UNSUPPORTED_LANGUAGE_VERSION", "type"),
             ("E1602_UNSUPPORTED_LANGUAGE_MINOR", "type"),
             ("E1801_FFI_NOT_AVAILABLE", "effect"),
