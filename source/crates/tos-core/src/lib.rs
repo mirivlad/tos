@@ -32,6 +32,14 @@ mod unicode {
 
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 
+/// Diagnostics retained for one module (docs/44 section 2).
+///
+/// Hostile source can carry an error every few bytes, so the number of
+/// diagnostics a module may produce is bounded like every other frontend input.
+/// Reaching the bound stops recording, not parsing: recovery still runs to
+/// completion so the outcome stays well formed.
+pub const MAX_DIAGNOSTICS_PER_MODULE: usize = 256;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SourceErrorCode {
     SourceTooLarge,
@@ -2340,6 +2348,31 @@ mod tests {
             diagnostics.iter().all(|d| d.module().is_none()),
             "a source unit alone cannot supply a path, so none is invented"
         );
+    }
+
+    #[test]
+    fn retained_diagnostics_are_bounded_per_module() {
+        // docs/44 section 2 bounds diagnostics like every other frontend input:
+        // hostile source must not be able to make the list grow without limit.
+        let mut text = String::from("module system.boot version 1.0 profile bootstrap; ");
+        text.push_str("resource [fuel: 1000] ");
+        for _ in 0..(MAX_DIAGNOSTICS_PER_MODULE * 2) {
+            text.push_str("enum Broken {Value} ");
+        }
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let outcome = Parser::parse_schema(&source);
+        assert_eq!(outcome.diagnostics().len(), MAX_DIAGNOSTICS_PER_MODULE);
+        assert!(outcome.is_truncated());
+        assert!(outcome.has_errors());
+        // The retained ones are the earliest, so the first problem is kept.
+        assert_eq!(outcome.diagnostics()[0].span().text(&source), "{");
+    }
+
+    #[test]
+    fn a_clean_parse_is_not_marked_truncated() {
+        let (_, outcome) = parse("fn main() -> i32 { return 1i32; }");
+        assert!(!outcome.is_truncated());
+        assert!(outcome.diagnostics().is_empty());
     }
 
     #[test]
