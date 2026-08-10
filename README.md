@@ -87,18 +87,34 @@ available, boot evidence remains the serial log.
 
 Stage 1 is formally closed as a bootable TOS foundation with source-bound
 capsule identity and fail-closed validation. Stage 1.5 is formally closed with
-ADR-0027's bespoke TOS Core foundation selection. Stage 2 Part A is preparing
-the accepted semantic/IR contract and programmer documentation; Stage 2 Part B
-production reference implementation is authorized but has not started. TOS is
+ADR-0027's bespoke TOS Core foundation selection. Stage 2 Part A is accepted:
+ADR-0028 fixes the TOS Core V1 semantic/IR contract and ADR-0029 its Unicode
+normalization baseline. Stage 2 Part B production reference implementation is
+under way — the bounded source reader and lexer are complete and the parser is
+in progress; checker, IR, verifier and interpreter are not implemented. TOS is
 not yet a user shell, application environment, or desktop operating system.
 
 ## Core thesis
 
-A conventional open-source operating system may publish source while installing binaries built elsewhere. TOS reverses the authority:
+The owner of a computer should be able to own its software in the engineering
+sense: open any installed component as human-readable source, understand it,
+change it, check the change, and keep running their own version.
+
+On a conventional system that loop is broken in the middle. The component you
+can read and the artifact the machine executes are different objects, connected
+by build infrastructure you do not run. Reading is possible; changing what is
+actually installed is a separate project.
+
+TOS closes the loop architecturally:
 
 > The source tree is the installed system. Parsed IR, bytecode, native code, indexes, capsules and boot images are disposable derivatives with verifiable provenance.
 
 The active system is identified by a commit. A machine can boot a known-good commit, branch its system, merge upstream changes, bisect regressions, push its system history to a remote and restore itself from a recovery nucleus plus repository.
+
+Provenance, reproducibility, rollback and auditability follow from this model
+and are worth having. They are consequences, not the goal. TOS is built so that
+a competent owner can work on their own machine — not to defend a suspicious
+user from the world.
 
 ## What makes TOS distinct
 
@@ -111,7 +127,20 @@ TOS is not merely:
 - a natural-language agent OS;
 - a VM that happens to run drivers.
 
-It is the conjunction of canonical installed text, source-to-runtime traceability, commit-addressed system identity, capability-confined textual services and drivers, owner-installable modification, transactional activation and repository-native recovery.
+It is the conjunction of canonical installed text, owner-installable
+modification, capability-confined textual services and drivers, commit-addressed
+system identity, source-to-runtime traceability, transactional activation and
+repository-native recovery.
+
+The first two properties are the point: the installed component is source, and
+the owner can change it and boot the result. The rest exist to make that safe
+and repeatable rather than reckless.
+
+TOS also states plainly what it does not own. Real machines run CPU microcode
+and device firmware produced by hardware vendors. TOS does not pretend that
+material is open, and does not let it quietly replace a component that should be
+text — it is named, versioned, hashed and kept visibly outside the canonical
+source tree. See ADR-0030.
 
 ## Non-negotiable development rule
 
@@ -173,6 +202,7 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 12. `docs/08_GIT_NATIVE_SYSTEM.md`
 13. `docs/36_GIT_COMPATIBILITY_PROFILES.md`
 14. `docs/09_FILESYSTEM_AND_STATE.md`
+    - Runtime hierarchy: `docs/45_SYSTEM_SOURCE_HIERARCHY.md`
 15. `docs/10_PROCESS_SERVICE_IPC.md`
 16. `docs/11_DRIVER_MODEL.md`
 17. `docs/12_SECURITY_CAPABILITIES_TRUST.md`
@@ -211,9 +241,16 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 
 ## Status
 
-Stage 0, Stage 1, and Stage 1.5 are formally closed. The repository is in
-Stage 2 Part A: proposed TOS Core V1 semantic/IR contracts, documentation, and
-conformance corpus are under Architect review before the first production
-frontend/runtime implementation. No implementation decision may silently
-contradict an accepted ADR or invariant. Legal documents are project policy,
-not jurisdiction-specific legal advice.
+Stage 0, Stage 1, Stage 1.5 and Stage 2 Part A are formally closed. The
+repository is in Stage 2 Part B: the production TOS Core reference frontend is
+being implemented against the accepted contracts in `docs/39`–`docs/44`. The
+bounded source reader and lexer are complete; the parser is in progress; the
+checker, IR lowering, verifier and interpreter are not implemented. Stage 3 is
+not authorized.
+
+ADR-0030 (external vendor opaque material and `/vendor`) and ADR-0031 with
+`docs/45_SYSTEM_SOURCE_HIERARCHY.md` (runtime system source hierarchy) are
+accepted; their implementation is deferred to the stage that first needs each
+subsystem. No implementation
+decision may silently contradict an accepted ADR or invariant. Legal documents
+are project policy, not jurisdiction-specific legal advice.

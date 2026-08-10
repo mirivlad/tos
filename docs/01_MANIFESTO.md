@@ -82,3 +82,40 @@ The owner should be able to branch that chain and boot the result. Open source t
 ## Openness is architectural and legal
 
 Architecture provides inspectability, source identity, modification and recovery. Copyleft provides downstream legal continuity. Neither substitutes for the other. A readable system under a closing licence can be enclosed; an open licence over an opaque installed binary can remain practically inaccessible. TOS requires both layers.
+
+## This is about ownership, not suspicion
+
+Everything above produces properties that are usually filed under security:
+provenance, reproducible artifacts, verifiable rollback, auditable history,
+supply-chain transparency. TOS should deliver them and should not overstate
+them.
+
+But they are consequences of the model, not the reason for it. The reason is
+that a person who owns a machine should be able to work on it — open the thing
+that is running, understand it, change it, check the change, and keep the
+result. Source identity exists so the owner knows what they are editing.
+History exists so a mistake is recoverable. Capabilities exist so one component
+can be changed without endangering the rest.
+
+The distinction is not rhetorical; it decides arguments. A system built around
+distrust resolves ambiguity by restricting the user, and ends up locking the
+owner out for their own protection. TOS resolves it by keeping the owner able to
+proceed with the risk visible. That is why an explicit research mode exists, why
+recovery is a first-class operation rather than a warning dialog, and why no
+security control in TOS may become a permanent denial of ownership.
+
+TOS is not an operating system for people who are afraid of their computer. It
+is for people who want to open it.
+
+## What TOS does not own
+
+A real machine executes material TOS does not produce: CPU microcode, GPU and
+peripheral firmware, vendor-signed device images. TOS cannot make that material
+readable, and pretending otherwise would be the same dishonesty this document
+objects to.
+
+So TOS names it. Vendor-controlled opaque material is identified, versioned,
+hashed and kept visibly outside the canonical source tree. It never silently
+replaces a component that should be text, and the owner can always see where the
+boundary runs. The boundary is stated so that its size can be observed — and
+argued about — rather than discovered. See ADR-0030.

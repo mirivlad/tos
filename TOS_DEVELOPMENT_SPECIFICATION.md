@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `53f00a17c93f1d0912147c31ed0d901428cf3d4f78d705224d8bca356b637c8c`  
+Source-manifest SHA-256: `8411580cd625f3629f6d6945451fa516cdbbf3ce53dcf6c6b77f157394f2fb10`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -102,18 +102,34 @@ available, boot evidence remains the serial log.
 
 Stage 1 is formally closed as a bootable TOS foundation with source-bound
 capsule identity and fail-closed validation. Stage 1.5 is formally closed with
-ADR-0027's bespoke TOS Core foundation selection. Stage 2 Part A is preparing
-the accepted semantic/IR contract and programmer documentation; Stage 2 Part B
-production reference implementation is authorized but has not started. TOS is
+ADR-0027's bespoke TOS Core foundation selection. Stage 2 Part A is accepted:
+ADR-0028 fixes the TOS Core V1 semantic/IR contract and ADR-0029 its Unicode
+normalization baseline. Stage 2 Part B production reference implementation is
+under way — the bounded source reader and lexer are complete and the parser is
+in progress; checker, IR, verifier and interpreter are not implemented. TOS is
 not yet a user shell, application environment, or desktop operating system.
 
 ## Core thesis
 
-A conventional open-source operating system may publish source while installing binaries built elsewhere. TOS reverses the authority:
+The owner of a computer should be able to own its software in the engineering
+sense: open any installed component as human-readable source, understand it,
+change it, check the change, and keep running their own version.
+
+On a conventional system that loop is broken in the middle. The component you
+can read and the artifact the machine executes are different objects, connected
+by build infrastructure you do not run. Reading is possible; changing what is
+actually installed is a separate project.
+
+TOS closes the loop architecturally:
 
 > The source tree is the installed system. Parsed IR, bytecode, native code, indexes, capsules and boot images are disposable derivatives with verifiable provenance.
 
 The active system is identified by a commit. A machine can boot a known-good commit, branch its system, merge upstream changes, bisect regressions, push its system history to a remote and restore itself from a recovery nucleus plus repository.
+
+Provenance, reproducibility, rollback and auditability follow from this model
+and are worth having. They are consequences, not the goal. TOS is built so that
+a competent owner can work on their own machine — not to defend a suspicious
+user from the world.
 
 ## What makes TOS distinct
 
@@ -126,7 +142,20 @@ TOS is not merely:
 - a natural-language agent OS;
 - a VM that happens to run drivers.
 
-It is the conjunction of canonical installed text, source-to-runtime traceability, commit-addressed system identity, capability-confined textual services and drivers, owner-installable modification, transactional activation and repository-native recovery.
+It is the conjunction of canonical installed text, owner-installable
+modification, capability-confined textual services and drivers, commit-addressed
+system identity, source-to-runtime traceability, transactional activation and
+repository-native recovery.
+
+The first two properties are the point: the installed component is source, and
+the owner can change it and boot the result. The rest exist to make that safe
+and repeatable rather than reckless.
+
+TOS also states plainly what it does not own. Real machines run CPU microcode
+and device firmware produced by hardware vendors. TOS does not pretend that
+material is open, and does not let it quietly replace a component that should be
+text — it is named, versioned, hashed and kept visibly outside the canonical
+source tree. See ADR-0030.
 
 ## Non-negotiable development rule
 
@@ -188,6 +217,7 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 12. `docs/08_GIT_NATIVE_SYSTEM.md`
 13. `docs/36_GIT_COMPATIBILITY_PROFILES.md`
 14. `docs/09_FILESYSTEM_AND_STATE.md`
+    - Runtime hierarchy: `docs/45_SYSTEM_SOURCE_HIERARCHY.md`
 15. `docs/10_PROCESS_SERVICE_IPC.md`
 16. `docs/11_DRIVER_MODEL.md`
 17. `docs/12_SECURITY_CAPABILITIES_TRUST.md`
@@ -226,12 +256,19 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 
 ## Status
 
-Stage 0, Stage 1, and Stage 1.5 are formally closed. The repository is in
-Stage 2 Part A: proposed TOS Core V1 semantic/IR contracts, documentation, and
-conformance corpus are under Architect review before the first production
-frontend/runtime implementation. No implementation decision may silently
-contradict an accepted ADR or invariant. Legal documents are project policy,
-not jurisdiction-specific legal advice.
+Stage 0, Stage 1, Stage 1.5 and Stage 2 Part A are formally closed. The
+repository is in Stage 2 Part B: the production TOS Core reference frontend is
+being implemented against the accepted contracts in `docs/39`–`docs/44`. The
+bounded source reader and lexer are complete; the parser is in progress; the
+checker, IR lowering, verifier and interpreter are not implemented. Stage 3 is
+not authorized.
+
+ADR-0030 (external vendor opaque material and `/vendor`) and ADR-0031 with
+`docs/45_SYSTEM_SOURCE_HIERARCHY.md` (runtime system source hierarchy) are
+accepted; their implementation is deferred to the stage that first needs each
+subsystem. No implementation
+decision may silently contradict an accepted ADR or invariant. Legal documents
+are project policy, not jurisdiction-specific legal advice.
 
 <!-- END README.md -->
 
@@ -703,18 +740,32 @@ Conformance is never used to forbid forks. It only prevents confusion about whic
 
 ## Purpose
 
-TOS explores a different relationship between an operating system, its source code, its installed state, and its history.
+TOS exists so that the owner of a computer can own its software in the
+engineering sense: open an installed component as human-readable source,
+understand it, change it, validate the change, and continue using their own
+version.
 
-The project exists to build an operating system where:
+Everything below is how that is achieved. The project builds an operating system
+where:
 
+- the owner can inspect, modify, replace, and recover every TOS component;
 - the installed system is inspectable source text;
 - changing source text changes the system without a separate package-build-install cycle;
 - executable caches are derived and disposable;
 - the system is identified by a repository commit;
 - rollback, branching, merging, cloning, and bisecting are ordinary system operations;
 - device support can be delivered as textual driver modules;
-- multiple programming languages can be added as textual frontend modules targeting one common execution model;
-- the owner retains the right to inspect, modify, replace, and recover every non-firmware component.
+- multiple programming languages can be added as textual frontend modules targeting one common execution model.
+
+Provenance, reproducibility, auditability and supply-chain transparency are real
+benefits of this model, and TOS should deliver them. They are not the motivation.
+An operating system designed primarily around distrust would make different
+choices than one designed around ownership, and TOS makes the ownership choice
+whenever the two diverge.
+
+TOS does not claim ownership of material it does not produce. CPU microcode,
+device firmware and comparable vendor-controlled opaque material are named as
+external rather than hidden or denied; see ADR-0030.
 
 ## Success definition
 
@@ -873,6 +924,43 @@ The owner should be able to branch that chain and boot the result. Open source t
 ## Openness is architectural and legal
 
 Architecture provides inspectability, source identity, modification and recovery. Copyleft provides downstream legal continuity. Neither substitutes for the other. A readable system under a closing licence can be enclosed; an open licence over an opaque installed binary can remain practically inaccessible. TOS requires both layers.
+
+## This is about ownership, not suspicion
+
+Everything above produces properties that are usually filed under security:
+provenance, reproducible artifacts, verifiable rollback, auditable history,
+supply-chain transparency. TOS should deliver them and should not overstate
+them.
+
+But they are consequences of the model, not the reason for it. The reason is
+that a person who owns a machine should be able to work on it — open the thing
+that is running, understand it, change it, check the change, and keep the
+result. Source identity exists so the owner knows what they are editing.
+History exists so a mistake is recoverable. Capabilities exist so one component
+can be changed without endangering the rest.
+
+The distinction is not rhetorical; it decides arguments. A system built around
+distrust resolves ambiguity by restricting the user, and ends up locking the
+owner out for their own protection. TOS resolves it by keeping the owner able to
+proceed with the risk visible. That is why an explicit research mode exists, why
+recovery is a first-class operation rather than a warning dialog, and why no
+security control in TOS may become a permanent denial of ownership.
+
+TOS is not an operating system for people who are afraid of their computer. It
+is for people who want to open it.
+
+## What TOS does not own
+
+A real machine executes material TOS does not produce: CPU microcode, GPU and
+peripheral firmware, vendor-signed device images. TOS cannot make that material
+readable, and pretending otherwise would be the same dishonesty this document
+objects to.
+
+So TOS names it. Vendor-controlled opaque material is identified, versioned,
+hashed and kept visibly outside the canonical source tree. It never silently
+replaces a component that should be text, and the owner can always see where the
+boundary runs. The boundary is stated so that its size can be observed — and
+argued about — rather than discovered. See ADR-0030.
 
 <!-- END docs/01_MANIFESTO.md -->
 

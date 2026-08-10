@@ -296,6 +296,19 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 - docs/17 now records that its layout tree is written relative to the
   implementation root, which the implemented repository nests under `source/`.
 
+### 2026-08-10 — Engineering-ownership motivation restored
+
+- README "Core thesis", docs/00 purpose and a new docs/01 section put the
+  owner's engineering ownership first: open an installed component as source,
+  understand it, change it, check the change, keep running that version.
+  Provenance, reproducibility, rollback and auditability are stated as
+  consequences of the model rather than its purpose.
+- docs/00 replaces "every non-firmware component" with the precise boundary
+  from ADR-0030, and README states plainly that TOS does not pretend vendor
+  microcode and device firmware are open.
+- README status corrected: Stage 2 Part A is accepted, Part B is under way with
+  the source reader and lexer complete and the parser in progress.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5

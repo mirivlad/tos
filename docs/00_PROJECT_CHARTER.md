@@ -4,18 +4,32 @@
 
 ## Purpose
 
-TOS explores a different relationship between an operating system, its source code, its installed state, and its history.
+TOS exists so that the owner of a computer can own its software in the
+engineering sense: open an installed component as human-readable source,
+understand it, change it, validate the change, and continue using their own
+version.
 
-The project exists to build an operating system where:
+Everything below is how that is achieved. The project builds an operating system
+where:
 
+- the owner can inspect, modify, replace, and recover every TOS component;
 - the installed system is inspectable source text;
 - changing source text changes the system without a separate package-build-install cycle;
 - executable caches are derived and disposable;
 - the system is identified by a repository commit;
 - rollback, branching, merging, cloning, and bisecting are ordinary system operations;
 - device support can be delivered as textual driver modules;
-- multiple programming languages can be added as textual frontend modules targeting one common execution model;
-- the owner retains the right to inspect, modify, replace, and recover every non-firmware component.
+- multiple programming languages can be added as textual frontend modules targeting one common execution model.
+
+Provenance, reproducibility, auditability and supply-chain transparency are real
+benefits of this model, and TOS should deliver them. They are not the motivation.
+An operating system designed primarily around distrust would make different
+choices than one designed around ownership, and TOS makes the ownership choice
+whenever the two diverge.
+
+TOS does not claim ownership of material it does not produce. CPU microcode,
+device firmware and comparable vendor-controlled opaque material are named as
+external rather than hidden or denied; see ADR-0030.
 
 ## Success definition
 
