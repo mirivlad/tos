@@ -768,6 +768,47 @@ decision, а не выбор реализации.
   `E1211_INDEX_TYPE_MISMATCH` внесён в реестр docs/44 §7 со stage `type`.
 - Тестов 132 → 134. `./scripts/preflight.sh --full` → **31/31 PASS**.
 
+### 2026-08-10 — Найден конфликт: docs/42 §1 ↔ принятый conformance-корпус
+
+При реализации `E1607_PRIVATE_PUBLIC_TYPE` обнаружено систематическое
+противоречие двух принятых источников. Реализация отката, решение не
+принималось.
+
+- **docs/42 §1** (Tier 2): «A public function's parameter/return types and
+  effect capabilities must be exported/reachable; an otherwise private ABI type
+  is `E1607_PRIVATE_PUBLIC_TYPE`.» То есть тип, объявленный без `pub`, не может
+  появляться в сигнатуре `pub fn`.
+- **Принятый корпус** (docs/44 §1 называет его accepted conformance contract
+  evidence): 15 из 27 файлов делают ровно это. `first.tos` объявляет
+  `enum FirstError` без `pub` и возвращает `Result<i32, FirstError>` из
+  `pub fn main`. То же в data.tos, ownership.tos, results.tos,
+  counter-service.tos, capabilities.tos, parallel-work.tos,
+  bootstrap-parallel.tos, call-and-constructor.tos, control-heads.tos,
+  explicit-control-return.tos, named-enum-variant.tos,
+  named-record-constructor.tos, pattern-bindings.tos,
+  pattern-local-variants.tos.
+- Форма `pub record` / `pub enum` разрешена грамматикой docs/39 §5, но в корпусе
+  не встречается **ни разу**. Единственный межмодульный пример (C005,
+  `math.tos` → `modules.tos`) экспортирует только функцию с примитивной
+  сигнатурой, поэтому ни один тип в корпусе границу модуля не пересекает.
+
+Прогон реализованной по букве docs/42 проверки даёт `E1607` на 12 accept-файлах
+и меняет первичный код у двух reject-векторов. Это не единичная опечатка, а
+расхождение контракта и его же принятых доказательств.
+
+**Два возможных разрешения, выбор за Project Architect:**
+
+1. Прав контракт: корпус приводится в соответствие — типы в публичных
+   сигнатурах получают `pub`. Меняются 15 файлов; правило остаётся как
+   написано, и приватный тип в публичном интерфейсе действительно отвергается.
+2. Правило уже написано, но шире задуманного: например, оно относится только к
+   типу, фактически пересекающему границу импорта, а модуль-приватный тип в
+   публичной сигнатуре допустим, потому что V1 не даёт отдельного ABI-обещания.
+   Тогда правится формулировка docs/42 §1, а корпус остаётся.
+
+До решения `E1607_PRIVATE_PUBLIC_TYPE` не реализуется, и семейство E16xx в
+реестре docs/44 §7 остаётся без него.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5
