@@ -173,6 +173,7 @@ def main() -> int:
             ("E1205_DUPLICATE_RECORD_FIELD", "type"),
             ("E1221_MISSING_RETURN", "type"),
             ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),
+            ("E1702_PROFILE_NOT_SUPPORTED", "resource"),
             ("E1703_DUPLICATE_RESOURCE_DECLARATION", "resource"),
             ("E1704_UNKNOWN_RESOURCE_LIMIT", "resource"),
         ]:

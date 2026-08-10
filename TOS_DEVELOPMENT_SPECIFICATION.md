@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `4b6436bc222ba94103016e080deede897f88303aef5aeadbd16963b9a5717c1b`  
+Source-manifest SHA-256: `09c2fadde8bde312170f1d241ee5a4e2e487afd92bd0bfbe2197a7e18fc22686`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4707,6 +4707,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 
 | Code | Condition |
 |---|---|
+| `E1702_PROFILE_NOT_SUPPORTED` | a `profile bootstrap` module uses a Full-profile construct — `async fn`, `spawn async`, `await`, a closure, `defer`, `unsafe` or `extern` — or declares `workers` greater than 1; the first such feature in source order is reported |
 | `E1700_RESOURCE_DECLARATION_REQUIRED` | the module resource declaration omits one of the ten required keys of section 6 of docs/41 |
 | `E1703_DUPLICATE_RESOURCE_DECLARATION` | a resource declaration is made more than once, whether as a second `resource` item or as a repeated key inside one |
 | `E1704_UNKNOWN_RESOURCE_LIMIT` | a resource key is not one of the required keys, or its value is not the literal class that key takes |

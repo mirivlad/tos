@@ -503,6 +503,22 @@ import-граф; `Result<T,E>` принимает два аргумента), н
 не выделено. По ADR-0032 выделение новых кодов в реестре — versioned language
 decision, а не выбор реализации.
 
+### 2026-08-10 — Stage 2 Part B: Bootstrap profile enforcement
+
+- Новый `profile.rs` реализует docs/42 §3: `profile bootstrap` — строгое
+  исполнимое подмножество `profile full`, и Full-модуль не может быть молча
+  принят Bootstrap-фронтендом. Запрещены `async fn`, `spawn async`, `await`,
+  closures, `defer`, `unsafe`, `extern`, а также `workers` больше 1.
+- Сообщается ровно одна диагностика `E1702_PROFILE_NOT_SUPPORTED` — с первой
+  запрещённой возможностью в порядке исходника, как требует контракт, плюс
+  поля `feature` и `profile`.
+- `parallel`, `spawn parallel`, `join` и `cancel` остаются разрешёнными: у них
+  определённая сериализованная Bootstrap-семантика по docs/41.
+- Проверка чисто синтаксическая, типы не нужны. R006 (`full-profile-async`)
+  связан с реализацией; `E1702_PROFILE_NOT_SUPPORTED` внесён в реестр
+  docs/44 §7 со stage `resource`.
+- Тестов 77 → 81. `./scripts/preflight.sh --full` → **31/31 PASS**.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5

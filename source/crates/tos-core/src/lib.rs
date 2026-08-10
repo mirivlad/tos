@@ -8,6 +8,7 @@ use std::vec::Vec;
 mod checker;
 mod diagnostic;
 mod parser;
+mod profile;
 mod returns;
 
 pub use checker::Checker;
@@ -1850,6 +1851,74 @@ mod tests {
             ["main"],
             "each return scope is analysed on its own"
         );
+    }
+
+    #[test]
+    fn bootstrap_rejects_the_first_full_profile_feature() {
+        let (source, diagnostics) =
+            check("fn main() -> unit { defer { } } async fn later() -> unit { }");
+        let profile: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1702_PROFILE_NOT_SUPPORTED")
+            .collect();
+        assert_eq!(profile.len(), 1, "docs/42 asks for the first feature only");
+        assert_eq!(profile[0].field("feature"), Some("defer"));
+        assert_eq!(profile[0].stage(), Stage::Resource);
+        assert_eq!(profile[0].span().text(&source), "defer { }");
+    }
+
+    #[test]
+    fn bootstrap_rejects_each_full_only_construct() {
+        let cases = [
+            ("fn main() -> unit { unsafe { } }", "unsafe"),
+            ("extern fn outside() -> unit;", "extern"),
+            ("async fn later() -> unit { }", "async fn"),
+            (
+                "fn main() -> unit { let step: fn () -> unit = fn () { }; }",
+                "closure",
+            ),
+            (
+                "fn main() -> unit { let task: Task<i32> = spawn async { return 1i32; }; }",
+                "spawn async",
+            ),
+            (
+                "fn main(task: Task<i32>) -> unit { let value: i32 = await task; }",
+                "await",
+            ),
+        ];
+        for (body, feature) in cases {
+            let (_, diagnostics) = check(body);
+            let found = diagnostics
+                .iter()
+                .find(|d| d.code() == "E1702_PROFILE_NOT_SUPPORTED")
+                .unwrap_or_else(|| std::panic!("{feature} must be rejected under bootstrap"));
+            assert_eq!(found.field("feature"), Some(feature));
+        }
+    }
+
+    #[test]
+    fn bootstrap_admits_its_own_concurrency_forms() {
+        // `parallel`, `spawn parallel` and `cancel` have defined serialized
+        // Bootstrap semantics.
+        let (_, diagnostics) = check(
+            "fn main() -> unit { parallel { } let task: Task<i32> = spawn parallel { return 1i32; }; cancel task; }",
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1702_PROFILE_NOT_SUPPORTED"));
+    }
+
+    #[test]
+    fn a_full_profile_module_admits_full_constructs() {
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] async fn later() -> unit { }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1702_PROFILE_NOT_SUPPORTED"));
     }
 
     #[test]
