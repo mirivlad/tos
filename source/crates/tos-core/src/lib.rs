@@ -1555,6 +1555,27 @@ mod tests {
     }
 
     #[test]
+    fn only_a_place_may_be_assigned_to() {
+        let (source, outcome) = parse(
+            "record Point [x: i32] \
+             fn main(grid: array<Point, 2>) -> i32 { grid[0i32].x = 1i32; return 0i32; }",
+        );
+        let schema = outcome.into_accepted().expect("a place assignment parses");
+        let assignment = &schema.functions()[0].body().statements()[0];
+        assert_eq!(assignment.form(), StatementForm::Assignment);
+        assert_eq!(
+            assignment.target().unwrap().span().text(&source),
+            "grid[0i32].x"
+        );
+
+        for target in ["read()", "(value)", "1i32"] {
+            let body = std::format!("fn main() -> i32 {{ {target} = 1i32; return 0i32; }}");
+            let (_, outcome) = parse(&body);
+            assert!(outcome.has_errors(), "{target} is not a place");
+        }
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.

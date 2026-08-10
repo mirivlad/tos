@@ -487,7 +487,10 @@ pub enum StatementForm {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ExpressionForm {
-    Primary,
+    /// A literal value.
+    Literal,
+    /// An identifier, including a predeclared value or function name.
+    Name,
     Group,
     Unary,
     Binary,
@@ -1897,6 +1900,14 @@ impl<'source> TokenCursor<'source> {
         let start = Span::from(self.current());
         let target_or_expression = self.parse_expression()?;
         if self.consume_kind(TokenKind::Equal).is_some() {
+            // docs/39 section 5: `assignment = place "=" expression`, and a
+            // place is a name followed by field and index suffixes only.
+            if !is_place(&target_or_expression) {
+                return Err(ParseError {
+                    code: ParseErrorCode::UnexpectedToken,
+                    span: target_or_expression.span,
+                });
+            }
             let expression = self.parse_expression()?;
             let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
             return Ok(Statement {
@@ -2330,19 +2341,20 @@ impl<'source> TokenCursor<'source> {
         if self.current_text() == "spawn" {
             return self.parse_spawn();
         }
-        if matches!(
-            self.current().kind(),
+        let form = match self.current().kind() {
+            TokenKind::Identifier => Some(ExpressionForm::Name),
             TokenKind::Boolean
-                | TokenKind::Integer
-                | TokenKind::Size
-                | TokenKind::Duration
-                | TokenKind::String
-                | TokenKind::Bytes
-                | TokenKind::Identifier
-        ) {
+            | TokenKind::Integer
+            | TokenKind::Size
+            | TokenKind::Duration
+            | TokenKind::String
+            | TokenKind::Bytes => Some(ExpressionForm::Literal),
+            _ => None,
+        };
+        if let Some(form) = form {
             let span = Span::from(self.advance());
             Ok(Expression {
-                form: ExpressionForm::Primary,
+                form,
                 left: None,
                 operator: None,
                 right: None,
@@ -2594,6 +2606,22 @@ impl<'source> TokenCursor<'source> {
             code,
             span: Span::from(self.current()),
         }
+    }
+}
+
+/// Whether an expression is a `place` — the only thing an assignment may
+/// target (docs/39 section 5).
+///
+/// A place is a name reached through field and index suffixes. A call result,
+/// literal, cast or grouped expression is not assignable, and accepting one
+/// here would let the parser admit source the grammar does not.
+fn is_place(expression: &Expression) -> bool {
+    match expression.form {
+        ExpressionForm::Name => true,
+        ExpressionForm::Field | ExpressionForm::Index => {
+            expression.inner.as_deref().is_some_and(is_place)
+        }
+        _ => false,
     }
 }
 
