@@ -1438,6 +1438,103 @@ mod tests {
     }
 
     #[test]
+    fn parser_builds_if_else_chains() {
+        let (source, outcome) = parse(
+            "fn main(value: i32) -> i32 { if (value == 0i32) { return 1i32; } \
+             else if (value == 1i32) { return 2i32; } else { return 3i32; } }",
+        );
+        let schema = outcome.into_accepted().expect("if/else chain parses");
+        let first = &schema.functions()[0].body().statements()[0];
+        assert_eq!(first.form(), StatementForm::If);
+        assert_eq!(
+            first.expression().unwrap().span().text(&source),
+            "value == 0i32"
+        );
+        assert_eq!(first.body().unwrap().statements().len(), 1);
+        assert!(first.else_body().is_none());
+
+        let second = first.else_if().expect("else if continues the chain");
+        assert_eq!(second.form(), StatementForm::If);
+        assert_eq!(second.else_body().unwrap().statements().len(), 1);
+    }
+
+    #[test]
+    fn parser_builds_match_branches_as_blocks() {
+        let (source, outcome) = parse(
+            "enum State [Ready, Stopped] \
+             fn main(state: State) -> i32 { match (state) { Ready => { return 1i32; } \
+             _ => { return 0i32; } } }",
+        );
+        let schema = outcome.into_accepted().expect("match statement parses");
+        let statement = &schema.functions()[0].body().statements()[0];
+        assert_eq!(statement.form(), StatementForm::Match);
+        let branches = statement.branches();
+        assert_eq!(branches.len(), 2);
+        assert_eq!(branches[0].pattern().name().unwrap().text(&source), "Ready");
+        assert_eq!(branches[1].pattern().form(), PatternForm::Wildcard);
+        assert_eq!(branches[1].body().statements().len(), 1);
+    }
+
+    #[test]
+    fn parser_builds_loop_forms_and_jumps() {
+        let (source, outcome) = parse(
+            "fn main(limit: i32, items: array<i32, 2>) -> i32 { \
+             while (limit > 0i32) { break; } \
+             for item in (items) { continue; } \
+             loop { break; } return 0i32; }",
+        );
+        let schema = outcome.into_accepted().expect("loop forms parse");
+        let statements = schema.functions()[0].body().statements();
+
+        assert_eq!(statements[0].form(), StatementForm::While);
+        assert_eq!(
+            statements[0].body().unwrap().statements()[0].form(),
+            StatementForm::Break
+        );
+
+        assert_eq!(statements[1].form(), StatementForm::For);
+        assert_eq!(
+            statements[1]
+                .pattern()
+                .unwrap()
+                .name()
+                .unwrap()
+                .text(&source),
+            "item"
+        );
+        assert_eq!(
+            statements[1].body().unwrap().statements()[0].form(),
+            StatementForm::Continue
+        );
+
+        assert_eq!(statements[2].form(), StatementForm::Loop);
+    }
+
+    #[test]
+    fn an_unparenthesized_control_head_is_rejected() {
+        // Conformance cases R009 through R011.
+        for vector in [
+            "if-identifier-control-head",
+            "while-identifier-control-head",
+            "match-identifier-control-head",
+        ] {
+            let path = std::format!(
+                "{}/../../../docs/language/conformance/v1/reject/{vector}.tos",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let bytes = std::fs::read(&path).expect("vector is readable");
+            let source = SourceReader::read(&bytes).expect("vector is transport-valid");
+            let outcome = Parser::parse_schema(&source);
+            assert!(outcome.has_errors(), "{vector}");
+            assert_eq!(
+                outcome.diagnostics()[0].code(),
+                "E1105_CONTROL_HEAD_PARENS_REQUIRED",
+                "{vector}"
+            );
+        }
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.
