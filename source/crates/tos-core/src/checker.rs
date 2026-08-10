@@ -14,8 +14,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::vec::Vec;
 
 use crate::parser::{
-    Block, Expression, ExpressionForm, Pattern, PatternForm, RecordField, Schema, Statement,
-    StatementForm,
+    Block, EnumVariantForm, Expression, ExpressionForm, Pattern, PatternForm, RecordField, Schema,
+    Statement, StatementForm,
 };
 use crate::{Diagnostic, Severity, SourceUnit, Span, Stage};
 
@@ -501,9 +501,10 @@ fn check_record_fields(source: &SourceUnit, schema: &Schema, out: &mut Vec<Diagn
             check_field_list(source, variant.fields(), out);
         }
     }
+    let constructors = named_field_constructors(source, schema);
     let mut findings = Vec::new();
     walk_expressions(schema, &mut |expression| {
-        check_named_arguments(source, expression, &mut findings);
+        check_named_arguments(source, &constructors, expression, &mut findings);
     });
     out.extend(findings);
 }
@@ -527,11 +528,65 @@ fn duplicate_field(source: &SourceUnit, span: Span, name: &str, first: Span) -> 
         .with_field("first_declared_at", first.start())
 }
 
-/// Checks that a named argument list supplies each field once.
+/// The declared field names of every local named-field constructor.
 ///
-/// docs/39 section 5 makes named construction exact-once, so the same rule
-/// covers a declared field list and a constructor argument list.
-fn check_named_arguments(source: &SourceUnit, expression: &Expression, out: &mut Vec<Diagnostic>) {
+/// docs/39 section 5 gives records and named-field enum variants the same
+/// construction form, so both are collected here. A name declared by more than
+/// one constructor is dropped: choosing between them needs types.
+fn named_field_constructors<'source>(
+    source: &'source SourceUnit,
+    schema: &Schema,
+) -> BTreeMap<&'source str, Vec<&'source str>> {
+    let mut constructors: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+    let mut ambiguous: BTreeSet<&str> = BTreeSet::new();
+    let mut record = |name: &'source str, fields: Vec<&'source str>| {
+        if constructors.insert(name, fields).is_some() {
+            ambiguous.insert(name);
+        }
+    };
+    for declaration in schema.records() {
+        let fields = declaration
+            .fields()
+            .iter()
+            .map(|field| field.name().text(source))
+            .collect();
+        record(declaration.name().text(source), fields);
+    }
+    for declaration in schema.enums() {
+        for variant in declaration.variants() {
+            if variant.form() != EnumVariantForm::NamedFields {
+                continue;
+            }
+            let fields = variant
+                .fields()
+                .iter()
+                .map(|field| field.name().text(source))
+                .collect();
+            record(variant.name().text(source), fields);
+        }
+    }
+    for name in ambiguous {
+        constructors.remove(name);
+    }
+    constructors
+}
+
+/// Checks a named argument list against the constructor it names.
+///
+/// docs/39 section 5 makes named construction exact-once over the declared
+/// fields: an unknown name is `E1207_UNKNOWN_RECORD_FIELD`, a duplicate is
+/// `E1205_DUPLICATE_RECORD_FIELD` and an omitted field is
+/// `E1206_MISSING_RECORD_FIELD`.
+///
+/// The duplicate check runs on every named argument list, because it needs no
+/// declaration. The other two run only when the callee names one local
+/// constructor, which is nominal resolution rather than typing.
+fn check_named_arguments(
+    source: &SourceUnit,
+    constructors: &BTreeMap<&str, Vec<&str>>,
+    expression: &Expression,
+    out: &mut Vec<Diagnostic>,
+) {
     let mut seen: BTreeMap<&str, Span> = BTreeMap::new();
     for argument in expression.arguments() {
         let Some(span) = argument.name() else {
@@ -544,6 +599,43 @@ fn check_named_arguments(source: &SourceUnit, expression: &Expression, out: &mut
                 seen.insert(name, span);
             }
         }
+    }
+    if seen.is_empty() {
+        return;
+    }
+    let Some(callee) = expression.callee() else {
+        return;
+    };
+    if callee.form() != ExpressionForm::Name {
+        return;
+    }
+    let Some(declared) = constructors.get(callee.span().text(source)) else {
+        return;
+    };
+    for (name, span) in &seen {
+        if declared.contains(name) {
+            continue;
+        }
+        out.push(
+            diagnostic("E1207_UNKNOWN_RECORD_FIELD", Stage::Type, *span, source)
+                .with_field("field", *name)
+                .with_field("constructor", callee.span().text(source)),
+        );
+    }
+    for field in declared {
+        if seen.contains_key(field) {
+            continue;
+        }
+        out.push(
+            diagnostic(
+                "E1206_MISSING_RECORD_FIELD",
+                Stage::Type,
+                expression.span(),
+                source,
+            )
+            .with_field("field", *field)
+            .with_field("constructor", callee.span().text(source)),
+        );
     }
 }
 

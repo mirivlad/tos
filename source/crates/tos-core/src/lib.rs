@@ -2081,6 +2081,66 @@ mod tests {
     }
 
     #[test]
+    fn a_named_constructor_names_every_declared_field_once() {
+        let (source, diagnostics) = check(
+            "record Point [x: i32, y: i32] \
+             fn main() -> unit { let partial: Point = Point(x: 1i32); \
+             let stray: Point = Point(x: 1i32, y: 2i32, z: 3i32); }",
+        );
+        let missing = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1206_MISSING_RECORD_FIELD")
+            .expect("an omitted field is reported");
+        assert_eq!(missing.field("field"), Some("y"));
+        assert_eq!(missing.field("constructor"), Some("Point"));
+        assert_eq!(missing.stage(), Stage::Type);
+
+        let unknown = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1207_UNKNOWN_RECORD_FIELD")
+            .expect("an unknown field is reported");
+        assert_eq!(unknown.field("field"), Some("z"));
+        assert_eq!(unknown.span().text(&source), "z");
+    }
+
+    #[test]
+    fn a_named_field_enum_variant_uses_the_same_rule() {
+        let (_, diagnostics) = check(
+            "enum Colour [Rgb [red: u8, green: u8, blue: u8]] \
+             fn main() -> unit { let partial: Colour = Rgb(red: 1u8, green: 2u8); }",
+        );
+        let missing: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1206_MISSING_RECORD_FIELD")
+            .filter_map(|d| d.field("field"))
+            .collect();
+        assert_eq!(missing, ["blue"]);
+    }
+
+    #[test]
+    fn a_complete_constructor_checks_clean() {
+        let (_, diagnostics) = check(
+            "record Point [x: i32, y: i32] \
+             fn main() -> unit { let whole: Point = Point(y: 2i32, x: 1i32); }",
+        );
+        assert!(
+            diagnostics.iter().all(|d| !d.code().starts_with("E120")),
+            "field order does not matter"
+        );
+    }
+
+    #[test]
+    fn an_ordinary_call_is_not_checked_against_fields() {
+        // Only a callee naming a local constructor has a declared field list.
+        let (_, diagnostics) = check(
+            "record Point [x: i32, y: i32] \
+             fn helper(value: i32) -> i32 { return value; } \
+             fn main() -> unit { let value: i32 = helper(1i32); }",
+        );
+        assert!(diagnostics.iter().all(|d| !d.code().starts_with("E120")));
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.
