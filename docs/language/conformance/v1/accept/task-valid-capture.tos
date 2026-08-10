@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.task_valid_capture version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub record Message [payload: bytes]
+
+// An owned affine value transfers its sole ownership across the task boundary,
+// and a Copy value is duplicated.
+pub fn main(count: i32, message: Message) -> i32 {
+    let worker: Task<i32> = spawn parallel {
+        return count;
+    };
+    let outcome: TaskResult<i32> = join worker;
+    return count;
+}

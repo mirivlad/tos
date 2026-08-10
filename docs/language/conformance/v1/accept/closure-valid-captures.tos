@@ -1,0 +1,18 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.closure_valid_captures version 1.0 profile full;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub record Message [payload: bytes]
+
+// A Copy value is captured by copy and stays usable outside; an affine value
+// is captured by move and is not used again.
+pub fn main(count: i32, message: Message) -> i32 {
+    let by_copy: fn () -> i32 = fn () {
+        return count;
+    };
+    let by_move: fn () -> Message = fn () {
+        return message;
+    };
+    return count;
+}

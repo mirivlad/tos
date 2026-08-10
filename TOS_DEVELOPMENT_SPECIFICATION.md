@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `7b5375620ef863813806ba6381038c8163d667079871621d92f538f3a80b2d17`  
+Source-manifest SHA-256: `8218d05f019ce39efec2a1ea5f82fb4e1fe3984cb7e1fc074474ed4d23569ce7`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4794,7 +4794,11 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 
 | Code | Condition |
 |---|---|
-| `E1301_USE_AFTER_MOVE` | an affine value is used after being moved by an assignment, an owning argument, a return, or placement in an aggregate |
+| `E1301_USE_AFTER_MOVE` | a place is used after its value moved out on some reachable path, by an assignment, an owning argument, a return, placement in an aggregate, a match subject, or a capture |
+| `E1302_CONFLICTING_BORROW` | a borrow overlaps a live borrow it may not coexist with: any mutable borrow alongside another borrow of an overlapping place |
+| `E1303_MUTATE_WHILE_BORROWED` | a write lands on a place that a live immutable borrow overlaps |
+| `E1304_INVALID_TASK_CAPTURE` | a task captures a value that is not `Transferable`: a borrow, a lock guard, a mutable region, a non-transferable capability, or a mutable binding by alias |
+| `E1305_INVALID_CLOSURE_CAPTURE` | a closure captures a borrow, a mutable binding by alias, a lock guard, a non-transferable capability, or a plain mutable region |
 
 ### Resource and profile (stage `resource`)
 

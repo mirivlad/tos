@@ -3130,6 +3130,324 @@ mod tests {
         );
     }
 
+    fn codes(diagnostics: &[Diagnostic], code: &str) -> usize {
+        diagnostics.iter().filter(|d| d.code() == code).count()
+    }
+
+    const COUNTER: &str = "pub record Counter [value: i32, other: i32] \
+         fn read(borrow counter: Counter) -> i32 { return counter.value; } \
+         fn write(borrow mut counter: Counter) -> unit { counter.value = 1i32; } ";
+
+    #[test]
+    fn repeated_immutable_borrows_are_compatible() {
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main(counter: Counter) -> i32 {{ \
+             let first = borrow counter; let second = borrow counter; return read(borrow counter); }}"
+        ));
+        assert_eq!(codes(&diagnostics, "E1302_CONFLICTING_BORROW"), 0);
+    }
+
+    #[test]
+    fn an_immutable_and_a_mutable_borrow_conflict() {
+        let (source, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> i32 {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             let view = borrow counter; write(borrow mut counter); return 0i32; }}"
+        ));
+        let conflict = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1302_CONFLICTING_BORROW")
+            .expect("a mutable borrow cannot join a shared one");
+        assert_eq!(conflict.stage(), Stage::Ownership);
+        assert_eq!(conflict.field("borrow"), Some("borrow mut"));
+        assert_eq!(conflict.field("conflicts_with"), Some("borrow"));
+        assert_eq!(conflict.span().text(&source), "borrow mut counter");
+    }
+
+    #[test]
+    fn a_mutable_borrow_is_exclusive() {
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             let first = borrow mut counter; write(borrow mut counter); }}"
+        ));
+        assert_eq!(codes(&diagnostics, "E1302_CONFLICTING_BORROW"), 1);
+    }
+
+    #[test]
+    fn a_borrow_ends_with_its_region() {
+        // A temporary borrow lives for its statement, so the next one is free.
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             write(borrow mut counter); write(borrow mut counter); read(borrow counter); }}"
+        ));
+        assert_eq!(codes(&diagnostics, "E1302_CONFLICTING_BORROW"), 0);
+    }
+
+    #[test]
+    fn a_branch_local_borrow_does_not_reach_its_sibling() {
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main(ready: bool) -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             if (ready) {{ let view = borrow mut counter; }} \
+             else {{ let second = borrow mut counter; }} }}"
+        ));
+        assert_eq!(codes(&diagnostics, "E1302_CONFLICTING_BORROW"), 0);
+    }
+
+    #[test]
+    fn borrows_of_unrelated_fields_do_not_conflict() {
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             let one = borrow mut counter.value; let two = borrow mut counter.other; }}"
+        ));
+        assert_eq!(
+            codes(&diagnostics, "E1302_CONFLICTING_BORROW"),
+            0,
+            "a field borrow locks the containing path, not siblings"
+        );
+    }
+
+    #[test]
+    fn a_field_borrow_locks_its_containing_path() {
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             let inner = borrow mut counter.value; let whole = borrow counter; }}"
+        ));
+        assert_eq!(codes(&diagnostics, "E1302_CONFLICTING_BORROW"), 1);
+    }
+
+    #[test]
+    fn constant_indices_are_disjoint_and_dynamic_ones_overlap() {
+        let (_, disjoint) = check(
+            "pub fn main() -> unit { let mut values: array<i32, 4> = [0, 0, 0, 0]; \
+             let one = borrow mut values[0]; let two = borrow mut values[1]; }",
+        );
+        assert_eq!(codes(&disjoint, "E1302_CONFLICTING_BORROW"), 0);
+
+        let (_, overlapping) = check(
+            "pub fn main(at: size) -> unit { let mut values: array<i32, 4> = [0, 0, 0, 0]; \
+             let one = borrow mut values[at]; let two = borrow mut values[1]; }",
+        );
+        assert_eq!(
+            codes(&overlapping, "E1302_CONFLICTING_BORROW"),
+            1,
+            "an unknown index may hit any element"
+        );
+    }
+
+    #[test]
+    fn a_write_under_an_immutable_borrow_is_rejected() {
+        let (source, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             let view = borrow counter; counter.value = 1i32; }}"
+        ));
+        let mutated = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1303_MUTATE_WHILE_BORROWED")
+            .expect("an immutable borrow forbids mutation");
+        assert_eq!(mutated.stage(), Stage::Ownership);
+        assert_eq!(mutated.field("place"), Some("counter.value"));
+        assert_eq!(mutated.span().text(&source), "counter.value");
+    }
+
+    #[test]
+    fn a_write_to_an_unborrowed_field_is_allowed() {
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             let view = borrow counter.value; counter.other = 1i32; }}"
+        ));
+        assert_eq!(codes(&diagnostics, "E1303_MUTATE_WHILE_BORROWED"), 0);
+    }
+
+    #[test]
+    fn a_write_with_no_live_borrow_is_allowed() {
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); counter.value = 1i32; }}"
+        ));
+        assert_eq!(codes(&diagnostics, "E1303_MUTATE_WHILE_BORROWED"), 0);
+    }
+
+    #[test]
+    fn a_task_may_not_capture_a_mutable_binding_by_alias() {
+        // docs/40 section 6: writing through a capture needs a mutable alias,
+        // which is not Transferable.
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             record Counter [value: i32] \
+             pub fn main() -> unit { let mut counter = Counter(value: 0i32); \
+             let first: Task<unit> = spawn parallel { counter.value = 1i32; }; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        let invalid = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1304_INVALID_TASK_CAPTURE")
+            .expect("an alias capture is not a transfer");
+        assert_eq!(invalid.stage(), Stage::Ownership);
+        assert_eq!(invalid.field("capture"), Some("counter"));
+        assert_eq!(invalid.field("reason"), Some("mutable binding by alias"));
+    }
+
+    #[test]
+    fn an_invalid_capture_does_not_also_move_the_value() {
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             record Counter [value: i32] \
+             pub fn main() -> unit { let mut counter = Counter(value: 0i32); \
+             let first: Task<unit> = spawn parallel { counter.value = 1i32; }; \
+             let second: Task<unit> = spawn parallel { counter.value = 2i32; }; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert_eq!(codes(&diagnostics, "E1304_INVALID_TASK_CAPTURE"), 2);
+        assert_eq!(
+            codes(&diagnostics, "E1301_USE_AFTER_MOVE"),
+            0,
+            "a rejected capture transfers nothing, so no move follows it"
+        );
+    }
+
+    #[test]
+    fn a_task_may_capture_a_copy_value() {
+        let (_, diagnostics) = check(
+            "pub fn main(count: i32) -> i32 { \
+             let worker: Task<i32> = spawn parallel { return count; }; return count; }",
+        );
+        assert_eq!(codes(&diagnostics, "E1304_INVALID_TASK_CAPTURE"), 0);
+        assert_eq!(codes(&diagnostics, "E1301_USE_AFTER_MOVE"), 0);
+    }
+
+    #[test]
+    fn a_task_capture_of_an_affine_value_moves_it() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(message: Message) -> unit {{ \
+             let worker: Task<Message> = spawn parallel {{ return message; }}; \
+             take(message); }}"
+        ));
+        assert_eq!(
+            moves(&diagnostics),
+            1,
+            "the task took sole ownership across the boundary"
+        );
+    }
+
+    #[test]
+    fn a_closure_may_not_capture_a_borrow() {
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             record Counter [value: i32] \
+             pub fn main(borrow counter: Counter) -> unit { \
+             let read_it: fn () -> i32 = fn () { return counter.value; }; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        let invalid = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1305_INVALID_CLOSURE_CAPTURE")
+            .expect("a borrow does not reach into a closure");
+        assert_eq!(invalid.field("capture"), Some("counter"));
+        assert_eq!(invalid.field("reason"), Some("borrow"));
+    }
+
+    #[test]
+    fn a_closure_captures_copy_by_copy_and_affine_by_move() {
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             record Message [payload: bytes] fn take(message: Message) -> unit { } \
+             pub fn main(count: i32, message: Message) -> i32 { \
+             let by_copy: fn () -> i32 = fn () { return count; }; \
+             let by_move: fn () -> Message = fn () { return message; }; \
+             take(message); return count; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert_eq!(codes(&diagnostics, "E1305_INVALID_CLOSURE_CAPTURE"), 0);
+        assert_eq!(
+            codes(&diagnostics, "E1301_USE_AFTER_MOVE"),
+            1,
+            "the Copy capture leaves count usable; the affine one moved message"
+        );
+    }
+
+    #[test]
+    fn a_closure_parameter_is_not_a_capture() {
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             pub fn main() -> unit { \
+             let step: fn (i32) -> i32 = fn (value: i32) { return value; }; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert_eq!(codes(&diagnostics, "E1305_INVALID_CLOSURE_CAPTURE"), 0);
+    }
+
+    const PAIR: &str = "pub record Pair [left: bytes, right: bytes] \
+         fn take_bytes(value: bytes) -> unit { } fn take_pair(pair: Pair) -> unit { } ";
+
+    #[test]
+    fn a_field_may_be_partially_moved() {
+        let (_, diagnostics) = check(&std::format!(
+            "{PAIR} pub fn main(pair: Pair) -> unit {{ take_bytes(pair.left); \
+             take_bytes(pair.right); }}"
+        ));
+        assert_eq!(
+            moves(&diagnostics),
+            0,
+            "moving one field leaves the untouched one movable"
+        );
+    }
+
+    #[test]
+    fn a_moved_field_may_not_be_moved_twice() {
+        let (_, diagnostics) = check(&std::format!(
+            "{PAIR} pub fn main(pair: Pair) -> unit {{ take_bytes(pair.left); \
+             take_bytes(pair.left); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1);
+    }
+
+    #[test]
+    fn a_partially_moved_aggregate_may_not_be_used_whole() {
+        // docs/40 section 5 allows the remainder to be used only to move or
+        // drop its untouched fields.
+        let (_, diagnostics) = check(&std::format!(
+            "{PAIR} pub fn main(pair: Pair) -> unit {{ take_bytes(pair.left); \
+             take_pair(pair); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1);
+        let reported = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+            .unwrap();
+        assert_eq!(reported.field("place"), Some("pair"));
+        assert_eq!(reported.field("moved"), Some("pair.left"));
+    }
+
+    #[test]
+    fn a_whole_move_blocks_a_later_field_use() {
+        let (_, diagnostics) = check(&std::format!(
+            "{PAIR} pub fn main(pair: Pair) -> unit {{ take_pair(pair); \
+             take_bytes(pair.left); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1);
+    }
+
+    #[test]
+    fn writing_a_place_restores_it() {
+        let (_, diagnostics) = check(&std::format!(
+            "{PAIR} pub fn main() -> unit {{ let mut pair = Pair(left: b\"a\", right: b\"b\"); \
+             take_bytes(pair.left); pair.left = b\"c\"; take_bytes(pair.left); }}"
+        ));
+        assert_eq!(
+            moves(&diagnostics),
+            0,
+            "an assignment gives the place a value again"
+        );
+    }
+
     #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists

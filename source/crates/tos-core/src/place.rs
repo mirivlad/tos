@@ -10,6 +10,16 @@
 //! places interact exactly when one is a prefix of the other, which is what
 //! "locks the containing path" means: `p.x` and `p.y` are independent, while
 //! `p` and `p.x` are not.
+//!
+//! **Layering.** This is TOS Core frontend semantic state, not a
+//! language-neutral executable representation. Ownership, borrows and
+//! `Transferable` are rules of the safe TOS Core language; they are proof the
+//! frontend produces, not a precondition for a program to be representable at
+//! all. A later frontend for another language may not satisfy them, and the
+//! isolation TOS guarantees any process — address space, capabilities, granted
+//! regions, verifier and runtime contract — is a separate layer that does not
+//! depend on these types. Nothing here may migrate into a shared IR or
+//! executable boundary as a mandatory condition.
 
 use std::string::String;
 use std::vec::Vec;

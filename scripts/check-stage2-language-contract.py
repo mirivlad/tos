@@ -190,6 +190,10 @@ def main() -> int:
             ("E1606_IMPORT_CYCLE", "type"),
             ("E1607_PRIVATE_PUBLIC_TYPE", "type"),
             ("E1301_USE_AFTER_MOVE", "ownership"),
+            ("E1302_CONFLICTING_BORROW", "ownership"),
+            ("E1303_MUTATE_WHILE_BORROWED", "ownership"),
+            ("E1304_INVALID_TASK_CAPTURE", "ownership"),
+            ("E1305_INVALID_CLOSURE_CAPTURE", "ownership"),
             ("E1801_FFI_NOT_AVAILABLE", "effect"),
             ("E1802_UNSAFE_RATIONALE_REQUIRED", "effect"),
             ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),
@@ -268,6 +272,10 @@ def main() -> int:
         failures,
     )
     for vector in [
+        "accept/task-valid-capture.tos",
+        "accept/closure-valid-captures.tos",
+        "reject/mutate-while-borrowed.tos",
+        "reject/closure-borrow-capture.tos",
         "accept/visibility-exported-surface.tos",
         "accept/visibility-imported-surface.tos",
         "accept/visibility-private-internals.tos",
