@@ -415,6 +415,8 @@ pub enum ExpressionForm {
     Call,
     Field,
     Index,
+    Question,
+    Cast,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -427,6 +429,7 @@ pub struct Expression {
     callee: Option<Box<Expression>>,
     arguments: Vec<Expression>,
     name: Option<Span>,
+    cast_type: Option<TypeSyntax>,
     span: Span,
 }
 
@@ -462,6 +465,11 @@ impl Expression {
     /// The field name of a `Field` expression.
     pub fn name(&self) -> Option<Span> {
         self.name
+    }
+
+    /// The target type of a `Cast` expression.
+    pub fn cast_type(&self) -> Option<&TypeSyntax> {
+        self.cast_type.as_ref()
     }
 
     pub fn span(&self) -> Span {
@@ -1416,6 +1424,7 @@ impl<'source> TokenCursor<'source> {
                 callee: None,
                 arguments: Vec::new(),
                 name: None,
+                cast_type: None,
             };
         }
         Ok(left)
@@ -1450,6 +1459,7 @@ impl<'source> TokenCursor<'source> {
                 callee: None,
                 arguments: Vec::new(),
                 name: None,
+                cast_type: None,
                 span: Span {
                     start: operator.start(),
                     end,
@@ -1459,7 +1469,8 @@ impl<'source> TokenCursor<'source> {
         self.parse_postfix_expression()
     }
 
-    /// Parses `primary ( call_suffix | index | field )*` (docs/39 section 5).
+    /// Parses `primary ( call_suffix | index | field | question | cast )*`
+    /// (docs/39 section 5).
     ///
     /// Suffixes chain left to right, so `a.b[0i32].c` nests as
     /// `Field(Index(Field(a, b), 0i32), c)`.
@@ -1477,6 +1488,7 @@ impl<'source> TokenCursor<'source> {
                     right: None,
                     inner: None,
                     name: None,
+                    cast_type: None,
                     span: Span {
                         start: operand.span.start(),
                         end: end.end(),
@@ -1496,12 +1508,51 @@ impl<'source> TokenCursor<'source> {
                     operator: None,
                     right: Some(Box::new(index)),
                     name: None,
+                    cast_type: None,
                     callee: None,
                     arguments: Vec::new(),
                     span: Span {
                         start: operand.span.start(),
                         end: end.end(),
                     },
+                    inner: Some(Box::new(operand)),
+                };
+                continue;
+            }
+            if let Some(question) = self.consume_kind(TokenKind::Question) {
+                operand = Expression {
+                    form: ExpressionForm::Question,
+                    left: None,
+                    operator: None,
+                    right: None,
+                    callee: None,
+                    arguments: Vec::new(),
+                    name: None,
+                    cast_type: None,
+                    span: Span {
+                        start: operand.span.start(),
+                        end: question.end(),
+                    },
+                    inner: Some(Box::new(operand)),
+                };
+                continue;
+            }
+            if self.current_text() == "as" {
+                self.advance();
+                let target = self.parse_type()?;
+                operand = Expression {
+                    form: ExpressionForm::Cast,
+                    left: None,
+                    operator: None,
+                    right: None,
+                    callee: None,
+                    arguments: Vec::new(),
+                    name: None,
+                    span: Span {
+                        start: operand.span.start(),
+                        end: target.span().end(),
+                    },
+                    cast_type: Some(target),
                     inner: Some(Box::new(operand)),
                 };
                 continue;
@@ -1516,6 +1567,7 @@ impl<'source> TokenCursor<'source> {
                     callee: None,
                     arguments: Vec::new(),
                     name: Some(name),
+                    cast_type: None,
                     span: Span {
                         start: operand.span.start(),
                         end: name.end(),
@@ -1549,6 +1601,7 @@ impl<'source> TokenCursor<'source> {
                 callee: None,
                 arguments: Vec::new(),
                 name: None,
+                cast_type: None,
                 span: Span {
                     start: start.start(),
                     end: end.end(),
@@ -1575,6 +1628,7 @@ impl<'source> TokenCursor<'source> {
                 callee: None,
                 arguments: Vec::new(),
                 name: None,
+                cast_type: None,
                 span,
             })
         } else {
