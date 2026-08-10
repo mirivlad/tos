@@ -10,11 +10,11 @@ mod parser;
 
 pub use diagnostic::{Diagnostic, DiagnosticField, Position, Severity, Stage};
 pub use parser::{
-    Block, BorrowMode, CallArgument, EnumDeclaration, EnumVariant, EnumVariantForm, Expression,
-    ExpressionForm, FunctionDeclaration, FunctionParameter, FunctionSignature, Import, ImportKind,
-    ModuleHeader, ModuleOutline, ModulePrefix, ParseOutcome, Parser, Profile, RecordDeclaration,
-    RecordField, ResourceDeclaration, ResourceLimit, Schema, Span, Statement, StatementForm,
-    TypeSyntax, TypeSyntaxForm,
+    Block, BorrowMode, CallArgument, ConstDeclaration, EnumDeclaration, EnumVariant,
+    EnumVariantForm, Expression, ExpressionForm, FunctionDeclaration, FunctionParameter,
+    FunctionSignature, Import, ImportKind, ModuleHeader, ModuleOutline, ModulePrefix, ParseOutcome,
+    Parser, Profile, RecordDeclaration, RecordField, ResourceDeclaration, ResourceLimit, Schema,
+    Span, Statement, StatementForm, TypeSyntax, TypeSyntaxForm, Visibility,
 };
 
 mod unicode {
@@ -1270,6 +1270,49 @@ mod tests {
             .diagnostics()
             .iter()
             .any(|diagnostic| diagnostic.span().text(&source) == "2i32"));
+    }
+
+    #[test]
+    fn named_constructor_fields_require_commas() {
+        // Conformance case R012.
+        let source = SourceReader::read(include_bytes!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../docs/language/conformance/v1/reject/record-field-separator.tos"
+        )))
+        .expect("vector is transport-valid");
+        let outcome = Parser::parse_schema(&source);
+        assert!(outcome.has_errors());
+        let diagnostic = &outcome.diagnostics()[0];
+        assert_eq!(diagnostic.code(), "E1106_LIST_SEPARATOR_REQUIRED");
+        assert_eq!(diagnostic.span().text(&source), "second");
+    }
+
+    #[test]
+    fn parser_records_visibility_and_the_async_marker() {
+        let (source, outcome) = parse(
+            "pub record Point [x: i32] enum Hidden [Value] \
+             pub const LIMIT: i32 = 8i32; \
+             pub async fn run() -> i32 { return 1i32; } \
+             fn helper() -> i32 { return 2i32; }",
+        );
+        let schema = outcome.into_accepted().expect("item visibility parses");
+        assert_eq!(schema.records()[0].visibility(), Visibility::Public);
+        assert_eq!(schema.enums()[0].visibility(), Visibility::Private);
+
+        let limit = &schema.consts()[0];
+        assert_eq!(limit.visibility(), Visibility::Public);
+        assert_eq!(limit.name().text(&source), "LIMIT");
+        assert_eq!(limit.ty().text(&source), "i32");
+        assert_eq!(limit.value().span().text(&source), "8i32");
+
+        let run = schema.functions()[0].signature();
+        assert_eq!(run.visibility(), Visibility::Public);
+        assert!(run.is_async());
+        assert!(run.span().text(&source).starts_with("async fn run"));
+
+        let helper = schema.functions()[1].signature();
+        assert_eq!(helper.visibility(), Visibility::Private);
+        assert!(!helper.is_async());
     }
 
     #[test]
