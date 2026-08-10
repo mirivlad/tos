@@ -10,11 +10,11 @@ mod parser;
 
 pub use diagnostic::{Diagnostic, DiagnosticField, Position, Severity, Stage};
 pub use parser::{
-    Block, BorrowMode, EnumDeclaration, EnumVariant, EnumVariantForm, Expression, ExpressionForm,
-    FunctionDeclaration, FunctionParameter, FunctionSignature, Import, ImportKind, ModuleHeader,
-    ModuleOutline, ModulePrefix, ParseOutcome, Parser, Profile, RecordDeclaration, RecordField,
-    ResourceDeclaration, ResourceLimit, Schema, Span, Statement, StatementForm, TypeSyntax,
-    TypeSyntaxForm,
+    Block, BorrowMode, CallArgument, EnumDeclaration, EnumVariant, EnumVariantForm, Expression,
+    ExpressionForm, FunctionDeclaration, FunctionParameter, FunctionSignature, Import, ImportKind,
+    ModuleHeader, ModuleOutline, ModulePrefix, ParseOutcome, Parser, Profile, RecordDeclaration,
+    RecordField, ResourceDeclaration, ResourceLimit, Schema, Span, Statement, StatementForm,
+    TypeSyntax, TypeSyntaxForm,
 };
 
 mod unicode {
@@ -1019,7 +1019,10 @@ mod tests {
         assert_eq!(expression.form(), ExpressionForm::Call);
         assert_eq!(expression.callee().unwrap().span().text(&source), "add_one");
         assert_eq!(expression.arguments().len(), 1);
-        assert_eq!(expression.arguments()[0].span().text(&source), "41i32");
+        assert_eq!(
+            expression.arguments()[0].value().span().text(&source),
+            "41i32"
+        );
     }
 
     #[test]
@@ -1215,6 +1218,58 @@ mod tests {
         assert_eq!(sum.left().unwrap().form(), ExpressionForm::Cast);
         assert_eq!(sum.left().unwrap().span().text(&source), "left as i64");
         assert_eq!(sum.right().unwrap().span().text(&source), "right");
+    }
+
+    #[test]
+    fn parser_builds_named_constructor_arguments() {
+        let (source, outcome) = parse(
+            "record Point [x: i32, y: i32] \
+             fn main() -> Point { return Point(x: 1i32, y: 2i32,); }",
+        );
+        let schema = outcome.into_accepted().expect("named arguments parse");
+        let call = schema.functions()[0].body().statements()[0]
+            .expression()
+            .unwrap();
+        assert_eq!(call.form(), ExpressionForm::Call);
+        let arguments = call.arguments();
+        assert_eq!(arguments.len(), 2, "a trailing comma closes the list");
+        assert_eq!(arguments[0].name().unwrap().text(&source), "x");
+        assert_eq!(arguments[0].value().span().text(&source), "1i32");
+        assert_eq!(arguments[1].name().unwrap().text(&source), "y");
+        assert_eq!(arguments[1].span().text(&source), "y: 2i32");
+    }
+
+    #[test]
+    fn positional_arguments_carry_no_name() {
+        let (_, outcome) = parse("fn main() -> i32 { return add(1i32, 2i32); }");
+        let schema = outcome.into_accepted().expect("positional arguments parse");
+        let call = schema.functions()[0].body().statements()[0]
+            .expression()
+            .unwrap();
+        assert!(call
+            .arguments()
+            .iter()
+            .all(|argument| argument.name().is_none()));
+    }
+
+    #[test]
+    fn an_argument_list_may_not_mix_positional_and_named_forms() {
+        // docs/39 section 5 gives call_arguments one form per list.
+        let (source, outcome) = parse("fn main() -> i32 { return add(1i32, y: 2i32); }");
+        assert!(outcome.has_errors());
+        let diagnostic = outcome
+            .diagnostics()
+            .iter()
+            .find(|diagnostic| diagnostic.span().text(&source) == "y")
+            .expect("the disagreeing argument is reported");
+        assert_eq!(diagnostic.code(), "E1107_UNEXPECTED_TOKEN");
+
+        let (source, outcome) = parse("fn main() -> i32 { return add(x: 1i32, 2i32); }");
+        assert!(outcome.has_errors());
+        assert!(outcome
+            .diagnostics()
+            .iter()
+            .any(|diagnostic| diagnostic.span().text(&source) == "2i32"));
     }
 
     #[test]
