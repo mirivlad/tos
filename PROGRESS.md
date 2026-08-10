@@ -363,6 +363,38 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   because the lexer emits `>>` as one shift token while `parse_type` expected
   the word `>`. Added `expect_close_angle`, which splits the token.
 
+### 2026-08-10 — Stage 2 Part B: TOS Core grammar complete
+
+- Парсер покрывает всю EBNF docs/39 §5: postfix chain (`.field`, `[index]`,
+  `?`, `as`), named call arguments, tuple/array/closure/spawn primaries,
+  паттерны всех четырёх форм, пятнадцать statement-форм (if/else, match, while,
+  for, loop, break, continue, parallel, cancel, defer, unsafe плюс ранее
+  реализованные let/return/assignment/expression) и полный item-набор с
+  `pub`, `const` и `async fn`.
+- Assignment ограничен `place` (имя плюс field/index суффиксы), как требует
+  грамматика; для этого форма `Primary` разделена на `Literal` и `Name`.
+- Новый conformance-гейт `crates/tos-core/tests/conformance.rs` привязывает
+  парсер прямо к корпусу: canonical examples и `accept/` обязаны парситься без
+  единой диагностики; `reject/` с frontend-кодом обязан выдать именно его;
+  `reject/` с кодом поздней стадии обязан пройти парсер, иначе вектор не может
+  дойти до стадии, которую заявляет.
+- Гейт нашёл три дефекта корпуса: `async.tos`/`capability.tos`/`parallel.tos`
+  использовали зарезервированные слова как сегмент имени модуля (переименованы
+  вместе с файлами); `unchecked-conversion.tos` не мог дойти до
+  `E1212_INVALID_AS_CONVERSION`, потому что сам не парсился; R024 ожидал
+  `E1107` там, где точный код — `E1101_EXPECTED_IDENTIFIER`.
+- Fuzz расширен на TOS Core: source reader и парсер прогоняются по мутациям и
+  случайным байтам; проверяется тотальность, завершаемость recovery и то, что
+  исход всегда либо чистое дерево, либо хотя бы одна диагностика.
+  200 000 раундов PASS.
+- Исправлено ложное срабатывание `scripts/check-unsafe-safety.py`: `unsafe {`
+  внутри строкового литерала с образцом TOS-исходника читался как Rust-блок.
+  Проверка по-прежнему ловит настоящие unsafe-блоки без SAFETY.
+- Тестов 37 → 60 (58 unit + 2 conformance). `./scripts/preflight.sh --full`
+  → **31/31 PASS**.
+- Шаг 2 из docs/44 §6 закрыт. Шаги 3–10 (checker, ownership, IR, verifier,
+  интерпретатор, source maps, corpus/perf evidence, `init.tos`) не начаты.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5

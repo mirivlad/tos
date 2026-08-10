@@ -12,6 +12,50 @@ UNSAFE_FN = re.compile(r"\bunsafe\s+fn\b")
 UNSAFE_EXTERN = re.compile(r"\bunsafe\s+extern\b")
 
 
+def without_literals(lines: list[str]) -> list[str]:
+    """Blank the contents of Rust string literals, preserving line geometry.
+
+    Rust tests embed TOS Core sample source as string literals, and a sample
+    may legitimately contain `unsafe { ... }`. Matching the raw text would
+    report that sample as an unsafe Rust block. Each removed character is
+    replaced by a space so line and column positions still refer to the file.
+    """
+
+    stripped: list[str] = []
+    in_string = False
+    escaped = False
+    for line in lines:
+        result: list[str] = []
+        index = 0
+        while index < len(line):
+            character = line[index]
+            if in_string:
+                if escaped:
+                    escaped = False
+                elif character == "\\":
+                    escaped = True
+                elif character == '"':
+                    in_string = False
+                result.append(" ")
+                index += 1
+                continue
+            if character == '"':
+                in_string = True
+                result.append(" ")
+                index += 1
+                continue
+            if character == "/" and line[index + 1 : index + 2] == "/":
+                result.append(" " * (len(line) - index))
+                break
+            result.append(character)
+            index += 1
+        stripped.append("".join(result))
+        # A backslash at end of line continues the literal onto the next line.
+        if not in_string:
+            escaped = False
+    return stripped
+
+
 def local_safety_comment(lines: list[str], line_number: int) -> bool:
     """Return whether the contiguous preceding comment block has SAFETY: text."""
 
@@ -64,7 +108,9 @@ def main() -> int:
     for path in rust_sources(root):
         relative = path.relative_to(root)
         lines = path.read_text(encoding="utf-8").splitlines()
-        for number, line in enumerate(lines, start=1):
+        # Rationales are looked up in the original text; matches are taken from
+        # code with literal contents removed.
+        for number, line in enumerate(without_literals(lines), start=1):
             stripped = line.lstrip()
             if stripped.startswith("//"):
                 continue
