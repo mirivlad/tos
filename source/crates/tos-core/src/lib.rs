@@ -16,8 +16,8 @@ mod profile;
 mod returns;
 
 pub use checker::Checker;
-pub use diagnostic::{Diagnostic, DiagnosticField, Position, Severity, Stage};
-pub use modules::{check_module_set, ModuleEntry};
+pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
+pub use modules::{check_module_set, check_source_set, ModuleEntry};
 pub use parser::{
     Block, BorrowMode, CallArgument, ConstDeclaration, EnumDeclaration, EnumVariant,
     EnumVariantForm, Expression, ExpressionForm, FunctionDeclaration, FunctionParameter,
@@ -2286,6 +2286,59 @@ mod tests {
             diagnostics.is_empty(),
             "a shared dependency is not a cycle: {:?}",
             diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn a_resolved_diagnostic_carries_its_module_identity() {
+        // docs/41 section 7 requires module name, canonical path and normalized
+        // source content ID on every diagnostic.
+        let source = module_source("app.main", "import app.missing;");
+        let schema = module_schema(&source);
+        let entry = ModuleEntry::new("app/main.tos", &source, &schema);
+        let diagnostics = check_source_set(&[entry]);
+        assert!(!diagnostics.is_empty());
+        for diagnostic in &diagnostics {
+            let identity = diagnostic
+                .module()
+                .expect("a resolved diagnostic names its module");
+            assert_eq!(identity.name(), "app.main");
+            assert_eq!(identity.path(), "app/main.tos");
+            assert!(identity.content_id().starts_with("sha256:"));
+            assert_eq!(identity.content_id().len(), "sha256:".len() + 64);
+            assert!(identity.source_set().is_none(), "the driver supplies it");
+        }
+    }
+
+    #[test]
+    fn the_content_id_names_the_normalized_bytes() {
+        // CRLF is normalized before the source unit exists, so the transport
+        // form does not change the identity.
+        let lf =
+            SourceReader::read(b"module a.b version 1.0 profile bootstrap;\nresource [fuel: 1]\n")
+                .expect("transport-valid source");
+        let crlf = SourceReader::read(
+            b"module a.b version 1.0 profile bootstrap;\r\nresource [fuel: 1]\r\n",
+        )
+        .expect("transport-valid source");
+        let lf_schema = module_schema(&lf);
+        let crlf_schema = module_schema(&crlf);
+        assert_eq!(
+            ModuleEntry::new("a/b.tos", &lf, &lf_schema)
+                .identity()
+                .content_id(),
+            ModuleEntry::new("a/b.tos", &crlf, &crlf_schema)
+                .identity()
+                .content_id()
+        );
+    }
+
+    #[test]
+    fn a_diagnostic_without_a_resolver_carries_no_identity() {
+        let (_, diagnostics) = check("fn main() -> i32 { return missing; }");
+        assert!(
+            diagnostics.iter().all(|d| d.module().is_none()),
+            "a source unit alone cannot supply a path, so none is invented"
         );
     }
 

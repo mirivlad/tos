@@ -24,6 +24,9 @@ dependencies = [
 [[package]]
 name = "tos-core"
 version = "0.1.0"
+dependencies = [
+ "tos-hash",
+]
 
 [[package]]
 name = "tos-hash"
