@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.pattern_bindings version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+enum Reading [
+    Empty,
+    Sample(i32),
+]
+
+// `Low` is not a variant of the expected type here, so it binds. Resolution
+// does not depend on capitalization.
+pub fn passthrough(value: i32) -> i32 {
+    match (value) {
+        Low => {
+            return Low;
+        }
+    }
+}
+
+pub fn payload(reading: Reading) -> i32 {
+    match (reading) {
+        Sample(amount) => {
+            return amount;
+        }
+        Empty => {
+            return 0i32;
+        }
+    }
+}
+
+pub fn catch_all(reading: Reading) -> i32 {
+    match (reading) {
+        Sample(amount) => {
+            return amount;
+        }
+        _ => {
+            return 0i32;
+        }
+    }
+}

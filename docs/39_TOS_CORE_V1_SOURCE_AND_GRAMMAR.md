@@ -181,6 +181,18 @@ Every diagnostic a source reader, lexer or parser can raise is registered with
 its stage and exact condition in
 `docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md` section 7.
 
+### Pattern resolution boundary
+
+A `pattern_path` of one identifier stays a single syntactic alternative. The
+parser MUST NOT decide whether it is a constructor or a binding: that decision
+needs the pattern's expected type and belongs to the checker, which resolves it
+under ADR-0033 and `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`
+section 2.
+
+A `pattern_path` containing at least one `.` is always a constructor path and
+never a binding. The parser therefore records the whole path and leaves its
+meaning to resolution.
+
 ## 5. Complete V1 grammar
 
 ```ebnf
@@ -271,8 +283,10 @@ cancel_stmt     = "cancel" expression ";" ;
 defer_stmt      = "defer" block ;
 unsafe_stmt     = "unsafe" block ;
 
-pattern         = "_" | pattern_name | pattern_name "(" pattern_list? ")"
+pattern         = "_"
+                | pattern_path ( "(" pattern_list? ")" )?
                 | "(" pattern_list ")" ;
+pattern_path    = pattern_name ( "." identifier )* ;
 pattern_name    = identifier | predeclared_value ;
 pattern_list    = pattern ( "," pattern )* ","? ;
 expression      = logical_or ;

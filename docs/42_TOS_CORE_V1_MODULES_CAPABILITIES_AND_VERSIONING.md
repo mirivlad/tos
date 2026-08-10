@@ -42,6 +42,14 @@ is a separate, source-identified system operation outside the language frontend.
 `import a.b as c;` imports exported types, functions, and constants under `c`.
 Without `as`, the final segment is the binding name. Imports are explicit; V1
 has no wildcard, relative, implicit prelude, or host-standard-library import.
+
+An imported enum's variant is reached through that binding as a qualified path —
+`c.Signal.Low` — in both expression and pattern position. A qualified pattern
+path always denotes a constructor and never a binding, and a path naming no
+reachable variant is an error rather than a catch-all (ADR-0033). Resolution
+uses the same deterministic import closure as any other imported name, so a
+variant pattern is reproducible from the module's declarations plus its
+closure.
 An import graph cycle is `E1606_IMPORT_CYCLE`, including a deterministic ordered
 cycle path in diagnostic fields. There is no top-level executable initialization:
 items declare types, constants, resources, and functions only. This makes

@@ -1729,6 +1729,51 @@ mod tests {
     }
 
     #[test]
+    fn a_qualified_pattern_path_is_never_a_binding() {
+        // ADR-0033 section 5: a path names a constructor, and an unknown one
+        // is an error rather than a catch-all.
+        let (source, diagnostics) = check(
+            "enum Signal [Low, High] \
+             fn main(signal: Signal) -> i32 { match (signal) { Signal.Low => { return 1i32; } \
+             Signal.Middle => { return 2i32; } } }",
+        );
+        let unknown = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1202_UNKNOWN_VALUE_NAME")
+            .expect("an unknown qualified variant is reported");
+        assert_eq!(unknown.field("name"), Some("Middle"));
+        assert_eq!(unknown.field("enum"), Some("Signal"));
+        assert_eq!(unknown.span().text(&source), "Signal.Middle");
+    }
+
+    #[test]
+    fn a_known_qualified_pattern_path_checks_clean() {
+        let (_, diagnostics) = check(
+            "enum Signal [Low, High] \
+             fn main(signal: Signal) -> i32 { match (signal) { Signal.Low => { return 1i32; } \
+             Signal.High => { return 2i32; } } }",
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1202_UNKNOWN_VALUE_NAME"));
+    }
+
+    #[test]
+    fn parser_records_the_whole_pattern_path() {
+        let (source, outcome) = parse(
+            "enum Signal [Low] \
+             fn main(signal: Signal) -> i32 { match (signal) { upstream.Signal.Low => { return 1i32; } } }",
+        );
+        let schema = outcome.into_accepted().expect("a qualified path parses");
+        let branch = &schema.functions()[0].body().statements()[0].branches()[0];
+        let pattern = branch.pattern();
+        assert!(pattern.is_qualified());
+        let path: Vec<&str> = pattern.path().iter().map(|s| s.text(&source)).collect();
+        assert_eq!(path, ["upstream", "Signal", "Low"]);
+        assert_eq!(pattern.name().unwrap().text(&source), "Low");
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.

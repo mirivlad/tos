@@ -57,6 +57,30 @@ unqualified there; an imported enum variant uses a qualified type/module name.
 `Some`, `None`, `Ok`, and `Err` are the fixed V1 constructors for `Option` and
 `Result`, not host-library names.
 
+### Pattern name resolution
+
+Every pattern is checked against an expected type: the scrutinee type for
+`match`, the initializer type refined by any annotation for `let`, the element
+type for `for`, and the corresponding tuple element or enum payload type for a
+nested pattern.
+
+A bare identifier that exactly names a variant of the expected enum type is the
+constructor pattern for that variant. Any other bare ordinary identifier
+introduces a new pattern binding. `Name(...)` is a constructor and destructuring
+pattern resolved the same way, and its sub-patterns are checked against that
+variant's payload positions.
+
+Resolution is nominal. There is no capitalization rule, and an existing lexical
+or value binding of the same name does not change the outcome, so two enums may
+declare variants with the same name and each is disambiguated by the expected
+type of the subject. `Some`, `None`, `Ok`, `Err`, `Completed` and `Cancelled`
+remain non-shadowable constructors and are never bindings.
+
+A qualified pattern path — `Signal.Low`, or `other.Signal.Low` for an imported
+enum — always denotes a constructor and never a binding. A qualified path that
+names no reachable variant is an error; it does not degrade into a catch-all. A
+local variant may be written either short or qualified. See ADR-0033.
+
 There are no user-defined generic functions, traits, implicit interfaces, or
 ad-hoc overload resolution in V1. The listed library type constructors are the
 only parameterized types. This keeps type identity, diagnostics, and
