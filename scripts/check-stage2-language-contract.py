@@ -171,6 +171,7 @@ def main() -> int:
         for code, stage in [
             ("E1202_UNKNOWN_VALUE_NAME", "type"),
             ("E1205_DUPLICATE_RECORD_FIELD", "type"),
+            ("E1221_MISSING_RETURN", "type"),
             ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),
             ("E1703_DUPLICATE_RESOURCE_DECLARATION", "resource"),
             ("E1704_UNKNOWN_RESOURCE_LIMIT", "resource"),
