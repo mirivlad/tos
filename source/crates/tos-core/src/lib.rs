@@ -9,6 +9,7 @@ mod boundary;
 mod checker;
 mod defer;
 mod diagnostic;
+mod modules;
 mod mutability;
 mod parser;
 mod profile;
@@ -16,6 +17,7 @@ mod returns;
 
 pub use checker::Checker;
 pub use diagnostic::{Diagnostic, DiagnosticField, Position, Severity, Stage};
+pub use modules::{check_module_set, ModuleEntry};
 pub use parser::{
     Block, BorrowMode, CallArgument, ConstDeclaration, EnumDeclaration, EnumVariant,
     EnumVariantForm, Expression, ExpressionForm, FunctionDeclaration, FunctionParameter,
@@ -2198,6 +2200,93 @@ mod tests {
         assert!(diagnostics
             .iter()
             .all(|d| d.code() != "E1225_INVALID_DEFER"));
+    }
+
+    fn module_source(name: &str, imports: &str) -> SourceUnit {
+        let text = std::format!(
+            "module {name} version 1.0 profile bootstrap; {imports} resource [fuel: 1000] \
+             fn main() -> unit {{ }}"
+        );
+        SourceReader::read(text.as_bytes()).expect("transport-valid source")
+    }
+
+    fn module_schema(source: &SourceUnit) -> Schema {
+        Parser::parse_schema(source)
+            .into_accepted()
+            .expect("module must parse")
+    }
+
+    #[test]
+    fn a_module_path_must_match_its_declared_name() {
+        let source = module_source("system.boot.init", "");
+        let schema = module_schema(&source);
+        let matched =
+            check_module_set(&[ModuleEntry::new("system/boot/init.tos", &source, &schema)]);
+        assert!(matched.is_empty());
+
+        let mismatched = check_module_set(&[ModuleEntry::new("system/init.tos", &source, &schema)]);
+        assert_eq!(mismatched.len(), 1);
+        assert_eq!(mismatched[0].code(), "E1603_MODULE_PATH_MISMATCH");
+        assert_eq!(
+            mismatched[0].field("expected"),
+            Some("system/boot/init.tos")
+        );
+        assert_eq!(mismatched[0].stage(), Stage::Type);
+    }
+
+    #[test]
+    fn an_import_must_name_a_module_of_the_source_set() {
+        let source = module_source("app.main", "import app.missing;");
+        let schema = module_schema(&source);
+        let diagnostics = check_module_set(&[ModuleEntry::new("app/main.tos", &source, &schema)]);
+        let missing = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1604_IMPORT_NOT_FOUND")
+            .expect("an unresolvable import is reported");
+        assert_eq!(missing.field("import"), Some("app.missing"));
+        assert_eq!(missing.field("importer"), Some("app.main"));
+    }
+
+    #[test]
+    fn an_import_cycle_is_reported_once_with_its_ordered_path() {
+        let first = module_source("app.first", "import app.second;");
+        let second = module_source("app.second", "import app.first;");
+        let first_schema = module_schema(&first);
+        let second_schema = module_schema(&second);
+        let diagnostics = check_module_set(&[
+            ModuleEntry::new("app/first.tos", &first, &first_schema),
+            ModuleEntry::new("app/second.tos", &second, &second_schema),
+        ]);
+        let cycles: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1606_IMPORT_CYCLE")
+            .collect();
+        assert_eq!(cycles.len(), 1, "one cycle is one finding");
+        assert_eq!(
+            cycles[0].field("cycle"),
+            Some("app.first -> app.second -> app.first")
+        );
+        assert_eq!(cycles[0].field("members"), Some("2"));
+    }
+
+    #[test]
+    fn an_acyclic_import_graph_resolves_clean() {
+        let leaf = module_source("app.leaf", "");
+        let mid = module_source("app.mid", "import app.leaf;");
+        let root = module_source("app.root", "import app.mid; import app.leaf;");
+        let leaf_schema = module_schema(&leaf);
+        let mid_schema = module_schema(&mid);
+        let root_schema = module_schema(&root);
+        let diagnostics = check_module_set(&[
+            ModuleEntry::new("app/leaf.tos", &leaf, &leaf_schema),
+            ModuleEntry::new("app/mid.tos", &mid, &mid_schema),
+            ModuleEntry::new("app/root.tos", &root, &root_schema),
+        ]);
+        assert!(
+            diagnostics.is_empty(),
+            "a shared dependency is not a cycle: {:?}",
+            diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>()
+        );
     }
 
     #[test]
