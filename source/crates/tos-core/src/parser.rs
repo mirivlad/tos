@@ -425,6 +425,47 @@ impl Block {
     }
 }
 
+/// Binding pattern form (docs/39 section 5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PatternForm {
+    /// `_`
+    Wildcard,
+    /// `name`, including a predeclared value such as `None`
+    Name,
+    /// `name(p, q)`, matching a tuple variant
+    Destructure,
+    /// `(p, q)`, matching a tuple value
+    Tuple,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub struct Pattern {
+    form: PatternForm,
+    name: Option<Span>,
+    elements: Vec<Pattern>,
+    span: Span,
+}
+
+impl Pattern {
+    pub fn form(&self) -> PatternForm {
+        self.form
+    }
+
+    /// The bound or matched name of a `Name` or `Destructure` pattern.
+    pub fn name(&self) -> Option<Span> {
+        self.name
+    }
+
+    /// The sub-patterns of a `Destructure` or `Tuple` pattern.
+    pub fn elements(&self) -> &[Pattern] {
+        &self.elements
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StatementForm {
     Let,
@@ -576,7 +617,7 @@ impl Expression {
 pub struct Statement {
     form: StatementForm,
     mutable: bool,
-    binding: Option<Span>,
+    pattern: Option<Pattern>,
     declared_type: Option<TypeSyntax>,
     target: Option<Expression>,
     expression: Option<Expression>,
@@ -589,8 +630,9 @@ impl Statement {
     pub fn is_mutable(&self) -> bool {
         self.mutable
     }
-    pub fn binding(&self) -> Option<Span> {
-        self.binding
+    /// The bound pattern of a `Let` statement.
+    pub fn pattern(&self) -> Option<&Pattern> {
+        self.pattern.as_ref()
     }
     pub fn declared_type(&self) -> Option<&TypeSyntax> {
         self.declared_type.as_ref()
@@ -1475,12 +1517,62 @@ impl<'source> TokenCursor<'source> {
         Ok(Statement {
             form: StatementForm::Return,
             mutable: false,
-            binding: None,
+            pattern: None,
             declared_type: None,
             target: None,
             expression,
             span: Span {
                 start: start.start(),
+                end: end.end(),
+            },
+        })
+    }
+
+    /// Parses `"_" | pattern_name | pattern_name "(" pattern_list? ")" |
+    /// "(" pattern_list ")"` (docs/39 section 5).
+    fn parse_pattern(&mut self) -> Result<Pattern, ParseError> {
+        if self.current().kind() == TokenKind::OpenParen {
+            let start = Span::from(self.advance());
+            let elements =
+                self.parse_comma_list(ListCloser::Kind(TokenKind::CloseParen), Self::parse_pattern);
+            let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+            return Ok(Pattern {
+                form: PatternForm::Tuple,
+                name: None,
+                elements,
+                span: Span {
+                    start: start.start(),
+                    end: end.end(),
+                },
+            });
+        }
+        let name = self.expect_identifier()?;
+        if name.text(self.source) == "_" {
+            return Ok(Pattern {
+                form: PatternForm::Wildcard,
+                name: None,
+                elements: Vec::new(),
+                span: name,
+            });
+        }
+        if self.current().kind() != TokenKind::OpenParen {
+            return Ok(Pattern {
+                form: PatternForm::Name,
+                name: Some(name),
+                elements: Vec::new(),
+                span: name,
+            });
+        }
+        self.advance();
+        let elements =
+            self.parse_comma_list(ListCloser::Kind(TokenKind::CloseParen), Self::parse_pattern);
+        let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+        Ok(Pattern {
+            form: PatternForm::Destructure,
+            name: Some(name),
+            elements,
+            span: Span {
+                start: name.start(),
                 end: end.end(),
             },
         })
@@ -1494,7 +1586,7 @@ impl<'source> TokenCursor<'source> {
         } else {
             false
         };
-        let binding = self.expect_identifier()?;
+        let pattern = self.parse_pattern()?;
         let declared_type = if self.consume_kind(TokenKind::Colon).is_some() {
             Some(self.parse_type()?)
         } else {
@@ -1506,7 +1598,7 @@ impl<'source> TokenCursor<'source> {
         Ok(Statement {
             form: StatementForm::Let,
             mutable,
-            binding: Some(binding),
+            pattern: Some(pattern),
             declared_type,
             target: None,
             expression,
@@ -1526,7 +1618,7 @@ impl<'source> TokenCursor<'source> {
             return Ok(Statement {
                 form: StatementForm::Assignment,
                 mutable: false,
-                binding: None,
+                pattern: None,
                 declared_type: None,
                 target: Some(target_or_expression),
                 expression: Some(expression),
@@ -1540,7 +1632,7 @@ impl<'source> TokenCursor<'source> {
         Ok(Statement {
             form: StatementForm::Expression,
             mutable: false,
-            binding: None,
+            pattern: None,
             declared_type: None,
             target: None,
             expression: Some(target_or_expression),

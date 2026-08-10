@@ -13,8 +13,8 @@ pub use parser::{
     Block, BorrowMode, CallArgument, ConstDeclaration, EnumDeclaration, EnumVariant,
     EnumVariantForm, Expression, ExpressionForm, FunctionDeclaration, FunctionParameter,
     FunctionSignature, Import, ImportKind, ModuleHeader, ModuleOutline, ModulePrefix, ParseOutcome,
-    Parser, Profile, RecordDeclaration, RecordField, ResourceDeclaration, ResourceLimit, Schema,
-    Span, Statement, StatementForm, TypeSyntax, TypeSyntaxForm, Visibility,
+    Parser, Pattern, PatternForm, Profile, RecordDeclaration, RecordField, ResourceDeclaration,
+    ResourceLimit, Schema, Span, Statement, StatementForm, TypeSyntax, TypeSyntaxForm, Visibility,
 };
 
 mod unicode {
@@ -1037,7 +1037,10 @@ mod tests {
         let binding = &module.functions()[0].body().statements()[0];
         assert_eq!(binding.form(), StatementForm::Let);
         assert!(binding.is_mutable());
-        assert_eq!(binding.binding().unwrap().text(&source), "count");
+        assert_eq!(
+            binding.pattern().unwrap().name().unwrap().text(&source),
+            "count"
+        );
         assert_eq!(binding.declared_type().unwrap().text(&source), "i32");
         assert_eq!(binding.expression().unwrap().span().text(&source), "41i32");
     }
@@ -1139,8 +1142,24 @@ mod tests {
         let schema = outcome.value().expect("recovery keeps the partial schema");
         let statements = schema.functions()[0].body().statements();
         assert_eq!(statements.len(), 3);
-        assert_eq!(statements[0].binding().unwrap().text(&source), "a");
-        assert_eq!(statements[1].binding().unwrap().text(&source), "c");
+        assert_eq!(
+            statements[0]
+                .pattern()
+                .unwrap()
+                .name()
+                .unwrap()
+                .text(&source),
+            "a"
+        );
+        assert_eq!(
+            statements[1]
+                .pattern()
+                .unwrap()
+                .name()
+                .unwrap()
+                .text(&source),
+            "c"
+        );
         assert_eq!(statements[2].form(), StatementForm::Return);
     }
 
@@ -1388,6 +1407,34 @@ mod tests {
             parse("fn main() -> i32 { let task: i32 = spawn { return 1i32; }; return 0i32; }");
         assert!(outcome.has_errors());
         assert!(outcome.into_accepted().is_none());
+    }
+
+    #[test]
+    fn parser_builds_every_let_pattern_form() {
+        let (source, outcome) = parse(
+            "fn main() -> i32 { let (first, second): (i32, i32) = (1i32, 2i32); \
+             let Some(value): Option<i32> = first; let _ : i32 = second; return value; }",
+        );
+        let schema = outcome.into_accepted().expect("patterns parse");
+        let statements = schema.functions()[0].body().statements();
+
+        let tuple = statements[0].pattern().unwrap();
+        assert_eq!(tuple.form(), PatternForm::Tuple);
+        assert_eq!(tuple.elements().len(), 2);
+        assert_eq!(tuple.elements()[0].form(), PatternForm::Name);
+        assert_eq!(tuple.elements()[1].name().unwrap().text(&source), "second");
+
+        let destructure = statements[1].pattern().unwrap();
+        assert_eq!(destructure.form(), PatternForm::Destructure);
+        assert_eq!(destructure.name().unwrap().text(&source), "Some");
+        assert_eq!(
+            destructure.elements()[0].name().unwrap().text(&source),
+            "value"
+        );
+
+        let wildcard = statements[2].pattern().unwrap();
+        assert_eq!(wildcard.form(), PatternForm::Wildcard);
+        assert!(wildcard.name().is_none());
     }
 
     #[test]
