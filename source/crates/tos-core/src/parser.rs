@@ -444,6 +444,10 @@ pub enum ExpressionForm {
     Index,
     Question,
     Cast,
+    Tuple,
+    Array,
+    Closure,
+    Spawn,
 }
 
 /// One argument of a call or constructor.
@@ -481,6 +485,9 @@ pub struct Expression {
     inner: Option<Box<Expression>>,
     callee: Option<Box<Expression>>,
     arguments: Vec<CallArgument>,
+    elements: Vec<Expression>,
+    parameters: Vec<FunctionParameter>,
+    body: Option<Box<Block>>,
     name: Option<Span>,
     cast_type: Option<TypeSyntax>,
     span: Span,
@@ -523,6 +530,41 @@ impl Expression {
     /// The target type of a `Cast` expression.
     pub fn cast_type(&self) -> Option<&TypeSyntax> {
         self.cast_type.as_ref()
+    }
+
+    /// The members of a `Tuple` or `Array` expression.
+    pub fn elements(&self) -> &[Expression] {
+        &self.elements
+    }
+
+    /// The parameters of a `Closure` expression.
+    pub fn parameters(&self) -> &[FunctionParameter] {
+        &self.parameters
+    }
+
+    /// The executable block of a `Closure` or `Spawn` expression.
+    pub fn body(&self) -> Option<&Block> {
+        self.body.as_deref()
+    }
+
+    /// An expression node carrying only its form and span, for builders that
+    /// fill in the parts their form actually uses.
+    fn node(form: ExpressionForm, span: Span) -> Expression {
+        Expression {
+            form,
+            left: None,
+            operator: None,
+            right: None,
+            inner: None,
+            callee: None,
+            arguments: Vec::new(),
+            elements: Vec::new(),
+            parameters: Vec::new(),
+            body: None,
+            name: None,
+            cast_type: None,
+            span,
+        }
     }
 
     pub fn span(&self) -> Span {
@@ -1570,6 +1612,9 @@ impl<'source> TokenCursor<'source> {
                 inner: None,
                 callee: None,
                 arguments: Vec::new(),
+                elements: Vec::new(),
+                parameters: Vec::new(),
+                body: None,
                 name: None,
                 cast_type: None,
             };
@@ -1605,6 +1650,9 @@ impl<'source> TokenCursor<'source> {
                 inner: Some(Box::new(inner)),
                 callee: None,
                 arguments: Vec::new(),
+                elements: Vec::new(),
+                parameters: Vec::new(),
+                body: None,
                 name: None,
                 cast_type: None,
                 span: Span {
@@ -1634,6 +1682,9 @@ impl<'source> TokenCursor<'source> {
                     operator: None,
                     right: None,
                     inner: None,
+                    elements: Vec::new(),
+                    parameters: Vec::new(),
+                    body: None,
                     name: None,
                     cast_type: None,
                     span: Span {
@@ -1654,6 +1705,9 @@ impl<'source> TokenCursor<'source> {
                     left: None,
                     operator: None,
                     right: Some(Box::new(index)),
+                    elements: Vec::new(),
+                    parameters: Vec::new(),
+                    body: None,
                     name: None,
                     cast_type: None,
                     callee: None,
@@ -1674,6 +1728,9 @@ impl<'source> TokenCursor<'source> {
                     right: None,
                     callee: None,
                     arguments: Vec::new(),
+                    elements: Vec::new(),
+                    parameters: Vec::new(),
+                    body: None,
                     name: None,
                     cast_type: None,
                     span: Span {
@@ -1694,6 +1751,9 @@ impl<'source> TokenCursor<'source> {
                     right: None,
                     callee: None,
                     arguments: Vec::new(),
+                    elements: Vec::new(),
+                    parameters: Vec::new(),
+                    body: None,
                     name: None,
                     span: Span {
                         start: operand.span.start(),
@@ -1713,6 +1773,9 @@ impl<'source> TokenCursor<'source> {
                     right: None,
                     callee: None,
                     arguments: Vec::new(),
+                    elements: Vec::new(),
+                    parameters: Vec::new(),
+                    body: None,
                     name: Some(name),
                     cast_type: None,
                     span: Span {
@@ -1780,26 +1843,119 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
-    fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {
-        if self.current().kind() == TokenKind::OpenParen {
-            let start = Span::from(self.advance());
-            let inner = self.parse_expression()?;
+    /// Parses `"(" expression ")"` or a tuple, which are told apart by the
+    /// comma after the first element (docs/39 section 5).
+    ///
+    /// A V1 tuple has at least two elements, so `(a,)` is rejected rather than
+    /// silently read as a one-element tuple or as a group.
+    fn parse_group_or_tuple(&mut self) -> Result<Expression, ParseError> {
+        let start = self.expect_kind(TokenKind::OpenParen, ParseErrorCode::UnexpectedToken)?;
+        let first = self.parse_expression()?;
+        if self.current().kind() != TokenKind::Comma {
             let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
             return Ok(Expression {
-                form: ExpressionForm::Group,
-                left: None,
-                operator: None,
-                right: None,
-                inner: Some(Box::new(inner)),
-                callee: None,
-                arguments: Vec::new(),
-                name: None,
-                cast_type: None,
-                span: Span {
+                inner: Some(Box::new(first)),
+                ..Expression::node(
+                    ExpressionForm::Group,
+                    Span {
+                        start: start.start(),
+                        end: end.end(),
+                    },
+                )
+            });
+        }
+        self.advance();
+        let mut elements = vec![first];
+        elements.extend(self.parse_comma_list(
+            ListCloser::Kind(TokenKind::CloseParen),
+            Self::parse_expression,
+        ));
+        if elements.len() < 2 {
+            return Err(self.error_here(ParseErrorCode::UnexpectedToken));
+        }
+        let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+        Ok(Expression {
+            elements,
+            ..Expression::node(
+                ExpressionForm::Tuple,
+                Span {
                     start: start.start(),
                     end: end.end(),
                 },
-            });
+            )
+        })
+    }
+
+    fn parse_array(&mut self) -> Result<Expression, ParseError> {
+        let start = self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
+        let elements = self.parse_comma_list(
+            ListCloser::Kind(TokenKind::CloseBracket),
+            Self::parse_expression,
+        );
+        let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
+        Ok(Expression {
+            elements,
+            ..Expression::node(
+                ExpressionForm::Array,
+                Span {
+                    start: start.start(),
+                    end: end.end(),
+                },
+            )
+        })
+    }
+
+    fn parse_closure(&mut self) -> Result<Expression, ParseError> {
+        let start = self.expect_word("fn", ParseErrorCode::UnexpectedToken)?;
+        self.expect_kind(TokenKind::OpenParen, ParseErrorCode::UnexpectedToken)?;
+        let parameters = self.parse_parameters();
+        self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+        let body = self.parse_block()?;
+        Ok(Expression {
+            parameters,
+            span: Span {
+                start: start.start(),
+                end: body.span.end(),
+            },
+            body: Some(Box::new(body)),
+            ..Expression::node(ExpressionForm::Closure, start)
+        })
+    }
+
+    /// Parses `"spawn" ( "async" | "parallel" ) block`.
+    ///
+    /// The mode word is required: docs/39 gives no bare `spawn`, and the parser
+    /// does not supply a default for a missing one.
+    fn parse_spawn(&mut self) -> Result<Expression, ParseError> {
+        let start = self.expect_word("spawn", ParseErrorCode::UnexpectedToken)?;
+        let mode = match self.current_text() {
+            "async" | "parallel" => Span::from(self.advance()),
+            _ => return Err(self.error_here(ParseErrorCode::UnexpectedToken)),
+        };
+        let body = self.parse_block()?;
+        Ok(Expression {
+            operator: Some(mode),
+            span: Span {
+                start: start.start(),
+                end: body.span.end(),
+            },
+            body: Some(Box::new(body)),
+            ..Expression::node(ExpressionForm::Spawn, start)
+        })
+    }
+
+    fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {
+        if self.current().kind() == TokenKind::OpenParen {
+            return self.parse_group_or_tuple();
+        }
+        if self.current().kind() == TokenKind::OpenBracket {
+            return self.parse_array();
+        }
+        if self.current_text() == "fn" {
+            return self.parse_closure();
+        }
+        if self.current_text() == "spawn" {
+            return self.parse_spawn();
         }
         if matches!(
             self.current().kind(),
@@ -1820,6 +1976,9 @@ impl<'source> TokenCursor<'source> {
                 inner: None,
                 callee: None,
                 arguments: Vec::new(),
+                elements: Vec::new(),
+                parameters: Vec::new(),
+                body: None,
                 name: None,
                 cast_type: None,
                 span,
