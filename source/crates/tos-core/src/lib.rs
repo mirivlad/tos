@@ -16,6 +16,7 @@ mod parser;
 mod profile;
 mod returns;
 mod types;
+mod typing;
 
 pub use checker::Checker;
 pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
@@ -2549,6 +2550,125 @@ mod tests {
         assert!(diagnostics
             .iter()
             .all(|d| d.code() != "E1220_NONEXHAUSTIVE_MATCH"));
+    }
+
+    #[test]
+    fn a_returned_value_must_have_the_declared_result_type() {
+        let (_, diagnostics) = check(
+            "fn ok() -> i32 { return 1i32; } \
+             fn wrong(ready: bool) -> i32 { return ready; }",
+        );
+        let mismatch: Vec<(&str, &str)> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1222_RETURN_TYPE_MISMATCH")
+            .map(|d| {
+                (
+                    d.field("expected").unwrap_or_default(),
+                    d.field("actual").unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(mismatch, [("i32", "bool")]);
+    }
+
+    #[test]
+    fn an_unsuffixed_literal_takes_the_declared_result_type() {
+        // docs/40 section 3 contextually types it, so no width disagrees.
+        let (_, diagnostics) =
+            check("fn wide() -> i64 { return 1; } fn narrow() -> u8 { return 2; }");
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1222_RETURN_TYPE_MISMATCH"));
+    }
+
+    #[test]
+    fn a_valueless_return_is_a_mismatch_in_a_non_unit_function() {
+        let (_, diagnostics) = check("fn takes() -> i32 { return; }");
+        let mismatch = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1222_RETURN_TYPE_MISMATCH")
+            .expect("`return;` does not produce an i32");
+        assert_eq!(mismatch.field("expected"), Some("i32"));
+        assert_eq!(mismatch.field("actual"), Some("unit"));
+
+        let (_, unit) = check("fn nothing() -> unit { return; }");
+        assert!(unit
+            .iter()
+            .all(|d| d.code() != "E1222_RETURN_TYPE_MISMATCH"));
+    }
+
+    #[test]
+    fn types_flow_through_calls_fields_and_propagation() {
+        let (_, diagnostics) = check(
+            "record Point [x: i32, y: bool] \
+             fn make() -> Point { return Point(x: 1i32, y: true); } \
+             fn read() -> Result<i32, i32> { return Ok(1i32); } \
+             fn field_is_bool() -> i32 { return make().y; } \
+             fn question_unwraps() -> i32 { return read()?; }",
+        );
+        let mismatch: Vec<(&str, &str)> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1222_RETURN_TYPE_MISMATCH")
+            .map(|d| {
+                (
+                    d.field("expected").unwrap_or_default(),
+                    d.field("actual").unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            mismatch,
+            [("i32", "bool")],
+            "the field access disagrees; `?` unwrapping the Ok payload does not"
+        );
+    }
+
+    #[test]
+    fn a_binding_carries_its_annotation_or_its_initializer_type() {
+        let (_, diagnostics) = check(
+            "fn annotated() -> i32 { let flag: bool = true; return flag; } \
+             fn inferred() -> i32 { let flag = true; return flag; }",
+        );
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|d| d.code() == "E1222_RETURN_TYPE_MISMATCH")
+                .count(),
+            2,
+            "both the annotated and the inferred binding are known to be bool"
+        );
+    }
+
+    #[test]
+    fn consuming_a_task_yields_its_outcome_type() {
+        // docs/41: `join Task<T>` produces `TaskResult<T>`, which is not `T`.
+        let (_, diagnostics) =
+            check("fn main(task: Task<i32>) -> i32 { let outcome = join task; return outcome; }");
+        let mismatch = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1222_RETURN_TYPE_MISMATCH")
+            .expect("TaskResult<i32> is not i32");
+        assert_eq!(mismatch.field("expected"), Some("i32"));
+        assert_eq!(mismatch.field("actual"), Some("TaskResult<i32>"));
+    }
+
+    #[test]
+    fn an_undetermined_type_reports_nothing() {
+        // A type from another module has a known identity but no shape here,
+        // and a guess would invent a mismatch.
+        let text = "module app.client version 1.0 profile bootstrap; import app.upstream as up; \
+             resource [fuel: 1000] fn main(value: up.Reading) -> i32 { return value; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code() != "E1222_RETURN_TYPE_MISMATCH"),
+            "a type from another module has no shape here"
+        );
     }
 
     #[test]
