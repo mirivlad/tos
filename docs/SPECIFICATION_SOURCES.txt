@@ -94,3 +94,4 @@ docs/adr/0029-tos-core-v1-unicode-normalization-baseline.md
 docs/adr/0030-external-vendor-opaque-material.md
 docs/adr/0031-system-source-hierarchy.md
 docs/adr/0032-parser-diagnostics-and-recovery.md
+docs/adr/0033-pattern-name-resolution.md

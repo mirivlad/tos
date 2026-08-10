@@ -211,6 +211,27 @@ def main() -> int:
     diagnostics_adr_path = root / "docs/adr/0032-parser-diagnostics-and-recovery.md"
     diagnostics_adr = diagnostics_adr_path.read_text(encoding="utf-8")
     require("- Status: Accepted" in diagnostics_adr, "ADR-0032 is not accepted", failures)
+    pattern_adr = (root / "docs/adr/0033-pattern-name-resolution.md").read_text(encoding="utf-8")
+    require("- Status: Accepted" in pattern_adr, "ADR-0033 is not accepted", failures)
+    require(
+        'pattern_path    = pattern_name ( "." identifier )* ;' in grammar,
+        "docs/39 lacks the ADR-0033 qualified constructor-pattern path",
+        failures,
+    )
+    require(
+        "A bare identifier that exactly names a variant of the expected enum type" in types,
+        "docs/40 lacks the ADR-0033 pattern resolution rule",
+        failures,
+    )
+    for vector in [
+        "accept/pattern-local-variants.tos",
+        "accept/pattern-bindings.tos",
+        "accept/pattern-qualified-import.tos",
+        "reject/pattern-unknown-qualified-variant.tos",
+        "reject/pattern-nonexhaustive-variants.tos",
+    ]:
+        require((root / "docs/language/conformance/v1" / vector).is_file(), f"missing vector: {vector}", failures)
+        require(vector in expectations, f"missing expectation: {vector}", failures)
     require(
         re.search(
             r"or at the `\}` that closes a top-level declaration\s+body and returns delimiter nesting to zero",

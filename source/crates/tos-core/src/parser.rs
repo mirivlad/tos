@@ -441,7 +441,7 @@ pub enum PatternForm {
 #[derive(Debug, Eq, PartialEq)]
 pub struct Pattern {
     form: PatternForm,
-    name: Option<Span>,
+    path: Vec<Span>,
     elements: Vec<Pattern>,
     span: Span,
 }
@@ -451,9 +451,24 @@ impl Pattern {
         self.form
     }
 
-    /// The bound or matched name of a `Name` or `Destructure` pattern.
+    /// The path of a `Name` or `Destructure` pattern.
+    ///
+    /// A single segment may be a constructor or a binding; a path with more
+    /// than one segment is always a constructor path (ADR-0033). Which one a
+    /// single segment is depends on the pattern's expected type and is decided
+    /// by the checker, not here.
+    pub fn path(&self) -> &[Span] {
+        &self.path
+    }
+
+    /// The last segment of the path, which names the constructor or binding.
     pub fn name(&self) -> Option<Span> {
-        self.name
+        self.path.last().copied()
+    }
+
+    /// Whether the pattern was written as a qualified constructor path.
+    pub fn is_qualified(&self) -> bool {
+        self.path.len() > 1
     }
 
     /// The sub-patterns of a `Destructure` or `Tuple` pattern.
@@ -1824,7 +1839,7 @@ impl<'source> TokenCursor<'source> {
             let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
             return Ok(Pattern {
                 form: PatternForm::Tuple,
-                name: None,
+                path: Vec::new(),
                 elements,
                 span: Span {
                     start: start.start(),
@@ -1832,21 +1847,27 @@ impl<'source> TokenCursor<'source> {
                 },
             });
         }
-        let name = self.expect_identifier()?;
-        if name.text(self.source) == "_" {
+        let first = self.expect_identifier()?;
+        if first.text(self.source) == "_" {
             return Ok(Pattern {
                 form: PatternForm::Wildcard,
-                name: None,
+                path: Vec::new(),
                 elements: Vec::new(),
-                span: name,
+                span: first,
             });
         }
+        let path = self.parse_pattern_path(first)?;
+        let start = path[0].start();
+        let last = *path.last().expect("a pattern path is nonempty");
         if self.current().kind() != TokenKind::OpenParen {
             return Ok(Pattern {
                 form: PatternForm::Name,
-                name: Some(name),
+                path,
                 elements: Vec::new(),
-                span: name,
+                span: Span {
+                    start,
+                    end: last.end(),
+                },
             });
         }
         self.advance();
@@ -1855,13 +1876,25 @@ impl<'source> TokenCursor<'source> {
         let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
         Ok(Pattern {
             form: PatternForm::Destructure,
-            name: Some(name),
+            path,
             elements,
             span: Span {
-                start: name.start(),
+                start,
                 end: end.end(),
             },
         })
+    }
+
+    /// Continues a pattern path after its first segment.
+    ///
+    /// `pattern_path = pattern_name ( "." identifier )*` stays deterministic:
+    /// no other production may follow a pattern name with a dot.
+    fn parse_pattern_path(&mut self, first: Span) -> Result<Vec<Span>, ParseError> {
+        let mut path = vec![first];
+        while self.consume_kind(TokenKind::Dot).is_some() {
+            path.push(self.expect_identifier()?);
+        }
+        Ok(path)
     }
 
     fn parse_let_statement(&mut self) -> Result<Statement, ParseError> {

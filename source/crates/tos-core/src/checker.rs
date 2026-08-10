@@ -101,9 +101,19 @@ impl Checker {
 /// argument label are field names, not values, and are checked against their
 /// type by a later slice.
 fn resolve_value_names(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> {
+    let mut local_enums = BTreeMap::new();
+    for declaration in schema.enums() {
+        let variants: BTreeSet<&str> = declaration
+            .variants()
+            .iter()
+            .map(|variant| variant.name().text(source))
+            .collect();
+        local_enums.insert(declaration.name().text(source), variants);
+    }
     let mut resolver = Resolver {
         source,
         scopes: Vec::new(),
+        local_enums,
         diagnostics: Vec::new(),
     };
     resolver.push_scope();
@@ -159,6 +169,9 @@ fn resolve_value_names(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> 
 struct Resolver<'source> {
     source: &'source SourceUnit,
     scopes: Vec<BTreeSet<&'source str>>,
+    /// Variant names of every enum declared in this module, for resolving a
+    /// qualified constructor pattern without types.
+    local_enums: BTreeMap<&'source str, BTreeSet<&'source str>>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -190,17 +203,24 @@ impl<'source> Resolver<'source> {
 
     /// Brings a pattern's bindings into the current scope.
     ///
-    /// A bare pattern name is treated as matching when it already resolves and
-    /// as binding otherwise, so `Some(value)` binds only `value`. Whether that
-    /// is the V1 rule is not settled by the accepted contract: docs/39 section
-    /// 2 makes only predeclared value names unshadowable, while the accepted
-    /// corpus matches user enum variants by bare name. The two readings admit
-    /// the same set of resolvable names, so this slice reports the same
-    /// diagnostics either way; the decision is needed before exhaustiveness
-    /// and typing, not here.
+    /// ADR-0033 resolves a bare pattern name against the pattern's expected
+    /// type: it is a constructor when it names a variant of that type and a
+    /// binding otherwise. This slice has no types yet, so it approximates by
+    /// treating an already-resolving name as a constructor. The approximation
+    /// is diagnosis-neutral — both readings admit the same set of resolvable
+    /// names — and the real rule lands with the type slice.
+    ///
+    /// A qualified path is always a constructor and never binds, so it
+    /// contributes no name here.
     fn bind_pattern(&mut self, pattern: &'source Pattern) {
         match pattern.form() {
             PatternForm::Wildcard => {}
+            PatternForm::Name | PatternForm::Destructure if pattern.is_qualified() => {
+                self.check_qualified_pattern(pattern);
+                for element in pattern.elements() {
+                    self.bind_pattern(element);
+                }
+            }
             PatternForm::Name => {
                 let span = pattern.name().expect("a name pattern carries its name");
                 let name = span.text(self.source);
@@ -214,6 +234,37 @@ impl<'source> Resolver<'source> {
                 }
             }
         }
+    }
+
+    /// Checks a qualified constructor pattern whose enum is declared locally.
+    ///
+    /// ADR-0033 section 5 makes a qualified path always a constructor, so a
+    /// path naming no reachable variant is an error rather than a binding.
+    /// Only a locally declared enum can be resolved without types: a path
+    /// through an import binding needs the module closure and is left to the
+    /// slice that owns it.
+    fn check_qualified_pattern(&mut self, pattern: &'source Pattern) {
+        let path = pattern.path();
+        let [enum_name, variant_name] = path else {
+            return;
+        };
+        let Some(variants) = self.local_enums.get(enum_name.text(self.source)) else {
+            return;
+        };
+        let variant = variant_name.text(self.source);
+        if variants.contains(variant) {
+            return;
+        }
+        self.diagnostics.push(
+            diagnostic(
+                "E1202_UNKNOWN_VALUE_NAME",
+                Stage::Type,
+                pattern.span(),
+                self.source,
+            )
+            .with_field("name", variant)
+            .with_field("enum", enum_name.text(self.source)),
+        );
     }
 
     fn visit_block(&mut self, block: &'source Block) {

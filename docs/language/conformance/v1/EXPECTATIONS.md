@@ -22,6 +22,9 @@
 | C014 | `accept/named-record-constructor.tos` | Bootstrap | `Point(x: ..., y: ...)` supplies each exact field once | named record constructor arguments |
 | C015 | `accept/named-enum-variant.tos` | Bootstrap | `Rgb(red: ..., green: ..., blue: ...)` supplies each exact field once | named-field enum construction through Call/Construct |
 | C016 | `accept/return-scopes.tos` | Full | nested ordinary block, closure, and spawned task return to their own nearest scope | explicit return-scope boundary |
+| C017 | `accept/pattern-local-variants.tos` | Bootstrap | accepts bare `Low`/`High` against `Signal` and against `Power`, plus qualified `Power.High` | expected type disambiguates a shared variant name, and a local variant may be written qualified |
+| C018 | `accept/pattern-bindings.tos` | Bootstrap | `Low` binds where the expected type is `i32`; `Sample(amount)` destructures; `_` is a catch-all | a bare name binds when the expected type has no such variant, independently of capitalization |
+| C019 | `accept/pattern-qualified-import.tos` | Bootstrap | accepts `upstream.Signal.Low` and `upstream.Signal.High` | an imported variant is reached as a qualified constructor path |
 | R001 | `reject/use-after-move.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | affine ownership negative |
 | R002 | `reject/borrow-escape.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` | a mutable borrow cannot coexist with later borrow/use |
 | R003 | `reject/forged-capability.tos` | Bootstrap | `E1502_FORGED_CAPABILITY` | scalar value cannot become authority |
@@ -50,6 +53,8 @@
 | R026 | `reject/missing-record-constructor-field.tos` | Bootstrap | `E1206_MISSING_RECORD_FIELD` | named constructor cannot omit a field |
 | R027 | `reject/standalone-block-expression.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at `{` | executable block is not an expression |
 | R028 | `reject/old-array-semicolon-type.tos` | Bootstrap | `E1101_EXPECTED_IDENTIFIER` at `[` | fixed array type uses `array<T, N>` |
+| R031 | `reject/pattern-unknown-qualified-variant.tos` | Bootstrap | `E1202_UNKNOWN_VALUE_NAME` at `Signal.Middle` | a qualified pattern path names a constructor and never degrades into a binding |
+| R032 | `reject/pattern-nonexhaustive-variants.tos` | Bootstrap | `E1220_NONEXHAUSTIVE_MATCH` | bare variant names are patterns, not catch-all bindings, so the missing arm is detected |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 

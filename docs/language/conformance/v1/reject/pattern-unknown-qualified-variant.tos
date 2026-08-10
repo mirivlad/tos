@@ -1,0 +1,25 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.pattern_unknown_qualified_variant version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+enum Signal [
+    Low,
+    High,
+]
+
+// A qualified path is always a constructor path, so an unknown one is an
+// error rather than a catch-all binding.
+pub fn classify(signal: Signal) -> i32 {
+    match (signal) {
+        Signal.Low => {
+            return 1i32;
+        }
+        Signal.Middle => {
+            return 2i32;
+        }
+        Signal.High => {
+            return 3i32;
+        }
+    }
+}
