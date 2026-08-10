@@ -56,6 +56,7 @@ name = "tos-tests-fuzz"
 version = "0.1.0"
 dependencies = [
  "tos-capsule",
+ "tos-core",
  "tos-hash",
 ]
 
