@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `0147e667321754ca6b6dfbda01a80522c125d78ad2732d672a2168b3bf749816`  
+Source-manifest SHA-256: `53f00a17c93f1d0912147c31ed0d901428cf3d4f78d705224d8bca356b637c8c`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2272,6 +2272,9 @@ device firmware. It is not part of the canonical `/system` tree and is never
 presented as TOS source. `/system` may declare that it requires a vendor object
 by identity, version and hash; the opaque bytes themselves stay in `/vendor`.
 See ADR-0030.
+
+The internal structure of the runtime `/system` tree is defined by
+`docs/45_SYSTEM_SOURCE_HIERARCHY.md`.
 
 ## Process model
 
@@ -5063,6 +5066,22 @@ separate `/firmware` root.
 This namespace is defined by ADR-0030. No implementation is required
 before the stage that first needs physical-hardware firmware.
 
+## Namespace classes at a glance
+
+| Namespace | Class | Deleting it means |
+|---|---|---|
+| `/system` | canonical source | not possible while active |
+| `/work` | source overlay | discards proposals |
+| `/config` | configuration | changes machine behavior |
+| `/state`, `/home`, `/secrets` | mutable state | data loss |
+| `/cache` | derived cache | regeneration only |
+| `/run` | ephemeral | nothing |
+| `/dev` | capability namespace | not applicable |
+| `/vendor` | external material | reacquisition from vendor |
+
+The internal structure of `/system` and the full classification rules are in
+`docs/45_SYSTEM_SOURCE_HIERARCHY.md`.
+
 ## State schema versions
 
 Every service with durable state declares:
@@ -5096,6 +5115,223 @@ System-source commits and mutable-state transactions are separate. A coordinated
 The first implementation may use a simple native object store and state filesystem under QEMU. The VFS and capability contracts must not assume a particular disk format. Support for conventional filesystems may later be implemented as user-space services.
 
 <!-- END docs/09_FILESYSTEM_AND_STATE.md -->
+
+---
+
+<!-- BEGIN docs/45_SYSTEM_SOURCE_HIERARCHY.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# Runtime system source hierarchy
+
+- Status: **Accepted Tier 2 contract — implementation deferred to the stage that
+  first needs each subsystem**
+- Authority on acceptance: Tier 2 under
+  `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`
+- Governing Tier 1 decisions: ADR-0002, ADR-0031, ADR-0030
+- Companion documents: `docs/03_ARCHITECTURE_OVERVIEW.md`,
+  `docs/09_FILESYSTEM_AND_STATE.md`, `docs/17_REPOSITORY_LAYOUT.md`
+
+## Status and boundary
+
+This document describes the source hierarchy of a **running TOS installation**.
+`docs/17_REPOSITORY_LAYOUT.md` describes the layout of the development
+repository and remains authoritative for that purpose. Where the two overlap,
+section 2 of this document defines the mapping.
+
+This document defines placement and classification. It does not define module
+resolution rules, manifest schema, capability grammar, activation mechanics or
+storage format; those belong to `docs/05`, `docs/10`, `docs/12`, `docs/13` and
+the versioned interface contracts. No directory described here is required to
+exist before the stage that first implements the subsystem it serves.
+
+## 1. Namespace classification
+
+Every path visible to a running TOS installation belongs to exactly one class.
+The class determines what deletion means, what rollback means and whether the
+content is canonical.
+
+| Class | Meaning | Deletion | Root namespaces |
+|---|---|---|---|
+| Canonical source | defines system behavior; commit-addressed and read-only | not possible while active; changes require commit and activation | `/system` |
+| Source overlay | candidate canonical source, not yet trusted or activated | discards candidates only | `/work` |
+| Configuration | machine and deployment configuration | changes machine behavior; versioning model is explicit | `/config` |
+| Mutable state | durable data owned by services and users | loses data | `/state`, `/home`, `/secrets` |
+| Derived cache | reproducible from canonical source and declared inputs | forces regeneration only | `/cache` |
+| Ephemeral | recreated on boot | none | `/run` |
+| Capability namespace | mediated handles, not stored bytes | not applicable | `/dev` |
+| External material | vendor-controlled opaque material outside TOS ownership | requires reacquisition from the vendor | `/vendor` |
+
+Consequences that follow from the table and are normative:
+
+- `/system` **MUST NOT** contain derived executable artifacts, generated caches,
+  mutable state, or vendor-controlled opaque material;
+- `/cache` **MUST NOT** contain anything whose loss removes functionality;
+- `/vendor` **MUST NOT** be presented as, mounted inside, or merged into
+  `/system`, per ADR-0030;
+- deleting `/cache` and rebooting **MUST** yield the same system behavior.
+
+## 2. Repository-to-runtime mapping
+
+The development repository subtree `source/system/` is the canonical input for
+the runtime `/system` tree. A system commit's `system/` tree becomes the
+installation's read-only `/system` when that commit is selected.
+
+The mapping is direct and unrenamed: `source/system/boot/init.tos` in the
+repository is `/system/boot/init.tos` in the running installation. A build step
+that rewrites, relocates or generates entries between the two would break the
+source-to-runtime chain required by I-16 and is not permitted.
+
+Repository directories outside `source/system/` — `boot/`, `nucleus/`,
+`crates/`, `interfaces/`, `host-tools/`, `tests/`, `docs/`, `legal/` — are
+project development material. They produce the binary trusted base, derived
+artifacts and evidence; they are not installed as `/system` content.
+
+## 3. `/system` hierarchy
+
+```text
+/system/
+    boot/           boot entry source, health requirements, boot policy
+    services/       system service modules
+    drivers/        user-space device driver modules
+    languages/      language frontend modules
+    lib/            shared textual modules used by other components
+    apps/           applications delivered with the system commit
+    shell/          command interpreter and console environment
+    ui/             graphical environment source
+    policy/         system policy source
+    schemas/        versioned IPC, state and interface schema source
+    machine/        machine-specific system source
+    third-party/    imported textual source with provenance metadata
+    lock/           resolved dependency, frontend, schema and vendor locks
+```
+
+Every entry is canonical source text. The names are normative at the conceptual
+level; exact storage and mount implementation may evolve through ADRs.
+
+### `boot/`
+
+Contains `init.tos` and the boot health requirements referenced by
+`docs/04_BOOT_AND_RECOVERY.md`. The capsule copy of `/system/boot/init.tos` and
+the repository-backed copy are related through the handoff protocol defined
+there; the capsule remains a transport and recovery seed, never a second
+installed system.
+
+### `services/`, `drivers/`, `languages/`
+
+Textual components launched as isolated processes under
+`docs/10_PROCESS_SERVICE_IPC.md`, `docs/11_DRIVER_MODEL.md` and
+`docs/07_LANGUAGE_FRONTENDS.md`. Each component's manifest is declared inside
+its own module source, as shown in `docs/11_DRIVER_MODEL.md`; TOS does not keep
+a parallel manifest directory that could drift from the code it describes.
+
+### `lib/`
+
+Shared textual modules imported by other `/system` components. A module is
+placed here when more than one component depends on it. Placement grants no
+authority: a library module holds no capabilities of its own and receives only
+what its caller passes.
+
+### `apps/`
+
+Applications delivered as part of the system commit. Applications installed and
+owned by a user are not `/system` content and do not appear here.
+
+### `shell/`, `ui/`, `policy/`
+
+Console environment, graphical environment and system policy source. Policy is
+canonical text like any other component; it is not a binary configuration
+database.
+
+### `schemas/`
+
+Source of record for the versioned boundaries required by I-09: IPC message
+schemas, durable state schemas and interface contracts as consumed by the
+running system. Schema version identity is part of activation validation under
+`docs/13_UPDATE_MERGE_PACKAGE_MODEL.md`.
+
+### `machine/`
+
+System source that applies to a specific machine or hardware profile — for
+example a board-specific driver set or platform quirk module. This is source and
+therefore lives in the system commit.
+
+Machine *configuration* is not source and remains in `/config` under
+`docs/09_FILESYSTEM_AND_STATE.md`. The distinction is: if changing it requires a
+source change, commit and activation, it belongs in `/system/machine/`; if it is
+deployment data consumed by a component, it belongs in `/config`.
+
+### `third-party/`
+
+Textual source imported from outside the project, retaining upstream metadata,
+patch series, provenance and licence records as required by
+`docs/27_THIRD_PARTY_COMPONENT_POLICY.md` and
+`docs/22_LICENSING_COPYRIGHT_AND_REUSE.md`.
+
+Material here is canonical source: readable, modifiable and rebuildable by the
+owner. Material that cannot satisfy that description is not third-party textual
+source — it is vendor-controlled opaque material and belongs in `/vendor` under
+ADR-0030.
+
+### `lock/`
+
+The resolved lock manifests required by `docs/13_UPDATE_MERGE_PACKAGE_MODEL.md`:
+exact dependency identities, frontend versions, schema versions, required
+runtime ABI and the identity/version/hash of every required `/vendor` object.
+
+Lock content is generated during update resolution but is **not** a derived
+cache: it is committed canonical source, because it records the decisions that
+define the system commit. Regenerating it may produce a different result at a
+different time, so it cannot be discarded and rebuilt.
+
+## 4. Relationship between `/work` and `/system`
+
+`/work` holds writable overlays with the same shape as `/system`. An overlay is
+a proposal, not an installation.
+
+- an overlay path corresponds to the `/system` path it proposes to change;
+- overlay content is never executed as system source without explicit
+  validation and transactional activation under I-05;
+- an overlay may be discarded without affecting the active commit;
+- multiple named overlays or branches may exist simultaneously;
+- status and diff against the active commit are always available.
+
+Editing source in a running system means editing an overlay and then committing
+and activating it. It does not mean mutating `/system`, which is read-only by
+class.
+
+## 5. Dependencies on `/vendor`
+
+A `/system` component that requires vendor-controlled opaque material declares
+that requirement in its own manifest, alongside its capability requirements, in
+the same way `docs/11_DRIVER_MODEL.md` declares device and capability needs. The
+declaration names vendor, object identity, version, content hash, expected
+`/vendor` placement, compatibility constraints and behavior when the object is
+absent, mismatched or refused.
+
+`/system/lock/` aggregates the resolved set for the commit so that the required
+external material of a system commit can be listed without traversing every
+component.
+
+The opaque bytes never appear in `/system`. The declaration is a reference.
+Full rules are in ADR-0030.
+
+## 6. Conformance expectations
+
+When this hierarchy is implemented, architecture conformance tests under
+`docs/31_ARCHITECTURE_CONFORMANCE_TESTS.md` must enforce that:
+
+- no path under `/system` resolves to derived-cache, mutable-state or
+  vendor-material content;
+- deleting `/cache` and rebooting reproduces identical system behavior;
+- every running non-nucleus component reports a `/system` source path that
+  exists in the active commit;
+- an overlay path in `/work` cannot execute as system source without passing
+  activation;
+- the set of required `/vendor` objects for the active commit is enumerable from
+  `/system/lock/` and matches the per-component declarations.
+
+<!-- END docs/45_SYSTEM_SOURCE_HIERARCHY.md -->
 
 ---
 
@@ -6672,7 +6908,14 @@ Developer/release tooling and external oracles. Runtime restoration cannot depen
 ### `system/`
 
 Canonical textual system tree, and the canonical input for the runtime
-`/system` tree of an installed machine.
+`/system` tree of an installed machine. The mapping is direct and unrenamed:
+`system/boot/init.tos` here is `/system/boot/init.tos` there. Its internal
+structure is defined by `docs/45_SYSTEM_SOURCE_HIERARCHY.md`; this document
+remains authoritative for the rest of the repository.
+
+The tree above is written relative to the implementation root. The implemented
+repository nests that root under `source/`, so this subtree is `source/system/`
+on disk and `docs/45_SYSTEM_SOURCE_HIERARCHY.md` names it that way.
 
 No generated executable caches or binary packages are committed here.
 
@@ -7160,6 +7403,8 @@ Mitigation:
 **Vendor-controlled opaque material** — externally produced bytes consumed by hardware that TOS cannot express as editable source, such as CPU microcode or device firmware; identified by vendor, version and hash, never presented as TOS source.
 
 **`/vendor`** — root namespace holding vendor-controlled opaque material, outside the canonical `/system` tree and outside the system commit.
+
+**Namespace class** — the single category a runtime path belongs to — canonical source, source overlay, configuration, mutable state, derived cache, ephemeral, capability namespace or external material — determining what deletion and rollback mean for it.
 
 **Vendor declaration** — canonical source text in `/system` naming a required `/vendor` object by vendor, identity, version, hash, placement and behavior on absence or mismatch; a reference, never an embedded payload.
 
@@ -10548,6 +10793,165 @@ belong to the same boundary, and a firmware-specific root would need siblings
 later.
 
 <!-- END docs/adr/0030-external-vendor-opaque-material.md -->
+
+---
+
+<!-- BEGIN docs/adr/0031-system-source-hierarchy.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0031: Runtime system source hierarchy
+
+- Status: Accepted (Project Architect-approved)
+- Date: 2026-08-10
+- Decision level: 2 — extends existing namespace contracts with a normative
+  runtime hierarchy without moving a trust boundary or changing an invariant
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-10
+
+## Context
+
+TOS documentation defines the root namespaces of a running system
+(`docs/03_ARCHITECTURE_OVERVIEW.md`), their classes
+(`docs/09_FILESYSTEM_AND_STATE.md`) and the layout of the development
+repository (`docs/17_REPOSITORY_LAYOUT.md`). It does not define the inside of
+`/system` on a running machine.
+
+The gaps are concrete, and each one is already reachable from an accepted
+contract:
+
+- `docs/17` lists `system/{boot,services,drivers,languages,shell,ui,policy}` in
+  the repository, but nothing states whether the runtime `/system` is that same
+  tree, a transformation of it, or an unrelated structure. I-16 requires a
+  running component to report its canonical source path, which is unanswerable
+  while the mapping is undefined.
+- `docs/04` names `/system/boot/init.tos` and `/system/boot/health.tos`,
+  `docs/07` names `/system/languages/<name>/` and `docs/14` names
+  `/system/drivers/virtio/block.tos`. These paths are used as facts by several
+  documents without a document that defines them.
+- `docs/13` requires that "the active system commit contains a lock manifest"
+  without saying where it lives or whether it is canonical source or a cache.
+- Shared libraries, applications, runtime-visible schemas, machine-specific
+  source and imported third-party textual source have no stated location,
+  although every one of them is implied by an accepted contract.
+- `docs/09` classifies root namespaces informally. There is no single statement
+  of which paths are canonical source, which are mutable state, which are
+  derived cache and which are external material — the distinction that makes
+  "deleting caches must not remove functionality" (I-01) mechanically testable.
+
+Left undefined, each gap gets filled by whichever subsystem is implemented
+first, and the resulting structure becomes architecture by accident.
+
+## Decision
+
+`docs/45_SYSTEM_SOURCE_HIERARCHY.md` becomes a Tier 2 normative contract
+defining the runtime system source hierarchy. Its substance:
+
+1. **Namespace classification.** Every runtime path belongs to exactly one of:
+   canonical source, source overlay, configuration, mutable state, derived
+   cache, ephemeral, capability namespace, external material. The class defines
+   what deletion and rollback mean for that path.
+
+2. **Repository-to-runtime mapping.** The repository subtree `source/system/` is
+   the canonical input for the runtime `/system` tree, mapped directly and
+   without renaming or generation. Repository directories outside
+   `source/system/` are development material and are not installed as `/system`
+   content.
+
+3. **`/system` hierarchy.** Thirteen entries: `boot/`, `services/`, `drivers/`,
+   `languages/`, `lib/`, `apps/`, `shell/`, `ui/`, `policy/`, `schemas/`,
+   `machine/`, `third-party/`, `lock/`. Each is canonical source text. Seven of
+   them are already named by `docs/17_REPOSITORY_LAYOUT.md`; the remaining six
+   are the minimum needed to give an existing accepted requirement a defined
+   location.
+
+4. **Manifests stay in module source.** Component manifests are declared inside
+   the module they describe, following `docs/11_DRIVER_MODEL.md`. No parallel
+   manifest directory is introduced, because a separate manifest tree can drift
+   from the code it describes.
+
+5. **`/work` shape.** Overlays mirror `/system` paths, are never executed as
+   system source without transactional activation, and are discardable.
+
+6. **`/vendor` dependencies.** A component declares required vendor objects in
+   its own manifest; `/system/lock/` aggregates the resolved set for the commit.
+   Opaque bytes never appear in `/system`. Governed by ADR-0030.
+
+7. **Lock manifests are canonical source, not cache.** They record resolution
+   decisions that define the commit and cannot be regenerated identically at a
+   later time, so they fail the derived-artifact test in I-01.
+
+This ADR defines placement and classification only. Module resolution, manifest
+schema, capability grammar, activation mechanics and storage format remain with
+their existing owning contracts. No directory must exist before the stage that
+implements the subsystem it serves.
+
+## Architecture impact statement
+
+- **Change level:** 2.
+- **Invariants affected:** none amended. I-01 gains a mechanically testable
+  boundary (canonical source versus derived cache per path); I-16 gains the
+  mapping that makes a reported source path resolvable in the active commit;
+  I-04 gains the explicit `/work`-to-`/system` relationship; I-09 gains a stated
+  location for runtime-visible schema source.
+- **Canonical representation after the change:** unchanged. `/system` remains
+  canonical text; this decision says what is inside it.
+- **Trusted-base impact:** none. No dependency enters the loader or nucleus and
+  no trust boundary moves.
+- **Source-to-runtime impact:** improved. The chain from reported source path to
+  active-commit tree entry becomes resolvable rather than conventional.
+- **Recovery and rollback impact:** unchanged mechanically. Classification makes
+  rollback semantics explicit per class, and section 3 of docs/45 clarifies that
+  `/system/lock/` rolls back with the commit while `/vendor` does not.
+- **Stage identity gate:** no stage gate is claimed or closed.
+- **Threat-model impact:** none directly. The classification supports existing
+  properties S6 and S9 by making "derived" and "mutable" checkable per path
+  rather than per subsystem convention.
+- **Performance contract:** none applicable.
+- **Compatibility profile:** none claimed.
+- **New dependencies:** none. The decision is documentary.
+- **Licence and patent impact:** none. `/system/third-party/` restates existing
+  obligations from docs/22 and docs/27 rather than adding any.
+- **Tests that enforce the decision:** deferred to the implementing stages, with
+  required conformance expectations listed in docs/45 section 6 — no `/system`
+  path resolving to cache, state or vendor content; `/cache` deletion behavior;
+  reported source paths existing in the active commit; overlay paths unable to
+  execute without activation; `/vendor` requirement sets enumerable from
+  `/system/lock/`.
+
+## Consequences
+
+Subsystem work from Stage 3 onward has a defined place to put its source, and
+the placement decisions are reviewable now rather than emerging from
+implementation order. Architecture conformance tests gain a target they can
+enforce mechanically.
+
+The cost is that a hierarchy defined before most of its subsystems exist may
+require revision. That is accepted: revising a stated contract through an ADR is
+the visible path, whereas an unstated hierarchy is revised silently and without
+review.
+
+## Alternatives considered
+
+**Extend `docs/09_FILESYSTEM_AND_STATE.md` instead of adding a document.**
+Rejected: docs/09 is about why one Git repository cannot hold every changing
+byte and how state is separated from source. The internal structure of the
+canonical tree is a different subject and would dilute both.
+
+**Extend `docs/17_REPOSITORY_LAYOUT.md`.** Rejected for the reason this ADR
+exists: conflating the developer repository with the installed system is the
+current source of ambiguity, and merging them into one document would preserve
+it.
+
+**Define nothing until Stage 3 needs it.** Rejected: the paths are already used
+as facts by docs/04, docs/07, docs/13 and docs/14, so the hierarchy is being
+relied upon before it is defined. Deferring means the first implementation
+chooses for the architecture.
+
+**Define a complete hierarchy including future subsystems.** Rejected: entries
+would have no accepted contract behind them. Every entry in docs/45 section 3
+traces to a requirement that already exists.
+
+<!-- END docs/adr/0031-system-source-hierarchy.md -->
 
 ---
 

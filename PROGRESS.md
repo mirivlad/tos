@@ -278,6 +278,24 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 - No implementation is authorized by this decision; `/vendor` is required only
   from the stage that first needs physical-hardware firmware.
 
+### 2026-08-10 — Accepted runtime system source hierarchy
+
+- Project Architect accepted ADR-0031 and docs/45 as Tier 2: classification of
+  every runtime path (canonical source / source overlay / configuration /
+  mutable state / derived cache / ephemeral / capability namespace / external
+  material), the direct unrenamed mapping from repository `source/system/` to
+  runtime `/system`, thirteen entries inside `/system`, the `/work`↔`/system`
+  relationship and where `/vendor` dependencies are declared.
+- The gap was real rather than cosmetic: docs/04, docs/07 and docs/14 already
+  use `/system/...` paths as facts, docs/13 requires a lock manifest without
+  saying where it lives, and I-16 requires a reported source path that nothing
+  made resolvable.
+- Manifests stay inside module source, following docs/11; no parallel manifest
+  tree is introduced. Lock manifests are classified as canonical source, not
+  derived cache, because they cannot be regenerated identically later.
+- docs/17 now records that its layout tree is written relative to the
+  implementation root, which the implemented repository nests under `source/`.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5

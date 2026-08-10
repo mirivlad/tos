@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 247
+- files in the release package: 248
 - active system invariants: 21
-- architecture decision records: 30 (30 accepted)
+- architecture decision records: 31 (31 accepted)
 
 Architecture decision records
 -----------------------------
@@ -74,6 +74,7 @@ Architecture decision records
 - docs/adr/0028-tos-core-v1-semantics-and-ir-contract.md — ADR-0028: TOS Core V1 semantics and IR contract [Accepted]
 - docs/adr/0029-tos-core-v1-unicode-normalization-baseline.md — ADR-0029: TOS Core V1 Unicode normalization baseline [Accepted (Project Architect-approved)]
 - docs/adr/0030-external-vendor-opaque-material.md — ADR-0030: External vendor-controlled opaque material and the `/vendor` namespace [Accepted (Project Architect-approved)]
+- docs/adr/0031-system-source-hierarchy.md — ADR-0031: Runtime system source hierarchy [Accepted (Project Architect-approved)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
