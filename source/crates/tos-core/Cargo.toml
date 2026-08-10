@@ -8,3 +8,6 @@ publish = false
 
 [lib]
 name = "tos_core"
+
+[dependencies]
+tos-hash = { path = "../tos-hash" }

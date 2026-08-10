@@ -7,13 +7,14 @@
 //! ID, byte span with derived line/UTF-8 column, structured key/value fields and
 //! ordered causal diagnostics.
 //!
-//! This module supplies the part a source-unit-scoped frontend stage can know:
-//! code, severity, stage, span, derived positions, fields and causes. Module
-//! name, canonical repository path, source-set identity and normalized source
-//! content ID are attached by the compilation driver that owns module-to-path
-//! mapping (`docs/42`); that layer does not exist yet, so this record does not
-//! carry placeholder values for them.
+//! A stage produces the part it can know on its own: code, severity, stage,
+//! span, derived positions, fields and causes. The module identity — name,
+//! canonical repository path, normalized source content ID and source-set
+//! identity — is attached by the layer that resolves modules over a source set
+//! (`crate::modules`), because only that layer knows a module's path. A
+//! diagnostic produced without it carries no identity rather than a placeholder.
 
+use std::boxed::Box;
 use std::string::{String, ToString};
 use std::vec::Vec;
 
@@ -131,6 +132,56 @@ impl DiagnosticField {
     }
 }
 
+/// The identity of the module a diagnostic belongs to (docs/41 section 7,
+/// docs/42 section 6).
+///
+/// The source-set identity is the selected system commit or accepted detached
+/// source-set identity. It is an input to the resolver rather than something
+/// derivable from one source unit, so it is present only when the caller
+/// supplied it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ModuleIdentity {
+    name: String,
+    path: String,
+    content_id: String,
+    source_set: Option<String>,
+}
+
+impl ModuleIdentity {
+    pub fn new(name: String, path: String, content_id: String) -> ModuleIdentity {
+        ModuleIdentity {
+            name,
+            path,
+            content_id,
+            source_set: None,
+        }
+    }
+
+    pub fn with_source_set(mut self, source_set: impl ToString) -> ModuleIdentity {
+        self.source_set = Some(source_set.to_string());
+        self
+    }
+
+    /// The declared module name, dot-separated.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The canonical repository path, never a host path (docs/42 section 6).
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The content identity of the normalized source bytes.
+    pub fn content_id(&self) -> &str {
+        &self.content_id
+    }
+
+    pub fn source_set(&self) -> Option<&str> {
+        self.source_set.as_deref()
+    }
+}
+
 /// A single frontend diagnostic.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Diagnostic {
@@ -140,6 +191,7 @@ pub struct Diagnostic {
     span: Span,
     start: Position,
     end: Position,
+    module: Option<Box<ModuleIdentity>>,
     fields: Vec<DiagnosticField>,
     causes: Vec<Diagnostic>,
 }
@@ -159,9 +211,21 @@ impl Diagnostic {
             span,
             start: Position::at(source, span.start()),
             end: Position::at(source, span.end()),
+            module: None,
             fields: Vec::new(),
             causes: Vec::new(),
         }
+    }
+
+    /// Attaches the identity of the module this diagnostic belongs to.
+    pub fn with_module(mut self, module: ModuleIdentity) -> Diagnostic {
+        self.module = Some(Box::new(module));
+        self
+    }
+
+    /// The module identity, when the resolver attached one.
+    pub fn module(&self) -> Option<&ModuleIdentity> {
+        self.module.as_deref()
     }
 
     pub fn with_field(mut self, key: &'static str, value: impl ToString) -> Diagnostic {

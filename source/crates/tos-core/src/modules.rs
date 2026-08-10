@@ -21,7 +21,7 @@ use std::string::{String, ToString};
 use std::vec::Vec;
 
 use crate::parser::Schema;
-use crate::{Diagnostic, Severity, SourceUnit, Stage};
+use crate::{Checker, Diagnostic, ModuleIdentity, Severity, SourceUnit, Stage};
 
 /// One module of a source set: its canonical repository path and parsed tree.
 pub struct ModuleEntry<'source> {
@@ -39,6 +39,36 @@ impl<'source> ModuleEntry<'source> {
             source,
             schema,
         }
+    }
+
+    /// The canonical repository path this module was registered at.
+    pub fn path(&self) -> &str {
+        &self.path
+    }
+
+    /// The identity every diagnostic from this module carries.
+    ///
+    /// The content ID is the SHA-256 of the normalized source bytes, so it
+    /// names exactly the text the frontend accepted rather than the transport
+    /// form it arrived in.
+    pub fn identity(&self) -> ModuleIdentity {
+        let digest = tos_hash::sha256(self.source.bytes());
+        let mut hex = [0u8; 64];
+        tos_hash::hex(&digest, &mut hex);
+        let content_id = std::format!(
+            "sha256:{}",
+            core::str::from_utf8(&hex).expect("hex output is ASCII")
+        );
+        ModuleIdentity::new(self.declared_name(), self.path.clone(), content_id)
+    }
+
+    /// Runs the per-module checks with this module's identity attached.
+    pub fn check(&self) -> Vec<Diagnostic> {
+        let identity = self.identity();
+        Checker::check(self.source, self.schema)
+            .into_iter()
+            .map(|diagnostic| diagnostic.with_module(identity.clone()))
+            .collect()
     }
 
     /// The declared module name, dot-separated.
@@ -78,6 +108,7 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
                     module.schema.outline().prefix().header().span(),
                     module.source,
                 )
+                .with_module(module.identity())
                 .with_field("declared", name)
                 .with_field("path", module.path.clone())
                 .with_field("expected", expected),
@@ -104,6 +135,7 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
                     import.span(),
                     module.source,
                 )
+                .with_module(module.identity())
                 .with_field("import", target)
                 .with_field("importer", module.declared_name()),
             );
@@ -111,6 +143,19 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
     }
 
     diagnostics.extend(find_cycles(modules, &by_name));
+    diagnostics
+}
+
+/// Checks every module of a source set, per module and across the set.
+///
+/// Each diagnostic carries the identity of the module it belongs to, which
+/// docs/41 section 7 requires and a single source unit cannot supply.
+pub fn check_source_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for module in modules {
+        diagnostics.extend(module.check());
+    }
+    diagnostics.extend(check_module_set(modules));
     diagnostics
 }
 
@@ -169,6 +214,7 @@ fn visit(
                 module.schema.outline().prefix().header().span(),
                 module.source,
             )
+            .with_module(module.identity())
             .with_field("cycle", closed)
             .with_field("members", cycle.len()),
         );

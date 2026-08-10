@@ -619,6 +619,25 @@ decision, а не выбор реализации.
   аппроксимируется по единственному корню.
 - Тестов 97 → 101. `./scripts/preflight.sh --full` → **31/31 PASS**.
 
+### 2026-08-10 — Stage 2 Part B: module identity on diagnostics
+
+- Закрыт задокументированный пробел в диагностической записи: docs/41 §7
+  требует на каждой диагностике имя модуля, канонический repository path,
+  normalized source content ID и source-set identity. Раньше их некому было
+  проставить; теперь резолвер набора модулей знает путь.
+- `ModuleIdentity` несёт имя, путь, content ID и опциональный source-set.
+  Content ID — SHA-256 нормализованных байтов, то есть именует ровно тот текст,
+  который принял фронтенд, а не транспортную форму: LF и CRLF дают один ID.
+- `ModuleEntry::check` и `check_source_set` проставляют identity на каждую
+  диагностику — и per-module, и межмодульную. Диагностика, полученная без
+  резолвера, identity не несёт: одна source unit не может назвать путь, и
+  placeholder не выдумывается.
+- Source-set identity остаётся входом compilation driver (выбранный system
+  commit или принятая detached identity), а не выводимой величиной.
+- `tos-core` получил зависимость на первопартийный `tos-hash`: content identity
+  требует хеша.
+- Тестов 101 → 104. `./scripts/preflight.sh --full` → **31/31 PASS**.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5
