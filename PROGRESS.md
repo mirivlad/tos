@@ -719,6 +719,27 @@ decision, а не выбор реализации.
   `E1222_RETURN_TYPE_MISMATCH` внесён в реестр docs/44 §7 со stage `type`.
 - Тестов 117 → 124. `./scripts/preflight.sh --full` → **31/31 PASS**.
 
+### 2026-08-10 — Stage 2 Part B: as-conversion legality
+
+- Реализовано правило docs/40 §3: `as` допустима только для целочисленного
+  расширения с сохранением знаковости. Любая другая конверсия —
+  `E1212_INVALID_AS_CONVERSION` с полями from/to. Narrowing, смена знака и
+  конверсия в тот же тип отвергаются; проверенное сужение выражается вызовом
+  `to_*`, возвращающим `Result<D, ConversionError>`.
+- Каст непрозрачного handle (`Task`, `Region`, `Mutex`, `Channel`, атомики,
+  функции и т. п.) docs/40 §3 сознательно направляет не сюда. Для capability
+  выделен `E1502_FORGED_CAPABILITY`; для остальных непрозрачных типов документ
+  говорит «the corresponding nonconstructible-type error», но такого кода ни
+  один документ не выделяет. Поэтому по ним не сообщается ничего, вместо
+  заимствования кода с другим смыслом.
+- R016 (`unchecked-conversion`) связан с реализацией;
+  `E1212_INVALID_AS_CONVERSION` внесён в реестр docs/44 §7 со stage `type`.
+- Тестов 124 → 128. `./scripts/preflight.sh --full` → **31/31 PASS**.
+
+**Ожидает решения (выделение кода):** «nonconstructible-type error» для каста
+непрозрачных типов, кроме capability. Условие описано в docs/40 §3 словами, но
+кода не имеет; по ADR-0032 выделение — versioned language decision.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5
