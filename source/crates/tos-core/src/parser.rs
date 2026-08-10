@@ -3,11 +3,17 @@
 //!
 //! This module owns syntax-tree construction only. Name, type, effect and
 //! resource decisions belong to later frontend stages.
+//!
+//! Parsing is deterministic and recovering, as required by docs/39 section 4: a
+//! lexical failure is reported alone, and a syntax failure produces exactly one
+//! diagnostic per synchronization region before the parser resumes at that
+//! region's boundary. The parser never guesses a missing declaration,
+//! capability, type or operator — a region that failed contributes no tree.
 
 use std::boxed::Box;
 use std::vec::Vec;
 
-use crate::{LexError, Lexer, SourceUnit, Token, TokenKind};
+use crate::{Diagnostic, LexError, Lexer, Severity, SourceUnit, Stage, Token, TokenKind};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Span {
@@ -542,9 +548,11 @@ impl ModuleOutline {
     }
 }
 
+/// Internal error signal. The parser recovers from these at a synchronization
+/// region boundary and reports each one as a [`Diagnostic`]; it is never a
+/// public parse result.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ParseErrorCode {
-    Lexical,
+enum ParseErrorCode {
     ExpectedModuleHeader,
     ExpectedIdentifier,
     ExpectedVersionComponent,
@@ -554,114 +562,153 @@ pub enum ParseErrorCode {
     ListSeparatorRequired,
 }
 
+impl ParseErrorCode {
+    /// Stable symbolic diagnostic code from the registry in docs/44 section 7.
+    ///
+    /// `E1107_UNEXPECTED_TOKEN` is the registered residual of the parse stage:
+    /// it is correct only where no more specific parser code applies.
+    fn symbol(self) -> &'static str {
+        match self {
+            ParseErrorCode::ExpectedModuleHeader => "E1100_EXPECTED_MODULE_HEADER",
+            ParseErrorCode::ExpectedIdentifier => "E1101_EXPECTED_IDENTIFIER",
+            ParseErrorCode::ExpectedVersionComponent => "E1102_EXPECTED_VERSION_COMPONENT",
+            ParseErrorCode::ExpectedProfile => "E1103_EXPECTED_PROFILE",
+            ParseErrorCode::ExpectedLiteral => "E1104_EXPECTED_LITERAL",
+            ParseErrorCode::ListSeparatorRequired => "E1106_LIST_SEPARATOR_REQUIRED",
+            ParseErrorCode::UnexpectedToken => "E1107_UNEXPECTED_TOKEN",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ParseError {
+struct ParseError {
     code: ParseErrorCode,
     span: Span,
 }
 
-impl ParseError {
-    pub fn code(self) -> ParseErrorCode {
-        self.code
+/// Synchronization region in which an error was detected, as defined by
+/// docs/39 section 4.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Region {
+    Declaration,
+    Statement,
+    List,
+}
+
+impl Region {
+    fn symbol(self) -> &'static str {
+        match self {
+            Region::Declaration => "declaration",
+            Region::Statement => "statement",
+            Region::List => "list",
+        }
+    }
+}
+
+/// Which token closes the list currently being parsed.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ListCloser {
+    Kind(TokenKind),
+    /// `>` closing a type-argument list. The lexer emits `>` as an operator
+    /// token, so it has no dedicated [`TokenKind`].
+    Angle,
+}
+
+/// Result of one parse: the tree that could be built without guessing, and
+/// every diagnostic produced along the way.
+///
+/// A partial tree may be present alongside errors, because docs/39 requires the
+/// parser to recover and keep reporting. It is never a valid module in that
+/// state — use [`ParseOutcome::into_accepted`] to obtain a tree only when the
+/// source parsed cleanly.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ParseOutcome<T> {
+    value: Option<T>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl<T> ParseOutcome<T> {
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
     }
 
-    pub fn span(self) -> Span {
-        self.span
+    pub fn has_errors(&self) -> bool {
+        self.diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity() == Severity::Error)
+    }
+
+    /// The tree the parser managed to build, which may be partial when
+    /// [`ParseOutcome::has_errors`] is true.
+    pub fn value(&self) -> Option<&T> {
+        self.value.as_ref()
+    }
+
+    /// The tree, but only when the source produced no error diagnostic.
+    pub fn into_accepted(self) -> Option<T> {
+        if self.has_errors() {
+            return None;
+        }
+        self.value
+    }
+
+    fn failed(diagnostic: Diagnostic) -> ParseOutcome<T> {
+        ParseOutcome {
+            value: None,
+            diagnostics: vec![diagnostic],
+        }
     }
 }
 
 pub struct Parser;
 
 impl Parser {
-    pub fn parse_header(source: &SourceUnit) -> Result<ModuleHeader, ParseError> {
-        let tokens = Lexer::lex(source).map_err(lexical_error)?;
-        let mut parser = TokenCursor {
-            source,
-            tokens,
-            index: 0,
-        };
-        let header = parser.parse_header()?;
-        parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
-        Ok(header)
-    }
-
-    pub fn parse_prefix(source: &SourceUnit) -> Result<ModulePrefix, ParseError> {
-        let tokens = Lexer::lex(source).map_err(lexical_error)?;
-        let mut parser = TokenCursor {
-            source,
-            tokens,
-            index: 0,
-        };
-        let header = parser.parse_header()?;
-        let mut imports = Vec::new();
-        while parser.current_text() == "import" {
-            imports.push(parser.parse_import()?);
-        }
-        parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
-        Ok(ModulePrefix { header, imports })
-    }
-
-    pub fn parse_outline(source: &SourceUnit) -> Result<ModuleOutline, ParseError> {
-        let tokens = Lexer::lex(source).map_err(lexical_error)?;
-        let mut parser = TokenCursor {
-            source,
-            tokens,
-            index: 0,
-        };
-        let header = parser.parse_header()?;
-        let mut imports = Vec::new();
-        while parser.current_text() == "import" {
-            imports.push(parser.parse_import()?);
-        }
-        let resource = parser.parse_resource_declaration()?;
-        parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
-        Ok(ModuleOutline {
-            prefix: ModulePrefix { header, imports },
-            resource,
+    pub fn parse_header(source: &SourceUnit) -> ParseOutcome<ModuleHeader> {
+        Parser::run(source, |cursor| {
+            let header = cursor.parse_header();
+            cursor.finish_region(header, Region::Declaration)
         })
     }
 
-    pub fn parse_schema(source: &SourceUnit) -> Result<Schema, ParseError> {
-        let tokens = Lexer::lex(source).map_err(lexical_error)?;
-        let mut parser = TokenCursor {
+    pub fn parse_prefix(source: &SourceUnit) -> ParseOutcome<ModulePrefix> {
+        Parser::run(source, |cursor| {
+            let prefix = cursor.parse_module_prefix()?;
+            cursor.expect_end_of_source();
+            Some(prefix)
+        })
+    }
+
+    pub fn parse_outline(source: &SourceUnit) -> ParseOutcome<ModuleOutline> {
+        Parser::run(source, |cursor| {
+            let outline = cursor.parse_module_outline()?;
+            cursor.expect_end_of_source();
+            Some(outline)
+        })
+    }
+
+    pub fn parse_schema(source: &SourceUnit) -> ParseOutcome<Schema> {
+        Parser::run(source, |cursor| cursor.parse_schema_body())
+    }
+
+    fn run<T>(
+        source: &SourceUnit,
+        parse: impl FnOnce(&mut TokenCursor) -> Option<T>,
+    ) -> ParseOutcome<T> {
+        let tokens = match Lexer::lex(source) {
+            Ok(tokens) => tokens,
+            Err(error) => return ParseOutcome::failed(lexical_diagnostic(error, source)),
+        };
+        let mut cursor = TokenCursor {
             source,
             tokens,
             index: 0,
+            diagnostics: Vec::new(),
         };
-        let header = parser.parse_header()?;
-        let mut imports = Vec::new();
-        while parser.current_text() == "import" {
-            imports.push(parser.parse_import()?);
+        let value = parse(&mut cursor);
+        ParseOutcome {
+            value,
+            diagnostics: cursor.diagnostics,
         }
-        let resource = parser.parse_resource_declaration()?;
-        let mut records = Vec::new();
-        let mut enums = Vec::new();
-        let mut extern_functions = Vec::new();
-        let mut functions = Vec::new();
-        while matches!(parser.current_text(), "record" | "enum" | "extern" | "fn") {
-            if parser.current_text() == "record" {
-                records.push(parser.parse_record_declaration()?);
-            } else if parser.current_text() == "enum" {
-                enums.push(parser.parse_enum_declaration()?);
-            } else {
-                if parser.current_text() == "extern" {
-                    extern_functions.push(parser.parse_extern_function()?);
-                } else {
-                    functions.push(parser.parse_function()?);
-                }
-            }
-        }
-        parser.expect_kind(TokenKind::Eof, ParseErrorCode::UnexpectedToken)?;
-        Ok(Schema {
-            outline: ModuleOutline {
-                prefix: ModulePrefix { header, imports },
-                resource,
-            },
-            records,
-            enums,
-            extern_functions,
-            functions,
-        })
     }
 }
 
@@ -669,6 +716,297 @@ struct TokenCursor<'source> {
     source: &'source SourceUnit,
     tokens: Vec<Token>,
     index: usize,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl<'source> TokenCursor<'source> {
+    fn parse_module_prefix(&mut self) -> Option<ModulePrefix> {
+        let header = self.parse_header();
+        let header = self.finish_region(header, Region::Declaration)?;
+        let mut imports = Vec::new();
+        while self.current_text() == "import" {
+            let import = self.parse_import();
+            if let Some(import) = self.finish_region(import, Region::Declaration) {
+                imports.push(import);
+            }
+        }
+        Some(ModulePrefix { header, imports })
+    }
+
+    fn parse_module_outline(&mut self) -> Option<ModuleOutline> {
+        let prefix = self.parse_module_prefix()?;
+        let resource = self.parse_resource_declaration();
+        let resource = self.finish_region(resource, Region::Declaration)?;
+        Some(ModuleOutline { prefix, resource })
+    }
+
+    fn parse_schema_body(&mut self) -> Option<Schema> {
+        let outline = self.parse_module_outline();
+        let mut records = Vec::new();
+        let mut enums = Vec::new();
+        let mut extern_functions = Vec::new();
+        let mut functions = Vec::new();
+        while self.current().kind() != TokenKind::Eof {
+            match self.current_text() {
+                "record" => {
+                    let declaration = self.parse_record_declaration();
+                    if let Some(declaration) = self.finish_region(declaration, Region::Declaration)
+                    {
+                        records.push(declaration);
+                    }
+                }
+                "enum" => {
+                    let declaration = self.parse_enum_declaration();
+                    if let Some(declaration) = self.finish_region(declaration, Region::Declaration)
+                    {
+                        enums.push(declaration);
+                    }
+                }
+                "extern" => {
+                    let signature = self.parse_extern_function();
+                    if let Some(signature) = self.finish_region(signature, Region::Declaration) {
+                        extern_functions.push(signature);
+                    }
+                }
+                "fn" => {
+                    let declaration = self.parse_function();
+                    if let Some(declaration) = self.finish_region(declaration, Region::Declaration)
+                    {
+                        functions.push(declaration);
+                    }
+                }
+                // docs/39 forbids guessing a missing declaration, so an
+                // unrecognized item head is reported and its region skipped.
+                _ => {
+                    let error = self.error_here(ParseErrorCode::UnexpectedToken);
+                    self.report(error, Region::Declaration);
+                    self.synchronize(Region::Declaration);
+                }
+            }
+        }
+        let outline = outline?;
+        Some(Schema {
+            outline,
+            records,
+            enums,
+            extern_functions,
+            functions,
+        })
+    }
+
+    fn expect_end_of_source(&mut self) {
+        while self.current().kind() != TokenKind::Eof {
+            let error = self.error_here(ParseErrorCode::UnexpectedToken);
+            self.report(error, Region::Declaration);
+            self.synchronize(Region::Declaration);
+        }
+    }
+
+    /// Reports and synchronizes when a region failed, yielding `None`.
+    fn finish_region<T>(&mut self, result: Result<T, ParseError>, region: Region) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) => {
+                self.report(error, region);
+                self.synchronize(region);
+                None
+            }
+        }
+    }
+
+    fn report(&mut self, error: ParseError, region: Region) {
+        let diagnostic = Diagnostic::new(
+            error.code.symbol(),
+            Severity::Error,
+            Stage::Parse,
+            error.span,
+            self.source,
+        )
+        .with_field("region", region.symbol())
+        .with_field("found", self.describe(error.span));
+        self.diagnostics.push(diagnostic);
+    }
+
+    /// Names the source text a diagnostic points at, for the `found` field.
+    fn describe(&self, span: Span) -> &'source str {
+        if span.start() >= self.source.bytes().len() {
+            return "<end of source>";
+        }
+        span.text(self.source)
+    }
+
+    /// Skips to the end of the failed region, per docs/39 section 4.
+    ///
+    /// A declaration region ends after the next top-level `;` or `]`. A
+    /// statement region ends after the next `;`, or at the closing brace of the
+    /// current block, which is left unconsumed for the block loop to see.
+    /// Nesting is tracked so that a delimiter inside a nested construct does
+    /// not end the outer region early.
+    ///
+    /// A declaration region also ends at the `}` that closes a top-level
+    /// declaration body and returns delimiter nesting to zero (docs/39 section
+    /// 4, ADR-0032): a `fn` declaration ends with a block rather than `;` or
+    /// `]`, so without that boundary one malformed signature would discard
+    /// every later declaration in the source unit.
+    fn synchronize(&mut self, region: Region) {
+        let mut depth = 0usize;
+        loop {
+            let kind = self.current().kind();
+            match kind {
+                TokenKind::Eof => return,
+                TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => {
+                    depth += 1;
+                    self.advance();
+                }
+                TokenKind::CloseBracket if region == Region::Declaration && depth == 0 => {
+                    self.advance();
+                    return;
+                }
+                TokenKind::CloseBrace if region == Region::Statement && depth == 0 => return,
+                TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
+                    let closes_declaration_body = region == Region::Declaration
+                        && depth == 1
+                        && kind == TokenKind::CloseBrace;
+                    depth = depth.saturating_sub(1);
+                    self.advance();
+                    if closes_declaration_body {
+                        return;
+                    }
+                }
+                TokenKind::Semicolon => {
+                    self.advance();
+                    if depth == 0 {
+                        return;
+                    }
+                }
+                _ => {
+                    self.advance();
+                }
+            }
+        }
+    }
+
+    /// Skips to the next element of a failed list, per docs/39 section 4.
+    ///
+    /// Returns `true` when a separator was crossed and another element may
+    /// follow, and `false` when the list ended at its closer or at end of
+    /// source.
+    fn synchronize_list(&mut self, closer: ListCloser) -> bool {
+        let mut depth = 0usize;
+        loop {
+            if depth == 0 && self.at_list_closer(closer) {
+                return false;
+            }
+            match self.current().kind() {
+                TokenKind::Eof => return false,
+                TokenKind::Comma if depth == 0 => {
+                    self.advance();
+                    return !self.at_list_closer(closer);
+                }
+                TokenKind::OpenParen | TokenKind::OpenBracket | TokenKind::OpenBrace => {
+                    depth += 1;
+                    self.advance();
+                }
+                TokenKind::CloseParen | TokenKind::CloseBracket | TokenKind::CloseBrace => {
+                    if depth == 0 {
+                        return false;
+                    }
+                    depth -= 1;
+                    self.advance();
+                }
+                _ => {
+                    if closer == ListCloser::Angle {
+                        match self.current_text() {
+                            "<" => depth += 1,
+                            ">" => depth = depth.saturating_sub(1),
+                            ">>" => depth = depth.saturating_sub(2),
+                            _ => {}
+                        }
+                    }
+                    self.advance();
+                }
+            }
+        }
+    }
+
+    fn at_list_closer(&self, closer: ListCloser) -> bool {
+        match closer {
+            ListCloser::Kind(kind) => self.current().kind() == kind,
+            // `Option<Option<i32>>` ends both argument lists at one `>>` token.
+            ListCloser::Angle => matches!(self.current_text(), ">" | ">>"),
+        }
+    }
+
+    /// Consumes the `>` that closes a type-argument list.
+    ///
+    /// The lexer emits `>>` as a single shift operator, so a type argument list
+    /// nested directly inside another ends at half a token. This splits the
+    /// shift token: the leading `>` closes the inner list and the trailing `>`
+    /// stays in the stream for the enclosing one.
+    fn expect_close_angle(&mut self) -> Result<Span, ParseError> {
+        let token = self.current();
+        if token.kind() == TokenKind::Operator {
+            match token.text(self.source) {
+                ">" => return Ok(Span::from(self.advance())),
+                ">>" => {
+                    self.tokens[self.index] = Token {
+                        kind: TokenKind::Operator,
+                        start: token.start() + 1,
+                        end: token.end(),
+                    };
+                    return Ok(Span {
+                        start: token.start(),
+                        end: token.start() + 1,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Err(self.error_here(ParseErrorCode::UnexpectedToken))
+    }
+
+    /// Parses a comma-separated list, recovering at list level so that one
+    /// malformed element does not discard the rest of the list.
+    ///
+    /// A trailing comma is permitted in every V1 list (docs/39 section 5).
+    fn parse_comma_list<T>(
+        &mut self,
+        closer: ListCloser,
+        parse_element: fn(&mut Self) -> Result<T, ParseError>,
+    ) -> Vec<T> {
+        let mut items = Vec::new();
+        if self.at_list_closer(closer) {
+            return items;
+        }
+        loop {
+            match parse_element(self) {
+                Ok(item) => items.push(item),
+                Err(error) => {
+                    self.report(error, Region::List);
+                    if self.synchronize_list(closer) {
+                        continue;
+                    }
+                    break;
+                }
+            }
+            if self.consume_kind(TokenKind::Comma).is_some() {
+                if self.at_list_closer(closer) {
+                    break;
+                }
+                continue;
+            }
+            if !self.at_list_closer(closer) {
+                let error = self.error_here(ParseErrorCode::ListSeparatorRequired);
+                self.report(error, Region::List);
+                if self.synchronize_list(closer) {
+                    continue;
+                }
+                break;
+            }
+            break;
+        }
+        items
+    }
 }
 
 impl<'source> TokenCursor<'source> {
@@ -738,32 +1076,10 @@ impl<'source> TokenCursor<'source> {
     fn parse_resource_declaration(&mut self) -> Result<ResourceDeclaration, ParseError> {
         let start = self.expect_word("resource", ParseErrorCode::UnexpectedToken)?;
         self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
-        let mut limits = Vec::new();
-        if self.current().kind() != TokenKind::CloseBracket {
-            loop {
-                let name = self.expect_identifier()?;
-                self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
-                let value = self.expect_literal()?;
-                limits.push(ResourceLimit {
-                    name,
-                    value,
-                    span: Span {
-                        start: name.start(),
-                        end: value.end(),
-                    },
-                });
-                if self.consume_kind(TokenKind::Comma).is_some() {
-                    if self.current().kind() == TokenKind::CloseBracket {
-                        break;
-                    }
-                    continue;
-                }
-                if self.current().kind() != TokenKind::CloseBracket {
-                    return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
-                }
-                break;
-            }
-        }
+        let limits = self.parse_comma_list(
+            ListCloser::Kind(TokenKind::CloseBracket),
+            Self::parse_resource_limit,
+        );
         let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
         Ok(ResourceDeclaration {
             limits,
@@ -774,11 +1090,25 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
+    fn parse_resource_limit(&mut self) -> Result<ResourceLimit, ParseError> {
+        let name = self.expect_identifier()?;
+        self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
+        let value = self.expect_literal()?;
+        Ok(ResourceLimit {
+            name,
+            value,
+            span: Span {
+                start: name.start(),
+                end: value.end(),
+            },
+        })
+    }
+
     fn parse_record_declaration(&mut self) -> Result<RecordDeclaration, ParseError> {
         let start = self.expect_word("record", ParseErrorCode::UnexpectedToken)?;
         let name = self.expect_identifier()?;
         self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
-        let fields = self.parse_field_list()?;
+        let fields = self.parse_field_list();
         let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
         Ok(RecordDeclaration {
             name,
@@ -794,22 +1124,10 @@ impl<'source> TokenCursor<'source> {
         let start = self.expect_word("enum", ParseErrorCode::UnexpectedToken)?;
         let name = self.expect_identifier()?;
         self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
-        let mut variants = Vec::new();
-        if self.current().kind() != TokenKind::CloseBracket {
-            loop {
-                variants.push(self.parse_enum_variant()?);
-                if self.consume_kind(TokenKind::Comma).is_some() {
-                    if self.current().kind() == TokenKind::CloseBracket {
-                        break;
-                    }
-                    continue;
-                }
-                if self.current().kind() != TokenKind::CloseBracket {
-                    return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
-                }
-                break;
-            }
-        }
+        let variants = self.parse_comma_list(
+            ListCloser::Kind(TokenKind::CloseBracket),
+            Self::parse_enum_variant,
+        );
         let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
         Ok(EnumDeclaration {
             name,
@@ -824,7 +1142,7 @@ impl<'source> TokenCursor<'source> {
     fn parse_enum_variant(&mut self) -> Result<EnumVariant, ParseError> {
         let name = self.expect_identifier()?;
         if self.consume_kind(TokenKind::OpenParen).is_some() {
-            let tuple_types = self.parse_tuple_type_list()?;
+            let tuple_types = self.parse_tuple_type_list();
             let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
             return Ok(EnumVariant {
                 name,
@@ -838,7 +1156,7 @@ impl<'source> TokenCursor<'source> {
             });
         }
         if self.consume_kind(TokenKind::OpenBracket).is_some() {
-            let fields = self.parse_field_list()?;
+            let fields = self.parse_field_list();
             let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
             return Ok(EnumVariant {
                 name,
@@ -860,67 +1178,40 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
-    fn parse_tuple_type_list(&mut self) -> Result<Vec<TypeSyntax>, ParseError> {
-        let mut types = Vec::new();
-        if self.current().kind() == TokenKind::CloseParen {
-            return Ok(types);
-        }
-        loop {
-            types.push(self.parse_type()?);
-            if self.consume_kind(TokenKind::Comma).is_some() {
-                if self.current().kind() == TokenKind::CloseParen {
-                    break;
-                }
-                continue;
-            }
-            if self.current().kind() != TokenKind::CloseParen {
-                return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
-            }
-            break;
-        }
-        Ok(types)
+    fn parse_tuple_type_list(&mut self) -> Vec<TypeSyntax> {
+        self.parse_comma_list(ListCloser::Kind(TokenKind::CloseParen), Self::parse_type)
     }
 
-    fn parse_field_list(&mut self) -> Result<Vec<RecordField>, ParseError> {
-        let mut fields = Vec::new();
-        if self.current().kind() == TokenKind::CloseBracket {
-            return Ok(fields);
+    fn parse_field_list(&mut self) -> Vec<RecordField> {
+        self.parse_comma_list(
+            ListCloser::Kind(TokenKind::CloseBracket),
+            Self::parse_record_field,
+        )
+    }
+
+    fn parse_record_field(&mut self) -> Result<RecordField, ParseError> {
+        if self.current_text() == "pub" {
+            self.advance();
         }
-        loop {
-            if self.current_text() == "pub" {
-                self.advance();
-            }
-            let name = self.expect_identifier()?;
-            self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
-            let ty = self.parse_type()?;
-            let type_end = ty.span().end();
-            fields.push(RecordField {
-                name,
-                ty,
-                span: Span {
-                    start: name.start(),
-                    end: type_end,
-                },
-            });
-            if self.consume_kind(TokenKind::Comma).is_some() {
-                if self.current().kind() == TokenKind::CloseBracket {
-                    break;
-                }
-                continue;
-            }
-            if self.current().kind() != TokenKind::CloseBracket {
-                return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
-            }
-            break;
-        }
-        Ok(fields)
+        let name = self.expect_identifier()?;
+        self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
+        let ty = self.parse_type()?;
+        let type_end = ty.span().end();
+        Ok(RecordField {
+            name,
+            ty,
+            span: Span {
+                start: name.start(),
+                end: type_end,
+            },
+        })
     }
 
     fn parse_function(&mut self) -> Result<FunctionDeclaration, ParseError> {
         let start = self.expect_word("fn", ParseErrorCode::UnexpectedToken)?;
         let name = self.expect_identifier()?;
         self.expect_kind(TokenKind::OpenParen, ParseErrorCode::UnexpectedToken)?;
-        let parameters = self.parse_parameters()?;
+        let parameters = self.parse_parameters();
         self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
         self.expect_word("->", ParseErrorCode::UnexpectedToken)?;
         let result = self.parse_type()?;
@@ -942,8 +1233,14 @@ impl<'source> TokenCursor<'source> {
     fn parse_block(&mut self) -> Result<Block, ParseError> {
         let start = self.expect_kind(TokenKind::OpenBrace, ParseErrorCode::UnexpectedToken)?;
         let mut statements = Vec::new();
-        while self.current().kind() != TokenKind::CloseBrace {
-            statements.push(self.parse_statement()?);
+        while !matches!(
+            self.current().kind(),
+            TokenKind::CloseBrace | TokenKind::Eof
+        ) {
+            let statement = self.parse_statement();
+            if let Some(statement) = self.finish_region(statement, Region::Statement) {
+                statements.push(statement);
+            }
         }
         let end = self.expect_kind(TokenKind::CloseBrace, ParseErrorCode::UnexpectedToken)?;
         Ok(Block {
@@ -1155,7 +1452,7 @@ impl<'source> TokenCursor<'source> {
     fn parse_postfix_expression(&mut self) -> Result<Expression, ParseError> {
         let mut callee = self.parse_primary_expression()?;
         while self.consume_kind(TokenKind::OpenParen).is_some() {
-            let arguments = self.parse_call_arguments()?;
+            let arguments = self.parse_call_arguments();
             let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
             callee = Expression {
                 form: ExpressionForm::Call,
@@ -1174,25 +1471,11 @@ impl<'source> TokenCursor<'source> {
         Ok(callee)
     }
 
-    fn parse_call_arguments(&mut self) -> Result<Vec<Expression>, ParseError> {
-        let mut arguments = Vec::new();
-        if self.current().kind() == TokenKind::CloseParen {
-            return Ok(arguments);
-        }
-        loop {
-            arguments.push(self.parse_expression()?);
-            if self.consume_kind(TokenKind::Comma).is_some() {
-                if self.current().kind() == TokenKind::CloseParen {
-                    break;
-                }
-                continue;
-            }
-            if self.current().kind() != TokenKind::CloseParen {
-                return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
-            }
-            break;
-        }
-        Ok(arguments)
+    fn parse_call_arguments(&mut self) -> Vec<Expression> {
+        self.parse_comma_list(
+            ListCloser::Kind(TokenKind::CloseParen),
+            Self::parse_expression,
+        )
     }
 
     fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {
@@ -1245,7 +1528,7 @@ impl<'source> TokenCursor<'source> {
         self.expect_word("fn", ParseErrorCode::UnexpectedToken)?;
         let name = self.expect_identifier()?;
         self.expect_kind(TokenKind::OpenParen, ParseErrorCode::UnexpectedToken)?;
-        let parameters = self.parse_parameters()?;
+        let parameters = self.parse_parameters();
         self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
         self.expect_word("->", ParseErrorCode::UnexpectedToken)?;
         let result = self.parse_type()?;
@@ -1263,49 +1546,39 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
-    fn parse_parameters(&mut self) -> Result<Vec<FunctionParameter>, ParseError> {
-        let mut parameters = Vec::new();
-        if self.current().kind() == TokenKind::CloseParen {
-            return Ok(parameters);
-        }
-        loop {
-            let start = Span::from(self.current());
-            let borrow_mode = if self.current_text() == "borrow" {
+    fn parse_parameters(&mut self) -> Vec<FunctionParameter> {
+        self.parse_comma_list(
+            ListCloser::Kind(TokenKind::CloseParen),
+            Self::parse_parameter,
+        )
+    }
+
+    fn parse_parameter(&mut self) -> Result<FunctionParameter, ParseError> {
+        let start = Span::from(self.current());
+        let borrow_mode = if self.current_text() == "borrow" {
+            self.advance();
+            if self.current_text() == "mut" {
                 self.advance();
-                if self.current_text() == "mut" {
-                    self.advance();
-                    BorrowMode::Mutable
-                } else {
-                    BorrowMode::Shared
-                }
+                BorrowMode::Mutable
             } else {
-                BorrowMode::Owned
-            };
-            let name = self.expect_identifier()?;
-            self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
-            let ty = self.parse_type()?;
-            let end = ty.span().end();
-            parameters.push(FunctionParameter {
-                name,
-                ty,
-                borrow_mode,
-                span: Span {
-                    start: start.start(),
-                    end,
-                },
-            });
-            if self.consume_kind(TokenKind::Comma).is_some() {
-                if self.current().kind() == TokenKind::CloseParen {
-                    break;
-                }
-                continue;
+                BorrowMode::Shared
             }
-            if self.current().kind() != TokenKind::CloseParen {
-                return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
-            }
-            break;
-        }
-        Ok(parameters)
+        } else {
+            BorrowMode::Owned
+        };
+        let name = self.expect_identifier()?;
+        self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
+        let ty = self.parse_type()?;
+        let end = ty.span().end();
+        Ok(FunctionParameter {
+            name,
+            ty,
+            borrow_mode,
+            span: Span {
+                start: start.start(),
+                end,
+            },
+        })
     }
 
     fn parse_effects(&mut self) -> Result<Vec<Span>, ParseError> {
@@ -1314,22 +1587,10 @@ impl<'source> TokenCursor<'source> {
         }
         self.advance();
         self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
-        let mut effects = Vec::new();
-        if self.current().kind() != TokenKind::CloseBracket {
-            loop {
-                effects.push(self.expect_identifier()?);
-                if self.consume_kind(TokenKind::Comma).is_some() {
-                    if self.current().kind() == TokenKind::CloseBracket {
-                        break;
-                    }
-                    continue;
-                }
-                if self.current().kind() != TokenKind::CloseBracket {
-                    return Err(self.error_here(ParseErrorCode::ListSeparatorRequired));
-                }
-                break;
-            }
-        }
+        let effects = self.parse_comma_list(
+            ListCloser::Kind(TokenKind::CloseBracket),
+            Self::expect_identifier,
+        );
         self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
         Ok(effects)
     }
@@ -1337,7 +1598,7 @@ impl<'source> TokenCursor<'source> {
     fn parse_type(&mut self) -> Result<TypeSyntax, ParseError> {
         if self.consume_kind(TokenKind::OpenParen).is_some() {
             let start = self.tokens[self.index - 1].start();
-            let elements = self.parse_tuple_type_list()?;
+            let elements = self.parse_tuple_type_list();
             let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
             return Ok(TypeSyntax::Tuple {
                 elements,
@@ -1350,7 +1611,7 @@ impl<'source> TokenCursor<'source> {
         if self.current_text() == "fn" {
             let start = Span::from(self.advance());
             self.expect_kind(TokenKind::OpenParen, ParseErrorCode::UnexpectedToken)?;
-            let parameters = self.parse_tuple_type_list()?;
+            let parameters = self.parse_tuple_type_list();
             self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
             self.expect_word("->", ParseErrorCode::UnexpectedToken)?;
             let result = self.parse_type()?;
@@ -1380,7 +1641,7 @@ impl<'source> TokenCursor<'source> {
             let element = self.parse_type()?;
             self.expect_kind(TokenKind::Comma, ParseErrorCode::ListSeparatorRequired)?;
             let length = self.expect_literal()?;
-            let end = self.expect_word(">", ParseErrorCode::UnexpectedToken)?;
+            let end = self.expect_close_angle()?;
             return Ok(TypeSyntax::Array {
                 element: Box::new(element),
                 length,
@@ -1390,15 +1651,8 @@ impl<'source> TokenCursor<'source> {
                 },
             });
         }
-        let mut arguments = Vec::new();
-        loop {
-            arguments.push(self.parse_type()?);
-            if self.consume_kind(TokenKind::Comma).is_some() {
-                continue;
-            }
-            break;
-        }
-        let end = self.expect_word(">", ParseErrorCode::UnexpectedToken)?;
+        let arguments = self.parse_comma_list(ListCloser::Angle, Self::parse_type);
+        let end = self.expect_close_angle()?;
         Ok(TypeSyntax::Constructed {
             name,
             arguments,
@@ -1494,12 +1748,22 @@ impl<'source> TokenCursor<'source> {
     }
 }
 
-fn lexical_error(error: LexError) -> ParseError {
-    ParseError {
-        code: ParseErrorCode::Lexical,
-        span: Span {
-            start: error.byte_offset(),
-            end: error.byte_offset(),
-        },
-    }
+/// Builds the single lexical diagnostic that ends a parse before it starts.
+///
+/// docs/39 section 4 requires the lowest-numbered applicable lexical error to
+/// be emitted first; the lexer stops at the first offending byte, so a failed
+/// lex yields exactly this diagnostic and no parse diagnostics.
+fn lexical_diagnostic(error: LexError, source: &SourceUnit) -> Diagnostic {
+    let span = Span {
+        start: error.byte_offset(),
+        end: error.byte_offset(),
+    };
+    Diagnostic::new(
+        error.code().symbol(),
+        Severity::Error,
+        Stage::Lex,
+        span,
+        source,
+    )
+    .with_field("byte_offset", error.byte_offset())
 }

@@ -5,14 +5,16 @@ use std::boxed::Box;
 use std::string::String;
 use std::vec::Vec;
 
+mod diagnostic;
 mod parser;
 
+pub use diagnostic::{Diagnostic, DiagnosticField, Position, Severity, Stage};
 pub use parser::{
     Block, BorrowMode, EnumDeclaration, EnumVariant, EnumVariantForm, Expression, ExpressionForm,
     FunctionDeclaration, FunctionParameter, FunctionSignature, Import, ImportKind, ModuleHeader,
-    ModuleOutline, ModulePrefix, ParseError, ParseErrorCode, Parser, Profile, RecordDeclaration,
-    RecordField, ResourceDeclaration, ResourceLimit, Schema, Span, Statement, StatementForm,
-    TypeSyntax, TypeSyntaxForm,
+    ModuleOutline, ModulePrefix, ParseOutcome, Parser, Profile, RecordDeclaration, RecordField,
+    ResourceDeclaration, ResourceLimit, Schema, Span, Statement, StatementForm, TypeSyntax,
+    TypeSyntaxForm,
 };
 
 mod unicode {
@@ -35,6 +37,20 @@ pub struct SourceError {
     code: SourceErrorCode,
     byte_offset: usize,
 }
+impl SourceErrorCode {
+    /// Stable symbolic diagnostic code from docs/39 section 1.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            SourceErrorCode::SourceTooLarge => "E1000_SOURCE_LIMIT",
+            SourceErrorCode::InvalidUtf8 => "E1001_INVALID_UTF8",
+            SourceErrorCode::BomForbidden => "E1002_BOM_FORBIDDEN",
+            SourceErrorCode::BareCr => "E1003_BARE_CR",
+            SourceErrorCode::NotNfc => "E1004_NOT_NFC",
+            SourceErrorCode::NulForbidden => "E1005_NUL_FORBIDDEN",
+        }
+    }
+}
+
 impl SourceError {
     pub fn code(self) -> SourceErrorCode {
         self.code
@@ -124,16 +140,31 @@ pub enum LexErrorCode {
     TabOutsideLiteral,
     NonAsciiWhitespace,
     InvalidIdentifier,
+    UnexpectedCharacter,
     InvalidIntegerLiteral,
     InvalidString,
     InvalidBytes,
-    UnexpectedByte,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LexError {
     code: LexErrorCode,
     byte_offset: usize,
 }
+impl LexErrorCode {
+    /// Stable symbolic diagnostic code from the registry in docs/44 section 7.
+    pub fn symbol(self) -> &'static str {
+        match self {
+            LexErrorCode::TabOutsideLiteral => "E1010_TAB_OUTSIDE_LITERAL",
+            LexErrorCode::NonAsciiWhitespace => "E1011_NON_ASCII_WHITESPACE",
+            LexErrorCode::InvalidIdentifier => "E1012_INVALID_IDENTIFIER",
+            LexErrorCode::UnexpectedCharacter => "E1013_UNEXPECTED_CHARACTER",
+            LexErrorCode::InvalidIntegerLiteral => "E1020_INVALID_INTEGER_LITERAL",
+            LexErrorCode::InvalidString => "E1030_INVALID_STRING",
+            LexErrorCode::InvalidBytes => "E1031_INVALID_BYTES",
+        }
+    }
+}
+
 impl LexError {
     pub fn code(self) -> LexErrorCode {
         self.code
@@ -308,11 +339,19 @@ impl Lexer {
                     b'}' => (TokenKind::CloseBrace, 1),
                     b'+' | b'-' | b'*' | b'/' | b'%' | b'!' | b'~' | b'<' | b'>' | b'&' | b'|'
                     | b'^' => (TokenKind::Operator, 1),
+                    // docs/44 section 7 fixes the split: a non-ASCII scalar
+                    // value here could only be attempting an identifier, which
+                    // is ASCII-only; anything else begins no lexical form.
                     _ => {
+                        let code = if byte >= 0x80 {
+                            LexErrorCode::InvalidIdentifier
+                        } else {
+                            LexErrorCode::UnexpectedCharacter
+                        };
                         return Err(LexError {
-                            code: LexErrorCode::UnexpectedByte,
+                            code,
                             byte_offset: i,
-                        })
+                        });
                     }
                 },
             };
@@ -769,7 +808,9 @@ mod tests {
     fn parser_builds_the_declared_module_header_with_source_spans() {
         let source = SourceReader::read(b"module system.boot version 1.0 profile bootstrap;")
             .expect("transport-valid source");
-        let header = Parser::parse_header(&source).expect("module header parses");
+        let header = Parser::parse_header(&source)
+            .into_accepted()
+            .expect("module header parses");
         assert_eq!(header.name().len(), 2);
         assert_eq!(header.version(), (1, 0));
         assert_eq!(header.profile(), Profile::Bootstrap);
@@ -788,7 +829,9 @@ mod tests {
               import capability system.time.Clock as clock;\n",
         )
         .expect("transport-valid source");
-        let prefix = Parser::parse_prefix(&source).expect("module prefix parses");
+        let prefix = Parser::parse_prefix(&source)
+            .into_accepted()
+            .expect("module prefix parses");
         assert_eq!(prefix.imports().len(), 2);
         assert_eq!(prefix.imports()[0].kind(), ImportKind::Module);
         assert_eq!(prefix.imports()[0].binding().text(&source), "text");
@@ -803,7 +846,9 @@ mod tests {
               resource [fuel: 1000, stack: 64KiB, imports: 0,]",
         )
         .expect("transport-valid source");
-        let outline = Parser::parse_outline(&source).expect("resource declaration parses");
+        let outline = Parser::parse_outline(&source)
+            .into_accepted()
+            .expect("resource declaration parses");
         assert_eq!(outline.resource().limits().len(), 3);
         assert_eq!(outline.resource().limits()[1].name().text(&source), "stack");
         assert_eq!(
@@ -818,7 +863,9 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [] record Point [x: i32, y: i32,]",
         )
         .expect("transport-valid source");
-        let schema = Parser::parse_schema(&source).expect("record schema parses");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("record schema parses");
         assert_eq!(schema.records().len(), 1);
         assert_eq!(schema.records()[0].name().text(&source), "Point");
         assert_eq!(schema.records()[0].fields().len(), 2);
@@ -832,7 +879,9 @@ mod tests {
               enum Message [Empty, Pair(i32, i32), Rgb [red: u8, green: u8,],]",
         )
         .expect("transport-valid source");
-        let schema = Parser::parse_schema(&source).expect("enum schema parses");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("enum schema parses");
         assert_eq!(schema.enums().len(), 1);
         let variants = schema.enums()[0].variants();
         assert_eq!(variants.len(), 3);
@@ -848,7 +897,9 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [] record Forms [pair: (i32, bool), result: Result<i32, Error>, buffer: array<u8, 16>,]",
         )
         .expect("transport-valid source");
-        let schema = Parser::parse_schema(&source).expect("type forms parse");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("type forms parse");
         let fields = schema.records()[0].fields();
         assert_eq!(fields[0].ty().form(), TypeSyntaxForm::Tuple);
         assert_eq!(fields[1].ty().form(), TypeSyntaxForm::Constructed);
@@ -862,7 +913,9 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [] extern fn now(borrow clock: Clock) -> duration uses [clock,];",
         )
         .expect("transport-valid source");
-        let schema = Parser::parse_schema(&source).expect("extern declaration parses");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("extern declaration parses");
         let function = &schema.extern_functions()[0];
         assert_eq!(function.name().text(&source), "now");
         assert_eq!(function.parameters().len(), 1);
@@ -876,7 +929,9 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { return 42i32; }",
         )
         .expect("transport-valid source");
-        let module = Parser::parse_schema(&source).expect("function body parses");
+        let module = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("function body parses");
         assert_eq!(module.functions().len(), 1);
         assert_eq!(
             module.functions()[0].signature().name().text(&source),
@@ -895,7 +950,9 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { return a + b * c; }",
         )
         .expect("transport-valid source");
-        let module = Parser::parse_schema(&source).expect("function expression parses");
+        let module = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("function expression parses");
         let expression = module.functions()[0].body().statements()[0]
             .expression()
             .expect("return value");
@@ -913,7 +970,9 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { return (a + b) * c; }",
         )
         .expect("transport-valid source");
-        let module = Parser::parse_schema(&source).expect("grouped expression parses");
+        let module = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("grouped expression parses");
         let expression = module.functions()[0].body().statements()[0]
             .expression()
             .expect("return value");
@@ -929,7 +988,9 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { return -a * !b; }",
         )
         .expect("transport-valid source");
-        let module = Parser::parse_schema(&source).expect("unary expression parses");
+        let module = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("unary expression parses");
         let expression = module.functions()[0].body().statements()[0]
             .expression()
             .expect("return value");
@@ -949,7 +1010,9 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { return add_one(41i32); }",
         )
         .expect("transport-valid source");
-        let module = Parser::parse_schema(&source).expect("call expression parses");
+        let module = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("call expression parses");
         let expression = module.functions()[0].body().statements()[0]
             .expression()
             .expect("return value");
@@ -965,7 +1028,9 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { let mut count: i32 = 41i32; return count; }",
         )
         .expect("transport-valid source");
-        let module = Parser::parse_schema(&source).expect("let binding parses");
+        let module = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("let binding parses");
         let binding = &module.functions()[0].body().statements()[0];
         assert_eq!(binding.form(), StatementForm::Let);
         assert!(binding.is_mutable());
@@ -980,7 +1045,9 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [] fn main() -> i32 { let mut count: i32 = 41i32; count = count + 1i32; return count; }",
         )
         .expect("transport-valid source");
-        let module = Parser::parse_schema(&source).expect("assignment parses");
+        let module = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("assignment parses");
         let assignment = &module.functions()[0].body().statements()[1];
         assert_eq!(assignment.form(), StatementForm::Assignment);
         assert_eq!(assignment.target().unwrap().span().text(&source), "count");
@@ -996,9 +1063,290 @@ mod tests {
             b"module system.boot version 1.0 profile bootstrap; resource [fuel: 1 stack: 1B]",
         )
         .expect("transport-valid source");
-        let error = Parser::parse_outline(&source).expect_err("list separator is mandatory");
-        assert_eq!(error.code(), ParseErrorCode::ListSeparatorRequired);
-        assert_eq!(error.span().text(&source), "stack");
+        let outcome = Parser::parse_outline(&source);
+        assert!(outcome.has_errors());
+        assert!(outcome.into_accepted().is_none());
+        let outcome = Parser::parse_outline(&source);
+        let diagnostic = &outcome.diagnostics()[0];
+        assert_eq!(diagnostic.code(), "E1106_LIST_SEPARATOR_REQUIRED");
+        assert_eq!(diagnostic.stage(), Stage::Parse);
+        assert_eq!(diagnostic.span().text(&source), "stack");
+        assert_eq!(diagnostic.field("region"), Some("list"));
+    }
+
+    const PREFIX: &str = "module system.boot version 1.0 profile bootstrap; resource [fuel: 1000] ";
+
+    fn parse(body: &str) -> (SourceUnit, ParseOutcome<Schema>) {
+        let text = std::format!("{PREFIX}{body}");
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let outcome = Parser::parse_schema(&source);
+        (source, outcome)
+    }
+
+    #[test]
+    fn parser_reports_one_diagnostic_for_each_failed_declaration_region() {
+        // A broken function signature and a superseded enum form surround a
+        // valid record. Each failed region contributes exactly one diagnostic
+        // and no tree, and neither swallows what follows it.
+        let (source, outcome) = parse(
+            "fn 7() -> i32 { return 1i32; } record Second [value: i32] enum Third {Value} \
+             fn main() -> i32 { return 1i32; }",
+        );
+        assert!(outcome.has_errors());
+        let codes: Vec<&str> = outcome
+            .diagnostics()
+            .iter()
+            .map(|diagnostic| diagnostic.code())
+            .collect();
+        assert_eq!(
+            codes,
+            ["E1101_EXPECTED_IDENTIFIER", "E1107_UNEXPECTED_TOKEN"]
+        );
+        assert_eq!(outcome.diagnostics()[0].span().text(&source), "7");
+        assert_eq!(outcome.diagnostics()[1].span().text(&source), "{");
+        for diagnostic in outcome.diagnostics() {
+            assert_eq!(diagnostic.field("region"), Some("declaration"));
+        }
+
+        // Recovery continued: the intact declarations after each failure are
+        // still parsed, and the broken ones are absent rather than guessed.
+        let schema = outcome.value().expect("recovery keeps the partial schema");
+        assert_eq!(schema.records().len(), 1);
+        assert_eq!(schema.records()[0].name().text(&source), "Second");
+        assert_eq!(schema.enums().len(), 0);
+        assert_eq!(schema.functions().len(), 1);
+        assert_eq!(
+            schema.functions()[0].signature().name().text(&source),
+            "main"
+        );
+    }
+
+    #[test]
+    fn parser_recovers_at_the_next_statement_boundary() {
+        let (source, outcome) = parse(
+            "fn main() -> i32 { let a: i32 = 1i32; let = 2i32; let c: i32 = 3i32; return c; }",
+        );
+        assert!(outcome.has_errors());
+        assert_eq!(outcome.diagnostics().len(), 1);
+        let diagnostic = &outcome.diagnostics()[0];
+        assert_eq!(diagnostic.code(), "E1101_EXPECTED_IDENTIFIER");
+        assert_eq!(diagnostic.field("region"), Some("statement"));
+        assert_eq!(diagnostic.span().text(&source), "=");
+
+        let schema = outcome.value().expect("recovery keeps the partial schema");
+        let statements = schema.functions()[0].body().statements();
+        assert_eq!(statements.len(), 3);
+        assert_eq!(statements[0].binding().unwrap().text(&source), "a");
+        assert_eq!(statements[1].binding().unwrap().text(&source), "c");
+        assert_eq!(statements[2].form(), StatementForm::Return);
+    }
+
+    #[test]
+    fn a_type_argument_list_nested_directly_inside_another_parses() {
+        // The lexer emits `>>` as one shift operator, so both argument lists
+        // close at a single token.
+        let (source, outcome) =
+            parse("fn main() -> Result<Option<i32>, Option<i32>> { return 1i32; }");
+        assert!(
+            !outcome.has_errors(),
+            "unexpected diagnostics: {:?}",
+            outcome
+                .diagnostics()
+                .iter()
+                .map(|diagnostic| diagnostic.code())
+                .collect::<Vec<_>>()
+        );
+        let schema = outcome
+            .into_accepted()
+            .expect("nested type arguments parse");
+        let result = schema.functions()[0].signature().result();
+        assert_eq!(result.form(), TypeSyntaxForm::Constructed);
+        assert_eq!(result.text(&source), "Result<Option<i32>, Option<i32>>");
+    }
+
+    #[test]
+    fn parser_recovers_at_the_next_list_separator() {
+        // The malformed middle field is dropped; the elements on both sides of
+        // it survive because synchronization stops at the next comma.
+        let (source, outcome) = parse("record Point [x: i32, 7: i32, z: i32]");
+        assert!(outcome.has_errors());
+        assert_eq!(outcome.diagnostics().len(), 1);
+        let diagnostic = &outcome.diagnostics()[0];
+        assert_eq!(diagnostic.code(), "E1101_EXPECTED_IDENTIFIER");
+        assert_eq!(diagnostic.field("region"), Some("list"));
+        assert_eq!(diagnostic.span().text(&source), "7");
+
+        let schema = outcome.value().expect("recovery keeps the partial schema");
+        let fields = schema.records()[0].fields();
+        assert_eq!(fields.len(), 2);
+        assert_eq!(fields[0].name().text(&source), "x");
+        assert_eq!(fields[1].name().text(&source), "z");
+    }
+
+    #[test]
+    fn a_lexical_failure_is_reported_alone() {
+        // docs/39 section 4 orders the lowest applicable lexical error first;
+        // the source below is also syntactically broken, and none of that is
+        // reported while the bytes cannot be tokenized.
+        let source = SourceReader::read(
+            b"module system.boot version 1.0 profile bootstrap; resource [fuel: 1] record @ [",
+        )
+        .expect("transport-valid source");
+        let outcome = Parser::parse_schema(&source);
+        assert_eq!(outcome.diagnostics().len(), 1);
+        let diagnostic = &outcome.diagnostics()[0];
+        assert_eq!(diagnostic.code(), "E1013_UNEXPECTED_CHARACTER");
+        assert_eq!(diagnostic.stage(), Stage::Lex);
+        assert_eq!(diagnostic.field("byte_offset"), Some("76"));
+        assert!(outcome.into_accepted().is_none());
+    }
+
+    #[test]
+    fn a_character_that_begins_no_lexical_form_is_distinguished_from_an_identifier_violation() {
+        // docs/44 section 7 fixes this precedence: non-ASCII takes the
+        // identifier code, everything else takes the unexpected-character code.
+        let source = SourceReader::read("fn main() { let ключ: i32 = 1i32; }".as_bytes())
+            .expect("transport-valid source");
+        let error = Lexer::lex(&source).expect_err("a non-ASCII identifier is invalid");
+        assert_eq!(error.code().symbol(), "E1012_INVALID_IDENTIFIER");
+        assert_eq!(error.byte_offset(), 16);
+
+        for (text, offset) in [("let @ = 1i32;", 4), ("let $x = 1i32;", 4)] {
+            let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+            let error = Lexer::lex(&source).expect_err("the character begins no lexical form");
+            assert_eq!(error.code().symbol(), "E1013_UNEXPECTED_CHARACTER");
+            assert_eq!(error.byte_offset(), offset);
+        }
+    }
+
+    #[test]
+    fn unexpected_character_conformance_vectors_match_their_recorded_spans() {
+        // Conformance cases R029 and R030, including the recorded byte offset
+        // and derived line/column.
+        let vectors: [(&str, &[u8], usize, usize, usize); 2] = [
+            (
+                "unexpected-character-at",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../docs/language/conformance/v1/reject/unexpected-character-at.tos"
+                )),
+                287,
+                7,
+                12,
+            ),
+            (
+                "unexpected-character-dollar",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../docs/language/conformance/v1/reject/unexpected-character-dollar.tos"
+                )),
+                288,
+                7,
+                9,
+            ),
+        ];
+        for (name, bytes, offset, line, column) in vectors {
+            let source = SourceReader::read(bytes).expect("vector is transport-valid");
+            let outcome = Parser::parse_schema(&source);
+            assert_eq!(outcome.diagnostics().len(), 1, "{name}");
+            let diagnostic = &outcome.diagnostics()[0];
+            assert_eq!(diagnostic.code(), "E1013_UNEXPECTED_CHARACTER", "{name}");
+            assert_eq!(diagnostic.stage(), Stage::Lex, "{name}");
+            assert_eq!(diagnostic.span().start(), offset, "{name}");
+            assert_eq!(diagnostic.start().line(), line, "{name}");
+            assert_eq!(diagnostic.start().column(), column, "{name}");
+            assert!(outcome.into_accepted().is_none(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_declaration_after_a_damaged_function_is_still_parsed() {
+        // ADR-0032 section 3: a `fn` declaration ends with a block, so without
+        // the closing-brace boundary this source would report one diagnostic
+        // and lose every later declaration.
+        let (source, outcome) = parse(
+            "fn () -> i32 { return 1i32; } record Kept [value: i32] \
+             fn healthy() -> i32 { return 2i32; }",
+        );
+        assert!(outcome.has_errors());
+        assert_eq!(outcome.diagnostics().len(), 1);
+        assert_eq!(
+            outcome.diagnostics()[0].field("region"),
+            Some("declaration")
+        );
+
+        let schema = outcome.value().expect("recovery keeps the partial schema");
+        assert_eq!(schema.records().len(), 1);
+        assert_eq!(schema.records()[0].name().text(&source), "Kept");
+        assert_eq!(schema.functions().len(), 1);
+        assert_eq!(
+            schema.functions()[0].signature().name().text(&source),
+            "healthy"
+        );
+    }
+
+    #[test]
+    fn diagnostic_positions_use_lines_and_utf8_columns() {
+        // The comment holds two-byte scalar values, so a byte-counted column
+        // would drift on the following line.
+        let source = SourceReader::read(
+            "module system.boot version 1.0 profile bootstrap;\n// ключ\nresource [\n".as_bytes(),
+        )
+        .expect("transport-valid source");
+        let outcome = Parser::parse_outline(&source);
+        assert!(outcome.has_errors());
+        let diagnostic = &outcome.diagnostics()[0];
+        assert_eq!(diagnostic.start().line(), 4);
+        assert_eq!(diagnostic.start().column(), 1);
+
+        // Byte 54 opens the second Cyrillic scalar value of the comment. A
+        // byte-counted column would report 6 for it.
+        let mid_line = Position::at(&source, 54);
+        assert_eq!(mid_line.line(), 2);
+        assert_eq!(mid_line.column(), 5);
+    }
+
+    #[test]
+    fn accepted_output_is_withheld_whenever_a_diagnostic_is_an_error() {
+        let (_, outcome) = parse("record Point [x: i32, 7: i32]");
+        assert!(outcome.value().is_some());
+        assert!(outcome.into_accepted().is_none());
+    }
+
+    #[test]
+    fn superseded_brace_syntax_is_rejected_by_the_conformance_vectors() {
+        // Conformance cases R020, R021 and R022: `[]` introduces resource,
+        // enum and record declaration lists, and the pre-acceptance brace forms
+        // must not parse.
+        let vectors: [(&str, &[u8]); 3] = [
+            (
+                "old-resource-braces",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../docs/language/conformance/v1/reject/old-resource-braces.tos"
+                )),
+            ),
+            (
+                "old-enum-braces",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../docs/language/conformance/v1/reject/old-enum-braces.tos"
+                )),
+            ),
+            (
+                "old-record-braces",
+                include_bytes!(concat!(
+                    env!("CARGO_MANIFEST_DIR"),
+                    "/../../../docs/language/conformance/v1/reject/old-record-braces.tos"
+                )),
+            ),
+        ];
+        for (name, bytes) in vectors {
+            let source = SourceReader::read(bytes).expect("vector is transport-valid");
+            let outcome = Parser::parse_schema(&source);
+            assert!(outcome.has_errors(), "{name} must not parse");
+            assert!(outcome.into_accepted().is_none(), "{name} must not parse");
+        }
     }
 
     #[test]
