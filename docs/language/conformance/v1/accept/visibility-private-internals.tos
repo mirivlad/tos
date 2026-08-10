@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.visibility_private_internals version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+enum Mode [
+    Fast,
+    Slow,
+]
+
+record Ledger [
+    total: i32,
+]
+
+// A private function may use private nominal types freely, and a public
+// function may use them inside its body: neither is a public surface.
+fn tally(mode: Mode, ledger: Ledger) -> Ledger {
+    match (mode) {
+        Fast => {
+            return Ledger(total: ledger.total + 1i32);
+        }
+        Slow => {
+            return ledger;
+        }
+    }
+}
+
+pub fn run(seed: i32) -> i32 {
+    let ledger: Ledger = tally(Fast, Ledger(total: seed));
+    return ledger.total;
+}

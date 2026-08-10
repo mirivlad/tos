@@ -14,12 +14,12 @@ resource [
     imports: 0,
 ]
 
-record Point [
+pub record Point [
     x: i32,
     y: i32,
 ]
 
-enum Axis [
+pub enum Axis [
     Horizontal,
     Vertical,
 ]

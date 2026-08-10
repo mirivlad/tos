@@ -3,7 +3,7 @@ module conformance.borrow_escape version 1.0 profile bootstrap;
 
 resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
 
-record Counter [value: i32]
+pub record Counter [value: i32]
 
 pub fn read(borrow counter: Counter) -> i32 { return counter.value; }
 pub fn write(borrow mut counter: Counter) -> unit { counter.value = 1i32; }

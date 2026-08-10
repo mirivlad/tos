@@ -188,6 +188,7 @@ def main() -> int:
             ("E1603_MODULE_PATH_MISMATCH", "type"),
             ("E1604_IMPORT_NOT_FOUND", "type"),
             ("E1606_IMPORT_CYCLE", "type"),
+            ("E1607_PRIVATE_PUBLIC_TYPE", "type"),
             ("E1801_FFI_NOT_AVAILABLE", "effect"),
             ("E1802_UNSAFE_RATIONALE_REQUIRED", "effect"),
             ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),
@@ -251,6 +252,11 @@ def main() -> int:
         failures,
     )
     require(
+        "transitive public type surface" in modules,
+        "docs/42 lacks the transitive public type surface rule",
+        failures,
+    )
+    require(
         "The number of type arguments is a static type property" in types,
         "docs/40 lacks the ADR-0034 arity stage decision",
         failures,
@@ -261,6 +267,11 @@ def main() -> int:
         failures,
     )
     for vector in [
+        "accept/visibility-exported-surface.tos",
+        "accept/visibility-imported-surface.tos",
+        "accept/visibility-private-internals.tos",
+        "reject/visibility-private-in-public.tos",
+        "reject/visibility-private-transitively.tos",
         "reject/index-type-mismatch.tos",
         "reject/integer-type-mismatch.tos",
         "reject/return-type-mismatch.tos",

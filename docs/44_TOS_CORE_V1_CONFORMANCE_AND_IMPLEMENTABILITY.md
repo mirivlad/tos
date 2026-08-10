@@ -36,6 +36,7 @@ convenient error.
 | resources | missing/invalid required limit, metered loop, recursion/import/task/worker/sync/shared/cleanup exhaustion |
 | concurrency | one/2/N-worker equivalent deterministic result, actual Full-engine overlap, safe mutable-share rejection, `TaskResult` join/cancel lifecycle, bounded task/worker behavior |
 | synchronization/atomics | mutex/channel/event/barrier ordering, valid/invalid memory order, release/acquire publication, no non-atomic race escape |
+| visibility | an exported type in a public signature, an imported exported type across a real module boundary, private types confined to a body or a private item, a private type named directly by a `pub fn`, and a private type reached transitively through an exported wrapper |
 | modules/provenance | deterministic import closure, cycle/ambiguity rejection, cache invalidation, source-map preservation through lowering/optimization |
 | IR verifier | malformed header/table/order/index/type/CFG/import/capability/region/resource/task/atomic/source-map negatives |
 | profiles/unsafe/FFI | Bootstrap reject Full-only constructs, serialized Bootstrap equivalence, unsafe rationale and unavailable FFI rejection |
@@ -250,6 +251,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1603_MODULE_PATH_MISMATCH` | a source unit's canonical repository path is not the path its declared module name maps to |
 | `E1604_IMPORT_NOT_FOUND` | an import names no module in the declared source set |
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
+| `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
 
 ### Unsafe and FFI boundary (stage `effect`)
 

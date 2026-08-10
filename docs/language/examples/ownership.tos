@@ -14,7 +14,7 @@ resource [
     imports: 0,
 ]
 
-record Packet [
+pub record Packet [
     id: u32,
     payload: bytes,
 ]

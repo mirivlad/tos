@@ -16,7 +16,7 @@ resource [
     imports: 1,
 ]
 
-enum ClockError [
+pub enum ClockError [
     Unavailable,
 ]
 
