@@ -94,9 +94,28 @@ type argument; `Result<T,E>` takes two. `Event`, `Semaphore`, `Barrier`,
 type arguments.
 `array<T, N>` takes one type argument and one compile-time `size` constant;
 its comma is a declarative type-parameter separator, not a statement
-terminator. Using another arity is a parse/type error, not an
-implementation-defined generic application. `slice<T>` is the only borrowed-view
-type form and retains the nonescaping restrictions above.
+terminator. Its second argument is a constant rather than a type, so it is not
+one of the parameterized constructors above. `slice<T>` is the only
+borrowed-view type form and retains the nonescaping restrictions above.
+
+The number of type arguments is a static type property, not a parser decision.
+The parser builds a constructed-type node for any known V1 constructor written
+with `<...>`, and the checker compares the actual count against the fixed arity
+above; a mismatch is `E1204_TYPE_ARGUMENT_ARITY` with the constructor and both
+arities. This is not an implementation-defined generic application, and it
+admits no user generics: an arbitrary `Foo<T>` is not V1 type syntax.
+
+A type name that resolves to no primitive, fixed or predeclared type, local
+nominal type or reachable imported type is `E1203_UNKNOWN_TYPE_NAME`, carrying
+the name as spelled. For a qualified name the module or import part resolves
+first: a missing import or module is the applicable `E16xx` code, while an
+existing one that does not declare the name is `E1203_UNKNOWN_TYPE_NAME`.
+
+Precedence is fixed. An unresolved name is `E1203_UNKNOWN_TYPE_NAME`; a
+resolved parameterized constructor applied with the wrong count is
+`E1204_TYPE_ARGUMENT_ARITY`; only after the arity is correct are the argument
+types and remaining type rules checked, so one mistake cannot cascade into
+findings derived from a constructed type that does not exist. See ADR-0034.
 
 ## 2. Bindings, functions, effects, and capabilities
 

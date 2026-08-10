@@ -14,6 +14,7 @@ mod mutability;
 mod parser;
 mod profile;
 mod returns;
+mod types;
 
 pub use checker::Checker;
 pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
@@ -2373,6 +2374,97 @@ mod tests {
         let (_, outcome) = parse("fn main() -> i32 { return 1i32; }");
         assert!(!outcome.is_truncated());
         assert!(outcome.diagnostics().is_empty());
+    }
+
+    #[test]
+    fn an_unresolved_type_name_is_reported() {
+        let (source, diagnostics) =
+            check("fn main() -> i32 { let value: Missing = 1i32; return 0i32; }");
+        let unknown = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1203_UNKNOWN_TYPE_NAME")
+            .expect("an unresolved type name is rejected");
+        assert_eq!(unknown.stage(), Stage::Type);
+        assert_eq!(unknown.field("type"), Some("Missing"));
+        assert_eq!(unknown.span().text(&source), "Missing");
+    }
+
+    #[test]
+    fn every_v1_type_form_resolves() {
+        let (_, diagnostics) = check(
+            "record Point [x: i32] enum Signal [Low] \
+             fn main(a: Option<i32>, b: Result<i32, Signal>, c: array<Point, 2>, \
+             d: (i32, bool), e: fn (i32) -> unit, f: AtomicU64, g: slice<u8>) -> unit { }",
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code() != "E1203_UNKNOWN_TYPE_NAME"),
+            "primitives, predeclared, local and constructed forms all resolve"
+        );
+    }
+
+    #[test]
+    fn a_constructor_arity_mismatch_names_both_arities() {
+        let (_, diagnostics) = check("fn main(a: Option<i32, bool>, b: Result<i32>) -> unit { }");
+        let arity: Vec<(&str, &str, &str)> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1204_TYPE_ARGUMENT_ARITY")
+            .map(|d| {
+                (
+                    d.field("constructor").unwrap_or_default(),
+                    d.field("expected_arity").unwrap_or_default(),
+                    d.field("actual_arity").unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(arity, [("Option", "1", "2"), ("Result", "2", "1")]);
+    }
+
+    #[test]
+    fn an_unresolved_name_precedes_an_arity_finding() {
+        // ADR-0034 section 3: the arity of a type that does not exist is not a
+        // fact, so one mistake does not become two diagnostics.
+        let (_, diagnostics) = check("fn main(a: Missing<i32, bool>) -> unit { }");
+        let codes: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code().starts_with("E120"))
+            .map(|d| d.code())
+            .collect();
+        assert_eq!(codes, ["E1203_UNKNOWN_TYPE_NAME"]);
+    }
+
+    #[test]
+    fn a_wrongly_applied_constructor_does_not_cascade() {
+        // The bad argument inside is not reported: the constructed type it
+        // would belong to does not exist.
+        let (_, diagnostics) = check("fn main(a: Option<Missing, bool>) -> unit { }");
+        let codes: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code().starts_with("E120"))
+            .map(|d| d.code())
+            .collect();
+        assert_eq!(codes, ["E1204_TYPE_ARGUMENT_ARITY"]);
+    }
+
+    #[test]
+    fn a_qualified_type_resolves_against_the_module_its_binding_names() {
+        let upstream = module_source("app.upstream", "");
+        let text = "module app.client version 1.0 profile bootstrap; import app.upstream as up; \
+             resource [fuel: 1000] fn main(value: up.Missing) -> unit { }";
+        let client = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let upstream_schema = module_schema(&upstream);
+        let client_schema = module_schema(&client);
+        let diagnostics = check_source_set(&[
+            ModuleEntry::new("app/client.tos", &client, &client_schema),
+            ModuleEntry::new("app/upstream.tos", &upstream, &upstream_schema),
+        ]);
+        let unknown = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1203_UNKNOWN_TYPE_NAME")
+            .expect("the import resolves, so the missing type is a type-name error");
+        assert_eq!(unknown.field("type"), Some("up.Missing"));
+        assert_eq!(unknown.field("module"), Some("app.upstream"));
     }
 
     #[test]

@@ -28,6 +28,7 @@ convenient error.
 |---|---|
 | lexical/source | UTF-8, BOM, Unicode 17.0.0/UAX #15 Revision 57 NFC, CRLF/bare-CR, tab, identifier, integer, string/bytes, and earliest-error precedence |
 | grammar | module/header/import, declaration/block recovery, parenthesized statement-only `if`/`match`, one Call/constructor form, `[]` declarative lists, named record/named-variant constructors, `fn (...) { ... }` closures, `array<T, N>`, no standalone block expression, precedence, complete match, reserved words, invalid profile syntax |
+| type resolution | unknown local type, unknown qualified type where the import and module resolve, `Option` and `Result` applied with the wrong arity, and the precedence of an unresolved name over an arity finding (ADR-0034) |
 | static type/evaluation | fixed-width literals, `to_*` checked conversion and invalid narrowing, checked overflow/shift/division, Result `?`, `Option` (not `nil`), evaluation order |
 | pattern resolution | local bare unit variant, bare binding where the expected type has no such variant, two enums sharing a variant name disambiguated by expected type, payload variant destructuring, explicitly qualified local variant, qualified imported variant, unknown qualified variant, exhaustive match over bare variants, wildcard and binding exhaustiveness, and independence from capitalization (ADR-0033) |
 | ownership | move/use-after-move, primitive/tuple/array Copy and affine nominal aggregate rule, immutable/mutable conflict, borrow escape, indexed alias conservatism, task capture |
@@ -227,6 +228,8 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 |---|---|
 | `E1201_ASSIGN_TO_IMMUTABLE` | an assignment targets a place whose root binding is not mutable |
 | `E1202_UNKNOWN_VALUE_NAME` | a value name, or a qualified constructor path in a pattern, resolves to no predeclared value, module item, parameter or in-scope binding |
+| `E1203_UNKNOWN_TYPE_NAME` | a type name resolves to no primitive, fixed or predeclared type, local nominal type or reachable imported type; for a qualified name the module or import part resolved first |
+| `E1204_TYPE_ARGUMENT_ARITY` | a known parameterized V1 type constructor is applied to the wrong number of type arguments; fields carry the constructor and both arities |
 | `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
 | `E1206_MISSING_RECORD_FIELD` | a named constructor omits a field its record or named-field variant declares |
 | `E1207_UNKNOWN_RECORD_FIELD` | a named constructor supplies a field its record or named-field variant does not declare |
