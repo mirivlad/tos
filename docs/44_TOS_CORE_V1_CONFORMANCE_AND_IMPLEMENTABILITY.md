@@ -230,6 +230,13 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
 
+### Unsafe and FFI boundary (stage `effect`)
+
+| Code | Condition |
+|---|---|
+| `E1801_FFI_NOT_AVAILABLE` | an `extern` item names no accepted FFI interface schema; V1 accepts none, so every `extern` item is rejected |
+| `E1802_UNSAFE_RATIONALE_REQUIRED` | an `unsafe` block does not open with a line comment beginning `SAFETY:` |
+
 ### Resource and profile (stage `resource`)
 
 | Code | Condition |

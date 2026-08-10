@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `7d285057288097c48c0ce69df319e6fd3f0d642561da76d5d8b4148c5c7917f6`  
+Source-manifest SHA-256: `7aadf67c6f403db015e327de8bc899b8cd73ffa6464c245d5bca9bf10236ef73`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4703,6 +4703,13 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1202_UNKNOWN_VALUE_NAME` | a value name, or a qualified constructor path in a pattern, resolves to no predeclared value, module item, parameter or in-scope binding |
 | `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
+
+### Unsafe and FFI boundary (stage `effect`)
+
+| Code | Condition |
+|---|---|
+| `E1801_FFI_NOT_AVAILABLE` | an `extern` item names no accepted FFI interface schema; V1 accepts none, so every `extern` item is rejected |
+| `E1802_UNSAFE_RATIONALE_REQUIRED` | an `unsafe` block does not open with a line comment beginning `SAFETY:` |
 
 ### Resource and profile (stage `resource`)
 
