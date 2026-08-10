@@ -20,7 +20,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tos_core::{Parser, SourceReader};
+use tos_core::{Checker, Parser, SourceReader};
 
 fn corpus_root() -> PathBuf {
     Path::new(concat!(
@@ -79,6 +79,30 @@ fn recorded_reject_codes() -> BTreeMap<String, String> {
 /// Whether a code belongs to a stage the parser owns.
 fn is_frontend_code(code: &str) -> bool {
     code.starts_with("E10") || code.starts_with("E11")
+}
+
+/// Later-stage codes the checker already implements.
+///
+/// A vector recording one of these must now be rejected rather than merely
+/// parse; the list grows as each check lands, so a check cannot be implemented
+/// without its corpus evidence starting to bind.
+const IMPLEMENTED_CHECKS: [&str; 4] = [
+    "E1205_DUPLICATE_RECORD_FIELD",
+    "E1700_RESOURCE_DECLARATION_REQUIRED",
+    "E1703_DUPLICATE_RESOURCE_DECLARATION",
+    "E1704_UNKNOWN_RESOURCE_LIMIT",
+];
+
+/// Parses and then checks a vector, returning the first diagnostic code.
+fn check_report(path: &Path) -> Option<String> {
+    let bytes = fs::read(path).expect("vector is readable");
+    let source = SourceReader::read(&bytes).ok()?;
+    let outcome = Parser::parse_schema(&source);
+    let schema = outcome.into_accepted()?;
+    let diagnostics = Checker::check(&source, &schema);
+    diagnostics
+        .first()
+        .map(|diagnostic| diagnostic.code().to_string())
 }
 
 fn parse_report(path: &Path) -> Result<Option<String>, String> {
@@ -155,6 +179,19 @@ fn rejected_vectors_fail_at_the_stage_their_expectation_records() {
             failures.push(std::format!(
                 "{name}: targets {code} but cannot reach that stage — {detail}"
             ));
+            continue;
+        }
+        if !IMPLEMENTED_CHECKS.contains(&code.as_str()) {
+            continue;
+        }
+        match check_report(&file) {
+            Some(observed) if observed == *code => {}
+            Some(observed) => failures.push(std::format!(
+                "{name}: expected {code}, checker gave {observed}"
+            )),
+            None => failures.push(std::format!(
+                "{name}: expected {code}, but it checked clean"
+            )),
         }
     }
     assert!(

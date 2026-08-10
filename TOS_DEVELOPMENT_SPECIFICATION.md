@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `c21995371ecefbb359cf0f8c8e0f66484fdbc39c7c95a956bacad86bea2c4820`  
+Source-manifest SHA-256: `cac5dfac24b8cd1dc7727033daabddd80e329575d18ce97d43660ed254294c99`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4647,6 +4647,20 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1105_CONTROL_HEAD_PARENS_REQUIRED` | an `if`, `while`, `match` or `for` head is not parenthesized |
 | `E1106_LIST_SEPARATOR_REQUIRED` | two members of a comma-separated list are not separated by a comma |
 | `E1107_UNEXPECTED_TOKEN` | the token cannot begin or continue the construct being parsed and no more specific parser code applies |
+
+### Type and evaluation (stage `type`)
+
+| Code | Condition |
+|---|---|
+| `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
+
+### Resource and profile (stage `resource`)
+
+| Code | Condition |
+|---|---|
+| `E1700_RESOURCE_DECLARATION_REQUIRED` | the module resource declaration omits one of the ten required keys of section 6 of docs/41 |
+| `E1703_DUPLICATE_RESOURCE_DECLARATION` | a resource declaration is made more than once, whether as a second `resource` item or as a repeated key inside one |
+| `E1704_UNKNOWN_RESOURCE_LIMIT` | a resource key is not one of the required keys, or its value is not the literal class that key takes |
 
 <!-- stage2-diagnostic-registry:end -->
 

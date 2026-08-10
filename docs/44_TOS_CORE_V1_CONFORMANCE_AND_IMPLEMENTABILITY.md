@@ -220,6 +220,20 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1106_LIST_SEPARATOR_REQUIRED` | two members of a comma-separated list are not separated by a comma |
 | `E1107_UNEXPECTED_TOKEN` | the token cannot begin or continue the construct being parsed and no more specific parser code applies |
 
+### Type and evaluation (stage `type`)
+
+| Code | Condition |
+|---|---|
+| `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
+
+### Resource and profile (stage `resource`)
+
+| Code | Condition |
+|---|---|
+| `E1700_RESOURCE_DECLARATION_REQUIRED` | the module resource declaration omits one of the ten required keys of section 6 of docs/41 |
+| `E1703_DUPLICATE_RESOURCE_DECLARATION` | a resource declaration is made more than once, whether as a second `resource` item or as a repeated key inside one |
+| `E1704_UNKNOWN_RESOURCE_LIMIT` | a resource key is not one of the required keys, or its value is not the literal class that key takes |
+
 <!-- stage2-diagnostic-registry:end -->
 
 `E1107_UNEXPECTED_TOKEN` is the defined residual of the parse stage. A more

@@ -395,6 +395,26 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 - Шаг 2 из docs/44 §6 закрыт. Шаги 3–10 (checker, ownership, IR, verifier,
   интерпретатор, source maps, corpus/perf evidence, `init.tos`) не начаты.
 
+### 2026-08-10 — Stage 2 Part B: first checker slice
+
+- Новый `checker.rs` — начало шага 3 docs/44 §6. Реализованы проверки, которым
+  достаточно собственных объявлений модуля: resource envelope по docs/41 §6
+  (`E1700_RESOURCE_DECLARATION_REQUIRED` для каждого из десяти обязательных
+  ключей, `E1703_DUPLICATE_RESOURCE_DECLARATION`, `E1704_UNKNOWN_RESOURCE_LIMIT`
+  для незнакомого ключа или неверного класса литерала) и exact-once именованных
+  полей (`E1205_DUPLICATE_RECORD_FIELD`) — как в объявлении record/enum-варианта,
+  так и в named-конструкторе на любой глубине выражения.
+- Семейства E12xx и E17xx частично внесены в реестр docs/44 §7 со stage и
+  условием, как требует правило включения. Механический гейт проверяет stage
+  каждого реализованного кода.
+- Conformance-гейт расширен: вектор с кодом поздней стадии, которая уже
+  реализована, обязан быть отклонён чекером именно этим кодом. R014 и R025
+  (`duplicate-record-field`, `duplicate-record-constructor-field`) теперь
+  связаны с реализацией.
+- Name resolution, типы, эффекты и ownership не реализованы и ничего не
+  сообщают — проверка, которую нельзя выполнить, молчит, а не угадывает.
+- Тестов 60 → 64. `./scripts/preflight.sh --full` → **31/31 PASS**.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5
