@@ -2747,6 +2747,65 @@ mod tests {
     }
 
     #[test]
+    fn integer_types_must_agree_when_assigned_or_passed() {
+        let (_, diagnostics) = check(
+            "fn takes(value: i32) -> i32 { return value; } \
+             fn main(wide: i64) -> i32 { let mut slot: i32 = 1i32; slot = wide; \
+             return takes(wide); }",
+        );
+        let mismatches: Vec<(&str, &str, &str)> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1210_INTEGER_TYPE_MISMATCH")
+            .map(|d| {
+                (
+                    d.field("expected").unwrap_or_default(),
+                    d.field("actual").unwrap_or_default(),
+                    d.field("position").unwrap_or_default(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            mismatches,
+            [("i32", "i64", "assignment"), ("i32", "i64", "argument")]
+        );
+    }
+
+    #[test]
+    fn an_unsuffixed_literal_takes_the_required_integer_type() {
+        let (_, diagnostics) = check(
+            "fn takes(value: u64) -> u64 { return value; } \
+             fn main() -> u64 { let mut slot: u8 = 1; slot = 2; return takes(3); }",
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1210_INTEGER_TYPE_MISMATCH"));
+    }
+
+    #[test]
+    fn size_is_its_own_integer_type() {
+        let (_, diagnostics) = check(
+            "fn main(count: size) -> i32 { let mut slot: i32 = 1i32; slot = count; return 0i32; }",
+        );
+        let mismatch = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1210_INTEGER_TYPE_MISMATCH")
+            .expect("size does not silently become i32");
+        assert_eq!(mismatch.field("actual"), Some("size"));
+    }
+
+    #[test]
+    fn a_disagreement_between_other_kinds_has_no_allocated_code() {
+        // docs/40 section 3 names E1210 for integer types only; reporting a
+        // bool-to-i32 assignment would need a code no document allocates.
+        let (_, diagnostics) = check(
+            "fn main(flag: bool) -> i32 { let mut slot: i32 = 1i32; slot = flag; return 0i32; }",
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1210_INTEGER_TYPE_MISMATCH"));
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.

@@ -23,6 +23,11 @@
 //! opaque types are described as taking "the corresponding nonconstructible-type
 //! error", which no document names, so this slice reports nothing for them
 //! rather than borrowing a code that means something else.
+//!
+//! Section 3 also makes assigning or passing values of *different integer
+//! types* `E1210_INTEGER_TYPE_MISMATCH`. It names no code for a disagreement
+//! between other kinds — a `bool` assigned to a `string`, say — so this slice
+//! reports only the integer case the contract states.
 
 use std::boxed::Box;
 use std::collections::BTreeMap;
@@ -304,6 +309,11 @@ fn resolve(source: &SourceUnit, ty: &TypeSyntax) -> Type {
     }
 }
 
+/// Whether a type belongs to the integer family docs/40 section 3 governs.
+fn is_integer_family(ty: &Type) -> bool {
+    matches!(ty, Type::Integer(_) | Type::Size)
+}
+
 /// Whether a type is an opaque handle whose cast docs/40 routes elsewhere.
 fn is_opaque(ty: &Type) -> bool {
     match ty {
@@ -354,6 +364,16 @@ impl<'source> TypeChecker<'source> {
     fn check_statement(&mut self, statement: &'source Statement, result: &Type) {
         match statement.form() {
             StatementForm::Return => self.check_return(statement, result),
+            StatementForm::Assignment => {
+                let target = statement
+                    .target()
+                    .map(|place| self.type_of(place))
+                    .unwrap_or(Type::Unknown);
+                if let Some(expression) = statement.expression() {
+                    let actual = self.type_of(expression);
+                    self.check_integer_agreement(expression.span(), &target, &actual, "assignment");
+                }
+            }
             StatementForm::Let => {
                 let declared = statement.declared_type().map(|ty| resolve(self.source, ty));
                 let inferred = statement
@@ -431,6 +451,38 @@ impl<'source> TypeChecker<'source> {
             return;
         }
         self.report_return(expression.span(), result, &actual);
+    }
+
+    /// Reports `E1210_INTEGER_TYPE_MISMATCH` when two integer types disagree.
+    ///
+    /// docs/40 section 3 names this code for assigning or passing values of
+    /// different integer types. A disagreement between other kinds has no
+    /// allocated code, so nothing is reported for it here.
+    fn check_integer_agreement(
+        &mut self,
+        span: crate::parser::Span,
+        expected: &Type,
+        actual: &Type,
+        position: &'static str,
+    ) {
+        if !is_integer_family(expected) || !is_integer_family(actual) {
+            return;
+        }
+        if actual.agrees_with(expected) {
+            return;
+        }
+        self.diagnostics.push(
+            Diagnostic::new(
+                "E1210_INTEGER_TYPE_MISMATCH",
+                Severity::Error,
+                Stage::Type,
+                span,
+                self.source,
+            )
+            .with_field("expected", expected.spell())
+            .with_field("actual", actual.spell())
+            .with_field("position", position),
+        );
     }
 
     fn report_return(&mut self, span: crate::parser::Span, expected: &Type, actual: &Type) {
@@ -621,7 +673,7 @@ impl<'source> TypeChecker<'source> {
     }
 
     fn call_type(&mut self, expression: &'source Expression) -> Type {
-        self.type_arguments(expression.arguments());
+        let actual = self.type_arguments(expression.arguments());
         let Some(callee) = expression.callee() else {
             return Type::Unknown;
         };
@@ -629,8 +681,24 @@ impl<'source> TypeChecker<'source> {
             return Type::Unknown;
         }
         let name = callee.span().text(self.source);
-        if let Some((_, result)) = self.declarations.functions.get(name) {
-            return result.clone();
+        if let Some((parameters, result)) = self.declarations.functions.get(name) {
+            let result = result.clone();
+            let parameters = parameters.clone();
+            // Only a positional list lines up with the parameter order; a named
+            // list belongs to a constructor and is checked by field name.
+            if expression
+                .arguments()
+                .iter()
+                .all(|argument| argument.name().is_none())
+                && parameters.len() == actual.len()
+            {
+                for ((wanted, given), argument) in
+                    parameters.iter().zip(&actual).zip(expression.arguments())
+                {
+                    self.check_integer_agreement(argument.span(), wanted, given, "argument");
+                }
+            }
+            return result;
         }
         if self.declarations.records.contains_key(name) {
             return Type::Nominal(name.to_string());
@@ -653,10 +721,11 @@ impl<'source> TypeChecker<'source> {
         Type::Unknown
     }
 
-    fn type_arguments(&mut self, arguments: &'source [CallArgument]) {
-        for argument in arguments {
-            self.type_of(argument.value());
-        }
+    fn type_arguments(&mut self, arguments: &'source [CallArgument]) -> Vec<Type> {
+        arguments
+            .iter()
+            .map(|argument| self.type_of(argument.value()))
+            .collect()
     }
 
     fn binary_type(&mut self, expression: &'source Expression) -> Type {

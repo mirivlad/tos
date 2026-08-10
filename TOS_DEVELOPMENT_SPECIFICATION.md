@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `48ab86bb5ba6d3a1871238438db4c9af573ab15c2aef966228e3c77b5f14dc99`  
+Source-manifest SHA-256: `c590b9c0e8cf7fe8bb7e475bd988d48f8a9bdb3b608f989df29c5c094fed0101`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4741,6 +4741,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1207_UNKNOWN_RECORD_FIELD` | a named constructor supplies a field its record or named-field variant does not declare |
 | `E1222_RETURN_TYPE_MISMATCH` | a `return` carries a value whose type is not the declared result type, or omits a value in a non-`unit` function |
 | `E1225_INVALID_DEFER` | a `defer` body performs `return`, `break`, `continue`, `await`, `join`, spawns work, or acquires a new resource |
+| `E1210_INTEGER_TYPE_MISMATCH` | a value of one integer type is assigned or passed where a different integer type is required; an unsuffixed literal takes the required type instead |
 | `E1212_INVALID_AS_CONVERSION` | an `as` conversion is not an integer widening that preserves signedness; a cast of an opaque handle is routed elsewhere by docs/40 section 3 and is not this code |
 | `E1220_NONEXHAUSTIVE_MATCH` | a `match` over an enum, `Option`, `Result` or `TaskResult` leaves a variant uncovered and has no wildcard or binding arm |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
