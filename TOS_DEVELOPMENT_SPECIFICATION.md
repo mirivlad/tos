@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `45d90a9d37103d64968b386e74ab9de68ccb24beee6ea3070bda2dfef6f4163e`  
+Source-manifest SHA-256: `7b5375620ef863813806ba6381038c8163d667079871621d92f538f3a80b2d17`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4789,6 +4789,12 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 |---|---|
 | `E1801_FFI_NOT_AVAILABLE` | an `extern` item names no accepted FFI interface schema; V1 accepts none, so every `extern` item is rejected |
 | `E1802_UNSAFE_RATIONALE_REQUIRED` | an `unsafe` block does not open with a line comment beginning `SAFETY:` |
+
+### Ownership (stage `ownership`)
+
+| Code | Condition |
+|---|---|
+| `E1301_USE_AFTER_MOVE` | an affine value is used after being moved by an assignment, an owning argument, a return, or placement in an aggregate |
 
 ### Resource and profile (stage `resource`)
 

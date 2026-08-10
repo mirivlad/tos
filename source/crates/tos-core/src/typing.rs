@@ -95,6 +95,29 @@ pub(crate) enum Type {
 }
 
 impl Type {
+    /// Whether values of this type are `Copy` (docs/40 section 5).
+    ///
+    /// V1 has no Copy marker, trait or user override: the set is fixed. A
+    /// tuple is `Copy` exactly when every element is, and an array exactly when
+    /// its element type is. User records and enums are always affine, as are
+    /// `Option`, `Result` and `TaskResult`. An undetermined type is treated as
+    /// `Copy` so that an unknown never produces a move diagnostic.
+    pub(crate) fn is_copy(&self) -> bool {
+        match self {
+            Type::Unknown
+            | Type::Unit
+            | Type::Bool
+            | Type::Integer(_)
+            | Type::UnsuffixedInteger
+            | Type::Size
+            | Type::Duration => true,
+            Type::Text | Type::Bytes | Type::Nominal(_) | Type::Function(_, _) => false,
+            Type::Constructed(name, _) => name == "Shared",
+            Type::Tuple(elements) => elements.iter().all(Type::is_copy),
+            Type::Array(element) => element.is_copy(),
+        }
+    }
+
     /// Whether an actual type may be used where an expected one is required.
     ///
     /// `Unknown` agrees with everything: it means "not determined", and
@@ -170,11 +193,25 @@ struct Declarations<'source> {
 }
 
 pub(crate) fn check_typing(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> {
+    analyse(source, schema).0
+}
+
+/// The type of every parameter and `let` binding, keyed by the byte offset of
+/// its name.
+///
+/// Ownership needs the same types typing already computes, so it reads them
+/// from this one inference rather than repeating it.
+pub(crate) fn binding_types(source: &SourceUnit, schema: &Schema) -> BTreeMap<usize, Type> {
+    analyse(source, schema).1
+}
+
+fn analyse(source: &SourceUnit, schema: &Schema) -> (Vec<Diagnostic>, BTreeMap<usize, Type>) {
     let declarations = collect(source, schema);
     let mut checker = TypeChecker {
         source,
         declarations,
         scopes: Vec::new(),
+        bindings: BTreeMap::new(),
         diagnostics: Vec::new(),
     };
     for function in schema.functions() {
@@ -184,12 +221,15 @@ pub(crate) fn check_typing(source: &SourceUnit, schema: &Schema) -> Vec<Diagnost
         for parameter in signature.parameters() {
             let name = parameter.name().text(source);
             let ty = resolve(source, parameter.ty());
+            checker
+                .bindings
+                .insert(parameter.name().start(), ty.clone());
             checker.declare(name, ty);
         }
         checker.check_block(function.body(), &result);
         checker.pop_scope();
     }
-    checker.diagnostics
+    (checker.diagnostics, checker.bindings)
 }
 
 fn collect<'source>(source: &'source SourceUnit, schema: &'source Schema) -> Declarations<'source> {
@@ -331,6 +371,8 @@ struct TypeChecker<'source> {
     source: &'source SourceUnit,
     declarations: Declarations<'source>,
     scopes: Vec<BTreeMap<&'source str, Type>>,
+    /// Binding name offset to its type, for the ownership slice.
+    bindings: BTreeMap<usize, Type>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -414,6 +456,7 @@ impl<'source> TypeChecker<'source> {
         match pattern.form() {
             PatternForm::Name if !pattern.is_qualified() => {
                 if let Some(name) = pattern.name() {
+                    self.bindings.insert(name.start(), bound.clone());
                     self.declare(name.text(self.source), bound.clone());
                 }
             }

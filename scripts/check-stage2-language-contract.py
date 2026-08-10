@@ -189,6 +189,7 @@ def main() -> int:
             ("E1604_IMPORT_NOT_FOUND", "type"),
             ("E1606_IMPORT_CYCLE", "type"),
             ("E1607_PRIVATE_PUBLIC_TYPE", "type"),
+            ("E1301_USE_AFTER_MOVE", "ownership"),
             ("E1801_FFI_NOT_AVAILABLE", "effect"),
             ("E1802_UNSAFE_RATIONALE_REQUIRED", "effect"),
             ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),
