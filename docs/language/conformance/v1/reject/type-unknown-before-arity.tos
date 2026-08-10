@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.type_unknown_before_arity version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// An unresolved constructor name is reported before any arity finding: the
+// arity of a type that does not exist is not a fact.
+pub fn main() -> i32 {
+    let value: Missing<i32, bool> = 1i32;
+    return 0i32;
+}

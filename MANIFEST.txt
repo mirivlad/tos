@@ -40,7 +40,7 @@ Composition (derived, not hand-maintained)
 ------------------------------------------
 - files in the release package: 259
 - active system invariants: 21
-- architecture decision records: 33 (33 accepted)
+- architecture decision records: 34 (34 accepted)
 
 Architecture decision records
 -----------------------------
@@ -77,6 +77,7 @@ Architecture decision records
 - docs/adr/0031-system-source-hierarchy.md — ADR-0031: Runtime system source hierarchy [Accepted (Project Architect-approved)]
 - docs/adr/0032-parser-diagnostics-and-recovery.md — ADR-0032: TOS Core V1 parser diagnostics and recovery clarification [Accepted (Project Architect-approved)]
 - docs/adr/0033-pattern-name-resolution.md — ADR-0033: TOS Core V1 pattern name resolution [Accepted (Project Architect-approved)]
+- docs/adr/0034-type-name-and-arity-diagnostics.md — ADR-0034: TOS Core V1 type-name and type-argument-arity diagnostics [Accepted (Project Architect-approved)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

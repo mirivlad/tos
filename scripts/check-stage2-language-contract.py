@@ -171,6 +171,8 @@ def main() -> int:
         for code, stage in [
             ("E1201_ASSIGN_TO_IMMUTABLE", "type"),
             ("E1202_UNKNOWN_VALUE_NAME", "type"),
+            ("E1203_UNKNOWN_TYPE_NAME", "type"),
+            ("E1204_TYPE_ARGUMENT_ARITY", "type"),
             ("E1205_DUPLICATE_RECORD_FIELD", "type"),
             ("E1206_MISSING_RECORD_FIELD", "type"),
             ("E1207_UNKNOWN_RECORD_FIELD", "type"),
@@ -236,7 +238,29 @@ def main() -> int:
         "docs/40 lacks the ADR-0033 pattern resolution rule",
         failures,
     )
+    arity_adr = (root / "docs/adr/0034-type-name-and-arity-diagnostics.md").read_text(encoding="utf-8")
+    require("- Status: Accepted" in arity_adr, "ADR-0034 is not accepted", failures)
+    require(
+        "parse/type error" not in types,
+        "docs/40 still leaves the type-argument arity stage ambiguous",
+        failures,
+    )
+    require(
+        "The number of type arguments is a static type property" in types,
+        "docs/40 lacks the ADR-0034 arity stage decision",
+        failures,
+    )
+    require(
+        "### Constructed-type boundary" in grammar,
+        "docs/39 lacks the ADR-0034 constructed-type boundary",
+        failures,
+    )
     for vector in [
+        "reject/type-unknown-local.tos",
+        "reject/type-unknown-qualified.tos",
+        "reject/type-option-arity.tos",
+        "reject/type-result-arity.tos",
+        "reject/type-unknown-before-arity.tos",
         "accept/pattern-local-variants.tos",
         "accept/pattern-bindings.tos",
         "accept/pattern-qualified-import.tos",

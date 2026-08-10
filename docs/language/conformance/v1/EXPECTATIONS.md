@@ -55,6 +55,11 @@
 | R028 | `reject/old-array-semicolon-type.tos` | Bootstrap | `E1101_EXPECTED_IDENTIFIER` at `[` | fixed array type uses `array<T, N>` |
 | R031 | `reject/pattern-unknown-qualified-variant.tos` | Bootstrap | `E1202_UNKNOWN_VALUE_NAME` at `Signal.Middle` | a qualified pattern path names a constructor and never degrades into a binding |
 | R032 | `reject/pattern-nonexhaustive-variants.tos` | Bootstrap | `E1220_NONEXHAUSTIVE_MATCH` | bare variant names are patterns, not catch-all bindings, so the missing arm is detected |
+| R033 | `reject/type-unknown-local.tos` | Bootstrap | `E1203_UNKNOWN_TYPE_NAME` at `Missing` | a type name resolving to nothing is rejected |
+| R034 | `reject/type-unknown-qualified.tos` | Bootstrap | `E1203_UNKNOWN_TYPE_NAME` at `upstream.Missing` | the import resolves, so the missing type is a type-name error rather than an import error |
+| R035 | `reject/type-option-arity.tos` | Bootstrap | `E1204_TYPE_ARGUMENT_ARITY` with `constructor=Option`, `expected_arity=1`, `actual_arity=2` | arity is a type property, not a parse decision |
+| R036 | `reject/type-result-arity.tos` | Bootstrap | `E1204_TYPE_ARGUMENT_ARITY` with `constructor=Result`, `expected_arity=2`, `actual_arity=1` | `Result<T,E>` takes two type arguments |
+| R037 | `reject/type-unknown-before-arity.tos` | Bootstrap | `E1203_UNKNOWN_TYPE_NAME` at `Missing` | an unresolved name precedes any arity finding (ADR-0034) |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 

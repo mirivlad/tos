@@ -142,8 +142,57 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
         }
     }
 
+    check_qualified_types(modules, &by_name, &mut diagnostics);
     diagnostics.extend(find_cycles(modules, &by_name));
     diagnostics
+}
+
+/// Resolves every qualified type name against the module its binding names.
+///
+/// A single module cannot see another module's type table, so the per-module
+/// slice accepts any qualified name whose binding is an import. Here the target
+/// module is known: a name it does not declare is `E1203_UNKNOWN_TYPE_NAME`
+/// (ADR-0034). A binding whose import itself does not resolve is already
+/// `E1604_IMPORT_NOT_FOUND` and is not reported twice.
+fn check_qualified_types(
+    modules: &[ModuleEntry],
+    by_name: &BTreeMap<String, usize>,
+    out: &mut Vec<Diagnostic>,
+) {
+    for module in modules {
+        let mut targets: BTreeMap<&str, usize> = BTreeMap::new();
+        for import in module.schema.outline().prefix().imports() {
+            let path = import
+                .path()
+                .iter()
+                .map(|segment| segment.text(module.source))
+                .collect::<Vec<_>>()
+                .join(".");
+            if let Some(&index) = by_name.get(&path) {
+                targets.insert(import.binding().text(module.source), index);
+            }
+        }
+        for (binding, name, span) in crate::types::qualified_type_uses(module.source, module.schema)
+        {
+            let Some(&index) = targets.get(binding) else {
+                continue;
+            };
+            let target = &modules[index];
+            let declared = crate::types::declared_type_names(target.source, target.schema);
+            if declared.contains(name) {
+                continue;
+            }
+            out.push(
+                crate::types::unknown_qualified_type(
+                    module.source,
+                    span,
+                    span.text(module.source).to_string(),
+                )
+                .with_module(module.identity())
+                .with_field("module", target.declared_name()),
+            );
+        }
+    }
 }
 
 /// Checks every module of a source set, per module and across the set.

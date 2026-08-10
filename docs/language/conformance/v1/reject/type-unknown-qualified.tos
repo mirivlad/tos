@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.type_unknown_qualified version 1.0 profile bootstrap;
+
+import conformance.pattern_local_variants as upstream;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 1]
+
+// The import resolves; the module simply declares no type of that name.
+pub fn main() -> i32 {
+    let value: upstream.Missing = 1i32;
+    return 0i32;
+}

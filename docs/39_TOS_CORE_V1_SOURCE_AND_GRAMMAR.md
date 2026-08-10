@@ -181,6 +181,19 @@ Every diagnostic a source reader, lexer or parser can raise is registered with
 its stage and exact condition in
 `docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md` section 7.
 
+### Constructed-type boundary
+
+The parser builds a constructed-type node for a known V1 type constructor
+written with `<...>` and does not decide how many type arguments it should
+take. That count is a static type property checked at the type stage and
+reported as `E1204_TYPE_ARGUMENT_ARITY`; an unresolved type name is
+`E1203_UNKNOWN_TYPE_NAME`. See ADR-0034 and
+`docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md` section 2.
+
+This grants no user generics: `<...>` remains admissible only after a name the
+language already defines as a parameterized constructor, and `array<T, N>`
+keeps its own form because its second argument is a constant.
+
 ### Pattern resolution boundary
 
 A `pattern_path` of one identifier stays a single syntactic alternative. The
