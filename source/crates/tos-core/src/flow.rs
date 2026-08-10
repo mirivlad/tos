@@ -20,13 +20,21 @@
 //!
 //! **Layering.** This is TOS Core frontend semantic state, not a
 //! language-neutral executable representation. Ownership, borrows and
-//! `Transferable` are rules of the safe TOS Core language; they are proof the
-//! frontend produces, not a precondition for a program to be representable at
-//! all. A later frontend for another language may not satisfy them, and the
-//! isolation TOS guarantees any process — address space, capabilities, granted
-//! regions, verifier and runtime contract — is a separate layer that does not
-//! depend on these types. Nothing here may migrate into a shared IR or
-//! executable boundary as a mandatory condition.
+//! `Transferable` are rules of the safe TOS Core language: proof the frontend
+//! produces, not a precondition for a program to be representable at all.
+//!
+//! docs/06 makes TOS IR a versioned representation shared by supported
+//! frontends, while docs/43 pins the `tos-ir/v1` schema — including its affine
+//! and `Copy` verification — to TOS Core V1. Both paths the architecture allows
+//! must stay open: a future versioned IR schema or profile able to carry
+//! another frontend's semantics, and foreign runtime integration under docs/07
+//! where that is the better fit. So nothing here may become a mandatory
+//! condition of a shared IR, and `tos-ir/v1` is not thereby the universal IR
+//! for an unsafe language either.
+//!
+//! The isolation TOS guarantees any process — address space, capabilities,
+//! granted regions, verifier and runtime contract — is a separate layer that
+//! does not depend on these types.
 
 use std::vec::Vec;
 
