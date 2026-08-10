@@ -419,6 +419,32 @@ pub enum ExpressionForm {
     Cast,
 }
 
+/// One argument of a call or constructor.
+///
+/// docs/39 section 5 gives calls a single Call/Construct form whose arguments
+/// are either all positional or all named; `name` is `Some` exactly for the
+/// named form.
+#[derive(Debug, Eq, PartialEq)]
+pub struct CallArgument {
+    name: Option<Span>,
+    value: Expression,
+    span: Span,
+}
+
+impl CallArgument {
+    pub fn name(&self) -> Option<Span> {
+        self.name
+    }
+
+    pub fn value(&self) -> &Expression {
+        &self.value
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct Expression {
     form: ExpressionForm,
@@ -427,7 +453,7 @@ pub struct Expression {
     right: Option<Box<Expression>>,
     inner: Option<Box<Expression>>,
     callee: Option<Box<Expression>>,
-    arguments: Vec<Expression>,
+    arguments: Vec<CallArgument>,
     name: Option<Span>,
     cast_type: Option<TypeSyntax>,
     span: Span,
@@ -458,7 +484,7 @@ impl Expression {
         self.callee.as_deref()
     }
 
-    pub fn arguments(&self) -> &[Expression] {
+    pub fn arguments(&self) -> &[CallArgument] {
         &self.arguments
     }
 
@@ -1580,11 +1606,57 @@ impl<'source> TokenCursor<'source> {
         }
     }
 
-    fn parse_call_arguments(&mut self) -> Vec<Expression> {
-        self.parse_comma_list(
+    /// Parses a call argument list and enforces that it is entirely positional
+    /// or entirely named (docs/39 section 5).
+    ///
+    /// The two forms are told apart without backtracking: `identifier :` can
+    /// only begin a named argument, because `:` is not an expression operator.
+    fn parse_call_arguments(&mut self) -> Vec<CallArgument> {
+        let arguments = self.parse_comma_list(
             ListCloser::Kind(TokenKind::CloseParen),
-            Self::parse_expression,
-        )
+            Self::parse_call_argument,
+        );
+        let Some(first) = arguments.first() else {
+            return arguments;
+        };
+        let named = first.name.is_some();
+        for argument in arguments.iter().skip(1) {
+            if argument.name.is_some() == named {
+                continue;
+            }
+            // Report at the argument that disagrees with the form the list
+            // opened with, not at the list as a whole.
+            let error = ParseError {
+                code: ParseErrorCode::UnexpectedToken,
+                span: argument.name.unwrap_or(argument.span),
+            };
+            self.report(error, Region::List);
+            break;
+        }
+        arguments
+    }
+
+    fn parse_call_argument(&mut self) -> Result<CallArgument, ParseError> {
+        if self.current().kind() == TokenKind::Identifier && self.peek(1).kind() == TokenKind::Colon
+        {
+            let name = self.expect_identifier()?;
+            self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
+            let value = self.parse_expression()?;
+            return Ok(CallArgument {
+                name: Some(name),
+                span: Span {
+                    start: name.start(),
+                    end: value.span.end(),
+                },
+                value,
+            });
+        }
+        let value = self.parse_expression()?;
+        Ok(CallArgument {
+            name: None,
+            span: value.span,
+            value,
+        })
     }
 
     fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {
@@ -1841,6 +1913,12 @@ impl<'source> TokenCursor<'source> {
 
     fn current(&self) -> Token {
         self.tokens[self.index]
+    }
+
+    /// The token `offset` positions ahead, saturating at end of source.
+    fn peek(&self, offset: usize) -> Token {
+        let index = (self.index + offset).min(self.tokens.len() - 1);
+        self.tokens[index]
     }
 
     fn current_text(&self) -> &str {
