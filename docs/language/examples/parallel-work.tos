@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-module examples.parallel version 1.0 profile bootstrap;
+module examples.parallel_work version 1.0 profile bootstrap;
 
 resource [
     fuel: 100000,

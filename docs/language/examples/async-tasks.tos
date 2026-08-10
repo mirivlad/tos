@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-module examples.async version 1.0 profile full;
+module examples.async_tasks version 1.0 profile full;
 
 resource [
     fuel: 100000,
