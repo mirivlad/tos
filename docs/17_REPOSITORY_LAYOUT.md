@@ -113,7 +113,16 @@ Developer/release tooling and external oracles. Runtime restoration cannot depen
 
 ### `system/`
 
-Canonical textual system tree. No generated executable caches or binary packages are committed here. Firmware blobs, if supported, are separate and explicitly licensed.
+Canonical textual system tree, and the canonical input for the runtime
+`/system` tree of an installed machine.
+
+No generated executable caches or binary packages are committed here.
+
+Vendor-controlled opaque material — CPU microcode, device firmware and
+comparable vendor-produced bytes — is never committed into this tree. It belongs
+to the runtime `/vendor` namespace under ADR-0030, carries its own
+licence and redistribution terms, and is referenced from `system/` only by
+declaration: vendor, object identity, version and content hash.
 
 ### `tests/performance/`
 

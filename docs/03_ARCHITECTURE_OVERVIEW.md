@@ -98,9 +98,16 @@ The visible filesystem is assembled from distinct stores:
 /cache    disposable generated data
 /run      ephemeral runtime objects
 /dev      capability-mediated device namespace
+/vendor   external vendor-controlled opaque material, outside canonical source
 ```
 
 The names are normative at the conceptual level; exact mount implementation may evolve through ADRs.
+
+`/vendor` holds material TOS does not own or author, such as CPU microcode and
+device firmware. It is not part of the canonical `/system` tree and is never
+presented as TOS source. `/system` may declare that it requires a vendor object
+by identity, version and hash; the opaque bytes themselves stay in `/vendor`.
+See ADR-0030.
 
 ## Process model
 
@@ -124,6 +131,9 @@ Every service and driver is a process with:
 5. **System services** — least authority required.
 6. **Applications** — user-granted capabilities.
 7. **Experimental branches** — explicitly marked trust state.
+8. **External vendor material** — opaque bytes TOS identifies but does not
+   inspect, verify or vouch for. TOS states their identity and version; it makes
+   no claim about their behavior.
 
 ## Compatibility strategy
 

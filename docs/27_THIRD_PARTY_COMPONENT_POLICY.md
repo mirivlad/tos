@@ -17,6 +17,29 @@ A mature external project can serve as:
 
 These roles have radically different architectural and legal effects. Promotion to a more trusted role requires explicit review.
 
+## External opaque vendor material
+
+The roles above all assume material TOS can read: source that can be reviewed,
+evaluated, patched and rebuilt. Vendor-controlled opaque material — CPU
+microcode, GPU and peripheral firmware, option ROMs — cannot be reviewed as
+source, so applying the admission process above to it would produce approvals
+with no evidentiary content.
+
+It is therefore a separate class, governed by ADR-0030:
+
+- it is not third-party textual source and does not become a TOS component;
+- it lives in `/vendor`, never in the canonical `/system` tree;
+- it is admitted by identity, version and content hash, not by source review;
+- TOS makes no claim to have inspected or verified its behavior;
+- it must never replace or shadow a component TOS architecture requires to be
+  textual;
+- it carries its own licence and redistribution terms, which do not extend to
+  any TOS component and which do not exempt it from the review required by
+  `docs/22_LICENSING_COPYRIGHT_AND_REUSE.md`.
+
+Imported material that *can* be read, modified and rebuilt by the owner is
+third-party textual source and stays under the rest of this policy.
+
 ## Trusted-base admission
 
 A dependency entering the loader, nucleus, bootstrap parser or verifier must satisfy:

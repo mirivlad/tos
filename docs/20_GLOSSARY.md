@@ -76,3 +76,9 @@
 
 **Threat evidence level** — E0–E4 label distinguishing design intent, implementation, tests, adversarial evidence and formal argument.
 
+**Vendor-controlled opaque material** — externally produced bytes consumed by hardware that TOS cannot express as editable source, such as CPU microcode or device firmware; identified by vendor, version and hash, never presented as TOS source.
+
+**`/vendor`** — root namespace holding vendor-controlled opaque material, outside the canonical `/system` tree and outside the system commit.
+
+**Vendor declaration** — canonical source text in `/system` naming a required `/vendor` object by vendor, identity, version, hash, placement and behavior on absence or mismatch; a reference, never an embedded payload.
+
