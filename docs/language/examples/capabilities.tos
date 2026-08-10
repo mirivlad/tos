@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-module examples.capability version 1.0 profile bootstrap;
+module examples.capabilities version 1.0 profile bootstrap;
 
 import capability system.time.Clock as clock;
 

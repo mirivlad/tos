@@ -111,7 +111,7 @@ root is a deterministic error, not an opportunity to search the host machine.
 
 ## 13. Capabilities: authority is not a value you can forge
 
-[capability.tos](examples/capability.tos) requests a typed `Clock` capability
+[capabilities.tos](examples/capabilities.tos) requests a typed `Clock` capability
 and declares its effect. It does not grant it. [forged-capability.tos]
 (conformance/v1/reject/forged-capability.tos) is why a number/string/cast is
 not an authority token. Concrete device/service APIs wait for later stages.
@@ -126,7 +126,7 @@ cannot silently grant more workers or memory than policy allows.
 ## 15. Async tasks
 
 Async tasks are Full-profile work that waits for a declared typed event/I/O
-contract; [async.tos](examples/async.tos) shows scoped spawning and awaiting.
+contract; [async-tasks.tos](examples/async-tasks.tos) shows scoped spawning and awaiting.
 The V1 source form is specified, but no Stage 2 implementation or Stage 3 I/O
 contract exists today. This chapter therefore teaches the boundary, not a fake
 runnable API: async is scoped, explicitly awaited, and does not promise a
@@ -135,7 +135,7 @@ dedicated CPU thread. `await` consumes a `Task<T>` and yields
 
 ## 16. Structured parallelism
 
-[parallel.tos](examples/parallel.tos) is the accepted CPU-parallel shape:
+[parallel-work.tos](examples/parallel-work.tos) is the accepted CPU-parallel shape:
 children are created in one lexical scope and joined there. A cancellation
 request still requires that final join. A Full engine must
 have a true multicore path; Bootstrap may serialize the same work. Correctness

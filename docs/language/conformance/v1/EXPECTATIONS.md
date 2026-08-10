@@ -45,7 +45,7 @@
 | R021 | `reject/old-enum-braces.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at `{` | enum declarations use `[]` |
 | R022 | `reject/old-record-braces.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at `{` | record declarations use `[]` |
 | R023 | `reject/old-record-construction-braces.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at `{` | record values use named constructor arguments |
-| R024 | `reject/comma-match-branches.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at the `,` after a branch block | executable match branches do not use commas |
+| R024 | `reject/comma-match-branches.tos` | Bootstrap | `E1101_EXPECTED_IDENTIFIER` at the `,` after a branch block | executable match branches do not use commas |
 | R025 | `reject/duplicate-record-constructor-field.tos` | Bootstrap | `E1205_DUPLICATE_RECORD_FIELD` | named constructor field is exact-once |
 | R026 | `reject/missing-record-constructor-field.tos` | Bootstrap | `E1206_MISSING_RECORD_FIELD` | named constructor cannot omit a field |
 | R027 | `reject/standalone-block-expression.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at `{` | executable block is not an expression |
