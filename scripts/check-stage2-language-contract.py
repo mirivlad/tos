@@ -178,6 +178,7 @@ def main() -> int:
             ("E1207_UNKNOWN_RECORD_FIELD", "type"),
             ("E1220_NONEXHAUSTIVE_MATCH", "type"),
             ("E1221_MISSING_RETURN", "type"),
+            ("E1222_RETURN_TYPE_MISMATCH", "type"),
             ("E1225_INVALID_DEFER", "type"),
             ("E1601_UNSUPPORTED_LANGUAGE_VERSION", "type"),
             ("E1602_UNSUPPORTED_LANGUAGE_MINOR", "type"),
@@ -257,6 +258,7 @@ def main() -> int:
         failures,
     )
     for vector in [
+        "reject/return-type-mismatch.tos",
         "reject/type-unknown-local.tos",
         "reject/type-unknown-qualified.tos",
         "reject/type-option-arity.tos",

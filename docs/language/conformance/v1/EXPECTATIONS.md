@@ -60,6 +60,7 @@
 | R035 | `reject/type-option-arity.tos` | Bootstrap | `E1204_TYPE_ARGUMENT_ARITY` with `constructor=Option`, `expected_arity=1`, `actual_arity=2` | arity is a type property, not a parse decision |
 | R036 | `reject/type-result-arity.tos` | Bootstrap | `E1204_TYPE_ARGUMENT_ARITY` with `constructor=Result`, `expected_arity=2`, `actual_arity=1` | `Result<T,E>` takes two type arguments |
 | R037 | `reject/type-unknown-before-arity.tos` | Bootstrap | `E1203_UNKNOWN_TYPE_NAME` at `Missing` | an unresolved name precedes any arity finding (ADR-0034) |
+| R038 | `reject/return-type-mismatch.tos` | Bootstrap | `E1222_RETURN_TYPE_MISMATCH` with `expected=i32`, `actual=bool` | a returned value must have the declared result type |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 

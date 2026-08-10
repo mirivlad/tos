@@ -95,6 +95,7 @@ impl Checker {
         diagnostics.extend(crate::types::check_types(source, schema));
         diagnostics.extend(crate::exhaustiveness::check_exhaustiveness(source, schema));
         diagnostics.extend(crate::returns::check_returns(source, schema));
+        diagnostics.extend(crate::typing::check_typing(source, schema));
         diagnostics.extend(crate::mutability::check_mutability(source, schema));
         diagnostics.extend(crate::boundary::check_boundary(source, schema));
         diagnostics.extend(crate::defer::check_defer_bodies(source, schema));
