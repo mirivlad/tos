@@ -93,3 +93,4 @@ docs/adr/0028-tos-core-v1-semantics-and-ir-contract.md
 docs/adr/0029-tos-core-v1-unicode-normalization-baseline.md
 docs/adr/0030-external-vendor-opaque-material.md
 docs/adr/0031-system-source-hierarchy.md
+docs/adr/0032-parser-diagnostics-and-recovery.md

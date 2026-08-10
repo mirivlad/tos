@@ -39,17 +39,30 @@
 | R015 | `reject/nil-absence.tos` | Bootstrap | `E1202_UNKNOWN_VALUE_NAME` | `nil` is an ordinary unbound identifier, not a second absence model |
 | R016 | `reject/unchecked-conversion.tos` | Bootstrap | `E1212_INVALID_AS_CONVERSION` | narrowing/sign-changing conversion must use `to_*` |
 | R017 | `reject/noncopy-aggregate.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | an aggregate containing `bytes` remains affine |
-| R018 | `reject/implicit-tail-return.tos` | Bootstrap | parse error | a bare final expression is not an implicit return |
+| R018 | `reject/implicit-tail-return.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at the closing `}` | a bare final expression is not an implicit return |
 | R019 | `reject/missing-nonunit-return.tos` | Bootstrap | `E1221_MISSING_RETURN` | every normal non-unit path explicitly returns |
-| R020 | `reject/old-resource-braces.tos` | Bootstrap | parse error | resource declarations use `[]` |
-| R021 | `reject/old-enum-braces.tos` | Bootstrap | parse error | enum declarations use `[]` |
-| R022 | `reject/old-record-braces.tos` | Bootstrap | parse error | record declarations use `[]` |
-| R023 | `reject/old-record-construction-braces.tos` | Bootstrap | parse error | record values use named constructor arguments |
-| R024 | `reject/comma-match-branches.tos` | Bootstrap | parse error | executable match branches do not use commas |
+| R020 | `reject/old-resource-braces.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at `{` | resource declarations use `[]` |
+| R021 | `reject/old-enum-braces.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at `{` | enum declarations use `[]` |
+| R022 | `reject/old-record-braces.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at `{` | record declarations use `[]` |
+| R023 | `reject/old-record-construction-braces.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at `{` | record values use named constructor arguments |
+| R024 | `reject/comma-match-branches.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at the `,` after a branch block | executable match branches do not use commas |
 | R025 | `reject/duplicate-record-constructor-field.tos` | Bootstrap | `E1205_DUPLICATE_RECORD_FIELD` | named constructor field is exact-once |
 | R026 | `reject/missing-record-constructor-field.tos` | Bootstrap | `E1206_MISSING_RECORD_FIELD` | named constructor cannot omit a field |
-| R027 | `reject/standalone-block-expression.tos` | Bootstrap | parse error | executable block is not an expression |
-| R028 | `reject/old-array-semicolon-type.tos` | Bootstrap | parse error | fixed array type uses `array<T, N>` |
+| R027 | `reject/standalone-block-expression.tos` | Bootstrap | `E1107_UNEXPECTED_TOKEN` at `{` | executable block is not an expression |
+| R028 | `reject/old-array-semicolon-type.tos` | Bootstrap | `E1101_EXPECTED_IDENTIFIER` at `[` | fixed array type uses `array<T, N>` |
+| R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
+| R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
+
+R029 and R030 also fix the precedence between the two codes for a character that
+cannot be tokenized: a non-ASCII scalar value outside a literal or comment is
+`E1012_INVALID_IDENTIFIER`, and every other such character is
+`E1013_UNEXPECTED_CHARACTER`. Both report the first byte of the character. These
+vectors are ordinary `.tos` files rather than generator instructions, because
+`@` and `$` are valid UTF-8 and the file can carry its own SPDX header.
+
+Every code named in this document is defined in the diagnostic registry in
+`docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md` section 7, and
+`scripts/check-stage2-language-contract.py` fails if the two disagree.
 
 ## Byte/source transport cases
 

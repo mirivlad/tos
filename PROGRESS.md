@@ -309,6 +309,32 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
 - README status corrected: Stage 2 Part A is accepted, Part B is under way with
   the source reader and lexer complete and the parser in progress.
 
+### 2026-08-10 — Accepted parser diagnostics and recovery clarification
+
+- Project Architect accepted ADR-0032, closing three gaps the first production
+  parser exposed in the accepted TOS Core V1 contract.
+- **Registry conflict.** docs/41 §7 asserted that a full diagnostic registry is
+  in docs/44; docs/44 had none, and docs/39 allocated only E1105/E1106 while
+  eight conformance rejects said merely "parse error". docs/44 §7 is now the
+  authoritative registry for every source-reader, lexer and parser code, with
+  stage and exact condition. E1100–E1104 and E1107 are ratified after checking
+  that each has one unambiguous meaning and no overlap; E1105/E1106 keep their
+  numbers. E1107_UNEXPECTED_TOKEN is the registered residual of the parse stage.
+- Later-stage families (E12xx–E18xx, V20xx) stay with docs/40–43 and MUST be
+  folded into the registry by the stage that implements them; their stage
+  labels are not guessed in advance.
+- **Declaration recovery.** docs/39 §4 now ends a declaration region at the `}`
+  closing a top-level declaration body, because a `fn` declaration ends with a
+  block and neither `;` nor `]` terminates it. No further heuristic is admitted.
+- **E1013_UNEXPECTED_CHARACTER** allocated for a valid UTF-8 character that
+  begins no lexical form. Precedence is mechanical: non-ASCII outside a literal
+  or comment stays E1012_INVALID_IDENTIFIER, everything else is E1013.
+  Conformance vectors R029/R030 fix span and precedence for `@` and `$`.
+- EXPECTATIONS.md no longer contains "parse error": every reject names a stable
+  code. `scripts/check-stage2-language-contract.py` now fails when a cited code
+  is unregistered, a registry entry lacks stage or condition, docs/39 names an
+  unregistered frontend code, or a "parse error" cell reappears.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5

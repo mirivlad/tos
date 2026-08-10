@@ -140,6 +140,77 @@ def main() -> int:
     require("`Option` (not `nil`)" in conformance, "conformance contract does not exclude nil", failures)
     require("TaskResult<T>" in guide and "TaskResult<T>" in tutorial, "programmer documentation misses TaskResult lifecycle", failures)
 
+    # ADR-0032: docs/44 is the authoritative diagnostic registry that docs/41
+    # points at, and it may not drift away from the conformance expectations or
+    # from the codes docs/39 names.
+    registry_block = re.search(
+        r"<!-- stage2-diagnostic-registry:start -->\n(.*?)\n<!-- stage2-diagnostic-registry:end -->",
+        conformance,
+        flags=re.DOTALL,
+    )
+    require(registry_block is not None, "missing machine-readable diagnostic registry", failures)
+    registry: dict[str, str] = {}
+    if registry_block is not None:
+        stage = ""
+        for line in registry_block.group(1).splitlines():
+            heading = re.match(r"### .*\(stage `(\w+)`\)", line)
+            if heading is not None:
+                stage = heading.group(1)
+                continue
+            row = re.match(r"\|\s*`(E1\d{3}_[A-Z0-9_]+)`\s*\|\s*(.+?)\s*\|$", line)
+            if row is None:
+                continue
+            code, condition = row.group(1), row.group(2)
+            require(code not in registry, f"duplicate registry entry: {code}", failures)
+            require(stage != "", f"registry entry outside a stage section: {code}", failures)
+            require(len(condition) >= 20, f"registry entry lacks a condition: {code}", failures)
+            registry[code] = stage
+        require(len(registry) >= 21, "diagnostic registry is implausibly small", failures)
+
+    require(
+        "parse error" not in expectations,
+        "a conformance expectation still says 'parse error' instead of a stable code",
+        failures,
+    )
+    # Frontend codes the source reader, lexer and parser can raise must be in
+    # the registry. Later-stage families stay with their owning contract until
+    # the stage that raises them is implemented (docs/44 section 7), so they are
+    # checked for a definition instead.
+    owning_contracts = "\n".join([types, concurrency, modules, ir, grammar])
+    for document, label in [(expectations, "expectation"), (grammar, "grammar")]:
+        for code in sorted(set(re.findall(r"`(E1\d{3}_[A-Z0-9_]+)`", document))):
+            if re.match(r"E1[01]\d{2}_", code):
+                require(code in registry, f"{label} cites unregistered frontend code: {code}", failures)
+            else:
+                require(
+                    f"`{code}`" in owning_contracts,
+                    f"{label} cites a later-stage code no contract defines: {code}",
+                    failures,
+                )
+    for code in sorted(set(re.findall(r"`(V2\d{3}_[A-Z0-9_]+)`", expectations))):
+        require(f"`{code}`" in ir, f"expectation cites an unspecified verifier code: {code}", failures)
+    for code in ["E1013_UNEXPECTED_CHARACTER", "E1105_CONTROL_HEAD_PARENS_REQUIRED", "E1106_LIST_SEPARATOR_REQUIRED"]:
+        require(code in registry, f"registry is missing required code: {code}", failures)
+    require(
+        registry.get("E1013_UNEXPECTED_CHARACTER") == "lex",
+        "E1013_UNEXPECTED_CHARACTER is not a lexical diagnostic",
+        failures,
+    )
+    for code in ["E1100_EXPECTED_MODULE_HEADER", "E1101_EXPECTED_IDENTIFIER", "E1107_UNEXPECTED_TOKEN"]:
+        require(registry.get(code) == "parse", f"{code} is not registered as a parse diagnostic", failures)
+    diagnostics_adr_path = root / "docs/adr/0032-parser-diagnostics-and-recovery.md"
+    diagnostics_adr = diagnostics_adr_path.read_text(encoding="utf-8")
+    require("- Status: Accepted" in diagnostics_adr, "ADR-0032 is not accepted", failures)
+    require(
+        re.search(
+            r"or at the `\}` that closes a top-level declaration\s+body and returns delimiter nesting to zero",
+            grammar,
+        )
+        is not None,
+        "docs/39 lacks the ADR-0032 declaration-recovery boundary",
+        failures,
+    )
+
     required_vectors = [
         "accept/type-forms.tos",
         "accept/control-heads.tos",

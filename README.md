@@ -248,9 +248,9 @@ bounded source reader and lexer are complete; the parser is in progress; the
 checker, IR lowering, verifier and interpreter are not implemented. Stage 3 is
 not authorized.
 
-ADR-0030 (external vendor opaque material and `/vendor`) and ADR-0031 with
-`docs/45_SYSTEM_SOURCE_HIERARCHY.md` (runtime system source hierarchy) are
-accepted; their implementation is deferred to the stage that first needs each
-subsystem. No implementation
+ADR-0030 (external vendor opaque material and `/vendor`), ADR-0031 with
+`docs/45_SYSTEM_SOURCE_HIERARCHY.md` (runtime system source hierarchy) and
+ADR-0032 (parser diagnostics and recovery) are accepted; their implementation is
+deferred to the stage that first needs each subsystem. No implementation
 decision may silently contradict an accepted ADR or invariant. Legal documents
 are project policy, not jurisdiction-specific legal advice.
