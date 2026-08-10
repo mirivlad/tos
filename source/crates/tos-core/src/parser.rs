@@ -45,6 +45,14 @@ impl From<Token> for Span {
     }
 }
 
+/// Item visibility. `pub` exports an item from its module; the absence of the
+/// marker keeps it module-private (docs/39 section 5).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Visibility {
+    Private,
+    Public,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Profile {
     Bootstrap,
@@ -251,12 +259,17 @@ impl RecordField {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct RecordDeclaration {
+    visibility: Visibility,
     name: Span,
     fields: Vec<RecordField>,
     span: Span,
 }
 
 impl RecordDeclaration {
+    pub fn visibility(&self) -> Visibility {
+        self.visibility
+    }
+
     pub fn name(&self) -> Span {
         self.name
     }
@@ -310,12 +323,17 @@ impl EnumVariant {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct EnumDeclaration {
+    visibility: Visibility,
     name: Span,
     variants: Vec<EnumVariant>,
     span: Span,
 }
 
 impl EnumDeclaration {
+    pub fn visibility(&self) -> Visibility {
+        self.visibility
+    }
+
     pub fn name(&self) -> Span {
         self.name
     }
@@ -360,6 +378,8 @@ impl FunctionParameter {
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct FunctionSignature {
+    visibility: Visibility,
+    is_async: bool,
     name: Span,
     parameters: Vec<FunctionParameter>,
     result: TypeSyntax,
@@ -367,6 +387,13 @@ pub struct FunctionSignature {
     span: Span,
 }
 impl FunctionSignature {
+    pub fn visibility(&self) -> Visibility {
+        self.visibility
+    }
+    /// Whether the declaration carries the `async` marker.
+    pub fn is_async(&self) -> bool {
+        self.is_async
+    }
     pub fn name(&self) -> Span {
         self.name
     }
@@ -552,10 +579,42 @@ impl FunctionDeclaration {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub struct ConstDeclaration {
+    visibility: Visibility,
+    name: Span,
+    ty: TypeSyntax,
+    value: Expression,
+    span: Span,
+}
+
+impl ConstDeclaration {
+    pub fn visibility(&self) -> Visibility {
+        self.visibility
+    }
+
+    pub fn name(&self) -> Span {
+        self.name
+    }
+
+    pub fn ty(&self) -> &TypeSyntax {
+        &self.ty
+    }
+
+    pub fn value(&self) -> &Expression {
+        &self.value
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub struct Schema {
     outline: ModuleOutline,
     records: Vec<RecordDeclaration>,
     enums: Vec<EnumDeclaration>,
+    consts: Vec<ConstDeclaration>,
     extern_functions: Vec<FunctionSignature>,
     functions: Vec<FunctionDeclaration>,
 }
@@ -571,6 +630,9 @@ impl Schema {
 
     pub fn enums(&self) -> &[EnumDeclaration] {
         &self.enums
+    }
+    pub fn consts(&self) -> &[ConstDeclaration] {
+        &self.consts
     }
     pub fn extern_functions(&self) -> &[FunctionSignature] {
         &self.extern_functions
@@ -786,32 +848,48 @@ impl<'source> TokenCursor<'source> {
         let outline = self.parse_module_outline();
         let mut records = Vec::new();
         let mut enums = Vec::new();
+        let mut consts = Vec::new();
         let mut extern_functions = Vec::new();
         let mut functions = Vec::new();
         while self.current().kind() != TokenKind::Eof {
+            // `visibility? item`: the marker is consumed before the item head
+            // is known, so every item form receives it.
+            let visibility = if self.current_text() == "pub" {
+                self.advance();
+                Visibility::Public
+            } else {
+                Visibility::Private
+            };
             match self.current_text() {
                 "record" => {
-                    let declaration = self.parse_record_declaration();
+                    let declaration = self.parse_record_declaration(visibility);
                     if let Some(declaration) = self.finish_region(declaration, Region::Declaration)
                     {
                         records.push(declaration);
                     }
                 }
                 "enum" => {
-                    let declaration = self.parse_enum_declaration();
+                    let declaration = self.parse_enum_declaration(visibility);
                     if let Some(declaration) = self.finish_region(declaration, Region::Declaration)
                     {
                         enums.push(declaration);
                     }
                 }
+                "const" => {
+                    let declaration = self.parse_const_declaration(visibility);
+                    if let Some(declaration) = self.finish_region(declaration, Region::Declaration)
+                    {
+                        consts.push(declaration);
+                    }
+                }
                 "extern" => {
-                    let signature = self.parse_extern_function();
+                    let signature = self.parse_extern_function(visibility);
                     if let Some(signature) = self.finish_region(signature, Region::Declaration) {
                         extern_functions.push(signature);
                     }
                 }
-                "fn" => {
-                    let declaration = self.parse_function();
+                "fn" | "async" => {
+                    let declaration = self.parse_function(visibility);
                     if let Some(declaration) = self.finish_region(declaration, Region::Declaration)
                     {
                         functions.push(declaration);
@@ -831,8 +909,32 @@ impl<'source> TokenCursor<'source> {
             outline,
             records,
             enums,
+            consts,
             extern_functions,
             functions,
+        })
+    }
+
+    fn parse_const_declaration(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<ConstDeclaration, ParseError> {
+        let start = self.expect_word("const", ParseErrorCode::UnexpectedToken)?;
+        let name = self.expect_identifier()?;
+        self.expect_kind(TokenKind::Colon, ParseErrorCode::UnexpectedToken)?;
+        let ty = self.parse_type()?;
+        self.expect_kind(TokenKind::Equal, ParseErrorCode::UnexpectedToken)?;
+        let value = self.parse_expression()?;
+        let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
+        Ok(ConstDeclaration {
+            visibility,
+            name,
+            ty,
+            value,
+            span: Span {
+                start: start.start(),
+                end: end.end(),
+            },
         })
     }
 
@@ -1146,13 +1248,17 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
-    fn parse_record_declaration(&mut self) -> Result<RecordDeclaration, ParseError> {
+    fn parse_record_declaration(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<RecordDeclaration, ParseError> {
         let start = self.expect_word("record", ParseErrorCode::UnexpectedToken)?;
         let name = self.expect_identifier()?;
         self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
         let fields = self.parse_field_list();
         let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
         Ok(RecordDeclaration {
+            visibility,
             name,
             fields,
             span: Span {
@@ -1162,7 +1268,10 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
-    fn parse_enum_declaration(&mut self) -> Result<EnumDeclaration, ParseError> {
+    fn parse_enum_declaration(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<EnumDeclaration, ParseError> {
         let start = self.expect_word("enum", ParseErrorCode::UnexpectedToken)?;
         let name = self.expect_identifier()?;
         self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
@@ -1172,6 +1281,7 @@ impl<'source> TokenCursor<'source> {
         );
         let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
         Ok(EnumDeclaration {
+            visibility,
             name,
             variants,
             span: Span {
@@ -1249,8 +1359,17 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
-    fn parse_function(&mut self) -> Result<FunctionDeclaration, ParseError> {
-        let start = self.expect_word("fn", ParseErrorCode::UnexpectedToken)?;
+    fn parse_function(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<FunctionDeclaration, ParseError> {
+        let async_marker = if self.current_text() == "async" {
+            Some(Span::from(self.advance()))
+        } else {
+            None
+        };
+        let fn_word = self.expect_word("fn", ParseErrorCode::UnexpectedToken)?;
+        let start = async_marker.unwrap_or(fn_word);
         let name = self.expect_identifier()?;
         self.expect_kind(TokenKind::OpenParen, ParseErrorCode::UnexpectedToken)?;
         let parameters = self.parse_parameters();
@@ -1260,6 +1379,8 @@ impl<'source> TokenCursor<'source> {
         let effects = self.parse_effects()?;
         let body = self.parse_block()?;
         let signature = FunctionSignature {
+            visibility,
+            is_async: async_marker.is_some(),
             name,
             parameters,
             result,
@@ -1708,7 +1829,10 @@ impl<'source> TokenCursor<'source> {
         }
     }
 
-    fn parse_extern_function(&mut self) -> Result<FunctionSignature, ParseError> {
+    fn parse_extern_function(
+        &mut self,
+        visibility: Visibility,
+    ) -> Result<FunctionSignature, ParseError> {
         let start = self.expect_word("extern", ParseErrorCode::UnexpectedToken)?;
         self.expect_word("fn", ParseErrorCode::UnexpectedToken)?;
         let name = self.expect_identifier()?;
@@ -1720,6 +1844,8 @@ impl<'source> TokenCursor<'source> {
         let effects = self.parse_effects()?;
         let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
         Ok(FunctionSignature {
+            visibility,
+            is_async: false,
             name,
             parameters,
             result,
