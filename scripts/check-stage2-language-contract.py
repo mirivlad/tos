@@ -273,6 +273,7 @@ def main() -> int:
     )
     for vector in [
         "accept/task-valid-capture.tos",
+        "reject/task-capture-then-use.tos",
         "accept/closure-valid-captures.tos",
         "reject/mutate-while-borrowed.tos",
         "reject/closure-borrow-capture.tos",

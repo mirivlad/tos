@@ -3449,6 +3449,210 @@ mod tests {
     }
 
     #[test]
+    fn a_break_carries_its_state_to_the_loop_exit() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
+             loop {{ take(message); break; }} take(message); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1, "the break carried the move out");
+    }
+
+    #[test]
+    fn a_continue_feeds_the_back_edge() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
+             while (ready) {{ take(message); continue; }} }}"
+        ));
+        assert_eq!(
+            moves(&diagnostics),
+            1,
+            "the next iteration sees the move the continue carried"
+        );
+    }
+
+    #[test]
+    fn a_conditional_break_carries_maybe_moved_state() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
+             while (ready) {{ if (ready) {{ take(message); break; }} }} take(message); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+                .unwrap()
+                .field("certainty"),
+            Some("on some paths")
+        );
+    }
+
+    #[test]
+    fn a_bare_loop_has_no_zero_iteration_exit() {
+        // Only a `break` leaves a bare loop, so code after an unbroken one is
+        // unreachable and cannot see the entry state.
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(message: Message) -> unit {{ \
+             loop {{ take(message); }} }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1, "the back edge reuses the value");
+
+        let (_, unreachable) = check(&std::format!(
+            "{AFFINE} pub fn main(message: Message) -> unit {{ \
+             loop {{ }} take(message); }}"
+        ));
+        assert_eq!(moves(&unreachable), 0);
+    }
+
+    #[test]
+    fn a_while_head_may_fail_so_entry_reaches_the_exit() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
+             while (ready) {{ return; }} take(message); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 0, "zero iterations is a real path");
+    }
+
+    #[test]
+    fn break_and_continue_bind_to_their_own_loop() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
+             while (ready) {{ loop {{ break; }} }} take(message); }}"
+        ));
+        assert_eq!(
+            moves(&diagnostics),
+            0,
+            "the inner break leaves the inner loop only"
+        );
+    }
+
+    #[test]
+    fn an_assignment_evaluates_its_index_before_the_right_side() {
+        // docs/40 section 4 fixes the order, so the index consumes first and
+        // the right side is the use that fails.
+        let (source, diagnostics) = check(&std::format!(
+            "{AFFINE} fn position(message: Message) -> size {{ return 0B; }} \
+             fn width(message: Message) -> i32 {{ return 1i32; }} \
+             pub fn main(message: Message) -> unit {{ \
+             let mut values: array<i32, 2> = [0, 0]; \
+             values[position(message)] = width(message); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1);
+        let reported = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+            .unwrap();
+        assert_eq!(
+            reported.span().text(&source),
+            "message",
+            "the right side is what uses the moved value"
+        );
+        assert!(reported.span().start() > source.bytes().len() - 40);
+    }
+
+    #[test]
+    fn a_short_circuit_right_side_is_a_conditional_path() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} fn ready_of(message: Message) -> bool {{ return true; }} \
+             pub fn main(flag: bool, message: Message) -> unit {{ \
+             let both = flag && ready_of(message); take(message); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+                .unwrap()
+                .field("certainty"),
+            Some("on some paths"),
+            "the right side runs only when the left is true"
+        );
+    }
+
+    #[test]
+    fn closure_capture_analysis_is_lexically_scoped() {
+        // The `then` arm shadows `count`; the `else` arm captures the outer one.
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             record Counter [value: i32] \
+             pub fn main(ready: bool, borrow counter: Counter) -> unit { \
+             let hidden: fn () -> i32 = fn () { \
+             if (ready) { let counter = 1i32; return counter; } \
+             else { return counter.value; } }; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert_eq!(
+            codes(&diagnostics, "E1305_INVALID_CLOSURE_CAPTURE"),
+            1,
+            "the shadow in one arm must not hide the capture in the other"
+        );
+    }
+
+    #[test]
+    fn a_match_arm_binding_does_not_hide_a_capture_in_another_arm() {
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             record Counter [value: i32] enum Mode [Fast, Slow] \
+             pub fn main(mode: Mode, borrow counter: Counter) -> unit { \
+             let peek: fn () -> i32 = fn () { \
+             match (mode) { Fast => { return 0i32; } Slow => { return counter.value; } } }; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert_eq!(codes(&diagnostics, "E1305_INVALID_CLOSURE_CAPTURE"), 1);
+    }
+
+    #[test]
+    fn a_sequential_declaration_still_applies_after_its_let() {
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             record Counter [value: i32] \
+             pub fn main(borrow counter: Counter) -> unit { \
+             let peek: fn () -> i32 = fn () { let counter = 1i32; return counter; }; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert_eq!(
+            codes(&diagnostics, "E1305_INVALID_CLOSURE_CAPTURE"),
+            0,
+            "the local declaration covers the later use"
+        );
+    }
+
+    #[test]
+    fn a_nested_closure_capture_reaches_the_outer_scope() {
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             record Counter [value: i32] \
+             pub fn main(borrow counter: Counter) -> unit { \
+             let outer: fn () -> unit = fn () { \
+             let inner: fn () -> i32 = fn () { return counter.value; }; }; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert!(
+            codes(&diagnostics, "E1305_INVALID_CLOSURE_CAPTURE") >= 1,
+            "a borrow reached through a nested closure is still a capture"
+        );
+    }
+
+    #[test]
+    fn a_synchronization_object_is_not_a_lock_guard() {
+        // docs/41 separates the object from the guard a lock operation yields;
+        // only the guard may not transfer.
+        let (_, diagnostics) = check(
+            "pub fn main(lock: Mutex<i32>) -> unit { \
+             let worker: Task<unit> = spawn parallel { let held = lock; }; }",
+        );
+        assert_eq!(codes(&diagnostics, "E1304_INVALID_TASK_CAPTURE"), 0);
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.

@@ -13,10 +13,19 @@
 //! correct — the second arm starts from the entry state, not from whatever the
 //! first arm left behind.
 //!
+//! Control leaves a statement through one of four channels — normal
+//! fallthrough, `break`, `continue`, `return` — and they must not be collapsed
+//! into a single reachability flag. A `break` carries its state to the loop's
+//! exit, a `continue` carries it to the loop's back edge, and a `return`
+//! carries it out of the return scope; losing any of them would silently drop
+//! the facts that path established.
+//!
 //! The lattice is small and monotone: a move, once recorded, is never removed,
 //! and a borrow live on either path is live after the join. A use is rejected
 //! when a move reaches it on *any* path, so `Definite` and `Maybe` differ only
-//! in what the diagnostic says, never in whether it fires.
+//! in what the diagnostic says, never in whether it fires. Monotone and finite
+//! is what lets a loop be solved by iterating to stability rather than by
+//! assuming a fixed number of passes.
 //!
 //! **Layering.** This is TOS Core frontend semantic state, not a
 //! language-neutral executable representation. Ownership, borrows and
@@ -97,29 +106,95 @@ pub(crate) enum Region {
 /// Ownership and borrow facts at one program point.
 #[derive(Clone, Debug, Default)]
 pub(crate) struct State {
-    /// Whether control can actually arrive here. A `return`, `break` or
-    /// `continue` makes the rest of its block unreachable, and an unreachable
-    /// path contributes nothing to a join.
-    pub(crate) reachable: bool,
     pub(crate) moves: Vec<MoveRecord>,
     pub(crate) borrows: Vec<BorrowRecord>,
+}
+
+/// How control left a statement or block.
+///
+/// Each channel holds the state of the paths that leave that way, or `None`
+/// when no path does. A loop consumes the `break` and `continue` channels of
+/// its own body; a return scope consumes `returns`.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct Flow {
+    pub(crate) normal: Option<State>,
+    pub(crate) breaks: Option<State>,
+    pub(crate) continues: Option<State>,
+    pub(crate) returns: Option<State>,
+}
+
+impl Flow {
+    pub(crate) fn normal(state: State) -> Flow {
+        Flow {
+            normal: Some(state),
+            ..Flow::default()
+        }
+    }
+
+    pub(crate) fn breaking(state: State) -> Flow {
+        Flow {
+            breaks: Some(state),
+            ..Flow::default()
+        }
+    }
+
+    pub(crate) fn continuing(state: State) -> Flow {
+        Flow {
+            continues: Some(state),
+            ..Flow::default()
+        }
+    }
+
+    pub(crate) fn returning(state: State) -> Flow {
+        Flow {
+            returns: Some(state),
+            ..Flow::default()
+        }
+    }
+
+    /// Joins two alternative flows channel by channel.
+    pub(crate) fn join(one: Flow, other: Flow) -> Flow {
+        Flow {
+            normal: join_option(one.normal, other.normal),
+            breaks: join_option(one.breaks, other.breaks),
+            continues: join_option(one.continues, other.continues),
+            returns: join_option(one.returns, other.returns),
+        }
+    }
+}
+
+pub(crate) fn join_option(one: Option<State>, other: Option<State>) -> Option<State> {
+    match (one, other) {
+        (Some(left), Some(right)) => Some(State::join(left, right)),
+        (Some(only), None) | (None, Some(only)) => Some(only),
+        (None, None) => None,
+    }
 }
 
 impl State {
     pub(crate) fn entry() -> State {
         State {
-            reachable: true,
             moves: Vec::new(),
             borrows: Vec::new(),
         }
     }
 
-    pub(crate) fn unreachable() -> State {
-        State {
-            reachable: false,
-            moves: Vec::new(),
-            borrows: Vec::new(),
+    /// Whether two states hold the same facts, for deciding loop stability.
+    pub(crate) fn same_facts(&self, other: &State) -> bool {
+        if self.moves.len() != other.moves.len() || self.borrows.len() != other.borrows.len() {
+            return false;
         }
+        self.moves.iter().all(|record| {
+            other
+                .moves
+                .iter()
+                .any(|mine| mine.place == record.place && mine.certainty == record.certainty)
+        }) && self.borrows.iter().all(|record| {
+            other
+                .borrows
+                .iter()
+                .any(|mine| mine.place == record.place && mine.kind == record.kind)
+        })
     }
 
     /// The first recorded move that makes using `place` invalid.
@@ -194,17 +269,11 @@ impl State {
 
     /// Joins two alternative paths.
     ///
-    /// An unreachable path contributes nothing. A move present on one side
-    /// becomes `Maybe`, which still blocks a later use; a borrow live on either
-    /// side stays live, because the checker must not lose a borrow that some
-    /// path leaves open.
+    /// A move present on one side becomes `Maybe`, which still blocks a later
+    /// use; a borrow live on either side stays live, because the checker must
+    /// not lose a borrow that some path leaves open. Unreachability is carried
+    /// by [`Flow`], so a path that cannot arrive never reaches this function.
     pub(crate) fn join(one: State, other: State) -> State {
-        if !one.reachable {
-            return other;
-        }
-        if !other.reachable {
-            return one;
-        }
         let mut moves: Vec<MoveRecord> = Vec::new();
         for record in one.moves.iter().chain(other.moves.iter()) {
             if let Some(existing) = moves
@@ -236,10 +305,6 @@ impl State {
             }
             borrows.push(record);
         }
-        State {
-            reachable: true,
-            moves,
-            borrows,
-        }
+        State { moves, borrows }
     }
 }
