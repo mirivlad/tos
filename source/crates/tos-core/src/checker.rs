@@ -88,6 +88,7 @@ impl Checker {
     /// findings.
     pub fn check(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> {
         let mut diagnostics = Vec::new();
+        check_language_version(source, schema, &mut diagnostics);
         check_resource_envelope(source, schema, &mut diagnostics);
         check_record_fields(source, schema, &mut diagnostics);
         diagnostics.extend(resolve_value_names(source, schema));
@@ -376,6 +377,46 @@ impl<'source> Resolver<'source> {
 
 fn diagnostic(code: &'static str, stage: Stage, span: Span, source: &SourceUnit) -> Diagnostic {
     Diagnostic::new(code, Severity::Error, stage, span, source)
+}
+
+/// The source-language version this frontend implements (docs/42 section 1).
+const LANGUAGE_VERSION: (u32, u32) = (1, 0);
+
+/// Checks the declared source-language version.
+///
+/// docs/42 section 1 requires exactly `1.0` for V1: another major is
+/// `E1601_UNSUPPORTED_LANGUAGE_VERSION` and an unknown minor is
+/// `E1602_UNSUPPORTED_LANGUAGE_MINOR`. The version is the language version, not
+/// a module release number, so a module cannot opt into a dialect.
+fn check_language_version(source: &SourceUnit, schema: &Schema, out: &mut Vec<Diagnostic>) {
+    let header = schema.outline().prefix().header();
+    let (major, minor) = header.version();
+    let (expected_major, expected_minor) = LANGUAGE_VERSION;
+    if major != expected_major {
+        out.push(
+            diagnostic(
+                "E1601_UNSUPPORTED_LANGUAGE_VERSION",
+                Stage::Type,
+                header.span(),
+                source,
+            )
+            .with_field("declared", major)
+            .with_field("supported", expected_major),
+        );
+        return;
+    }
+    if minor > expected_minor {
+        out.push(
+            diagnostic(
+                "E1602_UNSUPPORTED_LANGUAGE_MINOR",
+                Stage::Type,
+                header.span(),
+                source,
+            )
+            .with_field("declared", minor)
+            .with_field("supported", expected_minor),
+        );
+    }
 }
 
 /// Checks the module resource declaration against docs/41 section 6.

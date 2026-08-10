@@ -2040,6 +2040,46 @@ mod tests {
             .any(|d| d.code() == "E1802_UNSAFE_RATIONALE_REQUIRED"));
     }
 
+    fn check_header(version: &str) -> Vec<Diagnostic> {
+        let text = std::format!(
+            "module system.boot version {version} profile bootstrap; resource [fuel: 1000] \
+             fn main() -> unit {{ }}"
+        );
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        Checker::check(&source, &schema)
+            .into_iter()
+            .filter(|d| d.code().starts_with("E16"))
+            .collect()
+    }
+
+    #[test]
+    fn the_declared_language_version_must_be_exactly_one_zero() {
+        assert!(check_header("1.0").is_empty());
+
+        let major = check_header("2.0");
+        assert_eq!(major.len(), 1);
+        assert_eq!(major[0].code(), "E1601_UNSUPPORTED_LANGUAGE_VERSION");
+        assert_eq!(major[0].field("declared"), Some("2"));
+        assert_eq!(major[0].stage(), Stage::Type);
+
+        let minor = check_header("1.3");
+        assert_eq!(minor.len(), 1);
+        assert_eq!(minor[0].code(), "E1602_UNSUPPORTED_LANGUAGE_MINOR");
+        assert_eq!(minor[0].field("declared"), Some("3"));
+        assert_eq!(minor[0].field("supported"), Some("0"));
+    }
+
+    #[test]
+    fn an_unsupported_major_hides_the_minor_finding() {
+        // One header cannot be wrong in two ways at once.
+        let both = check_header("2.7");
+        assert_eq!(both.len(), 1);
+        assert_eq!(both[0].code(), "E1601_UNSUPPORTED_LANGUAGE_VERSION");
+    }
+
     #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists

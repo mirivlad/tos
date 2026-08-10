@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `7aadf67c6f403db015e327de8bc899b8cd73ffa6464c245d5bca9bf10236ef73`  
+Source-manifest SHA-256: `53d65b9024a7dbc62a7d4903c91c8fbefbb88594ae9f77b9b789f658f1a01637`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4703,6 +4703,13 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1202_UNKNOWN_VALUE_NAME` | a value name, or a qualified constructor path in a pattern, resolves to no predeclared value, module item, parameter or in-scope binding |
 | `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
+
+### Module and version (stage `type`)
+
+| Code | Condition |
+|---|---|
+| `E1601_UNSUPPORTED_LANGUAGE_VERSION` | the module header declares a source-language major version other than 1 |
+| `E1602_UNSUPPORTED_LANGUAGE_MINOR` | the module header declares a minor version the frontend does not implement |
 
 ### Unsafe and FFI boundary (stage `effect`)
 
