@@ -519,6 +519,23 @@ decision, а не выбор реализации.
   docs/44 §7 со stage `resource`.
 - Тестов 77 → 81. `./scripts/preflight.sh --full` → **31/31 PASS**.
 
+### 2026-08-10 — Stage 2 Part B: assignment mutability
+
+- Новый `mutability.rs` реализует docs/40 §2: присваивание требует mutable
+  binding, присваивание в неизменяемое место — `E1201_ASSIGN_TO_IMMUTABLE`.
+- Мутабельность определяется корнем place: `movable.x = ...` разрешено при
+  `let mut movable`, `fixed.x = ...` — нет. Парсер уже гарантирует, что цель
+  присваивания — place, поэтому корень всегда `Name`.
+- Параметр присваиваем только при `borrow mut`; owned и `borrow` параметры
+  неизменяемы. Биндинги `for` и ветвей `match` неизменяемы — грамматика не даёт
+  им `mut`.
+- Несвязанное имя в цели присваивания сообщается только как `E1202`: одна
+  ошибка не удваивается.
+- Отслеживание активных borrow относится к ownership-срезу; здесь сообщается
+  только то, что делают определённым сами формы объявления.
+- `E1201_ASSIGN_TO_IMMUTABLE` внесён в реестр docs/44 §7 со stage `type`.
+- Тестов 81 → 85. `./scripts/preflight.sh --full` → **31/31 PASS**.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5
