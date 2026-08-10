@@ -7,6 +7,7 @@ use std::vec::Vec;
 
 mod checker;
 mod diagnostic;
+mod mutability;
 mod parser;
 mod profile;
 mod returns;
@@ -1919,6 +1920,74 @@ mod tests {
         assert!(diagnostics
             .iter()
             .all(|d| d.code() != "E1702_PROFILE_NOT_SUPPORTED"));
+    }
+
+    #[test]
+    fn assignment_requires_a_mutable_binding() {
+        let (source, diagnostics) = check(
+            "record Point [x: i32] \
+             fn main(fixed: i32) -> unit { let mut count: i32 = 1i32; count = 2i32; \
+             let total: i32 = 3i32; total = 4i32; fixed = 5i32; }",
+        );
+        let immutable: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1201_ASSIGN_TO_IMMUTABLE")
+            .filter_map(|d| d.field("binding"))
+            .collect();
+        assert_eq!(immutable, ["total", "fixed"]);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .find(|d| d.code() == "E1201_ASSIGN_TO_IMMUTABLE")
+                .unwrap()
+                .span()
+                .text(&source),
+            "total"
+        );
+    }
+
+    #[test]
+    fn mutability_follows_the_root_of_a_place() {
+        let (_, diagnostics) = check(
+            "record Point [x: i32] \
+             fn main() -> unit { let mut movable: Point = Point(x: 1i32); movable.x = 2i32; \
+             let fixed: Point = Point(x: 3i32); fixed.x = 4i32; }",
+        );
+        let immutable: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1201_ASSIGN_TO_IMMUTABLE")
+            .filter_map(|d| d.field("binding"))
+            .collect();
+        assert_eq!(immutable, ["fixed"]);
+    }
+
+    #[test]
+    fn only_an_exclusive_borrow_parameter_is_assignable() {
+        let (_, diagnostics) = check(
+            "fn takes_mut(borrow mut slot: i32) -> unit { slot = 1i32; } \
+             fn takes_shared(borrow slot: i32) -> unit { slot = 1i32; }",
+        );
+        let immutable: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1201_ASSIGN_TO_IMMUTABLE")
+            .filter_map(|d| d.field("binding"))
+            .collect();
+        assert_eq!(immutable, ["slot"], "only the shared borrow is reported");
+    }
+
+    #[test]
+    fn an_unbound_assignment_target_is_reported_once() {
+        let (_, diagnostics) = check("fn main() -> unit { missing = 1i32; }");
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(
+                    |d| d.field("name") == Some("missing") || d.field("binding") == Some("missing")
+                )
+                .count(),
+            1,
+            "an unbound name is E1202 only"
+        );
     }
 
     #[test]

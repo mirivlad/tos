@@ -169,6 +169,7 @@ def main() -> int:
         # A family folded into the registry must be complete for the checks the
         # implementation actually performs (docs/44 section 7).
         for code, stage in [
+            ("E1201_ASSIGN_TO_IMMUTABLE", "type"),
             ("E1202_UNKNOWN_VALUE_NAME", "type"),
             ("E1205_DUPLICATE_RECORD_FIELD", "type"),
             ("E1221_MISSING_RETURN", "type"),
