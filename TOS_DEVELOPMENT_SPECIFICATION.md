@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `53d65b9024a7dbc62a7d4903c91c8fbefbb88594ae9f77b9b789f658f1a01637`  
+Source-manifest SHA-256: `960ff4c02376d62d0ab5f6273256f1d116341fb8b771471bdd26537cfcfb72bb`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4702,6 +4702,8 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1201_ASSIGN_TO_IMMUTABLE` | an assignment targets a place whose root binding is not mutable |
 | `E1202_UNKNOWN_VALUE_NAME` | a value name, or a qualified constructor path in a pattern, resolves to no predeclared value, module item, parameter or in-scope binding |
 | `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
+| `E1206_MISSING_RECORD_FIELD` | a named constructor omits a field its record or named-field variant declares |
+| `E1207_UNKNOWN_RECORD_FIELD` | a named constructor supplies a field its record or named-field variant does not declare |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
 
 ### Module and version (stage `type`)

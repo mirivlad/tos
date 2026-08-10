@@ -172,6 +172,8 @@ def main() -> int:
             ("E1201_ASSIGN_TO_IMMUTABLE", "type"),
             ("E1202_UNKNOWN_VALUE_NAME", "type"),
             ("E1205_DUPLICATE_RECORD_FIELD", "type"),
+            ("E1206_MISSING_RECORD_FIELD", "type"),
+            ("E1207_UNKNOWN_RECORD_FIELD", "type"),
             ("E1221_MISSING_RETURN", "type"),
             ("E1601_UNSUPPORTED_LANGUAGE_VERSION", "type"),
             ("E1602_UNSUPPORTED_LANGUAGE_MINOR", "type"),
