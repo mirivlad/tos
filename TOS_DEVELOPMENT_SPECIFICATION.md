@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `9907365debcfcf258f52a86ffbff7f07dc08ee7e7fd3a8c126f7429db7474de5`  
+Source-manifest SHA-256: `b7b230c19b1a604713cb32da998e97f661962b3ae4a4d40f1eef541e91e99b2e`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4713,6 +4713,9 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 |---|---|
 | `E1601_UNSUPPORTED_LANGUAGE_VERSION` | the module header declares a source-language major version other than 1 |
 | `E1602_UNSUPPORTED_LANGUAGE_MINOR` | the module header declares a minor version the frontend does not implement |
+| `E1603_MODULE_PATH_MISMATCH` | a source unit's canonical repository path is not the path its declared module name maps to |
+| `E1604_IMPORT_NOT_FOUND` | an import names no module in the declared source set |
+| `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 
 ### Unsafe and FFI boundary (stage `effect`)
 

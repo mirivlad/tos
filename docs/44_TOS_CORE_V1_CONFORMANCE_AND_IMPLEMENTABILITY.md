@@ -239,6 +239,9 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 |---|---|
 | `E1601_UNSUPPORTED_LANGUAGE_VERSION` | the module header declares a source-language major version other than 1 |
 | `E1602_UNSUPPORTED_LANGUAGE_MINOR` | the module header declares a minor version the frontend does not implement |
+| `E1603_MODULE_PATH_MISMATCH` | a source unit's canonical repository path is not the path its declared module name maps to |
+| `E1604_IMPORT_NOT_FOUND` | an import names no module in the declared source set |
+| `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 
 ### Unsafe and FFI boundary (stage `effect`)
 
