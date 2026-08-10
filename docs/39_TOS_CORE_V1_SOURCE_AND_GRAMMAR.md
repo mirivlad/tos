@@ -163,12 +163,23 @@ one-or-more. Literal tokens are quoted. `identifier`, `integer`, `string`,
 `bytes`, `size`, and `duration` refer to the lexical tokens above.
 
 The parser is deterministic. At a declaration-level error it synchronizes at
-the next top-level `;` or `]`. At a statement-level error it synchronizes at
-the next `;` or the closing brace of the current block. At a comma-separated
-list error it synchronizes at `,` or the enclosing closer. It MUST emit the
-lowest-numbered applicable lexical error first; then the earliest unconsumed
-syntax token; then one recovery diagnostic per synchronization region. It MUST
-not guess a missing declaration, capability, type, or operator.
+the next top-level `;` or `]`, or at the `}` that closes a top-level declaration
+body and returns delimiter nesting to zero. At a statement-level error it
+synchronizes at the next `;` or the closing brace of the current block. At a
+comma-separated list error it synchronizes at `,` or the enclosing closer. It
+MUST emit the lowest-numbered applicable lexical error first; then the earliest
+unconsumed syntax token; then one recovery diagnostic per synchronization
+region. It MUST not guess a missing declaration, capability, type, or operator.
+
+The closing-brace boundary exists because a `function_decl` ends with a block
+rather than `;` or `]`: without it, one malformed signature would discard every
+later declaration in the source unit. It can only end a region earlier than the
+`;`/`]` rule would, never later, and it admits no further recovery heuristic.
+See ADR-0032.
+
+Every diagnostic a source reader, lexer or parser can raise is registered with
+its stage and exact condition in
+`docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md` section 7.
 
 ## 5. Complete V1 grammar
 

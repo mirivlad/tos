@@ -40,7 +40,7 @@ Composition (derived, not hand-maintained)
 ------------------------------------------
 - files in the release package: 250
 - active system invariants: 21
-- architecture decision records: 31 (31 accepted)
+- architecture decision records: 32 (32 accepted)
 
 Architecture decision records
 -----------------------------
@@ -75,6 +75,7 @@ Architecture decision records
 - docs/adr/0029-tos-core-v1-unicode-normalization-baseline.md — ADR-0029: TOS Core V1 Unicode normalization baseline [Accepted (Project Architect-approved)]
 - docs/adr/0030-external-vendor-opaque-material.md — ADR-0030: External vendor-controlled opaque material and the `/vendor` namespace [Accepted (Project Architect-approved)]
 - docs/adr/0031-system-source-hierarchy.md — ADR-0031: Runtime system source hierarchy [Accepted (Project Architect-approved)]
+- docs/adr/0032-parser-diagnostics-and-recovery.md — ADR-0032: TOS Core V1 parser diagnostics and recovery clarification [Accepted (Project Architect-approved)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

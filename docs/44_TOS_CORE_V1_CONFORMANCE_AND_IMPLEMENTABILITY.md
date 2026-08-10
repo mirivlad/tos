@@ -162,7 +162,96 @@ This order does not authorize a second implementation path. The first parser,
 checker, IR, verifier, and interpreter are the intended long-term reference
 components; optimized backends remain subordinate derived engines.
 
-## 7. Open matters outside this proposal
+## 7. Diagnostic code registry
+
+This section is the authoritative registry that `docs/41` section 7 refers to.
+It enumerates every frontend diagnostic code reachable by the source reader,
+lexer and parser, with its stage and the exact condition that raises it. A code
+used by a conformance expectation must appear here; the mechanical gate in
+`scripts/check-stage2-language-contract.py` enforces that in both directions.
+
+Codes are allocated by the document that owns the rule — `docs/39` for lexical
+and grammatical conditions, ADR-0032 for the parser codes it ratified. This
+section records them in one enumerable place; it does not create authority the
+owning document did not grant.
+
+Human wording may improve. Code, stage and condition are stable for TOS Core 1.0
+and change only through a versioned language decision.
+
+<!-- stage2-diagnostic-registry:start -->
+
+### Source transport (stage `lex`)
+
+| Code | Condition |
+|---|---|
+| `E1000_SOURCE_LIMIT` | the source unit exceeds the 256 KiB ceiling; reported at the first excluded byte, before UTF-8 and NFC work |
+| `E1001_INVALID_UTF8` | the input is not valid UTF-8; reported at the first invalid byte, before normalization |
+| `E1002_BOM_FORBIDDEN` | the input begins with a UTF-8 byte order mark; reported at byte 0 |
+| `E1003_BARE_CR` | a CR appears that is not part of a CRLF pair; reported at that byte |
+| `E1004_NOT_NFC` | the input is not NFC under UCD 17.0.0 and UAX #15 Revision 57; reported at the first non-NFC sequence |
+| `E1005_NUL_FORBIDDEN` | a NUL scalar value appears in otherwise valid source; reported at that byte |
+
+### Lexical (stage `lex`)
+
+| Code | Condition |
+|---|---|
+| `E1010_TAB_OUTSIDE_LITERAL` | a horizontal tab appears outside a literal or comment |
+| `E1011_NON_ASCII_WHITESPACE` | a non-ASCII whitespace scalar value appears outside a literal or comment |
+| `E1012_INVALID_IDENTIFIER` | a non-ASCII scalar value appears outside a literal or comment, where only an ASCII identifier could be formed; reported at its first byte |
+| `E1013_UNEXPECTED_CHARACTER` | a valid UTF-8 character outside a literal or comment neither begins nor continues any admissible lexical form at its position, and is not covered by `E1012_INVALID_IDENTIFIER`; reported at its first byte |
+| `E1020_INVALID_INTEGER_LITERAL` | an integer literal has an invalid base digit, a leading or trailing underscore, repeated underscores, or an invalid suffix |
+| `E1030_INVALID_STRING` | a string literal has an invalid escape, an invalid scalar value, an unescaped line ending, or no terminator |
+| `E1031_INVALID_BYTES` | a `bytes` literal contains a character or escape outside the permitted ASCII set, or has no terminator |
+
+`E1012` and `E1013` are mutually exclusive by construction: a non-ASCII scalar
+value takes `E1012`, and every other character that begins no lexical form —
+necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
+
+### Parser (stage `parse`)
+
+| Code | Condition |
+|---|---|
+| `E1100_EXPECTED_MODULE_HEADER` | a required module-header keyword (`module`, `version`) is absent at its position |
+| `E1101_EXPECTED_IDENTIFIER` | an identifier is required at this position and the token present is not one |
+| `E1102_EXPECTED_VERSION_COMPONENT` | a module-header version component is not a decimal integer representable as `u32` |
+| `E1103_EXPECTED_PROFILE` | the module-header profile is neither `bootstrap` nor `full` |
+| `E1104_EXPECTED_LITERAL` | a literal is required at this position and the token present is not one |
+| `E1105_CONTROL_HEAD_PARENS_REQUIRED` | an `if`, `while`, `match` or `for` head is not parenthesized |
+| `E1106_LIST_SEPARATOR_REQUIRED` | two members of a comma-separated list are not separated by a comma |
+| `E1107_UNEXPECTED_TOKEN` | the token cannot begin or continue the construct being parsed and no more specific parser code applies |
+
+<!-- stage2-diagnostic-registry:end -->
+
+`E1107_UNEXPECTED_TOKEN` is the defined residual of the parse stage. A more
+specific code always wins where one applies. A recurring `E1107` condition with a
+distinct meaning is a reason to allocate a new code through a versioned language
+decision, not a reason to keep using the residual.
+
+Lexical diagnostics precede parse diagnostics: a source unit that fails to
+tokenize produces exactly one lexical diagnostic and no parse diagnostics. Within
+one stage the earliest source span wins, as required by `docs/41` section 7.
+
+### Later-stage families
+
+The `E12xx` type/evaluation, `E13xx` ownership, `E14xx` concurrency/atomic,
+`E15xx` capability/effect, `E16xx` module/version, `E17xx` resource/profile,
+`E18xx` unsafe/FFI and `V20xx` IR verifier families are defined by
+`docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`,
+`docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`,
+`docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md` and
+`docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`. Those documents state each condition;
+this registry does not restate them while the checker, verifier and runtime that
+raise them are unimplemented.
+
+Each family MUST be folded into the table above — with its stage and exact
+condition — by the stage that implements it, before that stage closes. A stage
+that raises a code absent from this registry has not met its exit gate. The
+stage label for a family is fixed when the family is folded in, not guessed in
+advance: `docs/41` section 7 enumerates the stages `lex`, `parse`, `type`,
+`ownership`, `effect`, `resource`, `IR` and `runtime`, and assigning families to
+them is part of contracting the corresponding checker.
+
+## 8. Open matters outside this proposal
 
 There are no unresolved semantic questions needed to begin the intended
 Bootstrap reference implementation if ADR-0028 is accepted. Deliberately
