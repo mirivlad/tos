@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.index_type_mismatch version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// An index has exact type `size`; an i32 is not one.
+pub fn main(values: array<i32, 2>, position: i32) -> i32 {
+    return values[position];
+}

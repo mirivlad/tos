@@ -28,6 +28,9 @@
 //! types* `E1210_INTEGER_TYPE_MISMATCH`. It names no code for a disagreement
 //! between other kinds — a `bool` assigned to a `string`, say — so this slice
 //! reports only the integer case the contract states.
+//!
+//! An index has exact type `size`; an integer literal may be contextually typed
+//! as one. Any other index type is `E1211_INDEX_TYPE_MISMATCH`.
 
 use std::boxed::Box;
 use std::collections::BTreeMap;
@@ -526,10 +529,7 @@ impl<'source> TypeChecker<'source> {
                     .unwrap_or(Type::Unknown);
                 Type::Array(Box::new(element))
             }
-            ExpressionForm::Index => match expression.inner().map(|inner| self.type_of(inner)) {
-                Some(Type::Array(element)) => *element,
-                _ => Type::Unknown,
-            },
+            ExpressionForm::Index => self.index_type(expression),
             ExpressionForm::Field => self.field_type(expression),
             ExpressionForm::Call => self.call_type(expression),
             ExpressionForm::Binary => self.binary_type(expression),
@@ -541,6 +541,37 @@ impl<'source> TypeChecker<'source> {
                 }
                 _ => Type::Unknown,
             },
+            _ => Type::Unknown,
+        }
+    }
+
+    /// Types an index expression and checks the index itself.
+    ///
+    /// docs/40 section 3 gives array, slice and region indexes exact type
+    /// `size`, with an integer literal contextually typed as one.
+    fn index_type(&mut self, expression: &'source Expression) -> Type {
+        if let Some(index) = expression.right() {
+            let actual = self.type_of(index);
+            let acceptable = matches!(actual, Type::Size | Type::UnsuffixedInteger | Type::Unknown);
+            if !acceptable {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        "E1211_INDEX_TYPE_MISMATCH",
+                        Severity::Error,
+                        Stage::Type,
+                        index.span(),
+                        self.source,
+                    )
+                    .with_field("expected", "size")
+                    .with_field("actual", actual.spell()),
+                );
+            }
+        }
+        match expression.inner().map(|inner| self.type_of(inner)) {
+            Some(Type::Array(element)) => *element,
+            Some(Type::Constructed(name, arguments)) if name == "slice" => {
+                arguments.first().cloned().unwrap_or(Type::Unknown)
+            }
             _ => Type::Unknown,
         }
     }
