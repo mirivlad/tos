@@ -230,6 +230,13 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
 
+### Module and version (stage `type`)
+
+| Code | Condition |
+|---|---|
+| `E1601_UNSUPPORTED_LANGUAGE_VERSION` | the module header declares a source-language major version other than 1 |
+| `E1602_UNSUPPORTED_LANGUAGE_MINOR` | the module header declares a minor version the frontend does not implement |
+
 ### Unsafe and FFI boundary (stage `effect`)
 
 | Code | Condition |

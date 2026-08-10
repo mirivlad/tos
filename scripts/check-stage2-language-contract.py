@@ -173,6 +173,8 @@ def main() -> int:
             ("E1202_UNKNOWN_VALUE_NAME", "type"),
             ("E1205_DUPLICATE_RECORD_FIELD", "type"),
             ("E1221_MISSING_RETURN", "type"),
+            ("E1601_UNSUPPORTED_LANGUAGE_VERSION", "type"),
+            ("E1602_UNSUPPORTED_LANGUAGE_MINOR", "type"),
             ("E1801_FFI_NOT_AVAILABLE", "effect"),
             ("E1802_UNSAFE_RATIONALE_REQUIRED", "effect"),
             ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),
