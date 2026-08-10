@@ -5,12 +5,13 @@ resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, syn
 
 pub record Message [payload: bytes]
 
-// An owned affine value transfers its sole ownership across the task boundary,
-// and a Copy value is duplicated.
+// The task captures the owned affine value, which transfers its sole
+// ownership, and the Copy value, which is duplicated. `message` is therefore
+// not used again here; `count` still is.
 pub fn main(count: i32, message: Message) -> i32 {
-    let worker: Task<i32> = spawn parallel {
-        return count;
+    let worker: Task<Message> = spawn parallel {
+        return message;
     };
-    let outcome: TaskResult<i32> = join worker;
+    let outcome: TaskResult<Message> = join worker;
     return count;
 }

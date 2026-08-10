@@ -28,7 +28,7 @@
 | C020 | `accept/visibility-exported-surface.tos` | Bootstrap | accepts an exported record in a public signature while a private record stays inside a body and a private function | `pub` covers the public surface only |
 | C021 | `accept/visibility-imported-surface.tos` plus `accept/visibility-exported-surface.tos` | Bootstrap | accepts an imported exported type in this module's public signature | a type exported by its own module is reachable for downstream consumers |
 | C022 | `accept/visibility-private-internals.tos` | Bootstrap | accepts private nominal types used by a private function and inside a public function's body | implementation details are not a public surface |
-| C023 | `accept/task-valid-capture.tos` | Bootstrap | accepts a Copy capture duplicated across a task boundary and a consuming `join` | an owned affine value transfers, a Copy value is duplicated |
+| C023 | `accept/task-valid-capture.tos` | Bootstrap | accepts an owned affine capture that transfers sole ownership and a Copy capture that is duplicated, with the Copy value still usable afterwards | a task boundary admits Transferable values only |
 | C024 | `accept/closure-valid-captures.tos` | Full | accepts a Copy capture by copy and an affine capture by move, with the Copy value still usable afterwards | closure capture follows the ownership rules |
 | R001 | `reject/use-after-move.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | affine ownership negative |
 | R002 | `reject/borrow-escape.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` | a mutable borrow cannot coexist with later borrow/use |
@@ -72,6 +72,7 @@
 | R042 | `reject/visibility-private-transitively.tos` | Bootstrap | `E1607_PRIVATE_PUBLIC_TYPE` with `type=Hidden`, `exported_by=get` | an exported wrapper does not hide a private type in its own surface |
 | R043 | `reject/mutate-while-borrowed.tos` | Bootstrap | `E1303_MUTATE_WHILE_BORROWED` with `place=counter.value` | a live immutable borrow forbids mutation of the borrowed path |
 | R044 | `reject/closure-borrow-capture.tos` | Full | `E1305_INVALID_CLOSURE_CAPTURE` with `reason=borrow` | a closure may not capture a borrow |
+| R045 | `reject/task-capture-then-use.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` with `place=message` | a valid affine task capture leaves nothing behind for the outer scope |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 

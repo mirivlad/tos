@@ -42,7 +42,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::string::{String, ToString};
 use std::vec::Vec;
 
-use crate::flow::{BorrowKind, BorrowRecord, Certainty, Region, State};
+use crate::flow::{join_option, BorrowKind, BorrowRecord, Certainty, Flow, Region, State};
 use crate::parser::{
     Block, BorrowMode, Expression, ExpressionForm, ImportKind, Pattern, PatternForm, Schema, Span,
     Statement, StatementForm,
@@ -52,11 +52,17 @@ use crate::typing::{binding_types, record_fields, Type};
 use crate::{Diagnostic, Severity, SourceUnit, Stage};
 
 /// Why a value may not cross a task or closure boundary (docs/40 section 6).
+///
+/// Only the two the frontend can establish on its own are listed. docs/41
+/// distinguishes a synchronization object such as `Mutex<T>` from the affine
+/// guard a lock operation yields, and it is the guard that may not transfer, so
+/// the object's type constructor proves nothing. Likewise docs/40 section 6
+/// makes a `Region<T>`'s shareability and mutability a fact of its capability
+/// contract, which this slice cannot see: inventing a diagnostic from the type
+/// constructor alone would be a guess.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NonTransferable {
     Borrow,
-    LockGuard,
-    Region,
     Capability,
 }
 
@@ -64,12 +70,15 @@ impl NonTransferable {
     fn reason(self) -> &'static str {
         match self {
             NonTransferable::Borrow => "borrow",
-            NonTransferable::LockGuard => "lock guard",
-            NonTransferable::Region => "mutable region",
             NonTransferable::Capability => "non-transferable capability",
         }
     }
 }
+
+/// A guard on loop iteration. The lattice is monotone and finite, so the fixed
+/// point is reached well before this; the bound only stops a lattice mistake
+/// from becoming a hang.
+const MAX_LOOP_ROUNDS: usize = 16;
 
 /// What the walker knows about one binding occurrence.
 struct BindingInfo {
@@ -96,7 +105,7 @@ pub(crate) fn check_ownership(source: &SourceUnit, schema: &Schema) -> Vec<Diagn
         diagnostics: Vec::new(),
     };
     for function in schema.functions() {
-        let mut state = State::entry();
+        let state = State::entry();
         checker.push_scope();
         for parameter in function.signature().parameters() {
             let barrier = match parameter.borrow_mode() {
@@ -107,9 +116,8 @@ pub(crate) fn check_ownership(source: &SourceUnit, schema: &Schema) -> Vec<Diagn
             };
             checker.declare(parameter.name(), barrier);
         }
-        state = checker.walk_block(function.body(), state);
-        let _ = state;
-        checker.pop_scope(&mut State::entry());
+        let _ = checker.walk_block(function.body(), state);
+        checker.scopes.pop();
     }
     checker.diagnostics
 }
@@ -129,18 +137,9 @@ impl<'source> OwnershipChecker<'source> {
         self.scopes.push(Vec::new());
     }
 
-    fn pop_scope(&mut self, state: &mut State) {
-        let Some(scope) = self.scopes.pop() else {
-            return;
-        };
-        let ids: Vec<BindingId> = scope.iter().map(|(_, id)| *id).collect();
-        state.forget(&ids);
-    }
-
     fn declare(&mut self, name: Span, barrier: Option<NonTransferable>) {
         let id = name.start();
         let ty = self.types.get(&id).cloned().unwrap_or(Type::Unknown);
-        let barrier = barrier.or_else(|| barrier_of(&ty));
         self.bindings.insert(
             id,
             BindingInfo {
@@ -289,6 +288,36 @@ impl<'source> OwnershipChecker<'source> {
         state.record_move(place, expression.span());
     }
 
+    /// Evaluates the base and index expressions of an assignment target.
+    ///
+    /// docs/40 section 4 evaluates them left to right before the right side.
+    /// The target place itself is not read: an assignment writes it rather than
+    /// using its old value.
+    fn evaluate_place_address(&mut self, target: &Expression, state: &mut State) {
+        match target.form() {
+            ExpressionForm::Name => {}
+            ExpressionForm::Group => {
+                if let Some(inner) = target.inner() {
+                    self.evaluate_place_address(inner, state);
+                }
+            }
+            ExpressionForm::Field => {
+                if let Some(inner) = target.inner() {
+                    self.evaluate_place_address(inner, state);
+                }
+            }
+            ExpressionForm::Index => {
+                if let Some(inner) = target.inner() {
+                    self.evaluate_place_address(inner, state);
+                }
+                if let Some(index) = target.right() {
+                    self.walk_expression(index, state);
+                }
+            }
+            _ => self.walk_expression(target, state),
+        }
+    }
+
     /// Reads then moves, for a position that takes ownership.
     fn consume(&mut self, expression: &Expression, state: &mut State) {
         self.walk_expression(expression, state);
@@ -382,7 +411,7 @@ impl<'source> OwnershipChecker<'source> {
         }
         let mut free: Vec<(String, Span)> = Vec::new();
         let mut assigned: BTreeSet<String> = BTreeSet::new();
-        collect_free(self.source, body, &mut declared, &mut free, &mut assigned);
+        collect_free(self.source, body, &declared, &mut free, &mut assigned);
 
         let mut seen: BTreeSet<String> = BTreeSet::new();
         for (name, span) in free {
@@ -438,22 +467,45 @@ impl<'source> OwnershipChecker<'source> {
 
     // --------------------------------------------------------------- walks
 
-    fn walk_block(&mut self, block: &Block, state: State) -> State {
+    fn walk_block(&mut self, block: &Block, state: State) -> Flow {
         self.push_scope();
         let depth = self.scopes.len();
-        let mut state = state;
+        let mut flow = Flow::normal(state);
         for statement in block.statements() {
-            if !state.reachable {
+            let Some(current) = flow.normal.take() else {
+                // Everything after a break, continue or return is unreachable.
                 break;
-            }
-            state = self.walk_statement(statement, state);
+            };
+            let next = self.walk_statement(statement, current);
+            flow = Flow {
+                normal: next.normal,
+                breaks: join_option(flow.breaks, next.breaks),
+                continues: join_option(flow.continues, next.continues),
+                returns: join_option(flow.returns, next.returns),
+            };
         }
-        state.end_block_borrows(depth);
-        self.pop_scope(&mut state);
-        state
+        let ids: Vec<BindingId> = self
+            .scopes
+            .last()
+            .map(|scope| scope.iter().map(|(_, id)| *id).collect())
+            .unwrap_or_default();
+        for state in [
+            &mut flow.normal,
+            &mut flow.breaks,
+            &mut flow.continues,
+            &mut flow.returns,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            state.end_block_borrows(depth);
+            state.forget(&ids);
+        }
+        self.scopes.pop();
+        flow
     }
 
-    fn walk_statement(&mut self, statement: &Statement, state: State) -> State {
+    fn walk_statement(&mut self, statement: &Statement, state: State) -> Flow {
         let mut state = state;
         match statement.form() {
             StatementForm::Let => {
@@ -467,15 +519,20 @@ impl<'source> OwnershipChecker<'source> {
                         .and_then(|expression| borrow_of(expression, self.source));
                     self.bind_pattern(pattern, borrow_kind, &mut state);
                 }
-                state
+                Flow::normal(state)
             }
             StatementForm::Assignment => {
+                // docs/40 section 4: the place base and index evaluate first,
+                // left to right, then the right side, then the write happens.
+                if let Some(target) = statement.target() {
+                    self.evaluate_place_address(target, &mut state);
+                }
                 if let Some(expression) = statement.expression() {
                     self.consume(expression, &mut state);
                 }
                 if let Some(target) = statement.target() {
                     self.check_write(target, &mut state);
-                    // Writing a place makes it whole again.
+                    // Writing a place gives it a value again.
                     if let Some((place, _)) = self.place_of(target) {
                         state
                             .moves
@@ -483,34 +540,39 @@ impl<'source> OwnershipChecker<'source> {
                     }
                 }
                 state.end_statement_borrows();
-                state
+                Flow::normal(state)
             }
             StatementForm::Return => {
                 if let Some(expression) = statement.expression() {
                     self.consume(expression, &mut state);
                 }
                 state.end_statement_borrows();
-                State::unreachable()
+                Flow::returning(state)
             }
-            StatementForm::Break | StatementForm::Continue => State::unreachable(),
+            StatementForm::Break => Flow::breaking(state),
+            StatementForm::Continue => Flow::continuing(state),
             StatementForm::Expression | StatementForm::Cancel => {
                 if let Some(expression) = statement.expression() {
                     self.walk_expression(expression, &mut state);
                 }
                 state.end_statement_borrows();
-                state
+                Flow::normal(state)
             }
             StatementForm::If => self.walk_if(statement, state),
             StatementForm::Match => self.walk_match(statement, state),
             StatementForm::While | StatementForm::For | StatementForm::Loop => {
                 self.walk_loop(statement, state)
             }
-            StatementForm::Parallel | StatementForm::Defer | StatementForm::Unsafe => {
-                match statement.body() {
-                    Some(body) => self.walk_block(body, state),
-                    None => state,
-                }
-            }
+            StatementForm::Parallel | StatementForm::Unsafe => match statement.body() {
+                Some(body) => self.walk_block(body, state),
+                None => Flow::normal(state),
+            },
+            // docs/40 section 5 registers a `defer` body now and runs it at
+            // scope exit. Which ownership state it observes there — what it
+            // captures, whether its cleanup consumes, and what the enclosing
+            // scope may still use in between — is not stated, so this slice
+            // analyses nothing inside it rather than choosing a semantics.
+            StatementForm::Defer => Flow::normal(state),
         }
     }
 
@@ -553,7 +615,7 @@ impl<'source> OwnershipChecker<'source> {
         }
     }
 
-    fn walk_if(&mut self, statement: &Statement, state: State) -> State {
+    fn walk_if(&mut self, statement: &Statement, state: State) -> Flow {
         let mut entry = state;
         if let Some(head) = statement.expression() {
             self.walk_expression(head, &mut entry);
@@ -562,7 +624,7 @@ impl<'source> OwnershipChecker<'source> {
 
         let taken = match statement.body() {
             Some(body) => self.walk_block(body, entry.clone()),
-            None => entry.clone(),
+            None => Flow::normal(entry.clone()),
         };
         let alternative = if let Some(block) = statement.else_body() {
             self.walk_block(block, entry)
@@ -570,12 +632,12 @@ impl<'source> OwnershipChecker<'source> {
             self.walk_statement(nested, entry)
         } else {
             // Without an else the condition may simply be false.
-            entry
+            Flow::normal(entry)
         };
-        State::join(taken, alternative)
+        Flow::join(taken, alternative)
     }
 
-    fn walk_match(&mut self, statement: &Statement, state: State) -> State {
+    fn walk_match(&mut self, statement: &Statement, state: State) -> Flow {
         let mut entry = state;
         if let Some(head) = statement.expression() {
             // docs/40 section 5: patterns bind by move unless the subject is an
@@ -584,53 +646,82 @@ impl<'source> OwnershipChecker<'source> {
         }
         entry.end_statement_borrows();
 
-        let mut joined: Option<State> = None;
+        let mut joined: Option<Flow> = None;
         for branch in statement.branches() {
             self.push_scope();
             self.bind_pattern(branch.pattern(), None, &mut entry.clone());
             let outcome = self.walk_block(branch.body(), entry.clone());
-            let mut outcome = outcome;
-            self.pop_scope(&mut outcome);
+            self.scopes.pop();
             joined = Some(match joined {
-                Some(existing) => State::join(existing, outcome),
+                Some(existing) => Flow::join(existing, outcome),
                 None => outcome,
             });
         }
-        joined.unwrap_or(entry)
+        joined.unwrap_or_else(|| Flow::normal(entry))
     }
 
-    /// Analyses a loop body twice so a move inside it is seen by the next
-    /// iteration.
+    /// Solves a loop by iterating its body to a stable entry state.
     ///
-    /// Moves only accumulate, so joining the first pass's result back into the
-    /// entry state and running once more reaches the fixed point. Only the
-    /// second pass reports, which keeps the diagnostics deterministic and
+    /// The lattice is monotone — a move is never removed and a borrow never
+    /// dropped by a join — and a body mentions finitely many places, so
+    /// repeatedly folding the back edge into the entry state reaches a fixed
+    /// point. The iteration runs silently and stops when the entry state stops
+    /// changing, rather than assuming some fixed number of passes; a bound on
+    /// the number of rounds guards against a lattice mistake turning into a
+    /// hang. Only the final pass reports, so diagnostics stay deterministic and
     /// unduplicated.
-    fn walk_loop(&mut self, statement: &Statement, state: State) -> State {
+    ///
+    /// The back edge carries both normal completion and `continue`. The exit
+    /// carries `break`, plus the entry state itself for `while` and `for`,
+    /// whose head may fail on the first evaluation; a bare `loop` has no
+    /// zero-iteration exit and leaves only through `break`.
+    fn walk_loop(&mut self, statement: &Statement, state: State) -> Flow {
         let mut entry = state;
         if let Some(head) = statement.expression() {
             self.walk_expression(head, &mut entry);
         }
         entry.end_statement_borrows();
         let Some(body) = statement.body() else {
-            return entry;
+            return Flow::normal(entry);
         };
+        let may_skip = statement.form() != StatementForm::Loop;
 
         self.push_scope();
         if let Some(pattern) = statement.pattern() {
             self.bind_pattern(pattern, None, &mut entry.clone());
         }
 
-        let suppressed = self.diagnostics.len();
-        let first = self.walk_block(body, entry.clone());
-        self.diagnostics.truncate(suppressed);
-        let repeated = State::join(entry.clone(), first);
+        let mut current = entry.clone();
+        for _ in 0..MAX_LOOP_ROUNDS {
+            let suppressed = self.diagnostics.len();
+            let outcome = self.walk_block(body, current.clone());
+            self.diagnostics.truncate(suppressed);
+            let back = join_option(outcome.normal, outcome.continues);
+            let next = match back {
+                Some(back) => State::join(current.clone(), back),
+                None => current.clone(),
+            };
+            if next.same_facts(&current) {
+                break;
+            }
+            current = next;
+        }
 
-        let mut outcome = self.walk_block(body, repeated);
-        self.pop_scope(&mut outcome);
-        // A `while`/`for` head may fail immediately, so the entry state also
-        // reaches the exit; a bare `loop` leaves only through `break`.
-        State::join(entry, outcome)
+        let outcome = self.walk_block(body, current.clone());
+        self.scopes.pop();
+
+        let mut exit = outcome.breaks;
+        if may_skip {
+            exit = join_option(exit, Some(entry));
+        }
+        // `break` and `continue` inside this body belong to this loop, so they
+        // do not escape; a `return` does.
+        Flow {
+            normal: exit,
+            breaks: None,
+            continues: None,
+            returns: outcome.returns,
+        }
     }
 
     fn walk_expression(&mut self, expression: &Expression, state: &mut State) {
@@ -667,6 +758,25 @@ impl<'source> OwnershipChecker<'source> {
             }
             ExpressionForm::Call => {
                 self.walk_call(expression, state);
+                return;
+            }
+            // docs/40 section 4: `&&` does not evaluate its right side after
+            // false and `||` does not after true, so the right side is a
+            // conditional path joined with the one that skipped it.
+            ExpressionForm::Binary
+                if matches!(
+                    expression.operator_text(self.source),
+                    Some("&&") | Some("||")
+                ) =>
+            {
+                if let Some(left) = expression.left() {
+                    self.walk_expression(left, state);
+                }
+                let mut taken = state.clone();
+                if let Some(right) = expression.right() {
+                    self.walk_expression(right, &mut taken);
+                }
+                *state = State::join(state.clone(), taken);
                 return;
             }
             ExpressionForm::Tuple | ExpressionForm::Array => {
@@ -727,18 +837,6 @@ fn borrow_word(kind: BorrowKind) -> &'static str {
     }
 }
 
-/// Whether a type may not cross a task or closure boundary.
-fn barrier_of(ty: &Type) -> Option<NonTransferable> {
-    match ty {
-        Type::Constructed(name, _) => match name.as_str() {
-            "Mutex" | "RwLock" => Some(NonTransferable::LockGuard),
-            "Region" | "DmaRegion" => Some(NonTransferable::Region),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
 /// The constant value of an index expression, when it has one.
 fn constant_index(expression: &Expression, source: &SourceUnit) -> Option<i128> {
     if expression.form() != ExpressionForm::Literal {
@@ -753,44 +851,92 @@ fn constant_index(expression: &Expression, source: &SourceUnit) -> Option<i128> 
 }
 
 /// Collects the names a body uses freely, and those it assigns.
+///
+/// Declarations are lexical. A `let` is visible to the statements after it in
+/// its own block, but a nested block, one `if` arm or one `match` arm gets a
+/// child environment, so a name it declares never hides an outer capture in a
+/// sibling arm or after the construct ends.
 fn collect_free(
     source: &SourceUnit,
     block: &Block,
-    declared: &mut BTreeSet<String>,
+    declared: &BTreeSet<String>,
     free: &mut Vec<(String, Span)>,
     assigned: &mut BTreeSet<String>,
 ) {
+    let mut scope = declared.clone();
     for statement in block.statements() {
         for expression in [statement.target(), statement.expression()]
             .into_iter()
             .flatten()
         {
-            free_in_expression(source, expression, declared, free);
+            free_in_expression(source, expression, &scope, free);
         }
         if statement.form() == StatementForm::Assignment {
             if let Some(target) = statement.target() {
                 if let Some(root) = root_name(source, target) {
-                    if !declared.contains(&root) {
+                    if !scope.contains(&root) {
                         assigned.insert(root);
                     }
                 }
             }
         }
+        // A `let` takes effect after its own statement, within this block only.
         if statement.form() == StatementForm::Let {
             if let Some(pattern) = statement.pattern() {
-                declare_pattern(source, pattern, declared);
+                declare_pattern(source, pattern, &mut scope);
+            }
+        }
+        // A loop pattern scopes to its body, not to the rest of this block.
+        let mut nested_scope = scope.clone();
+        if statement.form() == StatementForm::For {
+            if let Some(pattern) = statement.pattern() {
+                declare_pattern(source, pattern, &mut nested_scope);
             }
         }
         for nested in [statement.body(), statement.else_body()]
             .into_iter()
             .flatten()
         {
-            collect_free(source, nested, declared, free, assigned);
+            collect_free(source, nested, &nested_scope, free, assigned);
+        }
+        if let Some(chained) = statement.else_if() {
+            free_in_statement(source, chained, &scope, free, assigned);
         }
         for branch in statement.branches() {
-            declare_pattern(source, branch.pattern(), declared);
-            collect_free(source, branch.body(), declared, free, assigned);
+            let mut arm = scope.clone();
+            declare_pattern(source, branch.pattern(), &mut arm);
+            collect_free(source, branch.body(), &arm, free, assigned);
         }
+    }
+}
+
+/// Collects from one statement, for an `else if` continuation.
+fn free_in_statement(
+    source: &SourceUnit,
+    statement: &Statement,
+    declared: &BTreeSet<String>,
+    free: &mut Vec<(String, Span)>,
+    assigned: &mut BTreeSet<String>,
+) {
+    for expression in [statement.target(), statement.expression()]
+        .into_iter()
+        .flatten()
+    {
+        free_in_expression(source, expression, declared, free);
+    }
+    for nested in [statement.body(), statement.else_body()]
+        .into_iter()
+        .flatten()
+    {
+        collect_free(source, nested, declared, free, assigned);
+    }
+    if let Some(chained) = statement.else_if() {
+        free_in_statement(source, chained, declared, free, assigned);
+    }
+    for branch in statement.branches() {
+        let mut arm = declared.clone();
+        declare_pattern(source, branch.pattern(), &mut arm);
+        collect_free(source, branch.body(), &arm, free, assigned);
     }
 }
 
@@ -851,11 +997,13 @@ fn free_in_expression(
         free_in_expression(source, element, declared, free);
     }
     if let Some(body) = expression.body() {
+        // A nested closure sees the enclosing environment plus its own
+        // parameters; whatever it uses freely is also free here.
         let mut inner = declared.clone();
         for parameter in expression.parameters() {
             inner.insert(parameter.name().text(source).to_string());
         }
         let mut assigned = BTreeSet::new();
-        collect_free(source, body, &mut inner, free, &mut assigned);
+        collect_free(source, body, &inner, free, &mut assigned);
     }
 }

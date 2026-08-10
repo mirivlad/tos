@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.task_capture_then_use version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub record Message [payload: bytes]
+
+pub fn take(message: Message) -> unit { }
+
+// The task took sole ownership across the boundary, so the outer scope no
+// longer holds the value.
+pub fn main(message: Message) -> unit {
+    let worker: Task<Message> = spawn parallel {
+        return message;
+    };
+    take(message);
+}
