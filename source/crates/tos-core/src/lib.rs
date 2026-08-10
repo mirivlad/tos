@@ -10,10 +10,12 @@ mod checker;
 mod defer;
 mod diagnostic;
 mod exhaustiveness;
+mod flow;
 mod modules;
 mod mutability;
 mod ownership;
 mod parser;
+mod place;
 mod profile;
 mod returns;
 mod types;
@@ -2927,7 +2929,7 @@ mod tests {
             .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
             .expect("the second call uses a moved value");
         assert_eq!(moved.stage(), Stage::Ownership);
-        assert_eq!(moved.field("binding"), Some("message"));
+        assert_eq!(moved.field("place"), Some("message"));
         assert_eq!(moved.span().text(&source), "message");
         assert!(moved.field("moved_at").is_some());
     }
@@ -2991,6 +2993,140 @@ mod tests {
                 .count(),
             1,
             "the tuple literal moved the record"
+        );
+    }
+
+    fn moves(diagnostics: &[Diagnostic]) -> usize {
+        diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1301_USE_AFTER_MOVE")
+            .count()
+    }
+
+    const AFFINE: &str =
+        "pub record Message [payload: bytes] fn take(message: Message) -> unit { } ";
+
+    #[test]
+    fn a_move_in_each_alternative_branch_is_correct() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
+             if (ready) {{ take(message); }} else {{ take(message); }} }}"
+        ));
+        assert_eq!(
+            moves(&diagnostics),
+            0,
+            "each arm starts from the entry state"
+        );
+    }
+
+    #[test]
+    fn a_move_on_one_path_blocks_a_later_use() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
+             if (ready) {{ take(message); }} take(message); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1);
+        let reported = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+            .unwrap();
+        assert_eq!(reported.field("certainty"), Some("on some paths"));
+    }
+
+    #[test]
+    fn no_move_in_either_branch_leaves_the_value_available() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} fn peek(borrow message: Message) -> unit {{ }} \
+             pub fn main(ready: bool, message: Message) -> unit {{ \
+             if (ready) {{ peek(borrow message); }} else {{ }} take(message); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 0);
+    }
+
+    #[test]
+    fn a_diverging_branch_does_not_contribute_its_moves() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
+             if (ready) {{ take(message); return; }} take(message); }}"
+        ));
+        assert_eq!(
+            moves(&diagnostics),
+            0,
+            "the branch that moved cannot reach the later use"
+        );
+    }
+
+    #[test]
+    fn nested_control_flow_joins_correctly() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} enum Mode [Fast, Slow] \
+             pub fn main(mode: Mode, ready: bool, message: Message) -> unit {{ \
+             match (mode) {{ Fast => {{ if (ready) {{ take(message); }} else {{ take(message); }} }} \
+             Slow => {{ take(message); }} }} }}"
+        ));
+        assert_eq!(moves(&diagnostics), 0, "every path moves it exactly once");
+    }
+
+    #[test]
+    fn a_match_arm_starts_from_the_entry_state() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} enum Mode [Fast, Slow] \
+             pub fn main(mode: Mode, message: Message) -> unit {{ \
+             match (mode) {{ Fast => {{ take(message); }} Slow => {{ take(message); }} }} \
+             take(message); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1, "only the use after the join fails");
+    }
+
+    #[test]
+    fn grouping_does_not_change_consuming_semantics() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(message: Message) -> unit {{ take((message)); take(message); }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1, "parentheses name the same place");
+    }
+
+    #[test]
+    fn a_match_subject_binds_by_move() {
+        // docs/40 section 5: patterns bind by move unless the subject is an
+        // immutable Copy value.
+        let (_, diagnostics) = check(
+            "enum Mode [Fast, Slow] fn use_mode(mode: Mode) -> unit { } \
+             pub fn main(mode: Mode) -> unit { match (mode) { Fast => { } Slow => { } } \
+             use_mode(mode); }",
+        );
+        assert_eq!(moves(&diagnostics), 1);
+    }
+
+    #[test]
+    fn a_copy_subject_survives_a_match() {
+        let (_, diagnostics) = check(
+            "fn use_flag(flag: bool) -> unit { } \
+             pub fn main(flag: bool) -> unit { match (flag) { _ => { } } use_flag(flag); }",
+        );
+        assert_eq!(moves(&diagnostics), 0);
+    }
+
+    #[test]
+    fn a_move_inside_a_loop_is_seen_by_the_next_iteration() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
+             while (ready) {{ take(message); }} }}"
+        ));
+        assert_eq!(moves(&diagnostics), 1, "the second iteration reuses it");
+    }
+
+    #[test]
+    fn shadowing_does_not_disturb_the_outer_binding() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} pub fn main(message: Message) -> unit {{ \
+             if (true) {{ let message = Message(payload: b\"inner\"); take(message); }} \
+             take(message); }}"
+        ));
+        assert_eq!(
+            moves(&diagnostics),
+            0,
+            "the inner binding is a different one"
         );
     }
 
