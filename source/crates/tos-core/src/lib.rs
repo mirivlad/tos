@@ -9,6 +9,7 @@ mod boundary;
 mod checker;
 mod defer;
 mod diagnostic;
+mod exhaustiveness;
 mod modules;
 mod mutability;
 mod parser;
@@ -2465,6 +2466,89 @@ mod tests {
             .expect("the import resolves, so the missing type is a type-name error");
         assert_eq!(unknown.field("type"), Some("up.Missing"));
         assert_eq!(unknown.field("module"), Some("app.upstream"));
+    }
+
+    #[test]
+    fn a_match_over_an_enum_must_cover_every_variant() {
+        let (_, diagnostics) = check(
+            "enum Signal [Low, High, Mute] \
+             fn main(signal: Signal) -> i32 { match (signal) { Low => { return 1i32; } } }",
+        );
+        let missing = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1220_NONEXHAUSTIVE_MATCH")
+            .expect("a missing case is reported");
+        assert_eq!(missing.stage(), Stage::Type);
+        assert_eq!(missing.field("subject"), Some("Signal"));
+        assert_eq!(missing.field("missing"), Some("High, Mute"));
+        assert_eq!(missing.field("missing_count"), Some("2"));
+    }
+
+    #[test]
+    fn a_wildcard_or_binding_arm_is_exhaustive() {
+        // ADR-0033: a bare name that is not a variant of the expected type
+        // binds, and a binding matches every value.
+        for arm in ["_", "other"] {
+            let body = std::format!(
+                "enum Signal [Low, High] \
+                 fn main(signal: Signal) -> i32 {{ match (signal) {{ Low => {{ return 1i32; }} \
+                 {arm} => {{ return 0i32; }} }} }}"
+            );
+            let (_, diagnostics) = check(&body);
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|d| d.code() != "E1220_NONEXHAUSTIVE_MATCH"),
+                "{arm} covers the rest"
+            );
+        }
+    }
+
+    #[test]
+    fn qualified_and_payload_arms_count_as_coverage() {
+        let (_, diagnostics) = check(
+            "enum Reading [Empty, Sample(i32)] \
+             fn main(reading: Reading) -> i32 { match (reading) { Reading.Empty => { return 0i32; } \
+             Sample(amount) => { return amount; } } }",
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1220_NONEXHAUSTIVE_MATCH"));
+    }
+
+    #[test]
+    fn predeclared_sums_are_exhaustive_over_their_own_variants() {
+        let (_, incomplete) = check(
+            "fn main(value: Option<i32>) -> i32 { match (value) { Some(inner) => { return inner; } } }",
+        );
+        assert_eq!(
+            incomplete
+                .iter()
+                .find(|d| d.code() == "E1220_NONEXHAUSTIVE_MATCH")
+                .and_then(|d| d.field("missing")),
+            Some("None")
+        );
+
+        let (_, complete) = check(
+            "fn main(value: Result<i32, i32>) -> i32 { match (value) { Ok(inner) => { return inner; } \
+             Err(problem) => { return problem; } } }",
+        );
+        assert!(complete
+            .iter()
+            .all(|d| d.code() != "E1220_NONEXHAUSTIVE_MATCH"));
+    }
+
+    #[test]
+    fn a_scrutinee_without_a_stated_type_is_not_analysed() {
+        // Reporting here would need inference this slice does not do, and a
+        // guess could invent a missing case.
+        let (_, diagnostics) = check(
+            "enum Signal [Low, High] fn pick() -> Signal { return Low; } \
+             fn main() -> i32 { let chosen = pick(); match (chosen) { Low => { return 1i32; } } }",
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1220_NONEXHAUSTIVE_MATCH"));
     }
 
     #[test]

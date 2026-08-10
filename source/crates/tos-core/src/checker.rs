@@ -93,6 +93,7 @@ impl Checker {
         check_record_fields(source, schema, &mut diagnostics);
         diagnostics.extend(resolve_value_names(source, schema));
         diagnostics.extend(crate::types::check_types(source, schema));
+        diagnostics.extend(crate::exhaustiveness::check_exhaustiveness(source, schema));
         diagnostics.extend(crate::returns::check_returns(source, schema));
         diagnostics.extend(crate::mutability::check_mutability(source, schema));
         diagnostics.extend(crate::boundary::check_boundary(source, schema));
