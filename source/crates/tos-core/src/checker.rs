@@ -10,10 +10,13 @@
 //! Every diagnostic carries a code registered in docs/44 section 7. A check
 //! that cannot yet be performed reports nothing rather than guessing.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::vec::Vec;
 
-use crate::parser::{Block, Expression, RecordField, Schema, Statement};
+use crate::parser::{
+    Block, Expression, ExpressionForm, Pattern, PatternForm, RecordField, Schema, Statement,
+    StatementForm,
+};
 use crate::{Diagnostic, Severity, SourceUnit, Span, Stage};
 
 /// Resource keys every module must declare, with the literal class each one
@@ -56,6 +59,25 @@ impl LimitKind {
     }
 }
 
+/// Value names the language supplies without declaration (docs/39 section 2).
+const PREDECLARED_VALUES: [&str; 6] = ["Some", "None", "Ok", "Err", "Completed", "Cancelled"];
+
+const PREDECLARED_FUNCTIONS: [&str; 11] = [
+    "to_i8",
+    "to_i16",
+    "to_i32",
+    "to_i64",
+    "to_u8",
+    "to_u16",
+    "to_u32",
+    "to_u64",
+    "wrapping_add",
+    "wrapping_sub",
+    "wrapping_mul",
+];
+
+const ATOMIC_ORDERS: [&str; 5] = ["Relaxed", "Acquire", "Release", "AcqRel", "SeqCst"];
+
 pub struct Checker;
 
 impl Checker {
@@ -68,7 +90,232 @@ impl Checker {
         let mut diagnostics = Vec::new();
         check_resource_envelope(source, schema, &mut diagnostics);
         check_record_fields(source, schema, &mut diagnostics);
+        diagnostics.extend(resolve_value_names(source, schema));
         diagnostics
+    }
+}
+
+/// Resolves every value name against the scope it appears in.
+///
+/// Only value positions are resolved. A field name after `.` and a named
+/// argument label are field names, not values, and are checked against their
+/// type by a later slice.
+fn resolve_value_names(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> {
+    let mut resolver = Resolver {
+        source,
+        scopes: Vec::new(),
+        diagnostics: Vec::new(),
+    };
+    resolver.push_scope();
+    for name in PREDECLARED_VALUES
+        .iter()
+        .chain(PREDECLARED_FUNCTIONS.iter())
+        .chain(ATOMIC_ORDERS.iter())
+    {
+        resolver.declare(name);
+    }
+
+    // Module scope is collected before any body is visited, so declaration
+    // order does not affect resolution and recursion resolves.
+    resolver.push_scope();
+    for import in schema.outline().prefix().imports() {
+        let name = import.binding().text(source);
+        resolver.declare(name);
+    }
+    for record in schema.records() {
+        resolver.declare(record.name().text(source));
+    }
+    for declaration in schema.enums() {
+        // A variant name is an unqualified module-scope constructor in V1.
+        for variant in declaration.variants() {
+            resolver.declare(variant.name().text(source));
+        }
+    }
+    for declaration in schema.consts() {
+        resolver.declare(declaration.name().text(source));
+    }
+    for signature in schema.extern_functions() {
+        resolver.declare(signature.name().text(source));
+    }
+    for function in schema.functions() {
+        resolver.declare(function.signature().name().text(source));
+    }
+
+    for declaration in schema.consts() {
+        resolver.visit_expression(declaration.value());
+    }
+    for function in schema.functions() {
+        resolver.push_scope();
+        for parameter in function.signature().parameters() {
+            let name = parameter.name().text(source);
+            resolver.declare(name);
+        }
+        resolver.visit_block(function.body());
+        resolver.pop_scope();
+    }
+    resolver.diagnostics
+}
+
+struct Resolver<'source> {
+    source: &'source SourceUnit,
+    scopes: Vec<BTreeSet<&'source str>>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl<'source> Resolver<'source> {
+    fn push_scope(&mut self) {
+        self.scopes.push(BTreeSet::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn declare(&mut self, name: &'source str) {
+        if let Some(scope) = self.scopes.last_mut() {
+            scope.insert(name);
+        }
+    }
+
+    fn resolve(&mut self, span: Span) {
+        let name = span.text(self.source);
+        if self.scopes.iter().any(|scope| scope.contains(name)) {
+            return;
+        }
+        self.diagnostics.push(
+            diagnostic("E1202_UNKNOWN_VALUE_NAME", Stage::Type, span, self.source)
+                .with_field("name", name),
+        );
+    }
+
+    /// Brings a pattern's bindings into the current scope.
+    ///
+    /// A bare pattern name is treated as matching when it already resolves and
+    /// as binding otherwise, so `Some(value)` binds only `value`. Whether that
+    /// is the V1 rule is not settled by the accepted contract: docs/39 section
+    /// 2 makes only predeclared value names unshadowable, while the accepted
+    /// corpus matches user enum variants by bare name. The two readings admit
+    /// the same set of resolvable names, so this slice reports the same
+    /// diagnostics either way; the decision is needed before exhaustiveness
+    /// and typing, not here.
+    fn bind_pattern(&mut self, pattern: &'source Pattern) {
+        match pattern.form() {
+            PatternForm::Wildcard => {}
+            PatternForm::Name => {
+                let span = pattern.name().expect("a name pattern carries its name");
+                let name = span.text(self.source);
+                if !self.scopes.iter().any(|scope| scope.contains(name)) {
+                    self.declare(name);
+                }
+            }
+            PatternForm::Destructure | PatternForm::Tuple => {
+                for element in pattern.elements() {
+                    self.bind_pattern(element);
+                }
+            }
+        }
+    }
+
+    fn visit_block(&mut self, block: &'source Block) {
+        self.push_scope();
+        for statement in block.statements() {
+            self.visit_statement(statement);
+        }
+        self.pop_scope();
+    }
+
+    fn visit_statement(&mut self, statement: &'source Statement) {
+        match statement.form() {
+            StatementForm::Let => {
+                // The initializer cannot see the binding it produces.
+                if let Some(expression) = statement.expression() {
+                    self.visit_expression(expression);
+                }
+                if let Some(pattern) = statement.pattern() {
+                    self.bind_pattern(pattern);
+                }
+            }
+            StatementForm::For => {
+                if let Some(expression) = statement.expression() {
+                    self.visit_expression(expression);
+                }
+                self.push_scope();
+                if let Some(pattern) = statement.pattern() {
+                    self.bind_pattern(pattern);
+                }
+                if let Some(body) = statement.body() {
+                    self.visit_block(body);
+                }
+                self.pop_scope();
+            }
+            StatementForm::Match => {
+                if let Some(expression) = statement.expression() {
+                    self.visit_expression(expression);
+                }
+                for branch in statement.branches() {
+                    self.push_scope();
+                    self.bind_pattern(branch.pattern());
+                    self.visit_block(branch.body());
+                    self.pop_scope();
+                }
+            }
+            _ => {
+                if let Some(target) = statement.target() {
+                    self.visit_expression(target);
+                }
+                if let Some(expression) = statement.expression() {
+                    self.visit_expression(expression);
+                }
+                if let Some(body) = statement.body() {
+                    self.visit_block(body);
+                }
+                if let Some(body) = statement.else_body() {
+                    self.visit_block(body);
+                }
+                if let Some(nested) = statement.else_if() {
+                    self.visit_statement(nested);
+                }
+            }
+        }
+    }
+
+    fn visit_expression(&mut self, expression: &'source Expression) {
+        if expression.form() == ExpressionForm::Name {
+            self.resolve(expression.span());
+            return;
+        }
+        if expression.form() == ExpressionForm::Closure {
+            self.push_scope();
+            for parameter in expression.parameters() {
+                let name = parameter.name().text(self.source);
+                self.declare(name);
+            }
+            if let Some(body) = expression.body() {
+                self.visit_block(body);
+            }
+            self.pop_scope();
+            return;
+        }
+        for child in [
+            expression.left(),
+            expression.right(),
+            expression.inner(),
+            expression.callee(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            self.visit_expression(child);
+        }
+        for argument in expression.arguments() {
+            self.visit_expression(argument.value());
+        }
+        for element in expression.elements() {
+            self.visit_expression(element);
+        }
+        if let Some(body) = expression.body() {
+            self.visit_block(body);
+        }
     }
 }
 

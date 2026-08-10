@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `cac5dfac24b8cd1dc7727033daabddd80e329575d18ce97d43660ed254294c99`  
+Source-manifest SHA-256: `afe8e19569986e5d855bab04958a188cec275f439459f12e052b924a677a7aae`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4652,6 +4652,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 
 | Code | Condition |
 |---|---|
+| `E1202_UNKNOWN_VALUE_NAME` | a value name resolves to no predeclared value, module item, parameter or in-scope binding |
 | `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
 
 ### Resource and profile (stage `resource`)

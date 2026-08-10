@@ -415,6 +415,31 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   сообщают — проверка, которую нельзя выполнить, молчит, а не угадывает.
 - Тестов 60 → 64. `./scripts/preflight.sh --full` → **31/31 PASS**.
 
+### 2026-08-10 — Stage 2 Part B: value-name resolution
+
+- Чекер резолвит каждое имя в value-позиции: predeclared values, predeclared
+  functions и atomic orders; module scope (импорты, records, варианты enum как
+  unqualified-конструкторы, consts, extern fn, fn — собирается до обхода тел,
+  поэтому порядок объявления и рекурсия работают); параметры функции; биндинги
+  `let`, `for`, ветвей `match` и параметров замыканий с блочной областью
+  видимости. Нерезолвящееся имя — `E1202_UNKNOWN_VALUE_NAME`.
+- Имена полей после `.` и метки именованных аргументов не резолвятся как
+  значения — это поля, их проверит типовой срез.
+- Инициализатор `let` не видит собственный биндинг; биндинг не покидает блок.
+- Проверено эмпирически: по всем canonical examples и `accept/`-векторам ноль
+  нерезолвленных имён. R015 (`nil-absence`) связан с реализацией.
+- `E1202_UNKNOWN_VALUE_NAME` внесён в реестр docs/44 §7 со stage `type`.
+- Тестов 64 → 69. `./scripts/preflight.sh --full` → **31/31 PASS**.
+
+**Требуется решение Project Architect (Level 2):** правило разрешения bare
+pattern name. docs/39 §2 объявляет нешадоwable только predeclared value names,
+из чего следует, что любой другой идентификатор в паттерне связывает; но
+принятый корпус (`explicit-control-return.tos`, `copy-aggregates.tos`)
+сопоставляет пользовательские варианты enum по краткому имени. Текущий срез
+диагностически нейтрален к обоим прочтениям — множество резолвящихся имён
+совпадает. Следующий срез (типы и exhaustiveness `match`) без этого правила
+реализован быть не может.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5
