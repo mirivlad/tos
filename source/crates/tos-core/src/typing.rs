@@ -196,6 +196,29 @@ pub(crate) fn check_typing(source: &SourceUnit, schema: &Schema) -> Vec<Diagnost
     analyse(source, schema).0
 }
 
+/// The declared field types of every local record, for resolving a place path.
+///
+/// Ownership needs the type at `p.x`, not just at `p`, to know whether that
+/// step is `Copy`. It reads the same declarations typing already collected.
+pub(crate) fn record_fields(
+    source: &SourceUnit,
+    schema: &Schema,
+) -> BTreeMap<String, Vec<(String, Type)>> {
+    collect(source, schema)
+        .records
+        .into_iter()
+        .map(|(name, fields)| {
+            (
+                name.to_string(),
+                fields
+                    .into_iter()
+                    .map(|(field, ty)| (field.to_string(), ty))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
 /// The type of every parameter and `let` binding, keyed by the byte offset of
 /// its name.
 ///
