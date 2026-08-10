@@ -1669,6 +1669,66 @@ mod tests {
     }
 
     #[test]
+    fn checker_resolves_names_through_their_scopes() {
+        let (_, diagnostics) = check(
+            "enum Signal [Low, High] record Point [x: i32] \
+             fn helper() -> i32 { return 1i32; } \
+             fn main(input: Signal) -> i32 { let p: Point = Point(x: helper()); \
+             match (input) { Low => { return p.x; } other => { return 0i32; } } }",
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code() != "E1202_UNKNOWN_VALUE_NAME"),
+            "declared names, parameters, bindings and variants all resolve"
+        );
+    }
+
+    #[test]
+    fn checker_reports_an_unbound_value_name() {
+        let (source, diagnostics) = check("fn main() -> i32 { return missing; }");
+        let unknown = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1202_UNKNOWN_VALUE_NAME")
+            .expect("an unbound name is reported");
+        assert_eq!(unknown.stage(), Stage::Type);
+        assert_eq!(unknown.field("name"), Some("missing"));
+        assert_eq!(unknown.span().text(&source), "missing");
+    }
+
+    #[test]
+    fn a_let_initializer_cannot_see_its_own_binding() {
+        let (_, diagnostics) = check("fn main() -> i32 { let value: i32 = value; return 0i32; }");
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|d| d.field("name") == Some("value"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_binding_does_not_escape_its_block() {
+        let (_, diagnostics) =
+            check("fn main() -> i32 { if (true) { let inner: i32 = 1i32; } return inner; }");
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.code() == "E1202_UNKNOWN_VALUE_NAME" && d.field("name") == Some("inner")));
+    }
+
+    #[test]
+    fn field_names_are_not_resolved_as_values() {
+        // `.total` and the `x:` label name fields, not values in scope.
+        let (_, diagnostics) = check(
+            "record Point [x: i32] fn main(p: Point) -> i32 { let q: Point = Point(x: p.x); return q.x; }",
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1202_UNKNOWN_VALUE_NAME"));
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.

@@ -169,6 +169,7 @@ def main() -> int:
         # A family folded into the registry must be complete for the checks the
         # implementation actually performs (docs/44 section 7).
         for code, stage in [
+            ("E1202_UNKNOWN_VALUE_NAME", "type"),
             ("E1205_DUPLICATE_RECORD_FIELD", "type"),
             ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),
             ("E1703_DUPLICATE_RESOURCE_DECLARATION", "resource"),

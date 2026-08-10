@@ -224,6 +224,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 
 | Code | Condition |
 |---|---|
+| `E1202_UNKNOWN_VALUE_NAME` | a value name resolves to no predeclared value, module item, parameter or in-scope binding |
 | `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
 
 ### Resource and profile (stage `resource`)

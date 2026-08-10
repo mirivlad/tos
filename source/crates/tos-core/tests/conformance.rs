@@ -86,7 +86,8 @@ fn is_frontend_code(code: &str) -> bool {
 /// A vector recording one of these must now be rejected rather than merely
 /// parse; the list grows as each check lands, so a check cannot be implemented
 /// without its corpus evidence starting to bind.
-const IMPLEMENTED_CHECKS: [&str; 4] = [
+const IMPLEMENTED_CHECKS: [&str; 5] = [
+    "E1202_UNKNOWN_VALUE_NAME",
     "E1205_DUPLICATE_RECORD_FIELD",
     "E1700_RESOURCE_DECLARATION_REQUIRED",
     "E1703_DUPLICATE_RESOURCE_DECLARATION",
