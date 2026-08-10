@@ -5,6 +5,7 @@ use std::boxed::Box;
 use std::string::String;
 use std::vec::Vec;
 
+mod boundary;
 mod checker;
 mod diagnostic;
 mod mutability;
@@ -1988,6 +1989,55 @@ mod tests {
             1,
             "an unbound name is E1202 only"
         );
+    }
+
+    #[test]
+    fn an_extern_item_has_no_accepted_ffi_interface() {
+        let (source, diagnostics) = check("extern fn outside(value: i32) -> i32;");
+        let ffi = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1801_FFI_NOT_AVAILABLE")
+            .expect("extern is reserved but unavailable in V1");
+        assert_eq!(ffi.stage(), Stage::Effect);
+        assert_eq!(ffi.field("item"), Some("outside"));
+        assert!(ffi.span().text(&source).starts_with("extern fn outside"));
+    }
+
+    #[test]
+    fn an_unsafe_block_requires_a_leading_safety_rationale() {
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             fn documented() -> unit { unsafe {\n    // SAFETY: the caller holds the device grant.\n    } } \
+             fn bare() -> unit { unsafe { } }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        let missing: Vec<&Diagnostic> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1802_UNSAFE_RATIONALE_REQUIRED")
+            .collect();
+        assert_eq!(missing.len(), 1, "only the undocumented block is reported");
+        assert_eq!(missing[0].stage(), Stage::Effect);
+        assert_eq!(
+            missing[0].field("expected"),
+            Some("leading SAFETY: line comment")
+        );
+    }
+
+    #[test]
+    fn a_trailing_safety_comment_is_not_a_rationale() {
+        // docs/40 section 7 requires the comment to lead the block.
+        let text = "module system.boot version 1.0 profile full; resource [fuel: 1000] \
+             fn late() -> unit { unsafe {\n    let value: i32 = 1i32;\n    // SAFETY: too late.\n    } }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert!(diagnostics
+            .iter()
+            .any(|d| d.code() == "E1802_UNSAFE_RATIONALE_REQUIRED"));
     }
 
     #[test]
