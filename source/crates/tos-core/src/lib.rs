@@ -1179,6 +1179,45 @@ mod tests {
     }
 
     #[test]
+    fn parser_builds_question_and_cast_suffixes() {
+        let (source, outcome) = parse(
+            "extern fn load() -> Result<i32, i32>; \
+             fn main() -> Result<i64, i32> { return load()? as i64; }",
+        );
+        let schema = outcome.into_accepted().expect("question and cast parse");
+        let cast = schema.functions()[0].body().statements()[0]
+            .expression()
+            .unwrap();
+        assert_eq!(cast.form(), ExpressionForm::Cast);
+        assert_eq!(cast.cast_type().unwrap().text(&source), "i64");
+
+        let question = cast.inner().expect("cast applies to the propagated value");
+        assert_eq!(question.form(), ExpressionForm::Question);
+        assert_eq!(question.span().text(&source), "load()?");
+        assert_eq!(
+            question.inner().unwrap().form(),
+            ExpressionForm::Call,
+            "`?` applies to the call result"
+        );
+    }
+
+    #[test]
+    fn a_cast_binds_tighter_than_an_arithmetic_operator() {
+        // `as` is a postfix suffix, so it attaches to `left` alone.
+        let (source, outcome) =
+            parse("fn main(left: i32, right: i64) -> i64 { return left as i64 + right; }");
+        let schema = outcome.into_accepted().expect("cast in a sum parses");
+        let sum = schema.functions()[0].body().statements()[0]
+            .expression()
+            .unwrap();
+        assert_eq!(sum.form(), ExpressionForm::Binary);
+        assert_eq!(sum.operator_text(&source), Some("+"));
+        assert_eq!(sum.left().unwrap().form(), ExpressionForm::Cast);
+        assert_eq!(sum.left().unwrap().span().text(&source), "left as i64");
+        assert_eq!(sum.right().unwrap().span().text(&source), "right");
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.
