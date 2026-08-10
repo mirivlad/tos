@@ -907,11 +907,20 @@ enum ListCloser {
 pub struct ParseOutcome<T> {
     value: Option<T>,
     diagnostics: Vec<Diagnostic>,
+    truncated: bool,
 }
 
 impl<T> ParseOutcome<T> {
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Whether the retention bound of docs/44 section 2 dropped diagnostics.
+    ///
+    /// The reported ones are the earliest, so a truncated list still starts at
+    /// the first problem in the source.
+    pub fn is_truncated(&self) -> bool {
+        self.truncated
     }
 
     pub fn has_errors(&self) -> bool {
@@ -938,6 +947,7 @@ impl<T> ParseOutcome<T> {
         ParseOutcome {
             value: None,
             diagnostics: vec![diagnostic],
+            truncated: false,
         }
     }
 }
@@ -985,11 +995,13 @@ impl Parser {
             tokens,
             index: 0,
             diagnostics: Vec::new(),
+            truncated: false,
         };
         let value = parse(&mut cursor);
         ParseOutcome {
             value,
             diagnostics: cursor.diagnostics,
+            truncated: cursor.truncated,
         }
     }
 }
@@ -999,6 +1011,7 @@ struct TokenCursor<'source> {
     tokens: Vec<Token>,
     index: usize,
     diagnostics: Vec<Diagnostic>,
+    truncated: bool,
 }
 
 impl<'source> TokenCursor<'source> {
@@ -1146,6 +1159,11 @@ impl<'source> TokenCursor<'source> {
         )
         .with_field("region", region.symbol())
         .with_field("found", self.describe(error.span));
+        if self.diagnostics.len() >= crate::MAX_DIAGNOSTICS_PER_MODULE {
+            // Recovery keeps running so the parse still terminates cleanly.
+            self.truncated = true;
+            return;
+        }
         self.diagnostics.push(diagnostic);
     }
 
