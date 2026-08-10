@@ -12,6 +12,7 @@ mod diagnostic;
 mod exhaustiveness;
 mod modules;
 mod mutability;
+mod ownership;
 mod parser;
 mod profile;
 mod returns;
@@ -2911,6 +2912,86 @@ mod tests {
         assert!(diagnostics
             .iter()
             .all(|d| d.code() != "E1607_PRIVATE_PUBLIC_TYPE"));
+    }
+
+    #[test]
+    fn an_affine_value_may_be_used_once() {
+        let (source, diagnostics) = check(
+            "pub record Message [payload: bytes] \
+             fn take(message: Message) -> unit { } \
+             pub fn main() -> unit { let message = Message(payload: b\"hi\"); \
+             take(message); take(message); }",
+        );
+        let moved = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+            .expect("the second call uses a moved value");
+        assert_eq!(moved.stage(), Stage::Ownership);
+        assert_eq!(moved.field("binding"), Some("message"));
+        assert_eq!(moved.span().text(&source), "message");
+        assert!(moved.field("moved_at").is_some());
+    }
+
+    #[test]
+    fn a_copy_value_survives_repeated_use() {
+        // docs/40 section 5 fixes the Copy set; a user record is never in it.
+        let (_, diagnostics) = check(
+            "fn take(value: i32) -> unit { } \
+             pub fn main() -> unit { let count: i32 = 1i32; take(count); take(count); \
+             let pair: (i32, bool) = (1i32, true); let a = pair; let b = pair; }",
+        );
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1301_USE_AFTER_MOVE"));
+    }
+
+    #[test]
+    fn a_field_read_after_a_move_is_a_use() {
+        let (_, diagnostics) = check(
+            "pub record Message [payload: bytes] \
+             pub fn main(message: Message) -> size { let copied = message; \
+             return message.payload[0B]; }",
+        );
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|d| d.code() == "E1301_USE_AFTER_MOVE")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn a_borrow_does_not_move() {
+        let (_, diagnostics) = check(
+            "pub record Message [payload: bytes] \
+             fn inspect(borrow message: Message) -> unit { } \
+             pub fn main(message: Message) -> unit { inspect(borrow message); \
+             inspect(borrow message); }",
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code() != "E1301_USE_AFTER_MOVE"),
+            "a borrowed argument leaves ownership with the caller"
+        );
+    }
+
+    #[test]
+    fn an_aggregate_literal_takes_ownership_of_its_members() {
+        let (_, diagnostics) = check(
+            "pub record Message [payload: bytes] \
+             pub fn main(message: Message) -> unit { let pair = (message, 1i32); \
+             let again = message; }",
+        );
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|d| d.code() == "E1301_USE_AFTER_MOVE")
+                .count(),
+            1,
+            "the tuple literal moved the record"
+        );
     }
 
     #[test]

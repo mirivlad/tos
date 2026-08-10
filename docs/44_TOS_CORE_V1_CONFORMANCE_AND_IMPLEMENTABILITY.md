@@ -260,6 +260,12 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1801_FFI_NOT_AVAILABLE` | an `extern` item names no accepted FFI interface schema; V1 accepts none, so every `extern` item is rejected |
 | `E1802_UNSAFE_RATIONALE_REQUIRED` | an `unsafe` block does not open with a line comment beginning `SAFETY:` |
 
+### Ownership (stage `ownership`)
+
+| Code | Condition |
+|---|---|
+| `E1301_USE_AFTER_MOVE` | an affine value is used after being moved by an assignment, an owning argument, a return, or placement in an aggregate |
+
 ### Resource and profile (stage `resource`)
 
 | Code | Condition |
