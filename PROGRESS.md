@@ -679,6 +679,23 @@ decision, а не выбор реализации.
   `accept/pattern-qualified-import.tos`.
 - Тестов 106 → 112. `./scripts/preflight.sh --full` → **31/31 PASS**.
 
+### 2026-08-10 — Stage 2 Part B: match exhaustiveness
+
+- Новый `exhaustiveness.rs` реализует docs/40 §5: `match` по enum, `Option`,
+  `Result` или `TaskResult` обязан покрывать все варианты; непокрытый —
+  `E1220_NONEXHAUSTIVE_MATCH` с полями subject, missing и missing_count.
+- Правило покрытия арок взято из принятого ADR-0033: `_` исчерпывает, и краткое
+  имя, не являющееся вариантом ожидаемого типа, тоже — оно связывает, а
+  связывание совпадает с любым значением. Квалифицированный путь и
+  payload-деструктуризация засчитываются как покрытие своего варианта.
+- Ожидаемый тип берётся там, где исходник его заявляет: объявленный тип
+  параметра или `let` с аннотацией. Scrutinee без заявленного типа не
+  анализируется — вывод типов сюда не входит, а догадка могла бы выдумать
+  недостающий случай.
+- R032 (`pattern-nonexhaustive-variants`) связан с реализацией;
+  `E1220_NONEXHAUSTIVE_MATCH` внесён в реестр docs/44 §7 со stage `type`.
+- Тестов 112 → 117. `./scripts/preflight.sh --full` → **31/31 PASS**.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5

@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `85bc5a3456d4f8e063d916bfedb32c5a08219634469880df31d972ee1ee00596`  
+Source-manifest SHA-256: `3ad3e67aa007d4675d63326a4e3d3c73c5736b2247ce56deaf0f8fe26eb2fab5`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4740,6 +4740,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1206_MISSING_RECORD_FIELD` | a named constructor omits a field its record or named-field variant declares |
 | `E1207_UNKNOWN_RECORD_FIELD` | a named constructor supplies a field its record or named-field variant does not declare |
 | `E1225_INVALID_DEFER` | a `defer` body performs `return`, `break`, `continue`, `await`, `join`, spawns work, or acquires a new resource |
+| `E1220_NONEXHAUSTIVE_MATCH` | a `match` over an enum, `Option`, `Result` or `TaskResult` leaves a variant uncovered and has no wildcard or binding arm |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
 
 ### Module and version (stage `type`)
