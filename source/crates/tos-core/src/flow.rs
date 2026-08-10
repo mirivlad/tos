@@ -17,6 +17,16 @@
 //! and a borrow live on either path is live after the join. A use is rejected
 //! when a move reaches it on *any* path, so `Definite` and `Maybe` differ only
 //! in what the diagnostic says, never in whether it fires.
+//!
+//! **Layering.** This is TOS Core frontend semantic state, not a
+//! language-neutral executable representation. Ownership, borrows and
+//! `Transferable` are rules of the safe TOS Core language; they are proof the
+//! frontend produces, not a precondition for a program to be representable at
+//! all. A later frontend for another language may not satisfy them, and the
+//! isolation TOS guarantees any process — address space, capabilities, granted
+//! regions, verifier and runtime contract — is a separate layer that does not
+//! depend on these types. Nothing here may migrate into a shared IR or
+//! executable boundary as a mandatory condition.
 
 use std::vec::Vec;
 

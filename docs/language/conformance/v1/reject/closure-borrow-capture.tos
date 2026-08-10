@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.closure_borrow_capture version 1.0 profile full;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub record Counter [value: i32]
+
+// A closure captures each free value by copy or by move; it may not capture a
+// borrow, whose region does not extend to the closure.
+pub fn main(borrow counter: Counter) -> unit {
+    let read_it: fn () -> i32 = fn () {
+        return counter.value;
+    };
+}
