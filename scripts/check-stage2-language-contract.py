@@ -176,6 +176,7 @@ def main() -> int:
             ("E1205_DUPLICATE_RECORD_FIELD", "type"),
             ("E1206_MISSING_RECORD_FIELD", "type"),
             ("E1207_UNKNOWN_RECORD_FIELD", "type"),
+            ("E1212_INVALID_AS_CONVERSION", "type"),
             ("E1220_NONEXHAUSTIVE_MATCH", "type"),
             ("E1221_MISSING_RETURN", "type"),
             ("E1222_RETURN_TYPE_MISMATCH", "type"),

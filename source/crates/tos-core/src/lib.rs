@@ -2672,6 +2672,81 @@ mod tests {
     }
 
     #[test]
+    fn as_permits_only_signedness_preserving_widening() {
+        let (_, diagnostics) = check(
+            "fn widen(value: i32) -> i64 { return value as i64; } \
+             fn widen_unsigned(value: u8) -> u32 { return value as u32; }",
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code() != "E1212_INVALID_AS_CONVERSION"),
+            "widening within one signedness is the permitted form"
+        );
+    }
+
+    #[test]
+    fn as_rejects_narrowing_and_sign_change() {
+        let cases = [
+            (
+                "fn narrow(value: i32) -> i8 { return value as i8; }",
+                "i32",
+                "i8",
+            ),
+            (
+                "fn resign(value: i32) -> u32 { return value as u32; }",
+                "i32",
+                "u32",
+            ),
+            (
+                "fn same(value: i32) -> i32 { return value as i32; }",
+                "i32",
+                "i32",
+            ),
+            (
+                "fn from_bool(flag: bool) -> i32 { return flag as i32; }",
+                "bool",
+                "i32",
+            ),
+        ];
+        for (body, from, to) in cases {
+            let (_, diagnostics) = check(body);
+            let invalid = diagnostics
+                .iter()
+                .find(|d| d.code() == "E1212_INVALID_AS_CONVERSION")
+                .unwrap_or_else(|| std::panic!("{from} as {to} must be rejected"));
+            assert_eq!(invalid.field("from"), Some(from));
+            assert_eq!(invalid.field("to"), Some(to));
+            assert_eq!(invalid.stage(), Stage::Type);
+        }
+    }
+
+    #[test]
+    fn an_opaque_handle_cast_is_not_a_conversion_error() {
+        // docs/40 section 3 routes these elsewhere; no code names the
+        // condition for the non-capability handles.
+        let (_, diagnostics) = check("fn main(task: Task<i32>) -> i32 { return task as i32; }");
+        assert!(diagnostics
+            .iter()
+            .all(|d| d.code() != "E1212_INVALID_AS_CONVERSION"));
+    }
+
+    #[test]
+    fn checked_narrowing_uses_the_conversion_functions() {
+        // `to_u8` is the source form for a narrowing conversion, and it
+        // produces a Result rather than a cast.
+        let (_, diagnostics) =
+            check("fn main(value: i32) -> Result<u8, ConversionError> { return to_u8(value); }");
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code() != "E1222_RETURN_TYPE_MISMATCH"
+                    && d.code() != "E1212_INVALID_AS_CONVERSION"),
+            "a checked conversion is a call, not a cast"
+        );
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.

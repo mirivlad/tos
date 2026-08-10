@@ -15,6 +15,14 @@
 //! An unsuffixed integer literal is contextually typed: docs/40 section 3 lets
 //! it take the surrounding exact integer type, so it agrees with any of them.
 //! Its range check is not performed here.
+//!
+//! The same section restricts `as`: it converts only between integers, widening
+//! while preserving signedness. Anything else is `E1212_INVALID_AS_CONVERSION`,
+//! except a cast of an opaque handle, which docs/40 says is deliberately not a
+//! conversion error. `E1502_FORGED_CAPABILITY` covers a capability; the other
+//! opaque types are described as taking "the corresponding nonconstructible-type
+//! error", which no document names, so this slice reports nothing for them
+//! rather than borrowing a code that means something else.
 
 use std::boxed::Box;
 use std::collections::BTreeMap;
@@ -29,6 +37,31 @@ use crate::{Diagnostic, Severity, SourceUnit, Stage};
 
 /// The exact fixed-width integer type names (docs/40 section 1).
 const INTEGER_TYPES: [&str; 8] = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"];
+
+/// Opaque handle types, whose cast is not a conversion error (docs/40 §3).
+const OPAQUE_TYPES: [&str; 14] = [
+    "Task",
+    "TaskResult",
+    "Shared",
+    "Region",
+    "DmaRegion",
+    "Mutex",
+    "RwLock",
+    "Channel",
+    "Event",
+    "Semaphore",
+    "Barrier",
+    "Latch",
+    "AtomicBool",
+    "AtomicU32",
+];
+
+/// The bit width of an exact integer type, and whether it is signed.
+fn integer_shape(name: &str) -> Option<(u32, bool)> {
+    let signed = name.starts_with('i');
+    let width = name.get(1..)?.parse().ok()?;
+    Some((width, signed))
+}
 
 /// A resolved TOS Core type.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -271,6 +304,16 @@ fn resolve(source: &SourceUnit, ty: &TypeSyntax) -> Type {
     }
 }
 
+/// Whether a type is an opaque handle whose cast docs/40 routes elsewhere.
+fn is_opaque(ty: &Type) -> bool {
+    match ty {
+        Type::Constructed(name, _) => OPAQUE_TYPES.contains(&name.as_str()),
+        Type::Nominal(name) => OPAQUE_TYPES.contains(&name.as_str()) || name == "AtomicU64",
+        Type::Function(_, _) => true,
+        _ => false,
+    }
+}
+
 struct TypeChecker<'source> {
     source: &'source SourceUnit,
     declarations: Declarations<'source>,
@@ -414,10 +457,7 @@ impl<'source> TypeChecker<'source> {
                 .inner()
                 .map(|inner| self.type_of(inner))
                 .unwrap_or(Type::Unknown),
-            ExpressionForm::Cast => expression
-                .cast_type()
-                .map(|ty| resolve(self.source, ty))
-                .unwrap_or(Type::Unknown),
+            ExpressionForm::Cast => self.cast_type(expression),
             ExpressionForm::Tuple => {
                 let elements = expression
                     .elements()
@@ -451,6 +491,62 @@ impl<'source> TypeChecker<'source> {
             },
             _ => Type::Unknown,
         }
+    }
+
+    /// Types an `as` conversion and checks it against docs/40 section 3.
+    ///
+    /// Only an integer widening that preserves signedness is permitted. A cast
+    /// whose operand type is undetermined, or is an opaque handle, reports
+    /// nothing: the first would be a guess and the second is explicitly not a
+    /// conversion error.
+    fn cast_type(&mut self, expression: &'source Expression) -> Type {
+        let Some(target_syntax) = expression.cast_type() else {
+            return Type::Unknown;
+        };
+        let target = resolve(self.source, target_syntax);
+        let source_type = expression
+            .inner()
+            .map(|inner| self.type_of(inner))
+            .unwrap_or(Type::Unknown);
+        if self.cast_is_permitted(&source_type, &target) {
+            return target;
+        }
+        self.diagnostics.push(
+            Diagnostic::new(
+                "E1212_INVALID_AS_CONVERSION",
+                Severity::Error,
+                Stage::Type,
+                expression.span(),
+                self.source,
+            )
+            .with_field("from", source_type.spell())
+            .with_field("to", target.spell()),
+        );
+        target
+    }
+
+    fn cast_is_permitted(&self, from: &Type, to: &Type) -> bool {
+        if matches!(from, Type::Unknown) || matches!(to, Type::Unknown) {
+            return true;
+        }
+        if is_opaque(from) || is_opaque(to) {
+            // docs/40 section 3 routes these elsewhere; no code names the
+            // condition for the non-capability handles, so nothing is reported.
+            return true;
+        }
+        // An unsuffixed literal takes the target type directly.
+        if matches!(from, Type::UnsuffixedInteger) && matches!(to, Type::Integer(_)) {
+            return true;
+        }
+        let (Type::Integer(source), Type::Integer(target)) = (from, to) else {
+            return false;
+        };
+        let (Some((source_width, source_signed)), Some((target_width, target_signed))) =
+            (integer_shape(source), integer_shape(target))
+        else {
+            return false;
+        };
+        source_signed == target_signed && target_width > source_width
     }
 
     fn literal_type(&self, expression: &'source Expression) -> Type {
