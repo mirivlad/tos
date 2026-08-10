@@ -1142,6 +1142,43 @@ mod tests {
     }
 
     #[test]
+    fn parser_chains_field_and_index_suffixes_left_to_right() {
+        let (source, outcome) = parse(
+            "record Point [row: i32] \
+             fn main(grid: array<Point, 2>) -> i32 { return grid[1i32].row; }",
+        );
+        let schema = outcome.into_accepted().expect("postfix suffixes parse");
+        let statements = schema.functions()[0].body().statements();
+        let field = statements[0].expression().unwrap();
+        assert_eq!(field.form(), ExpressionForm::Field);
+        assert_eq!(field.name().unwrap().text(&source), "row");
+        assert_eq!(field.span().text(&source), "grid[1i32].row");
+
+        let index = field.inner().expect("field applies to the indexed value");
+        assert_eq!(index.form(), ExpressionForm::Index);
+        assert_eq!(index.right().unwrap().span().text(&source), "1i32");
+        assert_eq!(
+            index.inner().unwrap().span().text(&source),
+            "grid",
+            "indexing applies to the primary receiver"
+        );
+    }
+
+    #[test]
+    fn parser_applies_a_call_suffix_to_a_field_receiver() {
+        let (source, outcome) = parse("fn main() -> i32 { return device.reset(1i32); }");
+        let schema = outcome.into_accepted().expect("call on a field parses");
+        let call = schema.functions()[0].body().statements()[0]
+            .expression()
+            .unwrap();
+        assert_eq!(call.form(), ExpressionForm::Call);
+        assert_eq!(call.arguments().len(), 1);
+        let callee = call.callee().expect("callee is the field access");
+        assert_eq!(callee.form(), ExpressionForm::Field);
+        assert_eq!(callee.name().unwrap().text(&source), "reset");
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.

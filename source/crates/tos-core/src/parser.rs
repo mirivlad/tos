@@ -413,6 +413,8 @@ pub enum ExpressionForm {
     Unary,
     Binary,
     Call,
+    Field,
+    Index,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -424,6 +426,7 @@ pub struct Expression {
     inner: Option<Box<Expression>>,
     callee: Option<Box<Expression>>,
     arguments: Vec<Expression>,
+    name: Option<Span>,
     span: Span,
 }
 
@@ -454,6 +457,11 @@ impl Expression {
 
     pub fn arguments(&self) -> &[Expression] {
         &self.arguments
+    }
+
+    /// The field name of a `Field` expression.
+    pub fn name(&self) -> Option<Span> {
+        self.name
     }
 
     pub fn span(&self) -> Span {
@@ -1407,6 +1415,7 @@ impl<'source> TokenCursor<'source> {
                 inner: None,
                 callee: None,
                 arguments: Vec::new(),
+                name: None,
             };
         }
         Ok(left)
@@ -1440,6 +1449,7 @@ impl<'source> TokenCursor<'source> {
                 inner: Some(Box::new(inner)),
                 callee: None,
                 arguments: Vec::new(),
+                name: None,
                 span: Span {
                     start: operator.start(),
                     end,
@@ -1449,26 +1459,73 @@ impl<'source> TokenCursor<'source> {
         self.parse_postfix_expression()
     }
 
+    /// Parses `primary ( call_suffix | index | field )*` (docs/39 section 5).
+    ///
+    /// Suffixes chain left to right, so `a.b[0i32].c` nests as
+    /// `Field(Index(Field(a, b), 0i32), c)`.
     fn parse_postfix_expression(&mut self) -> Result<Expression, ParseError> {
-        let mut callee = self.parse_primary_expression()?;
-        while self.consume_kind(TokenKind::OpenParen).is_some() {
-            let arguments = self.parse_call_arguments();
-            let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
-            callee = Expression {
-                form: ExpressionForm::Call,
-                left: None,
-                operator: None,
-                right: None,
-                inner: None,
-                span: Span {
-                    start: callee.span.start(),
-                    end: end.end(),
-                },
-                callee: Some(Box::new(callee)),
-                arguments,
-            };
+        let mut operand = self.parse_primary_expression()?;
+        loop {
+            if self.consume_kind(TokenKind::OpenParen).is_some() {
+                let arguments = self.parse_call_arguments();
+                let end =
+                    self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+                operand = Expression {
+                    form: ExpressionForm::Call,
+                    left: None,
+                    operator: None,
+                    right: None,
+                    inner: None,
+                    name: None,
+                    span: Span {
+                        start: operand.span.start(),
+                        end: end.end(),
+                    },
+                    callee: Some(Box::new(operand)),
+                    arguments,
+                };
+                continue;
+            }
+            if self.consume_kind(TokenKind::OpenBracket).is_some() {
+                let index = self.parse_expression()?;
+                let end =
+                    self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
+                operand = Expression {
+                    form: ExpressionForm::Index,
+                    left: None,
+                    operator: None,
+                    right: Some(Box::new(index)),
+                    name: None,
+                    callee: None,
+                    arguments: Vec::new(),
+                    span: Span {
+                        start: operand.span.start(),
+                        end: end.end(),
+                    },
+                    inner: Some(Box::new(operand)),
+                };
+                continue;
+            }
+            if self.consume_kind(TokenKind::Dot).is_some() {
+                let name = self.expect_identifier()?;
+                operand = Expression {
+                    form: ExpressionForm::Field,
+                    left: None,
+                    operator: None,
+                    right: None,
+                    callee: None,
+                    arguments: Vec::new(),
+                    name: Some(name),
+                    span: Span {
+                        start: operand.span.start(),
+                        end: name.end(),
+                    },
+                    inner: Some(Box::new(operand)),
+                };
+                continue;
+            }
+            return Ok(operand);
         }
-        Ok(callee)
     }
 
     fn parse_call_arguments(&mut self) -> Vec<Expression> {
@@ -1491,6 +1548,7 @@ impl<'source> TokenCursor<'source> {
                 inner: Some(Box::new(inner)),
                 callee: None,
                 arguments: Vec::new(),
+                name: None,
                 span: Span {
                     start: start.start(),
                     end: end.end(),
@@ -1516,6 +1574,7 @@ impl<'source> TokenCursor<'source> {
                 inner: None,
                 callee: None,
                 arguments: Vec::new(),
+                name: None,
                 span,
             })
         } else {
