@@ -107,7 +107,9 @@ Uses signing, update, trademark or recovery policy to prevent the owner from run
 9. active commit to writable overlay;
 10. system repository to mutable state and secrets;
 11. recovery authority to candidate activation;
-12. local system to remote repositories and time/signature services.
+12. local system to remote repositories and time/signature services;
+13. canonical `/system` source to external vendor-controlled opaque material in
+    `/vendor`.
 
 Every implementation crossing a boundary names its input format, validation, authority, resource limits and failure behavior.
 
@@ -187,9 +189,27 @@ Threats include crafted object graphs, malicious packs, unauthorized ref movemen
 
 Threats include credential theft, malicious server data, downgrade, replay, time confusion and partial fetch. Network support must add transport-specific threat entries before Stage 7 closes.
 
+### External vendor material
+
+Threats include substitution of a declared vendor object, downgrade to a
+vulnerable firmware version, silent acceptance of a missing or mismatched
+object, opaque material shadowing a component required to be textual, and vendor
+material being presented to the owner as inspectable TOS source.
+
+Controls are identity-level only: declaration in canonical source with vendor,
+version and content hash; hash verification before use; defined behavior on
+absent, mismatched or refused objects; the placement rule keeping `/vendor` out
+of `/system`; and the owner-facing boundary report required by ADR-0030.
+
+TOS does not analyze what a vendor object does. The controls constrain which
+bytes are loaded and whether the owner can see that they were loaded — not their
+behavior once running. This limit is stated rather than mitigated, and T7 remains
+the governing adversary class.
+
 ## Accepted non-goals for early stages
 
 - confidentiality or integrity against malicious firmware;
+- verification of the internal behavior of vendor-controlled opaque material;
 - protection from all physical attacks;
 - availability against an attacker controlling granted device or CPU resources;
 - formal verification of the complete system;

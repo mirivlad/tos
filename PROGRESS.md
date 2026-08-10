@@ -258,6 +258,26 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   checker, IR, verifier and interpreter remain unimplemented. Stage 3 remains
   unauthorized.
 
+### 2026-08-10 — Accepted vendor-material boundary and `/vendor`
+
+- Project Architect accepted ADR-0030: external CPU microcode, GPU/Wi-Fi/device
+  firmware and comparable vendor-produced bytes are vendor-controlled opaque
+  material. They live in the new root namespace `/vendor`, are never canonical
+  TOS source, and MUST NOT replace a component the architecture requires to be
+  textual. `/system` declares a requirement by vendor/identity/version/hash/
+  placement/policy; the opaque bytes stay in `/vendor`. The owner MUST be able
+  to see where the boundary runs.
+- I-01 is not amended and no Level 4 identity amendment is required: vendor
+  opaque material is not a TOS executable component and does not become
+  canonical source. The ADR states that scope explicitly instead of leaving it
+  to be inferred.
+- Tier 2 synchronized: docs/03 (namespace list, trust zones), docs/09
+  (`/vendor` class), docs/11 (a driver stays textual even when it loads vendor
+  firmware), docs/17, docs/20, docs/27 (opaque material is not third-party
+  textual source), docs/34 (trust boundary 13, subsystem threats, non-goal).
+- No implementation is authorized by this decision; `/vendor` is required only
+  from the stage that first needs physical-hardware firmware.
+
 ## Граница закрытого Stage 1
 
 - Stage 1 — bootable trusted-source foundation, не shell/desktop, не Stage 1.5

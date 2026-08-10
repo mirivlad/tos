@@ -111,6 +111,25 @@ Boot-critical drivers use the TOS Core bootstrap profile. Later drivers may use 
 
 Physical hardware support begins only after the QEMU contracts are stable. Priority should go to devices with public specifications and simple reset behavior. GPU and Wi-Fi stacks are separate major programs, not early milestones.
 
+## Devices requiring vendor firmware
+
+Many real devices require a vendor firmware image before they operate. Under
+ADR-0030 that image is vendor-controlled opaque material: it lives in
+`/vendor`, it is not TOS source, and TOS makes no claim about its behavior.
+
+The driver does not change class because of it. A TOS driver is canonical
+readable source that the owner can inspect and modify, including when its
+runtime job is to hand a firmware image to a device. Loading vendor firmware is
+an action a textual component performs — never a reason for the component itself
+to become opaque, and never grounds for shipping a binary driver in place of a
+textual one.
+
+A driver requiring vendor firmware declares it in its manifest alongside its
+capability requirements: vendor, object identity, version, content hash and
+behavior when the object is absent, mismatched or refused. Refusing to load
+unavailable firmware and reporting the device as unavailable is a defined
+outcome; operating in an undeclared degraded mode is not.
+
 ## Source reuse and legal provenance
 
 Open driver source is not automatically reusable code. Porting separates:

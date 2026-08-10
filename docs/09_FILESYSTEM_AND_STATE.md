@@ -90,6 +90,28 @@ Ephemeral handles, sockets, service discovery entries, locks, and runtime metada
 
 A logical device namespace exposing service endpoints and capability-safe handles, not necessarily raw device files with ambient access.
 
+### `/vendor`
+
+External vendor-controlled opaque material: CPU microcode, GPU and peripheral
+firmware, and comparable bytes produced outside the project that TOS cannot
+express as editable source.
+
+Properties:
+
+- not canonical TOS source and never presented as source;
+- not a derived cache — deletion requires reacquisition from the vendor, not
+  regeneration from `/system`;
+- not part of the system commit, so `/system` rollback does not roll it back;
+- identified by vendor, object identity, version and content hash;
+- never merged into or mounted inside `/system`.
+
+`/system` may declare a requirement on a vendor object as canonical source text.
+The opaque bytes stay here. Firmware is one class inside `/vendor`; there is no
+separate `/firmware` root.
+
+This namespace is defined by ADR-0030. No implementation is required
+before the stage that first needs physical-hardware firmware.
+
 ## State schema versions
 
 Every service with durable state declares:

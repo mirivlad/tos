@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `d78b0a987af50b59db19a9dddfde2c87295460f0d0739862a26ca99da765c0de`  
+Source-manifest SHA-256: `0147e667321754ca6b6dfbda01a80522c125d78ad2732d672a2168b3bf749816`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2262,9 +2262,16 @@ The visible filesystem is assembled from distinct stores:
 /cache    disposable generated data
 /run      ephemeral runtime objects
 /dev      capability-mediated device namespace
+/vendor   external vendor-controlled opaque material, outside canonical source
 ```
 
 The names are normative at the conceptual level; exact mount implementation may evolve through ADRs.
+
+`/vendor` holds material TOS does not own or author, such as CPU microcode and
+device firmware. It is not part of the canonical `/system` tree and is never
+presented as TOS source. `/system` may declare that it requires a vendor object
+by identity, version and hash; the opaque bytes themselves stay in `/vendor`.
+See ADR-0030.
 
 ## Process model
 
@@ -2288,6 +2295,9 @@ Every service and driver is a process with:
 5. **System services** — least authority required.
 6. **Applications** — user-granted capabilities.
 7. **Experimental branches** — explicitly marked trust state.
+8. **External vendor material** — opaque bytes TOS identifies but does not
+   inspect, verify or vouch for. TOS states their identity and version; it makes
+   no claim about their behavior.
 
 ## Compatibility strategy
 
@@ -5031,6 +5041,28 @@ Ephemeral handles, sockets, service discovery entries, locks, and runtime metada
 
 A logical device namespace exposing service endpoints and capability-safe handles, not necessarily raw device files with ambient access.
 
+### `/vendor`
+
+External vendor-controlled opaque material: CPU microcode, GPU and peripheral
+firmware, and comparable bytes produced outside the project that TOS cannot
+express as editable source.
+
+Properties:
+
+- not canonical TOS source and never presented as source;
+- not a derived cache — deletion requires reacquisition from the vendor, not
+  regeneration from `/system`;
+- not part of the system commit, so `/system` rollback does not roll it back;
+- identified by vendor, object identity, version and content hash;
+- never merged into or mounted inside `/system`.
+
+`/system` may declare a requirement on a vendor object as canonical source text.
+The opaque bytes stay here. Firmware is one class inside `/vendor`; there is no
+separate `/firmware` root.
+
+This namespace is defined by ADR-0030. No implementation is required
+before the stage that first needs physical-hardware firmware.
+
 ## State schema versions
 
 Every service with durable state declares:
@@ -5294,6 +5326,25 @@ Boot-critical drivers use the TOS Core bootstrap profile. Later drivers may use 
 
 Physical hardware support begins only after the QEMU contracts are stable. Priority should go to devices with public specifications and simple reset behavior. GPU and Wi-Fi stacks are separate major programs, not early milestones.
 
+## Devices requiring vendor firmware
+
+Many real devices require a vendor firmware image before they operate. Under
+ADR-0030 that image is vendor-controlled opaque material: it lives in
+`/vendor`, it is not TOS source, and TOS makes no claim about its behavior.
+
+The driver does not change class because of it. A TOS driver is canonical
+readable source that the owner can inspect and modify, including when its
+runtime job is to hand a firmware image to a device. Loading vendor firmware is
+an action a textual component performs — never a reason for the component itself
+to become opaque, and never grounds for shipping a binary driver in place of a
+textual one.
+
+A driver requiring vendor firmware declares it in its manifest alongside its
+capability requirements: vendor, object identity, version, content hash and
+behavior when the object is absent, mismatched or refused. Refusing to load
+unavailable firmware and reporting the device as unavailable is a defined
+outcome; operating in an undeclared degraded mode is not.
+
 ## Source reuse and legal provenance
 
 Open driver source is not automatically reusable code. Porting separates:
@@ -5540,7 +5591,9 @@ Uses signing, update, trademark or recovery policy to prevent the owner from run
 9. active commit to writable overlay;
 10. system repository to mutable state and secrets;
 11. recovery authority to candidate activation;
-12. local system to remote repositories and time/signature services.
+12. local system to remote repositories and time/signature services;
+13. canonical `/system` source to external vendor-controlled opaque material in
+    `/vendor`.
 
 Every implementation crossing a boundary names its input format, validation, authority, resource limits and failure behavior.
 
@@ -5620,9 +5673,27 @@ Threats include crafted object graphs, malicious packs, unauthorized ref movemen
 
 Threats include credential theft, malicious server data, downgrade, replay, time confusion and partial fetch. Network support must add transport-specific threat entries before Stage 7 closes.
 
+### External vendor material
+
+Threats include substitution of a declared vendor object, downgrade to a
+vulnerable firmware version, silent acceptance of a missing or mismatched
+object, opaque material shadowing a component required to be textual, and vendor
+material being presented to the owner as inspectable TOS source.
+
+Controls are identity-level only: declaration in canonical source with vendor,
+version and content hash; hash verification before use; defined behavior on
+absent, mismatched or refused objects; the placement rule keeping `/vendor` out
+of `/system`; and the owner-facing boundary report required by ADR-0030.
+
+TOS does not analyze what a vendor object does. The controls constrain which
+bytes are loaded and whether the owner can see that they were loaded — not their
+behavior once running. This limit is stated rather than mitigated, and T7 remains
+the governing adversary class.
+
 ## Accepted non-goals for early stages
 
 - confidentiality or integrity against malicious firmware;
+- verification of the internal behavior of vendor-controlled opaque material;
 - protection from all physical attacks;
 - availability against an attacker controlling granted device or CPU resources;
 - formal verification of the complete system;
@@ -6600,7 +6671,16 @@ Developer/release tooling and external oracles. Runtime restoration cannot depen
 
 ### `system/`
 
-Canonical textual system tree. No generated executable caches or binary packages are committed here. Firmware blobs, if supported, are separate and explicitly licensed.
+Canonical textual system tree, and the canonical input for the runtime
+`/system` tree of an installed machine.
+
+No generated executable caches or binary packages are committed here.
+
+Vendor-controlled opaque material — CPU microcode, device firmware and
+comparable vendor-produced bytes — is never committed into this tree. It belongs
+to the runtime `/vendor` namespace under ADR-0030, carries its own
+licence and redistribution terms, and is referenced from `system/` only by
+declaration: vendor, object identity, version and content hash.
 
 ### `tests/performance/`
 
@@ -7077,6 +7157,12 @@ Mitigation:
 
 **Threat evidence level** — E0–E4 label distinguishing design intent, implementation, tests, adversarial evidence and formal argument.
 
+**Vendor-controlled opaque material** — externally produced bytes consumed by hardware that TOS cannot express as editable source, such as CPU microcode or device firmware; identified by vendor, version and hash, never presented as TOS source.
+
+**`/vendor`** — root namespace holding vendor-controlled opaque material, outside the canonical `/system` tree and outside the system commit.
+
+**Vendor declaration** — canonical source text in `/system` naming a required `/vendor` object by vendor, identity, version, hash, placement and behavior on absence or mismatch; a reference, never an embedded payload.
+
 <!-- END docs/20_GLOSSARY.md -->
 
 ---
@@ -7429,6 +7515,29 @@ A mature external project can serve as:
 - trusted-base dependency.
 
 These roles have radically different architectural and legal effects. Promotion to a more trusted role requires explicit review.
+
+## External opaque vendor material
+
+The roles above all assume material TOS can read: source that can be reviewed,
+evaluated, patched and rebuilt. Vendor-controlled opaque material — CPU
+microcode, GPU and peripheral firmware, option ROMs — cannot be reviewed as
+source, so applying the admission process above to it would produce approvals
+with no evidentiary content.
+
+It is therefore a separate class, governed by ADR-0030:
+
+- it is not third-party textual source and does not become a TOS component;
+- it lives in `/vendor`, never in the canonical `/system` tree;
+- it is admitted by identity, version and content hash, not by source review;
+- TOS makes no claim to have inspected or verified its behavior;
+- it must never replace or shadow a component TOS architecture requires to be
+  textual;
+- it carries its own licence and redistribution terms, which do not extend to
+  any TOS component and which do not exempt it from the review required by
+  `docs/22_LICENSING_COPYRIGHT_AND_REUSE.md`.
+
+Imported material that *can* be read, modified and rebuilt by the owner is
+third-party textual source and stays under the rest of this policy.
 
 ## Trusted-base admission
 
@@ -10192,6 +10301,253 @@ language foundation, grammar, ownership, IR, verifier, and runtime decisions
 are not reopened.
 
 <!-- END docs/adr/0029-tos-core-v1-unicode-normalization-baseline.md -->
+
+---
+
+<!-- BEGIN docs/adr/0030-external-vendor-opaque-material.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0030: External vendor-controlled opaque material and the `/vendor` namespace
+
+- Status: Accepted (Project Architect-approved)
+- Date: 2026-08-10
+- Decision level: 3 — introduces a root namespace, a trust boundary and a
+  declared dependency direction between canonical `/system` source and external
+  material that TOS does not control
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-10
+
+## Context
+
+TOS states that human-readable source text is the canonical installed form of
+its non-nucleus executable components. On real hardware this claim meets
+material that TOS cannot make textual and cannot rewrite:
+
+- Intel and AMD CPU microcode updates;
+- GPU firmware images;
+- Wi-Fi, Bluetooth, NIC, storage-controller and embedded-controller firmware;
+- device option ROMs and platform firmware payloads.
+
+These are produced, signed and versioned by hardware vendors. They are loaded
+by, or on behalf of, the machine, and their internal content is not source in
+any sense the owner can act on.
+
+Existing documentation handles this only by omission or by vague phrasing.
+`docs/00_PROJECT_CHARTER.md` spoke of "every non-firmware component" without
+defining what firmware is architecturally. `docs/17_REPOSITORY_LAYOUT.md` said
+"firmware blobs, if supported, are separate and explicitly licensed" without
+naming where they live or how `/system` may depend on them.
+
+Two failure modes follow from leaving this undefined. TOS could imply that a
+conforming machine contains no opaque binary material, which is false on every
+current platform and would make the project dishonest under I-15. Or opaque
+vendor material could quietly accumulate inside the canonical textual system
+tree, which would erase I-01 component by component while every individual step
+looked pragmatic.
+
+The honest position is a stated boundary rather than either denial or drift.
+
+## Decision
+
+### 1. Ownership scope
+
+TOS owns the TOS software layer. TOS does not claim ownership, authorship or
+control of vendor-produced material executed by CPUs and peripheral devices.
+
+### 2. Vendor-controlled opaque material
+
+A unit of external material is **vendor-controlled opaque material** when all of
+the following hold:
+
+- it is produced and versioned outside the TOS project;
+- it is consumed as bytes by hardware or by a hardware-facing loading path;
+- TOS cannot express it as canonical source text that the owner may edit,
+  rebuild and run;
+- it is not the definition of any TOS component.
+
+Vendor-controlled opaque material **MUST NOT** be presented as canonical TOS
+source. The system **MUST NOT** display, describe or record it as open,
+readable or modifiable material. TOS **MUST NOT** claim to have inspected,
+verified or understood its internal behavior. It is identified, located,
+version-pinned and hashed; it is not interpreted.
+
+### 3. `/vendor` namespace
+
+External material lives in a dedicated root namespace:
+
+```text
+/vendor/
+    firmware/
+        intel/
+        amd/
+        nvidia/
+        ...
+```
+
+`/vendor` is not part of the canonical `/system` tree and **MUST NOT** be
+merged into, mounted inside or presented as part of it. Firmware is one class
+inside `/vendor`; a separate root `/firmware` namespace is therefore not
+introduced.
+
+`/vendor` is its own namespace class, distinct from canonical source, mutable
+state and derived cache. It is not derived — deleting it does not regenerate it
+from canonical source — and it is not canonical TOS source.
+
+### 4. Declared dependency direction
+
+`/system` **MAY** declare that it requires a vendor object. The declaration is
+canonical source text in `/system` and states at least:
+
+- vendor and object identity;
+- version;
+- content hash;
+- expected placement under `/vendor`;
+- compatibility constraints;
+- policy for absence, mismatch and refusal.
+
+The opaque bytes themselves **MUST** reside under `/vendor`. A declaration is a
+reference, never an embedded payload. Dependency flows in one direction only:
+canonical source may name external material; external material never names,
+selects or alters canonical source.
+
+A TOS component **MUST** behave in a defined way when a declared vendor object
+is absent, has a mismatched hash, or is refused by policy. Silent degradation is
+not a defined behavior.
+
+### 5. No opaque substitution of textual components
+
+A component that TOS architecture requires to be textual **MUST NOT** be
+replaced, shadowed or superseded by vendor-controlled opaque material. A
+user-space driver written in TOS Core remains canonical readable source that the
+owner can inspect and modify, including when that driver's runtime job is to
+hand a firmware image to a device.
+
+Loading vendor firmware is an action performed by a textual TOS component. It is
+not a substitute for one.
+
+### 6. Visible boundary
+
+The owner **MUST** be able to determine, for the running system, which
+components are canonical TOS source and which are external opaque vendor
+material. For each vendor object the system reports vendor, object identity,
+version, content hash, provenance record, licence or redistribution status, and
+current status (required, present, absent, mismatched, refused).
+
+This report is an ordinary owner-facing system capability, not a debugging
+facility. A machine that cannot answer the question does not satisfy this
+decision.
+
+### 7. Licence and redistribution
+
+Vendor-controlled opaque material carries its own licence and redistribution
+terms and **MUST NOT** be treated as covered by TOS project licences. Its
+presence in a TOS installation does not make it a TOS component, and its terms
+do not extend to any TOS component. Redistribution requires the review already
+required by `docs/22_LICENSING_COPYRIGHT_AND_REUSE.md` and
+`docs/27_THIRD_PARTY_COMPONENT_POLICY.md`.
+
+### 8. Scope of this decision
+
+This ADR defines an architectural model. It authorizes no implementation, no
+loading path, no storage format and no firmware redistribution. `/vendor` has no
+required implementation before the stage that first needs physical-hardware
+firmware. Concrete declaration schema, storage format, verification path and
+loading mechanism require their own versioned contracts under I-09.
+
+## Relationship to system invariants
+
+This decision does not amend `docs/02_SYSTEM_INVARIANTS.md` and requires no
+Level 4 identity amendment.
+
+I-01 governs "every non-nucleus executable component" — that is, every component
+*of TOS*. Vendor-controlled opaque material is by this decision's definition not
+a TOS component, was never canonical TOS source, and does not become so by being
+present on the machine. This ADR states an existing scope boundary explicitly
+instead of leaving it to be inferred.
+
+The decision strengthens rather than weakens I-01 in practice: without a named
+boundary, opaque material has no defined place and tends to accumulate inside
+the canonical tree. Section 5 makes that specific failure a stated violation.
+
+Related invariants:
+
+- **I-15 honest compatibility** — TOS states plainly that opaque vendor material
+  exists on real hardware rather than implying a fully textual machine;
+- **I-16 source-to-runtime traceability** — traceability continues to apply to
+  TOS components; vendor objects are identified, not traced to source;
+- **I-17 owner-installable modification** — unaffected, because the textual
+  components the owner modifies remain textual under section 5;
+- **I-19 external dependency containment** — extended with a class that is
+  contained by placement and declaration rather than by review-for-admission,
+  since it cannot be reviewed as source;
+- **I-20 legal continuity of openness** — section 7 prevents vendor terms from
+  bleeding into TOS components.
+
+## Architecture impact statement
+
+- **Change level:** 3.
+- **Invariants affected:** none amended; I-01, I-15, I-16, I-17, I-19 and I-20
+  are scoped explicitly as described above.
+- **Canonical representation after the change:** unchanged. `/system` remains
+  canonical text. `/vendor` is explicitly not canonical TOS source.
+- **Trusted-base impact:** no dependency enters the loader or nucleus. A new
+  trust boundary is named: canonical source to external opaque material.
+- **Source-to-runtime impact:** the identity plane gains a second, weaker
+  answer class — vendor objects are reported by identity/version/hash, never by
+  source path and never as verified behavior.
+- **Recovery and rollback impact:** `/vendor` is not part of the system commit,
+  so rollback of `/system` does not roll back vendor material. Declarations in
+  `/system` carry version and hash, so a rolled-back commit states which vendor
+  objects it expects. Absence must be a defined, recoverable state.
+- **Stage identity gate:** no stage gate is claimed or closed. The model applies
+  from the first stage that touches physical-hardware firmware.
+- **Threat-model impact:** TOS does not claim confidentiality or integrity
+  against malicious firmware — an existing accepted non-goal in
+  `docs/34_THREAT_MODEL.md`. This decision adds the boundary and requires that
+  the owner can see it, which is a reporting requirement, not a protection claim.
+- **Performance contract:** none applicable; no measured path changes.
+- **Compatibility profile:** none claimed. No hardware support is asserted.
+- **New dependencies:** none. The decision is documentary.
+- **Licence and patent impact:** section 7 keeps vendor terms separate. No
+  material is imported by this decision.
+- **Tests that enforce the decision:** deferred to the implementing stage. When
+  `/vendor` is implemented, architecture conformance tests under
+  `docs/31_ARCHITECTURE_CONFORMANCE_TESTS.md` must enforce that no vendor object
+  is reachable as `/system` content, that a declared-and-absent object produces a
+  defined failure, and that the owner-facing boundary report is complete.
+
+## Consequences
+
+TOS gains a truthful statement about real machines: the TOS layer is textual and
+owner-controlled, and material outside that layer is named as external rather
+than hidden or denied. A future bare-metal stage can support CPU microcode and
+device firmware without either violating I-01 or pretending the material is
+open.
+
+The cost is that a TOS machine on real hardware is not fully inspectable by the
+owner, and this decision requires TOS to say so rather than obscure it. The
+boundary is visible precisely so that its size can be observed and argued about.
+
+## Alternatives considered
+
+**Prohibit all opaque material.** Rejected: it makes TOS unimplementable on
+current hardware and would either stop the project at emulation or be quietly
+violated later, which is worse than a stated boundary.
+
+**Treat firmware as ordinary third-party components under docs/27.** Rejected:
+that policy is built around material TOS can read, evaluate and admit by review.
+Opaque blobs cannot be reviewed as source, so applying the same process would
+produce approvals with no evidentiary content.
+
+**Place firmware under `/system/firmware`.** Rejected: it puts non-source bytes
+inside the canonical source tree, which is the exact drift section 5 forbids.
+
+**A separate root `/firmware`.** Rejected: firmware is one class of external
+vendor material. Microcode, option ROMs and future non-firmware vendor material
+belong to the same boundary, and a firmware-specific root would need siblings
+later.
+
+<!-- END docs/adr/0030-external-vendor-opaque-material.md -->
 
 ---
 
