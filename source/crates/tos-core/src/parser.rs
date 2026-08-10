@@ -472,6 +472,13 @@ pub enum StatementForm {
     Return,
     Assignment,
     Expression,
+    If,
+    Match,
+    While,
+    For,
+    Loop,
+    Break,
+    Continue,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -614,6 +621,27 @@ impl Expression {
 }
 
 #[derive(Debug, Eq, PartialEq)]
+pub struct MatchBranch {
+    pattern: Pattern,
+    body: Block,
+    span: Span,
+}
+
+impl MatchBranch {
+    pub fn pattern(&self) -> &Pattern {
+        &self.pattern
+    }
+
+    pub fn body(&self) -> &Block {
+        &self.body
+    }
+
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub struct Statement {
     form: StatementForm,
     mutable: bool,
@@ -621,11 +649,53 @@ pub struct Statement {
     declared_type: Option<TypeSyntax>,
     target: Option<Expression>,
     expression: Option<Expression>,
+    body: Option<Block>,
+    else_body: Option<Block>,
+    else_if: Option<Box<Statement>>,
+    branches: Vec<MatchBranch>,
     span: Span,
 }
 impl Statement {
     pub fn form(&self) -> StatementForm {
         self.form
+    }
+
+    /// The executable block of a compound statement: the taken branch of `if`,
+    /// or the body of `while`, `for` and `loop`.
+    pub fn body(&self) -> Option<&Block> {
+        self.body.as_ref()
+    }
+
+    /// The `else` block of an `if` statement, when the alternative is a block.
+    pub fn else_body(&self) -> Option<&Block> {
+        self.else_body.as_ref()
+    }
+
+    /// The `else if` continuation of an `if` statement.
+    pub fn else_if(&self) -> Option<&Statement> {
+        self.else_if.as_deref()
+    }
+
+    /// The branches of a `match` statement.
+    pub fn branches(&self) -> &[MatchBranch] {
+        &self.branches
+    }
+
+    /// A statement node carrying only its form and span.
+    fn node(form: StatementForm, span: Span) -> Statement {
+        Statement {
+            form,
+            mutable: false,
+            pattern: None,
+            declared_type: None,
+            target: None,
+            expression: None,
+            body: None,
+            else_body: None,
+            else_if: None,
+            branches: Vec::new(),
+            span,
+        }
     }
     pub fn is_mutable(&self) -> bool {
         self.mutable
@@ -747,6 +817,7 @@ enum ParseErrorCode {
     ExpectedProfile,
     UnexpectedToken,
     ExpectedLiteral,
+    ControlHeadParensRequired,
     ListSeparatorRequired,
 }
 
@@ -762,6 +833,7 @@ impl ParseErrorCode {
             ParseErrorCode::ExpectedVersionComponent => "E1102_EXPECTED_VERSION_COMPONENT",
             ParseErrorCode::ExpectedProfile => "E1103_EXPECTED_PROFILE",
             ParseErrorCode::ExpectedLiteral => "E1104_EXPECTED_LITERAL",
+            ParseErrorCode::ControlHeadParensRequired => "E1105_CONTROL_HEAD_PARENS_REQUIRED",
             ParseErrorCode::ListSeparatorRequired => "E1106_LIST_SEPARATOR_REQUIRED",
             ParseErrorCode::UnexpectedToken => "E1107_UNEXPECTED_TOKEN",
         }
@@ -1499,9 +1571,175 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
+    /// Consumes the parenthesized head of a control statement.
+    ///
+    /// docs/39 section 5 requires the parentheses so that the head has an
+    /// explicit boundary and cannot be confused with a record construction;
+    /// their absence is `E1105_CONTROL_HEAD_PARENS_REQUIRED`.
+    fn parse_control_head(&mut self) -> Result<Expression, ParseError> {
+        if self.current().kind() != TokenKind::OpenParen {
+            return Err(self.error_here(ParseErrorCode::ControlHeadParensRequired));
+        }
+        self.advance();
+        let head = self.parse_expression()?;
+        self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+        Ok(head)
+    }
+
+    fn parse_if_statement(&mut self) -> Result<Statement, ParseError> {
+        let start = self.expect_word("if", ParseErrorCode::UnexpectedToken)?;
+        let head = self.parse_control_head()?;
+        let body = self.parse_block()?;
+        let mut end = body.span.end();
+        let mut else_body = None;
+        let mut else_if = None;
+        if self.current_text() == "else" {
+            self.advance();
+            if self.current_text() == "if" {
+                let nested = self.parse_if_statement()?;
+                end = nested.span.end();
+                else_if = Some(Box::new(nested));
+            } else {
+                let block = self.parse_block()?;
+                end = block.span.end();
+                else_body = Some(block);
+            }
+        }
+        Ok(Statement {
+            expression: Some(head),
+            body: Some(body),
+            else_body,
+            else_if,
+            ..Statement::node(
+                StatementForm::If,
+                Span {
+                    start: start.start(),
+                    end,
+                },
+            )
+        })
+    }
+
+    fn parse_match_statement(&mut self) -> Result<Statement, ParseError> {
+        let start = self.expect_word("match", ParseErrorCode::UnexpectedToken)?;
+        let head = self.parse_control_head()?;
+        self.expect_kind(TokenKind::OpenBrace, ParseErrorCode::UnexpectedToken)?;
+        let mut branches = Vec::new();
+        while !matches!(
+            self.current().kind(),
+            TokenKind::CloseBrace | TokenKind::Eof
+        ) {
+            let branch = self.parse_match_branch();
+            if let Some(branch) = self.finish_region(branch, Region::Statement) {
+                branches.push(branch);
+            }
+        }
+        let end = self.expect_kind(TokenKind::CloseBrace, ParseErrorCode::UnexpectedToken)?;
+        Ok(Statement {
+            expression: Some(head),
+            branches,
+            ..Statement::node(
+                StatementForm::Match,
+                Span {
+                    start: start.start(),
+                    end: end.end(),
+                },
+            )
+        })
+    }
+
+    /// Parses `pattern "=>" block`.
+    ///
+    /// Branches are executable blocks and are not comma-separated, so a comma
+    /// after a branch is reported rather than accepted (conformance case R024).
+    fn parse_match_branch(&mut self) -> Result<MatchBranch, ParseError> {
+        let pattern = self.parse_pattern()?;
+        self.expect_kind(TokenKind::FatArrow, ParseErrorCode::UnexpectedToken)?;
+        let body = self.parse_block()?;
+        Ok(MatchBranch {
+            span: Span {
+                start: pattern.span.start(),
+                end: body.span.end(),
+            },
+            pattern,
+            body,
+        })
+    }
+
+    fn parse_while_statement(&mut self) -> Result<Statement, ParseError> {
+        let start = self.expect_word("while", ParseErrorCode::UnexpectedToken)?;
+        let head = self.parse_control_head()?;
+        let body = self.parse_block()?;
+        Ok(Statement {
+            expression: Some(head),
+            span: Span {
+                start: start.start(),
+                end: body.span.end(),
+            },
+            body: Some(body),
+            ..Statement::node(StatementForm::While, start)
+        })
+    }
+
+    fn parse_for_statement(&mut self) -> Result<Statement, ParseError> {
+        let start = self.expect_word("for", ParseErrorCode::UnexpectedToken)?;
+        let pattern = self.parse_pattern()?;
+        self.expect_word("in", ParseErrorCode::UnexpectedToken)?;
+        let head = self.parse_control_head()?;
+        let body = self.parse_block()?;
+        Ok(Statement {
+            pattern: Some(pattern),
+            expression: Some(head),
+            span: Span {
+                start: start.start(),
+                end: body.span.end(),
+            },
+            body: Some(body),
+            ..Statement::node(StatementForm::For, start)
+        })
+    }
+
+    fn parse_loop_statement(&mut self) -> Result<Statement, ParseError> {
+        let start = self.expect_word("loop", ParseErrorCode::UnexpectedToken)?;
+        let body = self.parse_block()?;
+        Ok(Statement {
+            span: Span {
+                start: start.start(),
+                end: body.span.end(),
+            },
+            body: Some(body),
+            ..Statement::node(StatementForm::Loop, start)
+        })
+    }
+
+    /// Parses `break ;` and `continue ;`, which carry no value in V1.
+    fn parse_jump_statement(
+        &mut self,
+        form: StatementForm,
+        word: &str,
+    ) -> Result<Statement, ParseError> {
+        let start = self.expect_word(word, ParseErrorCode::UnexpectedToken)?;
+        let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
+        Ok(Statement::node(
+            form,
+            Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        ))
+    }
+
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
-        if self.current_text() == "let" {
-            return self.parse_let_statement();
+        match self.current_text() {
+            "let" => return self.parse_let_statement(),
+            "if" => return self.parse_if_statement(),
+            "match" => return self.parse_match_statement(),
+            "while" => return self.parse_while_statement(),
+            "for" => return self.parse_for_statement(),
+            "loop" => return self.parse_loop_statement(),
+            "break" => return self.parse_jump_statement(StatementForm::Break, "break"),
+            "continue" => return self.parse_jump_statement(StatementForm::Continue, "continue"),
+            _ => {}
         }
         if self.current_text() != "return" {
             return self.parse_assignment_or_expression_statement();
@@ -1515,16 +1753,14 @@ impl<'source> TokenCursor<'source> {
         };
         let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
         Ok(Statement {
-            form: StatementForm::Return,
-            mutable: false,
-            pattern: None,
-            declared_type: None,
-            target: None,
             expression,
-            span: Span {
-                start: start.start(),
-                end: end.end(),
-            },
+            ..Statement::node(
+                StatementForm::Return,
+                Span {
+                    start: start.start(),
+                    end: end.end(),
+                },
+            )
         })
     }
 
@@ -1596,16 +1832,17 @@ impl<'source> TokenCursor<'source> {
         let expression = Some(self.parse_expression()?);
         let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
         Ok(Statement {
-            form: StatementForm::Let,
             mutable,
             pattern: Some(pattern),
             declared_type,
-            target: None,
             expression,
-            span: Span {
-                start: start.start(),
-                end: end.end(),
-            },
+            ..Statement::node(
+                StatementForm::Let,
+                Span {
+                    start: start.start(),
+                    end: end.end(),
+                },
+            )
         })
     }
 
@@ -1616,30 +1853,27 @@ impl<'source> TokenCursor<'source> {
             let expression = self.parse_expression()?;
             let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
             return Ok(Statement {
-                form: StatementForm::Assignment,
-                mutable: false,
-                pattern: None,
-                declared_type: None,
                 target: Some(target_or_expression),
                 expression: Some(expression),
-                span: Span {
-                    start: start.start(),
-                    end: end.end(),
-                },
+                ..Statement::node(
+                    StatementForm::Assignment,
+                    Span {
+                        start: start.start(),
+                        end: end.end(),
+                    },
+                )
             });
         }
         let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
         Ok(Statement {
-            form: StatementForm::Expression,
-            mutable: false,
-            pattern: None,
-            declared_type: None,
-            target: None,
             expression: Some(target_or_expression),
-            span: Span {
-                start: start.start(),
-                end: end.end(),
-            },
+            ..Statement::node(
+                StatementForm::Expression,
+                Span {
+                    start: start.start(),
+                    end: end.end(),
+                },
+            )
         })
     }
 
