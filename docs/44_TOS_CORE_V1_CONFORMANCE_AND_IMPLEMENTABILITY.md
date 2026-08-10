@@ -227,6 +227,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 |---|---|
 | `E1202_UNKNOWN_VALUE_NAME` | a value name, or a qualified constructor path in a pattern, resolves to no predeclared value, module item, parameter or in-scope binding |
 | `E1205_DUPLICATE_RECORD_FIELD` | a named field list declares or supplies the same field name more than once |
+| `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
 
 ### Resource and profile (stage `resource`)
 

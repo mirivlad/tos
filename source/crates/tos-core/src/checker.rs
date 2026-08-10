@@ -91,6 +91,7 @@ impl Checker {
         check_resource_envelope(source, schema, &mut diagnostics);
         check_record_fields(source, schema, &mut diagnostics);
         diagnostics.extend(resolve_value_names(source, schema));
+        diagnostics.extend(crate::returns::check_returns(source, schema));
         diagnostics
     }
 }

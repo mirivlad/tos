@@ -8,6 +8,7 @@ use std::vec::Vec;
 mod checker;
 mod diagnostic;
 mod parser;
+mod returns;
 
 pub use checker::Checker;
 pub use diagnostic::{Diagnostic, DiagnosticField, Position, Severity, Stage};
@@ -1771,6 +1772,84 @@ mod tests {
         let path: Vec<&str> = pattern.path().iter().map(|s| s.text(&source)).collect();
         assert_eq!(path, ["upstream", "Signal", "Low"]);
         assert_eq!(pattern.name().unwrap().text(&source), "Low");
+    }
+
+    #[test]
+    fn a_non_unit_function_must_return_on_every_path() {
+        let (source, diagnostics) = check(
+            "fn ok(ready: bool) -> i32 { if (ready) { return 1i32; } else { return 2i32; } } \
+             fn bad(ready: bool) -> i32 { if (ready) { return 1i32; } } \
+             fn unit_is_fine(ready: bool) -> unit { if (ready) { return; } }",
+        );
+        let missing: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1221_MISSING_RETURN")
+            .map(|d| d.span().text(&source))
+            .collect();
+        assert_eq!(missing, ["bad"]);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .find(|d| d.code() == "E1221_MISSING_RETURN")
+                .unwrap()
+                .field("scope"),
+            Some("function")
+        );
+    }
+
+    #[test]
+    fn a_diverging_loop_and_a_returning_match_complete_the_paths() {
+        let (_, diagnostics) = check(
+            "enum Signal [Low, High] \
+             fn spin() -> i32 { loop { } } \
+             fn choose(signal: Signal) -> i32 { match (signal) { Low => { return 1i32; } \
+             High => { return 2i32; } } }",
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .all(|d| d.code() != "E1221_MISSING_RETURN"),
+            "a loop without break and an all-returning match both diverge"
+        );
+    }
+
+    #[test]
+    fn a_loop_with_a_break_still_needs_a_return() {
+        let (source, diagnostics) = check("fn spin() -> i32 { loop { break; } }");
+        let missing = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1221_MISSING_RETURN")
+            .expect("a loop that can break falls through");
+        assert_eq!(missing.span().text(&source), "spin");
+    }
+
+    #[test]
+    fn a_closure_may_not_mix_a_value_return_with_a_fallthrough() {
+        let (_, diagnostics) = check(
+            "fn main(ready: bool) -> unit { \
+             let step: fn (bool) -> i32 = fn (flag: bool) { if (flag) { return 1i32; } }; }",
+        );
+        let missing = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1221_MISSING_RETURN")
+            .expect("the closure body falls through past a value return");
+        assert_eq!(missing.field("scope"), Some("closure"));
+    }
+
+    #[test]
+    fn a_return_inside_a_closure_does_not_satisfy_its_enclosing_function() {
+        let (source, diagnostics) =
+            check("fn main() -> i32 { let step: fn () -> i32 = fn () { return 1i32; }; }");
+        let missing: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1221_MISSING_RETURN")
+            .map(|d| d.span().text(&source))
+            .collect();
+        assert_eq!(
+            missing,
+            ["main"],
+            "each return scope is analysed on its own"
+        );
     }
 
     #[test]
