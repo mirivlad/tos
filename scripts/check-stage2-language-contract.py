@@ -166,6 +166,15 @@ def main() -> int:
             require(len(condition) >= 20, f"registry entry lacks a condition: {code}", failures)
             registry[code] = stage
         require(len(registry) >= 21, "diagnostic registry is implausibly small", failures)
+        # A family folded into the registry must be complete for the checks the
+        # implementation actually performs (docs/44 section 7).
+        for code, stage in [
+            ("E1205_DUPLICATE_RECORD_FIELD", "type"),
+            ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),
+            ("E1703_DUPLICATE_RESOURCE_DECLARATION", "resource"),
+            ("E1704_UNKNOWN_RESOURCE_LIMIT", "resource"),
+        ]:
+            require(registry.get(code) == stage, f"{code} is not registered at stage {stage}", failures)
 
     require(
         "parse error" not in expectations,
@@ -179,7 +188,7 @@ def main() -> int:
     owning_contracts = "\n".join([types, concurrency, modules, ir, grammar])
     for document, label in [(expectations, "expectation"), (grammar, "grammar")]:
         for code in sorted(set(re.findall(r"`(E1\d{3}_[A-Z0-9_]+)`", document))):
-            if re.match(r"E1[01]\d{2}_", code):
+            if re.match(r"E1[01]\d{2}_", code) or code in registry:
                 require(code in registry, f"{label} cites unregistered frontend code: {code}", failures)
             else:
                 require(

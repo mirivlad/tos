@@ -5,9 +5,11 @@ use std::boxed::Box;
 use std::string::String;
 use std::vec::Vec;
 
+mod checker;
 mod diagnostic;
 mod parser;
 
+pub use checker::Checker;
 pub use diagnostic::{Diagnostic, DiagnosticField, Position, Severity, Stage};
 pub use parser::{
     Block, BorrowMode, CallArgument, ConstDeclaration, EnumDeclaration, EnumVariant,
@@ -1573,6 +1575,97 @@ mod tests {
             let (_, outcome) = parse(&body);
             assert!(outcome.has_errors(), "{target} is not a place");
         }
+    }
+
+    fn check(body: &str) -> (SourceUnit, Vec<Diagnostic>) {
+        let text = std::format!("{PREFIX}{body}");
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        (source, diagnostics)
+    }
+
+    #[test]
+    fn checker_requires_every_resource_key() {
+        // PREFIX declares only `fuel`, so the other nine are missing.
+        let (_, diagnostics) = check("fn main() -> i32 { return 0i32; }");
+        let missing: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.code() == "E1700_RESOURCE_DECLARATION_REQUIRED")
+            .filter_map(|d| d.field("key"))
+            .collect();
+        assert_eq!(
+            missing,
+            // Reported in the order docs/41 section 6 lists the keys.
+            [
+                "stack",
+                "allocation",
+                "tasks",
+                "workers",
+                "sync",
+                "shared",
+                "cleanup",
+                "recursion",
+                "imports"
+            ]
+        );
+        assert!(diagnostics.iter().all(|d| d.stage() == Stage::Resource));
+    }
+
+    #[test]
+    fn checker_reports_unknown_and_repeated_resource_keys() {
+        let text = "module system.boot version 1.0 profile bootstrap; \
+             resource [fuel: 1000, fuel: 2000, budget: 1, stack: 4, allocation: 4KiB, tasks: 1, \
+             workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0] \
+             fn main() -> i32 { return 0i32; }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        let codes: Vec<(&str, Option<&str>)> = diagnostics
+            .iter()
+            .map(|d| (d.code(), d.field("key")))
+            .collect();
+        assert_eq!(
+            codes,
+            [
+                ("E1703_DUPLICATE_RESOURCE_DECLARATION", Some("fuel")),
+                ("E1704_UNKNOWN_RESOURCE_LIMIT", Some("budget")),
+                // `stack` takes a size, and 4 is an integer.
+                ("E1704_UNKNOWN_RESOURCE_LIMIT", Some("stack")),
+            ]
+        );
+        assert_eq!(diagnostics[2].field("expected"), Some("size"));
+    }
+
+    #[test]
+    fn checker_reports_a_duplicate_declared_field() {
+        let (source, diagnostics) = check("record Point [x: i32, x: i32]");
+        let duplicate = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1205_DUPLICATE_RECORD_FIELD")
+            .expect("duplicate field is reported");
+        assert_eq!(duplicate.stage(), Stage::Type);
+        assert_eq!(duplicate.field("field"), Some("x"));
+        assert_eq!(duplicate.span().text(&source), "x");
+        assert!(duplicate.field("first_declared_at").is_some());
+    }
+
+    #[test]
+    fn checker_reports_a_duplicate_constructor_argument_at_any_depth() {
+        let (_, diagnostics) = check(
+            "record Point [x: i32, y: i32] \
+             fn main() -> i32 { if (true) { let p: Point = Point(x: 1i32, x: 2i32, y: 3i32); } \
+             return 0i32; }",
+        );
+        let duplicate = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1205_DUPLICATE_RECORD_FIELD")
+            .expect("nested duplicate argument is reported");
+        assert_eq!(duplicate.field("field"), Some("x"));
     }
 
     #[test]
