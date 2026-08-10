@@ -1535,6 +1535,26 @@ mod tests {
     }
 
     #[test]
+    fn parser_builds_scope_and_cancellation_statements() {
+        let (source, outcome) = parse(
+            "fn main(task: Task<i32>) -> i32 { parallel { return 1i32; } \
+             defer { return 2i32; } unsafe { return 3i32; } cancel task; return 0i32; }",
+        );
+        let schema = outcome.into_accepted().expect("scope statements parse");
+        let statements = schema.functions()[0].body().statements();
+        assert_eq!(statements[0].form(), StatementForm::Parallel);
+        assert_eq!(statements[1].form(), StatementForm::Defer);
+        assert_eq!(statements[2].form(), StatementForm::Unsafe);
+        for statement in &statements[0..3] {
+            assert_eq!(statement.body().unwrap().statements().len(), 1);
+        }
+
+        let cancel = &statements[3];
+        assert_eq!(cancel.form(), StatementForm::Cancel);
+        assert_eq!(cancel.expression().unwrap().span().text(&source), "task");
+    }
+
+    #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists
         // close at a single token.

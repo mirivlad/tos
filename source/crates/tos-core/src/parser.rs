@@ -479,6 +479,10 @@ pub enum StatementForm {
     Loop,
     Break,
     Continue,
+    Parallel,
+    Cancel,
+    Defer,
+    Unsafe,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1729,6 +1733,45 @@ impl<'source> TokenCursor<'source> {
         ))
     }
 
+    /// Parses `parallel`, `defer` and `unsafe`, which each introduce a scope
+    /// around one executable block.
+    fn parse_scope_statement(
+        &mut self,
+        form: StatementForm,
+        word: &str,
+    ) -> Result<Statement, ParseError> {
+        let start = self.expect_word(word, ParseErrorCode::UnexpectedToken)?;
+        let body = self.parse_block()?;
+        Ok(Statement {
+            span: Span {
+                start: start.start(),
+                end: body.span.end(),
+            },
+            body: Some(body),
+            ..Statement::node(form, start)
+        })
+    }
+
+    /// Parses `cancel expression ;`.
+    ///
+    /// Cancellation is a request: docs/41 keeps it distinct from the consuming
+    /// `join`, so this statement does not discharge the task it names.
+    fn parse_cancel_statement(&mut self) -> Result<Statement, ParseError> {
+        let start = self.expect_word("cancel", ParseErrorCode::UnexpectedToken)?;
+        let expression = self.parse_expression()?;
+        let end = self.expect_kind(TokenKind::Semicolon, ParseErrorCode::UnexpectedToken)?;
+        Ok(Statement {
+            expression: Some(expression),
+            ..Statement::node(
+                StatementForm::Cancel,
+                Span {
+                    start: start.start(),
+                    end: end.end(),
+                },
+            )
+        })
+    }
+
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
         match self.current_text() {
             "let" => return self.parse_let_statement(),
@@ -1739,6 +1782,10 @@ impl<'source> TokenCursor<'source> {
             "loop" => return self.parse_loop_statement(),
             "break" => return self.parse_jump_statement(StatementForm::Break, "break"),
             "continue" => return self.parse_jump_statement(StatementForm::Continue, "continue"),
+            "parallel" => return self.parse_scope_statement(StatementForm::Parallel, "parallel"),
+            "defer" => return self.parse_scope_statement(StatementForm::Defer, "defer"),
+            "unsafe" => return self.parse_scope_statement(StatementForm::Unsafe, "unsafe"),
+            "cancel" => return self.parse_cancel_statement(),
             _ => {}
         }
         if self.current_text() != "return" {
