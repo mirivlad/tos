@@ -217,6 +217,33 @@ impl Diagnostic {
         }
     }
 
+    /// Builds a diagnostic from a span whose positions are already derived.
+    ///
+    /// Line and column come from the source text, so a diagnostic normally
+    /// needs it. A caller working from a derived module summary has the
+    /// positions and no longer has the tree — this is how it reports without
+    /// either retaining the source or inventing a position nobody computed.
+    pub fn at(
+        code: &'static str,
+        severity: Severity,
+        stage: Stage,
+        span: Span,
+        start: Position,
+        end: Position,
+    ) -> Diagnostic {
+        Diagnostic {
+            code,
+            severity,
+            stage,
+            span,
+            start,
+            end,
+            module: None,
+            fields: Vec::new(),
+            causes: Vec::new(),
+        }
+    }
+
     /// Attaches the identity of the module this diagnostic belongs to.
     pub fn with_module(mut self, module: ModuleIdentity) -> Diagnostic {
         self.module = Some(Box::new(module));

@@ -26,7 +26,8 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use crate::parser::{ImportKind, Schema};
+use crate::parser::Schema;
+use crate::summary::ModuleSummary;
 use crate::{Checker, Diagnostic, ModuleIdentity, Severity, SourceUnit, Stage};
 
 /// One module of a source set: its canonical repository path and parsed tree.
@@ -124,6 +125,20 @@ impl<'source> ModuleEntry<'source> {
         ModuleIdentity::new(self.declared_name(), self.path.clone(), content_id)
     }
 
+    /// The compact derived view set-wide resolution reads.
+    ///
+    /// Nothing the summary holds borrows the tree, so a caller may drop the
+    /// parse tree as soon as this returns — which is the point.
+    pub fn summarize(&self) -> ModuleSummary {
+        ModuleSummary::derive(
+            &self.path,
+            self.root,
+            self.dependency_set.as_deref(),
+            self.source,
+            self.schema,
+        )
+    }
+
     /// Runs the per-module checks with this module's identity attached.
     pub fn check(&self) -> Vec<Diagnostic> {
         let identity = self.identity();
@@ -170,11 +185,11 @@ struct Resolution {
 /// settles roots and only roots: a name declared twice inside one root has
 /// nothing ordering it, and several declared dependency source sets offering
 /// one name have nothing ordering them either.
-fn resolve_names(modules: &[ModuleEntry]) -> Resolution {
+fn resolve_names(modules: &[ModuleSummary]) -> Resolution {
     let mut candidates: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (index, module) in modules.iter().enumerate() {
         candidates
-            .entry(module.declared_name())
+            .entry(module.name.clone())
             .or_default()
             .push(index);
     }
@@ -186,7 +201,12 @@ fn resolve_names(modules: &[ModuleEntry]) -> Resolution {
         // provides the name. Nothing orders dependencies against each other.
         let mut sets: BTreeSet<&str> = BTreeSet::new();
         for index in &found {
-            sets.insert(modules[*index].dependency_set().unwrap_or("<local>"));
+            sets.insert(
+                modules[*index]
+                    .dependency_set
+                    .as_deref()
+                    .unwrap_or("<local>"),
+            );
         }
         if sets.len() > 1 {
             ambiguous.insert(
@@ -204,7 +224,7 @@ fn resolve_names(modules: &[ModuleEntry]) -> Resolution {
         let mut by_root: BTreeMap<usize, usize> = BTreeMap::new();
         let mut repeated: Option<usize> = None;
         for index in &found {
-            let root = modules[*index].root();
+            let root = modules[*index].root;
             let count = by_root.entry(root).or_insert(0);
             *count += 1;
             if *count > 1 {
@@ -226,7 +246,7 @@ fn resolve_names(modules: &[ModuleEntry]) -> Resolution {
         // Otherwise the earliest declared root resolves it.
         let winner = found
             .iter()
-            .min_by_key(|index| modules[**index].root())
+            .min_by_key(|index| modules[**index].root)
             .copied()
             .expect("a name with candidates has at least one");
         resolved.insert(name, winner);
@@ -242,75 +262,60 @@ fn resolve_names(modules: &[ModuleEntry]) -> Resolution {
 /// Per-module checks stay with `Checker::check`; this adds only what needs more
 /// than one module to see.
 pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
+    let summaries: Vec<ModuleSummary> = modules.iter().map(ModuleEntry::summarize).collect();
+    check_module_summaries(&summaries)
+}
+
+/// Checks module identity and the import graph of a source set, over summaries.
+///
+/// This is the whole of set-wide resolution, and it reads a compact derived
+/// view of each module rather than its parse tree. A loader can therefore parse
+/// one module, summarize it, drop the tree, and hold only summaries while it
+/// resolves — which is what keeps a dependency closure's memory bounded by the
+/// closure's *interfaces* instead of by its bodies.
+///
+/// Per-module checks stay with `Checker::check`; this adds only what needs more
+/// than one module to see.
+pub fn check_module_summaries(modules: &[ModuleSummary]) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let resolution = resolve_names(modules);
     let by_name = &resolution.resolved;
 
     for module in modules {
-        let name = module.declared_name();
-        let expected = alloc::format!("{}.tos", name.replace('.', "/"));
+        let expected = alloc::format!("{}.tos", module.name.replace('.', "/"));
         if module.path != expected {
             diagnostics.push(
-                Diagnostic::new(
-                    "E1603_MODULE_PATH_MISMATCH",
-                    Severity::Error,
-                    Stage::Type,
-                    module.schema.outline().prefix().header().span(),
-                    module.source,
-                )
-                .with_module(module.identity())
-                .with_field("declared", name)
-                .with_field("path", module.path.clone())
-                .with_field("expected", expected),
+                located("E1603_MODULE_PATH_MISMATCH", Stage::Type, module.header)
+                    .with_module(module.identity())
+                    .with_field("declared", module.name.clone())
+                    .with_field("path", module.path.clone())
+                    .with_field("expected", expected),
             );
         }
     }
 
     for module in modules {
-        for import in module.schema.outline().prefix().imports() {
-            // A capability import names an interface contract rather than a
-            // module of this source set, so it is not resolved here.
-            if import.kind() == ImportKind::Capability {
-                continue;
-            }
-            let target = import
-                .path()
-                .iter()
-                .map(|segment| segment.text(module.source))
-                .collect::<Vec<_>>()
-                .join(".");
-            if let Some(collision) = resolution.ambiguous.get(&target) {
+        for import in module.module_imports() {
+            if let Some(collision) = resolution.ambiguous.get(&import.target) {
                 diagnostics.push(
-                    Diagnostic::new(
-                        "E1605_AMBIGUOUS_IMPORT",
-                        Severity::Error,
-                        Stage::Type,
-                        import.span(),
-                        module.source,
-                    )
-                    .with_module(module.identity())
-                    .with_field("import", target.clone())
-                    .with_field("importer", module.declared_name())
-                    .with_field("candidates", collision.candidates)
-                    .with_field("collision", collision.kind)
-                    .with_field("collided", collision.identities.join(", ")),
+                    located("E1605_AMBIGUOUS_IMPORT", Stage::Type, import.at)
+                        .with_module(module.identity())
+                        .with_field("import", import.target.clone())
+                        .with_field("importer", module.name.clone())
+                        .with_field("candidates", collision.candidates)
+                        .with_field("collision", collision.kind)
+                        .with_field("collided", collision.identities.join(", ")),
                 );
                 continue;
             }
-            if by_name.contains_key(&target) {
+            if by_name.contains_key(&import.target) {
                 continue;
             }
             diagnostics.push(
-                Diagnostic::new(
-                    "E1604_IMPORT_NOT_FOUND",
-                    Severity::Error,
-                    Stage::Type,
-                    import.span(),
-                    module.source,
-                )
-                .with_module(module.identity())
-                .with_field("import", target)
-                .with_field("importer", module.declared_name()),
+                located("E1604_IMPORT_NOT_FOUND", Stage::Type, import.at)
+                    .with_module(module.identity())
+                    .with_field("import", import.target.clone())
+                    .with_field("importer", module.name.clone()),
             );
         }
     }
@@ -318,6 +323,12 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
     check_qualified_types(modules, by_name, &mut diagnostics);
     diagnostics.extend(find_cycles(modules, by_name));
     diagnostics
+}
+
+/// A diagnostic at a span whose positions were derived when the source was in
+/// hand.
+fn located(code: &'static str, stage: Stage, at: crate::summary::Located) -> Diagnostic {
+    Diagnostic::at(code, Severity::Error, stage, at.span, at.start, at.end)
 }
 
 /// Resolves every qualified type name against the module its binding names.
@@ -328,41 +339,30 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
 /// (ADR-0034). A binding whose import itself does not resolve is already
 /// `E1604_IMPORT_NOT_FOUND` and is not reported twice.
 fn check_qualified_types(
-    modules: &[ModuleEntry],
+    modules: &[ModuleSummary],
     by_name: &BTreeMap<String, usize>,
     out: &mut Vec<Diagnostic>,
 ) {
     for module in modules {
         let mut targets: BTreeMap<&str, usize> = BTreeMap::new();
-        for import in module.schema.outline().prefix().imports() {
-            let path = import
-                .path()
-                .iter()
-                .map(|segment| segment.text(module.source))
-                .collect::<Vec<_>>()
-                .join(".");
-            if let Some(&index) = by_name.get(&path) {
-                targets.insert(import.binding().text(module.source), index);
+        for import in module.module_imports() {
+            if let Some(&index) = by_name.get(&import.target) {
+                targets.insert(import.binding.as_str(), index);
             }
         }
-        for (binding, name, span) in crate::types::qualified_type_uses(module.source, module.schema)
-        {
-            let Some(&index) = targets.get(binding) else {
+        for used in &module.qualified_uses {
+            let Some(&index) = targets.get(used.binding.as_str()) else {
                 continue;
             };
             let target = &modules[index];
-            let declared = crate::types::declared_type_names(target.source, target.schema);
-            if declared.contains(name) {
+            if target.declared_types.contains(&used.name) {
                 continue;
             }
             out.push(
-                crate::types::unknown_qualified_type(
-                    module.source,
-                    span,
-                    span.text(module.source).to_string(),
-                )
-                .with_module(module.identity())
-                .with_field("module", target.declared_name()),
+                located("E1203_UNKNOWN_TYPE_NAME", Stage::Type, used.at)
+                    .with_field("type", used.spelled.clone())
+                    .with_module(module.identity())
+                    .with_field("module", target.name.clone()),
             );
         }
     }
@@ -385,7 +385,7 @@ pub fn check_source_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
 ///
 /// The search starts from modules in declared-name order and follows imports in
 /// source order, so the reported path is the same on every run.
-fn find_cycles(modules: &[ModuleEntry], by_name: &BTreeMap<String, usize>) -> Vec<Diagnostic> {
+fn find_cycles(modules: &[ModuleSummary], by_name: &BTreeMap<String, usize>) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut settled: BTreeSet<usize> = BTreeSet::new();
     let mut reported: BTreeSet<Vec<usize>> = BTreeSet::new();
@@ -407,7 +407,7 @@ fn find_cycles(modules: &[ModuleEntry], by_name: &BTreeMap<String, usize>) -> Ve
 
 fn visit(
     index: usize,
-    modules: &[ModuleEntry],
+    modules: &[ModuleSummary],
     by_name: &BTreeMap<String, usize>,
     path: &mut Vec<usize>,
     settled: &mut BTreeSet<usize>,
@@ -425,20 +425,14 @@ fn visit(
         let module = &modules[cycle[0]];
         let names: Vec<String> = cycle
             .iter()
-            .map(|&member| modules[member].declared_name())
+            .map(|&member| modules[member].name.clone())
             .collect();
         let closed = alloc::format!("{} -> {}", names.join(" -> "), names[0]);
         out.push(
-            Diagnostic::new(
-                "E1606_IMPORT_CYCLE",
-                Severity::Error,
-                Stage::Type,
-                module.schema.outline().prefix().header().span(),
-                module.source,
-            )
-            .with_module(module.identity())
-            .with_field("cycle", closed)
-            .with_field("members", cycle.len()),
+            located("E1606_IMPORT_CYCLE", Stage::Type, module.header)
+                .with_module(module.identity())
+                .with_field("cycle", closed)
+                .with_field("members", cycle.len()),
         );
         return;
     }
@@ -447,15 +441,9 @@ fn visit(
     }
     path.push(index);
     let module = &modules[index];
-    for import in module.schema.outline().prefix().imports() {
-        let target = import
-            .path()
-            .iter()
-            .map(|segment| segment.text(module.source))
-            .collect::<Vec<_>>()
-            .join(".");
+    for import in module.module_imports() {
         // A missing import is E1604; it contributes no edge.
-        if let Some(&next) = by_name.get(&target) {
+        if let Some(&next) = by_name.get(&import.target) {
             visit(next, modules, by_name, path, settled, reported, out);
         }
     }

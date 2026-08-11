@@ -31,13 +31,14 @@ mod parser;
 mod place;
 mod profile;
 mod returns;
+mod summary;
 mod types;
 mod typing;
 
 pub use checker::Checker;
 pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
 pub use lower::{lower_module, Gap, ModuleContext, FRONTEND_IDENTITY};
-pub use modules::{check_module_set, check_source_set, ModuleEntry};
+pub use modules::{check_module_set, check_module_summaries, check_source_set, ModuleEntry};
 pub use parser::{
     Block, BorrowMode, CallArgument, ConstDeclaration, EnumDeclaration, EnumVariant,
     EnumVariantForm, Expression, ExpressionForm, FunctionDeclaration, FunctionParameter,
@@ -45,6 +46,7 @@ pub use parser::{
     Parser, Pattern, PatternForm, Profile, RecordDeclaration, RecordField, ResourceDeclaration,
     ResourceLimit, Schema, Span, Statement, StatementForm, TypeSyntax, TypeSyntaxForm, Visibility,
 };
+pub use summary::{ImportSummary, Located, ModuleSummary, QualifiedUse};
 pub use tos_ir::module_digest;
 
 mod unicode {

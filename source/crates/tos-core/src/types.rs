@@ -546,20 +546,3 @@ fn collect_qualified<'source>(
         }
     }
 }
-
-/// Builds the `E1203_UNKNOWN_TYPE_NAME` diagnostic for a qualified name whose
-/// module resolved but does not declare it.
-pub(crate) fn unknown_qualified_type(
-    source: &SourceUnit,
-    span: crate::parser::Span,
-    spelled: String,
-) -> Diagnostic {
-    Diagnostic::new(
-        "E1203_UNKNOWN_TYPE_NAME",
-        Severity::Error,
-        Stage::Type,
-        span,
-        source,
-    )
-    .with_field("type", spelled)
-}
