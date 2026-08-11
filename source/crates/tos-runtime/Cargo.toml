@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-runtime"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "RuntimeMemoryGrantV1 and the bounded reclaiming heap of the TOS Stage 2 reference runtime."
+publish = false
+
+[lib]
+name = "tos_runtime"
