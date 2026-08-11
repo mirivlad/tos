@@ -443,6 +443,11 @@ pub enum PlaceStep {
     Field(usize),
     /// A constant index, or `None` when the index is not a constant.
     Index(Option<u64>),
+    /// An index computed by a value of type `size`.
+    ///
+    /// Aliasing analysis treats it exactly like `Index(None)` — it may name any
+    /// element — while execution reads the value it names.
+    DynamicIndex(ValueId),
 }
 
 /// An operand of an operation.
@@ -515,6 +520,20 @@ pub enum Op {
         body: FunctionId,
         captures: Vec<Operand>,
     },
+    /// Builds a closure value over a lowered body and its captured operands.
+    ///
+    /// The captures are ordered and explicit: a closure carries exactly what
+    /// the source captured, and nothing reaches it by ambient scope.
+    Closure {
+        body: FunctionId,
+        captures: Vec<Operand>,
+    },
+    /// Calls a closure value. The callee is an operand of function type, not a
+    /// name resolved at run time, so no host symbol lookup is possible.
+    CallValue {
+        callee: Operand,
+        operands: Vec<Operand>,
+    },
     /// Consumes a `Task<T>` and produces a `TaskResult<T>`.
     Join {
         task: Operand,
@@ -548,11 +567,29 @@ pub enum Op {
         release: bool,
     },
     /// Registers a deferred cleanup body for this scope (docs/40 section 5).
+    ///
+    /// Registration is what the `cleanup` resource limit counts. It takes no
+    /// ownership: ADR-0035 makes the body run at the exit it belongs to.
     RegisterCleanup {
         body: FunctionId,
     },
-    /// Runs the cleanups registered on the path reaching here, in reverse order.
-    RunCleanups,
+    /// Runs cleanup bodies at one exit, in the order given.
+    ///
+    /// ADR-0035 makes cleanup lexical, so which bodies run at an exit is a
+    /// static fact and is written here rather than reconstructed from a runtime
+    /// stack. The list is already in reverse registration order. Each call
+    /// carries the operands it reads, and they are read *here*, at the exit,
+    /// which is what makes registration take no ownership.
+    RunCleanups {
+        calls: Vec<CleanupCall>,
+    },
+}
+
+/// One deferred cleanup body and the operands it reads where it runs.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CleanupCall {
+    pub body: FunctionId,
+    pub captures: Vec<Operand>,
 }
 
 /// One instruction: an optional typed result and the operation producing it.
@@ -564,7 +601,14 @@ pub struct Instruction {
     pub source: SourceRef,
     /// Set on an operation that lowers to a runtime call.
     pub runtime_contract: Option<String>,
-    /// Set inside an `unsafe` block, with the accepted interface ID.
+    /// Whether the operation sits inside an `unsafe` block.
+    ///
+    /// docs/43 section 3 separates the marker from the interface: an `unsafe`
+    /// block is an explicit marker on ordinary operations, while an interface
+    /// ID names an accepted FFI schema. V1 accepts no interface, so the two
+    /// must not be conflated.
+    pub unsafe_block: bool,
+    /// Set on an operation reaching an accepted external interface.
     pub unsafe_interface: Option<String>,
 }
 

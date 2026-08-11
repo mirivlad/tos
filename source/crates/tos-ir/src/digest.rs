@@ -361,6 +361,7 @@ fn write_instruction(out: &mut Writer, instruction: &Instruction) {
     out.count(instruction.ty);
     write_op(out, &instruction.op);
     out.count(instruction.source);
+    out.flag(instruction.unsafe_block);
     write_optional_text(out, instruction.runtime_contract.as_deref());
     write_optional_text(out, instruction.unsafe_interface.as_deref());
 }
@@ -409,6 +410,10 @@ fn write_place(out: &mut Writer, place: &Place) {
                 out.number(*index as u128);
             }
             PlaceStep::Index(None) => out.tag(2),
+            PlaceStep::DynamicIndex(value) => {
+                out.tag(3);
+                out.count(*value);
+            }
         }
     }
 }
@@ -558,7 +563,24 @@ fn write_op(out: &mut Writer, op: &Op) {
             out.tag(19);
             out.count(*body);
         }
-        Op::RunCleanups => out.tag(20),
+        Op::RunCleanups { calls } => {
+            out.tag(20);
+            out.count(calls.len());
+            for call in calls {
+                out.count(call.body);
+                write_operands(out, &call.captures);
+            }
+        }
+        Op::Closure { body, captures } => {
+            out.tag(21);
+            out.count(*body);
+            write_operands(out, captures);
+        }
+        Op::CallValue { callee, operands } => {
+            out.tag(22);
+            write_operand(out, callee);
+            write_operands(out, operands);
+        }
     }
 }
 

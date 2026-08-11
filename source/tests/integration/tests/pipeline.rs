@@ -276,6 +276,7 @@ fn a_value_moved_twice_on_one_path_is_rejected() {
             },
             source,
             runtime_contract: None,
+            unsafe_block: false,
             unsafe_interface: None,
         });
     }
@@ -305,6 +306,7 @@ fn a_bootstrap_module_that_awaits_is_rejected() {
         },
         source,
         runtime_contract: None,
+        unsafe_block: false,
         unsafe_interface: None,
     });
     expect_rejection(&module, "V2023_PROFILE");
@@ -328,6 +330,7 @@ fn an_unconsumed_child_task_is_rejected() {
         },
         source,
         runtime_contract: None,
+        unsafe_block: false,
         unsafe_interface: None,
     });
     expect_rejection(&module, "V2030_TASK_SCOPE");
@@ -353,6 +356,7 @@ fn an_illegal_atomic_order_is_rejected() {
         },
         source,
         runtime_contract: None,
+        unsafe_block: false,
         unsafe_interface: None,
     });
     expect_rejection(&module, "V2032_ATOMIC_ORDER");

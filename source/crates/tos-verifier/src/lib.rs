@@ -586,6 +586,17 @@ fn check_instruction(
                 std::format!("a place names value {} outside the table", place.root),
             ));
         }
+        for step in &place.path {
+            if let tos_ir::PlaceStep::DynamicIndex(value) = step {
+                if *value >= function.values.len() {
+                    return Err(Finding::new(
+                        "V2011_CFG",
+                        at,
+                        std::format!("an index names value {value} outside the table"),
+                    ));
+                }
+            }
+        }
     }
     match &instruction.op {
         Op::Call { target, .. } => match target {
@@ -618,12 +629,19 @@ fn check_instruction(
                 ));
             }
         }
-        Op::Spawn { body, .. } => {
+        Op::Spawn { body, captures } => {
             if *body >= module.functions.len() {
                 return Err(Finding::new(
                     "V2030_TASK_SCOPE",
                     at,
                     "a spawn names a body outside the function table",
+                ));
+            }
+            if captures.len() != module.functions[*body].signature.parameters.len() {
+                return Err(Finding::new(
+                    "V2030_TASK_SCOPE",
+                    at,
+                    "a spawned body is given a different number of captures than it declares",
                 ));
             }
         }
@@ -633,6 +651,69 @@ fn check_instruction(
                     "V2011_CFG",
                     at,
                     "a cleanup names a body outside the function table",
+                ));
+            }
+        }
+        Op::RunCleanups { calls } => {
+            // docs/41 section 6 bounds live cleanups by the declared envelope,
+            // so an exit cannot run more of them than the module reserved.
+            if calls.len() as u128 > module.header.resource_envelope.cleanup {
+                return Err(Finding::new(
+                    "V2022_RESOURCE",
+                    at,
+                    std::format!(
+                        "{} cleanups at one exit exceeds the declared limit of {}",
+                        calls.len(),
+                        module.header.resource_envelope.cleanup
+                    ),
+                ));
+            }
+            for call in calls {
+                if call.body >= module.functions.len() {
+                    return Err(Finding::new(
+                        "V2011_CFG",
+                        at,
+                        "a cleanup names a body outside the function table",
+                    ));
+                }
+                if module.functions[call.body].signature.parameters.len() != call.captures.len() {
+                    return Err(Finding::new(
+                        "V2011_CFG",
+                        at,
+                        "a cleanup is given a different number of operands than it declares",
+                    ));
+                }
+            }
+        }
+        Op::Closure { body, captures } => {
+            if *body >= module.functions.len() {
+                return Err(Finding::new(
+                    "V2011_CFG",
+                    at,
+                    "a closure names a body outside the function table",
+                ));
+            }
+            // A closure carries exactly what it declares: nothing reaches its
+            // body by ambient scope, and nothing it needs is missing.
+            let declared = module.functions[*body].signature.parameters.len();
+            if captures.len() > declared {
+                return Err(Finding::new(
+                    "V2011_CFG",
+                    at,
+                    "a closure carries more captures than its body declares",
+                ));
+            }
+        }
+        Op::CallValue { callee, .. } => {
+            let ty = operand_type(module, function, callee);
+            if !matches!(
+                ty.and_then(|ty| module.type_of(ty)),
+                Some(TypeDef::Function(_, _))
+            ) {
+                return Err(Finding::new(
+                    "V2010_TYPE",
+                    at,
+                    "a value call names an operand that is not of function type",
                 ));
             }
         }
@@ -743,11 +824,18 @@ fn check_ownership_and_profile(module: &Module) -> Result<(), Finding> {
             }
             for block in &function.blocks {
                 for instruction in &block.instructions {
-                    if matches!(instruction.op, Op::Await { .. }) {
+                    // docs/44 section 7 lists the Full-only constructs; a
+                    // Bootstrap module may not contain their IR either.
+                    let full_only = match &instruction.op {
+                        Op::Await { .. } => Some("await"),
+                        Op::Closure { .. } => Some("a closure"),
+                        _ => None,
+                    };
+                    if let Some(what) = full_only {
                         return Err(Finding::new(
                             "V2023_PROFILE",
                             std::format!("function {index}"),
-                            "await is Full-profile only",
+                            std::format!("{what} is Full-profile only"),
                         ));
                     }
                 }
@@ -775,41 +863,40 @@ fn overlaps(one: &tos_ir::Place, other: &tos_ir::Place) -> bool {
         .all(|(left, right)| match (left, right) {
             (tos_ir::PlaceStep::Field(a), tos_ir::PlaceStep::Field(b)) => a == b,
             (tos_ir::PlaceStep::Index(Some(a)), tos_ir::PlaceStep::Index(Some(b))) => a == b,
-            (tos_ir::PlaceStep::Index(_), tos_ir::PlaceStep::Index(_)) => true,
+            // An index that is not a compile-time constant may name any
+            // element, so it overlaps every other index step.
+            (
+                tos_ir::PlaceStep::Index(_) | tos_ir::PlaceStep::DynamicIndex(_),
+                tos_ir::PlaceStep::Index(_) | tos_ir::PlaceStep::DynamicIndex(_),
+            ) => true,
             _ => false,
         })
 }
 
 // ------------------------------------------------------------------ step 8
 
+/// Task scope, atomic orders and unsafe interface claims.
+///
+/// docs/41 section 2 requires every spawned child to be consumed before its
+/// scope exits. The obligation travels with the handle: a `spawn` creates one,
+/// a move or read of the place holding it passes it on to whatever the
+/// instruction produces, and joining, awaiting, returning or handing it to
+/// another operation discharges it. `cancel` alone does not, which is the one
+/// case docs/41 states outright.
 fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
     for (index, function) in module.functions.iter().enumerate() {
         let at = std::format!("function {index}");
-        let mut spawned: BTreeSet<usize> = BTreeSet::new();
-        let mut consumed: BTreeSet<usize> = BTreeSet::new();
+        let mut pending: BTreeSet<usize> = BTreeSet::new();
         for block in &function.blocks {
             for instruction in &block.instructions {
-                match &instruction.op {
-                    Op::Spawn { .. } => {
-                        if let Some(result) = instruction.result {
-                            spawned.insert(result);
-                        }
-                    }
-                    Op::Join { task } | Op::Await { task } => {
-                        if let Operand::Value(value) = task {
-                            consumed.insert(*value);
-                        }
-                    }
-                    // docs/41 section 2: cancel consumes no ownership, so it
-                    // does not discharge the scope obligation.
-                    Op::Cancel { .. } => {}
-                    Op::Atomic {
-                        operation,
-                        order,
-                        failure_order,
-                        ..
-                    } => check_atomic(*operation, *order, *failure_order, &at)?,
-                    _ => {}
+                if let Op::Atomic {
+                    operation,
+                    order,
+                    failure_order,
+                    ..
+                } = &instruction.op
+                {
+                    check_atomic(*operation, *order, *failure_order, &at)?;
                 }
                 if let Some(interface) = &instruction.unsafe_interface {
                     // docs/44 section 7: V1 accepts no FFI interface schema.
@@ -819,9 +906,42 @@ fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
                         std::format!("{interface} is not an accepted V1 interface"),
                     ));
                 }
+                if matches!(instruction.op, Op::Cancel { .. }) {
+                    continue;
+                }
+                // Whatever this instruction touches, it takes the handle from.
+                let mut carried = false;
+                for operand in operands_of(&instruction.op) {
+                    if let Operand::Value(value) = operand {
+                        carried |= pending.remove(&value);
+                    }
+                }
+                for place in places_of(&instruction.op) {
+                    carried |= pending.remove(&place.root);
+                }
+                // A move or read of the whole place passes the handle to what
+                // this instruction produces; a join or await ends it.
+                let passes_on = matches!(
+                    instruction.op,
+                    Op::Move { .. } | Op::Read { .. } | Op::Borrow { .. }
+                );
+                if let Some(result) = instruction.result {
+                    // A spawn creates the obligation; a move or read of a place
+                    // that held one passes it to what this produces.
+                    let holds =
+                        matches!(instruction.op, Op::Spawn { .. }) || (carried && passes_on);
+                    if holds {
+                        pending.insert(result);
+                    }
+                }
+            }
+            for operand in terminator_operands(&block.terminator) {
+                if let Operand::Value(value) = operand {
+                    pending.remove(&value);
+                }
             }
         }
-        if let Some(task) = spawned.difference(&consumed).next() {
+        if let Some(task) = pending.iter().next() {
             return Err(Finding::new(
                 "V2030_TASK_SCOPE",
                 &at,
@@ -1054,6 +1174,16 @@ fn operands_of(op: &Op) -> Vec<Operand> {
         }
         Op::Capability { operands, .. } => operands.clone(),
         Op::Resource { amount, .. } => std::vec![amount.clone()],
+        Op::Closure { captures, .. } => captures.clone(),
+        Op::CallValue { callee, operands } => {
+            let mut all = std::vec![callee.clone()];
+            all.extend(operands.iter().cloned());
+            all
+        }
+        Op::RunCleanups { calls } => calls
+            .iter()
+            .flat_map(|call| call.captures.iter().cloned())
+            .collect(),
         _ => Vec::new(),
     }
 }
