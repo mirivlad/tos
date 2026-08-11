@@ -2,11 +2,15 @@
 
 # ADR-0037: TOS Core V1 region and DMA-region transferability
 
-- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Status: **Proposed (revision 2)** — `Region<mut T>` as a narrow V1 type form
+  approved in principle by the Project Architect; this text needs approval
 - Date: 2026-08-11
 - Decision level: 2 — fixes the `Transferable`, shareable and mutable facts of
   two accepted V1 type constructors
 - Project Architect approval: *(pending)*
+- Supersedes: revision 1, whose transfer and share model let a shareable DMA
+  region become `Shared<DmaRegion<T>>` and be copied into several tasks, which
+  would have gone around the very rule it was written to state
 
 ## Context
 
@@ -32,30 +36,52 @@ grant that produced them:
 
 ```text
 Region<T>          an immutably granted region: readable, shareable, Transferable
-Region<mut T>      a mutably granted region: readable and writable, not shareable,
-                   not Transferable
-DmaRegion<T>       as Region<T>, and additionally never Transferable
-DmaRegion<mut T>   as Region<mut T>
+Region<mut T>      a mutably granted region: readable and writable,
+                   not shareable, not Transferable
+DmaRegion<T>       an immutably granted device-visible region
+DmaRegion<mut T>   a mutably granted device-visible region
 ```
 
 `mut` inside the type argument is the only place V1 admits it in a type, and it
 is admitted for exactly these two constructors. It is not a general mutability
 qualifier and introduces no `mut T` elsewhere.
 
-### 2. The three facts
+### 2. The four facts
 
-| Type | `Copy` | shareable | mutable | `Transferable` |
+| Type | `Copy` | mutable | Shareable | `Transferable` |
 |---|---|---|---|---|
-| `Region<T>` | no | yes | no | yes |
-| `Region<mut T>` | no | no | yes | no |
-| `DmaRegion<T>` | no | yes | no | no |
-| `DmaRegion<mut T>` | no | no | yes | no |
+| `Region<T>` | no | no | yes | yes |
+| `Region<mut T>` | no | yes | no | no |
+| `DmaRegion<T>` | no | no | **no** | **no** |
+| `DmaRegion<mut T>` | no | yes | no | no |
 
-A DMA region is never `Transferable` in V1 regardless of mode: it names device-
-visible memory, and moving that across a task boundary is a decision the device
-and driver model has to make, not the language.
+Both DMA variants are conservative in V1. Making `DmaRegion<T>` shareable would
+let it become `Shared<DmaRegion<T>>`, and a `Shared<T>` is `Copy`, so the handle
+could then be copied into several tasks — which is exactly the crossing the rule
+"a DMA region never crosses a task boundary" exists to forbid. A narrower
+statement that can be walked around is worse than none. Wider DMA sharing or
+transfer may arrive later through a typed driver or device contract that says
+what makes it safe; it is not something the language grants by default.
 
-### 3. Diagnostics
+### 3. Sharing is an explicit typed operation, never an implicit copy
+
+`Region<T>` is affine like every other non-`Copy` value, so its handle has one
+owner. `Transferable` means that ownership may move into **exactly one** task —
+not that the handle may be duplicated.
+
+Using one region from several tasks is written:
+
+```text
+share(region)  ->  Shared<Region<T>>
+```
+
+`Shared<T>` is the `Copy` handle `docs/40` already defines, so the copies the
+several tasks hold are copies of a `Shared`, produced by a typed operation that
+appears in the source and in the IR. There is no path where an affine region
+handle is silently duplicated because two tasks happened to name it: that would
+make an ownership transfer look like a read.
+
+### 4. Diagnostics
 
 No new code. Capturing a non-`Transferable` region into a task is
 `E1304_INVALID_TASK_CAPTURE` with `reason=mutable region` or `reason=DMA
@@ -65,30 +91,41 @@ reasons. Writing through a `Region<T>` is `E1201_ASSIGN_TO_IMMUTABLE`.
 `V2021_REGION` gains these as verifier rules, so the IR carries the mode in its
 type table and the verifier rechecks it rather than trusting the frontend.
 
-### 4. Conformance evidence
+### 5. Conformance evidence
 
-At least: a positive sharing a `Region<T>` between two tasks; a negative
-capturing a `Region<mut T>` into a task; a negative capturing a `DmaRegion<T>`
-into a task; a negative writing through a `Region<T>`; and a positive writing
-through a `Region<mut T>`.
+At least: a positive moving a `Region<T>` into one task; a positive sharing one
+through `share(region)` and using the `Shared<Region<T>>` from two tasks; a
+negative capturing a `Region<T>` handle into two tasks without `share`; a
+negative capturing a `Region<mut T>` into a task; a negative capturing a
+`DmaRegion<T>` into a task; a negative applying `share` to a `DmaRegion<T>`; a
+negative writing through a `Region<T>`; and a positive writing through a
+`Region<mut T>`. Each capture and share negative has a forged-IR counterpart for
+`V2021_REGION`, so the checker and the verifier prove the same rule
+independently.
 
 ## Architecture impact statement
 
 - **Change level:** 2. **Invariants affected:** none amended.
 - **Canonical representation:** unchanged; no accepted source uses a region
   today, so nothing becomes invalid.
-- **Threat-model impact:** positive: a mutable region crossing a task boundary
-  is the shared-mutable case `docs/44` section 3 requires a negative for, and it
-  becomes decidable.
+- **Threat-model impact:** positive on both counts. A mutable region crossing a
+  task boundary is the shared-mutable case `docs/44` section 3 requires a
+  negative for, and it becomes decidable. Keeping both DMA variants
+  non-shareable closes the route by which a device-visible region could have
+  reached several tasks through a `Copy` handle.
 - **Compatibility profile:** TOS Core 1.0.
-- **Tests:** the five conformance cases, checker unit tests per row of the
-  table, and verifier negatives for `V2021_REGION`.
+- **Tests:** the eight conformance cases of section 5, checker unit tests per
+  row of the table and for `share`, and verifier negatives for `V2021_REGION`.
 
 ## Consequences
 
-Region rules become checkable, and the shared-mutable negative the threat model
-requires becomes expressible in source. The cost is one narrow syntactic
-extension, `mut` inside two type arguments.
+Region rules become checkable, the shared-mutable negative the threat model
+requires becomes expressible in source, and sharing is something a reader can
+see rather than something that happens because two tasks named the same handle.
+
+The cost is one narrow syntactic extension — `mut` inside two type arguments —
+and a deliberately conservative DMA model that a later typed device contract
+will have to widen explicitly.
 
 ## Alternatives considered
 
@@ -100,3 +137,13 @@ consulting an external contract the language does not name.
 **Two more constructors, `MutRegion<T>` and `MutDmaRegion<T>`.** Rejected: four
 names for two concepts, and the relationship between them would be spelled
 nowhere.
+
+**Let `Transferable` also mean shareable, so several tasks may hold a region.**
+Rejected: it makes a duplication of an affine handle invisible, and the number
+of holders would depend on how many tasks named it rather than on an operation
+in the source.
+
+**Make `DmaRegion<T>` shareable, since it is immutable.** Rejected: a
+`Shared<DmaRegion<T>>` is `Copy`, so shareability is transitively a way across
+the task boundary the DMA rule forbids. V1 stays conservative and a typed device
+contract widens it later if it can say why that is safe.

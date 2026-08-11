@@ -2,11 +2,15 @@
 
 # ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles
 
-- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Status: **Proposed (revision 2)** — the code and the precedence are approved
+  in principle by the Project Architect; this text needs approval
 - Date: 2026-08-11
 - Decision level: 2 — allocates a diagnostic code conformance evidence will
   depend on
 - Project Architect approval: *(pending)*
+- Supersedes: revision 1, whose type set wrongly included `TaskResult<T>` — an
+  ordinary affine result value with predeclared constructors — and omitted
+  `Shared<T>`, which only a typed `share` contract may produce
 
 ## Context
 
@@ -35,10 +39,24 @@ that V1 makes nonconstructible from source. The operations are:
 - a constructor call naming one of them;
 - a record or aggregate literal naming one of them as its constructor.
 
-The nonconstructible types are: `Task<T>`, `TaskResult<T>`, `Region<T>`,
+The nonconstructible types are: `Task<T>`, `Shared<T>`, `Region<T>`,
 `DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, `Event`, `Semaphore`,
-`Barrier`, `Latch`, the three atomic types, the three guard types of ADR-0036,
-`slice<T>`, and any function or closure type.
+`Barrier`, `Latch`, the three atomic types, `slice<T>`, and any function or
+closure type.
+
+`TaskResult<T>` is **not** among them. `docs/39` section 2 gives `Completed` and
+`Cancelled` as predeclared constructors in expression position, so a
+`TaskResult<T>` is an ordinary affine result value that source is meant to
+build. What may not be fabricated is the `Task<T>` a join consumes, not the
+value the join produces.
+
+`Shared<T>` **is** among them. `docs/40` makes it the handle a typed `share`
+contract yields; a cast or constructor producing one would manufacture sharing
+that no operation granted.
+
+The three guard types of ADR-0036 join this set when that ADR is accepted. They
+are named here rather than assumed, because until it is accepted they do not
+exist and this list would be citing types the contract does not have.
 
 The diagnostic carries the type as spelled and which operation attempted it.
 
@@ -63,9 +81,11 @@ This code is about constructing one out of data, never about holding one.
 ### 4. Conformance evidence
 
 At least: a negative casting an integer to `Task<i32>`; a negative casting a
-`Mutex<i32>` to an integer; a negative calling a constructor on `Event`; and a
-positive obtaining a task from `spawn` and using it, proving the code does not
-fire on the legitimate path.
+`Mutex<i32>` to an integer; a negative calling a constructor on `Event`; a
+negative constructing a `Shared<i32>`; a positive building a `TaskResult<T>`
+with `Completed` and `Cancelled`, proving the code does not fire on a value
+source is meant to build; and a positive obtaining a task from `spawn` and using
+it, proving it does not fire on the legitimate path either.
 
 ## Architecture impact statement
 
@@ -79,8 +99,9 @@ fire on the legitimate path.
   of integer data is the same class of forgery as fabricating a capability, and
   it was silently accepted.
 - **Compatibility profile:** TOS Core 1.0.
-- **Tests:** the four conformance cases, checker unit tests for each operation
-  and for the precedence against `E1212` and `E1502`, and the mechanical gate.
+- **Tests:** the six conformance cases, checker unit tests for each operation,
+  for every type in the set, for `TaskResult<T>` staying outside it, and for the
+  precedence against `E1212` and `E1502`, and the mechanical gate.
 
 ## Consequences
 

@@ -1,25 +1,35 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 
-# Stage 2 performance record — P1, locally measured
+# Stage 2 performance record — native-host half of the pair
 
 Produced by `source/tests/performance-core`. Reproduce with:
 
 ```bash
-cargo run --manifest-path source/Cargo.toml -p tos-core-performance --release
+cargo run --manifest-path source/Cargo.toml -p tos-core-performance --release -- --profile native
 ```
 
-**Evidence level: P1 (locally measured).** docs/35 assigns evidence levels
-P0 unmeasured design, P1 locally measured, P2 reproducible CI measurement,
-P3 independently reproduced, and says no stage closes on P0 for a metric
-assigned to that stage. This record lifts the two Stage 2 metrics off P0.
-It is **not** the declared reference-platform measurement a stage gate
-needs: this machine is not that platform, and asserting a budget from it
-would be a fabricated pass. The Stage 2 performance gate stays open.
+## What this is, and what it is not
+
+ADR-0040 (**Proposed**) fixes the Stage 2 reference platform as the same
+q35/qemu64/one-vCPU/256-MiB/TCG profile Stage 1 already mandates, and reads
+the docs/35 execution budget as a ratio of that platform's time to the
+native-host time of the *same* engine at the *same* commit.
+
+This file is the **native half** of that pair. It is the denominator, not a
+gate result. The reference half is not taken yet: running this harness under
+the ADR-0040 profile needs the engine to execute inside that profile, which
+is the remaining work. Presenting this as a reference-platform pass would be
+a fabricated PASS, so it is not presented as one.
+
+The harness is **told** which profile it ran under and records what it was
+told. It never concludes that whatever machine it happens to be on is the
+reference platform — choosing the platform after seeing the number is what
+ADR-0040 exists to prevent.
 
 ## Environment
 
 ```text
-source commit   a2cedfa (working tree at measurement)
+source commit   8f76bc1 (working tree at measurement)
 toolchain       rustc 1.97.1 (8bab26f4f 2026-07-14)
 profile         release, opt-level 2, lto true, panic abort
 kernel          Linux 6.5.0-1mx-ahs-amd64
@@ -31,35 +41,39 @@ cache state     cold process, no derived-artifact cache in the path
 ## Samples
 
 ```text
+TOS Core Stage 2 measurement harness
+profile: native (declared, not inferred — ADR-0040)
+evidence level: P1 native-host baseline; it is the denominator of the ratio, not a gate
 sampling: 3 warmups, 21 samples, median/p95/p99 in microseconds
 
 fixture: canonical module of 262069 bytes, content sha256:6298c4f6df5f1c209644da02169e9beb590651e2859f4b645826b82fe5cf86a2
 parse + check + lower + verify, 256 KiB module
-  median 145031 us, p95 146719 us, p99 152367 us, min 143022 us, max 152367 us
-  raw samples (us): 143022 143381 143410 143866 144616 144799 144855 144912 144958 144974 145031 145041 145054 145414 145458 146513 146570 146662 146712 146719 152367
+  median 137004 us, p95 141335 us, p99 143878 us, min 133067 us, max 143878 us
+  raw samples (us): 133067 133407 133967 134659 134837 134869 135730 135894 136475 136568 137004 137296 137310 137326 137652 138852 139016 140396 140654 141335 143878
   docs/35 budget: 500 ms p95 on the reference platform
 one-million-operation integer/control-flow benchmark
-  median 333423 us, p95 348204 us, p99 394669 us, min 331201 us, max 394669 us
-  raw samples (us): 331201 331570 332298 332932 333041 333072 333087 333112 333329 333333 333423 333992 334193 334309 334884 339479 342087 342350 343444 348204 394669
+  median 310375 us, p95 314610 us, p99 314733 us, min 305412 us, max 314733 us
+  raw samples (us): 305412 306485 306700 306904 306917 307894 308576 308659 308991 309625 310375 310398 310655 310753 311335 311813 312182 312337 312672 314610 314733
   docs/35 budget: within 10x a host reference interpreter
+  this is the native baseline; pass --baseline 314610 to the reference-profile run to obtain the ratio
 reject a quota-exceeding module
-  median 57683 us, p95 58328 us, p99 58726 us, min 57383 us, max 58726 us
-  raw samples (us): 57383 57415 57425 57425 57434 57539 57559 57593 57620 57627 57683 57779 57784 57809 57832 57890 58103 58162 58168 58328 58726
-  rejection/acceptance p95 ratio: 0.398 (docs/35 budget: at most 2.000)
+  median 55220 us, p95 59123 us, p99 64124 us, min 52870 us, max 64124 us
+  raw samples (us): 52870 53055 53207 53372 53375 54051 54401 54703 54707 55097 55220 55578 55654 55730 55865 56635 56704 57687 57893 59123 64124
+  rejection/acceptance p95 ratio: 0.418 (docs/35 budget: at most 2.000)
 
-This record is P1. Closing the docs/35 Stage 2 gate needs the same
-procedure on the declared reference platform, retained as raw samples.
+This is the native half of the pair. Closing the docs/35 Stage 2 gate
+needs the same procedure under the ADR-0040 reference profile, with
+both halves retained as raw samples.
 ```
 
 ## Reading
 
-The frontend-to-receipt path over a 256 KiB canonical module sits well
-inside the 500 ms p95 budget on this machine, and rejecting a
-quota-exceeding input of the same size costs less than the accepted input
-rather than degrading — the ratio docs/35 bounds at 2.0 is 0.4 here.
+The frontend-to-receipt path over a 256 KiB canonical module is well inside
+the 500 ms p95 budget here, and rejecting a quota-exceeding input **of the
+same size** costs 0.4 of the accepted input against a bound of 2.0 — the
+comparison is against a comparable input on purpose, because docs/35 bounds
+a rejection by the accepted-input budget.
 
-The one-million-operation benchmark has no comparison recorded: docs/35
-states it relative to "the host reference interpreter time under the same
-semantic implementation", and no such second implementation exists yet, so
-the ratio the budget is written against cannot be computed. The absolute
-number is retained so the comparison can be made when one does.
+The execution ratio is not computed here. It needs the reference half, and
+the harness prints the `--baseline` value to carry across so the quotient
+is never shown without the measurement it came from.
