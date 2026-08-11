@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `b37dfc8ca00c8112042d80726be5d8a690e71fd54503ba215a99201a4c6f3e21`  
+Source-manifest SHA-256: `ae9a008198f20b05e7a86fda3b513b9452c70a2ad252228fa0854ada4df0bf30`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1536,7 +1536,7 @@ Emitted before the outcome on a completed run.
 | Identifier | Required fields | Meaning |
 |---|---|---|
 | `TOS.RUN.VERIFIED` | `module=` `digest=sha256:<64 hex>` `verifier=` | The independent verifier issued a receipt for this exact module. |
-| `TOS.RUN.ACCOUNTING` | `fuel=` `depth=` `tasks=` `allocation=` `cleanup=` `workers=`, each `used/limit` | What the run consumed against what the module declared. |
+| `TOS.RUN.ACCOUNTING` | `fuel=` `depth=` `tasks=` `allocation=` `cleanup=` `workers=`, each `used/limit` | What the run consumed against what the module declared. `shared=` and `sync=` are appended in the same form. |
 
 `digest` is the complete `tos-ir/v1` module digest, and the engine ran the
 module that digest names — a receipt for another module is refused before any
