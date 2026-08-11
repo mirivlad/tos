@@ -490,3 +490,142 @@ fn the_task_budget_bounds_how_many_children_may_start() {
         .expect_err("a second child exceeds a budget of one");
     assert_eq!(trap.code, "RUNTIME_TASK_LIMIT");
 }
+
+// docs/41 section 6 runtime accounting: a reservation is checked before the
+// thing it pays for happens, so a module that would exceed its envelope never
+// produces the effect at all.
+
+#[test]
+fn allocation_is_charged_where_a_value_is_built() {
+    let (module, receipt) = pipeline(
+        "pub record Point [x: i32, y: i32] \
+         pub fn build() -> Point { return Point(x: 1i32, y: 2i32); }",
+    );
+    let outcome = run(&module, &receipt, "build", vec![])
+        .expect("the entry exists")
+        .expect("no trap");
+    let accounting = Accounting::of(&module, &outcome);
+    assert!(
+        accounting.allocation_peak > 0,
+        "constructing a record must charge the allocation budget"
+    );
+    assert!(accounting.allocation_peak <= accounting.allocation_limit);
+}
+
+#[test]
+fn an_allocation_beyond_the_envelope_fails_before_the_value_exists() {
+    let text = "module app.sample version 1.0 profile bootstrap; \
+         resource [fuel: 10000, stack: 64KiB, allocation: 0B, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0] \
+         pub record Point [x: i32, y: i32] \
+         pub fn build() -> Point { return Point(x: 1i32, y: 2i32); }";
+    let trap = trap_in(text, "build", vec![]);
+    assert_eq!(trap.code, "RUNTIME_ALLOCATION_LIMIT");
+}
+
+#[test]
+fn a_frame_releases_what_it_allocated_when_it_returns() {
+    // Each call charges and releases, so a bounded program stays bounded
+    // however many times it calls. A budget that held only one record would
+    // trap on the second call if release did not happen.
+    let (module, receipt) = pipeline(
+        "pub record Point [x: i32, y: i32] \
+         fn one() -> Point { return Point(x: 1i32, y: 2i32); } \
+         pub fn many() -> i32 { let a = one(); let b = one(); let c = one(); return 0i32; }",
+    );
+    let outcome = run(&module, &receipt, "many", vec![])
+        .expect("the entry exists")
+        .expect("repeated calls must stay inside the budget");
+    let accounting = Accounting::of(&module, &outcome);
+    assert!(accounting.allocation_peak <= accounting.allocation_limit);
+}
+
+#[test]
+fn a_registered_cleanup_is_charged_and_released_where_it_runs() {
+    let (module, receipt) = full_pipeline(
+        "pub record Cell [value: i32] \
+         fn bump(cell: Cell) -> Cell { return Cell(value: cell.value + 1i32); } \
+         pub fn main() -> i32 { let mut cell = Cell(value: 0i32); \
+         if (true) { defer { cell = bump(cell); } } return cell.value; }",
+    );
+    let outcome = run(&module, &receipt, "main", vec![])
+        .expect("the entry exists")
+        .expect("no trap");
+    let accounting = Accounting::of(&module, &outcome);
+    assert_eq!(
+        accounting.cleanups_peak, 1,
+        "one registration was live at a time"
+    );
+    assert!(accounting.cleanups_peak <= accounting.cleanup_limit);
+}
+
+#[test]
+fn a_cleanup_beyond_the_envelope_never_reaches_the_engine() {
+    // The verifier bounds cleanups per exit statically, so a module declaring
+    // `cleanup: 0` is refused before a receipt exists. That is a stronger place
+    // to catch it than the runtime charge, and the runtime charge still stands
+    // behind it for anything the static bound cannot see.
+    let text = "module app.sample version 1.0 profile full; \
+         resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 0, recursion: 8, imports: 0] \
+         pub record Cell [value: i32] \
+         fn bump(cell: Cell) -> Cell { return Cell(value: cell.value + 1i32); } \
+         pub fn main() -> i32 { let mut cell = Cell(value: 0i32); \
+         defer { cell = bump(cell); } return cell.value; }";
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("parses");
+    assert!(Checker::check(&source, &schema).is_empty());
+    let context = ModuleContext {
+        source_set: String::from("tos-execution-tests"),
+        path: String::from("app/sample.tos"),
+        content_id: content_id(text.as_bytes()),
+        dependency_digest: String::from("sha256:0000"),
+        capability_interface_digest: String::from("sha256:0000"),
+    };
+    let module = lower_module(&source, &schema, &context).expect("lowers");
+    let finding = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect_err("a cleanup budget of zero admits no registration");
+    assert_eq!(finding.code, "V2022_RESOURCE");
+}
+
+#[test]
+fn the_run_reserves_one_execution_context_against_the_declared_budget() {
+    // Bootstrap serializes, so exactly one context is reserved, and it is
+    // reserved before any instruction runs. `workers: 0` cannot be reached from
+    // valid source — the frontend rejects it — so the reservation is observed
+    // through the accounting rather than through a trap.
+    let (module, receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
+    let outcome = run(&module, &receipt, "answer", vec![])
+        .expect("the entry exists")
+        .expect("no trap");
+    let accounting = Accounting::of(&module, &outcome);
+    assert_eq!(accounting.workers_reserved, 1);
+    assert!(accounting.workers_reserved <= accounting.worker_limit);
+}
+
+/// Runs whole module text and requires it to trap.
+fn trap_in(text: &str, entry: &str, arguments: Vec<Value>) -> tos_engine::Trap {
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("parses");
+    assert!(
+        Checker::check(&source, &schema).is_empty(),
+        "the fixture must be checked source"
+    );
+    let context = ModuleContext {
+        source_set: String::from("tos-execution-tests"),
+        path: String::from("app/sample.tos"),
+        content_id: content_id(text.as_bytes()),
+        dependency_digest: String::from("sha256:0000"),
+        capability_interface_digest: String::from("sha256:0000"),
+    };
+    let module = lower_module(&source, &schema, &context).expect("lowers");
+    let receipt =
+        verify(&module, &ResolutionSnapshot::default(), &Limits::default()).expect("verifies");
+    run(&module, &receipt, entry, arguments)
+        .expect("the entry exists")
+        .expect_err("the fixture must trap")
+}
