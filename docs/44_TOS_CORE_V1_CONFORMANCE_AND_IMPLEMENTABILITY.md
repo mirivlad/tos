@@ -292,6 +292,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1702_PROFILE_NOT_SUPPORTED` | a `profile bootstrap` module uses a Full-profile construct — `async fn`, `spawn async`, `await`, a closure, `defer`, `unsafe` or `extern` — or declares `workers` greater than 1; the first such feature in source order is reported |
 | `E1700_RESOURCE_DECLARATION_REQUIRED` | the module resource declaration omits one of the ten required keys of section 6 of docs/41 |
 | `E1703_DUPLICATE_RESOURCE_DECLARATION` | a resource declaration is made more than once, whether as a second `resource` item or as a repeated key inside one |
+| `E1708_UNBOUNDED_CLEANUP` | a declared type's cleanup has no finite documented bound. V1 source has no drop-contract declaration form (docs/39 section 4), so no V1 module can raise this condition; it is registered for the contract that introduces one |
 | `E1701_UNMETERED_LOOP` | a loop has neither a statically proven finite bound nor fuel to meter its back edges: a `while` or bare `loop` in a module declaring `fuel: 0`. A `for` is bounded by the length of the sequence it iterates |
 | `E1704_UNKNOWN_RESOURCE_LIMIT` | a resource key is not one of the required keys, or its value is not the literal class that key takes |
 

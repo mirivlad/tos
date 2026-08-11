@@ -1,0 +1,7 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.unsupported_language_version version 2.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// V1 frontends accept source-language major version 1 only.
+pub fn main() -> unit { }
