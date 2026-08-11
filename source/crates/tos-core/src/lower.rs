@@ -24,15 +24,15 @@
 //! lowering would produce IR whose semantics the source does not have, and a
 //! verifier cannot detect that because the IR would be internally consistent.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::string::{String, ToString};
 use std::vec::Vec;
 
 use tos_ir::{
-    BinaryOp, Block, CallTarget, Constant, Function, FunctionOrigin, Header, Instruction, IntKind,
-    Module, NominalKind, Op, Operand, Parameter, PassMode, Place, PlaceStep, Profile,
-    ResourceEnvelope, Signature, SourceMapEntry, Terminator, TypeDef, TypeId, UnaryOp, ValueId,
-    Variant, Visibility,
+    BinaryOp, Block, CallTarget, CleanupCall, Constant, Function, FunctionOrigin, Header,
+    Instruction, IntKind, Module, NominalKind, Op, Operand, Parameter, PassMode, Place, PlaceStep,
+    Profile, ResourceEnvelope, Signature, SourceMapEntry, Terminator, TypeDef, TypeId, UnaryOp,
+    ValueId, Variant, Visibility,
 };
 
 use crate::parser::{
@@ -103,6 +103,7 @@ pub fn lower_module(
         nominals: BTreeMap::new(),
         variant_owner: BTreeMap::new(),
         functions_by_name: BTreeMap::new(),
+        functions: Vec::new(),
     };
 
     lowerer.intern_declared_types()?;
@@ -142,11 +143,17 @@ pub fn lower_module(
             .insert(function.signature().name().text(source).to_string(), index);
     }
 
-    let mut functions: Vec<Function> = Vec::new();
-    for function in schema.functions() {
-        let lowered = lowerer.lower_function(function.signature(), function.body())?;
-        functions.push(lowered);
+    // A declaration reserves its slot before any body is lowered, so a local
+    // call resolves whatever order the source declared functions in and a
+    // nested body appended later never shifts a declaration's index.
+    for _ in schema.functions() {
+        lowerer.functions.push(placeholder());
     }
+    for (index, function) in schema.functions().iter().enumerate() {
+        let lowered = lowerer.lower_function(function.signature(), function.body())?;
+        lowerer.functions[index] = lowered;
+    }
+    let functions = std::mem::take(&mut lowerer.functions);
 
     let exports = functions
         .iter()
@@ -217,8 +224,15 @@ fn canonicalize_functions(module: &mut Module) {
                         target: CallTarget::Local(index),
                         ..
                     } => *index = moved.get(*index).copied().unwrap_or(*index),
-                    Op::Spawn { body, .. } | Op::RegisterCleanup { body } => {
+                    Op::Spawn { body, .. }
+                    | Op::Closure { body, .. }
+                    | Op::RegisterCleanup { body } => {
                         *body = moved.get(*body).copied().unwrap_or(*body)
+                    }
+                    Op::RunCleanups { calls } => {
+                        for call in calls {
+                            call.body = moved.get(call.body).copied().unwrap_or(call.body);
+                        }
                     }
                     _ => {}
                 }
@@ -276,6 +290,27 @@ fn canonicalize_source_map(module: &mut Module) {
     }
 }
 
+/// A reserved slot, replaced before the module is returned.
+fn placeholder() -> Function {
+    Function {
+        signature: Signature {
+            name: String::new(),
+            visibility: Visibility::Private,
+            is_async: false,
+            parameters: Vec::new(),
+            result: 0,
+            effects: Vec::new(),
+        },
+        origin: FunctionOrigin::Declared,
+        source: 0,
+        stack_contribution: 0,
+        fuel_contribution: 0,
+        cleanup_contribution: 0,
+        values: Vec::new(),
+        blocks: Vec::new(),
+    }
+}
+
 struct Lowerer<'source> {
     source: &'source SourceUnit,
     schema: &'source Schema,
@@ -292,6 +327,9 @@ struct Lowerer<'source> {
     /// Enum variant name to its owning type and index.
     variant_owner: BTreeMap<String, (TypeId, usize)>,
     functions_by_name: BTreeMap<String, usize>,
+    /// Functions in the order they were lowered: declarations first, with each
+    /// nested body appended where the walk reached it.
+    functions: Vec<Function>,
 }
 
 impl<'source> Lowerer<'source> {
@@ -576,9 +614,6 @@ impl<'source> Lowerer<'source> {
         signature: &'source crate::parser::FunctionSignature,
         body: &'source crate::parser::Block,
     ) -> Result<Function, Gap> {
-        if signature.is_async() {
-            return Err(self.gap("async function", signature.span()));
-        }
         let mut parameters = Vec::new();
         let mut values: Vec<TypeId> = Vec::new();
         let mut scope: Vec<(String, ValueId)> = Vec::new();
@@ -595,7 +630,15 @@ impl<'source> Lowerer<'source> {
             scope.push((name.clone(), slot));
             parameters.push(Parameter { name, ty, mode });
         }
-        let result = self.resolve_type(signature.result())?;
+        let declared = self.resolve_type(signature.result())?;
+        // docs/40 section 4: an `async fn` declared `-> T` produces `Task<T>`,
+        // so the declaration's own result is the task and its body is the child
+        // the declaration spawns.
+        let result = if signature.is_async() {
+            self.intern(TypeDef::Task(declared))
+        } else {
+            declared
+        };
         let effects = signature
             .effects()
             .iter()
@@ -607,7 +650,7 @@ impl<'source> Lowerer<'source> {
                 crate::parser::Visibility::Public => Visibility::Public,
                 crate::parser::Visibility::Private => Visibility::Private,
             },
-            is_async: false,
+            is_async: signature.is_async(),
             parameters,
             result,
             effects,
@@ -616,6 +659,7 @@ impl<'source> Lowerer<'source> {
         let entry_source = self.map(signature.span());
         let mut builder = BodyBuilder {
             values,
+            in_unsafe: false,
             blocks: std::vec![Block {
                 parameters: Vec::new(),
                 instructions: Vec::new(),
@@ -626,8 +670,28 @@ impl<'source> Lowerer<'source> {
             scope,
             loops: Vec::new(),
             result,
+            cleanups: Vec::new(),
         };
-        self.lower_block(body, &mut builder)?;
+        if signature.is_async() {
+            // The declaration's own body is one instruction: spawn the child
+            // that carries the work, and return its handle.
+            let name = self.body_name("async", signature.span());
+            let (id, captures) =
+                self.lower_captured_body(&name, Vec::new(), body, declared, &mut builder)?;
+            let task = builder.define(result);
+            builder.push(Instruction {
+                result: Some(task),
+                ty: result,
+                op: Op::Spawn { body: id, captures },
+                source: entry_source,
+                unsafe_block: false,
+                unsafe_interface: None,
+                runtime_contract: Some(String::from("tos-runtime/task/v1")),
+            });
+            builder.set_terminator(Terminator::Return(Some(Operand::Value(task))));
+        } else {
+            self.lower_block(body, &mut builder)?;
+        }
         // A body that falls off its end returns unit; a non-unit function
         // reaching here was already `E1221_MISSING_RETURN`.
         if !builder.is_terminated() {
@@ -647,6 +711,353 @@ impl<'source> Lowerer<'source> {
         })
     }
 
+    /// The type a nested body returns, read from its own `return` statements.
+    ///
+    /// docs/39 gives a closure or spawned body no result annotation, and V1 has
+    /// no inference; the body says what it produces with an explicit `return`,
+    /// which is exactly what this reads.
+    fn body_result(&mut self, body: &'source crate::parser::Block) -> Option<TypeId> {
+        let expression = first_returned_expression(body)?;
+        self.static_expression_type(expression)
+    }
+
+    /// The type of an expression that a declaration already fixes.
+    ///
+    /// Only forms whose type is stated by a declaration are answered: a
+    /// literal, a call to a declared function, a constructor. Anything else
+    /// returns nothing, and the caller falls back rather than guessing.
+    fn static_expression_type(&mut self, expression: &'source Expression) -> Option<TypeId> {
+        match expression.form() {
+            ExpressionForm::Literal => {
+                let constant = self.literal_constant(expression).ok()?;
+                Some(self.constant_type(constant))
+            }
+            ExpressionForm::Group => self.static_expression_type(expression.inner()?),
+            ExpressionForm::Binary => {
+                let operator = expression.operator_text(self.source)?;
+                let op = binary_op(operator)?;
+                if op.is_comparison() {
+                    return Some(self.intern(TypeDef::Bool));
+                }
+                self.static_expression_type(expression.left()?)
+            }
+            ExpressionForm::Call => {
+                let callee = expression.callee()?;
+                if callee.form() != ExpressionForm::Name {
+                    return None;
+                }
+                let name = callee.span().text(self.source).to_string();
+                if let Some(&(ty, _)) = self.nominals.get(&name) {
+                    return Some(ty);
+                }
+                let index = *self.functions_by_name.get(&name)?;
+                let result = self.schema.functions()[index].signature().result();
+                self.resolve_type(result).ok()
+            }
+            ExpressionForm::Name => {
+                let name = expression.span().text(self.source);
+                let &(ty, _) = self.variant_owner.get(name)?;
+                Some(ty)
+            }
+            _ => None,
+        }
+    }
+
+    fn constant_type(&mut self, constant: usize) -> TypeId {
+        let definition = match self.constants.get(constant) {
+            Some(Constant::Bool(_)) => TypeDef::Bool,
+            Some(Constant::Int(kind, _)) => TypeDef::Int(*kind),
+            Some(Constant::Size(_)) => TypeDef::Size,
+            Some(Constant::Duration(_)) => TypeDef::Duration,
+            Some(Constant::Text(_)) => TypeDef::Text,
+            Some(Constant::Bytes(_)) => TypeDef::Bytes,
+            _ => TypeDef::Unit,
+        };
+        self.intern(definition)
+    }
+
+    // ---------------------------------------------------------- nested bodies
+
+    /// A deterministic name for a body lowered out of a source construct.
+    ///
+    /// The byte offset makes it unique and stable, and `#` keeps it out of the
+    /// identifier space, so a synthetic name can never collide with a declared
+    /// function or be called by source.
+    fn body_name(&self, kind: &str, span: Span) -> String {
+        std::format!("#{kind}@{}", span.start())
+    }
+
+    fn cleanup_name(&self, span: Span) -> String {
+        self.body_name("defer", span)
+    }
+
+    /// Lowers a nested block into its own function and returns it with the
+    /// operands the enclosing scope must pass.
+    ///
+    /// A nested body is its own return scope (docs/43 section 3), so it becomes
+    /// a real function rather than inlined blocks. What it uses from the
+    /// enclosing scope becomes explicit ordered captures naming the enclosing
+    /// slots: nothing reaches a nested body by ambient scope.
+    fn lower_captured_body(
+        &mut self,
+        name: &str,
+        declared: Vec<(String, TypeId)>,
+        body: &'source crate::parser::Block,
+        result: TypeId,
+        outer: &mut BodyBuilder,
+    ) -> Result<(usize, Vec<Operand>), Gap> {
+        self.lower_captured_body_with(name, declared, body, result, PassMode::Owned, outer)
+    }
+
+    /// As [`Self::lower_captured_body`], with the mode captures are passed in.
+    ///
+    /// A closure or a spawned child takes what it captures, so its captures are
+    /// owned. A deferred cleanup acts on the bindings of the scope it runs in,
+    /// so ADR-0035 makes its captures mutable borrows of those bindings: what
+    /// one cleanup leaves is what the next one and the scope observe.
+    fn lower_captured_body_with(
+        &mut self,
+        name: &str,
+        declared: Vec<(String, TypeId)>,
+        body: &'source crate::parser::Block,
+        result: TypeId,
+        capture_mode: PassMode,
+        outer: &mut BodyBuilder,
+    ) -> Result<(usize, Vec<Operand>), Gap> {
+        let mut bound: BTreeSet<String> = declared.iter().map(|(name, _)| name.clone()).collect();
+        let mut free: Vec<String> = Vec::new();
+        collect_free_names(self.source, body, &mut bound, &mut free);
+
+        let mut parameters = Vec::new();
+        let mut values: Vec<TypeId> = Vec::new();
+        let mut scope: Vec<(String, ValueId)> = Vec::new();
+        for (name, ty) in &declared {
+            let slot = values.len();
+            values.push(*ty);
+            scope.push((name.clone(), slot));
+            parameters.push(Parameter {
+                name: name.clone(),
+                ty: *ty,
+                mode: PassMode::Owned,
+            });
+        }
+        let mut captures: Vec<Operand> = Vec::new();
+        for name in &free {
+            let Some(slot) = outer.lookup(name) else {
+                // Not a binding of the enclosing scope: a module item, a
+                // constructor or a predeclared name, which the body resolves
+                // for itself.
+                continue;
+            };
+            let ty = outer.values.get(slot).copied().unwrap_or(result);
+            let captured = values.len();
+            values.push(ty);
+            scope.push((name.clone(), captured));
+            parameters.push(Parameter {
+                name: name.clone(),
+                ty,
+                mode: capture_mode,
+            });
+            captures.push(Operand::Value(slot));
+        }
+
+        let source = self.map(body.span());
+        let mut nested = BodyBuilder {
+            values,
+            in_unsafe: outer.in_unsafe,
+            blocks: std::vec![Block {
+                parameters: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Trap(String::from("RUNTIME_UNREACHABLE")),
+                source,
+            }],
+            current: 0,
+            scope,
+            loops: Vec::new(),
+            result,
+            cleanups: Vec::new(),
+        };
+        self.lower_block(body, &mut nested)?;
+        if !nested.is_terminated() {
+            nested.set_terminator(Terminator::Return(None));
+        }
+
+        let envelope = self.resource_envelope();
+        let id = self.functions.len();
+        self.functions.push(Function {
+            signature: Signature {
+                name: name.to_string(),
+                visibility: Visibility::Private,
+                is_async: false,
+                parameters,
+                result,
+                effects: Vec::new(),
+            },
+            origin: FunctionOrigin::LoweredBody,
+            source,
+            stack_contribution: envelope.stack,
+            fuel_contribution: envelope.fuel,
+            cleanup_contribution: envelope.cleanup,
+            values: nested.values,
+            blocks: nested.blocks,
+        });
+        Ok((id, captures))
+    }
+
+    /// Lowers `for pattern in (sequence) { ... }` to an explicit counted loop.
+    ///
+    /// docs/39 gives `for` a sequence to walk, so the loop is over its indices:
+    /// a counter, a bound read from the sequence, a bounds comparison and an
+    /// indexed read that binds the pattern. Nothing is implicit, which is what
+    /// makes the back edge and the iteration count verifier-visible.
+    fn lower_for(
+        &mut self,
+        statement: &'source Statement,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<(), Gap> {
+        let Some(sequence) = statement.expression() else {
+            return Err(self.gap("for without a sequence", statement.span()));
+        };
+        let sequence = self.lower_expression(sequence, builder)?;
+        let sequence_type = builder.type_of(&sequence);
+        let (element, length) = match self.types.get(sequence_type) {
+            Some(TypeDef::Array(element, length)) => (*element, *length),
+            // A slice has a runtime length, which V1 gives no source form to
+            // read, so it is not lowered rather than guessed at.
+            _ => {
+                return Err(self.gap(
+                    "for over a sequence without a static length",
+                    statement.span(),
+                ))
+            }
+        };
+
+        let size = self.intern(TypeDef::Size);
+        let bool_type = self.intern(TypeDef::Bool);
+        let zero = self.intern_constant(Constant::Size(0));
+        let one = self.intern_constant(Constant::Size(1));
+        let bound = self.intern_constant(Constant::Size(length as u128));
+
+        let counter = builder.define(size);
+        builder.push(Instruction {
+            result: Some(counter),
+            ty: size,
+            op: Op::Const(zero),
+            source: at,
+            unsafe_block: builder.in_unsafe,
+            unsafe_interface: None,
+            runtime_contract: None,
+        });
+
+        let head_block = builder.new_block(at);
+        let body_block = builder.new_block(at);
+        let exit_block = builder.new_block(at);
+        builder.set_terminator(Terminator::Branch {
+            target: head_block,
+            arguments: Vec::new(),
+        });
+
+        builder.current = head_block;
+        let more = builder.define(bool_type);
+        builder.push(Instruction {
+            result: Some(more),
+            ty: bool_type,
+            op: Op::Binary {
+                op: BinaryOp::Less,
+                left: Operand::Value(counter),
+                right: Operand::Constant(bound),
+            },
+            source: at,
+            unsafe_block: builder.in_unsafe,
+            unsafe_interface: None,
+            runtime_contract: None,
+        });
+        builder.set_terminator(Terminator::BranchIf {
+            condition: Operand::Value(more),
+            true_target: body_block,
+            true_arguments: Vec::new(),
+            false_target: exit_block,
+            false_arguments: Vec::new(),
+        });
+
+        builder.current = body_block;
+        let depth = builder.scope.len();
+        let Operand::Value(root) = sequence else {
+            return Err(self.gap("for over a constant sequence", statement.span()));
+        };
+        let item = builder.define(element);
+        builder.push(Instruction {
+            result: Some(item),
+            ty: element,
+            op: Op::Read {
+                place: Place {
+                    root,
+                    path: std::vec![PlaceStep::DynamicIndex(counter)],
+                },
+            },
+            source: at,
+            unsafe_block: builder.in_unsafe,
+            unsafe_interface: None,
+            runtime_contract: None,
+        });
+        if let Some(pattern) = statement.pattern() {
+            if let Some(name) = pattern.name() {
+                builder
+                    .scope
+                    .push((name.text(self.source).to_string(), item));
+            }
+        }
+        builder.loops.push(LoopFrame {
+            head: head_block,
+            exit: exit_block,
+            cleanup_depth: builder.cleanups.len(),
+        });
+        if let Some(body) = statement.body() {
+            self.lower_block(body, builder)?;
+        }
+        builder.loops.pop();
+        builder.scope.truncate(depth);
+        if !builder.is_terminated() {
+            let next = builder.define(size);
+            builder.push(Instruction {
+                result: Some(next),
+                ty: size,
+                op: Op::Binary {
+                    op: BinaryOp::Add,
+                    left: Operand::Value(counter),
+                    right: Operand::Constant(one),
+                },
+                source: at,
+                unsafe_block: builder.in_unsafe,
+                unsafe_interface: None,
+                runtime_contract: None,
+            });
+            builder.push(Instruction {
+                result: None,
+                ty: size,
+                op: Op::Write {
+                    place: Place {
+                        root: counter,
+                        path: Vec::new(),
+                    },
+                    value: Operand::Value(next),
+                },
+                source: at,
+                unsafe_block: builder.in_unsafe,
+                unsafe_interface: None,
+                runtime_contract: None,
+            });
+            builder.set_terminator(Terminator::Branch {
+                target: head_block,
+                arguments: Vec::new(),
+            });
+        }
+
+        builder.current = exit_block;
+        Ok(())
+    }
+
     // ------------------------------------------------------------ statements
 
     fn lower_block(
@@ -655,14 +1066,46 @@ impl<'source> Lowerer<'source> {
         builder: &mut BodyBuilder,
     ) -> Result<(), Gap> {
         let depth = builder.scope.len();
+        builder.cleanups.push(Vec::new());
         for statement in block.statements() {
             if builder.is_terminated() {
                 break;
             }
             self.lower_statement(statement, builder)?;
         }
+        // Normal completion leaves this block, so its own cleanups run here.
+        if !builder.is_terminated() {
+            self.emit_cleanups(builder.cleanups.len() - 1, builder);
+        }
+        builder.cleanups.pop();
         builder.scope.truncate(depth);
         Ok(())
+    }
+
+    /// Emits the cleanups of every lexical block from `from` inward.
+    ///
+    /// ADR-0035 runs them in reverse registration order, and the innermost
+    /// block's cleanups run before an enclosing block's, so the whole suffix is
+    /// walked from the inside out.
+    fn emit_cleanups(&mut self, from: usize, builder: &mut BodyBuilder) {
+        let mut calls: Vec<CleanupCall> = Vec::new();
+        for scope in builder.cleanups[from..].iter().rev() {
+            calls.extend(scope.iter().rev().cloned());
+        }
+        if calls.is_empty() {
+            return;
+        }
+        let unit = self.unit_type();
+        let source = builder.blocks[builder.current].source;
+        builder.push(Instruction {
+            result: None,
+            ty: unit,
+            op: Op::RunCleanups { calls },
+            source,
+            unsafe_block: builder.in_unsafe,
+            unsafe_interface: None,
+            runtime_contract: None,
+        });
     }
 
     fn lower_statement(
@@ -700,15 +1143,19 @@ impl<'source> Lowerer<'source> {
                     op: Op::Write { place, value },
                     source: at,
                     runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
                     unsafe_interface: None,
                 });
                 Ok(())
             }
             StatementForm::Return => {
+                // ADR-0035: the action that caused the exit is evaluated first,
+                // then the cleanups of every block this return leaves.
                 let value = match statement.expression() {
                     Some(expression) => Some(self.lower_expression(expression, builder)?),
                     None => None,
                 };
+                self.emit_cleanups(0, builder);
                 builder.set_terminator(Terminator::Return(value));
                 Ok(())
             }
@@ -726,6 +1173,7 @@ impl<'source> Lowerer<'source> {
                 let Some(loop_frame) = builder.loops.last().copied() else {
                     return Err(self.gap("break outside a loop", statement.span()));
                 };
+                self.emit_cleanups(loop_frame.cleanup_depth, builder);
                 builder.set_terminator(Terminator::Branch {
                     target: loop_frame.exit,
                     arguments: Vec::new(),
@@ -736,6 +1184,7 @@ impl<'source> Lowerer<'source> {
                 let Some(loop_frame) = builder.loops.last().copied() else {
                     return Err(self.gap("continue outside a loop", statement.span()));
                 };
+                self.emit_cleanups(loop_frame.cleanup_depth, builder);
                 builder.set_terminator(Terminator::Branch {
                     target: loop_frame.head,
                     arguments: Vec::new(),
@@ -752,10 +1201,69 @@ impl<'source> Lowerer<'source> {
                     None => Ok(()),
                 }
             }
-            StatementForm::For => Err(self.gap("for statement", statement.span())),
-            StatementForm::Defer => Err(self.gap("defer statement", statement.span())),
-            StatementForm::Cancel => Err(self.gap("cancel statement", statement.span())),
-            StatementForm::Unsafe => Err(self.gap("unsafe block", statement.span())),
+            StatementForm::For => self.lower_for(statement, builder, at),
+            StatementForm::Defer => {
+                let Some(body) = statement.body() else {
+                    return Err(self.gap("defer without a body", statement.span()));
+                };
+                let unit = self.unit_type();
+                let (cleanup, captures) = self.lower_captured_body_with(
+                    &self.cleanup_name(statement.span()),
+                    Vec::new(),
+                    body,
+                    unit,
+                    PassMode::MutableBorrow,
+                    builder,
+                )?;
+                builder.push(Instruction {
+                    result: None,
+                    ty: unit,
+                    op: Op::RegisterCleanup { body: cleanup },
+                    source: at,
+                    unsafe_block: builder.in_unsafe,
+                    unsafe_interface: None,
+                    runtime_contract: None,
+                });
+                if let Some(scope) = builder.cleanups.last_mut() {
+                    // The operands name slots, so the cleanup reads their state
+                    // where it runs rather than where it registered.
+                    scope.push(CleanupCall {
+                        body: cleanup,
+                        captures,
+                    });
+                }
+                Ok(())
+            }
+            StatementForm::Cancel => {
+                let Some(expression) = statement.expression() else {
+                    return Err(self.gap("cancel without a task", statement.span()));
+                };
+                let task = self.lower_expression(expression, builder)?;
+                let unit = self.unit_type();
+                builder.push(Instruction {
+                    result: None,
+                    ty: unit,
+                    op: Op::Cancel { task },
+                    source: at,
+                    unsafe_block: builder.in_unsafe,
+                    unsafe_interface: None,
+                    runtime_contract: Some(String::from("tos-runtime/task/v1")),
+                });
+                Ok(())
+            }
+            StatementForm::Unsafe => {
+                // docs/43 section 3 separates the marker from an interface ID:
+                // an `unsafe` block marks ordinary operations, and V1 accepts
+                // no external interface for any of them to name.
+                let Some(body) = statement.body() else {
+                    return Ok(());
+                };
+                let outer = builder.in_unsafe;
+                builder.in_unsafe = true;
+                let outcome = self.lower_block(body, builder);
+                builder.in_unsafe = outer;
+                outcome
+            }
         }
     }
 
@@ -839,6 +1347,7 @@ impl<'source> Lowerer<'source> {
         builder.loops.push(LoopFrame {
             head: head_block,
             exit: exit_block,
+            cleanup_depth: builder.cleanups.len(),
         });
         if let Some(body) = statement.body() {
             self.lower_block(body, builder)?;
@@ -872,6 +1381,7 @@ impl<'source> Lowerer<'source> {
         builder.loops.push(LoopFrame {
             head: body_block,
             exit: exit_block,
+            cleanup_depth: builder.cleanups.len(),
         });
         if let Some(body) = statement.body() {
             self.lower_block(body, builder)?;
@@ -940,14 +1450,14 @@ impl<'source> Lowerer<'source> {
         }
         complete.sort_by_key(|(variant, _)| *variant);
         builder.set_terminator(Terminator::MatchEnum {
-            subject,
+            subject: subject.clone(),
             arms: complete,
         });
 
         for (arm_block, branch) in bodies {
             builder.current = arm_block;
             let depth = builder.scope.len();
-            self.bind_match_pattern(branch.pattern(), builder, at)?;
+            self.bind_match_pattern(branch.pattern(), &subject, builder, at)?;
             self.lower_block(branch.body(), builder)?;
             builder.scope.truncate(depth);
             if !builder.is_terminated() {
@@ -961,19 +1471,42 @@ impl<'source> Lowerer<'source> {
         Ok(())
     }
 
-    /// Binds the payload names of a match arm to the values they destructure.
+    /// Binds the names a match arm destructures out of the subject.
     ///
-    /// The payload is reached through the subject's place, so a binding is a
-    /// slot initialized from a field step rather than a fresh value.
+    /// A payload name reads the subject's place at the position the variant
+    /// declares, so the binding is the value that lives there rather than a
+    /// fresh one. A bare binding arm names the whole subject.
     fn bind_match_pattern(
         &mut self,
         pattern: &'source Pattern,
+        subject: &Operand,
         builder: &mut BodyBuilder,
         at: usize,
     ) -> Result<(), Gap> {
-        if pattern.form() != PatternForm::Destructure && pattern.form() != PatternForm::Name {
+        let Operand::Value(root) = subject else {
+            // A constant subject has no place to destructure; the checker
+            // already rejected a pattern that would need one.
+            return Ok(());
+        };
+        if pattern.form() == PatternForm::Name
+            && !pattern.is_qualified()
+            && pattern.elements().is_empty()
+        {
+            if let Some(name) = pattern.name() {
+                let spelled = name.text(self.source);
+                // A name that is a variant is a constructor, not a binding.
+                if self.variant_index(spelled).is_none() {
+                    builder.scope.push((spelled.to_string(), *root));
+                }
+            }
             return Ok(());
         }
+        if pattern.form() != PatternForm::Destructure {
+            return Ok(());
+        }
+        let variant = pattern
+            .name()
+            .and_then(|name| self.variant_index(name.text(self.source)));
         for (index, element) in pattern.elements().iter().enumerate() {
             let Some(name) = element.name() else {
                 continue;
@@ -981,22 +1514,54 @@ impl<'source> Lowerer<'source> {
             if element.form() != PatternForm::Name || element.is_qualified() {
                 continue;
             }
-            let unit = self.unit_type();
-            let slot = builder.define(unit);
+            let place = Place {
+                root: *root,
+                path: std::vec![PlaceStep::Field(index)],
+            };
+            let ty = self.payload_type(*root, variant, index, builder);
+            let slot = builder.define(ty);
             builder.push(Instruction {
                 result: Some(slot),
-                ty: unit,
-                op: Op::Const(self.intern_constant(Constant::Unit)),
+                ty,
+                op: Op::Read { place },
                 source: at,
                 runtime_contract: None,
+                unsafe_block: builder.in_unsafe,
                 unsafe_interface: None,
             });
-            let _ = index;
             builder
                 .scope
                 .push((name.text(self.source).to_string(), slot));
         }
         Ok(())
+    }
+
+    /// The declared type of one payload position of a variant.
+    fn payload_type(
+        &self,
+        root: ValueId,
+        variant: Option<usize>,
+        position: usize,
+        builder: &BodyBuilder,
+    ) -> TypeId {
+        let subject = builder.values.get(root).copied().unwrap_or(0);
+        match (self.types.get(subject), variant) {
+            (Some(TypeDef::Nominal { variants, .. }), Some(index)) => variants
+                .get(index)
+                .and_then(|variant| variant.payload.get(position))
+                .copied()
+                .unwrap_or(subject),
+            (Some(TypeDef::Option(inner)), _) => *inner,
+            (Some(TypeDef::TaskResult(inner)), _) => *inner,
+            (Some(TypeDef::Result(ok, error)), Some(index)) => {
+                if index == 0 {
+                    *ok
+                } else {
+                    *error
+                }
+            }
+            _ => subject,
+        }
     }
 
     fn variant_index(&self, name: &str) -> Option<usize> {
@@ -1055,6 +1620,7 @@ impl<'source> Lowerer<'source> {
                     },
                     source: at,
                     runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
                     unsafe_interface: None,
                 });
                 builder
@@ -1173,6 +1739,7 @@ impl<'source> Lowerer<'source> {
                         },
                         source: at,
                         runtime_contract: None,
+                        unsafe_block: builder.in_unsafe,
                         unsafe_interface: None,
                     });
                     return Ok(Operand::Value(value));
@@ -1189,6 +1756,7 @@ impl<'source> Lowerer<'source> {
                     op: Op::Read { place },
                     source: at,
                     runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
                     unsafe_interface: None,
                 });
                 Ok(Operand::Value(value))
@@ -1217,6 +1785,7 @@ impl<'source> Lowerer<'source> {
                     op: Op::Binary { op, left, right },
                     source: at,
                     runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
                     unsafe_interface: None,
                 });
                 Ok(Operand::Value(value))
@@ -1238,6 +1807,7 @@ impl<'source> Lowerer<'source> {
                         op: Op::Borrow { place, kind },
                         source: at,
                         runtime_contract: None,
+                        unsafe_block: builder.in_unsafe,
                         unsafe_interface: None,
                     });
                     return Ok(Operand::Value(value));
@@ -1263,6 +1833,7 @@ impl<'source> Lowerer<'source> {
                         },
                         source: at,
                         runtime_contract: Some(String::from("tos-runtime/task/v1")),
+                        unsafe_block: builder.in_unsafe,
                         unsafe_interface: None,
                     });
                     return Ok(Operand::Value(value));
@@ -1284,6 +1855,7 @@ impl<'source> Lowerer<'source> {
                     op: Op::Unary { op, operand },
                     source: at,
                     runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
                     unsafe_interface: None,
                 });
                 Ok(Operand::Value(value))
@@ -1307,6 +1879,7 @@ impl<'source> Lowerer<'source> {
                     op: Op::Widen { operand, to: kind },
                     source: at,
                     runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
                     unsafe_interface: None,
                 });
                 Ok(Operand::Value(value))
@@ -1328,6 +1901,7 @@ impl<'source> Lowerer<'source> {
                     op: Op::Aggregate { ty, operands },
                     source: at,
                     runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
                     unsafe_interface: None,
                 });
                 Ok(Operand::Value(value))
@@ -1348,6 +1922,7 @@ impl<'source> Lowerer<'source> {
                     op: Op::Aggregate { ty, operands },
                     source: at,
                     runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
                     unsafe_interface: None,
                 });
                 Ok(Operand::Value(value))
@@ -1384,12 +1959,63 @@ impl<'source> Lowerer<'source> {
                     },
                     source: at,
                     runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
                     unsafe_interface: None,
                 });
                 Ok(Operand::Value(value))
             }
-            ExpressionForm::Closure => Err(self.gap("closure", expression.span())),
-            ExpressionForm::Spawn => Err(self.gap("spawn", expression.span())),
+            ExpressionForm::Closure => {
+                let Some(body) = expression.body() else {
+                    return Err(self.gap("closure without a body", expression.span()));
+                };
+                let mut declared = Vec::new();
+                let mut parameter_types = Vec::new();
+                for parameter in expression.parameters() {
+                    let ty = self.resolve_type(parameter.ty())?;
+                    parameter_types.push(ty);
+                    declared.push((parameter.name().text(self.source).to_string(), ty));
+                }
+                // A closure body is its own return scope; its result is the
+                // type its declared function type gives it, and `unit` when the
+                // body produces nothing.
+                let result = self.body_result(body).unwrap_or_else(|| self.unit_type());
+                let name = self.body_name("closure", expression.span());
+                let (id, captures) =
+                    self.lower_captured_body(&name, declared, body, result, builder)?;
+                let ty = self.intern(TypeDef::Function(parameter_types, result));
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Closure { body: id, captures },
+                    source: at,
+                    unsafe_block: builder.in_unsafe,
+                    unsafe_interface: None,
+                    runtime_contract: None,
+                });
+                Ok(Operand::Value(value))
+            }
+            ExpressionForm::Spawn => {
+                let Some(body) = expression.body() else {
+                    return Err(self.gap("spawn without a body", expression.span()));
+                };
+                let payload = self.body_result(body).unwrap_or_else(|| self.unit_type());
+                let name = self.body_name("spawn", expression.span());
+                let (id, captures) =
+                    self.lower_captured_body(&name, Vec::new(), body, payload, builder)?;
+                let ty = self.intern(TypeDef::Task(payload));
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Spawn { body: id, captures },
+                    source: at,
+                    unsafe_block: builder.in_unsafe,
+                    unsafe_interface: None,
+                    runtime_contract: Some(String::from("tos-runtime/task/v1")),
+                });
+                Ok(Operand::Value(value))
+            }
         }
     }
 
@@ -1466,6 +2092,7 @@ impl<'source> Lowerer<'source> {
                 },
                 source: at,
                 runtime_contract: Some(String::from("tos-runtime/capability/v1")),
+                unsafe_block: builder.in_unsafe,
                 unsafe_interface: None,
             });
             return Ok(Operand::Value(value));
@@ -1505,6 +2132,7 @@ impl<'source> Lowerer<'source> {
                 },
                 source: at,
                 runtime_contract: None,
+                unsafe_block: builder.in_unsafe,
                 unsafe_interface: None,
             });
             return Ok(Operand::Value(value));
@@ -1570,6 +2198,7 @@ impl<'source> Lowerer<'source> {
             },
             source: at,
             runtime_contract: Some(String::from("tos-runtime/atomic/v1")),
+            unsafe_block: builder.in_unsafe,
             unsafe_interface: None,
         });
         Ok(Operand::Value(value))
@@ -1612,6 +2241,37 @@ impl<'source> Lowerer<'source> {
         }
         let name = callee.span().text(self.source).to_string();
 
+        // A name bound to a closure value calls that value, not a declared
+        // function: the callee is an operand, so no name is resolved at run
+        // time.
+        if let Some(slot) = builder.lookup(&name) {
+            let mut operands = Vec::new();
+            for argument in expression.arguments() {
+                operands.push(self.lower_expression(argument.value(), builder)?);
+            }
+            let ty = match self
+                .types
+                .get(builder.values.get(slot).copied().unwrap_or(0))
+            {
+                Some(TypeDef::Function(_, result)) => *result,
+                _ => self.unit_type(),
+            };
+            let value = builder.define(ty);
+            builder.push(Instruction {
+                result: Some(value),
+                ty,
+                op: Op::CallValue {
+                    callee: Operand::Value(slot),
+                    operands,
+                },
+                source: at,
+                unsafe_block: builder.in_unsafe,
+                unsafe_interface: None,
+                runtime_contract: None,
+            });
+            return Ok(Operand::Value(value));
+        }
+
         // A record constructor supplies named arguments in declared order.
         if let Some(&(ty, ref field_names)) = self.nominals.get(&name) {
             let field_names = field_names.clone();
@@ -1649,6 +2309,7 @@ impl<'source> Lowerer<'source> {
                 op: Op::Aggregate { ty, operands },
                 source: at,
                 runtime_contract: None,
+                unsafe_block: builder.in_unsafe,
                 unsafe_interface: None,
             });
             return Ok(Operand::Value(value));
@@ -1693,6 +2354,7 @@ impl<'source> Lowerer<'source> {
                     },
                     source: at,
                     runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
                     unsafe_interface: None,
                 });
                 return Ok(Operand::Value(value));
@@ -1721,6 +2383,7 @@ impl<'source> Lowerer<'source> {
             op: Op::Call { target, operands },
             source: at,
             runtime_contract: None,
+            unsafe_block: builder.in_unsafe,
             unsafe_interface: None,
         });
         Ok(Operand::Value(value))
@@ -1780,16 +2443,27 @@ fn is_predeclared_variant(name: &str) -> bool {
 struct LoopFrame {
     head: usize,
     exit: usize,
+    /// How many lexical cleanup scopes were open when the loop began, so a
+    /// `break` or `continue` runs the cleanups of exactly the blocks it leaves.
+    cleanup_depth: usize,
 }
 
 /// The blocks and values of one function under construction.
 struct BodyBuilder {
     values: Vec<TypeId>,
+    /// Whether the walk is inside an `unsafe` block, which marks every
+    /// operation it emits (docs/43 section 3).
+    in_unsafe: bool,
     blocks: Vec<Block>,
     current: usize,
     scope: Vec<(String, ValueId)>,
     loops: Vec<LoopFrame>,
     result: TypeId,
+    /// Cleanup bodies registered by `defer`, innermost lexical block last.
+    ///
+    /// ADR-0035 makes cleanup lexical, so what runs at an exit is the suffix
+    /// registered by the blocks that exit leaves, in reverse order.
+    cleanups: Vec<Vec<CleanupCall>>,
 }
 
 impl BodyBuilder {
@@ -1866,6 +2540,165 @@ fn binary_op(operator: &str) -> Option<BinaryOp> {
         "||" => BinaryOp::LogicalOr,
         _ => return None,
     })
+}
+
+/// Collects, in first-use order, the names a block uses but does not declare.
+///
+/// Declarations are lexical: a `let` covers the statements after it in its own
+/// block, and a nested block, branch, arm or loop pattern gets a child
+/// environment, so a name declared in one place never hides a use in a sibling.
+fn collect_free_names(
+    source: &SourceUnit,
+    block: &crate::parser::Block,
+    bound: &mut BTreeSet<String>,
+    free: &mut Vec<String>,
+) {
+    let mut scope = bound.clone();
+    for statement in block.statements() {
+        for expression in [statement.target(), statement.expression()]
+            .into_iter()
+            .flatten()
+        {
+            free_names_in_expression(source, expression, &scope, free);
+        }
+        if statement.form() == StatementForm::Let {
+            if let Some(pattern) = statement.pattern() {
+                declare_pattern_names(source, pattern, &mut scope);
+            }
+        }
+        let mut nested_scope = scope.clone();
+        if statement.form() == StatementForm::For {
+            if let Some(pattern) = statement.pattern() {
+                declare_pattern_names(source, pattern, &mut nested_scope);
+            }
+        }
+        for nested in [statement.body(), statement.else_body()]
+            .into_iter()
+            .flatten()
+        {
+            let mut child = nested_scope.clone();
+            collect_free_names(source, nested, &mut child, free);
+        }
+        if let Some(chained) = statement.else_if() {
+            let mut child = scope.clone();
+            free_names_in_statement(source, chained, &mut child, free);
+        }
+        for branch in statement.branches() {
+            let mut arm = scope.clone();
+            declare_pattern_names(source, branch.pattern(), &mut arm);
+            collect_free_names(source, branch.body(), &mut arm, free);
+        }
+    }
+}
+
+fn free_names_in_statement(
+    source: &SourceUnit,
+    statement: &Statement,
+    bound: &mut BTreeSet<String>,
+    free: &mut Vec<String>,
+) {
+    for expression in [statement.target(), statement.expression()]
+        .into_iter()
+        .flatten()
+    {
+        free_names_in_expression(source, expression, bound, free);
+    }
+    for nested in [statement.body(), statement.else_body()]
+        .into_iter()
+        .flatten()
+    {
+        let mut child = bound.clone();
+        collect_free_names(source, nested, &mut child, free);
+    }
+    if let Some(chained) = statement.else_if() {
+        let mut child = bound.clone();
+        free_names_in_statement(source, chained, &mut child, free);
+    }
+    for branch in statement.branches() {
+        let mut arm = bound.clone();
+        declare_pattern_names(source, branch.pattern(), &mut arm);
+        collect_free_names(source, branch.body(), &mut arm, free);
+    }
+}
+
+fn declare_pattern_names(source: &SourceUnit, pattern: &Pattern, bound: &mut BTreeSet<String>) {
+    match pattern.form() {
+        PatternForm::Name if !pattern.is_qualified() => {
+            if let Some(name) = pattern.name() {
+                bound.insert(name.text(source).to_string());
+            }
+        }
+        PatternForm::Destructure | PatternForm::Tuple => {
+            for element in pattern.elements() {
+                declare_pattern_names(source, element, bound);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn free_names_in_expression(
+    source: &SourceUnit,
+    expression: &Expression,
+    bound: &BTreeSet<String>,
+    free: &mut Vec<String>,
+) {
+    if expression.form() == ExpressionForm::Name {
+        let name = expression.span().text(source).to_string();
+        if !bound.contains(&name) && !free.contains(&name) {
+            free.push(name);
+        }
+        return;
+    }
+    for child in [
+        expression.left(),
+        expression.right(),
+        expression.inner(),
+        expression.callee(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        free_names_in_expression(source, child, bound, free);
+    }
+    for argument in expression.arguments() {
+        free_names_in_expression(source, argument.value(), bound, free);
+    }
+    for element in expression.elements() {
+        free_names_in_expression(source, element, bound, free);
+    }
+    if let Some(body) = expression.body() {
+        // A nested closure sees this environment plus its own parameters;
+        // whatever it uses freely is also free here.
+        let mut inner = bound.clone();
+        for parameter in expression.parameters() {
+            inner.insert(parameter.name().text(source).to_string());
+        }
+        collect_free_names(source, body, &mut inner, free);
+    }
+}
+
+/// The expression of the first `return` a block performs, if it has one.
+fn first_returned_expression(block: &crate::parser::Block) -> Option<&Expression> {
+    for statement in block.statements() {
+        if statement.form() == StatementForm::Return {
+            return statement.expression();
+        }
+        for nested in [statement.body(), statement.else_body()]
+            .into_iter()
+            .flatten()
+        {
+            if let Some(found) = first_returned_expression(nested) {
+                return Some(found);
+            }
+        }
+        for branch in statement.branches() {
+            if let Some(found) = first_returned_expression(branch.body()) {
+                return Some(found);
+            }
+        }
+    }
+    None
 }
 
 fn borrow_kind(operator: &str) -> Option<tos_ir::BorrowKind> {

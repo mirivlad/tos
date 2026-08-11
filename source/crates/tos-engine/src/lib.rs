@@ -59,6 +59,23 @@ pub enum Value {
         index: usize,
         payload: Vec<Value>,
     },
+    /// A closure: the body it runs and the values it captured, in order.
+    Closure {
+        body: usize,
+        captures: Vec<Value>,
+    },
+    /// A scoped child task.
+    ///
+    /// Bootstrap serializes parallel scopes (docs/43 section 7). This engine
+    /// serializes by deferring the child to its join rather than running it at
+    /// the spawn, which keeps `cancel` meaningful: a child cancelled before it
+    /// is joined never starts, and `Cancelled` is an outcome docs/41 section 2
+    /// allows.
+    Task {
+        body: usize,
+        captures: Vec<Value>,
+        cancelled: bool,
+    },
 }
 
 /// A defined failure of a dynamic language precondition (docs/41 section 7).
@@ -90,6 +107,7 @@ pub struct Outcome {
     pub value: Value,
     pub fuel_used: u128,
     pub max_call_depth: u128,
+    pub tasks_started: u128,
 }
 
 /// Why a module could not be run at all, before any instruction executed.
@@ -140,11 +158,14 @@ pub fn run(
         fuel_used: 0,
         depth: 0,
         max_depth: 0,
+        task_limit: envelope.tasks,
+        tasks_started: 0,
     };
     Ok(engine.call(index, arguments).map(|value| Outcome {
         value,
         fuel_used: engine.fuel_used,
         max_call_depth: engine.max_depth,
+        tasks_started: engine.tasks_started,
     }))
 }
 
@@ -155,6 +176,8 @@ struct Engine<'module> {
     fuel_used: u128,
     depth: u128,
     max_depth: u128,
+    task_limit: u128,
+    tasks_started: u128,
 }
 
 /// How a block finished.
@@ -181,7 +204,55 @@ impl Engine<'_> {
         Ok(())
     }
 
+    /// Calls a function and writes back what it changed through a borrow.
+    ///
+    /// A `borrow mut` parameter names the caller's place, and the borrow rules
+    /// guarantee no other alias is live for the duration of the call, so
+    /// copying in and copying out is observationally the same as a reference
+    /// and needs no aliasing machinery to be correct.
+    fn call_with_writeback(
+        &mut self,
+        index: usize,
+        arguments: Vec<Value>,
+        operands: &[Operand],
+        values: &mut [Option<Value>],
+        source: SourceRef,
+    ) -> Result<Value, Trap> {
+        let modes: Vec<tos_ir::PassMode> = self.module.functions[index]
+            .signature
+            .parameters
+            .iter()
+            .map(|parameter| parameter.mode)
+            .collect();
+        let (result, finals) = self.call_capturing(index, arguments)?;
+        for (position, mode) in modes.iter().enumerate() {
+            if *mode != tos_ir::PassMode::MutableBorrow {
+                continue;
+            }
+            let (Some(Operand::Value(slot)), Some(Some(value))) =
+                (operands.get(position), finals.get(position))
+            else {
+                continue;
+            };
+            if let Some(target) = values.get_mut(*slot) {
+                *target = Some(value.clone());
+            }
+        }
+        let _ = source;
+        Ok(result)
+    }
+
     fn call(&mut self, index: usize, arguments: Vec<Value>) -> Result<Value, Trap> {
+        Ok(self.call_capturing(index, arguments)?.0)
+    }
+
+    /// Calls a function and returns its result with the final state of its
+    /// parameter slots, which is what a borrow writes back.
+    fn call_capturing(
+        &mut self,
+        index: usize,
+        arguments: Vec<Value>,
+    ) -> Result<(Value, Vec<Option<Value>>), Trap> {
         let function = &self.module.functions[index];
         self.depth += 1;
         self.max_depth = self.max_depth.max(self.depth);
@@ -220,7 +291,7 @@ impl Engine<'_> {
             }
         };
         self.depth -= 1;
-        outcome
+        outcome.map(|value| (value, values))
     }
 
     fn run_block(
@@ -406,7 +477,9 @@ impl Engine<'_> {
                     arguments.push(self.operand(operand, values, source)?);
                 }
                 match target {
-                    CallTarget::Local(index) => Some(self.call(*index, arguments)?),
+                    CallTarget::Local(index) => {
+                        Some(self.call_with_writeback(*index, arguments, operands, values, source)?)
+                    }
                     CallTarget::Imported { .. } => {
                         return Err(Trap::new(
                             "RUNTIME_UNRESOLVED_IMPORT",
@@ -419,15 +492,110 @@ impl Engine<'_> {
                     }
                 }
             }
-            Op::Spawn { .. }
-            | Op::Join { .. }
-            | Op::Await { .. }
-            | Op::Cancel { .. }
-            | Op::Atomic { .. }
-            | Op::Capability { .. }
-            | Op::Resource { .. }
-            | Op::RegisterCleanup { .. }
-            | Op::RunCleanups => {
+            Op::Closure { body, captures } => {
+                let mut held = Vec::new();
+                for capture in captures {
+                    held.push(self.operand(capture, values, source)?);
+                }
+                Some(Value::Closure {
+                    body: *body,
+                    captures: held,
+                })
+            }
+            Op::CallValue { callee, operands } => {
+                let callee = self.operand(callee, values, source)?;
+                let Value::Closure { body, captures } = callee else {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        "a value call applied to something that is not a closure",
+                        source,
+                    ));
+                };
+                // The body declares its own parameters first, then its
+                // captures, which is the order the lowerer built it in.
+                let mut arguments = Vec::new();
+                for operand in operands {
+                    arguments.push(self.operand(operand, values, source)?);
+                }
+                arguments.extend(captures);
+                Some(self.call(body, arguments)?)
+            }
+            Op::Spawn { body, captures } => {
+                let mut held = Vec::new();
+                for capture in captures {
+                    held.push(self.operand(capture, values, source)?);
+                }
+                self.tasks_started += 1;
+                if self.tasks_started > self.task_limit {
+                    return Err(Trap::new(
+                        "RUNTIME_TASK_LIMIT",
+                        std::format!("the declared task budget of {} is spent", self.task_limit),
+                        source,
+                    ));
+                }
+                Some(Value::Task {
+                    body: *body,
+                    captures: held,
+                    cancelled: false,
+                })
+            }
+            Op::Join { task } | Op::Await { task } => {
+                let handle = self.operand(task, values, source)?;
+                let Value::Task {
+                    body,
+                    captures,
+                    cancelled,
+                } = handle
+                else {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        "a join applied to something that is not a task",
+                        source,
+                    ));
+                };
+                // `Cancelled` and `Completed` are the two outcomes docs/41
+                // section 2 defines, and joining consumes the handle either way.
+                Some(if cancelled {
+                    Value::Variant {
+                        index: 1,
+                        payload: Vec::new(),
+                    }
+                } else {
+                    Value::Variant {
+                        index: 0,
+                        payload: std::vec![self.call(body, captures)?],
+                    }
+                })
+            }
+            Op::Cancel { task } => {
+                // docs/41 section 2: an idempotent cooperative request that
+                // consumes no ownership. The parent still has to join.
+                if let Operand::Value(slot) = task {
+                    if let Some(Some(Value::Task { cancelled, .. })) = values.get_mut(*slot) {
+                        *cancelled = true;
+                    }
+                }
+                None
+            }
+            Op::RegisterCleanup { .. } => {
+                // ADR-0035: registering reads, borrows and moves nothing. It is
+                // what the `cleanup` limit counts, and the count is bounded by
+                // the verifier before execution begins.
+                None
+            }
+            Op::RunCleanups { calls } => {
+                for call in calls {
+                    let mut arguments = Vec::new();
+                    for capture in &call.captures {
+                        arguments.push(self.operand(capture, values, source)?);
+                    }
+                    // ADR-0035: a cleanup acts on the scope it runs in, so what
+                    // it leaves is what the next one and the scope observe.
+                    self.call_with_writeback(call.body, arguments, &call.captures, values, source)?;
+                }
+                None
+            }
+            Op::Atomic { .. } | Op::Capability { .. } | Op::Resource { .. } => {
                 return Err(Trap::new(
                     "RUNTIME_OPERATION_NOT_IMPLEMENTED",
                     "this reference engine does not yet execute that operation family",
@@ -493,9 +661,52 @@ impl Engine<'_> {
             }
         };
         for step in &place.path {
-            current = step_into(current, step, source)?;
+            let step = self.resolve_step(step, values, source)?;
+            current = step_into(current, &step, source)?;
         }
         Ok(current)
+    }
+
+    /// Replaces a computed index with the constant it evaluates to.
+    ///
+    /// A dynamic index names a value of type `size`; reading it here is what
+    /// turns a place the checker analysed conservatively into the one location
+    /// the program actually touches.
+    fn resolve_step(
+        &self,
+        step: &PlaceStep,
+        values: &[Option<Value>],
+        source: SourceRef,
+    ) -> Result<PlaceStep, Trap> {
+        let PlaceStep::DynamicIndex(value) = step else {
+            return Ok(step.clone());
+        };
+        let index = match values.get(*value).and_then(|slot| slot.clone()) {
+            Some(Value::Size(index)) => index,
+            Some(Value::Int(_, index)) if index >= 0 => index as u128,
+            Some(_) => {
+                return Err(Trap::new(
+                    "RUNTIME_TYPE_CONFUSION",
+                    "an index is not a size",
+                    source,
+                ))
+            }
+            None => {
+                return Err(Trap::new(
+                    "RUNTIME_UNINITIALIZED_VALUE",
+                    std::format!("index value {value} is read before it is defined"),
+                    source,
+                ))
+            }
+        };
+        let Ok(index) = u64::try_from(index) else {
+            return Err(Trap::new(
+                "RUNTIME_INDEX_OUT_OF_RANGE",
+                "an index does not fit an element position",
+                source,
+            ));
+        };
+        Ok(PlaceStep::Index(Some(index)))
     }
 
     fn write_place(
@@ -505,7 +716,12 @@ impl Engine<'_> {
         values: &mut [Option<Value>],
         source: SourceRef,
     ) -> Result<(), Trap> {
-        if place.path.is_empty() {
+        let path: Vec<PlaceStep> = place
+            .path
+            .iter()
+            .map(|step| self.resolve_step(step, values, source))
+            .collect::<Result<_, _>>()?;
+        if path.is_empty() {
             if let Some(slot) = values.get_mut(place.root) {
                 *slot = Some(value);
             }
@@ -518,7 +734,7 @@ impl Engine<'_> {
                 source,
             ));
         };
-        write_into(root, &place.path, value, source)
+        write_into(root, &path, value, source)
     }
 
     /// The predeclared V1 operations (docs/39 section 2).
@@ -605,9 +821,9 @@ fn step_into(value: Value, step: &PlaceStep, source: SourceRef) -> Result<Value,
             .get(*index as usize)
             .map(|byte| Value::Int(IntKind::U8, *byte as i128))
             .ok_or_else(|| Trap::new("RUNTIME_INDEX_OUT_OF_RANGE", "index out of range", source)),
-        (_, PlaceStep::Index(None)) => Err(Trap::new(
-            "RUNTIME_OPERATION_NOT_IMPLEMENTED",
-            "a dynamic index needs its computed value, which this place does not carry",
+        (_, PlaceStep::Index(None) | PlaceStep::DynamicIndex(_)) => Err(Trap::new(
+            "RUNTIME_TYPE_CONFUSION",
+            "an index step reached execution without a value",
             source,
         )),
         _ => Err(Trap::new(
@@ -679,6 +895,9 @@ fn binary(op: BinaryOp, left: Value, right: Value, source: SourceRef) -> Result<
     if op.is_comparison() {
         return compare(op, left, right, source);
     }
+    if let (Value::Size(left), Value::Size(right)) = (&left, &right) {
+        return size_arithmetic(op, *left, *right, source);
+    }
     let (Value::Int(kind, left), Value::Int(_, right)) = (&left, &right) else {
         return Err(Trap::new(
             "RUNTIME_TYPE_CONFUSION",
@@ -744,6 +963,74 @@ fn binary(op: BinaryOp, left: Value, right: Value, source: SourceRef) -> Result<
         ));
     }
     Ok(Value::Int(kind, raw))
+}
+
+/// The reference ABI width `size` arithmetic is checked in.
+///
+/// docs/40 section 3 says `size` arithmetic is checked in the target ABI and
+/// that portable source must not assume its width. The reference engine has to
+/// pick one to be a semantic oracle at all, and it says so here rather than
+/// inheriting whatever the host happens to use.
+const SIZE_WIDTH_BITS: u32 = 64;
+
+fn size_arithmetic(
+    op: BinaryOp,
+    left: u128,
+    right: u128,
+    source: SourceRef,
+) -> Result<Value, Trap> {
+    let raw = match op {
+        BinaryOp::Add => left.checked_add(right),
+        BinaryOp::Subtract => left.checked_sub(right),
+        BinaryOp::Multiply => left.checked_mul(right),
+        BinaryOp::Divide | BinaryOp::Remainder => {
+            if right == 0 {
+                return Err(Trap::new(
+                    "RUNTIME_DIVISION_BY_ZERO",
+                    "division or remainder by zero",
+                    source,
+                ));
+            }
+            if op == BinaryOp::Divide {
+                left.checked_div(right)
+            } else {
+                left.checked_rem(right)
+            }
+        }
+        BinaryOp::BitAnd => Some(left & right),
+        BinaryOp::BitOr => Some(left | right),
+        BinaryOp::BitXor => Some(left ^ right),
+        BinaryOp::ShiftLeft | BinaryOp::ShiftRight => {
+            if right >= u128::from(SIZE_WIDTH_BITS) {
+                return Err(Trap::new(
+                    "RUNTIME_INVALID_SHIFT",
+                    "shift count is not below the size width",
+                    source,
+                ));
+            }
+            if op == BinaryOp::ShiftLeft {
+                left.checked_shl(right as u32)
+            } else {
+                left.checked_shr(right as u32)
+            }
+        }
+        _ => None,
+    };
+    let Some(raw) = raw else {
+        return Err(Trap::new(
+            "RUNTIME_ARITHMETIC_OVERFLOW",
+            "a checked size operation left the representable range",
+            source,
+        ));
+    };
+    if raw >= (1u128 << SIZE_WIDTH_BITS) {
+        return Err(Trap::new(
+            "RUNTIME_ARITHMETIC_OVERFLOW",
+            "a checked size operation left the target ABI width",
+            source,
+        ));
+    }
+    Ok(Value::Size(raw))
 }
 
 fn compare(op: BinaryOp, left: Value, right: Value, source: SourceRef) -> Result<Value, Trap> {
@@ -855,6 +1142,8 @@ pub struct Accounting {
     pub fuel_limit: u128,
     pub max_call_depth: u128,
     pub recursion_limit: u128,
+    pub tasks_started: u128,
+    pub task_limit: u128,
 }
 
 impl Accounting {
@@ -864,6 +1153,8 @@ impl Accounting {
             fuel_limit: module.header.resource_envelope.fuel,
             max_call_depth: outcome.max_call_depth,
             recursion_limit: module.header.resource_envelope.recursion,
+            tasks_started: outcome.tasks_started,
+            task_limit: module.header.resource_envelope.tasks,
         }
     }
 }

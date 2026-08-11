@@ -305,3 +305,188 @@ fn the_same_program_produces_the_same_result_every_run() {
     assert_eq!(first, second, "execution must be deterministic");
     assert_eq!(first.value, Value::Int(IntKind::I32, 45));
 }
+
+// The constructs added by full V1 lowering, executed end to end.
+
+const FULL_ENVELOPE: &str = "resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 4, \
+     workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]";
+
+/// The whole path for a Full-profile module.
+fn full_pipeline(body: &str) -> (Module, VerifiedModule) {
+    let text = format!("module app.sample version 1.0 profile full; {FULL_ENVELOPE} {body}");
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("source parses");
+    let diagnostics = Checker::check(&source, &schema);
+    assert!(
+        diagnostics.is_empty(),
+        "the pipeline takes checked source only: {:?}",
+        diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>()
+    );
+    let context = ModuleContext {
+        source_set: String::from("tos-execution-tests"),
+        path: String::from("app/sample.tos"),
+        content_id: content_id(text.as_bytes()),
+        dependency_digest: String::from("sha256:0000"),
+        capability_interface_digest: String::from("sha256:0000"),
+    };
+    let module = lower_module(&source, &schema, &context).expect("source lowers");
+    let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect("lowered IR verifies");
+    (module, receipt)
+}
+
+fn evaluate_full(body: &str, entry: &str, arguments: Vec<Value>) -> Value {
+    let (module, receipt) = full_pipeline(body);
+    run(&module, &receipt, entry, arguments)
+        .expect("the entry exists with this arity")
+        .expect("the program does not trap")
+        .value
+}
+
+#[test]
+fn a_spawned_child_is_joined_and_its_result_observed() {
+    let body = "pub fn main() -> i32 { \
+         parallel { let child = spawn parallel { return 7i32; }; \
+         match (join child) { Completed(value) => { return value; } Cancelled => { return 0i32; } } } \
+         return 0i32; }";
+    assert_eq!(evaluate(body, "main", vec![]), Value::Int(IntKind::I32, 7));
+}
+
+#[test]
+fn a_child_cancelled_before_its_join_reports_cancelled() {
+    // docs/41 section 2: `cancel` is a cooperative request and the parent still
+    // joins. Serialized Bootstrap defers the child to its join, so a request
+    // that arrives first means the child never starts — an allowed outcome.
+    let body = "pub fn main() -> i32 { \
+         parallel { let child = spawn parallel { return 7i32; }; \
+         cancel child; \
+         match (join child) { Completed(value) => { return value; } Cancelled => { return 1i32; } } } \
+         return 0i32; }";
+    assert_eq!(evaluate(body, "main", vec![]), Value::Int(IntKind::I32, 1));
+}
+
+#[test]
+fn a_spawned_child_sees_what_it_captured() {
+    let body = "pub fn main(count: i32) -> i32 { \
+         parallel { let child = spawn parallel { return count + 1i32; }; \
+         match (join child) { Completed(value) => { return value; } Cancelled => { return 0i32; } } } \
+         return 0i32; }";
+    assert_eq!(
+        evaluate(body, "main", vec![Value::Int(IntKind::I32, 41)]),
+        Value::Int(IntKind::I32, 42)
+    );
+}
+
+#[test]
+fn a_closure_is_built_and_called_with_its_captures() {
+    let body = "pub fn main(base: i32) -> i32 { \
+         let add = fn (value: i32) { return value + base; }; return add(2i32); }";
+    assert_eq!(
+        evaluate_full(body, "main", vec![Value::Int(IntKind::I32, 40)]),
+        Value::Int(IntKind::I32, 42)
+    );
+}
+
+#[test]
+fn an_async_function_returns_a_task_its_caller_awaits() {
+    let body = "async fn produce() -> i32 { return 9i32; } \
+         pub fn main() -> i32 { \
+         match (await produce()) { Completed(value) => { return value; } Cancelled => { return 0i32; } } }";
+    assert_eq!(
+        evaluate_full(body, "main", vec![]),
+        Value::Int(IntKind::I32, 9)
+    );
+}
+
+#[test]
+fn a_deferred_cleanup_runs_at_the_exit_it_belongs_to() {
+    // The cleanup writes through the counter it captured, so the value observed
+    // after the block proves the cleanup ran, and ran there.
+    let body = "pub record Cell [value: i32] \
+         fn bump(cell: Cell) -> Cell { return Cell(value: cell.value + 1i32); } \
+         pub fn main() -> i32 { \
+         let mut cell = Cell(value: 0i32); \
+         if (true) { defer { cell = bump(cell); } } \
+         return cell.value; }";
+    assert_eq!(
+        evaluate_full(body, "main", vec![]),
+        Value::Int(IntKind::I32, 1)
+    );
+}
+
+#[test]
+fn cleanups_run_in_reverse_registration_order() {
+    // The first cleanup doubles and the second adds one. Running them in
+    // reverse means add-then-double: (0 + 1) * 2 = 2. Registration order would
+    // have given (0 * 2) + 1 = 1.
+    let body = "pub record Cell [value: i32] \
+         fn doubled(cell: Cell) -> Cell { return Cell(value: cell.value * 2i32); } \
+         fn incremented(cell: Cell) -> Cell { return Cell(value: cell.value + 1i32); } \
+         pub fn main() -> i32 { \
+         let mut cell = Cell(value: 0i32); \
+         if (true) { defer { cell = doubled(cell); } defer { cell = incremented(cell); } } \
+         return cell.value; }";
+    assert_eq!(
+        evaluate_full(body, "main", vec![]),
+        Value::Int(IntKind::I32, 2)
+    );
+}
+
+#[test]
+fn a_return_runs_the_cleanups_of_the_blocks_it_leaves() {
+    let body = "pub record Cell [value: i32] \
+         fn incremented(cell: Cell) -> Cell { return Cell(value: cell.value + 1i32); } \
+         pub fn main() -> i32 { \
+         let mut cell = Cell(value: 0i32); \
+         defer { cell = incremented(cell); } \
+         return cell.value; }";
+    // The cleanup runs after the return operand is evaluated, so the returned
+    // value is the one that existed at the exit — ADR-0035's stated order.
+    assert_eq!(
+        evaluate_full(body, "main", vec![]),
+        Value::Int(IntKind::I32, 0)
+    );
+}
+
+#[test]
+fn a_for_loop_walks_every_element_of_its_array() {
+    let body = "pub fn main() -> i32 { \
+         let values: array<i32, 3> = [1i32, 2i32, 3i32]; \
+         let mut total = 0i32; \
+         for value in (values) { total = total + 1i32; } \
+         return total; }";
+    assert_eq!(evaluate(body, "main", vec![]), Value::Int(IntKind::I32, 3));
+}
+
+#[test]
+fn the_task_budget_bounds_how_many_children_may_start() {
+    let text = "module app.sample version 1.0 profile bootstrap; \
+         resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0] \
+         pub fn main() -> i32 { \
+         parallel { let one = spawn parallel { return 1i32; }; \
+         let two = spawn parallel { return 2i32; }; \
+         let first = join one; let second = join two; } \
+         return 0i32; }";
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("parses");
+    assert!(Checker::check(&source, &schema).is_empty());
+    let context = ModuleContext {
+        source_set: String::from("tos-execution-tests"),
+        path: String::from("app/sample.tos"),
+        content_id: content_id(text.as_bytes()),
+        dependency_digest: String::from("sha256:0000"),
+        capability_interface_digest: String::from("sha256:0000"),
+    };
+    let module = lower_module(&source, &schema, &context).expect("lowers");
+    let receipt =
+        verify(&module, &ResolutionSnapshot::default(), &Limits::default()).expect("verifies");
+    let trap = run(&module, &receipt, "main", vec![])
+        .expect("the entry exists")
+        .expect_err("a second child exceeds a budget of one");
+    assert_eq!(trap.code, "RUNTIME_TASK_LIMIT");
+}
