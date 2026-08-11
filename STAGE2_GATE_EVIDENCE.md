@@ -80,7 +80,7 @@ identity_question      Is actual language semantics executing from canonical
    11 heap gates (grant validation, reclaim, coalescing, exhaustion, 1000-round
       reuse returning the arena to its starting layout)
   remainder: Stage 0/1 capsule, boot protocol, hash, serial, fuzz, performance
-./scripts/preflight.sh --full   35 of 35 gates pass
+./scripts/preflight.sh --full   34 of 34 gates pass
 ```
 
 ## performance_report
