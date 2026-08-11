@@ -36,7 +36,7 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use tos_core::{ModuleEntry, Parser, Schema, SourceReader, SourceUnit};
+use tos_core::{ModuleEntry, ModuleSummary, Parser, Schema, SourceReader, SourceUnit};
 use tos_pipeline::{execute, Request, Run, Silent};
 use tos_runtime::{GlobalHeap, RuntimeMemoryGrant, GRANT_VERSION};
 
@@ -155,6 +155,7 @@ fn main() {
     let phased = a_source_set_one_module_at_a_time(if full { CLOSURE_CEILING } else { 16 });
     let resolution = set_wide_resolution(full);
     let at_ceiling = resolution_at_the_source_ceiling();
+    let summarized = resolution_over_summaries(full);
 
     println!();
     println!("== the bound ==");
@@ -179,6 +180,60 @@ fn main() {
         at_ceiling,
         mib(at_ceiling)
     );
+    println!(
+        "resolution over summaries, {CLOSURE_CEILING} ceiling modules {:>12} bytes  ({:.2} MiB)",
+        summarized,
+        mib(summarized)
+    );
+}
+
+/// What set-wide resolution costs when it reads summaries instead of trees.
+///
+/// The loader shape this measures is the one a bounded implementation uses:
+/// parse one module, summarize it, drop the tree, keep the summary. Only one
+/// parse tree is ever live, so the closure's cost is its *interfaces* rather
+/// than its bodies — and the modules here are at the published source ceiling,
+/// which is where the tree-based architecture needed gigabytes.
+fn resolution_over_summaries(full: bool) -> usize {
+    println!();
+    println!("== set-wide resolution over derived summaries ==");
+    let counts: &[usize] = if full {
+        &[1, 8, 32, CLOSURE_CEILING]
+    } else {
+        &[1, 8, 32]
+    };
+    let mut last = 0usize;
+    for &count in counts {
+        let before = arena().committed;
+        let mut summaries: Vec<ModuleSummary> = Vec::with_capacity(count);
+        for index in 0..count {
+            // One tree at a time. Everything but the summary is dropped before
+            // the next module is read.
+            let text = canonical_module(index, SOURCE_CEILING);
+            let source = SourceReader::read(text.as_bytes()).expect("transport-valid");
+            let schema = Parser::parse_schema(&source)
+                .into_accepted()
+                .expect("the fixture parses");
+            let path = module_path(index);
+            summaries.push(ModuleEntry::new(&path, &source, &schema).summarize());
+        }
+        let held = arena().committed - before;
+        let diagnostics = tos_core::check_module_summaries(&summaries);
+        assert!(
+            diagnostics.is_empty(),
+            "the generated set must resolve: {:?}",
+            diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>()
+        );
+        let peak = arena().committed - before;
+        println!(
+            "  {count:>4} modules of {SOURCE_CEILING} bytes: {held:>10} bytes of summaries, \
+             {peak} bytes live while resolving ({:.2} MiB)",
+            mib(peak)
+        );
+        last = peak;
+        drop(summaries);
+    }
+    last
 }
 
 /// The marginal resolution cost when every module is at the source ceiling.
