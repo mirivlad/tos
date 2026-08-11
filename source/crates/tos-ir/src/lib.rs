@@ -106,6 +106,17 @@ pub type BlockId = usize;
 pub type ValueId = usize;
 pub type SourceRef = usize;
 
+/// Which guard a lock operation grants (ADR-0036 section 2).
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LockMode {
+    /// `Mutex<T>.lock()` -> `MutexGuard<T>`
+    Mutex,
+    /// `RwLock<T>.read()` -> `ReadGuard<T>`
+    Read,
+    /// `RwLock<T>.write()` -> `WriteGuard<T>`
+    Write,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IntKind {
     I8,
@@ -552,6 +563,15 @@ pub enum Op {
     CallValue {
         callee: Operand,
         operands: Vec<Operand>,
+    },
+    /// Acquires a guard from a synchronization object (ADR-0036 section 2).
+    ///
+    /// Its own operation rather than a call: releasing is the guard's bounded
+    /// drop, so there is no `unlock` taking a guard back, and a verifier has to
+    /// be able to see an acquisition without knowing what any helper does.
+    Lock {
+        object: Operand,
+        mode: LockMode,
     },
     /// Produces a `Shared<T>` from a transitively immutable, shareable value,
     /// consuming it (ADR-0037 section 4).

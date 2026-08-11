@@ -114,7 +114,7 @@ pub fn accounting(completion: &Completion) -> String {
     let accounting = &completion.accounting;
     format!(
         "fuel={}/{} depth={}/{} tasks={}/{} allocation={}/{} cleanup={}/{} workers={}/{} \
-         shared={}/{}",
+         shared={}/{} sync={}/{}",
         accounting.fuel_used,
         accounting.fuel_limit,
         accounting.max_call_depth,
@@ -131,6 +131,8 @@ pub fn accounting(completion: &Completion) -> String {
         // exactly what its extension rule admits.
         accounting.shared_peak,
         accounting.shared_limit,
+        accounting.sync_peak,
+        accounting.sync_limit,
     )
 }
 

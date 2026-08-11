@@ -14,6 +14,7 @@
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use crate::LockMode as tos_ir_lock_mode;
 use crate::{
     AtomicOp, BinaryOp, Block, BorrowKind, CallTarget, Constant, Function, Import, Instruction,
     Module, Op, Operand, Place, PlaceStep, ResourceKind, Signature, SourceMapEntry, Terminator,
@@ -534,6 +535,15 @@ fn write_op(out: &mut Writer, op: &Op) {
         // A new operation takes a tag past the highest allocated one: a tag is
         // part of the module digest, so renumbering would change the identity
         // of every module that uses the renumbered operation.
+        Op::Lock { object, mode } => {
+            out.tag(24);
+            out.tag(match mode {
+                tos_ir_lock_mode::Mutex => 0,
+                tos_ir_lock_mode::Read => 1,
+                tos_ir_lock_mode::Write => 2,
+            });
+            write_operand(out, object);
+        }
         Op::Share { operand } => {
             out.tag(23);
             write_operand(out, operand);

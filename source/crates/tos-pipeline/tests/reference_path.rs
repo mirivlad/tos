@@ -289,3 +289,65 @@ fn a_share_beyond_the_declared_shared_budget_traps_before_the_effect() {
     };
     assert_eq!(*code, "RUNTIME_SHARED_LIMIT");
 }
+
+#[test]
+fn taking_a_guard_runs_and_is_metered_against_the_declared_sync_limit() {
+    // ADR-0036 on the runtime side: a lock operation is its own IR node, the
+    // verifier rechecks that it names a synchronization object and produces
+    // that object's guard, and a live guard counts against `sync`.
+    let text = "module system.boot.init version 1.0 profile bootstrap; \
+         resource [fuel: 1000, stack: 8KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+         sync: 2, shared: 0B, cleanup: 4, recursion: 4, imports: 0] \
+         pub fn main(cell: Mutex<i32>) -> unit { let guard = cell.lock(); }";
+    let run = execute(
+        &request(text, "main"),
+        vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 5)],
+        &mut Silent,
+    );
+    let Run::Completed(completion) = &run else {
+        panic!("expected a completed run: {:?}", render::events(&run));
+    };
+    assert_eq!(completion.accounting.sync_peak, 1);
+    assert!(completion.accounting.sync_peak <= completion.accounting.sync_limit);
+    assert!(render::events(&run).iter().any(|e| e.contains("sync=1/2")));
+}
+
+#[test]
+fn a_guard_beyond_the_declared_sync_limit_traps_before_the_effect() {
+    let text = "module system.boot.init version 1.0 profile bootstrap; \
+         resource [fuel: 1000, stack: 8KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 4, recursion: 4, imports: 0] \
+         pub fn main(cell: Mutex<i32>) -> unit { let guard = cell.lock(); }";
+    let run = execute(
+        &request(text, "main"),
+        vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 5)],
+        &mut Silent,
+    );
+    let Run::Trapped { code, .. } = &run else {
+        panic!("expected a trap: {:?}", render::events(&run));
+    };
+    assert_eq!(*code, "RUNTIME_SYNC_LIMIT");
+}
+
+#[test]
+fn a_guard_released_with_its_frame_does_not_accumulate() {
+    // A guard cannot outlive the frame that took it, so a helper called twice
+    // must not leave two live.
+    let text = "module system.boot.init version 1.0 profile bootstrap; \
+         resource [fuel: 4000, stack: 8KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+         sync: 1, shared: 0B, cleanup: 4, recursion: 4, imports: 0] \
+         fn touch(borrow cell: Mutex<i32>) -> unit { let guard = cell.lock(); } \
+         pub fn main(cell: Mutex<i32>) -> unit { touch(borrow cell); touch(borrow cell); }";
+    let run = execute(
+        &request(text, "main"),
+        vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 5)],
+        &mut Silent,
+    );
+    let Run::Completed(completion) = &run else {
+        panic!("expected a completed run: {:?}", render::events(&run));
+    };
+    assert_eq!(
+        completion.accounting.sync_peak, 1,
+        "two sequential frames must not hold two guards at once"
+    );
+}

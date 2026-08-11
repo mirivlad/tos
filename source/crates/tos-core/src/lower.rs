@@ -30,9 +30,9 @@ use alloc::vec::Vec;
 
 use tos_ir::{
     BinaryOp, Block, CallTarget, CleanupCall, Constant, Function, FunctionOrigin, Header,
-    Instruction, IntKind, Module, NominalKind, Op, Operand, Parameter, PassMode, Place, PlaceStep,
-    Profile, ResourceEnvelope, Signature, SourceMapEntry, Terminator, TypeDef, TypeId, UnaryOp,
-    ValueId, Variant, Visibility,
+    Instruction, IntKind, LockMode, Module, NominalKind, Op, Operand, Parameter, PassMode, Place,
+    PlaceStep, Profile, ResourceEnvelope, Signature, SourceMapEntry, Terminator, TypeDef, TypeId,
+    UnaryOp, ValueId, Variant, Visibility,
 };
 
 use crate::parser::{
@@ -2116,6 +2116,39 @@ impl<'source> Lowerer<'source> {
             );
             if is_atomic {
                 return self.lower_atomic(expression, slot, &operation, builder, at);
+            }
+            // A lock operation, decided from the receiver's *type* and never
+            // from the operation's name (ADR-0035): `.lock()` written on
+            // anything that is not a `Mutex<T>` is not an acquisition.
+            let acquired = match (self.types.get(receiver_type), operation.as_str()) {
+                (Some(TypeDef::Mutex(inner)), "lock") => {
+                    Some((LockMode::Mutex, TypeDef::MutexGuard(*inner)))
+                }
+                (Some(TypeDef::RwLock(inner)), "read") => {
+                    Some((LockMode::Read, TypeDef::ReadGuard(*inner)))
+                }
+                (Some(TypeDef::RwLock(inner)), "write") => {
+                    Some((LockMode::Write, TypeDef::WriteGuard(*inner)))
+                }
+                _ => None,
+            };
+            if let Some((mode, guard)) = acquired {
+                if !expression.arguments().is_empty() {
+                    return Err(self.gap("lock operation arity", expression.span()));
+                }
+                let object = self.lower_expression(receiver, builder)?;
+                let ty = self.intern(guard);
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Lock { object, mode },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
+                    unsafe_interface: None,
+                });
+                return Ok(Operand::Value(value));
             }
         }
 
