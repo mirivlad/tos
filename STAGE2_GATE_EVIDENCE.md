@@ -42,6 +42,7 @@ identity_question      Is actual language semantics executing from canonical
 - `source/crates/tos-verifier` — the independent verifier and its receipts.
 - `source/crates/tos-engine` — the bounded Bootstrap reference interpreter.
 - `source/crates/tos-cache` — derived-artifact identity and cache admission.
+- `source/crates/tos-runtime` — `RuntimeMemoryGrantV1` and the bounded heap.
 - `source/tests/performance-core` — the `docs/35` Stage 2 measurement harness.
 - `docs/language/conformance/v1/` — 25 accepted and 60 rejected vectors, three
   driver-level resolution cases, and the expectations table binding them.
@@ -51,7 +52,7 @@ identity_question      Is actual language semantics executing from canonical
 ## tests
 
 ```text
-377 tests pass across 29 binaries
+386 tests pass across 31 binaries
   234 tos-core unit tests
     2 conformance corpus gates (accept + reject)
     7 lowering gates (determinism, source maps, terminators, operands, digest)
@@ -60,7 +61,9 @@ identity_question      Is actual language semantics executing from canonical
     8 cache identity gates (key fields, fail-closed, delete and regenerate)
     1 boot-text gate (what init.tos is today)
   remainder: Stage 0/1 capsule, boot protocol, hash, serial, fuzz, performance
-./scripts/preflight.sh --full   31 of 31 gates pass
+    9 heap gates (grant validation, reclaim, coalescing, exhaustion, 1000-round
+      reuse returning the arena to its starting layout)
+./scripts/preflight.sh --full   33 of 33 gates pass
 ```
 
 ## performance_report
@@ -97,7 +100,7 @@ performance gate. The gate is open. See `known_failures`.
 | resource exhaustion | Partial. Fuel, recursion, tasks, **allocation**, **cleanup** and **workers** are reserved before the effect and released when the frame that charged them returns; the verifier additionally bounds cleanups per exit statically. `sync` and `shared` are **not** metered, and are not claimed: the operations that would consume them — lock acquisition and `share` — do not exist until ADR-0036 is implemented and ADR-0037 is accepted. |
 | source-map identity forgery | Present (`V2040_SOURCE_MAP`). |
 | cache substitution | Present (`Rejection::KeyDoesNotMatchIdentity`). |
-| runtime independence from the host | **Open, audited.** `docs/evidence/STAGE2_RUNTIME_INDEPENDENCE_AUDIT.md`. The production code uses no host runtime facility — every `std` path it uses is in `alloc` or `core` — and the freestanding target is already gated. One gap is genuine: no heap allocator exists, and who owns memory in Stage 2 before Stage 3 is undecided. Until that is settled the `docs/44` claim is not discharged. |
+| runtime independence from the host | **Partly discharged, and now gated rather than argued.** All five production crates are `#![no_std] + alloc` and build for `x86_64-unknown-none`; two preflight gates enforce it — a source gate that no production module names a host facility and that every crate declares `#![no_std]`, and a build gate that compiles all five for the freestanding target. `crates/tos-runtime` supplies the ADR-0041 grant and heap. What remains is linking and running a freestanding **binary**: the crates are proved host-free, the assembled runtime is not yet. |
 | cross-engine semantic differential testing | **N/A for the current supported-engine set.** `docs/44` section 3 requires it "for every supported engine" and section 7 requires every engine to pass the same vectors. One engine is supported, so the requirement is vacuously satisfied. It becomes mandatory the moment a second engine is supported, and no engine will be built to satisfy a denominator. |
 
 ## compatibility_profiles
@@ -119,11 +122,13 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    taken; the reference half needs a freestanding Stage 2 runtime to execute
    under the ADR-0040 profile, which item 3 blocks. No budget is asserted from
    the native record.
-3. **Runtime independence is decided but not discharged.** The audit's gap is
-   settled by ADR-0041 — the nucleus grants one bounded region and the runtime
-   never discovers memory — and the work it authorizes is unbuilt. Until it is,
-   the ADR-0040 reference measurement cannot be taken on the real path and
-   Stage 2 cannot be candidate-complete.
+3. **The freestanding runtime binary is not assembled.** The five crates build
+   host-free and the allocator exists; nothing yet links them into a runtime the
+   nucleus hands a grant to and drives. Until that runs, the ADR-0040 reference
+   measurement cannot be taken on the real path, `init.tos` cannot go through it,
+   and Stage 2 cannot be candidate-complete.
+   The arena bound ADR-0041's discipline needs is measurable — `high_water()`
+   exists for it — but has not been measured on a 256 KiB module yet.
 4. **ADR-0036 is accepted but not yet implemented.** Guard types, the lifetime
    relation, `E1402_INVALID_GUARD_LIFETIME` and the matching `V2031_SYNC` rules
    are decided and unbuilt, so `V2031_SYNC` still has no rules and `sync` has
@@ -132,9 +137,8 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    `DmaRegion<mut T>`, `share`, the transfer and share model, `V2021_REGION` and
    `shared` accounting are decided and unbuilt. Its diagnostic dependency —
    `E1215_ARGUMENT_TYPE_MISMATCH` — **is** implemented and bound to the corpus.
-6. **ADR-0041 is accepted but not yet implemented.** The memory grant, the
-   allocator, the `no_std` conversion and the freestanding runtime are decided
-   and unbuilt, which is what blocks items 1, 2 and 3.
+6. *(Resolved.)* ADR-0041's grant and heap are implemented, and the `no_std`
+   conversion is done and gated. Only the assembled binary of item 3 remains.
 7. **`sync` and `shared` are not metered**, because nothing consumes them yet.
    That follows items 4 and 5 rather than being separate work.
 
