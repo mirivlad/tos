@@ -39,6 +39,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "tos-core-performance"
+version = "0.1.0"
+dependencies = [
+ "tos-core",
+ "tos-engine",
+ "tos-hash",
+ "tos-ir",
+ "tos-verifier",
+]
+
+[[package]]
 name = "tos-engine"
 version = "0.1.0"
 dependencies = [

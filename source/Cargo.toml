@@ -16,6 +16,7 @@ members = [
     "tests/integration",
     "tests/fuzz",
     "tests/performance",
+    "tests/performance-core",
 ]
 # Target-only crates (UEFI / freestanding) are members but not default members:
 # they are built explicitly with their target, never on the host default build.
@@ -33,6 +34,7 @@ default-members = [
     "host-tools/capsule",
     "tests/integration",
     "tests/performance",
+    "tests/performance-core",
 ]
 
 [profile.release]
