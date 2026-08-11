@@ -179,6 +179,7 @@ def main() -> int:
             ("E1210_INTEGER_TYPE_MISMATCH", "type"),
             ("E1211_INDEX_TYPE_MISMATCH", "type"),
             ("E1212_INVALID_AS_CONVERSION", "type"),
+            ("E1213_NONCONSTRUCTIBLE_TYPE", "type"),
             ("E1220_NONEXHAUSTIVE_MATCH", "type"),
             ("E1221_MISSING_RETURN", "type"),
             ("E1222_RETURN_TYPE_MISMATCH", "type"),
