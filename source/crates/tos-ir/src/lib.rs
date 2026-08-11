@@ -203,6 +203,12 @@ pub enum TypeDef {
     Shared(TypeId),
     Region(TypeId),
     DmaRegion(TypeId),
+    /// A mutably granted region (ADR-0037): writable, not shareable, not
+    /// `Transferable`. A distinct constructor rather than a flag, so a
+    /// traversal cannot read the type and forget to look at the mode.
+    RegionMut(TypeId),
+    /// A mutably granted device-visible region (ADR-0037).
+    DmaRegionMut(TypeId),
     Mutex(TypeId),
     RwLock(TypeId),
     /// The affine mutable guard a `Mutex<T>` lock grants (ADR-0036).
@@ -546,6 +552,16 @@ pub enum Op {
     CallValue {
         callee: Operand,
         operands: Vec<Operand>,
+    },
+    /// Produces a `Shared<T>` from a transitively immutable, shareable value,
+    /// consuming it (ADR-0037 section 4).
+    ///
+    /// Its own operation rather than an opaque helper call: docs/43 section 3
+    /// forbids hiding shared-memory access behind one, and the verifier has to
+    /// be able to recheck the shareability requirement without knowing what any
+    /// particular helper does.
+    Share {
+        operand: Operand,
     },
     /// Consumes a `Task<T>` and produces a `TaskResult<T>`.
     Join {

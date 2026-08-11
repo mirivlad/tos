@@ -243,3 +243,49 @@ fn a_completed_run_renders_verification_accounting_and_answer_in_order() {
         assert!(!line.contains('\n') && !line.contains('\r'), "{line}");
     }
 }
+
+#[test]
+fn sharing_a_region_runs_and_is_charged_against_the_declared_budget() {
+    // ADR-0037: `share` is a language operation with its own IR node, the
+    // verifier rechecks its requirement independently, and the `Shared<T>` it
+    // produces counts against the module's declared `shared` limit.
+    let text = "module system.boot.init version 1.0 profile bootstrap; \
+         resource [fuel: 1000, stack: 8KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 4KiB, cleanup: 4, recursion: 4, imports: 0] \
+         pub fn main(area: Region<i32>) -> Shared<Region<i32>> { return share(area); }";
+    let run = execute(
+        &request(text, "main"),
+        vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 7)],
+        &mut Silent,
+    );
+    let Run::Completed(completion) = &run else {
+        panic!("expected a completed run: {:?}", render::events(&run));
+    };
+    assert!(
+        completion.accounting.shared_peak > 0,
+        "a share must charge the shared budget"
+    );
+    assert!(completion.accounting.shared_peak <= completion.accounting.shared_limit);
+    let events = render::events(&run);
+    assert!(
+        events.iter().any(|event| event.contains("shared=")),
+        "{events:?}"
+    );
+}
+
+#[test]
+fn a_share_beyond_the_declared_shared_budget_traps_before_the_effect() {
+    let text = "module system.boot.init version 1.0 profile bootstrap; \
+         resource [fuel: 1000, stack: 8KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 4, recursion: 4, imports: 0] \
+         pub fn main(area: Region<i32>) -> Shared<Region<i32>> { return share(area); }";
+    let run = execute(
+        &request(text, "main"),
+        vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 7)],
+        &mut Silent,
+    );
+    let Run::Trapped { code, .. } = &run else {
+        panic!("expected a trap: {:?}", render::events(&run));
+    };
+    assert_eq!(*code, "RUNTIME_SHARED_LIMIT");
+}

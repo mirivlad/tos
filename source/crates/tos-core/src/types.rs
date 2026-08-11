@@ -335,6 +335,7 @@ impl<'source> TypeResolver<'source> {
             TypeSyntax::Constructed {
                 name,
                 arguments,
+                mutable: _,
                 span,
             } => {
                 let spelled = name.text(self.source);

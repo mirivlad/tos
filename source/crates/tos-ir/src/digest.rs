@@ -189,6 +189,14 @@ fn write_type(out: &mut Writer, definition: &TypeDef) {
         // slotting in beside their locks: a tag is part of the module digest,
         // so renumbering an existing constructor would change the identity of
         // every module that uses it.
+        TypeDef::RegionMut(inner) => {
+            out.tag(34);
+            out.count(*inner);
+        }
+        TypeDef::DmaRegionMut(inner) => {
+            out.tag(35);
+            out.count(*inner);
+        }
         TypeDef::MutexGuard(inner) => {
             out.tag(31);
             out.count(*inner);
@@ -522,6 +530,13 @@ fn write_op(out: &mut Writer, op: &Op) {
             out.tag(12);
             out.count(*body);
             write_operands(out, captures);
+        }
+        // A new operation takes a tag past the highest allocated one: a tag is
+        // part of the module digest, so renumbering would change the identity
+        // of every module that uses the renumbered operation.
+        Op::Share { operand } => {
+            out.tag(23);
+            write_operand(out, operand);
         }
         Op::Join { task } => {
             out.tag(13);

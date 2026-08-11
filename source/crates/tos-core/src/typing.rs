@@ -76,6 +76,101 @@ const NONCONSTRUCTIBLE_TYPES: [&str; 17] = [
     "AtomicU64",
 ];
 
+/// The internal constructor name for a region written with or without `mut`.
+fn mutable_region_name(written: &str, mutable: bool) -> String {
+    match (written, mutable) {
+        ("Region", true) => String::from(REGION_MUT),
+        ("DmaRegion", true) => String::from(DMA_REGION_MUT),
+        _ => String::from(written),
+    }
+}
+
+/// The internal name of a mutably granted region. Never written in source.
+pub(crate) const REGION_MUT: &str = "Region<mut>";
+/// The internal name of a mutably granted device-visible region.
+pub(crate) const DMA_REGION_MUT: &str = "DmaRegion<mut>";
+
+/// The four facts of ADR-0037 section 2, as the checker needs them.
+///
+/// Both DMA variants are conservative in V1: making `DmaRegion<T>` shareable
+/// would let it become `Shared<DmaRegion<T>>`, and a `Shared<T>` is `Copy`, so
+/// the handle could be copied into several tasks — exactly the crossing the
+/// rule against a DMA region crossing a task boundary exists to forbid.
+pub(crate) fn region_facts(name: &str) -> Option<RegionFacts> {
+    match name {
+        "Region" => Some(RegionFacts {
+            mutable: false,
+            shareable: true,
+            transferable: true,
+            reason: "region",
+        }),
+        REGION_MUT => Some(RegionFacts {
+            mutable: true,
+            shareable: false,
+            transferable: false,
+            reason: "mutable region",
+        }),
+        "DmaRegion" => Some(RegionFacts {
+            mutable: false,
+            shareable: false,
+            transferable: false,
+            reason: "DMA region",
+        }),
+        DMA_REGION_MUT => Some(RegionFacts {
+            mutable: true,
+            shareable: false,
+            transferable: false,
+            reason: "DMA region",
+        }),
+        _ => None,
+    }
+}
+
+/// What ADR-0037 section 2 fixes about one region type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct RegionFacts {
+    pub(crate) mutable: bool,
+    pub(crate) shareable: bool,
+    pub(crate) transferable: bool,
+    /// The word a capture diagnostic uses for this kind of region.
+    pub(crate) reason: &'static str,
+}
+
+/// Whether a type is transitively immutable, as `share` requires.
+///
+/// `T` and everything reachable from it must contain no mutable region, no
+/// mutable borrow and no guard. A borrow is not representable as a `Type` here,
+/// so the reachable cases are the mutable regions and the three guards.
+pub(crate) fn transitively_immutable(ty: &Type, depth: usize) -> bool {
+    if depth > 32 {
+        return false;
+    }
+    match ty {
+        Type::Constructed(name, arguments) => {
+            if name == REGION_MUT || name == DMA_REGION_MUT || GUARDS.contains(&name.as_str()) {
+                return false;
+            }
+            arguments
+                .iter()
+                .all(|argument| transitively_immutable(argument, depth + 1))
+        }
+        Type::Array(element) => transitively_immutable(element, depth + 1),
+        Type::Tuple(elements) => elements
+            .iter()
+            .all(|element| transitively_immutable(element, depth + 1)),
+        Type::Function(parameters, result) => {
+            parameters
+                .iter()
+                .all(|parameter| transitively_immutable(parameter, depth + 1))
+                && transitively_immutable(result, depth + 1)
+        }
+        _ => true,
+    }
+}
+
+/// The three guard constructors, which are never transitively immutable.
+const GUARDS: [&str; 3] = ["MutexGuard", "ReadGuard", "WriteGuard"];
+
 /// The bit width of an exact integer type, and whether it is signed.
 fn integer_shape(name: &str) -> Option<(u32, bool)> {
     let signed = name.starts_with('i');
@@ -180,7 +275,15 @@ impl Type {
             Type::Nominal(name) => name.clone(),
             Type::Constructed(name, arguments) => {
                 let inner: Vec<String> = arguments.iter().map(Type::spell).collect();
-                alloc::format!("{name}<{}>", inner.join(", "))
+                // A mutably granted region is carried under an internal name so
+                // no code path can forget the mode; it is spelled back the way
+                // it was written, because a diagnostic naming a type nobody
+                // typed sends the reader looking for it.
+                match name.as_str() {
+                    REGION_MUT => alloc::format!("Region<mut {}>", inner.join(", ")),
+                    DMA_REGION_MUT => alloc::format!("DmaRegion<mut {}>", inner.join(", ")),
+                    _ => alloc::format!("{name}<{}>", inner.join(", ")),
+                }
             }
             Type::Array(element) => alloc::format!("array<{}, N>", element.spell()),
             Type::Tuple(elements) => {
@@ -369,9 +472,17 @@ fn resolve(source: &SourceUnit, ty: &TypeSyntax) -> Type {
             }
         }
         TypeSyntax::Constructed {
-            name, arguments, ..
+            name,
+            arguments,
+            mutable,
+            ..
         } => Type::Constructed(
-            name.text(source).to_string(),
+            // ADR-0037: a region's granted mode is part of its type, because
+            // the four facts — Copy, mutable, Shareable, Transferable — differ
+            // between the modes. It is carried as a distinct constructor rather
+            // than as a flag beside one, so no code path can read the type and
+            // forget to look at the mode; `spell` prints the written form back.
+            mutable_region_name(name.text(source), *mutable),
             arguments.iter().map(|ty| resolve(source, ty)).collect(),
         ),
         TypeSyntax::Array { element, .. } => Type::Array(Box::new(resolve(source, element))),
@@ -462,6 +573,9 @@ impl<'source> TypeChecker<'source> {
                     .target()
                     .map(|place| self.type_of(place))
                     .unwrap_or(Type::Unknown);
+                if let Some(place) = statement.target() {
+                    self.check_write_through_region(place);
+                }
                 if let Some(expression) = statement.expression() {
                     let actual = self.type_of(expression);
                     self.check_integer_agreement(expression.span(), &target, &actual, "assignment");
@@ -861,6 +975,97 @@ impl<'source> TypeChecker<'source> {
         Type::Constructed(String::from(guard), alloc::vec![protected])
     }
 
+    /// Reports a write through an immutably granted region (ADR-0037 section 6).
+    ///
+    /// The *region's* declared mode decides, not the binding's. A `let mut`
+    /// binding of a `Region<T>` may be rebound — that is a fact about the
+    /// handle — but nothing may be written through it, because the grant that
+    /// produced it was immutable. Deciding this from the binding form alone
+    /// would let `let mut` launder an immutable grant into a writable one.
+    fn check_write_through_region(&mut self, place: &'source Expression) {
+        let mut root = place;
+        let mut projected = false;
+        while let Some(inner) = root.inner() {
+            if !matches!(root.form(), ExpressionForm::Field | ExpressionForm::Index) {
+                break;
+            }
+            projected = true;
+            root = inner;
+        }
+        if !projected || root.form() != ExpressionForm::Name {
+            return;
+        }
+        let Some(Type::Constructed(name, _)) = self.lookup(root.span().text(self.source)) else {
+            return;
+        };
+        let Some(facts) = region_facts(&name) else {
+            return;
+        };
+        if facts.mutable {
+            return;
+        }
+        self.diagnostics.push(
+            Diagnostic::new(
+                "E1201_ASSIGN_TO_IMMUTABLE",
+                Severity::Error,
+                Stage::Type,
+                place.span(),
+                self.source,
+            )
+            .with_field("binding", root.span().text(self.source).to_string())
+            .with_field("reason", "immutably granted region"),
+        );
+    }
+
+    /// The type of `share(x)` (ADR-0037 section 4).
+    ///
+    /// ```text
+    /// share(T) -> Shared<T>    only when T is transitively immutable and Shareable
+    /// ```
+    ///
+    /// `share` is a language operation, not a library call: it is the only way
+    /// an affine region handle becomes usable from several tasks, and making it
+    /// explicit is what stops an ownership transfer from looking like a read.
+    /// An argument that does not satisfy the requirement is
+    /// `E1215_ARGUMENT_TYPE_MISMATCH` — the general code ADR-0037 section 5
+    /// settles on — rather than a code invented for this one operation.
+    fn share_type(&mut self, expression: &'source Expression, actual: &[Type]) -> Type {
+        let [argument] = actual else {
+            // Arity is not this slice's finding; the call simply has no type.
+            return Type::Unknown;
+        };
+        if matches!(argument, Type::Unknown) {
+            return Type::Unknown;
+        }
+        let shareable = match argument {
+            Type::Constructed(name, _) => region_facts(name).map(|facts| facts.shareable),
+            _ => None,
+        };
+        let acceptable = shareable.unwrap_or(true) && transitively_immutable(argument, 0);
+        if !acceptable {
+            let span = expression
+                .arguments()
+                .first()
+                .map(|first| first.span())
+                .unwrap_or(expression.span());
+            self.diagnostics.push(
+                Diagnostic::new(
+                    "E1215_ARGUMENT_TYPE_MISMATCH",
+                    Severity::Error,
+                    Stage::Type,
+                    span,
+                    self.source,
+                )
+                .with_field("callee", "share")
+                .with_field("position", 0usize)
+                .with_field("expected", "a transitively immutable, shareable type")
+                .with_field("actual", argument.spell()),
+            );
+            return Type::Unknown;
+        }
+        Type::Constructed(String::from("Shared"), alloc::vec![argument.clone()])
+    }
+
     /// Reports an argument that does not satisfy its declared parameter type.
     ///
     /// ADR-0037 allocates `E1215_ARGUMENT_TYPE_MISMATCH` as the residual code
@@ -918,6 +1123,9 @@ impl<'source> TypeChecker<'source> {
             return Type::Unknown;
         }
         let name = callee.span().text(self.source);
+        if name == "share" {
+            return self.share_type(expression, &actual);
+        }
         if let Some((parameters, result)) = self.declarations.functions.get(name) {
             let result = result.clone();
             let parameters = parameters.clone();

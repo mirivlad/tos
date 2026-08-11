@@ -60,17 +60,24 @@ use crate::{Diagnostic, Severity, SourceUnit, Stage};
 
 /// Why a value may not cross a task or closure boundary (docs/40 section 6).
 ///
-/// Only the two the frontend can establish on its own are listed. docs/41
-/// distinguishes a synchronization object such as `Mutex<T>` from the affine
-/// guard a lock operation yields, and it is the guard that may not transfer, so
-/// the object's type constructor proves nothing. Likewise docs/40 section 6
-/// makes a `Region<T>`'s shareability and mutability a fact of its capability
-/// contract, which this slice cannot see: inventing a diagnostic from the type
-/// constructor alone would be a guess.
+/// docs/41 distinguishes a synchronization object such as `Mutex<T>` from the
+/// affine guard a lock operation yields, and it is the guard that may not
+/// transfer, so the object's type constructor still proves nothing — a guard is
+/// tracked by where it came from, in `crate::guards`, and its escape is
+/// `E1402_INVALID_GUARD_LIFETIME` rather than a capture code (ADR-0036).
+///
+/// A region is different since ADR-0037: the granted mode is part of the type,
+/// so `Region<mut T>` and both `DmaRegion` modes are known here to be
+/// non-`Transferable` without inspecting any capability contract. That is the
+/// whole point of putting the mode in the type — the fact is readable at the
+/// place it matters instead of being a property nobody local can see.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NonTransferable {
     Borrow,
     Capability,
+    /// A region whose declared mode makes it non-`Transferable`, with the word
+    /// ADR-0037 section 6 gives it.
+    Region(&'static str),
 }
 
 impl NonTransferable {
@@ -78,8 +85,18 @@ impl NonTransferable {
         match self {
             NonTransferable::Borrow => "borrow",
             NonTransferable::Capability => "non-transferable capability",
+            NonTransferable::Region(word) => word,
         }
     }
+}
+
+/// The transfer barrier a region type imposes, when it imposes one.
+fn region_barrier(ty: &Type) -> Option<NonTransferable> {
+    let Type::Constructed(name, _) = ty else {
+        return None;
+    };
+    let facts = crate::typing::region_facts(name)?;
+    (!facts.transferable).then_some(NonTransferable::Region(facts.reason))
 }
 
 /// A guard on loop iteration. The lattice is monotone and finite, so the fixed
@@ -164,6 +181,9 @@ impl<'source> OwnershipChecker<'source> {
     fn declare(&mut self, name: Span, barrier: Option<NonTransferable>) {
         let id = name.start();
         let ty = self.types.get(&id).cloned().unwrap_or(Type::Unknown);
+        // A borrow barrier is about how the binding was formed and wins; a
+        // region barrier is about what the binding holds.
+        let barrier = barrier.or_else(|| region_barrier(&ty));
         self.bindings.insert(
             id,
             BindingInfo {

@@ -80,7 +80,7 @@ Architecture decision records
 - docs/adr/0034-type-name-and-arity-diagnostics.md — ADR-0034: TOS Core V1 type-name and type-argument-arity diagnostics [Accepted (Project Architect-approved)]
 - docs/adr/0035-defer-ownership-and-borrow-conflicts.md — ADR-0035: TOS Core V1 `defer` ownership semantics and the borrow-conflict class [Accepted (Project Architect-approved)]
 - docs/adr/0036-synchronization-guard-representation.md — ADR-0036: TOS Core V1 synchronization guard representation [Accepted (Project Architect-approved)]
-- docs/adr/0037-region-transferability.md — ADR-0037: TOS Core V1 region and DMA-region transferability [**Proposed (revision 3)** — the region model is accepted; this]
+- docs/adr/0037-region-transferability.md — ADR-0037: TOS Core V1 region and DMA-region transferability [**Accepted (revision 3)** — the region model, the `share` operation it]
 - docs/adr/0038-module-root-precedence.md — ADR-0038: TOS Core V1 module-root precedence and the exact `E1605` condition [Accepted (Project Architect-approved)]
 - docs/adr/0039-nonconstructible-opaque-types.md — ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles [Accepted (Project Architect-approved), revision 3]
 - docs/adr/0040-stage2-reference-platform.md — ADR-0040: the Stage 2 reference platform profile [Accepted (Project Architect-approved)]

@@ -508,6 +508,7 @@ impl<'source> Lowerer<'source> {
             TypeSyntax::Constructed {
                 name,
                 arguments,
+                mutable,
                 span,
             } => {
                 let spelled = name.text(self.source);
@@ -521,8 +522,16 @@ impl<'source> Lowerer<'source> {
                     "Task" => TypeDef::Task(first),
                     "TaskResult" => TypeDef::TaskResult(first),
                     "Shared" => TypeDef::Shared(first),
+                    // ADR-0037: the granted mode is part of the type, so it
+                    // reaches the IR as a distinct constructor. A verifier that
+                    // had to infer the mode could not recheck it.
+                    "Region" if *mutable => TypeDef::RegionMut(first),
+                    "DmaRegion" if *mutable => TypeDef::DmaRegionMut(first),
                     "Region" => TypeDef::Region(first),
                     "DmaRegion" => TypeDef::DmaRegion(first),
+                    "MutexGuard" => TypeDef::MutexGuard(first),
+                    "ReadGuard" => TypeDef::ReadGuard(first),
+                    "WriteGuard" => TypeDef::WriteGuard(first),
                     "Mutex" => TypeDef::Mutex(first),
                     "RwLock" => TypeDef::RwLock(first),
                     "Channel" => TypeDef::Channel(first),
@@ -2364,6 +2373,28 @@ impl<'source> Lowerer<'source> {
         let mut operands = Vec::new();
         for argument in expression.arguments() {
             operands.push(self.lower_expression(argument.value(), builder)?);
+        }
+        // `share` lowers to its own operation, never to an opaque helper call:
+        // docs/43 section 3 forbids hiding shared-memory access behind one, and
+        // the verifier rechecks the shareability requirement on this operation.
+        if name == "share" && !self.functions_by_name.contains_key(&name) {
+            let [operand] = operands.as_slice() else {
+                return Err(self.gap("share arity", expression.span()));
+            };
+            let operand = operand.clone();
+            let inner = builder.type_of(&operand);
+            let ty = self.intern(TypeDef::Shared(inner));
+            let value = builder.define(ty);
+            builder.push(Instruction {
+                result: Some(value),
+                ty,
+                op: Op::Share { operand },
+                source: at,
+                runtime_contract: None,
+                unsafe_block: builder.in_unsafe,
+                unsafe_interface: None,
+            });
+            return Ok(Operand::Value(value));
         }
         let (target, ty) = match self.functions_by_name.get(&name) {
             Some(&index) => {

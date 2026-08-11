@@ -119,6 +119,8 @@ pub struct Outcome {
     pub allocation_peak: u128,
     /// The most cleanups registered and unrun at any one moment.
     pub cleanups_peak: u128,
+    /// The most of the declared `shared` budget held at any one moment.
+    pub shared_peak: u128,
 }
 
 /// Why a module could not be run at all, before any instruction executed.
@@ -174,6 +176,9 @@ pub fn run(
         allocation_limit: envelope.allocation,
         allocation_held: 0,
         allocation_peak: 0,
+        shared_limit: envelope.shared,
+        shared_held: 0,
+        shared_peak: 0,
         cleanup_limit: envelope.cleanup,
         cleanups_live: 0,
         cleanups_peak: 0,
@@ -196,6 +201,7 @@ pub fn run(
         tasks_started: engine.tasks_started,
         allocation_peak: engine.allocation_peak,
         cleanups_peak: engine.cleanups_peak,
+        shared_peak: engine.shared_peak,
     }))
 }
 
@@ -208,6 +214,12 @@ struct Engine<'module> {
     max_depth: u128,
     task_limit: u128,
     tasks_started: u128,
+    /// Bytes of the declared `shared` budget currently held, and the most ever
+    /// held at once. ADR-0037 makes a `Shared<T>` count against it, so sharing
+    /// is bounded by the envelope like every other resource.
+    shared_limit: u128,
+    shared_held: u128,
+    shared_peak: u128,
     /// Bytes of the declared allocation budget currently held.
     allocation_limit: u128,
     allocation_held: u128,
@@ -298,6 +310,33 @@ impl Engine<'_> {
         self.allocation_held += bytes;
         self.allocation_peak = self.allocation_peak.max(self.allocation_held);
         Ok(bytes)
+    }
+
+    /// Charges the declared `shared` budget for a value about to be shared.
+    ///
+    /// ADR-0037 section 4 makes the `Shared<T>` a `share` produces count against
+    /// the module's declared `shared` limit. The reservation is checked before
+    /// the effect, like every other resource: a module that would exceed its
+    /// budget never produces the handle. The cost uses the same declared cell
+    /// model as `allocation`, because the engine has no other measure of a
+    /// value's size and inventing a second one would make two budgets
+    /// incomparable.
+    fn reserve_shared(&mut self, cells: usize, source: SourceRef) -> Result<(), Trap> {
+        let bytes = CELL_BYTES * (cells as u128 + 1);
+        if self.shared_held + bytes > self.shared_limit {
+            return Err(Trap::new(
+                "RUNTIME_SHARED_LIMIT",
+                alloc::format!(
+                    "{bytes} more shared bytes exceeds the declared budget of {}, of which {} is held",
+                    self.shared_limit,
+                    self.shared_held
+                ),
+                source,
+            ));
+        }
+        self.shared_held += bytes;
+        self.shared_peak = self.shared_peak.max(self.shared_held);
+        Ok(())
     }
 
     /// Releases what a frame charged, when the frame's values go out of scope.
@@ -705,6 +744,16 @@ impl Engine<'_> {
                         payload: alloc::vec![self.call(body, captures)?],
                     }
                 })
+            }
+            // `share` consumes its argument and produces the same value behind
+            // a `Shared` handle. Bootstrap has one context, so the sharing is
+            // observable in the accounting rather than in aliasing: what the
+            // engine can prove here is that the module stayed inside the
+            // `shared` budget it declared.
+            Op::Share { operand } => {
+                let value = self.operand(operand, values, source)?;
+                self.reserve_shared(value_cells(&value), source)?;
+                Some(value)
             }
             Op::Cancel { task } => {
                 // docs/41 section 2: an idempotent cooperative request that
@@ -1276,6 +1325,21 @@ pub fn trap_source<'module>(
     module.source_map.get(trap.source)
 }
 
+/// How many cells a value occupies in the engine's declared cost model.
+///
+/// The same model `allocation` uses: one cell per scalar, and an aggregate
+/// costs its parts. Using a second model for `shared` would make two declared
+/// budgets incomparable to each other and to the module that declares them.
+fn value_cells(value: &Value) -> usize {
+    match value {
+        Value::Aggregate(parts) => parts.iter().map(value_cells).sum::<usize>().max(1),
+        Value::Variant { payload, .. } => payload.iter().map(value_cells).sum::<usize>().max(1),
+        Value::Bytes(bytes) => bytes.len().div_ceil(16).max(1),
+        Value::Text(text) => text.len().div_ceil(16).max(1),
+        _ => 1,
+    }
+}
+
 /// A record of what a run consumed, for the resource accounting docs/41
 /// section 6 requires an engine to keep.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -1292,6 +1356,8 @@ pub struct Accounting {
     pub cleanup_limit: u128,
     pub workers_reserved: u128,
     pub worker_limit: u128,
+    pub shared_peak: u128,
+    pub shared_limit: u128,
 }
 
 impl Accounting {
@@ -1310,6 +1376,8 @@ impl Accounting {
             // Bootstrap serializes, so one context is reserved for the run.
             workers_reserved: 1,
             worker_limit: module.header.resource_envelope.workers,
+            shared_peak: outcome.shared_peak,
+            shared_limit: module.header.resource_envelope.shared,
         }
     }
 }
