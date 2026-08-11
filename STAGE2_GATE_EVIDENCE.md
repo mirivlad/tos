@@ -42,7 +42,18 @@ identity_question      Is actual language semantics executing from canonical
 - `source/crates/tos-verifier` — the independent verifier and its receipts.
 - `source/crates/tos-engine` — the bounded Bootstrap reference interpreter.
 - `source/crates/tos-cache` — derived-artifact identity and cache admission.
-- `source/crates/tos-runtime` — `RuntimeMemoryGrantV1` and the bounded heap.
+- `source/crates/tos-runtime` — `RuntimeMemoryGrantV1`, the bounded heap, and
+  the region chooser that turns free and occupied spans into a grant.
+- `source/crates/tos-pipeline` — the composition: canonical source through every
+  stage to an observable, source-mapped result, `no_std`, with the `TOS.RUN.*`
+  event rendering both the boot log and the host tests read.
+- `source/nucleus` — derives the grant from the validated memory map, installs
+  the bounded heap, measures the stack it runs on, and drives the reference path
+  over the capsule's canonical boot text.
+- `source/host-tools/qemu-test/stage2-runtime.sh` — Stage 2 conformance on the
+  real boot path, checking values rather than the presence of events.
+- `source/tests/arena-bound` — the arena measurement, whole pipeline through the
+  bounded heap.
 - `source/tests/performance-core` — the `docs/35` Stage 2 measurement harness.
 - `docs/language/conformance/v1/` — 25 accepted and 60 rejected vectors, three
   driver-level resolution cases, and the expectations table binding them.
@@ -52,18 +63,24 @@ identity_question      Is actual language semantics executing from canonical
 ## tests
 
 ```text
-386 tests pass across 31 binaries
-  234 tos-core unit tests
+429 tests pass across 39 binaries
+  230 tos-core unit tests
+   15 guard-lifetime gates (ADR-0036: each operation value, the precedence over
+      E1304/E1305, and the positives a guard must keep)
     2 conformance corpus gates (accept + reject)
     7 lowering gates (determinism, source maps, terminators, operands, digest)
-   19 pipeline gates (verifier acceptance + forged-IR negatives by family)
+   22 pipeline gates (verifier acceptance + forged-IR negatives by family,
+      including V2031_SYNC reached without any frontend involvement)
    34 execution gates (results, traps, tasks, cleanup, closures, accounting)
+   13 reference-path gates (every stage entered in order, each stage's refusal
+      reaching the caller intact, and the canonical boot module executing)
     8 cache identity gates (key fields, fail-closed, delete and regenerate)
-    1 boot-text gate (what init.tos is today)
-  remainder: Stage 0/1 capsule, boot protocol, hash, serial, fuzz, performance
-    9 heap gates (grant validation, reclaim, coalescing, exhaustion, 1000-round
+   10 region-chooser gates (a grant never overlaps live memory, and one the
+      chooser makes is one the heap accepts)
+   11 heap gates (grant validation, reclaim, coalescing, exhaustion, 1000-round
       reuse returning the arena to its starting layout)
-./scripts/preflight.sh --full   33 of 33 gates pass
+  remainder: Stage 0/1 capsule, boot protocol, hash, serial, fuzz, performance
+./scripts/preflight.sh --full   35 of 35 gates pass
 ```
 
 ## performance_report
@@ -113,34 +130,57 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
 
 ## known_failures
 
-1. **`/system/boot/init.tos` is not a TOS Core module.** Proved by
-   `tests/integration/tests/init_boot.rs`: the file is transport-valid and the
-   parser rejects it at `E1013_UNEXPECTED_CHARACTER`. It is the Stage 1 capsule's
-   illustrative boot text, which the nucleus reads as text. Replacing it is
-   sequenced after the decisions below, by the Project Architect's direction.
-2. **The Stage 2 performance gate is open.** The native half of the ratio is
-   taken; the reference half needs a freestanding Stage 2 runtime to execute
-   under the ADR-0040 profile, which item 3 blocks. No budget is asserted from
-   the native record.
-3. **The freestanding runtime binary is not assembled.** The five crates build
-   host-free and the allocator exists; nothing yet links them into a runtime the
-   nucleus hands a grant to and drives. Until that runs, the ADR-0040 reference
-   measurement cannot be taken on the real path, `init.tos` cannot go through it,
-   and Stage 2 cannot be candidate-complete.
-   The arena bound ADR-0041's discipline needs is measurable — `high_water()`
-   exists for it — but has not been measured on a 256 KiB module yet.
-4. **ADR-0036 is accepted but not yet implemented.** Guard types, the lifetime
-   relation, `E1402_INVALID_GUARD_LIFETIME` and the matching `V2031_SYNC` rules
-   are decided and unbuilt, so `V2031_SYNC` still has no rules and `sync` has
-   nothing to meter.
+1. *(Resolved.)* **`/system/boot/init.tos` is a TOS Core module and executes.**
+   It declares `module system.boot.init`, its resource envelope, a record and
+   three functions, and it runs through the ordinary reference path on the boot
+   path. `tests/integration/tests/init_boot.rs` takes the boot content out of
+   the golden capsule — the bytes a booting machine actually receives — and runs
+   them, and `crates/tos-pipeline/tests/boot_module.rs` runs the file itself.
+2. *(Resolved.)* **The freestanding runtime runs on the boot path.**
+   `crates/tos-pipeline` composes reader, parser, checker, module resolution,
+   lowerer, independent verifier and bounded engine; the nucleus derives a
+   `RuntimeMemoryGrantV1` from the validated memory map, installs the bounded
+   heap as its global allocator, and drives it over the capsule's canonical boot
+   text. Verified in QEMU under the ADR-0040 profile by
+   `host-tools/qemu-test/stage2-runtime.sh`, which checks the stage order, the
+   verifier's receipt, the returned value, every accounting pair against its own
+   limit, the arena peak against the grant and the stack use against the stack —
+   not merely that the events appeared.
+3. **The Stage 2 performance gate is open.** The native half of the ratio is
+   taken. The reference half is now *takeable* — the reference path executes
+   under the ADR-0040 profile — but it has not been taken, and no budget is
+   asserted from the native record.
+4. *(Resolved.)* **ADR-0036 is implemented.** The three guard constructors, the
+   three lock operations, `E1402_INVALID_GUARD_LIFETIME` with all six
+   `operation` values and its precedence over `E1304`/`E1305`, and `V2031_SYNC`
+   reached by the verifier's own traversal with forged-IR negatives.
+   `sync` accounting still has nothing to meter: see item 6.
 5. **ADR-0037 is accepted but not yet implemented.** `Region<mut T>`,
    `DmaRegion<mut T>`, `share`, the transfer and share model, `V2021_REGION` and
    `shared` accounting are decided and unbuilt. Its diagnostic dependency —
    `E1215_ARGUMENT_TYPE_MISMATCH` — **is** implemented and bound to the corpus.
-6. *(Resolved.)* ADR-0041's grant and heap are implemented, and the `no_std`
-   conversion is done and gated. Only the assembled binary of item 3 remains.
-7. **`sync` and `shared` are not metered**, because nothing consumes them yet.
-   That follows items 4 and 5 rather than being separate work.
+6. **`sync` and `shared` are not metered.** The engine executes no lock
+   operation and no `share`, so there is nothing to count. `sync` follows the
+   engine's side of ADR-0036, which is not built; `shared` follows item 5.
+7. **The conformance corpus has no ADR-0036 vectors.** The nine cases ADR-0036
+   section 7 lists are covered by `crates/tos-core/tests/guards.rs` and by the
+   forged-IR negatives in `tests/integration/tests/pipeline.rs`, and they are
+   not yet expressed as `docs/language/conformance/v1` vectors with
+   `EXPECTATIONS.md` rows.
+8. **A maximal dependency closure does not fit the reference platform.** The two
+   published ceilings of docs/44 section 2 multiply to a closure whose
+   resolution needs about 3.2 GiB, measured by slope; ADR-0040's platform has
+   256 MiB. This implementation resolves roughly 19 ceiling-sized modules, or
+   256 modules averaging 8 KiB. Neither ceiling is weakened, and no accepted
+   document requires the maximal closure to resolve in 256 MiB.
+   `docs/evidence/STAGE2_ARENA_BOUND.md` records the measurement and names the
+   architectural fix — resolving over per-module summaries rather than parse
+   trees — which is not done.
+9. **ADR-0042 is Proposed and unresolved.** Boot ABI v1 does not settle whether
+   identifiers from another vocabulary may be interleaved with its success
+   sequence, nor what result code means "the canonical boot module did not
+   execute". The implementation fails closed with the existing
+   `RESULT_CAPSULE_INVALID` and changes no normative text meanwhile.
 
 ## architect_approval
 
