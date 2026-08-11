@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `23f9dfd158f72332e5b462149ecfd38fe3d7da2bdc32ece657d608b07fcdf6b0`  
+Source-manifest SHA-256: `09372a7878d275ffafa648abe81498cbaf6e9d42d07ba537dba037af08d2cdf8`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -12187,11 +12187,16 @@ semantics.
 
 # ADR-0036: TOS Core V1 synchronization guard representation
 
-- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Status: **Proposed (revision 2)** — direction approved by the Project
+  Architect; this text needs approval to become Accepted
 - Date: 2026-08-11
-- Decision level: 2 — adds type constructors to the accepted V1 type surface,
-  which conformance evidence and the IR type table depend on
+- Decision level: 2 — adds type constructors and one diagnostic code to the
+  accepted V1 surface, which conformance evidence and the IR type table depend on
 - Project Architect approval: *(pending)*
+- Supersedes: revision 1 of this ADR, which left the normative "a guard may not
+  be held across await" rule with no source diagnostic, said nothing about the
+  lifetime relation between a guard and its lock, and did not say that the
+  checker and the verifier must prove the same rule independently
 
 ## Context
 
@@ -12259,42 +12264,103 @@ affine rule exists to prevent.
 A guard's scope is its binding's block. Its `drop` releases the lock and is
 bounded: it allocates nothing, awaits nothing and acquires no authority.
 
-### 4. Diagnostics
+### 4. The lifetime relation between a guard and its lock
 
-No new source diagnostic is allocated. A guard crossing a task or closure
-boundary is `E1304_INVALID_TASK_CAPTURE` or `E1305_INVALID_CLOSURE_CAPTURE` with
-`reason=lock guard`, which is the reason `docs/40` section 6 already names. A
-guard held across `await` is `E1401`-adjacent but distinct, and is deliberately
-**left open**: it needs the async slice, and this ADR does not decide it.
+Acquisition creates a checkable dependency: **the synchronization object must
+outlive every guard it granted.** A guard names a resource inside that object,
+so an object that is moved or dropped while one of its guards is live would
+leave the guard naming nothing — the exact condition the affine rule exists to
+prevent, one level up.
 
-The verifier family `V2031_SYNC` gains the guard rules: a guard operand may not
-appear in a spawn capture, a closure capture, an aggregate, a return, or a
-channel operation.
+Moving a guard between bindings of the same scope does **not** release the lock.
+A guard is affine, so a move transfers ownership of the guard *and the release
+obligation with it*; the lock is released by the bounded `drop` of whichever
+binding finally owns it. That is what makes a guard usable at all: a helper may
+take one, and releasing on every move would release it at the first hand-off.
 
-### 5. Conformance evidence
+### 5. `E1402_INVALID_GUARD_LIFETIME`
+
+Stage `type`, in the `E14xx` concurrency family. One code covers every
+prohibited lifetime or escape operation on a guard, with a structured
+`operation` field naming which:
+
+```text
+operation=held_across_await     a guard is live across an `await`
+operation=returned              a guard is returned from a function, task or
+                                closure body
+operation=aggregate             a guard is placed into a record, enum, tuple or
+                                array
+operation=channel               a guard is sent through a channel
+operation=task_boundary         a guard is moved or captured across a task or
+                                closure boundary
+operation=lock_outlived         the synchronization object is moved or dropped
+                                while one of its guards is live
+```
+
+The diagnostic also carries the guard type and the source position where the
+guard was acquired, because a lifetime finding that does not say where the
+lifetime started cannot be acted on.
+
+**Precedence, so nothing is reported twice.** A guard crossing a task or closure
+boundary is `E1402_INVALID_GUARD_LIFETIME` with `operation=task_boundary`, and
+**not** `E1304_INVALID_TASK_CAPTURE` or `E1305_INVALID_CLOSURE_CAPTURE`. The
+capture codes keep their meaning for every other non-`Transferable` value; a
+guard is routed to the guard-specific code because its rule is about the
+guard's lifetime rather than about transferability alone, and a single reading
+is what keeps the two families from overlapping. `docs/40` section 6 is amended
+to say so: it continues to list a lock guard among the values that are not
+`Transferable`, and it records that the diagnostic for one is `E1402`.
+
+### 6. The checker and the verifier prove the same rule independently
+
+`V2031_SYNC` gains exactly the rules of section 5, restated over IR: a guard
+operand may not appear in a spawn capture, a closure capture, an aggregate
+construction, a return, or a channel operation; a guard value may not be live
+across an await; and a synchronization object may not be moved or dropped while
+a guard derived from it is live.
+
+Neither component may take the other's word for it. The verifier reaches the
+conclusion by its own traversal of the IR, as `docs/43` section 5 requires, and
+the frontend's success is not an input to it. A guard rule the checker enforces
+and the verifier does not would be a rule an alternate frontend could skip.
+
+### 7. Conformance evidence
 
 At least: a positive taking and releasing a mutex guard within a block; a
-positive taking two read guards of one `RwLock`; a negative capturing a guard
-into a task; a negative returning a guard; and a negative applying a constructor
-to a guard type.
+positive taking two read guards of one `RwLock`; a positive moving a guard into
+a helper binding and releasing it there, proving a move is not a release; a
+negative capturing a guard into a task (`operation=task_boundary`); a negative
+returning a guard (`operation=returned`); a negative holding a guard across an
+`await` (`operation=held_across_await`); a negative placing a guard into a
+record (`operation=aggregate`); a negative dropping the mutex while its guard is
+live (`operation=lock_outlived`); and a negative applying a constructor to a
+guard type. Each has a matching forged-IR negative for `V2031_SYNC`.
 
 ## Architecture impact statement
 
-- **Change level:** 2. **Invariants affected:** none amended; I-09 and I-15 are
-  served by naming what was described but unnamed.
+- **Change level:** 2. **Invariants affected:** none amended; I-09 is served —
+  `E1402` becomes part of the versioned diagnostic boundary; I-15 is served by
+  naming what was described but unnamed.
 - **Canonical representation:** unchanged. No accepted source becomes invalid —
   V1 source cannot name a guard today, so nothing can break.
 - **Trusted-base impact:** none. **Threat-model impact:** positive: the guard
   rules become checkable instead of unstated.
 - **Compatibility profile:** TOS Core 1.0; the three constructors are fixed for
   V1 and change only through a versioned language decision.
-- **Tests:** the five conformance cases above, checker unit tests per rule, and
-  the mechanical gate binding the constructors to the arity table.
+- **Tests:** the nine conformance cases of section 7 with their forged-IR
+  counterparts, checker unit tests per `operation` value and for the precedence
+  against `E1304`/`E1305`, and the mechanical gate binding the constructors to
+  the arity table and `E1402` to the registry.
 
 ## Consequences
 
 The synchronization slice becomes implementable, and `V2031_SYNC` stops being a
-family with no rules. The cost is three more names fixed for V1.
+family with no rules. Every prohibited guard operation has a code, so no
+normative rule about guards is left without a way to report it.
+
+The cost is three type names and one diagnostic code fixed for V1, and one
+routing decision: a guard crossing a task boundary is reported as a guard
+lifetime finding rather than as a capture finding.
 
 ## Alternatives considered
 
@@ -12309,6 +12375,16 @@ exactly where the verifier has to see it.
 **Model release as an `unlock(guard)` operation.** Rejected: it leaves a named
 guard after release, which is the use-after-release the affine rule prevents.
 
+**Report a guard crossing a task boundary as `E1304`/`E1305`.** Rejected as the
+primary reading: the same program would then be describable by two codes from
+two families, and a conformance expectation would have to pick one without the
+contract saying which. One guard-specific code with an `operation` field says
+exactly what happened and leaves the capture codes their own meaning.
+
+**Release the lock when a guard is moved.** Rejected: it would release at the
+first hand-off, so a guard could never be passed to a helper, and the
+release point would depend on binding structure rather than on ownership.
+
 <!-- END docs/adr/0036-synchronization-guard-representation.md -->
 
 ---
@@ -12319,11 +12395,15 @@ guard after release, which is the use-after-release the affine rule prevents.
 
 # ADR-0037: TOS Core V1 region and DMA-region transferability
 
-- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Status: **Proposed (revision 2)** — `Region<mut T>` as a narrow V1 type form
+  approved in principle by the Project Architect; this text needs approval
 - Date: 2026-08-11
 - Decision level: 2 — fixes the `Transferable`, shareable and mutable facts of
   two accepted V1 type constructors
 - Project Architect approval: *(pending)*
+- Supersedes: revision 1, whose transfer and share model let a shareable DMA
+  region become `Shared<DmaRegion<T>>` and be copied into several tasks, which
+  would have gone around the very rule it was written to state
 
 ## Context
 
@@ -12349,30 +12429,52 @@ grant that produced them:
 
 ```text
 Region<T>          an immutably granted region: readable, shareable, Transferable
-Region<mut T>      a mutably granted region: readable and writable, not shareable,
-                   not Transferable
-DmaRegion<T>       as Region<T>, and additionally never Transferable
-DmaRegion<mut T>   as Region<mut T>
+Region<mut T>      a mutably granted region: readable and writable,
+                   not shareable, not Transferable
+DmaRegion<T>       an immutably granted device-visible region
+DmaRegion<mut T>   a mutably granted device-visible region
 ```
 
 `mut` inside the type argument is the only place V1 admits it in a type, and it
 is admitted for exactly these two constructors. It is not a general mutability
 qualifier and introduces no `mut T` elsewhere.
 
-### 2. The three facts
+### 2. The four facts
 
-| Type | `Copy` | shareable | mutable | `Transferable` |
+| Type | `Copy` | mutable | Shareable | `Transferable` |
 |---|---|---|---|---|
-| `Region<T>` | no | yes | no | yes |
-| `Region<mut T>` | no | no | yes | no |
-| `DmaRegion<T>` | no | yes | no | no |
-| `DmaRegion<mut T>` | no | no | yes | no |
+| `Region<T>` | no | no | yes | yes |
+| `Region<mut T>` | no | yes | no | no |
+| `DmaRegion<T>` | no | no | **no** | **no** |
+| `DmaRegion<mut T>` | no | yes | no | no |
 
-A DMA region is never `Transferable` in V1 regardless of mode: it names device-
-visible memory, and moving that across a task boundary is a decision the device
-and driver model has to make, not the language.
+Both DMA variants are conservative in V1. Making `DmaRegion<T>` shareable would
+let it become `Shared<DmaRegion<T>>`, and a `Shared<T>` is `Copy`, so the handle
+could then be copied into several tasks — which is exactly the crossing the rule
+"a DMA region never crosses a task boundary" exists to forbid. A narrower
+statement that can be walked around is worse than none. Wider DMA sharing or
+transfer may arrive later through a typed driver or device contract that says
+what makes it safe; it is not something the language grants by default.
 
-### 3. Diagnostics
+### 3. Sharing is an explicit typed operation, never an implicit copy
+
+`Region<T>` is affine like every other non-`Copy` value, so its handle has one
+owner. `Transferable` means that ownership may move into **exactly one** task —
+not that the handle may be duplicated.
+
+Using one region from several tasks is written:
+
+```text
+share(region)  ->  Shared<Region<T>>
+```
+
+`Shared<T>` is the `Copy` handle `docs/40` already defines, so the copies the
+several tasks hold are copies of a `Shared`, produced by a typed operation that
+appears in the source and in the IR. There is no path where an affine region
+handle is silently duplicated because two tasks happened to name it: that would
+make an ownership transfer look like a read.
+
+### 4. Diagnostics
 
 No new code. Capturing a non-`Transferable` region into a task is
 `E1304_INVALID_TASK_CAPTURE` with `reason=mutable region` or `reason=DMA
@@ -12382,30 +12484,41 @@ reasons. Writing through a `Region<T>` is `E1201_ASSIGN_TO_IMMUTABLE`.
 `V2021_REGION` gains these as verifier rules, so the IR carries the mode in its
 type table and the verifier rechecks it rather than trusting the frontend.
 
-### 4. Conformance evidence
+### 5. Conformance evidence
 
-At least: a positive sharing a `Region<T>` between two tasks; a negative
-capturing a `Region<mut T>` into a task; a negative capturing a `DmaRegion<T>`
-into a task; a negative writing through a `Region<T>`; and a positive writing
-through a `Region<mut T>`.
+At least: a positive moving a `Region<T>` into one task; a positive sharing one
+through `share(region)` and using the `Shared<Region<T>>` from two tasks; a
+negative capturing a `Region<T>` handle into two tasks without `share`; a
+negative capturing a `Region<mut T>` into a task; a negative capturing a
+`DmaRegion<T>` into a task; a negative applying `share` to a `DmaRegion<T>`; a
+negative writing through a `Region<T>`; and a positive writing through a
+`Region<mut T>`. Each capture and share negative has a forged-IR counterpart for
+`V2021_REGION`, so the checker and the verifier prove the same rule
+independently.
 
 ## Architecture impact statement
 
 - **Change level:** 2. **Invariants affected:** none amended.
 - **Canonical representation:** unchanged; no accepted source uses a region
   today, so nothing becomes invalid.
-- **Threat-model impact:** positive: a mutable region crossing a task boundary
-  is the shared-mutable case `docs/44` section 3 requires a negative for, and it
-  becomes decidable.
+- **Threat-model impact:** positive on both counts. A mutable region crossing a
+  task boundary is the shared-mutable case `docs/44` section 3 requires a
+  negative for, and it becomes decidable. Keeping both DMA variants
+  non-shareable closes the route by which a device-visible region could have
+  reached several tasks through a `Copy` handle.
 - **Compatibility profile:** TOS Core 1.0.
-- **Tests:** the five conformance cases, checker unit tests per row of the
-  table, and verifier negatives for `V2021_REGION`.
+- **Tests:** the eight conformance cases of section 5, checker unit tests per
+  row of the table and for `share`, and verifier negatives for `V2021_REGION`.
 
 ## Consequences
 
-Region rules become checkable, and the shared-mutable negative the threat model
-requires becomes expressible in source. The cost is one narrow syntactic
-extension, `mut` inside two type arguments.
+Region rules become checkable, the shared-mutable negative the threat model
+requires becomes expressible in source, and sharing is something a reader can
+see rather than something that happens because two tasks named the same handle.
+
+The cost is one narrow syntactic extension — `mut` inside two type arguments —
+and a deliberately conservative DMA model that a later typed device contract
+will have to widen explicitly.
 
 ## Alternatives considered
 
@@ -12417,6 +12530,16 @@ consulting an external contract the language does not name.
 **Two more constructors, `MutRegion<T>` and `MutDmaRegion<T>`.** Rejected: four
 names for two concepts, and the relationship between them would be spelled
 nowhere.
+
+**Let `Transferable` also mean shareable, so several tasks may hold a region.**
+Rejected: it makes a duplication of an affine handle invisible, and the number
+of holders would depend on how many tasks named it rather than on an operation
+in the source.
+
+**Make `DmaRegion<T>` shareable, since it is immutable.** Rejected: a
+`Shared<DmaRegion<T>>` is `Copy`, so shareability is transitively a way across
+the task boundary the DMA rule forbids. V1 stays conservative and a typed device
+contract widens it later if it can say why that is safe.
 
 <!-- END docs/adr/0037-region-transferability.md -->
 
@@ -12543,11 +12666,15 @@ language property under `docs/42`, not a tool preference.
 
 # ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles
 
-- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Status: **Proposed (revision 2)** — the code and the precedence are approved
+  in principle by the Project Architect; this text needs approval
 - Date: 2026-08-11
 - Decision level: 2 — allocates a diagnostic code conformance evidence will
   depend on
 - Project Architect approval: *(pending)*
+- Supersedes: revision 1, whose type set wrongly included `TaskResult<T>` — an
+  ordinary affine result value with predeclared constructors — and omitted
+  `Shared<T>`, which only a typed `share` contract may produce
 
 ## Context
 
@@ -12576,10 +12703,24 @@ that V1 makes nonconstructible from source. The operations are:
 - a constructor call naming one of them;
 - a record or aggregate literal naming one of them as its constructor.
 
-The nonconstructible types are: `Task<T>`, `TaskResult<T>`, `Region<T>`,
+The nonconstructible types are: `Task<T>`, `Shared<T>`, `Region<T>`,
 `DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, `Event`, `Semaphore`,
-`Barrier`, `Latch`, the three atomic types, the three guard types of ADR-0036,
-`slice<T>`, and any function or closure type.
+`Barrier`, `Latch`, the three atomic types, `slice<T>`, and any function or
+closure type.
+
+`TaskResult<T>` is **not** among them. `docs/39` section 2 gives `Completed` and
+`Cancelled` as predeclared constructors in expression position, so a
+`TaskResult<T>` is an ordinary affine result value that source is meant to
+build. What may not be fabricated is the `Task<T>` a join consumes, not the
+value the join produces.
+
+`Shared<T>` **is** among them. `docs/40` makes it the handle a typed `share`
+contract yields; a cast or constructor producing one would manufacture sharing
+that no operation granted.
+
+The three guard types of ADR-0036 join this set when that ADR is accepted. They
+are named here rather than assumed, because until it is accepted they do not
+exist and this list would be citing types the contract does not have.
 
 The diagnostic carries the type as spelled and which operation attempted it.
 
@@ -12604,9 +12745,11 @@ This code is about constructing one out of data, never about holding one.
 ### 4. Conformance evidence
 
 At least: a negative casting an integer to `Task<i32>`; a negative casting a
-`Mutex<i32>` to an integer; a negative calling a constructor on `Event`; and a
-positive obtaining a task from `spawn` and using it, proving the code does not
-fire on the legitimate path.
+`Mutex<i32>` to an integer; a negative calling a constructor on `Event`; a
+negative constructing a `Shared<i32>`; a positive building a `TaskResult<T>`
+with `Completed` and `Cancelled`, proving the code does not fire on a value
+source is meant to build; and a positive obtaining a task from `spawn` and using
+it, proving it does not fire on the legitimate path either.
 
 ## Architecture impact statement
 
@@ -12620,8 +12763,9 @@ fire on the legitimate path.
   of integer data is the same class of forgery as fabricating a capability, and
   it was silently accepted.
 - **Compatibility profile:** TOS Core 1.0.
-- **Tests:** the four conformance cases, checker unit tests for each operation
-  and for the precedence against `E1212` and `E1502`, and the mechanical gate.
+- **Tests:** the six conformance cases, checker unit tests for each operation,
+  for every type in the set, for `TaskResult<T>` staying outside it, and for the
+  precedence against `E1212` and `E1502`, and the mechanical gate.
 
 ## Consequences
 
@@ -12644,6 +12788,146 @@ would make every audit of that code less meaningful.
 unenforced and a forgery path open.
 
 <!-- END docs/adr/0039-nonconstructible-opaque-types.md -->
+
+---
+
+<!-- BEGIN docs/adr/0040-stage2-reference-platform.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0040: the Stage 2 reference platform profile
+
+- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Date: 2026-08-11
+- Decision level: 2 — fixes the platform a Stage 2 performance gate is measured
+  on, which every later performance claim is stated against
+- Project Architect approval: *(pending)*
+
+## Context
+
+`docs/35` gives Stage 2 two budgets for the bootstrap profile — parse,
+type-check, lower and verify a 256 KiB canonical module within 500 ms p95, and
+execute the standard one-million-operation integer and control-flow benchmark
+within ten times "the host reference interpreter time under the same semantic
+implementation" — and an evidence ladder where P1 is locally measured and no
+stage closes on P0 for its own metric.
+
+It names a reference platform for Stage 1: the mandatory
+q35/qemu64/one-vCPU/256-MiB/TCG functional profile. It names none for Stage 2.
+
+Without one, "reference platform" would end up meaning whichever machine
+produced an agreeable number, which is measurement chosen after the fact. A
+platform has to be fixed before a measurement is taken for the measurement to
+mean anything.
+
+## Decision
+
+### 1. The Stage 2 reference platform is the Stage 1 profile
+
+Stage 2 performance evidence is taken on the same profile Stage 1 already
+mandates:
+
+```text
+machine      q35
+cpu          qemu64
+vcpus        1
+memory       256 MiB
+accelerator  TCG (no hardware virtualization)
+firmware     the declared OVMF build of the Stage 1 gate
+```
+
+One platform for both stages, for three reasons. It already exists and is
+already gated, so no second environment has to be kept honest. TCG on one vCPU
+is deterministic enough to compare across runs and slow enough that a budget met
+there is met anywhere. And a single profile keeps Stage 1 and Stage 2 numbers
+comparable, which they would not be if each stage picked its own.
+
+### 2. What "host reference interpreter time" means
+
+`docs/35` states the execution budget as a ratio against "the host reference
+interpreter time under the same semantic implementation". That is the **native
+host** execution of the **same** reference interpreter — the same
+`tos-engine`, the same commit, the same workload — not a second semantic
+implementation.
+
+So the execution metric is a pair of measurements and their ratio:
+
+```text
+reference   the benchmark under the profile of section 1
+native      the same benchmark, same commit, same engine, on the native host
+ratio       reference / native            budget: at most 10
+```
+
+This is deliberately written down because the sentence admits a second reading —
+a different implementation of the same semantics — and building one purely to
+satisfy a ratio would be a worse outcome than stating which reading holds.
+
+### 3. Sampling and retention
+
+Unchanged from `docs/35` and restated so a record is checkable: three warmups,
+twenty-one samples, median, p95 and p99 retained with the raw samples, the
+source commit, the toolchain and build identity, the profile, and the cache
+state. Both halves of the ratio are recorded, never just the quotient.
+
+### 4. Evidence level
+
+A record taken under section 1 with section 3's retention is **P2** when it is
+produced by the repository's own reproducible gate, and **P1** when produced by
+hand. A record from any other machine is P1 and names the machine; it may
+support a stage's progress but does not close its gate.
+
+### 5. What this ADR does not decide
+
+It does not set new budgets, change the numbers in `docs/35`, or say anything
+about a Full-profile or multicore reference platform. Those need their own
+decision when a Full engine exists.
+
+## Architecture impact statement
+
+- **Change level:** 2. **Invariants affected:** none amended.
+- **Canonical representation:** unchanged. **Trusted-base impact:** none.
+- **Threat-model impact:** none directly; a fixed platform makes a resource-
+  exhaustion measurement comparable across runs, which the abuse evidence in
+  `docs/44` section 3 depends on.
+- **Recovery and rollback impact:** none.
+- **Stage identity gate:** no gate is claimed or closed by this ADR. It states
+  where the Stage 2 performance gate is measured, not that it has been.
+- **Compatibility profile:** the profile is fixed for Stage 2 and changes only
+  through a versioned decision, because changing it silently would invalidate
+  every retained comparison.
+- **New dependencies:** none. Both halves of the ratio use tooling the
+  repository already has.
+- **Tests:** the harness records which profile it ran under and refuses to
+  present a P2 claim for a record taken elsewhere.
+
+## Consequences
+
+The Stage 2 performance gate has a place to be measured, chosen before the
+measurement rather than after it, and the execution budget has one reading. The
+remaining work is mechanical: run the harness under the profile, retain both
+halves, and compute the ratio.
+
+The cost is that a Stage 2 performance number is a TCG number, so it is slower
+than the hardware a developer sits at. That is the intended trade — a budget met
+on the slowest gated profile is met everywhere, and the alternative is a number
+whose platform was chosen to suit it.
+
+## Alternatives considered
+
+**Declare the maintainer's machine the reference platform.** Rejected: it is
+choosing the platform after seeing the result, and no one else can reproduce it.
+
+**Define a new Stage 2-specific QEMU profile.** Rejected for now: a second
+profile is a second thing to keep gated and honest, and nothing about the Stage 2
+metrics needs anything the Stage 1 profile lacks.
+
+**Build a second semantic implementation to satisfy the ratio.** Rejected: it
+would exist only to produce a denominator, and a throwaway implementation is a
+worse oracle than none. The native-host reading of section 2 measures what the
+budget is actually about — how much the reference platform costs — using the
+implementation that already exists.
+
+<!-- END docs/adr/0040-stage2-reference-platform.md -->
 
 ---
 

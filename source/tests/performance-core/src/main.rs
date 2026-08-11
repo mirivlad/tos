@@ -9,13 +9,18 @@
 //! and the quota-rejection behaviour that bounds how badly a rejected input may
 //! cost compared with an accepted one.
 //!
-//! **What this harness does and does not claim.** It produces a P1 *locally
-//! measured* record on whatever machine runs it. It does not produce a P2
-//! reproducible CI measurement and it does not produce the declared
-//! reference-platform result docs/35 requires for a stage gate: this machine is
-//! not that platform, and asserting a budget from it would be a fabricated
-//! pass. The output records the environment it actually ran in, so the number
-//! can be read for what it is and re-measured where it counts.
+//! **Which platform a record came from is an input, never an inference.** The
+//! harness is told with `--profile native` or `--profile reference` and records
+//! what it was told. It never decides for itself that the machine it happens to
+//! be running on is the reference platform: choosing the platform after seeing
+//! the number is the thing ADR-0040 exists to prevent.
+//!
+//! The execution budget is a ratio. ADR-0040 section 2 reads docs/35's "host
+//! reference interpreter time under the same semantic implementation" as the
+//! native-host run of this same engine at this same commit, so the ratio is
+//! `reference / native` and both halves are retained. `--baseline <us>` supplies
+//! the native p95 when computing the reference-side record, so the quotient is
+//! never presented without the measurement it came from.
 //!
 //! docs/35 fixes the sampling: three warmups then twenty-one samples, with
 //! median, p95 and p99 retained.
@@ -31,8 +36,23 @@ const WARMUPS: usize = 3;
 const SAMPLES: usize = 21;
 
 fn main() {
+    let profile = argument("--profile").unwrap_or_else(|| String::from("native"));
+    let baseline: Option<u128> = argument("--baseline").and_then(|value| value.parse().ok());
+    if profile != "native" && profile != "reference" {
+        eprintln!("usage: --profile native|reference [--baseline <native p95 us>]");
+        std::process::exit(2);
+    }
+
     println!("TOS Core Stage 2 measurement harness");
-    println!("evidence level: P1 (locally measured) — not the docs/35 reference platform");
+    println!("profile: {profile} (declared, not inferred — ADR-0040)");
+    println!(
+        "evidence level: {}",
+        if profile == "reference" {
+            "the record is reference-platform only if it was actually taken there"
+        } else {
+            "P1 native-host baseline; it is the denominator of the ratio, not a gate"
+        }
+    );
     println!("sampling: {WARMUPS} warmups, {SAMPLES} samples, median/p95/p99 in microseconds");
     println!();
 
@@ -62,7 +82,20 @@ fn main() {
         "one-million-operation integer/control-flow benchmark",
         &execution,
     );
+    let execution_p95 = percentile(&execution, 95);
     println!("  docs/35 budget: within 10x a host reference interpreter");
+    match (profile.as_str(), baseline) {
+        ("reference", Some(native)) => println!(
+            "  reference/native p95 ratio: {:.3} (docs/35 budget: at most 10.000), native baseline {native} us",
+            execution_p95 as f64 / native.max(1) as f64
+        ),
+        ("reference", None) => println!(
+            "  ratio not computed: pass --baseline <native p95 us> from a native run of this same commit"
+        ),
+        _ => println!(
+            "  this is the native baseline; pass --baseline {execution_p95} to the reference-profile run to obtain the ratio"
+        ),
+    }
 
     // The comparison only means something against a comparable input: docs/35
     // bounds a rejection by the *accepted-input* budget, so the rejected
@@ -81,8 +114,25 @@ fn main() {
     );
 
     println!();
-    println!("This record is P1. Closing the docs/35 Stage 2 gate needs the same");
-    println!("procedure on the declared reference platform, retained as raw samples.");
+    if profile == "native" {
+        println!("This is the native half of the pair. Closing the docs/35 Stage 2 gate");
+        println!("needs the same procedure under the ADR-0040 reference profile, with");
+        println!("both halves retained as raw samples.");
+    } else {
+        println!("Reference-profile record. It closes the docs/35 Stage 2 gate only if it");
+        println!("was taken under the ADR-0040 profile and both halves are retained.");
+    }
+}
+
+/// Reads a declared argument. Nothing is inferred from the environment.
+fn argument(name: &str) -> Option<String> {
+    let mut args = std::env::args();
+    while let Some(found) = args.next() {
+        if found == name {
+            return args.next();
+        }
+    }
+    None
 }
 
 /// Says why the path stopped, so a fixture defect is never read as a slow path.

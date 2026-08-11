@@ -315,8 +315,8 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
         }
     }
 
-    check_qualified_types(modules, &by_name, &mut diagnostics);
-    diagnostics.extend(find_cycles(modules, &by_name));
+    check_qualified_types(modules, by_name, &mut diagnostics);
+    diagnostics.extend(find_cycles(modules, by_name));
     diagnostics
 }
 

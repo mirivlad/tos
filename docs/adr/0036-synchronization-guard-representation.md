@@ -2,11 +2,16 @@
 
 # ADR-0036: TOS Core V1 synchronization guard representation
 
-- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Status: **Proposed (revision 2)** — direction approved by the Project
+  Architect; this text needs approval to become Accepted
 - Date: 2026-08-11
-- Decision level: 2 — adds type constructors to the accepted V1 type surface,
-  which conformance evidence and the IR type table depend on
+- Decision level: 2 — adds type constructors and one diagnostic code to the
+  accepted V1 surface, which conformance evidence and the IR type table depend on
 - Project Architect approval: *(pending)*
+- Supersedes: revision 1 of this ADR, which left the normative "a guard may not
+  be held across await" rule with no source diagnostic, said nothing about the
+  lifetime relation between a guard and its lock, and did not say that the
+  checker and the verifier must prove the same rule independently
 
 ## Context
 
@@ -74,42 +79,103 @@ affine rule exists to prevent.
 A guard's scope is its binding's block. Its `drop` releases the lock and is
 bounded: it allocates nothing, awaits nothing and acquires no authority.
 
-### 4. Diagnostics
+### 4. The lifetime relation between a guard and its lock
 
-No new source diagnostic is allocated. A guard crossing a task or closure
-boundary is `E1304_INVALID_TASK_CAPTURE` or `E1305_INVALID_CLOSURE_CAPTURE` with
-`reason=lock guard`, which is the reason `docs/40` section 6 already names. A
-guard held across `await` is `E1401`-adjacent but distinct, and is deliberately
-**left open**: it needs the async slice, and this ADR does not decide it.
+Acquisition creates a checkable dependency: **the synchronization object must
+outlive every guard it granted.** A guard names a resource inside that object,
+so an object that is moved or dropped while one of its guards is live would
+leave the guard naming nothing — the exact condition the affine rule exists to
+prevent, one level up.
 
-The verifier family `V2031_SYNC` gains the guard rules: a guard operand may not
-appear in a spawn capture, a closure capture, an aggregate, a return, or a
-channel operation.
+Moving a guard between bindings of the same scope does **not** release the lock.
+A guard is affine, so a move transfers ownership of the guard *and the release
+obligation with it*; the lock is released by the bounded `drop` of whichever
+binding finally owns it. That is what makes a guard usable at all: a helper may
+take one, and releasing on every move would release it at the first hand-off.
 
-### 5. Conformance evidence
+### 5. `E1402_INVALID_GUARD_LIFETIME`
+
+Stage `type`, in the `E14xx` concurrency family. One code covers every
+prohibited lifetime or escape operation on a guard, with a structured
+`operation` field naming which:
+
+```text
+operation=held_across_await     a guard is live across an `await`
+operation=returned              a guard is returned from a function, task or
+                                closure body
+operation=aggregate             a guard is placed into a record, enum, tuple or
+                                array
+operation=channel               a guard is sent through a channel
+operation=task_boundary         a guard is moved or captured across a task or
+                                closure boundary
+operation=lock_outlived         the synchronization object is moved or dropped
+                                while one of its guards is live
+```
+
+The diagnostic also carries the guard type and the source position where the
+guard was acquired, because a lifetime finding that does not say where the
+lifetime started cannot be acted on.
+
+**Precedence, so nothing is reported twice.** A guard crossing a task or closure
+boundary is `E1402_INVALID_GUARD_LIFETIME` with `operation=task_boundary`, and
+**not** `E1304_INVALID_TASK_CAPTURE` or `E1305_INVALID_CLOSURE_CAPTURE`. The
+capture codes keep their meaning for every other non-`Transferable` value; a
+guard is routed to the guard-specific code because its rule is about the
+guard's lifetime rather than about transferability alone, and a single reading
+is what keeps the two families from overlapping. `docs/40` section 6 is amended
+to say so: it continues to list a lock guard among the values that are not
+`Transferable`, and it records that the diagnostic for one is `E1402`.
+
+### 6. The checker and the verifier prove the same rule independently
+
+`V2031_SYNC` gains exactly the rules of section 5, restated over IR: a guard
+operand may not appear in a spawn capture, a closure capture, an aggregate
+construction, a return, or a channel operation; a guard value may not be live
+across an await; and a synchronization object may not be moved or dropped while
+a guard derived from it is live.
+
+Neither component may take the other's word for it. The verifier reaches the
+conclusion by its own traversal of the IR, as `docs/43` section 5 requires, and
+the frontend's success is not an input to it. A guard rule the checker enforces
+and the verifier does not would be a rule an alternate frontend could skip.
+
+### 7. Conformance evidence
 
 At least: a positive taking and releasing a mutex guard within a block; a
-positive taking two read guards of one `RwLock`; a negative capturing a guard
-into a task; a negative returning a guard; and a negative applying a constructor
-to a guard type.
+positive taking two read guards of one `RwLock`; a positive moving a guard into
+a helper binding and releasing it there, proving a move is not a release; a
+negative capturing a guard into a task (`operation=task_boundary`); a negative
+returning a guard (`operation=returned`); a negative holding a guard across an
+`await` (`operation=held_across_await`); a negative placing a guard into a
+record (`operation=aggregate`); a negative dropping the mutex while its guard is
+live (`operation=lock_outlived`); and a negative applying a constructor to a
+guard type. Each has a matching forged-IR negative for `V2031_SYNC`.
 
 ## Architecture impact statement
 
-- **Change level:** 2. **Invariants affected:** none amended; I-09 and I-15 are
-  served by naming what was described but unnamed.
+- **Change level:** 2. **Invariants affected:** none amended; I-09 is served —
+  `E1402` becomes part of the versioned diagnostic boundary; I-15 is served by
+  naming what was described but unnamed.
 - **Canonical representation:** unchanged. No accepted source becomes invalid —
   V1 source cannot name a guard today, so nothing can break.
 - **Trusted-base impact:** none. **Threat-model impact:** positive: the guard
   rules become checkable instead of unstated.
 - **Compatibility profile:** TOS Core 1.0; the three constructors are fixed for
   V1 and change only through a versioned language decision.
-- **Tests:** the five conformance cases above, checker unit tests per rule, and
-  the mechanical gate binding the constructors to the arity table.
+- **Tests:** the nine conformance cases of section 7 with their forged-IR
+  counterparts, checker unit tests per `operation` value and for the precedence
+  against `E1304`/`E1305`, and the mechanical gate binding the constructors to
+  the arity table and `E1402` to the registry.
 
 ## Consequences
 
 The synchronization slice becomes implementable, and `V2031_SYNC` stops being a
-family with no rules. The cost is three more names fixed for V1.
+family with no rules. Every prohibited guard operation has a code, so no
+normative rule about guards is left without a way to report it.
+
+The cost is three type names and one diagnostic code fixed for V1, and one
+routing decision: a guard crossing a task boundary is reported as a guard
+lifetime finding rather than as a capture finding.
 
 ## Alternatives considered
 
@@ -123,3 +189,13 @@ exactly where the verifier has to see it.
 
 **Model release as an `unlock(guard)` operation.** Rejected: it leaves a named
 guard after release, which is the use-after-release the affine rule prevents.
+
+**Report a guard crossing a task boundary as `E1304`/`E1305`.** Rejected as the
+primary reading: the same program would then be describable by two codes from
+two families, and a conformance expectation would have to pick one without the
+contract saying which. One guard-specific code with an `operation` field says
+exactly what happened and leaves the capture codes their own meaning.
+
+**Release the lock when a guard is moved.** Rejected: it would release at the
+first hand-off, so a guard could never be passed to a helper, and the
+release point would depend on binding structure rather than on ownership.

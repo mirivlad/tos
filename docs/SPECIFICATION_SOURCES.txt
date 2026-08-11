@@ -101,3 +101,4 @@ docs/adr/0036-synchronization-guard-representation.md
 docs/adr/0037-region-transferability.md
 docs/adr/0038-module-root-precedence.md
 docs/adr/0039-nonconstructible-opaque-types.md
+docs/adr/0040-stage2-reference-platform.md
