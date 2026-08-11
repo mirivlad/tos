@@ -45,7 +45,7 @@
 //! granted regions, verifier and runtime contract — is a separate layer that
 //! does not depend on these types.
 
-use std::vec::Vec;
+use alloc::vec::Vec;
 
 use crate::parser::Span;
 use crate::place::{BindingId, Place};

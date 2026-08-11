@@ -10,8 +10,8 @@
 //! Every diagnostic carries a code registered in docs/44 section 7. A check
 //! that cannot yet be performed reports nothing rather than guessing.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::vec::Vec;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::vec::Vec;
 
 use crate::parser::{
     Block, EnumVariantForm, Expression, ExpressionForm, Pattern, PatternForm, RecordField, Schema,

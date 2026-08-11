@@ -1,9 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //! Bounded canonical TOS Core V1 source reader (docs/39, ADR-0029).
 
-use std::boxed::Box;
-use std::string::String;
-use std::vec::Vec;
+#![no_std]
+
+extern crate alloc;
+
+// The test harness is a host program by construction, so it keeps `std`.
+#[cfg(test)]
+extern crate std;
+
+use alloc::boxed::Box;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 mod boundary;
 mod capability;
@@ -733,6 +741,8 @@ fn nfc(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::{format, vec};
+
     use super::*;
 
     #[test]
@@ -1112,7 +1122,7 @@ mod tests {
     const PREFIX: &str = "module system.boot version 1.0 profile bootstrap; resource [fuel: 1000] ";
 
     fn parse(body: &str) -> (SourceUnit, ParseOutcome<Schema>) {
-        let text = std::format!("{PREFIX}{body}");
+        let text = alloc::format!("{PREFIX}{body}");
         let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
         let outcome = Parser::parse_schema(&source);
         (source, outcome)
@@ -1547,7 +1557,7 @@ mod tests {
             "while-identifier-control-head",
             "match-identifier-control-head",
         ] {
-            let path = std::format!(
+            let path = alloc::format!(
                 "{}/../../../docs/language/conformance/v1/reject/{vector}.tos",
                 env!("CARGO_MANIFEST_DIR")
             );
@@ -1598,14 +1608,14 @@ mod tests {
         );
 
         for target in ["read()", "(value)", "1i32"] {
-            let body = std::format!("fn main() -> i32 {{ {target} = 1i32; return 0i32; }}");
+            let body = alloc::format!("fn main() -> i32 {{ {target} = 1i32; return 0i32; }}");
             let (_, outcome) = parse(&body);
             assert!(outcome.has_errors(), "{target} is not a place");
         }
     }
 
     fn check(body: &str) -> (SourceUnit, Vec<Diagnostic>) {
-        let text = std::format!("{PREFIX}{body}");
+        let text = alloc::format!("{PREFIX}{body}");
         let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
         let schema = Parser::parse_schema(&source)
             .into_accepted()
@@ -2064,7 +2074,7 @@ mod tests {
     }
 
     fn check_header(version: &str) -> Vec<Diagnostic> {
-        let text = std::format!(
+        let text = alloc::format!(
             "module system.boot version {version} profile bootstrap; resource [fuel: 1000] \
              fn main() -> unit {{ }}"
         );
@@ -2164,7 +2174,7 @@ mod tests {
     }
 
     fn check_full(body: &str) -> (SourceUnit, Vec<Diagnostic>) {
-        let text = std::format!(
+        let text = alloc::format!(
             "module system.boot version 1.0 profile full; resource [fuel: 1000] {body}"
         );
         let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
@@ -2223,7 +2233,7 @@ mod tests {
     }
 
     fn module_source(name: &str, imports: &str) -> SourceUnit {
-        let text = std::format!(
+        let text = alloc::format!(
             "module {name} version 1.0 profile bootstrap; {imports} resource [fuel: 1000] \
              fn main() -> unit {{ }}"
         );
@@ -2650,7 +2660,7 @@ mod tests {
         // ADR-0033: a bare name that is not a variant of the expected type
         // binds, and a binding matches every value.
         for arm in ["_", "other"] {
-            let body = std::format!(
+            let body = alloc::format!(
                 "enum Signal [Low, High] \
                  fn main(signal: Signal) -> i32 {{ match (signal) {{ Low => {{ return 1i32; }} \
                  {arm} => {{ return 0i32; }} }} }}"
@@ -3165,7 +3175,7 @@ mod tests {
 
     #[test]
     fn a_move_in_each_alternative_branch_is_correct() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
              if (ready) {{ take(message); }} else {{ take(message); }} }}"
         ));
@@ -3178,7 +3188,7 @@ mod tests {
 
     #[test]
     fn a_move_on_one_path_blocks_a_later_use() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
              if (ready) {{ take(message); }} take(message); }}"
         ));
@@ -3192,7 +3202,7 @@ mod tests {
 
     #[test]
     fn no_move_in_either_branch_leaves_the_value_available() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} fn peek(borrow message: Message) -> unit {{ }} \
              pub fn main(ready: bool, message: Message) -> unit {{ \
              if (ready) {{ peek(borrow message); }} else {{ }} take(message); }}"
@@ -3202,7 +3212,7 @@ mod tests {
 
     #[test]
     fn a_diverging_branch_does_not_contribute_its_moves() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
              if (ready) {{ take(message); return; }} take(message); }}"
         ));
@@ -3215,7 +3225,7 @@ mod tests {
 
     #[test]
     fn nested_control_flow_joins_correctly() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} enum Mode [Fast, Slow] \
              pub fn main(mode: Mode, ready: bool, message: Message) -> unit {{ \
              match (mode) {{ Fast => {{ if (ready) {{ take(message); }} else {{ take(message); }} }} \
@@ -3226,7 +3236,7 @@ mod tests {
 
     #[test]
     fn a_match_arm_starts_from_the_entry_state() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} enum Mode [Fast, Slow] \
              pub fn main(mode: Mode, message: Message) -> unit {{ \
              match (mode) {{ Fast => {{ take(message); }} Slow => {{ take(message); }} }} \
@@ -3237,7 +3247,7 @@ mod tests {
 
     #[test]
     fn grouping_does_not_change_consuming_semantics() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(message: Message) -> unit {{ take((message)); take(message); }}"
         ));
         assert_eq!(moves(&diagnostics), 1, "parentheses name the same place");
@@ -3266,7 +3276,7 @@ mod tests {
 
     #[test]
     fn a_move_inside_a_loop_is_seen_by_the_next_iteration() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
              while (ready) {{ take(message); }} }}"
         ));
@@ -3275,7 +3285,7 @@ mod tests {
 
     #[test]
     fn shadowing_does_not_disturb_the_outer_binding() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(message: Message) -> unit {{ \
              if (true) {{ let message = Message(payload: b\"inner\"); take(message); }} \
              take(message); }}"
@@ -3297,7 +3307,7 @@ mod tests {
 
     #[test]
     fn repeated_immutable_borrows_are_compatible() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main(counter: Counter) -> i32 {{ \
              let first = borrow counter; let second = borrow counter; return read(borrow counter); }}"
         ));
@@ -3306,7 +3316,7 @@ mod tests {
 
     #[test]
     fn an_immutable_and_a_mutable_borrow_conflict() {
-        let (source, diagnostics) = check(&std::format!(
+        let (source, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> i32 {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              let view = borrow counter; write(borrow mut counter); return 0i32; }}"
         ));
@@ -3322,7 +3332,7 @@ mod tests {
 
     #[test]
     fn a_mutable_borrow_is_exclusive() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              let first = borrow mut counter; write(borrow mut counter); }}"
         ));
@@ -3332,7 +3342,7 @@ mod tests {
     #[test]
     fn a_borrow_ends_with_its_region() {
         // A temporary borrow lives for its statement, so the next one is free.
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              write(borrow mut counter); write(borrow mut counter); read(borrow counter); }}"
         ));
@@ -3341,7 +3351,7 @@ mod tests {
 
     #[test]
     fn a_branch_local_borrow_does_not_reach_its_sibling() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main(ready: bool) -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              if (ready) {{ let view = borrow mut counter; }} \
              else {{ let second = borrow mut counter; }} }}"
@@ -3351,7 +3361,7 @@ mod tests {
 
     #[test]
     fn borrows_of_unrelated_fields_do_not_conflict() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              let one = borrow mut counter.value; let two = borrow mut counter.other; }}"
         ));
@@ -3364,7 +3374,7 @@ mod tests {
 
     #[test]
     fn a_field_borrow_locks_its_containing_path() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              let inner = borrow mut counter.value; let whole = borrow counter; }}"
         ));
@@ -3392,7 +3402,7 @@ mod tests {
 
     #[test]
     fn a_write_under_an_immutable_borrow_is_rejected() {
-        let (source, diagnostics) = check(&std::format!(
+        let (source, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              let view = borrow counter; counter.value = 1i32; }}"
         ));
@@ -3407,7 +3417,7 @@ mod tests {
 
     #[test]
     fn a_write_to_an_unborrowed_field_is_allowed() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              let view = borrow counter.value; counter.other = 1i32; }}"
         ));
@@ -3416,7 +3426,7 @@ mod tests {
 
     #[test]
     fn a_write_with_no_live_borrow_is_allowed() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); counter.value = 1i32; }}"
         ));
         assert_eq!(codes(&diagnostics, "E1303_MUTATE_WHILE_BORROWED"), 0);
@@ -3476,7 +3486,7 @@ mod tests {
 
     #[test]
     fn a_task_capture_of_an_affine_value_moves_it() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(message: Message) -> unit {{ \
              let worker: Task<Message> = spawn parallel {{ return message; }}; \
              take(message); }}"
@@ -3546,7 +3556,7 @@ mod tests {
 
     #[test]
     fn a_field_may_be_partially_moved() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{PAIR} pub fn main(pair: Pair) -> unit {{ take_bytes(pair.left); \
              take_bytes(pair.right); }}"
         ));
@@ -3559,7 +3569,7 @@ mod tests {
 
     #[test]
     fn a_moved_field_may_not_be_moved_twice() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{PAIR} pub fn main(pair: Pair) -> unit {{ take_bytes(pair.left); \
              take_bytes(pair.left); }}"
         ));
@@ -3570,7 +3580,7 @@ mod tests {
     fn a_partially_moved_aggregate_may_not_be_used_whole() {
         // docs/40 section 5 allows the remainder to be used only to move or
         // drop its untouched fields.
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{PAIR} pub fn main(pair: Pair) -> unit {{ take_bytes(pair.left); \
              take_pair(pair); }}"
         ));
@@ -3585,7 +3595,7 @@ mod tests {
 
     #[test]
     fn a_whole_move_blocks_a_later_field_use() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{PAIR} pub fn main(pair: Pair) -> unit {{ take_pair(pair); \
              take_bytes(pair.left); }}"
         ));
@@ -3594,7 +3604,7 @@ mod tests {
 
     #[test]
     fn writing_a_place_restores_it() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{PAIR} pub fn main() -> unit {{ let mut pair = Pair(left: b\"a\", right: b\"b\"); \
              take_bytes(pair.left); pair.left = b\"c\"; take_bytes(pair.left); }}"
         ));
@@ -3607,7 +3617,7 @@ mod tests {
 
     #[test]
     fn a_break_carries_its_state_to_the_loop_exit() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
              loop {{ take(message); break; }} take(message); }}"
         ));
@@ -3616,7 +3626,7 @@ mod tests {
 
     #[test]
     fn a_continue_feeds_the_back_edge() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
              while (ready) {{ take(message); continue; }} }}"
         ));
@@ -3629,7 +3639,7 @@ mod tests {
 
     #[test]
     fn a_conditional_break_carries_maybe_moved_state() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
              while (ready) {{ if (ready) {{ take(message); break; }} }} take(message); }}"
         ));
@@ -3648,13 +3658,13 @@ mod tests {
     fn a_bare_loop_has_no_zero_iteration_exit() {
         // Only a `break` leaves a bare loop, so code after an unbroken one is
         // unreachable and cannot see the entry state.
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(message: Message) -> unit {{ \
              loop {{ take(message); }} }}"
         ));
         assert_eq!(moves(&diagnostics), 1, "the back edge reuses the value");
 
-        let (_, unreachable) = check(&std::format!(
+        let (_, unreachable) = check(&alloc::format!(
             "{AFFINE} pub fn main(message: Message) -> unit {{ \
              loop {{ }} take(message); }}"
         ));
@@ -3663,7 +3673,7 @@ mod tests {
 
     #[test]
     fn a_while_head_may_fail_so_entry_reaches_the_exit() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
              while (ready) {{ return; }} take(message); }}"
         ));
@@ -3672,7 +3682,7 @@ mod tests {
 
     #[test]
     fn break_and_continue_bind_to_their_own_loop() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} pub fn main(ready: bool, message: Message) -> unit {{ \
              while (ready) {{ loop {{ break; }} }} take(message); }}"
         ));
@@ -3687,7 +3697,7 @@ mod tests {
     fn an_assignment_evaluates_its_index_before_the_right_side() {
         // docs/40 section 4 fixes the order, so the index consumes first and
         // the right side is the use that fails.
-        let (source, diagnostics) = check(&std::format!(
+        let (source, diagnostics) = check(&alloc::format!(
             "{AFFINE} fn position(message: Message) -> size {{ return 0B; }} \
              fn width(message: Message) -> i32 {{ return 1i32; }} \
              pub fn main(message: Message) -> unit {{ \
@@ -3709,7 +3719,7 @@ mod tests {
 
     #[test]
     fn a_short_circuit_right_side_is_a_conditional_path() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} fn ready_of(message: Message) -> bool {{ return true; }} \
              pub fn main(flag: bool, message: Message) -> unit {{ \
              let both = flag && ready_of(message); take(message); }}"
@@ -3814,7 +3824,7 @@ mod tests {
 
     #[test]
     fn an_owner_read_under_a_mutable_borrow_is_rejected() {
-        let (source, diagnostics) = check(&std::format!(
+        let (source, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> i32 {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              let held = borrow mut counter; return counter.value; }}"
         ));
@@ -3831,7 +3841,7 @@ mod tests {
 
     #[test]
     fn an_owner_write_under_a_mutable_borrow_is_rejected() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              let held = borrow mut counter; counter.value = 1i32; }}"
         ));
@@ -3849,7 +3859,7 @@ mod tests {
 
     #[test]
     fn a_move_under_a_live_borrow_is_rejected() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{AFFINE} fn peek(borrow message: Message) -> unit {{ }} \
              pub fn main(message: Message) -> unit {{ \
              let view = borrow message; take(message); }}"
@@ -3872,7 +3882,7 @@ mod tests {
         // ADR-0035: an operation through the correct borrow is not an owner
         // alias. Reading through a shared borrow and writing through a mutable
         // one are exactly as legal as before.
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> i32 {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              let held = borrow mut counter; write(borrow mut held); return read(borrow held); }}"
         ));
@@ -3882,7 +3892,7 @@ mod tests {
 
     #[test]
     fn an_owner_read_under_a_shared_borrow_is_allowed() {
-        let (_, diagnostics) = check(&std::format!(
+        let (_, diagnostics) = check(&alloc::format!(
             "{COUNTER} pub fn main() -> i32 {{ let mut counter = Counter(value: 0i32, other: 0i32); \
              let view = borrow counter; return counter.value; }}"
         ));
@@ -3901,7 +3911,7 @@ mod tests {
          fn peek(borrow message: Message) -> unit { } ";
 
     fn check_cleanup(body: &str) -> (SourceUnit, Vec<Diagnostic>) {
-        let text = std::format!("{CLEANUP}{body}");
+        let text = alloc::format!("{CLEANUP}{body}");
         let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
         let schema = Parser::parse_schema(&source)
             .into_accepted()
@@ -4226,7 +4236,7 @@ mod tests {
          import capability system.time.Clock as clock; resource [fuel: 1000] ";
 
     fn check_authority(body: &str) -> (SourceUnit, Vec<Diagnostic>) {
-        let text = std::format!("{AUTHORITY}{body}");
+        let text = alloc::format!("{AUTHORITY}{body}");
         let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
         let schema = Parser::parse_schema(&source)
             .into_accepted()

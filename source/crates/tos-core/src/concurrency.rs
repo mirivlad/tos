@@ -17,9 +17,9 @@
 //! the handle. A `spawn` whose value is not bound at all can never be consumed
 //! and is reported where it stands.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::string::{String, ToString};
-use std::vec::Vec;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use crate::parser::{Block, Expression, ExpressionForm, Schema, Span, Statement, StatementForm};
 use crate::{Diagnostic, Severity, SourceUnit, Stage};

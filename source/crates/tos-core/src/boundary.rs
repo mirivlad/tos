@@ -12,7 +12,7 @@
 //! `E1802_UNSAFE_RATIONALE_REQUIRED`. The lexer discards comments, so the
 //! rationale is read from the source text of the block itself.
 
-use std::vec::Vec;
+use alloc::vec::Vec;
 
 use crate::parser::{Block, Expression, Schema, Statement, StatementForm};
 use crate::{Diagnostic, Severity, SourceUnit, Span, Stage};

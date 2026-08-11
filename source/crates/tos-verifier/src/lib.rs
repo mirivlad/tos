@@ -19,11 +19,18 @@
 //! module the verifier actually saw, or one deterministic primary `V20xx`
 //! finding. An engine accepts IR only with a receipt for that exact digest.
 
+#![no_std]
 #![forbid(unsafe_code)]
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::string::{String, ToString};
-use std::vec::Vec;
+extern crate alloc;
+
+// The test harness is a host program by construction, so it keeps `std`.
+#[cfg(test)]
+extern crate std;
+
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use tos_ir::{
     AtomicOp, Block, CallTarget, Constant, Function, Instruction, MemoryOrder, Module, Op, Operand,
@@ -152,7 +159,7 @@ fn check_limits(module: &Module, limits: &Limits) -> Result<(), Finding> {
             return Err(Finding::new(
                 "V2001_LIMIT",
                 name,
-                std::format!("{actual} entries exceeds the ceiling of {ceiling}"),
+                alloc::format!("{actual} entries exceeds the ceiling of {ceiling}"),
             ));
         }
     }
@@ -167,14 +174,14 @@ fn check_limits(module: &Module, limits: &Limits) -> Result<(), Finding> {
         if function.blocks.len() > limits.blocks_per_function {
             return Err(Finding::new(
                 "V2001_LIMIT",
-                std::format!("function {index}"),
+                alloc::format!("function {index}"),
                 "more basic blocks than the ceiling allows",
             ));
         }
         if function.signature.parameters.len() > limits.parameters {
             return Err(Finding::new(
                 "V2001_LIMIT",
-                std::format!("function {index}"),
+                alloc::format!("function {index}"),
                 "more parameters than the ceiling allows",
             ));
         }
@@ -182,7 +189,7 @@ fn check_limits(module: &Module, limits: &Limits) -> Result<(), Finding> {
             if block.instructions.len() > limits.instructions_per_block {
                 return Err(Finding::new(
                     "V2001_LIMIT",
-                    std::format!("function {index} block {block_index}"),
+                    alloc::format!("function {index} block {block_index}"),
                     "more instructions than the ceiling allows",
                 ));
             }
@@ -199,14 +206,14 @@ fn check_schema(module: &Module) -> Result<(), Finding> {
         return Err(Finding::new(
             "V2002_SCHEMA",
             "header.schema_id",
-            std::format!("expected {}, found {}", tos_ir::SCHEMA_ID, header.schema_id),
+            alloc::format!("expected {}, found {}", tos_ir::SCHEMA_ID, header.schema_id),
         ));
     }
     if header.language_version != tos_ir::LANGUAGE_VERSION {
         return Err(Finding::new(
             "V2002_SCHEMA",
             "header.language_version",
-            std::format!(
+            alloc::format!(
                 "expected {}, found {}",
                 tos_ir::LANGUAGE_VERSION,
                 header.language_version
@@ -245,7 +252,7 @@ fn check_source_identity(module: &Module) -> Result<(), Finding> {
         if !value.starts_with("sha256:") {
             return Err(Finding::new(
                 "V2003_SOURCE_IDENTITY",
-                std::format!("header.{field}"),
+                alloc::format!("header.{field}"),
                 "identity is not a named digest",
             ));
         }
@@ -258,12 +265,12 @@ fn check_source_identity(module: &Module) -> Result<(), Finding> {
         ));
     }
     // docs/42 section 1: a module name maps to exactly one canonical path.
-    let expected = std::format!("{}.tos", header.module_name.replace('.', "/"));
+    let expected = alloc::format!("{}.tos", header.module_name.replace('.', "/"));
     if !header.path.ends_with(&expected) {
         return Err(Finding::new(
             "V2003_SOURCE_IDENTITY",
             "header.path",
-            std::format!("{} does not map to {}", header.module_name, header.path),
+            alloc::format!("{} does not map to {}", header.module_name, header.path),
         ));
     }
     Ok(())
@@ -278,7 +285,7 @@ fn check_table_order(module: &Module) -> Result<(), Finding> {
             return Err(Finding::new(
                 "V2004_TABLE_ORDER",
                 "exports",
-                std::format!("{} follows {}", pair[1].name, pair[0].name),
+                alloc::format!("{} follows {}", pair[1].name, pair[0].name),
             ));
         }
     }
@@ -288,7 +295,7 @@ fn check_table_order(module: &Module) -> Result<(), Finding> {
             return Err(Finding::new(
                 "V2004_TABLE_ORDER",
                 "functions",
-                std::format!(
+                alloc::format!(
                     "{} follows {}",
                     pair[1].signature.name,
                     pair[0].signature.name
@@ -319,8 +326,8 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
             if !module.has_type(referenced) {
                 return Err(Finding::new(
                     "V2010_TYPE",
-                    std::format!("type {index}"),
-                    std::format!("references type {referenced} outside the table"),
+                    alloc::format!("type {index}"),
+                    alloc::format!("references type {referenced} outside the table"),
                 ));
             }
         }
@@ -335,7 +342,7 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
             if export_name.is_empty() {
                 return Err(Finding::new(
                     "V2010_TYPE",
-                    std::format!("type {index}"),
+                    alloc::format!("type {index}"),
                     "a nominal type must record its export name",
                 ));
             }
@@ -348,7 +355,7 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
                     if !variants.is_empty() {
                         return Err(Finding::new(
                             "V2010_TYPE",
-                            std::format!("type {index}"),
+                            alloc::format!("type {index}"),
                             "a record declares variants",
                         ));
                     }
@@ -357,7 +364,7 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
                     if !fields.is_empty() {
                         return Err(Finding::new(
                             "V2010_TYPE",
-                            std::format!("type {index}"),
+                            alloc::format!("type {index}"),
                             "an enum declares record fields",
                         ));
                     }
@@ -369,15 +376,15 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
         if import.module_name.is_empty() {
             return Err(Finding::new(
                 "V2012_IMPORT",
-                std::format!("import {index}"),
+                alloc::format!("import {index}"),
                 "an import names no module",
             ));
         }
         if !snapshot.modules.is_empty() && !snapshot.modules.contains_key(&import.module_name) {
             return Err(Finding::new(
                 "V2012_IMPORT",
-                std::format!("import {index}"),
-                std::format!(
+                alloc::format!("import {index}"),
+                alloc::format!(
                     "{} is not in the declared resolution snapshot",
                     import.module_name
                 ),
@@ -388,7 +395,7 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
         if !module.has_type(import.ty) {
             return Err(Finding::new(
                 "V2013_CAPABILITY",
-                std::format!("capability import {index}"),
+                alloc::format!("capability import {index}"),
                 "the declared handle type is outside the table",
             ));
         }
@@ -399,8 +406,8 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
             _ => {
                 return Err(Finding::new(
                     "V2013_CAPABILITY",
-                    std::format!("capability import {index}"),
-                    std::format!("{} is not typed as its own interface", import.interface),
+                    alloc::format!("capability import {index}"),
+                    alloc::format!("{} is not typed as its own interface", import.interface),
                 ))
             }
         }
@@ -409,8 +416,8 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
         {
             return Err(Finding::new(
                 "V2013_CAPABILITY",
-                std::format!("capability import {index}"),
-                std::format!(
+                alloc::format!("capability import {index}"),
+                alloc::format!(
                     "{} is not in the declared capability contract",
                     import.interface
                 ),
@@ -432,8 +439,8 @@ fn referenced_types(definition: &TypeDef) -> Vec<TypeId> {
         | TypeDef::RwLock(inner)
         | TypeDef::Channel(inner)
         | TypeDef::Slice(inner)
-        | TypeDef::Array(inner, _) => std::vec![*inner],
-        TypeDef::Result(ok, error) => std::vec![*ok, *error],
+        | TypeDef::Array(inner, _) => alloc::vec![*inner],
+        TypeDef::Result(ok, error) => alloc::vec![*ok, *error],
         TypeDef::Tuple(elements) => elements.clone(),
         TypeDef::Function(parameters, result) => {
             let mut all = parameters.clone();
@@ -457,7 +464,7 @@ fn referenced_types(definition: &TypeDef) -> Vec<TypeId> {
 
 fn check_control_flow(module: &Module) -> Result<(), Finding> {
     for (index, function) in module.functions.iter().enumerate() {
-        let at = std::format!("function {index}");
+        let at = alloc::format!("function {index}");
         if function.blocks.is_empty() {
             return Err(Finding::new("V2011_CFG", at, "a function has no blocks"));
         }
@@ -487,7 +494,7 @@ fn check_control_flow(module: &Module) -> Result<(), Finding> {
             }
         }
         for (block_index, block) in function.blocks.iter().enumerate() {
-            let at = std::format!("function {index} block {block_index}");
+            let at = alloc::format!("function {index} block {block_index}");
             check_block(module, function, block, &at)?;
         }
     }
@@ -509,7 +516,7 @@ fn check_block(
             return Err(Finding::new(
                 "V2011_CFG",
                 at,
-                std::format!("a terminator names block {target} of {count}"),
+                alloc::format!("a terminator names block {target} of {count}"),
             ));
         }
     }
@@ -538,7 +545,7 @@ fn check_block(
                 return Err(Finding::new(
                     "V2011_CFG",
                     at,
-                    std::format!("the match arm map leaves variant {variant} uncovered"),
+                    alloc::format!("the match arm map leaves variant {variant} uncovered"),
                 ));
             }
         }
@@ -564,7 +571,7 @@ fn check_instruction(
             return Err(Finding::new(
                 "V2011_CFG",
                 at,
-                std::format!("an instruction defines value {result} outside the table"),
+                alloc::format!("an instruction defines value {result} outside the table"),
             ));
         }
         if function.values[result] != instruction.ty {
@@ -583,7 +590,7 @@ fn check_instruction(
             return Err(Finding::new(
                 "V2011_CFG",
                 at,
-                std::format!("a place names value {} outside the table", place.root),
+                alloc::format!("a place names value {} outside the table", place.root),
             ));
         }
         for step in &place.path {
@@ -592,7 +599,7 @@ fn check_instruction(
                     return Err(Finding::new(
                         "V2011_CFG",
                         at,
-                        std::format!("an index names value {value} outside the table"),
+                        alloc::format!("an index names value {value} outside the table"),
                     ));
                 }
             }
@@ -661,7 +668,7 @@ fn check_instruction(
                 return Err(Finding::new(
                     "V2022_RESOURCE",
                     at,
-                    std::format!(
+                    alloc::format!(
                         "{} cleanups at one exit exceeds the declared limit of {}",
                         calls.len(),
                         module.header.resource_envelope.cleanup
@@ -748,7 +755,7 @@ fn check_operand(
                 return Err(Finding::new(
                     "V2011_CFG",
                     at,
-                    std::format!("an operand names value {value} outside the table"),
+                    alloc::format!("an operand names value {value} outside the table"),
                 ));
             }
         }
@@ -757,7 +764,7 @@ fn check_operand(
                 return Err(Finding::new(
                     "V2011_CFG",
                     at,
-                    std::format!("an operand names constant {constant} outside the table"),
+                    alloc::format!("an operand names constant {constant} outside the table"),
                 ));
             }
         }
@@ -795,7 +802,7 @@ fn operand_type(module: &Module, function: &Function, operand: &Operand) -> Opti
 fn check_ownership_and_profile(module: &Module) -> Result<(), Finding> {
     for (index, function) in module.functions.iter().enumerate() {
         for (block_index, block) in function.blocks.iter().enumerate() {
-            let at = std::format!("function {index} block {block_index}");
+            let at = alloc::format!("function {index} block {block_index}");
             let mut moved: Vec<&tos_ir::Place> = Vec::new();
             for instruction in &block.instructions {
                 if let Op::Move { place } = &instruction.op {
@@ -807,7 +814,7 @@ fn check_ownership_and_profile(module: &Module) -> Result<(), Finding> {
                         return Err(Finding::new(
                             "V2020_OWNERSHIP",
                             at,
-                            std::format!("value {} is moved twice on one path", place.root),
+                            alloc::format!("value {} is moved twice on one path", place.root),
                         ));
                     }
                     moved.push(place);
@@ -818,7 +825,7 @@ fn check_ownership_and_profile(module: &Module) -> Result<(), Finding> {
             if function.signature.is_async {
                 return Err(Finding::new(
                     "V2023_PROFILE",
-                    std::format!("function {index}"),
+                    alloc::format!("function {index}"),
                     "an async function is Full-profile only",
                 ));
             }
@@ -834,8 +841,8 @@ fn check_ownership_and_profile(module: &Module) -> Result<(), Finding> {
                     if let Some(what) = full_only {
                         return Err(Finding::new(
                             "V2023_PROFILE",
-                            std::format!("function {index}"),
-                            std::format!("{what} is Full-profile only"),
+                            alloc::format!("function {index}"),
+                            alloc::format!("{what} is Full-profile only"),
                         ));
                     }
                 }
@@ -885,7 +892,7 @@ fn overlaps(one: &tos_ir::Place, other: &tos_ir::Place) -> bool {
 /// case docs/41 states outright.
 fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
     for (index, function) in module.functions.iter().enumerate() {
-        let at = std::format!("function {index}");
+        let at = alloc::format!("function {index}");
         let mut pending: BTreeSet<usize> = BTreeSet::new();
         for block in &function.blocks {
             for instruction in &block.instructions {
@@ -903,7 +910,7 @@ fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
                     return Err(Finding::new(
                         "V2033_UNSAFE",
                         &at,
-                        std::format!("{interface} is not an accepted V1 interface"),
+                        alloc::format!("{interface} is not an accepted V1 interface"),
                     ));
                 }
                 if matches!(instruction.op, Op::Cancel { .. }) {
@@ -945,7 +952,7 @@ fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
             return Err(Finding::new(
                 "V2030_TASK_SCOPE",
                 &at,
-                std::format!("value {task} is a child that leaves its scope unconsumed"),
+                alloc::format!("value {task} is a child that leaves its scope unconsumed"),
             ));
         }
     }
@@ -973,7 +980,7 @@ fn check_atomic(
         return Err(Finding::new(
             "V2032_ATOMIC_ORDER",
             at,
-            std::format!(
+            alloc::format!(
                 "{} does not accept {}",
                 operation_name(operation),
                 order.spelled()
@@ -997,14 +1004,14 @@ fn check_atomic(
         return Err(Finding::new(
             "V2032_ATOMIC_ORDER",
             at,
-            std::format!("a failure order may not be {}", failure.spelled()),
+            alloc::format!("a failure order may not be {}", failure.spelled()),
         ));
     }
     if failure.rank() > order.rank() {
         return Err(Finding::new(
             "V2032_ATOMIC_ORDER",
             at,
-            std::format!(
+            alloc::format!(
                 "failure order {} is stronger than success order {}",
                 failure.spelled(),
                 order.spelled()
@@ -1033,7 +1040,7 @@ fn operation_name(operation: AtomicOp) -> &'static str {
 fn check_source_maps(module: &Module) -> Result<(), Finding> {
     let header = &module.header;
     for (index, entry) in module.source_map.iter().enumerate() {
-        let at = std::format!("source map {index}");
+        let at = alloc::format!("source map {index}");
         if entry.byte_start > entry.byte_end {
             return Err(Finding::new(
                 "V2040_SOURCE_MAP",
@@ -1077,7 +1084,7 @@ fn check_source_maps(module: &Module) -> Result<(), Finding> {
         if function.source >= module.source_map.len() {
             return Err(Finding::new(
                 "V2040_SOURCE_MAP",
-                std::format!("function {index}"),
+                alloc::format!("function {index}"),
                 "a function has no source-map entry",
             ));
         }
@@ -1085,7 +1092,7 @@ fn check_source_maps(module: &Module) -> Result<(), Finding> {
             if block.source >= module.source_map.len() {
                 return Err(Finding::new(
                     "V2040_SOURCE_MAP",
-                    std::format!("function {index} block {block_index}"),
+                    alloc::format!("function {index} block {block_index}"),
                     "a block has no source-map entry",
                 ));
             }
@@ -1113,7 +1120,7 @@ fn source_map_digest(entries: &[SourceMapEntry]) -> String {
     let digest = tos_hash::sha256(&bytes);
     let mut hex = [0u8; 64];
     tos_hash::hex(&digest, &mut hex);
-    std::format!(
+    alloc::format!(
         "sha256:{}",
         core::str::from_utf8(&hex).expect("hex output is ASCII")
     )
@@ -1124,14 +1131,14 @@ fn source_map_digest(entries: &[SourceMapEntry]) -> String {
 fn terminator_targets(terminator: &Terminator) -> Vec<usize> {
     match terminator {
         Terminator::Return(_) | Terminator::Trap(_) => Vec::new(),
-        Terminator::Branch { target, .. } => std::vec![*target],
+        Terminator::Branch { target, .. } => alloc::vec![*target],
         Terminator::BranchIf {
             true_target,
             false_target,
             ..
-        } => std::vec![*true_target, *false_target],
+        } => alloc::vec![*true_target, *false_target],
         Terminator::MatchEnum { arms, .. } => arms.iter().map(|(_, target)| *target).collect(),
-        Terminator::PropagateError { ok_target, .. } => std::vec![*ok_target],
+        Terminator::PropagateError { ok_target, .. } => alloc::vec![*ok_target],
     }
 }
 
@@ -1145,13 +1152,13 @@ fn terminator_operands(terminator: &Terminator) -> Vec<Operand> {
             false_arguments,
             ..
         } => {
-            let mut all = std::vec![condition.clone()];
+            let mut all = alloc::vec![condition.clone()];
             all.extend(true_arguments.iter().cloned());
             all.extend(false_arguments.iter().cloned());
             all
         }
-        Terminator::MatchEnum { subject, .. } => std::vec![subject.clone()],
-        Terminator::PropagateError { result, .. } => std::vec![result.clone()],
+        Terminator::MatchEnum { subject, .. } => alloc::vec![subject.clone()],
+        Terminator::PropagateError { result, .. } => alloc::vec![result.clone()],
         Terminator::Trap(_) => Vec::new(),
     }
 }
@@ -1159,24 +1166,24 @@ fn terminator_operands(terminator: &Terminator) -> Vec<Operand> {
 fn operands_of(op: &Op) -> Vec<Operand> {
     match op {
         Op::Aggregate { operands, .. } | Op::Variant { operands, .. } => operands.clone(),
-        Op::Write { value, .. } => std::vec![value.clone()],
-        Op::Binary { left, right, .. } => std::vec![left.clone(), right.clone()],
-        Op::Unary { operand, .. } | Op::Widen { operand, .. } => std::vec![operand.clone()],
+        Op::Write { value, .. } => alloc::vec![value.clone()],
+        Op::Binary { left, right, .. } => alloc::vec![left.clone(), right.clone()],
+        Op::Unary { operand, .. } | Op::Widen { operand, .. } => alloc::vec![operand.clone()],
         Op::Call { operands, .. } => operands.clone(),
         Op::Spawn { captures, .. } => captures.clone(),
-        Op::Join { task } | Op::Await { task } | Op::Cancel { task } => std::vec![task.clone()],
+        Op::Join { task } | Op::Await { task } | Op::Cancel { task } => alloc::vec![task.clone()],
         Op::Atomic {
             target, operands, ..
         } => {
-            let mut all = std::vec![target.clone()];
+            let mut all = alloc::vec![target.clone()];
             all.extend(operands.iter().cloned());
             all
         }
         Op::Capability { operands, .. } => operands.clone(),
-        Op::Resource { amount, .. } => std::vec![amount.clone()],
+        Op::Resource { amount, .. } => alloc::vec![amount.clone()],
         Op::Closure { captures, .. } => captures.clone(),
         Op::CallValue { callee, operands } => {
-            let mut all = std::vec![callee.clone()];
+            let mut all = alloc::vec![callee.clone()];
             all.extend(operands.iter().cloned());
             all
         }
@@ -1194,7 +1201,7 @@ fn places_of(op: &Op) -> Vec<&tos_ir::Place> {
         | Op::Move { place }
         | Op::Write { place, .. }
         | Op::Borrow { place, .. }
-        | Op::Drop { place } => std::vec![place],
+        | Op::Drop { place } => alloc::vec![place],
         _ => Vec::new(),
     }
 }

@@ -10,8 +10,8 @@
 //! region's boundary. The parser never guesses a missing declaration,
 //! capability, type or operator — a region that failed contributes no tree.
 
-use std::boxed::Box;
-use std::vec::Vec;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 
 use crate::{Diagnostic, LexError, Lexer, Severity, SourceUnit, Stage, Token, TokenKind};
 
@@ -946,7 +946,7 @@ impl<T> ParseOutcome<T> {
     fn failed(diagnostic: Diagnostic) -> ParseOutcome<T> {
         ParseOutcome {
             value: None,
-            diagnostics: vec![diagnostic],
+            diagnostics: alloc::vec![diagnostic],
             truncated: false,
         }
     }
@@ -1352,7 +1352,7 @@ impl<'source> TokenCursor<'source> {
 impl<'source> TokenCursor<'source> {
     fn parse_header(&mut self) -> Result<ModuleHeader, ParseError> {
         let start = self.expect_word("module", ParseErrorCode::ExpectedModuleHeader)?;
-        let mut name = vec![self.expect_identifier()?];
+        let mut name = alloc::vec![self.expect_identifier()?];
         while self.consume_kind(TokenKind::Dot).is_some() {
             name.push(self.expect_identifier()?);
         }
@@ -1908,7 +1908,7 @@ impl<'source> TokenCursor<'source> {
     /// `pattern_path = pattern_name ( "." identifier )*` stays deterministic:
     /// no other production may follow a pattern name with a dot.
     fn parse_pattern_path(&mut self, first: Span) -> Result<Vec<Span>, ParseError> {
-        let mut path = vec![first];
+        let mut path = alloc::vec![first];
         while self.consume_kind(TokenKind::Dot).is_some() {
             path.push(self.expect_identifier()?);
         }
@@ -2300,7 +2300,7 @@ impl<'source> TokenCursor<'source> {
             });
         }
         self.advance();
-        let mut elements = vec![first];
+        let mut elements = alloc::vec![first];
         elements.extend(self.parse_comma_list(
             ListCloser::Kind(TokenKind::CloseParen),
             Self::parse_expression,
@@ -2570,7 +2570,7 @@ impl<'source> TokenCursor<'source> {
     }
 
     fn parse_dotted_name(&mut self) -> Result<Vec<Span>, ParseError> {
-        let mut name = vec![self.expect_identifier()?];
+        let mut name = alloc::vec![self.expect_identifier()?];
         while self.consume_kind(TokenKind::Dot).is_some() {
             name.push(self.expect_identifier()?);
         }

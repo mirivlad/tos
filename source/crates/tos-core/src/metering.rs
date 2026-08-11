@@ -19,7 +19,7 @@
 //! `E1700_RESOURCE_DECLARATION_REQUIRED`; its loops are not reported a second
 //! time for a consequence of the same defect.
 
-use std::vec::Vec;
+use alloc::vec::Vec;
 
 use crate::parser::{Block, Schema, Statement, StatementForm};
 use crate::{Diagnostic, Severity, SourceUnit, Stage};
@@ -45,7 +45,8 @@ fn declared_fuel(source: &SourceUnit, schema: &Schema) -> Option<u128> {
             continue;
         }
         let text = limit.value().text(source);
-        let digits: std::string::String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+        let digits: alloc::string::String =
+            text.chars().take_while(|c| c.is_ascii_digit()).collect();
         if digits.is_empty() || digits.len() != text.len() {
             // A size literal or a malformed value is not a fuel budget;
             // `E1704_UNKNOWN_RESOURCE_LIMIT` owns that.

@@ -12,8 +12,8 @@
 //! this reports only what the declarations make certain and never invents a
 //! missing case.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::vec::Vec;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::vec::Vec;
 
 use crate::parser::{
     Block, Expression, ExpressionForm, Pattern, PatternForm, Schema, Statement, StatementForm,

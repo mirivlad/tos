@@ -11,8 +11,8 @@
 //! position, so no two distinct modules can produce the same byte stream by
 //! moving a boundary — the ambiguity that makes naive concatenation unsafe.
 
-use std::string::String;
-use std::vec::Vec;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::{
     AtomicOp, BinaryOp, Block, BorrowKind, CallTarget, Constant, Function, Import, Instruction,
@@ -27,7 +27,7 @@ pub fn module_digest(module: &Module) -> String {
     let digest = tos_hash::sha256(&writer.bytes);
     let mut hex = [0u8; 64];
     tos_hash::hex(&digest, &mut hex);
-    std::format!(
+    alloc::format!(
         "sha256:{}",
         core::str::from_utf8(&hex).expect("hex output is ASCII")
     )

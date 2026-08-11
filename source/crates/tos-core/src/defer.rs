@@ -13,7 +13,7 @@
 //! and belongs to the slice that resolves types; this module reports nothing
 //! for it rather than guessing which calls allocate.
 
-use std::vec::Vec;
+use alloc::vec::Vec;
 
 use crate::parser::{Block, Expression, ExpressionForm, Schema, Statement, StatementForm};
 use crate::{Diagnostic, Severity, SourceUnit, Span, Stage};

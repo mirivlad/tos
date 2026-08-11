@@ -14,8 +14,8 @@
 //! the binding forms make certain: a `borrow mut` parameter is mutable, a
 //! `borrow` or owned parameter is not, and a `let` without `mut` is not.
 
-use std::collections::BTreeMap;
-use std::vec::Vec;
+use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 
 use crate::parser::{
     Block, BorrowMode, Expression, ExpressionForm, Pattern, PatternForm, Schema, Span, Statement,

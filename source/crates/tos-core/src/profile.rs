@@ -9,7 +9,7 @@
 //! `unsafe` and `extern`, and requires `workers: 1`. Every one of those is
 //! visible in the syntax tree, so this check needs no types.
 
-use std::vec::Vec;
+use alloc::vec::Vec;
 
 use crate::parser::{Block, Expression, ExpressionForm, Profile, Schema, Statement, StatementForm};
 use crate::{Diagnostic, Severity, SourceUnit, Span, Stage};
@@ -32,7 +32,7 @@ pub(crate) fn check_profile(source: &SourceUnit, schema: &Schema) -> Vec<Diagnos
     let Some(first) = found.into_iter().min_by_key(|entry| entry.span.start()) else {
         return Vec::new();
     };
-    std::vec![Diagnostic::new(
+    alloc::vec![Diagnostic::new(
         "E1702_PROFILE_NOT_SUPPORTED",
         Severity::Error,
         Stage::Resource,

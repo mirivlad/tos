@@ -14,9 +14,9 @@
 //! (`crate::modules`), because only that layer knows a module's path. A
 //! diagnostic produced without it carries no identity rather than a placeholder.
 
-use std::boxed::Box;
-use std::string::{String, ToString};
-use std::vec::Vec;
+use alloc::boxed::Box;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use crate::{SourceUnit, Span};
 

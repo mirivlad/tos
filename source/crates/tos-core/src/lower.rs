@@ -24,9 +24,9 @@
 //! lowering would produce IR whose semantics the source does not have, and a
 //! verifier cannot detect that because the IR would be internally consistent.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::string::{String, ToString};
-use std::vec::Vec;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use tos_ir::{
     BinaryOp, Block, CallTarget, CleanupCall, Constant, Function, FunctionOrigin, Header,
@@ -153,7 +153,7 @@ pub fn lower_module(
         let lowered = lowerer.lower_function(function.signature(), function.body())?;
         lowerer.functions[index] = lowered;
     }
-    let functions = std::mem::take(&mut lowerer.functions);
+    let functions = core::mem::take(&mut lowerer.functions);
 
     let exports = functions
         .iter()
@@ -207,7 +207,7 @@ fn canonicalize_functions(module: &mut Module) {
             .name
             .cmp(&module.functions[*right].signature.name)
     });
-    let mut moved = std::vec![0usize; order.len()];
+    let mut moved = alloc::vec![0usize; order.len()];
     for (position, old) in order.iter().enumerate() {
         moved[*old] = position;
     }
@@ -265,7 +265,7 @@ fn canonicalize_source_map(module: &mut Module) {
             other.byte_end,
         ))
     });
-    let mut moved = std::vec![0usize; order.len()];
+    let mut moved = alloc::vec![0usize; order.len()];
     for (position, old) in order.iter().enumerate() {
         moved[*old] = position;
     }
@@ -336,7 +336,7 @@ impl<'source> Lowerer<'source> {
     // ------------------------------------------------------------- interning
 
     fn intern(&mut self, definition: TypeDef) -> TypeId {
-        let key = std::format!("{definition:?}");
+        let key = alloc::format!("{definition:?}");
         if let Some(&existing) = self.type_index.get(&key) {
             return existing;
         }
@@ -347,7 +347,7 @@ impl<'source> Lowerer<'source> {
     }
 
     fn intern_constant(&mut self, constant: Constant) -> usize {
-        let key = std::format!("{constant:?}");
+        let key = alloc::format!("{constant:?}");
         if let Some(&existing) = self.constant_index.get(&key) {
             return existing;
         }
@@ -660,7 +660,7 @@ impl<'source> Lowerer<'source> {
         let mut builder = BodyBuilder {
             values,
             in_unsafe: false,
-            blocks: std::vec![Block {
+            blocks: alloc::vec![Block {
                 parameters: Vec::new(),
                 instructions: Vec::new(),
                 terminator: Terminator::Trap(String::from("RUNTIME_UNREACHABLE")),
@@ -784,7 +784,7 @@ impl<'source> Lowerer<'source> {
     /// identifier space, so a synthetic name can never collide with a declared
     /// function or be called by source.
     fn body_name(&self, kind: &str, span: Span) -> String {
-        std::format!("#{kind}@{}", span.start())
+        alloc::format!("#{kind}@{}", span.start())
     }
 
     fn cleanup_name(&self, span: Span) -> String {
@@ -865,7 +865,7 @@ impl<'source> Lowerer<'source> {
         let mut nested = BodyBuilder {
             values,
             in_unsafe: outer.in_unsafe,
-            blocks: std::vec![Block {
+            blocks: alloc::vec![Block {
                 parameters: Vec::new(),
                 instructions: Vec::new(),
                 terminator: Terminator::Trap(String::from("RUNTIME_UNREACHABLE")),
@@ -993,7 +993,7 @@ impl<'source> Lowerer<'source> {
             op: Op::Read {
                 place: Place {
                     root,
-                    path: std::vec![PlaceStep::DynamicIndex(counter)],
+                    path: alloc::vec![PlaceStep::DynamicIndex(counter)],
                 },
             },
             source: at,
@@ -1516,7 +1516,7 @@ impl<'source> Lowerer<'source> {
             }
             let place = Place {
                 root: *root,
-                path: std::vec![PlaceStep::Field(index)],
+                path: alloc::vec![PlaceStep::Field(index)],
             };
             let ty = self.payload_type(*root, variant, index, builder);
             let slot = builder.define(ty);
@@ -1954,7 +1954,7 @@ impl<'source> Lowerer<'source> {
                                 Operand::Value(id) => *id,
                                 Operand::Constant(_) => 0,
                             },
-                            path: std::vec![PlaceStep::Field(0)],
+                            path: alloc::vec![PlaceStep::Field(0)],
                         },
                     },
                     source: at,
@@ -2275,7 +2275,7 @@ impl<'source> Lowerer<'source> {
         // A record constructor supplies named arguments in declared order.
         if let Some(&(ty, ref field_names)) = self.nominals.get(&name) {
             let field_names = field_names.clone();
-            let mut ordered: Vec<Option<Operand>> = std::vec![None; field_names.len()];
+            let mut ordered: Vec<Option<Operand>> = alloc::vec![None; field_names.len()];
             for (position, argument) in expression.arguments().iter().enumerate() {
                 let lowered = self.lower_expression(argument.value(), builder)?;
                 let index = match argument.name() {
@@ -2295,7 +2295,7 @@ impl<'source> Lowerer<'source> {
                 .map(|operand| {
                     operand.unwrap_or(Operand::Constant(
                         self.constant_index
-                            .get(&std::format!("{:?}", Constant::Unit))
+                            .get(&alloc::format!("{:?}", Constant::Unit))
                             .copied()
                             .unwrap_or(0),
                     ))

@@ -26,11 +26,18 @@
 //! an object is kept is the caller's decision, and a persisted store may only
 //! be introduced with that format contract.
 
+#![no_std]
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
-use std::string::{String, ToString};
-use std::vec::Vec;
+extern crate alloc;
+
+// The test harness is a host program by construction, so it keeps `std`.
+#[cfg(test)]
+extern crate std;
+
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use tos_ir::Module;
 use tos_verifier::VerifiedModule;
@@ -167,7 +174,7 @@ fn digest_of(bytes: &[u8]) -> String {
     let digest = tos_hash::sha256(bytes);
     let mut hex = [0u8; 64];
     tos_hash::hex(&digest, &mut hex);
-    std::format!(
+    alloc::format!(
         "sha256:{}",
         core::str::from_utf8(&hex).expect("hex output is ASCII")
     )

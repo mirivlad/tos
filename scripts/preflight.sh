@@ -89,6 +89,15 @@ stage1_native_validation_harness() {
 stage2_language_contract() {
     bash "$ROOT/scripts/tests/check-stage2-language-contract.sh"
 }
+freestanding_runtime_source() {
+    python3 "$ROOT/scripts/check-freestanding-runtime.py" --root "$ROOT"
+}
+# The build is what proves the whole dependency closure is free of `std`; the
+# source gate above only proves no module names a host facility.
+build_freestanding_runtime() {
+    (cd "$ROOT/source" && cargo build --release --target x86_64-unknown-none \
+        -p tos-core -p tos-ir -p tos-verifier -p tos-engine -p tos-cache)
+}
 release_manifest() { python3 "$ROOT/tools/build-release-manifest.py" --check; }
 spdx() { sh "$ROOT/scripts/check-spdx.sh"; }
 dco() { sh "$ROOT/scripts/check-dco.sh"; }
@@ -150,6 +159,8 @@ run_gate "timed QEMU harness" qemu_timed_harness
 run_gate "Stage 1 performance workload" stage1_performance_workload
 run_gate "Stage 1 native validation harness" stage1_native_validation_harness
 run_gate "Stage 2 language-contract consistency" stage2_language_contract
+run_gate "freestanding runtime source" freestanding_runtime_source
+run_gate "freestanding runtime build" build_freestanding_runtime
 run_gate "release manifest and SHA256SUMS" release_manifest
 run_gate "SPDX licence inventory" spdx
 run_gate "DCO sign-off" dco

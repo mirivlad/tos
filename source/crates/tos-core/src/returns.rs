@@ -13,7 +13,7 @@
 //! a `return` inside a closure or spawned body targets that body, so nested
 //! scopes are never followed from an enclosing one.
 
-use std::vec::Vec;
+use alloc::vec::Vec;
 
 use crate::parser::{Block, Expression, ExpressionForm, Schema, Statement, StatementForm};
 use crate::{Diagnostic, Severity, SourceUnit, Span, Stage};

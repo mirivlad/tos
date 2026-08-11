@@ -22,9 +22,9 @@
 //! A capability import names an interface contract, not a module of this source
 //! set (docs/42 section 4), so it is not resolved against the set.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::string::{String, ToString};
-use std::vec::Vec;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use crate::parser::{ImportKind, Schema};
 use crate::{Checker, Diagnostic, ModuleIdentity, Severity, SourceUnit, Stage};
@@ -117,7 +117,7 @@ impl<'source> ModuleEntry<'source> {
         let digest = tos_hash::sha256(self.source.bytes());
         let mut hex = [0u8; 64];
         tos_hash::hex(&digest, &mut hex);
-        let content_id = std::format!(
+        let content_id = alloc::format!(
             "sha256:{}",
             core::str::from_utf8(&hex).expect("hex output is ASCII")
         );
@@ -218,7 +218,7 @@ fn resolve_names(modules: &[ModuleEntry]) -> Resolution {
                 Collision {
                     kind: "root",
                     candidates: count,
-                    identities: std::vec![std::format!("root {root}")],
+                    identities: alloc::vec![alloc::format!("root {root}")],
                 },
             );
             continue;
@@ -248,7 +248,7 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
 
     for module in modules {
         let name = module.declared_name();
-        let expected = std::format!("{}.tos", name.replace('.', "/"));
+        let expected = alloc::format!("{}.tos", name.replace('.', "/"));
         if module.path != expected {
             diagnostics.push(
                 Diagnostic::new(
@@ -427,7 +427,7 @@ fn visit(
             .iter()
             .map(|&member| modules[member].declared_name())
             .collect();
-        let closed = std::format!("{} -> {}", names.join(" -> "), names[0]);
+        let closed = alloc::format!("{} -> {}", names.join(" -> "), names[0]);
         out.push(
             Diagnostic::new(
                 "E1606_IMPORT_CYCLE",
