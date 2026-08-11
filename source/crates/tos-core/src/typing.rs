@@ -47,9 +47,15 @@ use crate::{Diagnostic, Severity, SourceUnit, Stage};
 const INTEGER_TYPES: [&str; 8] = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"];
 
 /// Opaque handle types, whose cast is not a conversion error (docs/40 §3).
-const OPAQUE_TYPES: [&str; 14] = [
+/// Types V1 source may not bring into existence (ADR-0039).
+///
+/// A value of one of these is obtained the way the language provides — a task
+/// from `spawn`, a `Shared<T>` from `share` — never fabricated out of data.
+/// `TaskResult<T>` is deliberately absent: `Completed` and `Cancelled` are
+/// predeclared constructors, so it is an ordinary affine result value source is
+/// meant to build.
+const NONCONSTRUCTIBLE_TYPES: [&str; 14] = [
     "Task",
-    "TaskResult",
     "Shared",
     "Region",
     "DmaRegion",
@@ -62,6 +68,7 @@ const OPAQUE_TYPES: [&str; 14] = [
     "Latch",
     "AtomicBool",
     "AtomicU32",
+    "AtomicU64",
 ];
 
 /// The bit width of an exact integer type, and whether it is signed.
@@ -380,11 +387,13 @@ fn is_integer_family(ty: &Type) -> bool {
     matches!(ty, Type::Integer(_) | Type::Size)
 }
 
-/// Whether a type is an opaque handle whose cast docs/40 routes elsewhere.
-fn is_opaque(ty: &Type) -> bool {
+/// Whether a type is one V1 source may not fabricate a value of (ADR-0039).
+fn is_nonconstructible(ty: &Type) -> bool {
     match ty {
-        Type::Constructed(name, _) => OPAQUE_TYPES.contains(&name.as_str()),
-        Type::Nominal(name) => OPAQUE_TYPES.contains(&name.as_str()) || name == "AtomicU64",
+        Type::Constructed(name, _) => NONCONSTRUCTIBLE_TYPES.contains(&name.as_str()),
+        Type::Nominal(name) => NONCONSTRUCTIBLE_TYPES.contains(&name.as_str()),
+        // A function or closure value comes from a declaration or a closure
+        // expression, never from a conversion.
         Type::Function(_, _) => true,
         _ => false,
     }
@@ -660,8 +669,30 @@ impl<'source> TypeChecker<'source> {
         if self.cast_is_permitted(&source_type, &target) {
             return target;
         }
-        self.diagnostics.push(
-            Diagnostic::new(
+        // ADR-0039 precedence: a capability forgery is `E1502` and is reported
+        // by the capability slice, which sees the imported interfaces; any
+        // other nonconstructible handle is `E1213`; and only an ordinary
+        // conversion between value types reaches `E1212`.
+        let nonconstructible = if is_nonconstructible(&target) {
+            Some(target.spell())
+        } else if is_nonconstructible(&source_type) {
+            Some(source_type.spell())
+        } else {
+            None
+        };
+        let diagnostic = match nonconstructible {
+            Some(spelled) => Diagnostic::new(
+                "E1213_NONCONSTRUCTIBLE_TYPE",
+                Severity::Error,
+                Stage::Type,
+                expression.span(),
+                self.source,
+            )
+            .with_field("type", spelled)
+            .with_field("operation", "as")
+            .with_field("from", source_type.spell())
+            .with_field("to", target.spell()),
+            None => Diagnostic::new(
                 "E1212_INVALID_AS_CONVERSION",
                 Severity::Error,
                 Stage::Type,
@@ -670,7 +701,8 @@ impl<'source> TypeChecker<'source> {
             )
             .with_field("from", source_type.spell())
             .with_field("to", target.spell()),
-        );
+        };
+        self.diagnostics.push(diagnostic);
         target
     }
 
@@ -678,10 +710,10 @@ impl<'source> TypeChecker<'source> {
         if matches!(from, Type::Unknown) || matches!(to, Type::Unknown) {
             return true;
         }
-        if is_opaque(from) || is_opaque(to) {
-            // docs/40 section 3 routes these elsewhere; no code names the
-            // condition for the non-capability handles, so nothing is reported.
-            return true;
+        // A nonconstructible handle on either side is never a permitted
+        // conversion; ADR-0039 decides which code names it.
+        if is_nonconstructible(from) || is_nonconstructible(to) {
+            return false;
         }
         // An unsuffixed literal takes the target type directly.
         if matches!(from, Type::UnsuffixedInteger) && matches!(to, Type::Integer(_)) {

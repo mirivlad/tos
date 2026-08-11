@@ -91,6 +91,9 @@
 | R058 | `reject/unsafe-without-rationale.tos` | Full | `E1802_UNSAFE_RATIONALE_REQUIRED` | an `unsafe` block opens with a `SAFETY:` rationale |
 | R059 | `reject/unknown-resource-limit.tos` | Bootstrap | `E1704_UNKNOWN_RESOURCE_LIMIT` with `key=bandwidth` | the resource envelope has exactly ten keys |
 | R060 | `reject/unknown-record-field.tos` | Bootstrap | `E1207_UNKNOWN_RECORD_FIELD` with `field=z` | a named constructor supplies only declared fields |
+| R061 | `reject/nonconstructible-task-cast.tos` | Bootstrap | `E1213_NONCONSTRUCTIBLE_TYPE` with `type=Task<i32>`, `operation=as` | a task is obtained from `spawn`, never fabricated from data |
+| R062 | `reject/nonconstructible-shared-cast.tos` | Bootstrap | `E1213_NONCONSTRUCTIBLE_TYPE` with `type=Shared<i32>` | a `Shared<T>` comes only from the typed share contract |
+| R063 | `reject/nonconstructible-mutex-operand.tos` | Bootstrap | `E1213_NONCONSTRUCTIBLE_TYPE` with `type=Mutex<i32>` | the operand side of `as` is closed too |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 

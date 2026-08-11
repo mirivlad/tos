@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `f5a8d008075f2b8b9f2345fad0df4eb4a5d1b1dc34833c0ca55f463cc3da4b8d`  
+Source-manifest SHA-256: `d5274a08e27887bf14056a9b306120d1c1f9fc395d6979b41d0d0d35d08bb442`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4817,7 +4817,8 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1225_INVALID_DEFER` | a `defer` body performs `return`, `break`, `continue`, `await`, `join`, spawns work, or acquires a new resource |
 | `E1210_INTEGER_TYPE_MISMATCH` | a value of one integer type is assigned or passed where a different integer type is required; an unsuffixed literal takes the required type instead |
 | `E1211_INDEX_TYPE_MISMATCH` | an array, slice or region index is not of exact type `size`, and is not an integer literal contextually typed as one |
-| `E1212_INVALID_AS_CONVERSION` | an `as` conversion is not an integer widening that preserves signedness; a cast of an opaque handle is routed elsewhere by docs/40 section 3 and is not this code |
+| `E1212_INVALID_AS_CONVERSION` | an `as` conversion between ordinary value types is not an integer widening that preserves signedness; a conversion touching a capability or another nonconstructible type is routed to `E1502` or `E1213` and is not this code |
+| `E1213_NONCONSTRUCTIBLE_TYPE` | an `as` conversion whose target or operand type is one V1 source may not fabricate a value of — `Task`, `Shared`, `Region`, `DmaRegion`, `Mutex`, `RwLock`, `Channel`, `Event`, `Semaphore`, `Barrier`, `Latch`, an atomic, a slice, or a function or closure type. `TaskResult<T>` is not among them: `Completed` and `Cancelled` build one. A predeclared type in value position is `E1202`, not this (ADR-0039) |
 | `E1220_NONEXHAUSTIVE_MATCH` | a `match` over an enum, `Option`, `Result` or `TaskResult` leaves a variant uncovered and has no wildcard or binding arm |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
 
@@ -12729,12 +12730,11 @@ language property under `docs/42`, not a tool preference.
 
 # ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles
 
-- Status: **Proposed (revision 3)** — the code and the precedence are accepted;
-  this revision narrows the operations to forms V1 grammar actually admits
+- Status: Accepted (Project Architect-approved), revision 3
 - Date: 2026-08-11
 - Decision level: 2 — allocates a diagnostic code conformance evidence will
   depend on
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-11
 - Supersedes: revision 1, whose type set wrongly included `TaskResult<T>` and
   omitted `Shared<T>`; and revision 2, which promised the code for constructor
   and aggregate forms that V1 source cannot express in the first place

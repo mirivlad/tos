@@ -2,12 +2,11 @@
 
 # ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles
 
-- Status: **Proposed (revision 3)** — the code and the precedence are accepted;
-  this revision narrows the operations to forms V1 grammar actually admits
+- Status: Accepted (Project Architect-approved), revision 3
 - Date: 2026-08-11
 - Decision level: 2 — allocates a diagnostic code conformance evidence will
   depend on
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-11
 - Supersedes: revision 1, whose type set wrongly included `TaskResult<T>` and
   omitted `Shared<T>`; and revision 2, which promised the code for constructor
   and aggregate forms that V1 source cannot express in the first place
