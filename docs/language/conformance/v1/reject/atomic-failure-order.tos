@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.atomic_failure_order version 1.0 profile full;
+
+resource [fuel: 100000, stack: 64KiB, allocation: 8KiB, tasks: 1, workers: 1, sync: 1, shared: 4KiB, cleanup: 16, recursion: 8, imports: 0]
+
+// The failure order of a compare-exchange may not be stronger than its success
+// order.
+pub fn exchange(borrow state: AtomicU32) -> Result<u32, u32> {
+    return state.compare_exchange(0u32, 1u32, Acquire, SeqCst);
+}

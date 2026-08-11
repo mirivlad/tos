@@ -253,6 +253,13 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 | `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
 
+### Concurrency (stage `type`)
+
+| Code | Condition |
+|---|---|
+| `E1401_UNJOINED_TASK` | a task scope is left with a spawned child still unconsumed, or a spawned child's handle is never bound and so can never be consumed; `cancel` is a cooperative request and does not discharge the obligation |
+| `E1410_INVALID_ATOMIC_ORDER` | an atomic operation is given an order it does not accept — a load outside `Relaxed`/`Acquire`/`SeqCst`, a store outside `Relaxed`/`Release`/`SeqCst`, a `compare_exchange` failure order outside `Relaxed`/`Acquire`/`SeqCst`, or a failure order stronger than its success order |
+
 ### Capability and effect (stage `effect`)
 
 | Code | Condition |

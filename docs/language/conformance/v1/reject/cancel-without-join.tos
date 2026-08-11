@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.cancel_without_join version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// `cancel` is an idempotent cooperative request that consumes no ownership, so
+// the parent still owes a consuming join before the scope exits.
+pub fn main() -> unit {
+    parallel {
+        let child = spawn parallel { return 7i32; };
+        cancel child;
+    }
+}

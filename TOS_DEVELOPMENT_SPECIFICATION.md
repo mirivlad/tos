@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `bbb9626c8ef69fc5792ab1413a2a34b2e256a220fc432b3d157b51c8d0cb1dd5`  
+Source-manifest SHA-256: `7881854fa9057d84bb3305073322003231ff5bb2f17e90186cafb7694fff7ace`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4819,6 +4819,13 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1604_IMPORT_NOT_FOUND` | an import names no module in the declared source set |
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 | `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
+
+### Concurrency (stage `type`)
+
+| Code | Condition |
+|---|---|
+| `E1401_UNJOINED_TASK` | a task scope is left with a spawned child still unconsumed, or a spawned child's handle is never bound and so can never be consumed; `cancel` is a cooperative request and does not discharge the obligation |
+| `E1410_INVALID_ATOMIC_ORDER` | an atomic operation is given an order it does not accept — a load outside `Relaxed`/`Acquire`/`SeqCst`, a store outside `Relaxed`/`Release`/`SeqCst`, a `compare_exchange` failure order outside `Relaxed`/`Acquire`/`SeqCst`, or a failure order stronger than its success order |
 
 ### Capability and effect (stage `effect`)
 

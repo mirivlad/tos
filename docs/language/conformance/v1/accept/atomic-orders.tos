@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.atomic_orders version 1.0 profile full;
+
+resource [fuel: 100000, stack: 64KiB, allocation: 8KiB, tasks: 1, workers: 1, sync: 1, shared: 4KiB, cleanup: 16, recursion: 8, imports: 0]
+
+// A load accepts Relaxed, Acquire and SeqCst.
+pub fn loads(borrow state: AtomicU32) -> u32 {
+    let relaxed = state.load(Relaxed);
+    let acquired = state.load(Acquire);
+    return state.load(SeqCst);
+}
+
+// A store accepts Relaxed, Release and SeqCst.
+pub fn stores(borrow state: AtomicU32) -> unit {
+    state.store(1u32, Relaxed);
+    state.store(2u32, Release);
+    state.store(3u32, SeqCst);
+}
+
+// A read-modify-write accepts every order.
+pub fn read_modify_writes(borrow state: AtomicU32) -> u32 {
+    let added = state.fetch_add(1u32, AcqRel);
+    let swapped = state.swap(2u32, SeqCst);
+    return state.fetch_or(4u32, Relaxed);
+}
+
+// A compare-exchange failure order is no stronger than its success order.
+pub fn exchanges(borrow state: AtomicU32) -> Result<u32, u32> {
+    return state.compare_exchange(0u32, 1u32, AcqRel, Acquire);
+}

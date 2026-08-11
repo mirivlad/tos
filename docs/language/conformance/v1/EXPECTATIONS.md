@@ -31,6 +31,7 @@
 | C023 | `accept/task-valid-capture.tos` | Bootstrap | accepts an owned affine capture that transfers sole ownership and a Copy capture that is duplicated, with the Copy value still usable afterwards | a task boundary admits Transferable values only |
 | C024 | `accept/closure-valid-captures.tos` | Full | accepts a Copy capture by copy and an affine capture by move, with the Copy value still usable afterwards | closure capture follows the ownership rules |
 | C026 | `accept/capability-effects.tos` | Bootstrap | accepts a declared effect set, a caller that declares the same effect, and a pure call chain | declared authority is exact and transitive |
+| C027 | `accept/atomic-orders.tos` | Full | accepts every order each atomic operation class admits, including a compare-exchange whose failure order is no stronger than its success order | typed atomic order legality |
 | C025 | `accept/defer-cleanup-order.tos` | Full | accepts a resource used after its cleanup is registered, two cleanups released in reverse registration order, and a returning path that runs its cleanup | `defer` registers without taking ownership and runs on the exit path reached |
 | R001 | `reject/use-after-move.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | affine ownership negative |
 | R002 | `reject/borrow-escape.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` | a mutable borrow cannot coexist with later borrow/use |
@@ -81,6 +82,8 @@
 | R049 | `reject/defer-move-then-cleanup.tos` | Full | `E1301_USE_AFTER_MOVE` inside the `defer` body | a cleanup is checked against the ownership state of the exit path that runs it |
 | R050 | `reject/undeclared-capability-effect.tos` | Bootstrap | `E1501_UNDECLARED_CAPABILITY_EFFECT` with `capability=clock`, `interface=system.time.Clock` | an imported capability is not ambient authority inside the module |
 | R051 | `reject/undeclared-callee-effect.tos` | Bootstrap | `E1501_UNDECLARED_CAPABILITY_EFFECT` with `required_by=sample` | a call may not launder an effect the caller does not declare |
+| R052 | `reject/atomic-failure-order.tos` | Full | `E1410_INVALID_ATOMIC_ORDER` with `position=failure`, `success_order=Acquire` | a compare-exchange failure order may not be stronger than its success order |
+| R053 | `reject/cancel-without-join.tos` | Bootstrap | `E1401_UNJOINED_TASK` with `task=child` | `cancel` consumes no ownership and does not discharge the join obligation |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 
