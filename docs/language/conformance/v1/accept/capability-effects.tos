@@ -1,0 +1,26 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.capability_effects version 1.0 profile bootstrap;
+
+import capability system.time.Clock as clock;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 1]
+
+// A declared effect set admits the operation that needs it.
+pub fn sample() -> duration uses [clock] {
+    return clock.now();
+}
+
+// A caller that declares the same effect covers its callee, so the declared
+// set of a well-formed module is already its transitive set.
+pub fn twice() -> duration uses [clock] {
+    return sample();
+}
+
+// A function that needs no authority declares nothing, and calling one is free.
+pub fn pure_helper(value: i32) -> i32 {
+    return value;
+}
+
+pub fn uses_no_authority() -> i32 {
+    return pure_helper(1i32);
+}

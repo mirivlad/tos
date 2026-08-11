@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.undeclared_capability_effect version 1.0 profile bootstrap;
+
+import capability system.time.Clock as clock;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 1]
+
+// The capability is imported by the module, but authority is never ambient: an
+// operation that needs it is type-correct only inside a declared effect set.
+pub fn sample() -> duration {
+    return clock.now();
+}

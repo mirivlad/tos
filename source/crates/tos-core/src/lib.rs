@@ -6,6 +6,7 @@ use std::string::String;
 use std::vec::Vec;
 
 mod boundary;
+mod capability;
 mod checker;
 mod defer;
 mod diagnostic;
@@ -3935,6 +3936,101 @@ mod tests {
             0,
             "the return left before the registration was reached"
         );
+    }
+
+    // docs/40 section 3 and docs/42 section 4: declared authority.
+
+    const AUTHORITY: &str = "module system.boot version 1.0 profile bootstrap; \
+         import capability system.time.Clock as clock; resource [fuel: 1000] ";
+
+    fn check_authority(body: &str) -> (SourceUnit, Vec<Diagnostic>) {
+        let text = std::format!("{AUTHORITY}{body}");
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        (source, diagnostics)
+    }
+
+    #[test]
+    fn a_capability_operation_needs_the_declared_effect() {
+        let (_, diagnostics) =
+            check_authority("pub fn sample() -> duration { return clock.now(); }");
+        let missing = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1501_UNDECLARED_CAPABILITY_EFFECT")
+            .expect("authority is never ambient");
+        assert_eq!(missing.stage(), Stage::Effect);
+        assert_eq!(missing.field("capability"), Some("clock"));
+        assert_eq!(missing.field("interface"), Some("system.time.Clock"));
+    }
+
+    #[test]
+    fn a_declared_effect_admits_the_operation() {
+        let (_, diagnostics) =
+            check_authority("pub fn sample() -> duration uses [clock] { return clock.now(); }");
+        assert_eq!(codes(&diagnostics, "E1501_UNDECLARED_CAPABILITY_EFFECT"), 0);
+    }
+
+    #[test]
+    fn a_caller_must_declare_every_effect_its_callee_requires() {
+        let (_, diagnostics) = check_authority(
+            "fn sample() -> duration uses [clock] { return clock.now(); } \
+             pub fn main() -> duration { return sample(); }",
+        );
+        let missing = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1501_UNDECLARED_CAPABILITY_EFFECT")
+            .expect("a call cannot launder authority");
+        assert_eq!(missing.field("required_by"), Some("sample"));
+        assert_eq!(missing.field("capability"), Some("clock"));
+    }
+
+    #[test]
+    fn a_declared_caller_effect_covers_its_callee() {
+        let (_, diagnostics) = check_authority(
+            "fn sample() -> duration uses [clock] { return clock.now(); } \
+             pub fn main() -> duration uses [clock] { return sample(); }",
+        );
+        assert_eq!(codes(&diagnostics, "E1501_UNDECLARED_CAPABILITY_EFFECT"), 0);
+    }
+
+    #[test]
+    fn a_capability_cannot_be_cast_into_existence() {
+        let (_, diagnostics) = check_authority(
+            "pub fn main() -> unit { let forged: system.time.Clock = 1u64 as system.time.Clock; }",
+        );
+        let forged = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1502_FORGED_CAPABILITY")
+            .expect("a scalar cannot become authority");
+        assert_eq!(forged.stage(), Stage::Effect);
+        assert_eq!(forged.field("interface"), Some("system.time.Clock"));
+        assert_eq!(forged.field("operation"), Some("cast"));
+        assert_eq!(
+            codes(&diagnostics, "E1212_INVALID_AS_CONVERSION"),
+            0,
+            "docs/40 section 3 routes this away from the generic conversion error"
+        );
+    }
+
+    #[test]
+    fn a_capability_cannot_be_constructed() {
+        let (_, diagnostics) =
+            check_authority("pub fn main() -> unit { let forged = system.time.Clock(); }");
+        let forged = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1502_FORGED_CAPABILITY")
+            .expect("a capability is nonconstructible");
+        assert_eq!(forged.field("operation"), Some("construct"));
+    }
+
+    #[test]
+    fn an_unimported_path_is_not_a_capability_forgery() {
+        let (_, diagnostics) =
+            check_authority("pub fn main() -> unit { let value = 1u64 as u64; }");
+        assert_eq!(codes(&diagnostics, "E1502_FORGED_CAPABILITY"), 0);
     }
 
     #[test]

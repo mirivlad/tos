@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `d902e0eac9ae491ac35daaedcb5457b95c439990a79921f60cea73a7f9212509`  
+Source-manifest SHA-256: `bbb9626c8ef69fc5792ab1413a2a34b2e256a220fc432b3d157b51c8d0cb1dd5`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4819,6 +4819,13 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1604_IMPORT_NOT_FOUND` | an import names no module in the declared source set |
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 | `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
+
+### Capability and effect (stage `effect`)
+
+| Code | Condition |
+|---|---|
+| `E1501_UNDECLARED_CAPABILITY_EFFECT` | an operation requires a capability whose name is not in the enclosing function's effect set, or a call requires an effect the caller's `uses` set does not include; the `required_by` field names the callee, or `operation` for a direct use |
+| `E1502_FORGED_CAPABILITY` | a capability interface is constructed or cast into existence rather than received through its declared import; the `interface` field names it and `operation` says which |
 
 ### Unsafe and FFI boundary (stage `effect`)
 
