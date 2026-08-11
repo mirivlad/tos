@@ -194,6 +194,8 @@ def main() -> int:
             ("E1303_MUTATE_WHILE_BORROWED", "ownership"),
             ("E1304_INVALID_TASK_CAPTURE", "ownership"),
             ("E1305_INVALID_CLOSURE_CAPTURE", "ownership"),
+            ("E1501_UNDECLARED_CAPABILITY_EFFECT", "effect"),
+            ("E1502_FORGED_CAPABILITY", "effect"),
             ("E1801_FFI_NOT_AVAILABLE", "effect"),
             ("E1802_UNSAFE_RATIONALE_REQUIRED", "effect"),
             ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),

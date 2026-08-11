@@ -33,7 +33,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::string::String;
 use std::vec::Vec;
 
-use crate::parser::{Schema, TypeSyntax, Visibility};
+use crate::parser::{ImportKind, Schema, TypeSyntax, Visibility};
 use crate::{Diagnostic, Severity, SourceUnit, Stage};
 
 /// Primitive type names (docs/40 section 1).
@@ -210,6 +210,7 @@ pub(crate) fn check_types(source: &SourceUnit, schema: &Schema) -> Vec<Diagnosti
         source,
         local: BTreeSet::new(),
         imports: BTreeSet::new(),
+        capability_interfaces: BTreeSet::new(),
         diagnostics: Vec::new(),
     };
     for declaration in schema.records() {
@@ -220,6 +221,17 @@ pub(crate) fn check_types(source: &SourceUnit, schema: &Schema) -> Vec<Diagnosti
     }
     for import in schema.outline().prefix().imports() {
         resolver.imports.insert(import.binding().text(source));
+        // A capability interface is named by its full path, not through the
+        // binding: `import capability system.time.Clock as clock` makes
+        // `system.time.Clock` a reachable imported type (docs/42 section 4).
+        if import.kind() == ImportKind::Capability {
+            let path: std::vec::Vec<&str> = import
+                .path()
+                .iter()
+                .map(|segment| segment.text(source))
+                .collect();
+            resolver.capability_interfaces.insert(path.join("."));
+        }
     }
 
     for declaration in schema.records() {
@@ -255,6 +267,8 @@ struct TypeResolver<'source> {
     source: &'source SourceUnit,
     local: BTreeSet<&'source str>,
     imports: BTreeSet<&'source str>,
+    /// Full paths of the capability interfaces this module imports.
+    capability_interfaces: BTreeSet<String>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -387,7 +401,8 @@ impl<'source> TypeResolver<'source> {
     /// the name is decided by the source-set slice.
     fn resolves(&self, path: &'source [crate::parser::Span], spelled: &str) -> bool {
         if path.len() > 1 {
-            return self.imports.contains(path[0].text(self.source));
+            return self.capability_interfaces.contains(spelled)
+                || self.imports.contains(path[0].text(self.source));
         }
         PRIMITIVE_TYPES.contains(&spelled)
             || NULLARY_TYPES.contains(&spelled)

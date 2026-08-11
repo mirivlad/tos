@@ -253,6 +253,13 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 | `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
 
+### Capability and effect (stage `effect`)
+
+| Code | Condition |
+|---|---|
+| `E1501_UNDECLARED_CAPABILITY_EFFECT` | an operation requires a capability whose name is not in the enclosing function's effect set, or a call requires an effect the caller's `uses` set does not include; the `required_by` field names the callee, or `operation` for a direct use |
+| `E1502_FORGED_CAPABILITY` | a capability interface is constructed or cast into existence rather than received through its declared import; the `interface` field names it and `operation` says which |
+
 ### Unsafe and FFI boundary (stage `effect`)
 
 | Code | Condition |

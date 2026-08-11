@@ -997,6 +997,30 @@ Evidence: C025 (`accept/defer-cleanup-order.tos`), R046–R048 (три стро�
 
 ### Требуют решения Project Architect
 
+**D. Отсутствующий DCO sign-off в опубликованном коммите `80bfcc1`.** Коммит
+`80bfcc1` («feat: close the ownership frontier under ADR-0035») ушёл в
+`origin/main` без trailer `Signed-off-by:`, которого требует docs/23. Гейт
+`scripts/check-dco.sh` сканирует все достижимые от HEAD коммиты, поэтому
+`./scripts/preflight.sh --full` теперь падает на нём и будет падать на каждом
+последующем прогоне:
+
+```text
+missing DCO trailer: 80bfcc17bd1cba29a5365acd4116aa32ccbcfe84
+```
+
+Дефект внесён реализацией. Исправление требует переписывания уже
+опубликованной истории (`git commit --amend -s` + force-push единственного
+коммита), что прямо запрещено действующим мандатом, а обход падающего гейта
+запрещён отдельно. Поэтому решение за Project Architect: либо разрешить
+однократный amend + force-push именно этого коммита, либо принять иной
+вариант (например, отдельная запись провенанса вне git-истории, если docs/23
+это допускает).
+
+Все последующие коммиты подписываются `git commit -s`. До решения полный
+preflight не может быть зелёным, и Stage 2 не может считаться
+candidate-complete по этому пункту.
+
+
 **C. Transferable для region и lock guard.** После пункта 6 у чекера нет
 способа отличить transferable region от нетрансферабельного и объект
 синхронизации от выданного им guard. Оба требуют capability-contract среза;
