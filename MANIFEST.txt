@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 303
+- files in the release package: 304
 - active system invariants: 21
-- architecture decision records: 39 (35 accepted)
+- architecture decision records: 39 (36 accepted)
 
 Architecture decision records
 -----------------------------
@@ -81,7 +81,7 @@ Architecture decision records
 - docs/adr/0035-defer-ownership-and-borrow-conflicts.md — ADR-0035: TOS Core V1 `defer` ownership semantics and the borrow-conflict class [Accepted (Project Architect-approved)]
 - docs/adr/0036-synchronization-guard-representation.md — ADR-0036: TOS Core V1 synchronization guard representation [**Proposed** — needs Project Architect approval to become Accepted]
 - docs/adr/0037-region-transferability.md — ADR-0037: TOS Core V1 region and DMA-region transferability [**Proposed** — needs Project Architect approval to become Accepted]
-- docs/adr/0038-module-root-precedence.md — ADR-0038: TOS Core V1 module-root precedence and the exact `E1605` condition [**Proposed** — needs Project Architect approval to become Accepted]
+- docs/adr/0038-module-root-precedence.md — ADR-0038: TOS Core V1 module-root precedence and the exact `E1605` condition [Accepted (Project Architect-approved)]
 - docs/adr/0039-nonconstructible-opaque-types.md — ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles [**Proposed** — needs Project Architect approval to become Accepted]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a

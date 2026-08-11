@@ -2,11 +2,11 @@
 
 # ADR-0038: TOS Core V1 module-root precedence and the exact `E1605` condition
 
-- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Status: Accepted (Project Architect-approved)
 - Date: 2026-08-11
 - Decision level: 2 — fixes a stable diagnostic condition and the resolution
   rule conformance evidence depends on
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-11
 
 ## Context
 
@@ -32,28 +32,31 @@ The declared list of module roots is searched in order. The **first** root that
 declares a module name resolves that name. That makes resolution deterministic
 and total.
 
-Ordering is not permission to shadow silently. A name declared by more than one
-root is `E1605_AMBIGUOUS_IMPORT` **when more than one of the roots that declare
-it is reachable from the importing module's declared dependency set**. A root
-that the importer does not depend on is not a candidate and does not make
-anything ambiguous.
+Ordering settles roots, and only roots. It is not permission to paper over a
+collision between *declared dependencies*: a name offered by more than one
+reachable declared dependency source set is `E1605_AMBIGUOUS_IMPORT`, because
+nothing orders dependencies against each other and choosing one would be an
+implementation preference rather than a resolution rule.
 
-The two sentences are reconciled this way: the order makes resolution decidable
-for the ordinary case of a private root layered over a shared one, and the code
-covers the case where two *declared dependencies* both offer the name, which is
-a configuration mistake no ordering should paper over.
+The two sentences of docs/42 are reconciled this way. The order makes resolution
+decidable for the ordinary case — a private root layered over a shared one — and
+the code covers the case the order says nothing about.
 
 ### 2. The exact condition
 
 `E1605_AMBIGUOUS_IMPORT` is reported when either holds:
 
 1. the declared source set contains more than one module with the requested
-   name, and nothing in the set orders them; or
-2. more than one declared module root reachable from the importer declares the
+   name inside one root, so nothing in the set orders them; or
+2. more than one reachable declared dependency source set provides the
    requested name.
 
+Otherwise the candidate in the earliest declared root resolves the name.
+
 The diagnostic carries the requested import, the importer, the number of
-candidates, and — when the roots are known — their ordered identities.
+candidates, and the identities that collided — the root for case 1, the
+dependency source sets for case 2 — so the configuration mistake is nameable
+without re-deriving it.
 
 `E1604_IMPORT_NOT_FOUND` remains the case of no candidate at all. A missing
 import takes precedence over an ambiguous one only when there is genuinely no

@@ -101,6 +101,20 @@ cannot be tokenized: a non-ASCII scalar value outside a literal or comment is
 vectors are ordinary `.tos` files rather than generator instructions, because
 `@` and `$` are valid UTF-8 and the file can carry its own SPDX header.
 
+## Driver-level resolution cases
+
+`E1605_AMBIGUOUS_IMPORT` and the root-precedence rule of ADR-0038 are properties
+of a declared source-set layout — an ordered root list and a set of declared
+dependency source sets — not of one file. They cannot be written as `.tos`
+vectors, because the corpus gives every file its own canonical path. They are
+bound instead by named driver-level cases over the source-set API:
+
+| ID | Layout | Expected result | Purpose |
+|---|---|---|---|
+| D001 | `app.shared` in root 0 and root 1, importer in root 0 | resolves to the root 0 candidate, no diagnostic | the declared root order settles roots, which is what layering means |
+| D002 | `app.shared` provided by dependency sets `vendor.a` and `vendor.b` | `E1605_AMBIGUOUS_IMPORT` with `collision=dependency`, `collided=vendor.a, vendor.b` | nothing orders declared dependencies against each other |
+| D003 | `app.shared` declared twice inside root 1 | `E1605_AMBIGUOUS_IMPORT` with `collision=root`, `candidates=2` | one root cannot declare a name twice |
+
 Every code named in this document is defined in the diagnostic registry in
 `docs/44_TOS_CORE_V1_CONFORMANCE_AND_IMPLEMENTABILITY.md` section 7, and
 `scripts/check-stage2-language-contract.py` fails if the two disagree.

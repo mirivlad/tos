@@ -2297,6 +2297,69 @@ mod tests {
     }
 
     #[test]
+    fn an_earlier_declared_root_shadows_a_later_one() {
+        // ADR-0038: the order settles roots, so layering a private root over a
+        // shared one resolves rather than colliding.
+        let importer = module_source("app.main", "import app.shared;");
+        let private = module_source("app.shared", "");
+        let shared = module_source("app.shared", "");
+        let importer_schema = module_schema(&importer);
+        let private_schema = module_schema(&private);
+        let shared_schema = module_schema(&shared);
+        let diagnostics = check_module_set(&[
+            ModuleEntry::in_root(0, "app/main.tos", &importer, &importer_schema),
+            ModuleEntry::in_root(0, "app/shared.tos", &private, &private_schema),
+            ModuleEntry::in_root(1, "app/shared.tos", &shared, &shared_schema),
+        ]);
+        assert_eq!(codes(&diagnostics, "E1605_AMBIGUOUS_IMPORT"), 0);
+        assert_eq!(codes(&diagnostics, "E1604_IMPORT_NOT_FOUND"), 0);
+    }
+
+    #[test]
+    fn two_declared_dependencies_offering_one_name_collide() {
+        // Nothing orders dependency source sets against each other, so the
+        // root order cannot decide this one.
+        let importer = module_source("app.main", "import app.shared;");
+        let one = module_source("app.shared", "");
+        let other = module_source("app.shared", "");
+        let importer_schema = module_schema(&importer);
+        let one_schema = module_schema(&one);
+        let other_schema = module_schema(&other);
+        let diagnostics = check_module_set(&[
+            ModuleEntry::in_root(0, "app/main.tos", &importer, &importer_schema),
+            ModuleEntry::from_dependency("vendor.a", 1, "app/shared.tos", &one, &one_schema),
+            ModuleEntry::from_dependency("vendor.b", 2, "app/shared.tos", &other, &other_schema),
+        ]);
+        let ambiguous = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1605_AMBIGUOUS_IMPORT")
+            .expect("nothing orders two declared dependencies");
+        assert_eq!(ambiguous.field("collision"), Some("dependency"));
+        assert_eq!(ambiguous.field("collided"), Some("vendor.a, vendor.b"));
+    }
+
+    #[test]
+    fn one_root_declaring_a_name_twice_collides() {
+        let importer = module_source("app.main", "import app.shared;");
+        let one = module_source("app.shared", "");
+        let other = module_source("app.shared", "");
+        let importer_schema = module_schema(&importer);
+        let one_schema = module_schema(&one);
+        let other_schema = module_schema(&other);
+        let diagnostics = check_module_set(&[
+            ModuleEntry::in_root(0, "app/main.tos", &importer, &importer_schema),
+            ModuleEntry::in_root(1, "app/shared.tos", &one, &one_schema),
+            ModuleEntry::in_root(1, "app/shared.tos", &other, &other_schema),
+        ]);
+        let ambiguous = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1605_AMBIGUOUS_IMPORT")
+            .expect("one root cannot declare a name twice");
+        assert_eq!(ambiguous.field("collision"), Some("root"));
+        assert_eq!(ambiguous.field("candidates"), Some("2"));
+    }
+
+    #[test]
     fn a_capability_import_is_not_resolved_against_the_source_set() {
         // docs/42 section 4: a capability names an interface contract, not a
         // module of this set.
