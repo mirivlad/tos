@@ -9,7 +9,7 @@ Project Architect grants it.
 
 ```text
 stage                  2 — Executed-source identity
-source_commit          f7cbaf4 (origin/main)
+source_commit          see PROVENANCE_HISTORY_REWRITE.md for the SHA mapping
 architecture_version   TOS Core 1.0; tos-ir/v1; ADR-0027, ADR-0028, ADR-0032,
                        ADR-0033, ADR-0034, ADR-0035
 identity_question      Is actual language semantics executing from canonical
@@ -97,11 +97,9 @@ than approximations.
 3. **No cache or provenance plane.** docs/43 section 6 cache identity, deletion
    and regeneration, and source-mutation invalidation are unimplemented.
 4. **No performance evidence.** See above.
-5. **DCO gate fails on commit `80bfcc1`.** That commit reached `origin/main`
-   without the `Signed-off-by` trailer docs/23 requires. Repairing it needs
-   published history rewritten, which the standing instruction forbids, so
-   `./scripts/preflight.sh --full` reports 1 of 31 gates failing until the
-   Architect decides. Every later commit carries the trailer.
+5. *(Resolved.)* The missing `Signed-off-by` on `80bfcc1` was repaired under a
+   one-time Architect authorization; every tree hash is unchanged and the
+   mapping is in `PROVENANCE_HISTORY_REWRITE.md`. `preflight --full` passes.
 6. **Open contract questions**, recorded in `PROGRESS.md`: region and lock-guard
    `Transferable` and the missing guard type constructor; the
    nonconstructible-type error for non-capability opaque handles; module-root
