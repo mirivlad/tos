@@ -16,7 +16,8 @@ source_commit          see `git rev-parse HEAD`; the SHA mapping for the one
                        authorized history repair is in
                        PROVENANCE_HISTORY_REWRITE.md
 architecture_version   TOS Core 1.0; tos-ir/v1; accepted ADR-0027, ADR-0028,
-                       ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0038
+                       ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036,
+                       ADR-0038, ADR-0040
 identity_question      Is actual language semantics executing from canonical
                        text with a verifiable mapping to runtime behavior?
 ```
@@ -69,14 +70,18 @@ retains the native-host record: raw 3-warmup/21-sample median/p95/p99 for both
 Stage 2 metrics and the quota-rejection ratio, with the toolchain, environment
 and the exact command.
 
-ADR-0040 (**Proposed**) fixes the Stage 2 reference platform as the
+ADR-0040 (**accepted**) fixes the Stage 2 reference platform as the
 q35/qemu64/one-vCPU/256-MiB/TCG profile Stage 1 already mandates, and reads the
 `docs/35` execution budget as the ratio of that platform's time to the
 native-host time of the same engine at the same commit. The harness takes the
 profile as a declared argument and records what it was told; it never concludes
 that the machine it runs on is the reference platform.
 
-The reference half is **not taken**, so the gate is open. See `known_failures`.
+The reference half is **not taken**, and cannot be until the runtime-independence
+gap closes: ADR-0040 section 1a requires the measurement to run the real Stage 2
+runtime path, so a number produced by running the engine inside a host guest
+would measure the host and would let a host runtime into Stage 2 through the
+performance gate. The gate is open. See `known_failures`.
 
 ## threat_model_coverage
 
@@ -92,6 +97,7 @@ The reference half is **not taken**, so the gate is open. See `known_failures`.
 | resource exhaustion | Partial. Fuel, recursion and the task budget are enforced at runtime; allocation, workers, sync, shared and cleanup are declared and verified but not metered during execution. |
 | source-map identity forgery | Present (`V2040_SOURCE_MAP`). |
 | cache substitution | Present (`Rejection::KeyDoesNotMatchIdentity`). |
+| runtime independence from the host | **Open, audited.** `docs/evidence/STAGE2_RUNTIME_INDEPENDENCE_AUDIT.md`. The production code uses no host runtime facility — every `std` path it uses is in `alloc` or `core` — and the freestanding target is already gated. One gap is genuine: no heap allocator exists, and who owns memory in Stage 2 before Stage 3 is undecided. Until that is settled the `docs/44` claim is not discharged. |
 | cross-engine semantic differential testing | **N/A for the current supported-engine set.** `docs/44` section 3 requires it "for every supported engine" and section 7 requires every engine to pass the same vectors. One engine is supported, so the requirement is vacuously satisfied. It becomes mandatory the moment a second engine is supported, and no engine will be built to satisfy a denominator. |
 
 ## compatibility_profiles
@@ -110,17 +116,25 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    illustrative boot text, which the nucleus reads as text. Replacing it is
    sequenced after the decisions below, by the Project Architect's direction.
 2. **The Stage 2 performance gate is open.** The native half of the ratio is
-   taken; the reference half needs the harness to execute under the ADR-0040
-   profile, and ADR-0040 itself needs approval. No budget is asserted from the
-   native record.
-3. **Four contract decisions await approval and are unimplemented.** ADR-0036
-   (guard representation and `E1402_INVALID_GUARD_LIFETIME`), ADR-0037 (region
-   and DMA-region transfer and share model), ADR-0039
-   (`E1213_NONCONSTRUCTIBLE_TYPE`) and ADR-0040 (Stage 2 reference platform) are
-   **Proposed** with full decision text. Until they are accepted,
-   `V2021_REGION` and `V2031_SYNC` have no rules, and casting an integer to
-   `Task<i32>` is still accepted in silence.
-4. **Runtime resource metering is partial.** See `threat_model_coverage`.
+   taken; the reference half needs a freestanding Stage 2 runtime to execute
+   under the ADR-0040 profile, which item 3 blocks. No budget is asserted from
+   the native record.
+3. **Runtime independence is not discharged.** The audit finds one architectural
+   gap — no heap allocator, and no decision on who owns memory in Stage 2 before
+   Stage 3 — and presents three options without choosing. This blocks the
+   ADR-0040 reference measurement, which may not be taken through a host binary,
+   and therefore blocks candidate-complete.
+4. **ADR-0036 is accepted but not yet implemented.** Guard types, the lifetime
+   relation, `E1402_INVALID_GUARD_LIFETIME` and the matching `V2031_SYNC` rules
+   are decided and unbuilt.
+5. **Two contract decisions are still open.** ADR-0037 revision 3 adds `share`
+   as a predeclared operation and stops at one boundary it uncovers: a `share`
+   with a non-Shareable argument has no diagnostic code, because the registry
+   has no argument-type-mismatch code at all. ADR-0039 revision 3 narrows
+   `E1213` to the `as` forms V1 grammar admits. Until both are accepted,
+   `V2021_REGION` has no rules and casting an integer to `Task<i32>` is still
+   accepted in silence.
+6. **Runtime resource metering is partial.** See `threat_model_coverage`.
 
 ## architect_approval
 

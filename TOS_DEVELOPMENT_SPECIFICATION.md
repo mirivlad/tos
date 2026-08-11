@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `09372a7878d275ffafa648abe81498cbaf6e9d42d07ba537dba037af08d2cdf8`  
+Source-manifest SHA-256: `f5a8d008075f2b8b9f2345fad0df4eb4a5d1b1dc34833c0ca55f463cc3da4b8d`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -12187,12 +12187,11 @@ semantics.
 
 # ADR-0036: TOS Core V1 synchronization guard representation
 
-- Status: **Proposed (revision 2)** — direction approved by the Project
-  Architect; this text needs approval to become Accepted
+- Status: Accepted (Project Architect-approved)
 - Date: 2026-08-11
 - Decision level: 2 — adds type constructors and one diagnostic code to the
   accepted V1 surface, which conformance evidence and the IR type table depend on
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-11
 - Supersedes: revision 1 of this ADR, which left the normative "a guard may not
   be held across await" rule with no source diagnostic, said nothing about the
   lifetime relation between a guard and its lock, and did not say that the
@@ -12395,15 +12394,17 @@ release point would depend on binding structure rather than on ownership.
 
 # ADR-0037: TOS Core V1 region and DMA-region transferability
 
-- Status: **Proposed (revision 2)** — `Region<mut T>` as a narrow V1 type form
-  approved in principle by the Project Architect; this text needs approval
+- Status: **Proposed (revision 3)** — the region model is accepted; this
+  revision adds the `share` operation the model needs and stops at one boundary
+  it uncovers
 - Date: 2026-08-11
 - Decision level: 2 — fixes the `Transferable`, shareable and mutable facts of
   two accepted V1 type constructors
 - Project Architect approval: *(pending)*
-- Supersedes: revision 1, whose transfer and share model let a shareable DMA
-  region become `Shared<DmaRegion<T>>` and be copied into several tasks, which
-  would have gone around the very rule it was written to state
+- Supersedes: revision 1, whose share model let a shareable DMA region become
+  `Shared<DmaRegion<T>>` and be copied into several tasks; and revision 2, which
+  used a `share(region)` form that the accepted V1 word inventory and
+  `predeclared-function` list do not contain
 
 ## Context
 
@@ -12462,11 +12463,10 @@ what makes it safe; it is not something the language grants by default.
 owner. `Transferable` means that ownership may move into **exactly one** task —
 not that the handle may be duplicated.
 
-Using one region from several tasks is written:
-
-```text
-share(region)  ->  Shared<Region<T>>
-```
+Using one region from several tasks is written `share(region)`. Revision 2 used
+that form without it existing: `share` is in neither the accepted V1 word
+inventory of `docs/39` section 2 nor its `predeclared-function` list. Section 4
+adds it, because the model is not expressible without it.
 
 `Shared<T>` is the `Copy` handle `docs/40` already defines, so the copies the
 several tasks hold are copies of a `Shared`, produced by a typed operation that
@@ -12474,7 +12474,66 @@ appears in the source and in the IR. There is no path where an affine region
 handle is silently duplicated because two tasks happened to name it: that would
 make an ownership transfer look like a read.
 
-### 4. Diagnostics
+### 4. `share` as a predeclared operation
+
+`share` joins `predeclared-function` in `docs/39` section 2, alongside `to_*`
+and `wrapping_*`. It is a language operation, not a library call and not ambient
+runtime behaviour.
+
+**Type rule.**
+
+```text
+share(T) -> Shared<T>    only when T is transitively immutable and Shareable
+```
+
+Transitively immutable means `T` and every type reachable from it contains no
+mutable region, no mutable borrow and no guard. Shareable is the column of the
+section 2 table: `Region<T>` is, `Region<mut T>` and both `DmaRegion` variants
+are not.
+
+**Ownership.** `share` consumes its argument. The affine handle is moved into
+the operation and the caller holds `Shared<T>` afterwards; the original name is
+moved-from, and using it is `E1301_USE_AFTER_MOVE` like any other move. A
+`share` that left the original usable would hand out two roots to one region,
+which is the duplication this whole section exists to prevent.
+
+**Verifier-visible and accounted.** `share` lowers to its own IR operation, not
+to an opaque helper call: `docs/43` section 3 forbids hiding shared-memory
+access behind one. It carries its argument, its result type and its source span,
+`V2021_REGION` rechecks the Shareable requirement independently, and the
+resulting `Shared<T>` counts against the module's declared `shared` resource
+limit, so sharing is bounded by the envelope like every other resource.
+
+### 5. One boundary this uncovers — an Architect decision
+
+A `share` whose argument is not Shareable — `share(dma)`, `share(mutable)` —
+has **no diagnostic code to report it**. The registry has no general
+argument-type-mismatch code at all: `E1210` is integer agreement, `E1211` is
+indexing, `E1212` is `as`, `E1222` is a return. Nothing covers "this call's
+argument does not satisfy the operation's declared requirement".
+
+Rather than borrow one of those for a condition it does not describe, this ADR
+stops here and proposes the narrow options:
+
+1. **`E1214_INVALID_SHARE`** — one code for exactly this operation, with a
+   `reason` field (`not_shareable`, `mutable`, `dma`). Smallest possible
+   addition; adds a code that only ever fires for one operation.
+2. **`E1215_ARGUMENT_TYPE_MISMATCH`** — a general code for an argument that does
+   not satisfy a declared parameter or predeclared-operation requirement. Wider,
+   and it fills a gap the registry has independently of `share`: today an
+   ordinary call with a wrongly typed argument has no code either.
+3. **Extend `E1210`'s condition** to argument agreement generally. Rejected here
+   as a suggestion — it is named to be dismissed: `E1210` is about integer
+   types, and widening an accepted stable condition to cover unrelated cases is
+   what the registry discipline exists to prevent.
+
+Option 2 is the recommendation: the gap it closes is real and larger than
+`share`, and one general code is easier for conformance tooling to reason about
+than a family of operation-specific ones. But allocating a code is a versioned
+language decision, so it is the Project Architect's, and this ADR is not
+Accepted until it is made.
+
+### 6. Diagnostics
 
 No new code. Capturing a non-`Transferable` region into a task is
 `E1304_INVALID_TASK_CAPTURE` with `reason=mutable region` or `reason=DMA
@@ -12484,23 +12543,27 @@ reasons. Writing through a `Region<T>` is `E1201_ASSIGN_TO_IMMUTABLE`.
 `V2021_REGION` gains these as verifier rules, so the IR carries the mode in its
 type table and the verifier rechecks it rather than trusting the frontend.
 
-### 5. Conformance evidence
+### 7. Conformance evidence
 
 At least: a positive moving a `Region<T>` into one task; a positive sharing one
 through `share(region)` and using the `Shared<Region<T>>` from two tasks; a
 negative capturing a `Region<T>` handle into two tasks without `share`; a
 negative capturing a `Region<mut T>` into a task; a negative capturing a
-`DmaRegion<T>` into a task; a negative applying `share` to a `DmaRegion<T>`; a
-negative writing through a `Region<T>`; and a positive writing through a
+`DmaRegion<T>` into a task; a negative applying `share` to a `DmaRegion<T>` and to a
+`Region<mut T>` under whichever code section 5 settles on; a negative using a
+region after `share` consumed it (`E1301`); a negative writing through a
+`Region<T>`; and a positive writing through a
 `Region<mut T>`. Each capture and share negative has a forged-IR counterpart for
 `V2021_REGION`, so the checker and the verifier prove the same rule
 independently.
 
 ## Architecture impact statement
 
-- **Change level:** 2. **Invariants affected:** none amended.
-- **Canonical representation:** unchanged; no accepted source uses a region
-  today, so nothing becomes invalid.
+- **Change level:** 2 — the type facts, plus one predeclared operation and, once
+  section 5 is settled, one diagnostic code. **Invariants affected:** none
+  amended.
+- **Canonical representation:** unchanged; no accepted source uses a region or
+  `share` today, so nothing becomes invalid.
 - **Threat-model impact:** positive on both counts. A mutable region crossing a
   task boundary is the shared-mutable case `docs/44` section 3 requires a
   negative for, and it becomes decidable. Keeping both DMA variants
@@ -12666,15 +12729,15 @@ language property under `docs/42`, not a tool preference.
 
 # ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles
 
-- Status: **Proposed (revision 2)** — the code and the precedence are approved
-  in principle by the Project Architect; this text needs approval
+- Status: **Proposed (revision 3)** — the code and the precedence are accepted;
+  this revision narrows the operations to forms V1 grammar actually admits
 - Date: 2026-08-11
 - Decision level: 2 — allocates a diagnostic code conformance evidence will
   depend on
 - Project Architect approval: *(pending)*
-- Supersedes: revision 1, whose type set wrongly included `TaskResult<T>` — an
-  ordinary affine result value with predeclared constructors — and omitted
-  `Shared<T>`, which only a typed `share` contract may produce
+- Supersedes: revision 1, whose type set wrongly included `TaskResult<T>` and
+  omitted `Shared<T>`; and revision 2, which promised the code for constructor
+  and aggregate forms that V1 source cannot express in the first place
 
 ## Context
 
@@ -12699,9 +12762,20 @@ Stage `type`. An operation attempts to bring into existence a value of a type
 that V1 makes nonconstructible from source. The operations are:
 
 - an `as` conversion whose target type is one of the nonconstructible types;
-- an `as` conversion whose operand type is one of them;
-- a constructor call naming one of them;
-- a record or aggregate literal naming one of them as its constructor.
+- an `as` conversion whose operand type is one of them.
+
+That is the whole list, and it is short for a reason. A predeclared type is not
+an expression primary or callee in V1, so `Event()`, `Task(1i32)` and
+`Mutex(1i32)` are not fabrication attempts this code has to catch — they are
+names that resolve to nothing in value position, and the frontend already
+reports each as `E1202_UNKNOWN_VALUE_NAME`. Verified against the reference
+frontend, not assumed.
+
+Promising `E1213` for those forms would mean widening the grammar to let them
+through to the type stage purely so a diagnostic could fire, which is a worse
+outcome than the rejection they already get. The grammar is not widened, and any
+future V1 operation that can genuinely express such a fabrication comes under
+this code when it exists.
 
 The nonconstructible types are: `Task<T>`, `Shared<T>`, `Region<T>`,
 `DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, `Event`, `Semaphore`,
@@ -12745,11 +12819,14 @@ This code is about constructing one out of data, never about holding one.
 ### 4. Conformance evidence
 
 At least: a negative casting an integer to `Task<i32>`; a negative casting a
-`Mutex<i32>` to an integer; a negative calling a constructor on `Event`; a
-negative constructing a `Shared<i32>`; a positive building a `TaskResult<T>`
-with `Completed` and `Cancelled`, proving the code does not fire on a value
-source is meant to build; and a positive obtaining a task from `spawn` and using
-it, proving it does not fire on the legitimate path either.
+`Mutex<i32>` to an integer; a negative casting an integer to `Shared<i32>`; a
+positive building a `TaskResult<T>` with `Completed` and `Cancelled`, proving
+the code does not fire on a value source is meant to build; and a positive
+obtaining a task from `spawn` and using it, proving it does not fire on the
+legitimate path either.
+
+A vector for `Event()` is deliberately absent: R-vectors record the code a form
+actually produces, and that form produces `E1202_UNKNOWN_VALUE_NAME`.
 
 ## Architecture impact statement
 
@@ -12763,8 +12840,9 @@ it, proving it does not fire on the legitimate path either.
   of integer data is the same class of forgery as fabricating a capability, and
   it was silently accepted.
 - **Compatibility profile:** TOS Core 1.0.
-- **Tests:** the six conformance cases, checker unit tests for each operation,
-  for every type in the set, for `TaskResult<T>` staying outside it, and for the
+- **Tests:** the five conformance cases, checker unit tests for both `as`
+  directions, for every type in the set, for `TaskResult<T>` staying outside it,
+  for a predeclared type in value position still being `E1202`, and for the
   precedence against `E1212` and `E1502`, and the mechanical gate.
 
 ## Consequences
@@ -12784,8 +12862,13 @@ tooling could not tell a narrowing mistake from a forgery attempt.
 not authority, and widening a capability code to cover non-authority values
 would make every audit of that code less meaningful.
 
-**Leave the seven cases unreported.** Rejected: it leaves a stated rule
+**Leave the `as` cases unreported.** Rejected: it leaves a stated rule
 unenforced and a forgery path open.
+
+**Widen the grammar so `Event()` reaches the type stage and gets `E1213`.**
+Rejected: it would change what V1 source *is* to improve a diagnostic on a form
+that is already rejected, and a grammar that admits nonsense so a later stage can
+name it is worse than one that does not admit it.
 
 <!-- END docs/adr/0039-nonconstructible-opaque-types.md -->
 
@@ -12797,11 +12880,11 @@ unenforced and a forgery path open.
 
 # ADR-0040: the Stage 2 reference platform profile
 
-- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Status: Accepted (Project Architect-approved)
 - Date: 2026-08-11
 - Decision level: 2 — fixes the platform a Stage 2 performance gate is measured
   on, which every later performance claim is stated against
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-11
 
 ## Context
 
@@ -12838,9 +12921,34 @@ firmware     the declared OVMF build of the Stage 1 gate
 
 One platform for both stages, for three reasons. It already exists and is
 already gated, so no second environment has to be kept honest. TCG on one vCPU
-is deterministic enough to compare across runs and slow enough that a budget met
-there is met anywhere. And a single profile keeps Stage 1 and Stage 2 numbers
-comparable, which they would not be if each stage picked its own.
+is deterministic enough that two runs are comparable. And a single profile keeps
+Stage 1 and Stage 2 numbers comparable, which they would not be if each stage
+picked its own.
+
+A record taken here demonstrates conformance **on this declared platform**. It
+says nothing about performance on other hardware or other emulators, and it is
+not evidence that a budget met here is met anywhere: a different CPU, a
+different accelerator or a different memory system can be faster or slower for
+reasons this profile does not model. The value of a fixed platform is
+comparability across runs and across stages, not extrapolation.
+
+### 1a. The measurement must run the real Stage 2 path
+
+The reference measurement executes the actual Stage 2 TOS runtime and recovery
+path. Running `tos-engine` inside an arbitrary Linux or host guest under the
+profile does **not** satisfy this gate: the guest's libc and host OS would
+become a runtime dependency of the measured path, which is exactly the
+dependency `docs/44` says is not a recovery or runtime dependency. A number
+produced that way would measure the host, and would let a host runtime enter the
+Stage 2 story through the performance gate.
+
+Native-host execution remains admissible as the **comparison baseline** of
+section 2 — that is what a baseline is for — and is never the production or
+reference execution path.
+
+The freestanding runtime this requires is the subject of the runtime-
+independence audit; until it exists, the reference half of the pair cannot be
+taken, and that is an open gate rather than a number taken elsewhere.
 
 ### 2. What "host reference interpreter time" means
 
@@ -12898,7 +13006,8 @@ decision when a Full engine exists.
 - **New dependencies:** none. Both halves of the ratio use tooling the
   repository already has.
 - **Tests:** the harness records which profile it ran under and refuses to
-  present a P2 claim for a record taken elsewhere.
+  present a P2 claim for a record taken elsewhere. A reference-profile record is
+  admissible only from the real Stage 2 runtime path of section 1a.
 
 ## Consequences
 
@@ -12908,9 +13017,9 @@ remaining work is mechanical: run the harness under the profile, retain both
 halves, and compute the ratio.
 
 The cost is that a Stage 2 performance number is a TCG number, so it is slower
-than the hardware a developer sits at. That is the intended trade — a budget met
-on the slowest gated profile is met everywhere, and the alternative is a number
-whose platform was chosen to suit it.
+than the hardware a developer sits at, and it is a statement about this platform
+only. That is the intended trade: the alternative is a number whose platform was
+chosen to suit it, which states nothing at all.
 
 ## Alternatives considered
 
