@@ -187,6 +187,7 @@ def main() -> int:
             ("E1602_UNSUPPORTED_LANGUAGE_MINOR", "type"),
             ("E1603_MODULE_PATH_MISMATCH", "type"),
             ("E1604_IMPORT_NOT_FOUND", "type"),
+            ("E1605_AMBIGUOUS_IMPORT", "type"),
             ("E1606_IMPORT_CYCLE", "type"),
             ("E1607_PRIVATE_PUBLIC_TYPE", "type"),
             ("E1301_USE_AFTER_MOVE", "ownership"),
@@ -203,6 +204,7 @@ def main() -> int:
             ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),
             ("E1702_PROFILE_NOT_SUPPORTED", "resource"),
             ("E1703_DUPLICATE_RESOURCE_DECLARATION", "resource"),
+            ("E1701_UNMETERED_LOOP", "resource"),
             ("E1704_UNKNOWN_RESOURCE_LIMIT", "resource"),
         ]:
             require(registry.get(code) == stage, f"{code} is not registered at stage {stage}", failures)

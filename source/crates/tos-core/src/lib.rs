@@ -13,6 +13,7 @@ mod defer;
 mod diagnostic;
 mod exhaustiveness;
 mod flow;
+mod metering;
 mod modules;
 mod mutability;
 mod ownership;
@@ -2261,6 +2262,94 @@ mod tests {
             .expect("an unresolvable import is reported");
         assert_eq!(missing.field("import"), Some("app.missing"));
         assert_eq!(missing.field("importer"), Some("app.main"));
+    }
+
+    #[test]
+    fn a_module_name_declared_twice_makes_its_import_ambiguous() {
+        // docs/42 section 1: resolution reads only the declared source set. A
+        // set holding the same name twice offers two candidates and nothing to
+        // choose between them.
+        let importer = module_source("app.main", "import app.shared;");
+        let one = module_source("app.shared", "");
+        let other = module_source("app.shared", "");
+        let importer_schema = module_schema(&importer);
+        let one_schema = module_schema(&one);
+        let other_schema = module_schema(&other);
+        let diagnostics = check_module_set(&[
+            ModuleEntry::new("app/main.tos", &importer, &importer_schema),
+            ModuleEntry::new("app/shared.tos", &one, &one_schema),
+            ModuleEntry::new("app/shared.tos", &other, &other_schema),
+        ]);
+        let ambiguous = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1605_AMBIGUOUS_IMPORT")
+            .expect("two candidates cannot resolve deterministically");
+        assert_eq!(ambiguous.field("import"), Some("app.shared"));
+        assert_eq!(ambiguous.field("candidates"), Some("2"));
+        assert_eq!(
+            codes(&diagnostics, "E1604_IMPORT_NOT_FOUND"),
+            0,
+            "an ambiguous import is not also a missing one"
+        );
+    }
+
+    #[test]
+    fn a_capability_import_is_not_resolved_against_the_source_set() {
+        // docs/42 section 4: a capability names an interface contract, not a
+        // module of this set.
+        let source = module_source("app.main", "import capability system.time.Clock as clock;");
+        let schema = module_schema(&source);
+        let diagnostics = check_module_set(&[ModuleEntry::new("app/main.tos", &source, &schema)]);
+        assert_eq!(codes(&diagnostics, "E1604_IMPORT_NOT_FOUND"), 0);
+        assert_eq!(codes(&diagnostics, "E1605_AMBIGUOUS_IMPORT"), 0);
+    }
+
+    #[test]
+    fn a_loop_with_no_bound_and_no_fuel_is_unmetered() {
+        // docs/41 section 6: a loop must have a statically proven finite bound
+        // or consume fuel. `fuel: 0` leaves nothing for a back edge to consume.
+        let text = "module system.boot version 1.0 profile bootstrap; resource [fuel: 0] \
+             pub fn main() -> unit { loop { } }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        let unmetered = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1701_UNMETERED_LOOP")
+            .expect("an unbounded loop with no fuel is unmetered");
+        assert_eq!(unmetered.stage(), Stage::Resource);
+        assert_eq!(unmetered.field("form"), Some("loop"));
+    }
+
+    #[test]
+    fn fuel_meters_a_loop_that_has_no_static_bound() {
+        let text = "module system.boot version 1.0 profile bootstrap; resource [fuel: 1000] \
+             pub fn main() -> unit { loop { } }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert_eq!(codes(&diagnostics, "E1701_UNMETERED_LOOP"), 0);
+    }
+
+    #[test]
+    fn a_for_loop_is_bounded_by_the_sequence_it_iterates() {
+        let text = "module system.boot version 1.0 profile bootstrap; resource [fuel: 0] \
+             pub fn main() -> unit { let values: array<i32, 2> = [0, 0]; \
+             for value in (values) { } }";
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        assert_eq!(
+            codes(&diagnostics, "E1701_UNMETERED_LOOP"),
+            0,
+            "the iteration count is the sequence length, which is finite"
+        );
     }
 
     #[test]

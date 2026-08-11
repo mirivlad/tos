@@ -11,16 +11,26 @@
 //! ambient directory, the host filesystem, the network, the clock or the
 //! environment, and an import never triggers a fetch.
 //!
-//! `E1605_AMBIGUOUS_IMPORT` arises when one name resolves under more than one
-//! declared module root. A root list is compilation-driver configuration that
-//! this API does not yet take, so that condition is not reported here rather
-//! than approximated from a single root.
+//! `E1605_AMBIGUOUS_IMPORT` is reported when the declared source set contains
+//! the same module name more than once. Resolution then has more than one
+//! candidate and nothing in the set says which one wins, so an import of that
+//! name is ambiguous rather than silently decided.
+//!
+//! **Boundary.** docs/42 section 1 also gives resolution "a declared ordered
+//! list of module roots", and whether a name matching under several roots is
+//! ambiguous or resolved by that order is not stated: the order makes it
+//! decidable, yet the code exists for a condition the order would prevent.
+//! That case is left to the compilation-driver configuration and is not
+//! approximated here.
+//!
+//! A capability import names an interface contract, not a module of this source
+//! set (docs/42 section 4), so it is not resolved against the set.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::string::{String, ToString};
 use std::vec::Vec;
 
-use crate::parser::Schema;
+use crate::parser::{ImportKind, Schema};
 use crate::{Checker, Diagnostic, ModuleIdentity, Severity, SourceUnit, Stage};
 
 /// One module of a source set: its canonical repository path and parsed tree.
@@ -92,9 +102,17 @@ impl<'source> ModuleEntry<'source> {
 pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut by_name: BTreeMap<String, usize> = BTreeMap::new();
+    let mut duplicates: BTreeMap<String, usize> = BTreeMap::new();
     for (index, module) in modules.iter().enumerate() {
-        by_name.insert(module.declared_name(), index);
+        let name = module.declared_name();
+        *duplicates.entry(name.clone()).or_insert(0) += 1;
+        by_name.entry(name).or_insert(index);
     }
+    let ambiguous: BTreeSet<&String> = duplicates
+        .iter()
+        .filter(|(_, count)| **count > 1)
+        .map(|(name, _)| name)
+        .collect();
 
     for module in modules {
         let name = module.declared_name();
@@ -118,12 +136,33 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
 
     for module in modules {
         for import in module.schema.outline().prefix().imports() {
+            // A capability import names an interface contract rather than a
+            // module of this source set, so it is not resolved here.
+            if import.kind() == ImportKind::Capability {
+                continue;
+            }
             let target = import
                 .path()
                 .iter()
                 .map(|segment| segment.text(module.source))
                 .collect::<Vec<_>>()
                 .join(".");
+            if ambiguous.contains(&target) {
+                diagnostics.push(
+                    Diagnostic::new(
+                        "E1605_AMBIGUOUS_IMPORT",
+                        Severity::Error,
+                        Stage::Type,
+                        import.span(),
+                        module.source,
+                    )
+                    .with_module(module.identity())
+                    .with_field("import", target.clone())
+                    .with_field("importer", module.declared_name())
+                    .with_field("candidates", duplicates[&target]),
+                );
+                continue;
+            }
             if by_name.contains_key(&target) {
                 continue;
             }
