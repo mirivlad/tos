@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.borrow_owner_read version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub record Counter [value: i32]
+
+// A live mutable borrow is exclusive. Reading the owning place around it is an
+// alias the borrow was supposed to exclude.
+pub fn main() -> i32 {
+    let mut counter = Counter(value: 0i32);
+    let held = borrow mut counter;
+    return counter.value;
+}

@@ -30,6 +30,7 @@
 | C022 | `accept/visibility-private-internals.tos` | Bootstrap | accepts private nominal types used by a private function and inside a public function's body | implementation details are not a public surface |
 | C023 | `accept/task-valid-capture.tos` | Bootstrap | accepts an owned affine capture that transfers sole ownership and a Copy capture that is duplicated, with the Copy value still usable afterwards | a task boundary admits Transferable values only |
 | C024 | `accept/closure-valid-captures.tos` | Full | accepts a Copy capture by copy and an affine capture by move, with the Copy value still usable afterwards | closure capture follows the ownership rules |
+| C025 | `accept/defer-cleanup-order.tos` | Full | accepts a resource used after its cleanup is registered, two cleanups released in reverse registration order, and a returning path that runs its cleanup | `defer` registers without taking ownership and runs on the exit path reached |
 | R001 | `reject/use-after-move.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | affine ownership negative |
 | R002 | `reject/borrow-escape.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` | a mutable borrow cannot coexist with later borrow/use |
 | R003 | `reject/forged-capability.tos` | Bootstrap | `E1502_FORGED_CAPABILITY` | scalar value cannot become authority |
@@ -73,6 +74,10 @@
 | R043 | `reject/mutate-while-borrowed.tos` | Bootstrap | `E1303_MUTATE_WHILE_BORROWED` with `place=counter.value` | a live immutable borrow forbids mutation of the borrowed path |
 | R044 | `reject/closure-borrow-capture.tos` | Full | `E1305_INVALID_CLOSURE_CAPTURE` with `reason=borrow` | a closure may not capture a borrow |
 | R045 | `reject/task-capture-then-use.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` with `place=message` | a valid affine task capture leaves nothing behind for the outer scope |
+| R046 | `reject/borrow-owner-read.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` with `operation=read`, `conflicts_with=borrow mut` | a live mutable borrow excludes an owner read of the borrowed path |
+| R047 | `reject/borrow-owner-write.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` with `operation=write`, `conflicts_with=borrow mut` | an owner write under a mutable borrow is the conflict code, not `E1303` |
+| R048 | `reject/borrow-owner-move.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` with `operation=move`, `conflicts_with=borrow` | a move invalidates the place any live borrow still names |
+| R049 | `reject/defer-move-then-cleanup.tos` | Full | `E1301_USE_AFTER_MOVE` inside the `defer` body | a cleanup is checked against the ownership state of the exit path that runs it |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 

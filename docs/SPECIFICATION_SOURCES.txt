@@ -96,3 +96,4 @@ docs/adr/0031-system-source-hierarchy.md
 docs/adr/0032-parser-diagnostics-and-recovery.md
 docs/adr/0033-pattern-name-resolution.md
 docs/adr/0034-type-name-and-arity-diagnostics.md
+docs/adr/0035-defer-ownership-and-borrow-conflicts.md
