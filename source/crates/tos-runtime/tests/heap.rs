@@ -187,7 +187,7 @@ fn freed_memory_actually_comes_back() {
     let second = safely::claim(&mut heap, big).expect("it comes back");
     safely::release(&mut heap, second);
     assert_eq!(
-        heap.in_use(),
+        heap.committed(),
         0,
         "nothing is held after everything is freed"
     );
@@ -214,9 +214,11 @@ fn adjacent_free_blocks_coalesce_in_both_directions() {
         (1, 1),
         "three freed neighbours must become one free block"
     );
-    // And the whole arena is allocable again as one piece.
+    // And the arena is one piece again: a request for all of it less the
+    // per-allocation prefix must fit, which it could not if the three blocks
+    // had stayed separate.
     let capacity = heap.capacity();
-    let whole = safely::claim(&mut heap, capacity);
+    let whole = safely::claim(&mut heap, capacity - 64);
     assert!(whole.is_some(), "a coalesced arena allocates as one block");
 }
 
@@ -248,7 +250,7 @@ fn repeated_execution_returns_the_arena_to_its_starting_state() {
         }
     }
 
-    assert_eq!(heap.in_use(), 0);
+    assert_eq!(heap.committed(), 0);
     assert_eq!(
         heap.block_census(),
         start,
@@ -277,32 +279,108 @@ fn exhaustion_refuses_rather_than_corrupting() {
     for pointer in live {
         safely::release(&mut heap, pointer);
     }
-    assert_eq!(heap.in_use(), 0);
+    assert_eq!(heap.committed(), 0);
     assert!(safely::claim(&mut heap, 1024).is_some());
 }
 
 #[test]
-fn an_over_aligned_request_is_refused_rather_than_mis_served() {
-    // The heap's grain satisfies alignments up to it. A larger one is refused,
-    // because handing back a pointer that does not meet the requested
-    // alignment would be worse than saying no.
-    let mut backing = Backing::new(ARENA);
-    let mut heap = heap_over(&mut backing);
-    let over = Layout::from_size_align(64, 4096).unwrap();
-    assert!(safely::claim_aligned(&mut heap, over).is_none());
-}
-
-#[test]
-fn the_high_water_mark_measures_the_bound_the_arena_must_exceed() {
+fn the_arena_bound_survives_frees() {
     let mut backing = Backing::new(ARENA);
     let mut heap = heap_over(&mut backing);
     let a = safely::claim(&mut heap, 1000).unwrap();
     let b = safely::claim(&mut heap, 2000).unwrap();
     safely::release(&mut heap, a);
     safely::release(&mut heap, b);
-    assert_eq!(heap.in_use(), 0);
+    assert_eq!(heap.committed(), 0);
     assert!(
-        heap.high_water() >= 3000,
-        "the peak is what an arena must be sized above, so it must survive frees"
+        heap.peak_extent() >= 3000,
+        "a bound that shrank on free would understate what an identical later \
+         run needs, so it must err upward"
     );
+}
+
+#[test]
+fn freeing_an_unsplit_block_must_not_eat_another_allocations_accounting() {
+    // A request whose leftover is too small to be its own block keeps the whole
+    // block. If the accounting adds the requested size but subtracts the block
+    // size, freeing that allocation charges the difference to whatever else is
+    // live — and the arena appears emptier than it is.
+    let mut backing = Backing::new(ARENA);
+    let mut heap = heap_over(&mut backing);
+
+    // Fill the arena, then free one block so exactly one hole exists.
+    let mut live = Vec::new();
+    while let Some(pointer) = safely::claim(&mut heap, 96) {
+        live.push(pointer);
+    }
+    assert!(live.len() >= 3);
+    let hole = live.remove(1);
+    safely::release(&mut heap, hole);
+
+    let before = heap.committed();
+    // Ask for slightly less than the hole: too little left over to split, so
+    // the whole hole is occupied.
+    let snug = safely::claim(&mut heap, 90).expect("the hole takes a smaller request");
+    let after_claim = heap.committed();
+    safely::release(&mut heap, snug);
+    let after_release = heap.committed();
+
+    assert!(
+        after_claim > before,
+        "claiming must raise the committed total"
+    );
+    assert_eq!(
+        after_release, before,
+        "releasing must return exactly what claiming took, not the block size"
+    );
+}
+
+#[test]
+fn the_arena_bound_accounts_for_metadata_and_fragmentation() {
+    // `peak_extent` is what ADR-0041 sizes an arena from, so it must bound the
+    // real footprint — tags, rounding and holes included — not the sum of the
+    // payloads asked for.
+    let mut backing = Backing::new(ARENA);
+    let mut heap = heap_over(&mut backing);
+
+    let mut live = Vec::new();
+    let mut requested = 0usize;
+    for _ in 0..8 {
+        if let Some(pointer) = safely::claim(&mut heap, 100) {
+            live.push(pointer);
+            requested += 100;
+        }
+    }
+    // Free every other one: the holes stay inside the used extent.
+    for (index, pointer) in live.iter().enumerate() {
+        if index % 2 == 0 {
+            safely::release(&mut heap, *pointer);
+        }
+    }
+    assert!(
+        heap.peak_extent() > requested,
+        "the bound must exceed the requested payload, since every block carries \
+         metadata and a hole below the frontier is still arena the run needed"
+    );
+}
+
+#[test]
+fn a_strongly_aligned_request_is_served_correctly() {
+    // A `GlobalAlloc` cannot assume its dependency closure never asks for more
+    // than the block grain, so the alignment has to be real.
+    let mut backing = Backing::new(ARENA);
+    let mut heap = heap_over(&mut backing);
+    for align in [16usize, 32, 64, 256, 4096] {
+        let request = Layout::from_size_align(200, align).unwrap();
+        let pointer = safely::claim_aligned(&mut heap, request)
+            .unwrap_or_else(|| panic!("alignment {align} must be served"));
+        assert_eq!(
+            pointer as usize % align,
+            0,
+            "alignment {align} was not honoured"
+        );
+        safely::fill(pointer, 0xC3, 200);
+        safely::release(&mut heap, pointer);
+    }
+    assert_eq!(heap.committed(), 0, "every aligned block came back");
 }
