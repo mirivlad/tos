@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-cache"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Derived-artifact identity and cache admission for TOS Core: keys, invalidation, and fail-closed lookup."
+publish = false
+
+[lib]
+name = "tos_cache"
+
+[dependencies]
+tos-hash = { path = "../tos-hash" }
+tos-ir = { path = "../tos-ir" }
+tos-verifier = { path = "../tos-verifier" }

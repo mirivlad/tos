@@ -1245,6 +1245,38 @@ task-scope считало потреблением только `join`/`await`. 
 
 Тестов 360, `preflight --full` 31/31.
 
+### 2026-08-11 — Stage 2 §6 пункт 8: identity plane и cache admission
+
+Новый crate `source/crates/tos-cache` владеет идентичностью производных
+объектов по docs/43 §6. Ключ содержит всё, изменение чего меняет смысл объекта:
+content ID и **упорядоченное** dependency closure, source set, каноническое имя
+и путь модуля, frontend, версию языка и feature revision, Unicode baseline,
+схему IR и ревизию source map, verifier, backend и target ABI, политику
+оптимизации/безопасности, digest resource envelope и digest capability-контракта.
+Тест меняет каждое из 17 полей по одному и требует, чтобы ключ сдвинулся:
+поле, которое ему не принадлежит, позволило бы переиспользовать устаревший
+объект после изменения, изменившего его смысл.
+
+Lookup **fail-closed**: объект, лежащий не под своим ключом (подстановка),
+receipt другого модуля и отсутствующий source-map digest — все отвергаются, ни
+один не откатывается на «похожий» источник или host-артефакт. Admission требует
+receipt, поэтому кэш не может стать способом обойти verifier.
+
+**Байтовый формат не вводится.** docs/43 §1 запрещает замораживать persisted
+representation до появления bounded versioned format contract по docs/18,
+поэтому crate определяет идентичность и правила допуска, но не хранение.
+
+`RunningIdentity` замыкает цепочку docs/37 Stage 2: canonical source →
+normalized identity → frontend identity → typed IR identity → verifier receipt →
+engine identity → cache key. Тест проверяет каждое звено и затем действительно
+исполняет то, что этой идентичностью названо.
+
+Удаление всех объектов проверено отдельно: после `clear()` регенерация из того
+же канонического источника даёт тот же ключ, тот же receipt и тот же результат —
+кэш стоит работы, но не функциональности.
+
+Тестов 368.
+
 ### Требуют решения Project Architect
 
 **C. Transferable для region и lock guard.** После пункта 6 у чекера нет
