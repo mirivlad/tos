@@ -1,0 +1,31 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A canonical boot module that the checker refuses.
+//
+// It exists so the boot path can be shown to fail closed for the right reason:
+// the capsule is well-formed and the nucleus is healthy, and the *module* is
+// wrong. That is exactly the condition ADR-0042 gives RESULT_BOOT_MODULE_FAILED
+// (0x25), and a test that never produces the condition proves nothing about the
+// code that reports it.
+//
+// The defect is deliberate and minimal: `main` declares `i32` and returns a
+// boolean, so the module parses and stops at the checker.
+
+module system.boot.init version 1.0 profile bootstrap;
+
+resource [
+    fuel: 1024,
+    stack: 8KiB,
+    allocation: 1KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 4,
+    imports: 0
+]
+
+pub fn main() -> i32 {
+    return true;
+}

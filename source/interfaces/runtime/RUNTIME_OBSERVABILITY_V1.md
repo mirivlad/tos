@@ -1,21 +1,18 @@
 <!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-# The `TOS.RUN.*` events the Stage 2 reference runtime emits
+# Runtime Observability v1 — the `TOS.RUN.*` contract
 
-Status: **not a normative contract.** This records what the implementation
-emits today. It is deliberately *not* placed under `source/interfaces/`: a
-versioned interface contract there carries Tier 2 authority under
-`docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md` only once the Project Architect has
-accepted it, and this vocabulary has not been accepted.
-**ADR-0042 (Proposed)** asks for it to be promoted to an accepted Tier 2
-interface contract at `source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md`.
-Until that decision, nothing here binds any consumer, and the descriptions of
-stability below state the producer's current discipline rather than a guarantee
-anyone may rely on.
+Status: **Accepted Tier 2 interface contract.**
+
+Its authority is assigned by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`, and it
+conforms to the Tier 0 invariants and to every accepted Tier 1 ADR, which take
+precedence over anything written here. Accepted by ADR-0042 (Project
+Architect-approved, 2026-08-12), which also makes `TOS.RUN.*` the delegated
+namespace Boot ABI v1 section 7 admits between its own success identifiers.
 
 Producer: `source/crates/tos-pipeline` (`render::events`) and the component
-driving it
+driving it.
 Consumers: the serial boot log, host test harnesses,
-`source/host-tools/qemu-test/stage2-runtime.sh`
+`source/host-tools/qemu-test/stage2-runtime.sh`.
 
 ## 1. Role
 
@@ -140,15 +137,19 @@ serial transport as the Boot ABI v1 events, between `TOS.IDENTITY` and
 `TOS.HALT`. Boot ABI v1's own identifiers keep their relative order and their
 meanings; nothing in this contract changes, removes or reinterprets any of them.
 
-Boot ABI v1 section 7 does not say whether identifiers belonging to another
-vocabulary may be interleaved with its success sequence, and it directs a
-consumer to treat "an unknown non-success `TOS.*` failure or result" as a
-failed boot. Whether `TOS.RUN.COMPLETED` falls under that sentence is not
-settled by any accepted document. **ADR-0042 (Proposed)** states the question,
-and this section describes what the implementation does today rather than
-claiming the point is decided.
+ADR-0042 settles the two questions this raised. Boot ABI v1's success
+identifiers are a required **ordered subsequence** of the transport, and
+identifiers of an accepted versioned interface contract — this one — MAY appear
+between them. That is a delegation to an accepted contract, not an opening for
+arbitrary unknown `TOS.*` namespaces: an identifier belonging to no accepted
+contract is still unknown, and the Boot ABI rule for one is unchanged.
 
-The nucleus fails the boot closed when the canonical boot module does not
-complete, using the result code it already uses for capsule content it rejects
-after handoff. Boot ABI v1 has no result code meaning "the canonical boot module
-did not execute"; ADR-0042 raises that too.
+The Boot ABI terminal result remains authoritative for whether the boot
+succeeded. Nothing in this contract reports a boot verdict; it reports what the
+runtime did with the source it was given.
+
+When the canonical boot module does not complete, the nucleus emits
+`TOS.BOOTMODULE.FAIL` and halts with `RESULT_BOOT_MODULE_FAILED` (`0x25`),
+whose exact condition Boot ABI v1 section 2 states. Which stage refused, and
+why, is in the `TOS.RUN.*` events above — the result code says the boot module
+failed, not how.
