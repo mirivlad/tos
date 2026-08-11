@@ -29,9 +29,9 @@
 //! function body, or only by a module-private item, is an implementation detail
 //! and is not part of it.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::string::String;
-use std::vec::Vec;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::String;
+use alloc::vec::Vec;
 
 use crate::parser::{ImportKind, Schema, TypeSyntax, Visibility};
 use crate::{Diagnostic, Severity, SourceUnit, Stage};
@@ -225,7 +225,7 @@ pub(crate) fn check_types(source: &SourceUnit, schema: &Schema) -> Vec<Diagnosti
         // binding: `import capability system.time.Clock as clock` makes
         // `system.time.Clock` a reachable imported type (docs/42 section 4).
         if import.kind() == ImportKind::Capability {
-            let path: std::vec::Vec<&str> = import
+            let path: alloc::vec::Vec<&str> = import
                 .path()
                 .iter()
                 .map(|segment| segment.text(source))

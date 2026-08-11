@@ -29,8 +29,8 @@
 //! granted regions, verifier and runtime contract — is a separate layer that
 //! does not depend on these types.
 
-use std::string::String;
-use std::vec::Vec;
+use alloc::string::String;
+use alloc::vec::Vec;
 
 /// One step of a place path.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -113,7 +113,7 @@ impl Place {
                     spelled.push_str(name);
                 }
                 Segment::Index(Some(index)) => {
-                    spelled.push_str(&std::format!("[{index}]"));
+                    spelled.push_str(&alloc::format!("[{index}]"));
                 }
                 Segment::Index(None) => spelled.push_str("[..]"),
             }

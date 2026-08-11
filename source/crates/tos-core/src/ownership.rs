@@ -45,9 +45,9 @@
 //! granted regions, verifier and runtime contract — is a separate layer that
 //! does not depend on these types.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::string::{String, ToString};
-use std::vec::Vec;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use crate::flow::{join_option, BorrowKind, BorrowRecord, Certainty, Flow, Region, State};
 use crate::parser::{
@@ -594,7 +594,7 @@ impl<'source> OwnershipChecker<'source> {
     fn unwind(&mut self, state: Option<State>, pending: &[PendingDefer<'_>]) -> Option<State> {
         let mut state = state?;
         for cleanup in pending.iter().rev() {
-            let saved = std::mem::replace(&mut self.scopes, cleanup.scopes.clone());
+            let saved = core::mem::replace(&mut self.scopes, cleanup.scopes.clone());
             let reported = self.diagnostics.len();
             let outcome = self.walk_block(cleanup.body, state.clone());
             self.scopes = saved;

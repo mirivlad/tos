@@ -32,9 +32,9 @@
 //! have, so a call to an imported function is not checked here. Within a module
 //! the names denote the same bindings and the comparison is exact.
 
-use std::collections::{BTreeMap, BTreeSet};
-use std::string::{String, ToString};
-use std::vec::Vec;
+use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use crate::parser::{Block, Expression, ExpressionForm, ImportKind, Schema, Span, Statement};
 use crate::{Diagnostic, Severity, SourceUnit, Stage};
@@ -241,7 +241,7 @@ fn spelled_path(source: &SourceUnit, expression: &Expression) -> Option<String> 
         ExpressionForm::Field => {
             let base = spelled_path(source, expression.inner()?)?;
             let name = expression.name()?.text(source);
-            Some(std::format!("{base}.{name}"))
+            Some(alloc::format!("{base}.{name}"))
         }
         _ => None,
     }

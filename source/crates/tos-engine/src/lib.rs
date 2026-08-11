@@ -26,11 +26,18 @@
 //! the lowered Bootstrap subset contains no unserialized concurrency, so the
 //! result is one the language allows.
 
+#![no_std]
 #![forbid(unsafe_code)]
 
-use std::collections::BTreeMap;
-use std::string::{String, ToString};
-use std::vec::Vec;
+extern crate alloc;
+
+// The test harness is a host program by construction, so it keeps `std`.
+#[cfg(test)]
+extern crate std;
+
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use tos_ir::{
     BinaryOp, CallTarget, Constant, IntKind, Module, Op, Operand, Place, PlaceStep, SourceRef,
@@ -242,7 +249,7 @@ impl Engine<'_> {
         if self.fuel_used > self.fuel_limit {
             return Err(Trap::new(
                 "RUNTIME_FUEL_EXHAUSTED",
-                std::format!("the declared budget of {} is spent", self.fuel_limit),
+                alloc::format!("the declared budget of {} is spent", self.fuel_limit),
                 source,
             ));
         }
@@ -254,7 +261,7 @@ impl Engine<'_> {
         if self.workers_held + 1 > self.worker_limit {
             return Err(Trap::new(
                 "RUNTIME_WORKER_LIMIT",
-                std::format!(
+                alloc::format!(
                     "the declared worker budget of {} admits no execution context",
                     self.worker_limit
                 ),
@@ -280,7 +287,7 @@ impl Engine<'_> {
         if self.allocation_held + bytes > self.allocation_limit {
             return Err(Trap::new(
                 "RUNTIME_ALLOCATION_LIMIT",
-                std::format!(
+                alloc::format!(
                     "{bytes} more bytes exceeds the declared budget of {}, of which {} is held",
                     self.allocation_limit,
                     self.allocation_held
@@ -303,7 +310,7 @@ impl Engine<'_> {
         if self.cleanups_live + 1 > self.cleanup_limit {
             return Err(Trap::new(
                 "RUNTIME_CLEANUP_LIMIT",
-                std::format!(
+                alloc::format!(
                     "the declared cleanup budget of {} is already fully registered",
                     self.cleanup_limit
                 ),
@@ -376,7 +383,7 @@ impl Engine<'_> {
             self.depth -= 1;
             return Err(Trap::new(
                 "RUNTIME_RECURSION_LIMIT",
-                std::format!("the declared depth of {} is exceeded", self.recursion_limit),
+                alloc::format!("the declared depth of {} is exceeded", self.recursion_limit),
                 source,
             ));
         }
@@ -384,10 +391,10 @@ impl Engine<'_> {
         // A frame's charges are its own: what it allocated and registered is
         // released when it returns, so a bounded program stays bounded however
         // many times it calls.
-        let outer_allocation = std::mem::take(&mut self.frame_allocation);
-        let outer_cleanups = std::mem::take(&mut self.frame_cleanups);
+        let outer_allocation = core::mem::take(&mut self.frame_allocation);
+        let outer_cleanups = core::mem::take(&mut self.frame_cleanups);
 
-        let mut values: Vec<Option<Value>> = std::vec![None; function.values.len()];
+        let mut values: Vec<Option<Value>> = alloc::vec![None; function.values.len()];
         for (slot, argument) in arguments.into_iter().enumerate() {
             if slot < values.len() {
                 values[slot] = Some(argument);
@@ -412,9 +419,9 @@ impl Engine<'_> {
             }
         };
         self.depth -= 1;
-        let charged = std::mem::replace(&mut self.frame_allocation, outer_allocation);
+        let charged = core::mem::replace(&mut self.frame_allocation, outer_allocation);
         self.release_allocation(charged);
-        let registered = std::mem::replace(&mut self.frame_cleanups, outer_cleanups);
+        let registered = core::mem::replace(&mut self.frame_cleanups, outer_cleanups);
         self.release_cleanups(registered);
         outcome.map(|value| (value, values))
     }
@@ -503,7 +510,7 @@ impl Engine<'_> {
                     // representation defect rather than a program outcome.
                     return Err(Trap::new(
                         "RUNTIME_TYPE_CONFUSION",
-                        std::format!("no arm covers variant {index}"),
+                        alloc::format!("no arm covers variant {index}"),
                         source,
                     ));
                 };
@@ -531,7 +538,7 @@ impl Engine<'_> {
             }
             Terminator::Trap(code) => Err(Trap::new(
                 "RUNTIME_TRAP",
-                std::format!("the program reached {code}"),
+                alloc::format!("the program reached {code}"),
                 source,
             )),
         }
@@ -661,7 +668,7 @@ impl Engine<'_> {
                 if self.tasks_started > self.task_limit {
                     return Err(Trap::new(
                         "RUNTIME_TASK_LIMIT",
-                        std::format!("the declared task budget of {} is spent", self.task_limit),
+                        alloc::format!("the declared task budget of {} is spent", self.task_limit),
                         source,
                     ));
                 }
@@ -695,7 +702,7 @@ impl Engine<'_> {
                 } else {
                     Value::Variant {
                         index: 0,
-                        payload: std::vec![self.call(body, captures)?],
+                        payload: alloc::vec![self.call(body, captures)?],
                     }
                 })
             }
@@ -771,7 +778,7 @@ impl Engine<'_> {
                 Some(value) => Ok(value),
                 None => Err(Trap::new(
                     "RUNTIME_UNINITIALIZED_VALUE",
-                    std::format!("value {index} is read before it is defined"),
+                    alloc::format!("value {index} is read before it is defined"),
                     source,
                 )),
             },
@@ -790,7 +797,7 @@ impl Engine<'_> {
             None => {
                 return Err(Trap::new(
                     "RUNTIME_UNINITIALIZED_VALUE",
-                    std::format!("value {} is read before it is defined", place.root),
+                    alloc::format!("value {} is read before it is defined", place.root),
                     source,
                 ))
             }
@@ -829,7 +836,7 @@ impl Engine<'_> {
             None => {
                 return Err(Trap::new(
                     "RUNTIME_UNINITIALIZED_VALUE",
-                    std::format!("index value {value} is read before it is defined"),
+                    alloc::format!("index value {value} is read before it is defined"),
                     source,
                 ))
             }
@@ -865,7 +872,7 @@ impl Engine<'_> {
         let Some(Some(root)) = values.get_mut(place.root) else {
             return Err(Trap::new(
                 "RUNTIME_UNINITIALIZED_VALUE",
-                std::format!("value {} is written before it is defined", place.root),
+                alloc::format!("value {} is written before it is defined", place.root),
                 source,
             ));
         };
@@ -883,7 +890,7 @@ impl Engine<'_> {
             let Some(kind) = IntKind::parse(target) else {
                 return Err(Trap::new(
                     "RUNTIME_OPERATION_NOT_IMPLEMENTED",
-                    std::format!("unknown checked conversion {name}"),
+                    alloc::format!("unknown checked conversion {name}"),
                     source,
                 ));
             };
@@ -899,11 +906,11 @@ impl Engine<'_> {
             return Ok(match fits(kind, magnitude) {
                 true => Value::Variant {
                     index: 0,
-                    payload: std::vec![Value::Int(kind, magnitude)],
+                    payload: alloc::vec![Value::Int(kind, magnitude)],
                 },
                 false => Value::Variant {
                     index: 1,
-                    payload: std::vec![Value::Unit],
+                    payload: alloc::vec![Value::Unit],
                 },
             });
         }
@@ -932,7 +939,7 @@ impl Engine<'_> {
         }
         Err(Trap::new(
             "RUNTIME_OPERATION_NOT_IMPLEMENTED",
-            std::format!("{name} is not a predeclared V1 operation this engine runs"),
+            alloc::format!("{name} is not a predeclared V1 operation this engine runs"),
             source,
         ))
     }
@@ -1066,7 +1073,7 @@ fn binary(op: BinaryOp, left: Value, right: Value, source: SourceRef) -> Result<
             if right < 0 || right >= i128::from(width) {
                 return Err(Trap::new(
                     "RUNTIME_INVALID_SHIFT",
-                    std::format!("shift count {right} is not below the width {width}"),
+                    alloc::format!("shift count {right} is not below the width {width}"),
                     source,
                 ));
             }
@@ -1093,7 +1100,7 @@ fn binary(op: BinaryOp, left: Value, right: Value, source: SourceRef) -> Result<
     if !fits(kind, raw) {
         return Err(Trap::new(
             "RUNTIME_ARITHMETIC_OVERFLOW",
-            std::format!("{raw} does not fit {}", kind.spelled()),
+            alloc::format!("{raw} does not fit {}", kind.spelled()),
             source,
         ));
     }

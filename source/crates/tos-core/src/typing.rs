@@ -32,10 +32,10 @@
 //! An index has exact type `size`; an integer literal may be contextually typed
 //! as one. Any other index type is `E1211_INDEX_TYPE_MISMATCH`.
 
-use std::boxed::Box;
-use std::collections::BTreeMap;
-use std::string::{String, ToString};
-use std::vec::Vec;
+use alloc::boxed::Box;
+use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 use crate::parser::{
     Block, CallArgument, EnumVariantForm, Expression, ExpressionForm, Pattern, PatternForm, Schema,
@@ -175,16 +175,16 @@ impl Type {
             Type::Nominal(name) => name.clone(),
             Type::Constructed(name, arguments) => {
                 let inner: Vec<String> = arguments.iter().map(Type::spell).collect();
-                std::format!("{name}<{}>", inner.join(", "))
+                alloc::format!("{name}<{}>", inner.join(", "))
             }
-            Type::Array(element) => std::format!("array<{}, N>", element.spell()),
+            Type::Array(element) => alloc::format!("array<{}, N>", element.spell()),
             Type::Tuple(elements) => {
                 let inner: Vec<String> = elements.iter().map(Type::spell).collect();
-                std::format!("({})", inner.join(", "))
+                alloc::format!("({})", inner.join(", "))
             }
             Type::Function(parameters, result) => {
                 let inner: Vec<String> = parameters.iter().map(Type::spell).collect();
-                std::format!("fn ({}) -> {}", inner.join(", "), result.spell())
+                alloc::format!("fn ({}) -> {}", inner.join(", "), result.spell())
             }
         }
     }
@@ -906,7 +906,7 @@ impl<'source> TypeChecker<'source> {
             if INTEGER_TYPES.contains(&destination) {
                 return Type::Constructed(
                     String::from("Result"),
-                    std::vec![
+                    alloc::vec![
                         Type::Integer(destination.to_string()),
                         Type::Nominal(String::from("ConversionError")),
                     ],
@@ -959,7 +959,7 @@ impl<'source> TypeChecker<'source> {
             "await" | "join" => match inner {
                 Type::Constructed(name, arguments) if name == "Task" => Type::Constructed(
                     String::from("TaskResult"),
-                    std::vec![arguments.first().cloned().unwrap_or(Type::Unknown)],
+                    alloc::vec![arguments.first().cloned().unwrap_or(Type::Unknown)],
                 ),
                 _ => Type::Unknown,
             },

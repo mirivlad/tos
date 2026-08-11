@@ -19,10 +19,13 @@
 //! schema: a receipt binds to the digest of the module the verifier actually
 //! saw.
 
+#![no_std]
 #![forbid(unsafe_code)]
 
-use std::string::String;
-use std::vec::Vec;
+extern crate alloc;
+
+use alloc::string::String;
+use alloc::vec::Vec;
 
 pub mod digest;
 
