@@ -8,6 +8,7 @@ use std::vec::Vec;
 mod boundary;
 mod capability;
 mod checker;
+mod concurrency;
 mod defer;
 mod diagnostic;
 mod exhaustiveness;
@@ -3936,6 +3937,132 @@ mod tests {
             0,
             "the return left before the registration was reached"
         );
+    }
+
+    // docs/41 sections 2 and 5: task scopes and atomic order legality.
+
+    #[test]
+    fn a_task_scope_may_not_be_left_with_an_unconsumed_child() {
+        let (_, diagnostics) = check(
+            "pub fn main() -> unit { parallel { let child = spawn parallel { return 1i32; }; } }",
+        );
+        let unjoined = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1401_UNJOINED_TASK")
+            .expect("every child is consumed before scope exit");
+        assert_eq!(unjoined.field("task"), Some("child"));
+    }
+
+    #[test]
+    fn a_joined_child_discharges_the_obligation() {
+        let (_, diagnostics) = check(
+            "pub fn main() -> unit { parallel { let child = spawn parallel { return 1i32; }; \
+             let outcome = join child; } }",
+        );
+        assert_eq!(codes(&diagnostics, "E1401_UNJOINED_TASK"), 0);
+    }
+
+    #[test]
+    fn cancel_alone_does_not_discharge_the_obligation() {
+        // docs/41 section 2 is explicit: cancel consumes no ownership.
+        let (_, diagnostics) = check(
+            "pub fn main() -> unit { parallel { let child = spawn parallel { return 1i32; }; \
+             cancel child; } }",
+        );
+        assert_eq!(codes(&diagnostics, "E1401_UNJOINED_TASK"), 1);
+    }
+
+    #[test]
+    fn an_unbound_child_handle_can_never_be_consumed() {
+        let (_, diagnostics) =
+            check("pub fn main() -> unit { parallel { spawn parallel { return 1i32; }; } }");
+        let unjoined = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1401_UNJOINED_TASK")
+            .expect("a discarded handle is unconsumable");
+        assert_eq!(
+            unjoined.field("reason"),
+            Some("the child handle is never bound")
+        );
+    }
+
+    #[test]
+    fn each_task_scope_owns_its_own_children() {
+        // The inner scope joins; the outer one does not, and only the outer
+        // child is reported.
+        let (_, diagnostics) = check(
+            "pub fn main() -> unit { let outer = spawn parallel { return 1i32; }; \
+             parallel { let inner = spawn parallel { return 2i32; }; let done = join inner; } }",
+        );
+        assert_eq!(codes(&diagnostics, "E1401_UNJOINED_TASK"), 1);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .find(|d| d.code() == "E1401_UNJOINED_TASK")
+                .unwrap()
+                .field("task"),
+            Some("outer")
+        );
+    }
+
+    #[test]
+    fn a_load_rejects_a_release_order() {
+        let (_, diagnostics) =
+            check("pub fn read_it(borrow state: AtomicU32) -> u32 { return state.load(Release); }");
+        let invalid = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1410_INVALID_ATOMIC_ORDER")
+            .expect("a load never releases");
+        assert_eq!(invalid.field("operation"), Some("load"));
+        assert_eq!(invalid.field("order"), Some("Release"));
+    }
+
+    #[test]
+    fn a_store_rejects_an_acquire_order() {
+        let (_, diagnostics) = check(
+            "pub fn write_it(borrow state: AtomicU32) -> unit { state.store(1u32, Acquire); }",
+        );
+        assert_eq!(codes(&diagnostics, "E1410_INVALID_ATOMIC_ORDER"), 1);
+    }
+
+    #[test]
+    fn every_order_is_legal_for_a_read_modify_write() {
+        let (_, diagnostics) = check(
+            "pub fn bump(borrow state: AtomicU32) -> u32 { return state.fetch_add(1u32, AcqRel); }",
+        );
+        assert_eq!(codes(&diagnostics, "E1410_INVALID_ATOMIC_ORDER"), 0);
+    }
+
+    #[test]
+    fn a_compare_exchange_failure_order_may_not_be_stronger_than_success() {
+        let (_, diagnostics) = check(
+            "pub fn swap_it(borrow state: AtomicU32) -> Result<u32, u32> { \
+             return state.compare_exchange(0u32, 1u32, Acquire, SeqCst); }",
+        );
+        let invalid = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1410_INVALID_ATOMIC_ORDER")
+            .expect("a failure order may not exceed the success order");
+        assert_eq!(invalid.field("position"), Some("failure"));
+        assert_eq!(invalid.field("success_order"), Some("Acquire"));
+    }
+
+    #[test]
+    fn a_compare_exchange_failure_order_may_not_release() {
+        let (_, diagnostics) = check(
+            "pub fn swap_it(borrow state: AtomicU32) -> Result<u32, u32> { \
+             return state.compare_exchange(0u32, 1u32, SeqCst, Release); }",
+        );
+        assert_eq!(codes(&diagnostics, "E1410_INVALID_ATOMIC_ORDER"), 1);
+    }
+
+    #[test]
+    fn a_legal_compare_exchange_pair_is_accepted() {
+        let (_, diagnostics) = check(
+            "pub fn swap_it(borrow state: AtomicU32) -> Result<u32, u32> { \
+             return state.compare_exchange(0u32, 1u32, AcqRel, Acquire); }",
+        );
+        assert_eq!(codes(&diagnostics, "E1410_INVALID_ATOMIC_ORDER"), 0);
     }
 
     // docs/40 section 3 and docs/42 section 4: declared authority.
