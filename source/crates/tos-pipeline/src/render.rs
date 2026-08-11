@@ -131,8 +131,9 @@ pub fn accounting(completion: &Completion) -> String {
 
 /// Every event a run produces, in order, without a line terminator.
 ///
-/// These are the `TOS.RUN.*` identifiers of
-/// `interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md`. The vocabulary lives with
+/// These are the `TOS.RUN.*` identifiers described in
+/// `docs/evidence/STAGE2_RUNTIME_EVENTS.md`, whose promotion to an accepted
+/// interface contract is ADR-0042 (Proposed). The vocabulary lives with
 /// the runtime that emits it rather than with any one consumer, so the nucleus
 /// writing them to serial and a hosted test asserting on them are reading the
 /// same producer — a boot log and a test expectation built by different code
