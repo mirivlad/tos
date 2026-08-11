@@ -48,6 +48,8 @@
 
 #![no_std]
 
+pub mod region;
+
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;
 

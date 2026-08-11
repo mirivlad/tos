@@ -9,8 +9,12 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+
 mod exception;
 mod framebuffer;
+mod runtime;
+mod stack;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -115,7 +119,12 @@ fn crypto_baseline(cap_bytes: &[u8], capsule: &Capsule<'_>) -> ! {
 }
 
 /// First logical line of boot text: the first line that is non-empty and not
-/// a comment (`#` after leading whitespace). Returns the trimmed line.
+/// a comment. Returns the trimmed line.
+///
+/// A TOS Core line comment starts with `//` (docs/39 section 2), so the SPDX
+/// header and the module's prose are skipped and the reported line is the one
+/// that says what the module is. `#` is still skipped: it cannot begin a
+/// logical line in TOS Core, so skipping it can never hide one.
 fn first_logical_line(content: &[u8]) -> Option<&[u8]> {
     for raw in content.split(|&b| b == b'\n') {
         let mut line = raw;
@@ -129,7 +138,7 @@ fn first_logical_line(content: &[u8]) -> Option<&[u8]> {
         if line.is_empty() {
             continue;
         }
-        if line[0] == b'#' {
+        if line[0] == b'#' || line.starts_with(b"//") {
             continue;
         }
         return Some(line);
@@ -172,6 +181,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // SAFETY: the loader wrote a naturally aligned BootInfo into that pool;
     // the preceding raw-byte validation accepted its exact ABI representation.
     let bi = unsafe { &*bi_raw };
+    let bi_address = bi_raw as u64;
 
     // --- 2. memory map ---
     if bi.memory_map_length == 0 || bi.memory_map_length % 24 != 0 {
@@ -279,14 +289,42 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::put_hex32(&bi.capsule_digest);
     tos_serial::puts(b" arch=0.2.1 builder=1\r\n");
 
-    // --- 6. best-effort human-facing diagnostic ---
+    // --- 6. Stage 2: run the canonical boot module ---
+    // The capsule's boot text is a TOS Core module, and it goes through the
+    // ordinary reference path. Nothing here is special because it is boot: the
+    // nucleus calls the same pipeline a hosted test calls, and a module the
+    // frontend, the verifier or the engine refuses stops the boot rather than
+    // being waved through. The nucleus owns memory discovery and hands the
+    // runtime one bounded region (ADR-0041); the runtime cannot name BootInfo.
+    match runtime::execute_boot_text(bi, bi_address, descs, boot.name, boot.content, kind) {
+        Ok(true) => {}
+        Ok(false) => {
+            // Every stage already reported why, in full, over serial. The
+            // capsule's canonical boot text did not execute, so the boot fails
+            // closed with the code the nucleus already uses for capsule content
+            // it rejects after handoff.
+            cap_fail();
+        }
+        Err(reason) => {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=");
+            tos_serial::puts(match reason {
+                runtime::Unstartable::NoGrant(_) => b"no-grant" as &[u8],
+                runtime::Unstartable::HeapRejectedGrant => b"heap-rejected-grant",
+                runtime::Unstartable::BootPathNotText => b"boot-path-not-text",
+            });
+            tos_serial::puts(b"\r\n");
+            mem_fail();
+        }
+    }
+
+    // --- 7. best-effort human-facing diagnostic ---
     // All boot decisions, source identity checks and canonical boot-text work
     // above have succeeded. Rendering cannot affect the result.
     // SAFETY: BootInfo validation and ADR-0022's loader checks established a
     // mapped, reserved framebuffer range; rendering is best-effort only.
     unsafe { framebuffer::render_stage1_status(bi) };
 
-    // --- 7. halt with success code ---
+    // --- 8. halt with success code ---
     tos_serial::puts(b"TOS.HALT ok=0x10\r\n");
     result_port(RESULT_HALT_OK)
 }

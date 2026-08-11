@@ -33,7 +33,14 @@ use tos_boot_protocol::{
 use tos_capsule::{parse, CapsError, MAX_CAPSULE_BYTES};
 use tos_hash::sha256;
 
-const STACK_PAGES: usize = 8; // 32 KiB
+// The nucleus runs the Stage 2 reference path on this stack: a recursive
+// descent parser, a checker, a lowerer, the verifier and the engine, each
+// recursing over nested source. 32 KiB was sized for a nucleus that only
+// validated records, and a stack overflow at boot does not report an error —
+// it writes over whatever lies below. The nucleus measures what it actually
+// uses and reports it as TOS.RUN.STACK, so this number is checked rather than
+// assumed. The region is reserved in the handed-over memory map either way.
+const STACK_PAGES: usize = 512; // 2 MiB
 
 /// Fixed physical load address of the nucleus (must match nucleus/linker.ld).
 const NUCLEUS_BASE: u64 = 0x2_000_000;

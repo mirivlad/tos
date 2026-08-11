@@ -5,26 +5,26 @@
   "vectors": [
     {
       "vector": "valid-001.bin",
-      "sha256": "ee0a337e550c07fbaaa32a150cb4bb416731b8063c65efd7a025521c66fce889",
+      "sha256": "e60dd9b6a0db47d68346364c8dc9be0ee384df715e36d1823c2f005c4911670c",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -63,14 +63,14 @@
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
@@ -91,26 +91,26 @@
     },
     {
       "vector": "invalid-traversal.bin",
-      "sha256": "dffd25b3995e5cd648fc7c8fdb50411dc12dd44fc609fbe47c76d0538695a26a",
+      "sha256": "23a21c9e92ff4891d74488cb6ade0815315cf02459825b005ecbba03a24f2500",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -134,26 +134,26 @@
     },
     {
       "vector": "invalid-dup.bin",
-      "sha256": "9961a7952a84a4c318dfe2d5f4f169cc5f2b9c4e0d96636d709e4d753bbb1bec",
+      "sha256": "3df957a46f826e0e2444c18ca83ea09aecd322b25ffa144fa4cab410127da8bb",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -162,7 +162,7 @@
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -177,26 +177,26 @@
     },
     {
       "vector": "invalid-badmagic.bin",
-      "sha256": "24a8991556b63f44003a2965a00e40edaedcf81fe233ed99d30413c4cc36a9b1",
+      "sha256": "5336f81e1b6af65a6d6585c18917b543fb399e0de550992a149568b3ffe7b714",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -227,7 +227,7 @@
       },
       "derivation": {
         "base_vector": "valid-001.bin",
-        "base_sha256": "ee0a337e550c07fbaaa32a150cb4bb416731b8063c65efd7a025521c66fce889",
+        "base_sha256": "e60dd9b6a0db47d68346364c8dc9be0ee384df715e36d1823c2f005c4911670c",
         "transformation_recipe": {
           "kind": "header-byte-rewrite",
           "operations": [
@@ -242,26 +242,26 @@
     },
     {
       "vector": "invalid-truncated.bin",
-      "sha256": "5043be997ebd3c4867bd289cb895781ff47464598a9a6e16cb12eb9f86e1bc7f",
+      "sha256": "f3e1f3f134344477f1bf04ac101d02662a1610b0f4cb7b23627f86906d2d96b2",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -292,7 +292,7 @@
       },
       "derivation": {
         "base_vector": "valid-001.bin",
-        "base_sha256": "ee0a337e550c07fbaaa32a150cb4bb416731b8063c65efd7a025521c66fce889",
+        "base_sha256": "e60dd9b6a0db47d68346364c8dc9be0ee384df715e36d1823c2f005c4911670c",
         "transformation_recipe": {
           "kind": "truncate",
           "operations": [
@@ -305,26 +305,26 @@
     },
     {
       "vector": "invalid-kind-none.bin",
-      "sha256": "87a788e9ebbb249485714e2ae0799616649f54707f19f47d5c423b455708049c",
+      "sha256": "fdf14f63b5c1e92664e47e647b3ee780c94a1e6aa40e204f61af22d7c7a83831",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -355,7 +355,7 @@
       },
       "derivation": {
         "base_vector": "valid-001.bin",
-        "base_sha256": "ee0a337e550c07fbaaa32a150cb4bb416731b8063c65efd7a025521c66fce889",
+        "base_sha256": "e60dd9b6a0db47d68346364c8dc9be0ee384df715e36d1823c2f005c4911670c",
         "transformation_recipe": {
           "kind": "header-byte-rewrite",
           "operations": [
@@ -370,26 +370,26 @@
     },
     {
       "vector": "invalid-sha1-oid-padding.bin",
-      "sha256": "f11457ecad0fa407d82686c16d715bd5ba48b436b66bfd4ab3653e9c163b9434",
+      "sha256": "de15da056aec0aff20c10e62c53a30f0dcd4c2ae91579c0fabc3462115130179",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -420,7 +420,7 @@
       },
       "derivation": {
         "base_vector": "valid-001.bin",
-        "base_sha256": "ee0a337e550c07fbaaa32a150cb4bb416731b8063c65efd7a025521c66fce889",
+        "base_sha256": "e60dd9b6a0db47d68346364c8dc9be0ee384df715e36d1823c2f005c4911670c",
         "transformation_recipe": {
           "kind": "sha1-oid-padding",
           "operations": [
@@ -456,26 +456,26 @@
     },
     {
       "vector": "invalid-file-reserved.bin",
-      "sha256": "db5670545c0b50a9ed99ea0432b30c9c71ac68054b918e9482a19cde7591d0cd",
+      "sha256": "a26d8488240adebc8d01cafdb1b79020fb40c03311528a9a15a58eeb089bf12c",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -506,7 +506,7 @@
       },
       "derivation": {
         "base_vector": "valid-001.bin",
-        "base_sha256": "ee0a337e550c07fbaaa32a150cb4bb416731b8063c65efd7a025521c66fce889",
+        "base_sha256": "e60dd9b6a0db47d68346364c8dc9be0ee384df715e36d1823c2f005c4911670c",
         "transformation_recipe": {
           "kind": "header-layout-rewrite",
           "operations": [
@@ -521,26 +521,26 @@
     },
     {
       "vector": "invalid-path-flag.bin",
-      "sha256": "fbd2f05daadb5a8a24120bf6f05536ec57c1b438ece8d0c15d25343c810fc819",
+      "sha256": "ad3988e79220de3d5e021a73ce6bcae07e52a086a6bf7df3a9f07262e013c54a",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -571,7 +571,7 @@
       },
       "derivation": {
         "base_vector": "valid-001.bin",
-        "base_sha256": "ee0a337e550c07fbaaa32a150cb4bb416731b8063c65efd7a025521c66fce889",
+        "base_sha256": "e60dd9b6a0db47d68346364c8dc9be0ee384df715e36d1823c2f005c4911670c",
         "transformation_recipe": {
           "kind": "header-layout-rewrite",
           "operations": [
@@ -586,26 +586,26 @@
     },
     {
       "vector": "invalid-dup-file-index.bin",
-      "sha256": "6df294c6c8d5aa4bcc768a7299f622735ddbe36e945f337215121fc86445ad3c",
+      "sha256": "c9ea45c9804ab18c6b477c4a08688941f064be1d8f684e9b3793c658d8f29a22",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -636,7 +636,7 @@
       },
       "derivation": {
         "base_vector": "valid-001.bin",
-        "base_sha256": "ee0a337e550c07fbaaa32a150cb4bb416731b8063c65efd7a025521c66fce889",
+        "base_sha256": "e60dd9b6a0db47d68346364c8dc9be0ee384df715e36d1823c2f005c4911670c",
         "transformation_recipe": {
           "kind": "header-layout-rewrite",
           "operations": [
@@ -651,26 +651,26 @@
     },
     {
       "vector": "invalid-unreferenced-file.bin",
-      "sha256": "ea07a47ca2ebf80f17f08280cbf3142774ca7be04f0565aa2f4914e33b9670d2",
+      "sha256": "ab65e9c1bc2da36f722251ed0058e14b2e90e28bcc581bc6b0ac57a97c255be0",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -701,7 +701,7 @@
       },
       "derivation": {
         "base_vector": "generated-unreferenced-base.bin",
-        "base_sha256": "cf253115210340df1848a583385d7863b72fede27c73b93db5143d68d1aaa33d",
+        "base_sha256": "8d537341aea8c9478f6d2a86dc008ccdaea8198a3502b7c427f361990fc2ceeb",
         "transformation_recipe": {
           "kind": "packed-layout-rewrite",
           "operations": [
@@ -723,26 +723,26 @@
     },
     {
       "vector": "invalid-bootcanon-mismatch.bin",
-      "sha256": "0e80b25c7ea650dd74397d8c959298cbbea48f73dd62a2b13f703da205cc30c0",
+      "sha256": "fcdeba02ea6618a9c99c499c7501ce650a247027b78c7c7625f6c3b84a33dbc1",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -773,7 +773,7 @@
       },
       "derivation": {
         "base_vector": "valid-001.bin",
-        "base_sha256": "ee0a337e550c07fbaaa32a150cb4bb416731b8063c65efd7a025521c66fce889",
+        "base_sha256": "e60dd9b6a0db47d68346364c8dc9be0ee384df715e36d1823c2f005c4911670c",
         "transformation_recipe": {
           "kind": "header-layout-rewrite",
           "operations": [
@@ -788,26 +788,26 @@
     },
     {
       "vector": "invalid-licence-tail.bin",
-      "sha256": "e9019b53501241cf4597bc48bea700059136137d39a3cec341411d6165d38b9c",
+      "sha256": "6758f1652649ff9d8881d6a6bf3440f9bcafba9cb335ac42deaead3d730e27b2",
       "generated_artifact": true,
       "provenance_status": "verified",
       "generator": {
         "path": "source/tests/vectors/gen/gen.sh",
         "version": 1,
-        "source_commit": "adc9292e57855c836351529777dae65da0a502a4",
-        "sha256": "7203ae7cdabc0c57e5379e4c17fbc3f920d216fb9d4e08d20444f6b8c926c5db",
+        "source_commit": "edeac0c10aca9fdea6f5047ef00438777e627f7c",
+        "sha256": "ee7b32fe2f0d78ead757dee3e31bc9bdca2b3229ffc7a6f37dcc28f1f2a07fa7",
         "spdx": "GPL-3.0-or-later"
       },
       "source_commit": {
         "kind": "git",
         "algorithm": "sha1",
-        "value": "adc9292e57855c836351529777dae65da0a502a4"
+        "value": "edeac0c10aca9fdea6f5047ef00438777e627f7c"
       },
       "inputs": [
         {
           "repository_path": "source/system/boot/init.tos",
           "capsule_path": "/system/boot/init.tos",
-          "sha256": "a3c82b57bf2b3e7ecad5091906e14fc67acd056a8ffb35c05eb8cdfef721282b",
+          "sha256": "2d017c8fc7096f43afee21b0497169207cda63633b822a654a6a4e055a576918",
           "spdx": [
             "GPL-3.0-or-later"
           ],
@@ -838,7 +838,7 @@
       },
       "derivation": {
         "base_vector": "valid-001.bin",
-        "base_sha256": "ee0a337e550c07fbaaa32a150cb4bb416731b8063c65efd7a025521c66fce889",
+        "base_sha256": "e60dd9b6a0db47d68346364c8dc9be0ee384df715e36d1823c2f005c4911670c",
         "transformation_recipe": {
           "kind": "header-layout-rewrite",
           "operations": [

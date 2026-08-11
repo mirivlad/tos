@@ -87,7 +87,20 @@ dependencies = [
  "tos-boot-protocol",
  "tos-capsule",
  "tos-hash",
+ "tos-pipeline",
+ "tos-runtime",
  "tos-serial",
+]
+
+[[package]]
+name = "tos-pipeline"
+version = "0.1.0"
+dependencies = [
+ "tos-core",
+ "tos-engine",
+ "tos-hash",
+ "tos-ir",
+ "tos-verifier",
 ]
 
 [[package]]
@@ -129,6 +142,7 @@ dependencies = [
  "tos-engine",
  "tos-hash",
  "tos-ir",
+ "tos-pipeline",
  "tos-verifier",
 ]
 
