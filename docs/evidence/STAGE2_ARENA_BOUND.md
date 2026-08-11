@@ -1,72 +1,112 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+# Stage 2 implementation-arena bound
 
-# Stage 2 implementation-arena bound — measured
+Evidence level: **P1** (locally measured, docs/35).
+Producer: `source/tests/arena-bound` — the whole production path run with
+`tos_runtime::BoundedHeap` installed as the global allocator.
+Reproduce: `cargo run --release -p tos-arena-bound` (add `--full` for the
+256-module sweep).
 
 ADR-0041 accepts two disciplines for allocation failure. The one this
-implementation relies on is a proved upper memory bound with an arena at
-least that large, because `GlobalAlloc`'s contract is a null pointer and
-`alloc` turns that into `handle_alloc_error`. A bound has to be measured to
-be proved. This is the measurement.
+implementation relies on is "a proved upper memory bound and an arena at least
+that large", so the bound has to be measured. Every figure below comes from
+running source reader, parser, checker, module resolution, lowerer, independent
+verifier and bounded engine *through* the heap being measured — not from
+modelling it.
 
-Reproduce with:
+## What is measured, and why the metric is what it is
 
-```bash
-cargo run --manifest-path source/Cargo.toml -p tos-arena-bound --release
-```
+`peak_extent` is the highest address the arena was ever carried to. A sum of
+requested payloads is not a bound: every block carries tags, a request is
+rounded up to the grain, a remainder too small to be its own block stays with
+the allocation, and a hole below the highest live block is arena the run still
+needed. `peak_extent` includes all of it, and never falls when memory is freed —
+a bound must err upward.
 
-## What was measured
+`committed` is the live figure in whole blocks, and `block_census` is the layout.
+Both are needed: **equal live bytes do not prove an arena is in the same state.**
+The same total can sit in twice as many pieces, and a reference runtime that
+fragments a little further on every repetition is not a recovery oracle.
 
-The whole production path — SourceReader, Parser, Checker, Lowerer,
-independent Verifier, reference engine — over a canonical module filling the
-`docs/44` source-unit ceiling of 256 KiB, with `tos_runtime`'s bounded heap
-installed as the global allocator. Nothing was stubbed and no stage was
-skipped; the run's answer is checked, so the bound describes a run that
-really happened.
+## Results
 
-Running the pipeline *through* the heap is also the strongest test the heap
-has. Hundreds of thousands of irregular allocate/free pairs exercise
-splitting, coalescing and reuse far past what a unit test reaches, and any
-corruption would surface as a wrong answer rather than as a passing
-assertion.
+| workload | arena needed |
+|---|---|
+| one module at the published 256 KiB source ceiling | **52 268 096 B — 49.85 MiB** |
+| a source set processed module by module (16 × 32 KiB) | **52 268 096 B — 49.85 MiB** |
+| 64 repeated whole-pipeline executions | frontier unchanged after the first |
+| set-wide resolution, 256 modules of 8 KiB | 107 579 136 B — 102.60 MiB *(fitted)* |
+| set-wide resolution, 256 modules at the 256 KiB ceiling | 3 455 961 328 B — 3.22 GiB *(fitted)* |
 
-## Result
+Each run produced the right answer. A measurement of a pipeline that did not
+compute anything would measure nothing.
 
-```text
-TOS Stage 2 implementation-arena bound
-allocator: tos_runtime::BoundedHeap over a 536870912-byte region
+### The executable path does not accumulate across modules
 
-fixture: 262066 bytes of canonical source
-pipeline result: Int(I32, 3)
-committed after the run: 382704 bytes
-peak extent (the arena this run needed): 54408096 bytes
-  = 51.89 MiB, against a 512 MiB region
-blocks after the run: 6 total, 2 free
-committed before the run: 382704 bytes
+Processing sixteen modules one at a time, releasing each module's state before
+the next begins, moved the frontier by **0 bytes**. Not "a little": none.
 
-The whole production path ran on this heap and produced the right
-answer, so the bound above is a bound on a run that really happened.
-```
+The mechanism is not luck. `peak_extent` is a high-water mark, and the heap is
+first-fit with immediate coalescing of both neighbours — so the memory the
+previous module returned is the memory the next module is handed, and only a
+*deeper* run can move the frontier. The bound for a source set processed this
+way is therefore the bound for its **largest single module**, not the sum of its
+modules, and multiplying the single-module figure by a module count would
+overstate it by two orders of magnitude.
 
-## Reading
+### Repeated execution returns the arena to the same *layout*
 
-**51.89 MiB** is the arena the worst-case single module needs. `peak_extent`
-is the highest address the arena was ever carried to, so it already includes
-every block's tags, the rounding to the grain, the per-allocation prefix that
-makes strong alignments serviceable, remainders too small to split off, and
-any hole below the frontier. It is not a sum of requested payloads, which
-would not have been a bound at all.
+Sixty-four consecutive runs of the whole pipeline over the same module. From the
+second round on, every observable is identical to the first: 19 696 bytes
+committed, 6 blocks, 2 of them free, and a frontier that never moves again.
 
-Six blocks remain at the end, two of them free, and the committed figure
-before and after the measured run is identical — the pipeline gave back what
-it took, and the arena did not fragment into a long tail.
+The layout is asserted, not only the total. Accumulating fragmentation breaks the
+block census long before it breaks the committed figure, so a test that compared
+totals alone would pass while the arena slowly shattered.
 
-## What this does and does not settle
+### Set-wide resolution is the one linear term, and it is measured
 
-It settles the discipline for **one module at the published ceiling**, which
-is the case `docs/44` bounds. A nucleus grant sized above this with margin
-satisfies ADR-0041 for that workload.
+docs/42 module resolution is the part of the path that cannot be phased away.
+`check_module_set` compares every module's declared name, imports and type table
+against every other's, and it reads them **from parse trees** — so every module
+of a closure is live at once, and this term is linear in the closure size.
 
-It does not settle a multi-module source set, whose closure `docs/44` caps at
-256 modules; that bound needs its own measurement before a grant size is
-fixed for it. The number is retained here rather than baked into a constant
-so the grant size stays a declared decision rather than a magic value.
+The slope is measured, not assumed: 1, 8 and 32 modules of 8 KiB give
+419 928 bytes per module; 1, 2 and 4 modules at the 256 KiB ceiling give
+13 499 848 bytes per module. Both are ~51× the module's source size, which is
+what a parse tree costs.
+
+## The constraint this exposes
+
+The two published ceilings of docs/44 section 2 are independent: a source unit
+may be 256 KiB, and a dependency closure may hold 256 modules. Their product is
+a closure whose resolution needs **~3.2 GiB** with the current architecture, and
+the ADR-0040 reference platform has 256 MiB.
+
+So, on the reference platform, this implementation resolves a closure of roughly
+**19 ceiling-sized modules**, or **256 modules averaging about 8 KiB** — not the
+maximal closure the ceilings jointly admit. That is an implementation limit and
+it is stated as one: no accepted document requires a maximal closure to resolve
+in 256 MiB, and nothing here weakens either published ceiling.
+
+It is also avoidable, and worth recording as the next architectural step rather
+than as a defect. Resolution needs each module's declared name, its imports and
+its declared type names — a bounded summary of a few kilobytes — not its parse
+tree. Extracting summaries in a first pass and resolving over those would make
+the linear term about three orders of magnitude smaller and leave the bound at
+"the largest single module", which the phased measurement above already shows is
+where the executable path sits. That refactor is not done.
+
+## What is not claimed
+
+- Not P2 or P3: one machine, one build, no CI reproduction and no independent
+  reproduction (docs/35).
+- The two ceiling-closure figures are **fitted from a measured slope**, and are
+  labelled so wherever they appear. The 256-module ceiling-sized case needs more
+  memory than the machine this was measured on has, which is itself the finding.
+- The measured figures cover the reference implementation. Another conforming
+  implementation's arena is its own to measure.
+- The grant the nucleus makes is a separate, declared decision
+  (`crates/tos-runtime/src/region.rs`), deliberately not derived from this
+  number automatically: a bound that silently became a configuration would stop
+  being a bound anyone had to look at.

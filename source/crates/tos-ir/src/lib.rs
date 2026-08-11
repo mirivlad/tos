@@ -205,6 +205,16 @@ pub enum TypeDef {
     DmaRegion(TypeId),
     Mutex(TypeId),
     RwLock(TypeId),
+    /// The affine mutable guard a `Mutex<T>` lock grants (ADR-0036).
+    ///
+    /// A guard is a distinct type from the object that granted it, because the
+    /// rules differ: the object may be shared and stored, the guard may not
+    /// leave the scope that took it.
+    MutexGuard(TypeId),
+    /// An immutable read guard an `RwLock<T>` grants (ADR-0036).
+    ReadGuard(TypeId),
+    /// The affine write guard an `RwLock<T>` grants (ADR-0036).
+    WriteGuard(TypeId),
     Channel(TypeId),
     Slice(TypeId),
     Result(TypeId, TypeId),

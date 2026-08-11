@@ -185,6 +185,22 @@ fn write_type(out: &mut Writer, definition: &TypeDef) {
             out.tag(22);
             out.count(*inner);
         }
+        // ADR-0036 guards take tags past the highest allocated one rather than
+        // slotting in beside their locks: a tag is part of the module digest,
+        // so renumbering an existing constructor would change the identity of
+        // every module that uses it.
+        TypeDef::MutexGuard(inner) => {
+            out.tag(31);
+            out.count(*inner);
+        }
+        TypeDef::ReadGuard(inner) => {
+            out.tag(32);
+            out.count(*inner);
+        }
+        TypeDef::WriteGuard(inner) => {
+            out.tag(33);
+            out.count(*inner);
+        }
         TypeDef::Channel(inner) => {
             out.tag(23);
             out.count(*inner);

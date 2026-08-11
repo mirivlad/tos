@@ -115,7 +115,7 @@ The inventory is deliberately machine-readable and is checked by
 ```text
 reserved: as async await bootstrap borrow break cancel capability const continue defer else enum extern false fn for full if import in join let loop match module mut parallel profile pub record resource return spawn true unsafe uses version while
 primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes unit
-predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice array
+predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock MutexGuard ReadGuard WriteGuard Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice array
 atomic-order: Relaxed Acquire Release AcqRel SeqCst
 predeclared-value: Some None Ok Err Completed Cancelled
 predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul
@@ -267,6 +267,9 @@ constructed_type = "Option" "<" type ">"
                 | "DmaRegion" "<" type ">"
                 | "Mutex" "<" type ">"
                 | "RwLock" "<" type ">"
+                | "MutexGuard" "<" type ">"
+                | "ReadGuard" "<" type ">"
+                | "WriteGuard" "<" type ">"
                 | "Channel" "<" type ">"
                 | "slice" "<" type ">" ;
 array_type      = "array" "<" type "," const_expression ">" ;

@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `bc89c5856e65bafb3a99402c9e9d5579f7e55c71567b90a8debcbfd68a6a59b4`  
+Source-manifest SHA-256: `a0ce634565d5b68bcadbf86ed21adcbf252bfe1f03735372aa9da52b887d73ea`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -3152,7 +3152,7 @@ The inventory is deliberately machine-readable and is checked by
 ```text
 reserved: as async await bootstrap borrow break cancel capability const continue defer else enum extern false fn for full if import in join let loop match module mut parallel profile pub record resource return spawn true unsafe uses version while
 primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes unit
-predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice array
+predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock MutexGuard ReadGuard WriteGuard Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice array
 atomic-order: Relaxed Acquire Release AcqRel SeqCst
 predeclared-value: Some None Ok Err Completed Cancelled
 predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul
@@ -3304,6 +3304,9 @@ constructed_type = "Option" "<" type ">"
                 | "DmaRegion" "<" type ">"
                 | "Mutex" "<" type ">"
                 | "RwLock" "<" type ">"
+                | "MutexGuard" "<" type ">"
+                | "ReadGuard" "<" type ">"
+                | "WriteGuard" "<" type ">"
                 | "Channel" "<" type ">"
                 | "slice" "<" type ">" ;
 array_type      = "array" "<" type "," const_expression ">" ;
@@ -3537,7 +3540,8 @@ independent verification bounded.
 
 The complete V1 constructed-type arity is fixed and is shared with docs/39 and
 docs/43: `Option<T>`, `Task<T>`, `TaskResult<T>`, `Shared<T>`, `Region<T>`,
-`DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, and `slice<T>` take one
+`DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `MutexGuard<T>`, `ReadGuard<T>`,
+`WriteGuard<T>`, `Channel<T>`, and `slice<T>` take one
 type argument; `Result<T,E>` takes two. `Event`, `Semaphore`, `Barrier`,
 `Latch`, `AtomicBool`, `AtomicU32`, `AtomicU64`, and `ConversionError` take no
 type arguments.
@@ -3608,7 +3612,11 @@ borrow, mutable binding by alias, lock guard, non-transferable capability, or
 plain mutable region. A closure is affine when any captured value is affine.
 It may be called within its owning scope but cannot be exported, serialized,
 stored in a public nominal type, or passed to an interface with a stable ABI in
-V1. An invalid capture is `E1305_INVALID_CLOSURE_CAPTURE`.
+V1. An invalid capture is `E1305_INVALID_CLOSURE_CAPTURE`, except for a lock
+guard: ADR-0036 routes a guard crossing a task or closure boundary to
+`E1402_INVALID_GUARD_LIFETIME` with `operation=task_boundary`, because the rule
+broken is about the guard's lifetime rather than about transferability alone.
+The capture codes keep their meaning for every other non-`Transferable` value.
 
 ## 3. Conversion, equality, and integer semantics
 
@@ -3813,7 +3821,8 @@ is stated in its capability contract and independently checked in IR.
 
 A value may cross a task boundary only if it is `Transferable`: owned affine
 values transfer their sole ownership; immutable `Copy`/`Shared<T>` values are
-duplicated; opaque capabilities, mutable borrows, lock guards, and plain
+duplicated; opaque capabilities, mutable borrows, lock guards (whose diagnostic
+is `E1402_INVALID_GUARD_LIFETIME`, ADR-0036), and plain
 mutable regions are non-transferable unless their own contract exposes a
 specific attenuation/transfer operation. A closure/task with an invalid capture
 is `E1304_INVALID_TASK_CAPTURE`.
@@ -4840,6 +4849,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | Code | Condition |
 |---|---|
 | `E1401_UNJOINED_TASK` | a task scope is left with a spawned child still unconsumed, or a spawned child's handle is never bound and so can never be consumed; `cancel` is a cooperative request and does not discharge the obligation |
+| `E1402_INVALID_GUARD_LIFETIME` | a lock guard leaves the lifetime it is allowed, with a structured `operation` field naming which: `held_across_await`, `returned`, `aggregate`, `channel`, `task_boundary`, or `lock_outlived` (ADR-0036). The finding also carries the guard type and the position where the guard was acquired. A guard crossing a task or closure boundary is reported here and **not** as `E1304_INVALID_TASK_CAPTURE` or `E1305_INVALID_CLOSURE_CAPTURE` |
 | `E1410_INVALID_ATOMIC_ORDER` | an atomic operation is given an order it does not accept — a load outside `Relaxed`/`Acquire`/`SeqCst`, a store outside `Relaxed`/`Release`/`SeqCst`, a `compare_exchange` failure order outside `Relaxed`/`Acquire`/`SeqCst`, or a failure order stronger than its success order |
 
 ### Capability and effect (stage `effect`)

@@ -21,6 +21,7 @@ mod defer;
 mod diagnostic;
 mod exhaustiveness;
 mod flow;
+mod guards;
 mod lower;
 mod metering;
 mod modules;

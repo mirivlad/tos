@@ -56,7 +56,7 @@ const NULLARY_TYPES: [&str; 8] = [
 
 /// The fixed arity of every parameterized V1 type constructor (docs/40
 /// section 2). `array` is excluded: its second argument is a constant.
-const PARAMETERIZED_TYPES: [(&str, usize); 11] = [
+const PARAMETERIZED_TYPES: [(&str, usize); 14] = [
     ("Option", 1),
     ("Task", 1),
     ("TaskResult", 1),
@@ -65,6 +65,10 @@ const PARAMETERIZED_TYPES: [(&str, usize); 11] = [
     ("DmaRegion", 1),
     ("Mutex", 1),
     ("RwLock", 1),
+    // ADR-0036: a lock grants a guard, and the guard is its own type.
+    ("MutexGuard", 1),
+    ("ReadGuard", 1),
+    ("WriteGuard", 1),
     ("Channel", 1),
     ("slice", 1),
     ("Result", 2),
