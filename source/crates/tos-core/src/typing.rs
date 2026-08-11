@@ -54,13 +54,18 @@ const INTEGER_TYPES: [&str; 8] = ["i8", "i16", "i32", "i64", "u8", "u16", "u32",
 /// `TaskResult<T>` is deliberately absent: `Completed` and `Cancelled` are
 /// predeclared constructors, so it is an ordinary affine result value source is
 /// meant to build.
-const NONCONSTRUCTIBLE_TYPES: [&str; 14] = [
+const NONCONSTRUCTIBLE_TYPES: [&str; 17] = [
     "Task",
     "Shared",
     "Region",
     "DmaRegion",
     "Mutex",
     "RwLock",
+    // ADR-0036: a guard exists only as the result of a lock operation. There is
+    // no constructor syntax for one, so writing one is a forged guard.
+    "MutexGuard",
+    "ReadGuard",
+    "WriteGuard",
     "Channel",
     "Event",
     "Semaphore",
@@ -388,6 +393,17 @@ fn is_integer_family(ty: &Type) -> bool {
 }
 
 /// Whether a type is one V1 source may not fabricate a value of (ADR-0039).
+/// Whether a written type name is one V1 source may not bring into existence.
+///
+/// ADR-0039 fixes the set; ADR-0036 adds the three guards to it. Exposed so the
+/// name resolver can tell a forged handle from a name that simply does not
+/// exist: `MutexGuard(0i32)` is a guard nobody may construct, not an unknown
+/// value, and reporting it as unknown would send the reader looking for a
+/// declaration that must never be written.
+pub(crate) fn is_nonconstructible_name(name: &str) -> bool {
+    NONCONSTRUCTIBLE_TYPES.contains(&name)
+}
+
 fn is_nonconstructible(ty: &Type) -> bool {
     match ty {
         Type::Constructed(name, _) => NONCONSTRUCTIBLE_TYPES.contains(&name.as_str()),
@@ -818,6 +834,33 @@ impl<'source> TypeChecker<'source> {
             .unwrap_or(Type::Unknown)
     }
 
+    /// The guard a lock operation yields (ADR-0036 section 2).
+    ///
+    /// `Mutex<T>.lock()`, `RwLock<T>.read()` and `RwLock<T>.write()` are typed
+    /// operations on the synchronization object, in the same receiver-operation
+    /// form the atomics use. The guard's type is derived from the *receiver's*
+    /// type, never from the name of the operation alone: a `.lock()` written on
+    /// anything else is not a guard, and inferring one from the spelling would
+    /// be the guess ADR-0035 forbids.
+    fn lock_operation_type(&mut self, callee: &'source Expression) -> Type {
+        let (Some(name), Some(receiver)) = (callee.name(), callee.inner()) else {
+            return Type::Unknown;
+        };
+        let Type::Constructed(object, arguments) = self.type_of(receiver) else {
+            return Type::Unknown;
+        };
+        let Some(protected) = arguments.first().cloned() else {
+            return Type::Unknown;
+        };
+        let guard = match (object.as_str(), name.text(self.source)) {
+            ("Mutex", "lock") => "MutexGuard",
+            ("RwLock", "read") => "ReadGuard",
+            ("RwLock", "write") => "WriteGuard",
+            _ => return Type::Unknown,
+        };
+        Type::Constructed(String::from(guard), alloc::vec![protected])
+    }
+
     /// Reports an argument that does not satisfy its declared parameter type.
     ///
     /// ADR-0037 allocates `E1215_ARGUMENT_TYPE_MISMATCH` as the residual code
@@ -868,6 +911,9 @@ impl<'source> TypeChecker<'source> {
         let Some(callee) = expression.callee() else {
             return Type::Unknown;
         };
+        if callee.form() == ExpressionForm::Field {
+            return self.lock_operation_type(callee);
+        }
         if callee.form() != ExpressionForm::Name {
             return Type::Unknown;
         }

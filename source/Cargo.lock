@@ -10,6 +10,7 @@ dependencies = [
  "tos-engine",
  "tos-hash",
  "tos-ir",
+ "tos-pipeline",
  "tos-runtime",
  "tos-verifier",
 ]

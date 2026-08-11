@@ -890,7 +890,90 @@ fn overlaps(one: &tos_ir::Place, other: &tos_ir::Place) -> bool {
 /// instruction produces, and joining, awaiting, returning or handing it to
 /// another operation discharges it. `cancel` alone does not, which is the one
 /// case docs/41 states outright.
+/// Whether a type is one of the three ADR-0036 lock guards.
+fn is_guard(module: &Module, ty: TypeId) -> bool {
+    matches!(
+        module.types.get(ty),
+        Some(TypeDef::MutexGuard(_)) | Some(TypeDef::ReadGuard(_)) | Some(TypeDef::WriteGuard(_))
+    )
+}
+
+/// The guard type an operand carries, when it carries one.
+fn guard_operand(module: &Module, function: &Function, operand: &Operand) -> Option<TypeId> {
+    let Operand::Value(id) = operand else {
+        return None;
+    };
+    let ty = *function.values.get(*id)?;
+    is_guard(module, ty).then_some(ty)
+}
+
+/// The guard rules of ADR-0036, reached by this verifier's own traversal.
+///
+/// docs/43 section 5 forbids taking the frontend's word for anything, so this
+/// restates the rules over IR rather than trusting that a checker ran: a guard
+/// rule the checker enforces and the verifier does not is a rule an alternate
+/// frontend could skip. The IR carries a type for every value, so a guard is
+/// identified from the type table rather than from any name.
+fn check_guard_lifetimes(module: &Module) -> Result<(), Finding> {
+    for (index, function) in module.functions.iter().enumerate() {
+        for (block_index, block) in function.blocks.iter().enumerate() {
+            let mut held: bool = false;
+            for instruction in &block.instructions {
+                let at = alloc::format!("functions[{index}].blocks[{block_index}]");
+                let escaping = match &instruction.op {
+                    Op::Spawn { captures, .. } => Some(("task_boundary", captures)),
+                    Op::Closure { captures, .. } => Some(("task_boundary", captures)),
+                    Op::Aggregate { operands, .. } => Some(("aggregate", operands)),
+                    Op::Variant { operands, .. } => Some(("aggregate", operands)),
+                    _ => None,
+                };
+                if let Some((operation, operands)) = escaping {
+                    for operand in operands {
+                        if guard_operand(module, function, operand).is_some() {
+                            return Err(Finding::new(
+                                "V2031_SYNC",
+                                at.clone(),
+                                alloc::format!("a guard operand escapes: {operation}"),
+                            ));
+                        }
+                    }
+                }
+                // A guard produced in this block is live from here on: the IR
+                // is in SSA form within a block, so a later await in the same
+                // block is an await while it is held.
+                if let Some(result) = instruction.result {
+                    if function
+                        .values
+                        .get(result)
+                        .is_some_and(|ty| is_guard(module, *ty))
+                    {
+                        held = true;
+                    }
+                }
+                if held && matches!(instruction.op, Op::Await { .. }) {
+                    return Err(Finding::new(
+                        "V2031_SYNC",
+                        at,
+                        "a guard is live across an await",
+                    ));
+                }
+            }
+            if let Terminator::Return(Some(operand)) = &block.terminator {
+                if guard_operand(module, function, operand).is_some() {
+                    return Err(Finding::new(
+                        "V2031_SYNC",
+                        alloc::format!("functions[{index}].blocks[{block_index}]"),
+                        "a guard operand escapes: returned",
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
+    check_guard_lifetimes(module)?;
     for (index, function) in module.functions.iter().enumerate() {
         let at = alloc::format!("function {index}");
         let mut pending: BTreeSet<usize> = BTreeSet::new();

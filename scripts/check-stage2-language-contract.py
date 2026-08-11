@@ -198,6 +198,7 @@ def main() -> int:
             ("E1304_INVALID_TASK_CAPTURE", "ownership"),
             ("E1305_INVALID_CLOSURE_CAPTURE", "ownership"),
             ("E1401_UNJOINED_TASK", "type"),
+            ("E1402_INVALID_GUARD_LIFETIME", "type"),
             ("E1410_INVALID_ATOMIC_ORDER", "type"),
             ("E1501_UNDECLARED_CAPABILITY_EFFECT", "effect"),
             ("E1502_FORGED_CAPABILITY", "effect"),

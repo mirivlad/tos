@@ -100,6 +100,7 @@ impl Checker {
         diagnostics.extend(crate::ownership::check_ownership(source, schema));
         diagnostics.extend(crate::mutability::check_mutability(source, schema));
         diagnostics.extend(crate::concurrency::check_concurrency(source, schema));
+        diagnostics.extend(crate::guards::check_guards(source, schema));
         diagnostics.extend(crate::capability::check_capabilities(source, schema));
         diagnostics.extend(crate::boundary::check_boundary(source, schema));
         diagnostics.extend(crate::defer::check_defer_bodies(source, schema));
@@ -207,6 +208,23 @@ impl<'source> Resolver<'source> {
     fn resolve(&mut self, span: Span) {
         let name = span.text(self.source);
         if self.scopes.iter().any(|scope| scope.contains(name)) {
+            return;
+        }
+        // ADR-0039 precedence: a nonconstructible type used where a value is
+        // expected is a forged handle, not an unknown name. Reporting it as
+        // unknown would send the reader looking for a declaration that must
+        // never exist — the constructor is absent by design.
+        if crate::typing::is_nonconstructible_name(name) {
+            self.diagnostics.push(
+                diagnostic(
+                    "E1213_NONCONSTRUCTIBLE_TYPE",
+                    Stage::Type,
+                    span,
+                    self.source,
+                )
+                .with_field("type", name)
+                .with_field("operation", "construct"),
+            );
             return;
         }
         self.diagnostics.push(

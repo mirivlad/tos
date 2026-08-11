@@ -88,7 +88,8 @@ independent verification bounded.
 
 The complete V1 constructed-type arity is fixed and is shared with docs/39 and
 docs/43: `Option<T>`, `Task<T>`, `TaskResult<T>`, `Shared<T>`, `Region<T>`,
-`DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, and `slice<T>` take one
+`DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `MutexGuard<T>`, `ReadGuard<T>`,
+`WriteGuard<T>`, `Channel<T>`, and `slice<T>` take one
 type argument; `Result<T,E>` takes two. `Event`, `Semaphore`, `Barrier`,
 `Latch`, `AtomicBool`, `AtomicU32`, `AtomicU64`, and `ConversionError` take no
 type arguments.
@@ -159,7 +160,11 @@ borrow, mutable binding by alias, lock guard, non-transferable capability, or
 plain mutable region. A closure is affine when any captured value is affine.
 It may be called within its owning scope but cannot be exported, serialized,
 stored in a public nominal type, or passed to an interface with a stable ABI in
-V1. An invalid capture is `E1305_INVALID_CLOSURE_CAPTURE`.
+V1. An invalid capture is `E1305_INVALID_CLOSURE_CAPTURE`, except for a lock
+guard: ADR-0036 routes a guard crossing a task or closure boundary to
+`E1402_INVALID_GUARD_LIFETIME` with `operation=task_boundary`, because the rule
+broken is about the guard's lifetime rather than about transferability alone.
+The capture codes keep their meaning for every other non-`Transferable` value.
 
 ## 3. Conversion, equality, and integer semantics
 
@@ -364,7 +369,8 @@ is stated in its capability contract and independently checked in IR.
 
 A value may cross a task boundary only if it is `Transferable`: owned affine
 values transfer their sole ownership; immutable `Copy`/`Shared<T>` values are
-duplicated; opaque capabilities, mutable borrows, lock guards, and plain
+duplicated; opaque capabilities, mutable borrows, lock guards (whose diagnostic
+is `E1402_INVALID_GUARD_LIFETIME`, ADR-0036), and plain
 mutable regions are non-transferable unless their own contract exposes a
 specific attenuation/transfer operation. A closure/task with an invalid capture
 is `E1304_INVALID_TASK_CAPTURE`.

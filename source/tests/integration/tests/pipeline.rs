@@ -405,3 +405,79 @@ fn a_receipt_binds_to_the_digest_of_the_module_that_was_checked() {
         "a receipt must not match a module it did not check"
     );
 }
+
+/// The verifier reaches the ADR-0036 guard rules by its own traversal.
+///
+/// The frontend refuses these programs too, and that is exactly why these are
+/// forged directly into IR: docs/43 section 5 forbids the verifier from taking
+/// a frontend's success as an input, so a guard rule it cannot catch on its own
+/// is a rule an alternate frontend could skip.
+fn module_with_a_guard() -> (tos_ir::Module, usize, usize) {
+    let mut module = sample_module();
+    let protected = module.types.len();
+    module
+        .types
+        .push(tos_ir::TypeDef::Int(tos_ir::IntKind::I32));
+    let guard = module.types.len();
+    module.types.push(tos_ir::TypeDef::MutexGuard(protected));
+    let function = &mut module.functions[0];
+    let held = function.values.len();
+    function.values.push(guard);
+    (module, guard, held)
+}
+
+#[test]
+fn a_guard_captured_by_a_spawn_is_rejected() {
+    let (mut module, guard, held) = module_with_a_guard();
+    let function = &mut module.functions[0];
+    let source = function.blocks[0].source;
+    let result = function.values.len();
+    function.values.push(guard);
+    function.blocks[0].instructions.push(tos_ir::Instruction {
+        result: Some(result),
+        ty: guard,
+        op: Op::Spawn {
+            body: 1usize,
+            captures: alloc_vec(held),
+        },
+        source,
+        runtime_contract: None,
+        unsafe_block: false,
+        unsafe_interface: None,
+    });
+    expect_rejection(&module, "V2031_SYNC");
+}
+
+#[test]
+fn a_guard_placed_into_an_aggregate_is_rejected() {
+    let (mut module, guard, held) = module_with_a_guard();
+    let function = &mut module.functions[0];
+    let source = function.blocks[0].source;
+    let result = function.values.len();
+    function.values.push(guard);
+    function.blocks[0].instructions.push(tos_ir::Instruction {
+        result: Some(result),
+        ty: guard,
+        op: Op::Aggregate {
+            ty: guard,
+            operands: alloc_vec(held),
+        },
+        source,
+        runtime_contract: None,
+        unsafe_block: false,
+        unsafe_interface: None,
+    });
+    expect_rejection(&module, "V2031_SYNC");
+}
+
+#[test]
+fn a_returned_guard_is_rejected() {
+    let (mut module, _guard, held) = module_with_a_guard();
+    let function = &mut module.functions[0];
+    function.blocks[0].terminator = tos_ir::Terminator::Return(Some(tos_ir::Operand::Value(held)));
+    expect_rejection(&module, "V2031_SYNC");
+}
+
+fn alloc_vec(value: usize) -> Vec<tos_ir::Operand> {
+    vec![tos_ir::Operand::Value(value)]
+}
