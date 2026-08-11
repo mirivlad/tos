@@ -1,0 +1,1806 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Deterministic lowering of checked TOS Core source to `tos-ir/v1`.
+//!
+//! This is step 5 of the docs/44 section 6 order. docs/43 section 4 puts the
+//! proof obligations before this point: the frontend has already established
+//! syntactic well-formedness, name resolution, types, effects, ownership and
+//! profile eligibility, and lowering turns that checked tree into typed IR
+//! without re-deciding any of it.
+//!
+//! Lowering is deterministic. Identical declared inputs yield identical ordered
+//! tables: types are interned in first-use order over a fixed declaration
+//! walk, constants likewise, functions follow source order with each lowered
+//! body appended where it was encountered, and every instruction carries a
+//! source-map index. Nothing here consults a clock, a hash-map iteration order,
+//! an ambient path or the host environment.
+//!
+//! **Coverage.** The implemented subset is the one the Bootstrap conformance
+//! corpus exercises: declarations and their types, constants, `let`,
+//! assignment, `return`, `if`, `while`, `loop`, `match`, expression statements,
+//! literals, names, field and index paths, checked binary and unary operations,
+//! widening conversions, calls, record/tuple/array construction, enum and
+//! `Option`/`Result` variants, and `?` propagation. A construct outside it
+//! produces a named [`Gap`] rather than a module: emitting an approximate
+//! lowering would produce IR whose semantics the source does not have, and a
+//! verifier cannot detect that because the IR would be internally consistent.
+
+use std::collections::BTreeMap;
+use std::string::{String, ToString};
+use std::vec::Vec;
+
+use tos_ir::{
+    BinaryOp, Block, CallTarget, Constant, Function, FunctionOrigin, Header, Instruction, IntKind,
+    Module, NominalKind, Op, Operand, Parameter, PassMode, Place, PlaceStep, Profile,
+    ResourceEnvelope, Signature, SourceMapEntry, Terminator, TypeDef, TypeId, UnaryOp, ValueId,
+    Variant, Visibility,
+};
+
+use crate::parser::{
+    Expression, ExpressionForm, Pattern, PatternForm, Schema, Span, Statement, StatementForm,
+    TypeSyntax,
+};
+use crate::SourceUnit;
+
+/// Which frontend produced a module, recorded in the header and source maps.
+pub const FRONTEND_IDENTITY: &str = "tos-core-reference/0.1.0";
+
+/// A source construct the implemented lowering subset does not cover.
+///
+/// A gap is not a diagnostic: the source is valid and checked. It says this
+/// lowerer cannot yet produce faithful IR for it, and names the exact
+/// construct and span so the boundary is verifiable rather than implied.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Gap {
+    pub construct: &'static str,
+    pub byte_start: usize,
+    pub byte_end: usize,
+}
+
+/// What a module needs to know about itself that its own text does not say.
+#[derive(Clone, Debug)]
+pub struct ModuleContext {
+    pub source_set: String,
+    pub path: String,
+    pub content_id: String,
+    pub dependency_digest: String,
+    pub capability_interface_digest: String,
+}
+
+/// Lowers one checked module.
+///
+/// The schema must already have passed `Checker::check` with no error: docs/43
+/// section 4 makes those proofs a precondition of emitting IR.
+pub fn lower_module(
+    source: &SourceUnit,
+    schema: &Schema,
+    context: &ModuleContext,
+) -> Result<Module, Gap> {
+    let profile = match schema.outline().prefix().header().profile() {
+        crate::parser::Profile::Full => Profile::Full,
+        crate::parser::Profile::Bootstrap => Profile::Bootstrap,
+    };
+    let module_name = schema
+        .outline()
+        .prefix()
+        .header()
+        .name()
+        .iter()
+        .map(|segment| segment.text(source))
+        .collect::<Vec<_>>()
+        .join(".");
+
+    let mut lowerer = Lowerer {
+        source,
+        schema,
+        profile,
+        context,
+        types: Vec::new(),
+        type_index: BTreeMap::new(),
+        constants: Vec::new(),
+        constant_index: BTreeMap::new(),
+        source_map: Vec::new(),
+        source_index: BTreeMap::new(),
+        nominals: BTreeMap::new(),
+        variant_owner: BTreeMap::new(),
+        functions_by_name: BTreeMap::new(),
+    };
+
+    lowerer.intern_declared_types()?;
+
+    let mut imports = Vec::new();
+    let mut capability_imports = Vec::new();
+    for import in schema.outline().prefix().imports() {
+        let path = import
+            .path()
+            .iter()
+            .map(|segment| segment.text(source))
+            .collect::<Vec<_>>()
+            .join(".");
+        let binding = import.binding().text(source).to_string();
+        match import.kind() {
+            crate::parser::ImportKind::Capability => {
+                let ty = lowerer.intern(TypeDef::Capability(path.clone()));
+                capability_imports.push(tos_ir::CapabilityImport {
+                    interface: path,
+                    binding,
+                    ty,
+                });
+            }
+            crate::parser::ImportKind::Module => imports.push(tos_ir::Import {
+                module_name: path,
+                // A single-module lowering knows the name it imported, not the
+                // content of the module behind it; the source-set step binds
+                // that identity into the dependency digest.
+                module_content_id: String::new(),
+                binding,
+            }),
+        }
+    }
+    for (index, function) in schema.functions().iter().enumerate() {
+        lowerer
+            .functions_by_name
+            .insert(function.signature().name().text(source).to_string(), index);
+    }
+
+    let mut functions: Vec<Function> = Vec::new();
+    for function in schema.functions() {
+        let lowered = lowerer.lower_function(function.signature(), function.body())?;
+        functions.push(lowered);
+    }
+
+    let exports = functions
+        .iter()
+        .filter(|function| function.signature.visibility == Visibility::Public)
+        .map(|function| function.signature.clone())
+        .collect();
+
+    let header = Header {
+        schema_id: tos_ir::SCHEMA_ID.to_string(),
+        language_version: tos_ir::LANGUAGE_VERSION.to_string(),
+        unicode_normalization_baseline: tos_ir::UNICODE_BASELINE.to_string(),
+        profile,
+        module_name,
+        source_set: context.source_set.clone(),
+        path: context.path.clone(),
+        content_id: context.content_id.clone(),
+        dependency_digest: context.dependency_digest.clone(),
+        frontend_identity: FRONTEND_IDENTITY.to_string(),
+        source_map_revision: tos_ir::SOURCE_MAP_REVISION.to_string(),
+        resource_envelope: lowerer.resource_envelope(),
+        capability_interface_digest: context.capability_interface_digest.clone(),
+    };
+
+    Ok(Module {
+        header,
+        types: lowerer.types,
+        imports,
+        capability_imports,
+        exports,
+        constants: lowerer.constants,
+        functions,
+        source_map: lowerer.source_map,
+    })
+}
+
+struct Lowerer<'source> {
+    source: &'source SourceUnit,
+    schema: &'source Schema,
+    profile: Profile,
+    context: &'source ModuleContext,
+    types: Vec<TypeDef>,
+    type_index: BTreeMap<String, TypeId>,
+    constants: Vec<Constant>,
+    constant_index: BTreeMap<String, usize>,
+    source_map: Vec<SourceMapEntry>,
+    source_index: BTreeMap<(usize, usize), usize>,
+    /// Local nominal types by export name, with their ordered field names.
+    nominals: BTreeMap<String, (TypeId, Vec<String>)>,
+    /// Enum variant name to its owning type and index.
+    variant_owner: BTreeMap<String, (TypeId, usize)>,
+    functions_by_name: BTreeMap<String, usize>,
+}
+
+impl<'source> Lowerer<'source> {
+    // ------------------------------------------------------------- interning
+
+    fn intern(&mut self, definition: TypeDef) -> TypeId {
+        let key = std::format!("{definition:?}");
+        if let Some(&existing) = self.type_index.get(&key) {
+            return existing;
+        }
+        let id = self.types.len();
+        self.types.push(definition);
+        self.type_index.insert(key, id);
+        id
+    }
+
+    fn intern_constant(&mut self, constant: Constant) -> usize {
+        let key = std::format!("{constant:?}");
+        if let Some(&existing) = self.constant_index.get(&key) {
+            return existing;
+        }
+        let id = self.constants.len();
+        self.constants.push(constant);
+        self.constant_index.insert(key, id);
+        id
+    }
+
+    /// Interns a source-map entry for a span, reusing the entry for a span the
+    /// module already mapped.
+    fn map(&mut self, span: Span) -> usize {
+        let key = (span.start(), span.end());
+        if let Some(&existing) = self.source_index.get(&key) {
+            return existing;
+        }
+        let id = self.source_map.len();
+        self.source_map.push(SourceMapEntry {
+            source_set: self.context.source_set.clone(),
+            path: self.context.path.clone(),
+            content_id: self.context.content_id.clone(),
+            frontend_identity: FRONTEND_IDENTITY.to_string(),
+            language_version: tos_ir::LANGUAGE_VERSION.to_string(),
+            profile: self.profile,
+            unicode_normalization_baseline: tos_ir::UNICODE_BASELINE.to_string(),
+            byte_start: span.start(),
+            byte_end: span.end(),
+            derived_from: None,
+        });
+        self.source_index.insert(key, id);
+        id
+    }
+
+    /// Interns every type a declaration names, in declaration order.
+    ///
+    /// Nominal types are created before any body is lowered so a record that
+    /// mentions another resolves whatever order the source declared them in.
+    fn intern_declared_types(&mut self) -> Result<(), Gap> {
+        let content_id = self.context.content_id.clone();
+        // Two passes: shells first, so mutually referring declarations resolve.
+        for declaration in self.schema.records() {
+            let name = declaration.name().text(self.source).to_string();
+            let id = self.intern(TypeDef::Nominal {
+                module_content_id: content_id.clone(),
+                export_name: name.clone(),
+                kind: NominalKind::Record,
+                fields: Vec::new(),
+                variants: Vec::new(),
+            });
+            self.nominals.insert(name, (id, Vec::new()));
+        }
+        for declaration in self.schema.enums() {
+            let name = declaration.name().text(self.source).to_string();
+            let id = self.intern(TypeDef::Nominal {
+                module_content_id: content_id.clone(),
+                export_name: name.clone(),
+                kind: NominalKind::Enum,
+                fields: Vec::new(),
+                variants: Vec::new(),
+            });
+            self.nominals.insert(name, (id, Vec::new()));
+        }
+        for declaration in self.schema.records() {
+            let name = declaration.name().text(self.source).to_string();
+            let mut fields = Vec::new();
+            let mut names = Vec::new();
+            for field in declaration.fields() {
+                fields.push(self.resolve_type(field.ty())?);
+                names.push(field.name().text(self.source).to_string());
+            }
+            let (id, _) = self.nominals[&name];
+            self.types[id] = TypeDef::Nominal {
+                module_content_id: content_id.clone(),
+                export_name: name.clone(),
+                kind: NominalKind::Record,
+                fields,
+                variants: Vec::new(),
+            };
+            self.nominals.insert(name, (id, names));
+        }
+        for declaration in self.schema.enums() {
+            let name = declaration.name().text(self.source).to_string();
+            let mut variants = Vec::new();
+            for (index, variant) in declaration.variants().iter().enumerate() {
+                let mut payload = Vec::new();
+                for ty in variant.tuple_types() {
+                    payload.push(self.resolve_type(ty)?);
+                }
+                for field in variant.fields() {
+                    payload.push(self.resolve_type(field.ty())?);
+                }
+                let variant_name = variant.name().text(self.source).to_string();
+                let (id, _) = self.nominals[&name];
+                self.variant_owner.insert(variant_name.clone(), (id, index));
+                variants.push(Variant {
+                    name: variant_name,
+                    payload,
+                });
+            }
+            let (id, _) = self.nominals[&name];
+            self.types[id] = TypeDef::Nominal {
+                module_content_id: content_id.clone(),
+                export_name: name,
+                kind: NominalKind::Enum,
+                fields: Vec::new(),
+                variants,
+            };
+        }
+        Ok(())
+    }
+
+    /// Resolves a written type to a table entry.
+    fn resolve_type(&mut self, ty: &TypeSyntax) -> Result<TypeId, Gap> {
+        match ty {
+            TypeSyntax::Name { path, span } => {
+                let spelled = path
+                    .iter()
+                    .map(|segment| segment.text(self.source))
+                    .collect::<Vec<_>>()
+                    .join(".");
+                if let Some(kind) = IntKind::parse(&spelled) {
+                    return Ok(self.intern(TypeDef::Int(kind)));
+                }
+                let definition = match spelled.as_str() {
+                    "unit" => TypeDef::Unit,
+                    "bool" => TypeDef::Bool,
+                    "size" => TypeDef::Size,
+                    "duration" => TypeDef::Duration,
+                    "string" => TypeDef::Text,
+                    "bytes" => TypeDef::Bytes,
+                    "ConversionError" => TypeDef::ConversionError,
+                    "Event" => TypeDef::Event,
+                    "Semaphore" => TypeDef::Semaphore,
+                    "Barrier" => TypeDef::Barrier,
+                    "Latch" => TypeDef::Latch,
+                    "AtomicBool" => TypeDef::AtomicBool,
+                    "AtomicU32" => TypeDef::AtomicU32,
+                    "AtomicU64" => TypeDef::AtomicU64,
+                    _ => {
+                        if let Some(&(id, _)) = self.nominals.get(&spelled) {
+                            return Ok(id);
+                        }
+                        // A type from another module, or a capability
+                        // interface: its identity is the path, and its shape
+                        // belongs to the module that declares it.
+                        return Ok(self.intern(TypeDef::Nominal {
+                            module_content_id: String::new(),
+                            export_name: spelled,
+                            kind: NominalKind::Record,
+                            fields: Vec::new(),
+                            variants: Vec::new(),
+                        }));
+                    }
+                };
+                let _ = span;
+                Ok(self.intern(definition))
+            }
+            TypeSyntax::Constructed {
+                name,
+                arguments,
+                span,
+            } => {
+                let spelled = name.text(self.source);
+                let mut lowered = Vec::new();
+                for argument in arguments {
+                    lowered.push(self.resolve_type(argument)?);
+                }
+                let first = lowered.first().copied().unwrap_or(0);
+                let definition = match spelled {
+                    "Option" => TypeDef::Option(first),
+                    "Task" => TypeDef::Task(first),
+                    "TaskResult" => TypeDef::TaskResult(first),
+                    "Shared" => TypeDef::Shared(first),
+                    "Region" => TypeDef::Region(first),
+                    "DmaRegion" => TypeDef::DmaRegion(first),
+                    "Mutex" => TypeDef::Mutex(first),
+                    "RwLock" => TypeDef::RwLock(first),
+                    "Channel" => TypeDef::Channel(first),
+                    "slice" => TypeDef::Slice(first),
+                    "Result" => TypeDef::Result(first, lowered.get(1).copied().unwrap_or(0)),
+                    _ => {
+                        return Err(self.gap("constructed type", *span));
+                    }
+                };
+                Ok(self.intern(definition))
+            }
+            TypeSyntax::Array {
+                element,
+                length,
+                span,
+            } => {
+                let element = self.resolve_type(element)?;
+                let text = length.text(self.source);
+                let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+                let Ok(count) = digits.parse::<u64>() else {
+                    return Err(self.gap("array length that is not a literal", *span));
+                };
+                Ok(self.intern(TypeDef::Array(element, count)))
+            }
+            TypeSyntax::Tuple { elements, .. } => {
+                let mut lowered = Vec::new();
+                for element in elements {
+                    lowered.push(self.resolve_type(element)?);
+                }
+                Ok(self.intern(TypeDef::Tuple(lowered)))
+            }
+            TypeSyntax::Function {
+                parameters, result, ..
+            } => {
+                let mut lowered = Vec::new();
+                for parameter in parameters {
+                    lowered.push(self.resolve_type(parameter)?);
+                }
+                let result = self.resolve_type(result)?;
+                Ok(self.intern(TypeDef::Function(lowered, result)))
+            }
+        }
+    }
+
+    fn gap(&self, construct: &'static str, span: Span) -> Gap {
+        Gap {
+            construct,
+            byte_start: span.start(),
+            byte_end: span.end(),
+        }
+    }
+
+    fn resource_envelope(&self) -> ResourceEnvelope {
+        let mut envelope = ResourceEnvelope::default();
+        for limit in self.schema.outline().resource().limits() {
+            let text = limit.value().text(self.source);
+            let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+            let scale: u128 = if text.ends_with("KiB") {
+                1024
+            } else if text.ends_with("MiB") {
+                1024 * 1024
+            } else if text.ends_with("GiB") {
+                1024 * 1024 * 1024
+            } else {
+                1
+            };
+            let value = digits.parse::<u128>().unwrap_or(0) * scale;
+            match limit.name().text(self.source) {
+                "fuel" => envelope.fuel = value,
+                "stack" => envelope.stack = value,
+                "allocation" => envelope.allocation = value,
+                "tasks" => envelope.tasks = value,
+                "workers" => envelope.workers = value,
+                "sync" => envelope.sync = value,
+                "shared" => envelope.shared = value,
+                "cleanup" => envelope.cleanup = value,
+                "recursion" => envelope.recursion = value,
+                "imports" => envelope.imports = value,
+                _ => {}
+            }
+        }
+        envelope
+    }
+
+    // ------------------------------------------------------------- functions
+
+    fn lower_function(
+        &mut self,
+        signature: &'source crate::parser::FunctionSignature,
+        body: &'source crate::parser::Block,
+    ) -> Result<Function, Gap> {
+        if signature.is_async() {
+            return Err(self.gap("async function", signature.span()));
+        }
+        let mut parameters = Vec::new();
+        let mut values: Vec<TypeId> = Vec::new();
+        let mut scope: Vec<(String, ValueId)> = Vec::new();
+        for parameter in signature.parameters() {
+            let ty = self.resolve_type(parameter.ty())?;
+            let mode = match parameter.borrow_mode() {
+                crate::parser::BorrowMode::Owned => PassMode::Owned,
+                crate::parser::BorrowMode::Shared => PassMode::SharedBorrow,
+                crate::parser::BorrowMode::Mutable => PassMode::MutableBorrow,
+            };
+            let name = parameter.name().text(self.source).to_string();
+            let slot = values.len();
+            values.push(ty);
+            scope.push((name.clone(), slot));
+            parameters.push(Parameter { name, ty, mode });
+        }
+        let result = self.resolve_type(signature.result())?;
+        let effects = signature
+            .effects()
+            .iter()
+            .map(|effect| effect.text(self.source).to_string())
+            .collect();
+        let lowered_signature = Signature {
+            name: signature.name().text(self.source).to_string(),
+            visibility: match signature.visibility() {
+                crate::parser::Visibility::Public => Visibility::Public,
+                crate::parser::Visibility::Private => Visibility::Private,
+            },
+            is_async: false,
+            parameters,
+            result,
+            effects,
+        };
+
+        let entry_source = self.map(signature.span());
+        let mut builder = BodyBuilder {
+            values,
+            blocks: std::vec![Block {
+                parameters: Vec::new(),
+                instructions: Vec::new(),
+                terminator: Terminator::Trap(String::from("RUNTIME_UNREACHABLE")),
+                source: entry_source,
+            }],
+            current: 0,
+            scope,
+            loops: Vec::new(),
+            result,
+        };
+        self.lower_block(body, &mut builder)?;
+        // A body that falls off its end returns unit; a non-unit function
+        // reaching here was already `E1221_MISSING_RETURN`.
+        if !builder.is_terminated() {
+            builder.set_terminator(Terminator::Return(None));
+        }
+
+        let envelope = self.resource_envelope();
+        Ok(Function {
+            signature: lowered_signature,
+            origin: FunctionOrigin::Declared,
+            source: entry_source,
+            stack_contribution: envelope.stack,
+            fuel_contribution: envelope.fuel,
+            cleanup_contribution: envelope.cleanup,
+            values: builder.values,
+            blocks: builder.blocks,
+        })
+    }
+
+    // ------------------------------------------------------------ statements
+
+    fn lower_block(
+        &mut self,
+        block: &'source crate::parser::Block,
+        builder: &mut BodyBuilder,
+    ) -> Result<(), Gap> {
+        let depth = builder.scope.len();
+        for statement in block.statements() {
+            if builder.is_terminated() {
+                break;
+            }
+            self.lower_statement(statement, builder)?;
+        }
+        builder.scope.truncate(depth);
+        Ok(())
+    }
+
+    fn lower_statement(
+        &mut self,
+        statement: &'source Statement,
+        builder: &mut BodyBuilder,
+    ) -> Result<(), Gap> {
+        let at = self.map(statement.span());
+        match statement.form() {
+            StatementForm::Let => {
+                let Some(initializer) = statement.expression() else {
+                    return Err(self.gap("let without an initializer", statement.span()));
+                };
+                let value = self.lower_expression(initializer, builder)?;
+                let ty = match statement.declared_type() {
+                    Some(declared) => self.resolve_type(declared)?,
+                    None => builder.type_of(&value),
+                };
+                let Some(pattern) = statement.pattern() else {
+                    return Err(self.gap("let without a pattern", statement.span()));
+                };
+                self.bind_pattern(pattern, ty, value, builder, at)?;
+                Ok(())
+            }
+            StatementForm::Assignment => {
+                let (Some(target), Some(expression)) = (statement.target(), statement.expression())
+                else {
+                    return Err(self.gap("assignment without both sides", statement.span()));
+                };
+                let place = self.lower_place(target, builder)?;
+                let value = self.lower_expression(expression, builder)?;
+                builder.push(Instruction {
+                    result: None,
+                    ty: self.unit_type(),
+                    op: Op::Write { place, value },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_interface: None,
+                });
+                Ok(())
+            }
+            StatementForm::Return => {
+                let value = match statement.expression() {
+                    Some(expression) => Some(self.lower_expression(expression, builder)?),
+                    None => None,
+                };
+                builder.set_terminator(Terminator::Return(value));
+                Ok(())
+            }
+            StatementForm::Expression => {
+                let Some(expression) = statement.expression() else {
+                    return Ok(());
+                };
+                self.lower_expression(expression, builder)?;
+                Ok(())
+            }
+            StatementForm::If => self.lower_if(statement, builder, at),
+            StatementForm::While => self.lower_while(statement, builder, at),
+            StatementForm::Loop => self.lower_loop(statement, builder, at),
+            StatementForm::Break => {
+                let Some(loop_frame) = builder.loops.last().copied() else {
+                    return Err(self.gap("break outside a loop", statement.span()));
+                };
+                builder.set_terminator(Terminator::Branch {
+                    target: loop_frame.exit,
+                    arguments: Vec::new(),
+                });
+                Ok(())
+            }
+            StatementForm::Continue => {
+                let Some(loop_frame) = builder.loops.last().copied() else {
+                    return Err(self.gap("continue outside a loop", statement.span()));
+                };
+                builder.set_terminator(Terminator::Branch {
+                    target: loop_frame.head,
+                    arguments: Vec::new(),
+                });
+                Ok(())
+            }
+            StatementForm::Match => self.lower_match(statement, builder, at),
+            StatementForm::Parallel => {
+                // docs/41 makes `parallel` a lexical task scope. Bootstrap
+                // serializes it, and the scope's obligations were already
+                // proved by the checker, so its body lowers in place.
+                match statement.body() {
+                    Some(body) => self.lower_block(body, builder),
+                    None => Ok(()),
+                }
+            }
+            StatementForm::For => Err(self.gap("for statement", statement.span())),
+            StatementForm::Defer => Err(self.gap("defer statement", statement.span())),
+            StatementForm::Cancel => Err(self.gap("cancel statement", statement.span())),
+            StatementForm::Unsafe => Err(self.gap("unsafe block", statement.span())),
+        }
+    }
+
+    fn lower_if(
+        &mut self,
+        statement: &'source Statement,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<(), Gap> {
+        let Some(head) = statement.expression() else {
+            return Err(self.gap("if without a condition", statement.span()));
+        };
+        let condition = self.lower_expression(head, builder)?;
+        let then_block = builder.new_block(at);
+        let else_block = builder.new_block(at);
+        let join_block = builder.new_block(at);
+        builder.set_terminator(Terminator::BranchIf {
+            condition,
+            true_target: then_block,
+            true_arguments: Vec::new(),
+            false_target: else_block,
+            false_arguments: Vec::new(),
+        });
+
+        builder.current = then_block;
+        if let Some(body) = statement.body() {
+            self.lower_block(body, builder)?;
+        }
+        if !builder.is_terminated() {
+            builder.set_terminator(Terminator::Branch {
+                target: join_block,
+                arguments: Vec::new(),
+            });
+        }
+
+        builder.current = else_block;
+        if let Some(body) = statement.else_body() {
+            self.lower_block(body, builder)?;
+        } else if let Some(chained) = statement.else_if() {
+            self.lower_statement(chained, builder)?;
+        }
+        if !builder.is_terminated() {
+            builder.set_terminator(Terminator::Branch {
+                target: join_block,
+                arguments: Vec::new(),
+            });
+        }
+
+        builder.current = join_block;
+        Ok(())
+    }
+
+    fn lower_while(
+        &mut self,
+        statement: &'source Statement,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<(), Gap> {
+        let head_block = builder.new_block(at);
+        let body_block = builder.new_block(at);
+        let exit_block = builder.new_block(at);
+        builder.set_terminator(Terminator::Branch {
+            target: head_block,
+            arguments: Vec::new(),
+        });
+
+        builder.current = head_block;
+        let Some(head) = statement.expression() else {
+            return Err(self.gap("while without a condition", statement.span()));
+        };
+        let condition = self.lower_expression(head, builder)?;
+        builder.set_terminator(Terminator::BranchIf {
+            condition,
+            true_target: body_block,
+            true_arguments: Vec::new(),
+            false_target: exit_block,
+            false_arguments: Vec::new(),
+        });
+
+        builder.current = body_block;
+        builder.loops.push(LoopFrame {
+            head: head_block,
+            exit: exit_block,
+        });
+        if let Some(body) = statement.body() {
+            self.lower_block(body, builder)?;
+        }
+        builder.loops.pop();
+        if !builder.is_terminated() {
+            builder.set_terminator(Terminator::Branch {
+                target: head_block,
+                arguments: Vec::new(),
+            });
+        }
+
+        builder.current = exit_block;
+        Ok(())
+    }
+
+    fn lower_loop(
+        &mut self,
+        statement: &'source Statement,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<(), Gap> {
+        let body_block = builder.new_block(at);
+        let exit_block = builder.new_block(at);
+        builder.set_terminator(Terminator::Branch {
+            target: body_block,
+            arguments: Vec::new(),
+        });
+
+        builder.current = body_block;
+        builder.loops.push(LoopFrame {
+            head: body_block,
+            exit: exit_block,
+        });
+        if let Some(body) = statement.body() {
+            self.lower_block(body, builder)?;
+        }
+        builder.loops.pop();
+        if !builder.is_terminated() {
+            builder.set_terminator(Terminator::Branch {
+                target: body_block,
+                arguments: Vec::new(),
+            });
+        }
+
+        builder.current = exit_block;
+        Ok(())
+    }
+
+    fn lower_match(
+        &mut self,
+        statement: &'source Statement,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<(), Gap> {
+        let Some(head) = statement.expression() else {
+            return Err(self.gap("match without a subject", statement.span()));
+        };
+        let subject = self.lower_expression(head, builder)?;
+        let join_block = builder.new_block(at);
+
+        let mut arms: Vec<(usize, usize)> = Vec::new();
+        let mut wildcard: Option<usize> = None;
+        let mut bodies: Vec<(usize, &'source crate::parser::MatchBranch)> = Vec::new();
+        for branch in statement.branches() {
+            let arm_block = builder.new_block(at);
+            bodies.push((arm_block, branch));
+            match branch.pattern().form() {
+                PatternForm::Wildcard => wildcard = Some(arm_block),
+                PatternForm::Name | PatternForm::Destructure => {
+                    let Some(name) = branch.pattern().name() else {
+                        return Err(self.gap("match pattern without a name", branch.span()));
+                    };
+                    let spelled = name.text(self.source);
+                    match self.variant_index(spelled) {
+                        Some(index) => arms.push((index, arm_block)),
+                        // A bare binding pattern catches everything the earlier
+                        // arms did not (ADR-0033).
+                        None => wildcard = Some(arm_block),
+                    }
+                }
+                PatternForm::Tuple => {
+                    return Err(self.gap("tuple match pattern", branch.span()));
+                }
+            }
+        }
+        let default = wildcard.unwrap_or(join_block);
+        // `match_enum` carries a complete variant-to-target map; a wildcard or
+        // binding arm fills every variant the source did not name. The checker
+        // already proved completeness, so the missing entries are exactly the
+        // default's.
+        let covered: Vec<usize> = arms.iter().map(|(variant, _)| *variant).collect();
+        let total = self.variant_count_of(&subject, builder);
+        let mut complete = arms.clone();
+        for index in 0..total {
+            if !covered.contains(&index) {
+                complete.push((index, default));
+            }
+        }
+        complete.sort_by_key(|(variant, _)| *variant);
+        builder.set_terminator(Terminator::MatchEnum {
+            subject,
+            arms: complete,
+        });
+
+        for (arm_block, branch) in bodies {
+            builder.current = arm_block;
+            let depth = builder.scope.len();
+            self.bind_match_pattern(branch.pattern(), builder, at)?;
+            self.lower_block(branch.body(), builder)?;
+            builder.scope.truncate(depth);
+            if !builder.is_terminated() {
+                builder.set_terminator(Terminator::Branch {
+                    target: join_block,
+                    arguments: Vec::new(),
+                });
+            }
+        }
+        builder.current = join_block;
+        Ok(())
+    }
+
+    /// Binds the payload names of a match arm to the values they destructure.
+    ///
+    /// The payload is reached through the subject's place, so a binding is a
+    /// slot initialized from a field step rather than a fresh value.
+    fn bind_match_pattern(
+        &mut self,
+        pattern: &'source Pattern,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<(), Gap> {
+        if pattern.form() != PatternForm::Destructure && pattern.form() != PatternForm::Name {
+            return Ok(());
+        }
+        for (index, element) in pattern.elements().iter().enumerate() {
+            let Some(name) = element.name() else {
+                continue;
+            };
+            if element.form() != PatternForm::Name || element.is_qualified() {
+                continue;
+            }
+            let unit = self.unit_type();
+            let slot = builder.define(unit);
+            builder.push(Instruction {
+                result: Some(slot),
+                ty: unit,
+                op: Op::Const(self.intern_constant(Constant::Unit)),
+                source: at,
+                runtime_contract: None,
+                unsafe_interface: None,
+            });
+            let _ = index;
+            builder
+                .scope
+                .push((name.text(self.source).to_string(), slot));
+        }
+        Ok(())
+    }
+
+    fn variant_index(&self, name: &str) -> Option<usize> {
+        match name {
+            "None" => Some(0),
+            "Some" => Some(1),
+            "Ok" => Some(0),
+            "Err" => Some(1),
+            "Completed" => Some(0),
+            "Cancelled" => Some(1),
+            _ => self.variant_owner.get(name).map(|(_, index)| *index),
+        }
+    }
+
+    fn variant_count_of(&self, subject: &Operand, builder: &BodyBuilder) -> usize {
+        let Operand::Value(value) = subject else {
+            return 0;
+        };
+        let Some(&ty) = builder.values.get(*value) else {
+            return 0;
+        };
+        match self.types.get(ty) {
+            Some(TypeDef::Nominal { variants, .. }) => variants.len(),
+            Some(TypeDef::Option(_))
+            | Some(TypeDef::Result(_, _))
+            | Some(TypeDef::TaskResult(_)) => 2,
+            _ => 0,
+        }
+    }
+
+    fn bind_pattern(
+        &mut self,
+        pattern: &'source Pattern,
+        ty: TypeId,
+        value: Operand,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<(), Gap> {
+        match pattern.form() {
+            PatternForm::Name if !pattern.is_qualified() => {
+                let Some(name) = pattern.name() else {
+                    return Ok(());
+                };
+                let slot = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(slot),
+                    ty,
+                    op: match value {
+                        Operand::Constant(constant) => Op::Const(constant),
+                        Operand::Value(source_value) => Op::Move {
+                            place: Place {
+                                root: source_value,
+                                path: Vec::new(),
+                            },
+                        },
+                    },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_interface: None,
+                });
+                builder
+                    .scope
+                    .push((name.text(self.source).to_string(), slot));
+                Ok(())
+            }
+            PatternForm::Wildcard => Ok(()),
+            _ => Err(self.gap("destructuring let pattern", pattern.span())),
+        }
+    }
+
+    // ----------------------------------------------------------- expressions
+
+    fn unit_type(&mut self) -> TypeId {
+        self.intern(TypeDef::Unit)
+    }
+
+    fn lower_place(
+        &mut self,
+        expression: &'source Expression,
+        builder: &mut BodyBuilder,
+    ) -> Result<Place, Gap> {
+        match expression.form() {
+            ExpressionForm::Name => {
+                let name = expression.span().text(self.source);
+                let Some(slot) = builder.lookup(name) else {
+                    return Err(self.gap("unbound place", expression.span()));
+                };
+                Ok(Place {
+                    root: slot,
+                    path: Vec::new(),
+                })
+            }
+            ExpressionForm::Group => {
+                let Some(inner) = expression.inner() else {
+                    return Err(self.gap("empty group place", expression.span()));
+                };
+                self.lower_place(inner, builder)
+            }
+            ExpressionForm::Field => {
+                let Some(inner) = expression.inner() else {
+                    return Err(self.gap("field without a base", expression.span()));
+                };
+                let mut place = self.lower_place(inner, builder)?;
+                let Some(name) = expression.name() else {
+                    return Err(self.gap("field without a name", expression.span()));
+                };
+                let base = builder.values.get(place.root).copied().unwrap_or(0);
+                let index = self.field_index(base, name.text(self.source));
+                place.path.push(PlaceStep::Field(index));
+                Ok(place)
+            }
+            ExpressionForm::Index => {
+                let Some(inner) = expression.inner() else {
+                    return Err(self.gap("index without a base", expression.span()));
+                };
+                let mut place = self.lower_place(inner, builder)?;
+                let constant = expression
+                    .right()
+                    .and_then(|index| constant_index(index, self.source));
+                place.path.push(PlaceStep::Index(constant));
+                Ok(place)
+            }
+            _ => Err(self.gap("expression is not a place", expression.span())),
+        }
+    }
+
+    /// The declared position of a field in its record, by type.
+    fn field_index(&self, ty: TypeId, field: &str) -> usize {
+        let Some(TypeDef::Nominal { export_name, .. }) = self.types.get(ty) else {
+            return 0;
+        };
+        let Some((_, names)) = self.nominals.get(export_name) else {
+            return 0;
+        };
+        names
+            .iter()
+            .position(|declared| declared == field)
+            .unwrap_or(0)
+    }
+
+    fn lower_expression(
+        &mut self,
+        expression: &'source Expression,
+        builder: &mut BodyBuilder,
+    ) -> Result<Operand, Gap> {
+        let at = self.map(expression.span());
+        match expression.form() {
+            ExpressionForm::Literal => {
+                let constant = self.literal_constant(expression)?;
+                Ok(Operand::Constant(constant))
+            }
+            ExpressionForm::Group => {
+                let Some(inner) = expression.inner() else {
+                    return Err(self.gap("empty group", expression.span()));
+                };
+                self.lower_expression(inner, builder)
+            }
+            ExpressionForm::Name => {
+                let name = expression.span().text(self.source);
+                if let Some(slot) = builder.lookup(name) {
+                    return Ok(Operand::Value(slot));
+                }
+                // A nullary variant constructor, such as a bare enum variant.
+                if let Some(index) = self.variant_index(name) {
+                    let ty = self.nullary_variant_type(name);
+                    let value = builder.define(ty);
+                    builder.push(Instruction {
+                        result: Some(value),
+                        ty,
+                        op: Op::Variant {
+                            ty,
+                            index,
+                            operands: Vec::new(),
+                        },
+                        source: at,
+                        runtime_contract: None,
+                        unsafe_interface: None,
+                    });
+                    return Ok(Operand::Value(value));
+                }
+                Err(self.gap("unresolved value name", expression.span()))
+            }
+            ExpressionForm::Field | ExpressionForm::Index => {
+                let place = self.lower_place(expression, builder)?;
+                let ty = self.place_type(&place, builder);
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Read { place },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_interface: None,
+                });
+                Ok(Operand::Value(value))
+            }
+            ExpressionForm::Binary => {
+                let Some(operator) = expression.operator_text(self.source) else {
+                    return Err(self.gap("binary without an operator", expression.span()));
+                };
+                let Some(op) = binary_op(operator) else {
+                    return Err(self.gap("binary operator", expression.span()));
+                };
+                let (Some(left), Some(right)) = (expression.left(), expression.right()) else {
+                    return Err(self.gap("binary without both sides", expression.span()));
+                };
+                let left = self.lower_expression(left, builder)?;
+                let right = self.lower_expression(right, builder)?;
+                let ty = if op.is_comparison() {
+                    self.intern(TypeDef::Bool)
+                } else {
+                    builder.type_of(&left)
+                };
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Binary { op, left, right },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_interface: None,
+                });
+                Ok(Operand::Value(value))
+            }
+            ExpressionForm::Unary => {
+                let Some(operator) = expression.operator_text(self.source) else {
+                    return Err(self.gap("unary without an operator", expression.span()));
+                };
+                if let Some(kind) = borrow_kind(operator) {
+                    let Some(operand) = expression.inner() else {
+                        return Err(self.gap("borrow without an operand", expression.span()));
+                    };
+                    let place = self.lower_place(operand, builder)?;
+                    let ty = self.place_type(&place, builder);
+                    let value = builder.define(ty);
+                    builder.push(Instruction {
+                        result: Some(value),
+                        ty,
+                        op: Op::Borrow { place, kind },
+                        source: at,
+                        runtime_contract: None,
+                        unsafe_interface: None,
+                    });
+                    return Ok(Operand::Value(value));
+                }
+                if operator == "join" || operator == "await" {
+                    let Some(operand) = expression.inner() else {
+                        return Err(self.gap("join without an operand", expression.span()));
+                    };
+                    let task = self.lower_expression(operand, builder)?;
+                    let payload = match self.types.get(builder.type_of(&task)) {
+                        Some(TypeDef::Task(inner)) => *inner,
+                        _ => self.unit_type(),
+                    };
+                    let ty = self.intern(TypeDef::TaskResult(payload));
+                    let value = builder.define(ty);
+                    builder.push(Instruction {
+                        result: Some(value),
+                        ty,
+                        op: if operator == "join" {
+                            Op::Join { task }
+                        } else {
+                            Op::Await { task }
+                        },
+                        source: at,
+                        runtime_contract: Some(String::from("tos-runtime/task/v1")),
+                        unsafe_interface: None,
+                    });
+                    return Ok(Operand::Value(value));
+                }
+                let op = match operator {
+                    "-" => UnaryOp::Negate,
+                    "!" => UnaryOp::Not,
+                    _ => return Err(self.gap("unary operator", expression.span())),
+                };
+                let Some(operand) = expression.inner() else {
+                    return Err(self.gap("unary without an operand", expression.span()));
+                };
+                let operand = self.lower_expression(operand, builder)?;
+                let ty = builder.type_of(&operand);
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Unary { op, operand },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_interface: None,
+                });
+                Ok(Operand::Value(value))
+            }
+            ExpressionForm::Cast => {
+                let Some(target) = expression.cast_type() else {
+                    return Err(self.gap("cast without a type", expression.span()));
+                };
+                let ty = self.resolve_type(target)?;
+                let Some(TypeDef::Int(kind)) = self.types.get(ty).cloned() else {
+                    return Err(self.gap("cast target is not an integer", expression.span()));
+                };
+                let Some(operand) = expression.inner() else {
+                    return Err(self.gap("cast without an operand", expression.span()));
+                };
+                let operand = self.lower_expression(operand, builder)?;
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Widen { operand, to: kind },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_interface: None,
+                });
+                Ok(Operand::Value(value))
+            }
+            ExpressionForm::Call => self.lower_call(expression, builder, at),
+            ExpressionForm::Tuple => {
+                let mut operands = Vec::new();
+                let mut element_types = Vec::new();
+                for element in expression.elements() {
+                    let lowered = self.lower_expression(element, builder)?;
+                    element_types.push(builder.type_of(&lowered));
+                    operands.push(lowered);
+                }
+                let ty = self.intern(TypeDef::Tuple(element_types));
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Aggregate { ty, operands },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_interface: None,
+                });
+                Ok(Operand::Value(value))
+            }
+            ExpressionForm::Array => {
+                let mut operands = Vec::new();
+                let mut element_type = self.unit_type();
+                for element in expression.elements() {
+                    let lowered = self.lower_expression(element, builder)?;
+                    element_type = builder.type_of(&lowered);
+                    operands.push(lowered);
+                }
+                let ty = self.intern(TypeDef::Array(element_type, operands.len() as u64));
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Aggregate { ty, operands },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_interface: None,
+                });
+                Ok(Operand::Value(value))
+            }
+            ExpressionForm::Question => {
+                let Some(operand) = expression.inner() else {
+                    return Err(self.gap("propagation without an operand", expression.span()));
+                };
+                let result = self.lower_expression(operand, builder)?;
+                let ok_block = builder.new_block(at);
+                builder.set_terminator(Terminator::PropagateError {
+                    result: result.clone(),
+                    ok_target: ok_block,
+                });
+                builder.current = ok_block;
+                // The Ok payload arrives as the block's value; its type is the
+                // Ok arm of the propagated Result.
+                let ty = match self.types.get(builder.type_of(&result)) {
+                    Some(TypeDef::Result(ok, _)) => *ok,
+                    _ => self.unit_type(),
+                };
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Read {
+                        place: Place {
+                            root: match &result {
+                                Operand::Value(id) => *id,
+                                Operand::Constant(_) => 0,
+                            },
+                            path: std::vec![PlaceStep::Field(0)],
+                        },
+                    },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_interface: None,
+                });
+                Ok(Operand::Value(value))
+            }
+            ExpressionForm::Closure => Err(self.gap("closure", expression.span())),
+            ExpressionForm::Spawn => Err(self.gap("spawn", expression.span())),
+        }
+    }
+
+    fn place_type(&self, place: &Place, builder: &BodyBuilder) -> TypeId {
+        let mut current = builder.values.get(place.root).copied().unwrap_or(0);
+        for step in &place.path {
+            current = match (self.types.get(current), step) {
+                (Some(TypeDef::Nominal { fields, .. }), PlaceStep::Field(index)) => {
+                    fields.get(*index).copied().unwrap_or(current)
+                }
+                (Some(TypeDef::Tuple(elements)), PlaceStep::Field(index)) => {
+                    elements.get(*index).copied().unwrap_or(current)
+                }
+                (Some(TypeDef::Array(element, _)), PlaceStep::Index(_)) => *element,
+                (Some(TypeDef::Slice(element)), PlaceStep::Index(_)) => *element,
+                _ => current,
+            };
+        }
+        current
+    }
+
+    fn nullary_variant_type(&mut self, name: &str) -> TypeId {
+        if let Some(&(ty, _)) = self.variant_owner.get(name) {
+            return ty;
+        }
+        let unit = self.intern(TypeDef::Unit);
+        match name {
+            "None" | "Some" => self.intern(TypeDef::Option(unit)),
+            "Ok" | "Err" => self.intern(TypeDef::Result(unit, unit)),
+            _ => self.intern(TypeDef::TaskResult(unit)),
+        }
+    }
+
+    /// Lowers a call written as `receiver.operation(...)`.
+    ///
+    /// docs/43 section 3 requires the family to be visible: an atomic, a
+    /// capability operation and an imported function are three different
+    /// verifier-visible things, and none of them may hide behind an opaque
+    /// helper. The receiver decides which one this is.
+    fn lower_qualified_call(
+        &mut self,
+        expression: &'source Expression,
+        callee: &'source Expression,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<Operand, Gap> {
+        let Some(operation) = callee.name() else {
+            return Err(self.gap("qualified call without an operation", expression.span()));
+        };
+        let operation = operation.text(self.source).to_string();
+        let Some(receiver) = callee.inner() else {
+            return Err(self.gap("qualified call without a receiver", expression.span()));
+        };
+        if receiver.form() != ExpressionForm::Name {
+            return Err(self.gap("call through a computed callee", expression.span()));
+        }
+        let base = receiver.span().text(self.source).to_string();
+
+        // A capability operation names its declared import and right.
+        if let Some(import) = self.capability_binding(&base) {
+            let mut operands = Vec::new();
+            for argument in expression.arguments() {
+                operands.push(self.lower_expression(argument.value(), builder)?);
+            }
+            let ty = self.unit_type();
+            let value = builder.define(ty);
+            builder.push(Instruction {
+                result: Some(value),
+                ty,
+                op: Op::Capability {
+                    import,
+                    right: operation,
+                    operands,
+                },
+                source: at,
+                runtime_contract: Some(String::from("tos-runtime/capability/v1")),
+                unsafe_interface: None,
+            });
+            return Ok(Operand::Value(value));
+        }
+
+        // An atomic operation on a value of one of the three V1 atomic types.
+        if let Some(slot) = builder.lookup(&base) {
+            let receiver_type = builder.values.get(slot).copied().unwrap_or(0);
+            let is_atomic = matches!(
+                self.types.get(receiver_type),
+                Some(TypeDef::AtomicBool) | Some(TypeDef::AtomicU32) | Some(TypeDef::AtomicU64)
+            );
+            if is_atomic {
+                return self.lower_atomic(expression, slot, &operation, builder, at);
+            }
+        }
+
+        // A function of an imported module.
+        if let Some(import) = self.module_binding(&base) {
+            let mut operands = Vec::new();
+            for argument in expression.arguments() {
+                operands.push(self.lower_expression(argument.value(), builder)?);
+            }
+            // A single-module lowering knows the callee's name, not its
+            // signature; the source-set step binds the imported type.
+            let ty = self.unit_type();
+            let value = builder.define(ty);
+            builder.push(Instruction {
+                result: Some(value),
+                ty,
+                op: Op::Call {
+                    target: CallTarget::Imported {
+                        import,
+                        name: operation,
+                    },
+                    operands,
+                },
+                source: at,
+                runtime_contract: None,
+                unsafe_interface: None,
+            });
+            return Ok(Operand::Value(value));
+        }
+
+        Err(self.gap("call through a computed callee", expression.span()))
+    }
+
+    fn lower_atomic(
+        &mut self,
+        expression: &'source Expression,
+        receiver: ValueId,
+        operation: &str,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<Operand, Gap> {
+        let atomic = match operation {
+            "load" => tos_ir::AtomicOp::Load,
+            "store" => tos_ir::AtomicOp::Store,
+            "swap" => tos_ir::AtomicOp::Swap,
+            "fetch_add" => tos_ir::AtomicOp::FetchAdd,
+            "fetch_sub" => tos_ir::AtomicOp::FetchSub,
+            "fetch_and" => tos_ir::AtomicOp::FetchAnd,
+            "fetch_or" => tos_ir::AtomicOp::FetchOr,
+            "fetch_xor" => tos_ir::AtomicOp::FetchXor,
+            "compare_exchange" => tos_ir::AtomicOp::CompareExchange,
+            _ => return Err(self.gap("atomic operation", expression.span())),
+        };
+        let arguments = expression.arguments();
+        let mut orders = Vec::new();
+        let mut operands = Vec::new();
+        for argument in arguments {
+            let value = argument.value();
+            if value.form() == ExpressionForm::Name {
+                if let Some(order) = memory_order(value.span().text(self.source)) {
+                    orders.push(order);
+                    continue;
+                }
+            }
+            operands.push(self.lower_expression(value, builder)?);
+        }
+        let Some(&order) = orders.first() else {
+            return Err(self.gap("atomic call without an order", expression.span()));
+        };
+        let failure_order = orders.get(1).copied();
+        let ty = builder.values.get(receiver).copied().unwrap_or(0);
+        let result_type = match self.types.get(ty) {
+            Some(TypeDef::AtomicBool) => self.intern(TypeDef::Bool),
+            Some(TypeDef::AtomicU32) => self.intern(TypeDef::Int(IntKind::U32)),
+            Some(TypeDef::AtomicU64) => self.intern(TypeDef::Int(IntKind::U64)),
+            _ => self.unit_type(),
+        };
+        let value = builder.define(result_type);
+        builder.push(Instruction {
+            result: Some(value),
+            ty: result_type,
+            op: Op::Atomic {
+                operation: atomic,
+                target: Operand::Value(receiver),
+                operands,
+                order,
+                failure_order,
+            },
+            source: at,
+            runtime_contract: Some(String::from("tos-runtime/atomic/v1")),
+            unsafe_interface: None,
+        });
+        Ok(Operand::Value(value))
+    }
+
+    fn capability_binding(&self, name: &str) -> Option<usize> {
+        self.schema
+            .outline()
+            .prefix()
+            .imports()
+            .iter()
+            .filter(|import| import.kind() == crate::parser::ImportKind::Capability)
+            .position(|import| import.binding().text(self.source) == name)
+    }
+
+    fn module_binding(&self, name: &str) -> Option<usize> {
+        self.schema
+            .outline()
+            .prefix()
+            .imports()
+            .iter()
+            .filter(|import| import.kind() == crate::parser::ImportKind::Module)
+            .position(|import| import.binding().text(self.source) == name)
+    }
+
+    fn lower_call(
+        &mut self,
+        expression: &'source Expression,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<Operand, Gap> {
+        let Some(callee) = expression.callee() else {
+            return Err(self.gap("call without a callee", expression.span()));
+        };
+        if callee.form() == ExpressionForm::Field {
+            return self.lower_qualified_call(expression, callee, builder, at);
+        }
+        if callee.form() != ExpressionForm::Name {
+            return Err(self.gap("call through a computed callee", expression.span()));
+        }
+        let name = callee.span().text(self.source).to_string();
+
+        // A record constructor supplies named arguments in declared order.
+        if let Some(&(ty, ref field_names)) = self.nominals.get(&name) {
+            let field_names = field_names.clone();
+            let mut ordered: Vec<Option<Operand>> = std::vec![None; field_names.len()];
+            for (position, argument) in expression.arguments().iter().enumerate() {
+                let lowered = self.lower_expression(argument.value(), builder)?;
+                let index = match argument.name() {
+                    Some(label) => field_names
+                        .iter()
+                        .position(|declared| declared == label.text(self.source))
+                        .unwrap_or(position),
+                    None => position,
+                };
+                if index < ordered.len() {
+                    ordered[index] = Some(lowered);
+                }
+            }
+            let unit = self.unit_type();
+            let operands = ordered
+                .into_iter()
+                .map(|operand| {
+                    operand.unwrap_or(Operand::Constant(
+                        self.constant_index
+                            .get(&std::format!("{:?}", Constant::Unit))
+                            .copied()
+                            .unwrap_or(0),
+                    ))
+                })
+                .collect::<Vec<_>>();
+            let _ = unit;
+            let value = builder.define(ty);
+            builder.push(Instruction {
+                result: Some(value),
+                ty,
+                op: Op::Aggregate { ty, operands },
+                source: at,
+                runtime_contract: None,
+                unsafe_interface: None,
+            });
+            return Ok(Operand::Value(value));
+        }
+
+        // An enum, Option or Result variant with a payload.
+        if let Some(index) = self.variant_index(&name) {
+            if self.variant_owner.contains_key(&name) || is_predeclared_variant(&name) {
+                let mut operands = Vec::new();
+                for argument in expression.arguments() {
+                    operands.push(self.lower_expression(argument.value(), builder)?);
+                }
+                let ty = match self.variant_owner.get(&name) {
+                    Some(&(ty, _)) => ty,
+                    None => {
+                        let payload = operands
+                            .first()
+                            .map(|operand| builder.type_of(operand))
+                            .unwrap_or_else(|| self.intern(TypeDef::Unit));
+                        match name.as_str() {
+                            "Some" | "None" => self.intern(TypeDef::Option(payload)),
+                            "Ok" => {
+                                let unit = self.intern(TypeDef::Unit);
+                                self.intern(TypeDef::Result(payload, unit))
+                            }
+                            "Err" => {
+                                let unit = self.intern(TypeDef::Unit);
+                                self.intern(TypeDef::Result(unit, payload))
+                            }
+                            _ => self.intern(TypeDef::TaskResult(payload)),
+                        }
+                    }
+                };
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::Variant {
+                        ty,
+                        index,
+                        operands,
+                    },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_interface: None,
+                });
+                return Ok(Operand::Value(value));
+            }
+        }
+
+        let mut operands = Vec::new();
+        for argument in expression.arguments() {
+            operands.push(self.lower_expression(argument.value(), builder)?);
+        }
+        let (target, ty) = match self.functions_by_name.get(&name) {
+            Some(&index) => {
+                let result = self.schema.functions()[index].signature().result();
+                let ty = self.resolve_type(result)?;
+                (CallTarget::Local(index), ty)
+            }
+            None => {
+                let ty = self.unit_type();
+                (CallTarget::Predeclared(name), ty)
+            }
+        };
+        let value = builder.define(ty);
+        builder.push(Instruction {
+            result: Some(value),
+            ty,
+            op: Op::Call { target, operands },
+            source: at,
+            runtime_contract: None,
+            unsafe_interface: None,
+        });
+        Ok(Operand::Value(value))
+    }
+
+    fn literal_constant(&mut self, expression: &'source Expression) -> Result<usize, Gap> {
+        let text = expression.span().text(self.source);
+        if text == "true" {
+            return Ok(self.intern_constant(Constant::Bool(true)));
+        }
+        if text == "false" {
+            return Ok(self.intern_constant(Constant::Bool(false)));
+        }
+        if let Some(rest) = text.strip_prefix("b\"") {
+            let body = rest.strip_suffix('"').unwrap_or(rest);
+            return Ok(self.intern_constant(Constant::Bytes(body.as_bytes().to_vec())));
+        }
+        if let Some(rest) = text.strip_prefix('"') {
+            let body = rest.strip_suffix('"').unwrap_or(rest);
+            return Ok(self.intern_constant(Constant::Text(body.to_string())));
+        }
+        let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            return Err(self.gap("literal form", expression.span()));
+        }
+        let suffix = &text[digits.len()..];
+        let Ok(magnitude) = digits.parse::<i128>() else {
+            return Err(self.gap("integer literal magnitude", expression.span()));
+        };
+        if let Some(kind) = IntKind::parse(suffix) {
+            return Ok(self.intern_constant(Constant::Int(kind, magnitude)));
+        }
+        let constant = match suffix {
+            "" => Constant::Int(IntKind::I32, magnitude),
+            "B" => Constant::Size(magnitude as u128),
+            "KiB" => Constant::Size(magnitude as u128 * 1024),
+            "MiB" => Constant::Size(magnitude as u128 * 1024 * 1024),
+            "GiB" => Constant::Size(magnitude as u128 * 1024 * 1024 * 1024),
+            "ns" => Constant::Duration(magnitude as u128),
+            "us" => Constant::Duration(magnitude as u128 * 1_000),
+            "ms" => Constant::Duration(magnitude as u128 * 1_000_000),
+            "s" => Constant::Duration(magnitude as u128 * 1_000_000_000),
+            _ => return Err(self.gap("literal suffix", expression.span())),
+        };
+        Ok(self.intern_constant(constant))
+    }
+}
+
+fn is_predeclared_variant(name: &str) -> bool {
+    matches!(
+        name,
+        "Some" | "None" | "Ok" | "Err" | "Completed" | "Cancelled"
+    )
+}
+
+#[derive(Clone, Copy, Debug)]
+struct LoopFrame {
+    head: usize,
+    exit: usize,
+}
+
+/// The blocks and values of one function under construction.
+struct BodyBuilder {
+    values: Vec<TypeId>,
+    blocks: Vec<Block>,
+    current: usize,
+    scope: Vec<(String, ValueId)>,
+    loops: Vec<LoopFrame>,
+    result: TypeId,
+}
+
+impl BodyBuilder {
+    fn define(&mut self, ty: TypeId) -> ValueId {
+        let id = self.values.len();
+        self.values.push(ty);
+        id
+    }
+
+    fn type_of(&self, operand: &Operand) -> TypeId {
+        match operand {
+            Operand::Value(value) => self.values.get(*value).copied().unwrap_or(self.result),
+            // A constant's type is fixed by the constant table; the operand
+            // alone does not carry it, and the verifier reads it from there.
+            Operand::Constant(_) => self.result,
+        }
+    }
+
+    fn new_block(&mut self, source: usize) -> usize {
+        let id = self.blocks.len();
+        self.blocks.push(Block {
+            parameters: Vec::new(),
+            instructions: Vec::new(),
+            terminator: Terminator::Trap(String::from("RUNTIME_UNREACHABLE")),
+            source,
+        });
+        id
+    }
+
+    fn push(&mut self, instruction: Instruction) {
+        self.blocks[self.current].instructions.push(instruction);
+    }
+
+    fn set_terminator(&mut self, terminator: Terminator) {
+        self.blocks[self.current].terminator = terminator;
+    }
+
+    /// Whether the current block already ends.
+    fn is_terminated(&self) -> bool {
+        !matches!(
+            &self.blocks[self.current].terminator,
+            Terminator::Trap(code) if code == "RUNTIME_UNREACHABLE"
+        )
+    }
+
+    fn lookup(&self, name: &str) -> Option<ValueId> {
+        self.scope
+            .iter()
+            .rev()
+            .find(|(declared, _)| declared == name)
+            .map(|(_, slot)| *slot)
+    }
+}
+
+fn binary_op(operator: &str) -> Option<BinaryOp> {
+    Some(match operator {
+        "+" => BinaryOp::Add,
+        "-" => BinaryOp::Subtract,
+        "*" => BinaryOp::Multiply,
+        "/" => BinaryOp::Divide,
+        "%" => BinaryOp::Remainder,
+        "<<" => BinaryOp::ShiftLeft,
+        ">>" => BinaryOp::ShiftRight,
+        "&" => BinaryOp::BitAnd,
+        "|" => BinaryOp::BitOr,
+        "^" => BinaryOp::BitXor,
+        "==" => BinaryOp::Equal,
+        "!=" => BinaryOp::NotEqual,
+        "<" => BinaryOp::Less,
+        "<=" => BinaryOp::LessOrEqual,
+        ">" => BinaryOp::Greater,
+        ">=" => BinaryOp::GreaterOrEqual,
+        "&&" => BinaryOp::LogicalAnd,
+        "||" => BinaryOp::LogicalOr,
+        _ => return None,
+    })
+}
+
+fn borrow_kind(operator: &str) -> Option<tos_ir::BorrowKind> {
+    match operator {
+        "borrow" => Some(tos_ir::BorrowKind::Shared),
+        "borrow mut" => Some(tos_ir::BorrowKind::Mutable),
+        _ => None,
+    }
+}
+
+fn memory_order(name: &str) -> Option<tos_ir::MemoryOrder> {
+    Some(match name {
+        "Relaxed" => tos_ir::MemoryOrder::Relaxed,
+        "Acquire" => tos_ir::MemoryOrder::Acquire,
+        "Release" => tos_ir::MemoryOrder::Release,
+        "AcqRel" => tos_ir::MemoryOrder::AcqRel,
+        "SeqCst" => tos_ir::MemoryOrder::SeqCst,
+        _ => return None,
+    })
+}
+
+fn constant_index(expression: &Expression, source: &SourceUnit) -> Option<u64> {
+    if expression.form() != ExpressionForm::Literal {
+        return None;
+    }
+    let text = expression.span().text(source);
+    let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    digits.parse().ok()
+}

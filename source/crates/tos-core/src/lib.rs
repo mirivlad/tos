@@ -13,6 +13,7 @@ mod defer;
 mod diagnostic;
 mod exhaustiveness;
 mod flow;
+mod lower;
 mod metering;
 mod modules;
 mod mutability;
@@ -26,6 +27,7 @@ mod typing;
 
 pub use checker::Checker;
 pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
+pub use lower::{lower_module, Gap, ModuleContext, FRONTEND_IDENTITY};
 pub use modules::{check_module_set, check_source_set, ModuleEntry};
 pub use parser::{
     Block, BorrowMode, CallArgument, ConstDeclaration, EnumDeclaration, EnumVariant,
@@ -34,6 +36,7 @@ pub use parser::{
     Parser, Pattern, PatternForm, Profile, RecordDeclaration, RecordField, ResourceDeclaration,
     ResourceLimit, Schema, Span, Statement, StatementForm, TypeSyntax, TypeSyntaxForm, Visibility,
 };
+pub use tos_ir::module_digest;
 
 mod unicode {
     include!(concat!(env!("OUT_DIR"), "/unicode_tables.rs"));

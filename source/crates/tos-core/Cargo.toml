@@ -11,3 +11,4 @@ name = "tos_core"
 
 [dependencies]
 tos-hash = { path = "../tos-hash" }
+tos-ir = { path = "../tos-ir" }
