@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-arena-bound"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Measures the implementation arena the Stage 2 pipeline needs, through the real bounded heap."
+publish = false
+
+[dependencies]
+tos-core = { path = "../../crates/tos-core" }
+tos-ir = { path = "../../crates/tos-ir" }
+tos-verifier = { path = "../../crates/tos-verifier" }
+tos-engine = { path = "../../crates/tos-engine" }
+tos-runtime = { path = "../../crates/tos-runtime" }
+tos-hash = { path = "../../crates/tos-hash" }
