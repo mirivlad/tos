@@ -244,6 +244,11 @@ def derived(name, kind, operations, base="valid-001.bin", inputs=None):
 
 vectors = [
     entry("valid-001.bin", valid_inputs()),
+    entry("boot-module-invalid.bin", [
+        source("source/tests/vectors/gen/boot-module-invalid.tos", "/system/boot/init.tos",
+               "embedded canonical boot source the checker refuses"),
+        source("source/system/boot/NOTICES.txt", None, "embedded licence notice tail"),
+    ]),
     entry("invalid-missing-boot.bin", [
         source("VERSION", "/system/version", "embedded canonical version source"),
     ]),
