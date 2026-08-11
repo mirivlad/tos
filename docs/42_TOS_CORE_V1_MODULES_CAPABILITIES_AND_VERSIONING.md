@@ -34,10 +34,22 @@ The resolver input is exactly:
 - the effective resource import limit.
 
 It MUST NOT inspect an ambient current directory, host filesystem outside those
-roots, network, clock, random source, or undeclared environment variable. A
-missing or ambiguous import is `E1604_IMPORT_NOT_FOUND` or
-`E1605_AMBIGUOUS_IMPORT`. An import never triggers a fetch. Any required fetch
-is a separate, source-identified system operation outside the language frontend.
+roots, network, clock, random source, or undeclared environment variable. An
+import never triggers a fetch. Any required fetch is a separate,
+source-identified system operation outside the language frontend.
+
+The declared module roots are searched in order, and the candidate in the
+earliest root resolves the name. That order settles roots and only roots: it is
+what layering a private root over a shared one means, and it makes resolution
+deterministic and total. It is not permission to paper over a collision between
+declared dependencies, which nothing orders against each other.
+
+An import naming no candidate at all is `E1604_IMPORT_NOT_FOUND`. An import is
+`E1605_AMBIGUOUS_IMPORT` when either the declared source set holds more than one
+module with the requested name inside one root, so nothing in the set orders
+them, or more than one reachable declared dependency source set provides that
+name. The two conditions are disjoint, and the diagnostic names the identities
+that collided. See ADR-0038.
 
 `import a.b as c;` imports exported types, functions, and constants under `c`.
 Without `as`, the final segment is the binding name. Imports are explicit; V1

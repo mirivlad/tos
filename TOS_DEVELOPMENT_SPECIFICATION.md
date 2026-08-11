@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `4f95e4eeb5a8948019250d6acd3a47cbb33dcf89c15db2d301154d57044e7bf8`  
+Source-manifest SHA-256: `23f9dfd158f72332e5b462149ecfd38fe3d7da2bdc32ece657d608b07fcdf6b0`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4124,10 +4124,22 @@ The resolver input is exactly:
 - the effective resource import limit.
 
 It MUST NOT inspect an ambient current directory, host filesystem outside those
-roots, network, clock, random source, or undeclared environment variable. A
-missing or ambiguous import is `E1604_IMPORT_NOT_FOUND` or
-`E1605_AMBIGUOUS_IMPORT`. An import never triggers a fetch. Any required fetch
-is a separate, source-identified system operation outside the language frontend.
+roots, network, clock, random source, or undeclared environment variable. An
+import never triggers a fetch. Any required fetch is a separate,
+source-identified system operation outside the language frontend.
+
+The declared module roots are searched in order, and the candidate in the
+earliest root resolves the name. That order settles roots and only roots: it is
+what layering a private root over a shared one means, and it makes resolution
+deterministic and total. It is not permission to paper over a collision between
+declared dependencies, which nothing orders against each other.
+
+An import naming no candidate at all is `E1604_IMPORT_NOT_FOUND`. An import is
+`E1605_AMBIGUOUS_IMPORT` when either the declared source set holds more than one
+module with the requested name inside one root, so nothing in the set orders
+them, or more than one reachable declared dependency source set provides that
+name. The two conditions are disjoint, and the diagnostic names the identities
+that collided. See ADR-0038.
 
 `import a.b as c;` imports exported types, functions, and constants under `c`.
 Without `as`, the final segment is the binding name. Imports are explicit; V1
@@ -4817,7 +4829,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1602_UNSUPPORTED_LANGUAGE_MINOR` | the module header declares a minor version the frontend does not implement |
 | `E1603_MODULE_PATH_MISMATCH` | a source unit's canonical repository path is not the path its declared module name maps to |
 | `E1604_IMPORT_NOT_FOUND` | an import names no module in the declared source set |
-| `E1605_AMBIGUOUS_IMPORT` | the declared source set contains the same module name more than once, so an import of that name has more than one candidate and nothing in the set decides between them |
+| `E1605_AMBIGUOUS_IMPORT` | an import has candidates nothing orders: the declared source set holds the requested name more than once inside one module root, or more than one reachable declared dependency source set provides it. Candidates in different roots are settled by the declared root order and are not ambiguous (ADR-0038) |
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 | `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
 
@@ -12416,11 +12428,11 @@ nowhere.
 
 # ADR-0038: TOS Core V1 module-root precedence and the exact `E1605` condition
 
-- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Status: Accepted (Project Architect-approved)
 - Date: 2026-08-11
 - Decision level: 2 — fixes a stable diagnostic condition and the resolution
   rule conformance evidence depends on
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-11
 
 ## Context
 
@@ -12446,28 +12458,31 @@ The declared list of module roots is searched in order. The **first** root that
 declares a module name resolves that name. That makes resolution deterministic
 and total.
 
-Ordering is not permission to shadow silently. A name declared by more than one
-root is `E1605_AMBIGUOUS_IMPORT` **when more than one of the roots that declare
-it is reachable from the importing module's declared dependency set**. A root
-that the importer does not depend on is not a candidate and does not make
-anything ambiguous.
+Ordering settles roots, and only roots. It is not permission to paper over a
+collision between *declared dependencies*: a name offered by more than one
+reachable declared dependency source set is `E1605_AMBIGUOUS_IMPORT`, because
+nothing orders dependencies against each other and choosing one would be an
+implementation preference rather than a resolution rule.
 
-The two sentences are reconciled this way: the order makes resolution decidable
-for the ordinary case of a private root layered over a shared one, and the code
-covers the case where two *declared dependencies* both offer the name, which is
-a configuration mistake no ordering should paper over.
+The two sentences of docs/42 are reconciled this way. The order makes resolution
+decidable for the ordinary case — a private root layered over a shared one — and
+the code covers the case the order says nothing about.
 
 ### 2. The exact condition
 
 `E1605_AMBIGUOUS_IMPORT` is reported when either holds:
 
 1. the declared source set contains more than one module with the requested
-   name, and nothing in the set orders them; or
-2. more than one declared module root reachable from the importer declares the
+   name inside one root, so nothing in the set orders them; or
+2. more than one reachable declared dependency source set provides the
    requested name.
 
+Otherwise the candidate in the earliest declared root resolves the name.
+
 The diagnostic carries the requested import, the importer, the number of
-candidates, and — when the roots are known — their ordered identities.
+candidates, and the identities that collided — the root for case 1, the
+dependency source sets for case 2 — so the configuration mistake is nameable
+without re-deriving it.
 
 `E1604_IMPORT_NOT_FOUND` remains the case of no candidate at all. A missing
 import takes precedence over an ambiguous one only when there is genuinely no

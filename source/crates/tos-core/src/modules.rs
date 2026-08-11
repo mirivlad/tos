@@ -11,17 +11,13 @@
 //! ambient directory, the host filesystem, the network, the clock or the
 //! environment, and an import never triggers a fetch.
 //!
-//! `E1605_AMBIGUOUS_IMPORT` is reported when the declared source set contains
-//! the same module name more than once. Resolution then has more than one
-//! candidate and nothing in the set says which one wins, so an import of that
-//! name is ambiguous rather than silently decided.
-//!
-//! **Boundary.** docs/42 section 1 also gives resolution "a declared ordered
-//! list of module roots", and whether a name matching under several roots is
-//! ambiguous or resolved by that order is not stated: the order makes it
-//! decidable, yet the code exists for a condition the order would prevent.
-//! That case is left to the compilation-driver configuration and is not
-//! approximated here.
+//! ADR-0038 settles how a name with several candidates resolves. The declared
+//! module roots are searched in order and the candidate in the earliest root
+//! wins, which is what layering a private root over a shared one means. That
+//! order settles roots and only roots: `E1605_AMBIGUOUS_IMPORT` covers the two
+//! cases it says nothing about — the same name declared more than once inside
+//! one root, and a name offered by more than one reachable declared dependency
+//! source set, which nothing orders against each other.
 //!
 //! A capability import names an interface contract, not a module of this source
 //! set (docs/42 section 4), so it is not resolved against the set.
@@ -34,8 +30,17 @@ use crate::parser::{ImportKind, Schema};
 use crate::{Checker, Diagnostic, ModuleIdentity, Severity, SourceUnit, Stage};
 
 /// One module of a source set: its canonical repository path and parsed tree.
+///
+/// A module also records where it came from, because ADR-0038 resolves a name
+/// with several candidates from exactly that: which declared root holds it, and
+/// which declared dependency source set provides it.
 pub struct ModuleEntry<'source> {
     path: String,
+    /// Position in the declared ordered root list; earlier roots win.
+    root: usize,
+    /// The declared dependency source set this module came from, or `None` for
+    /// the source set being compiled.
+    dependency_set: Option<String>,
     source: &'source SourceUnit,
     schema: &'source Schema,
 }
@@ -46,9 +51,56 @@ impl<'source> ModuleEntry<'source> {
     pub fn new(path: &str, source: &'source SourceUnit, schema: &'source Schema) -> Self {
         ModuleEntry {
             path: path.to_string(),
+            root: 0,
+            dependency_set: None,
             source,
             schema,
         }
+    }
+
+    /// Registers a module in a declared root of the ordered root list.
+    ///
+    /// The index is the root's position: a lower index shadows a higher one.
+    pub fn in_root(
+        root: usize,
+        path: &str,
+        source: &'source SourceUnit,
+        schema: &'source Schema,
+    ) -> Self {
+        ModuleEntry {
+            path: path.to_string(),
+            root,
+            dependency_set: None,
+            source,
+            schema,
+        }
+    }
+
+    /// Registers a module provided by a declared dependency source set.
+    pub fn from_dependency(
+        dependency_set: &str,
+        root: usize,
+        path: &str,
+        source: &'source SourceUnit,
+        schema: &'source Schema,
+    ) -> Self {
+        ModuleEntry {
+            path: path.to_string(),
+            root,
+            dependency_set: Some(dependency_set.to_string()),
+            source,
+            schema,
+        }
+    }
+
+    /// Which declared root holds this module.
+    pub fn root(&self) -> usize {
+        self.root
+    }
+
+    /// Which declared dependency source set provides it, if not the local one.
+    pub fn dependency_set(&self) -> Option<&str> {
+        self.dependency_set.as_deref()
     }
 
     /// The canonical repository path this module was registered at.
@@ -95,24 +147,104 @@ impl<'source> ModuleEntry<'source> {
     }
 }
 
+/// Why a name has candidates nothing orders (ADR-0038).
+struct Collision {
+    /// `root` when one root declares the name twice, `dependency` when several
+    /// declared dependency source sets provide it.
+    kind: &'static str,
+    candidates: usize,
+    /// The identities that collided, so the configuration mistake is nameable.
+    identities: Vec<String>,
+}
+
+/// What every declared module name resolves to, and what does not resolve.
+struct Resolution {
+    resolved: BTreeMap<String, usize>,
+    ambiguous: BTreeMap<String, Collision>,
+}
+
+/// Resolves every declared name under the ADR-0038 rule.
+///
+/// The declared roots are searched in order, so the candidate in the earliest
+/// root wins and layering a private root over a shared one works. That order
+/// settles roots and only roots: a name declared twice inside one root has
+/// nothing ordering it, and several declared dependency source sets offering
+/// one name have nothing ordering them either.
+fn resolve_names(modules: &[ModuleEntry]) -> Resolution {
+    let mut candidates: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for (index, module) in modules.iter().enumerate() {
+        candidates
+            .entry(module.declared_name())
+            .or_default()
+            .push(index);
+    }
+
+    let mut resolved = BTreeMap::new();
+    let mut ambiguous = BTreeMap::new();
+    for (name, found) in candidates {
+        // Case 2: more than one reachable declared dependency source set
+        // provides the name. Nothing orders dependencies against each other.
+        let mut sets: BTreeSet<&str> = BTreeSet::new();
+        for index in &found {
+            sets.insert(modules[*index].dependency_set().unwrap_or("<local>"));
+        }
+        if sets.len() > 1 {
+            ambiguous.insert(
+                name,
+                Collision {
+                    kind: "dependency",
+                    candidates: found.len(),
+                    identities: sets.iter().map(|set| set.to_string()).collect(),
+                },
+            );
+            continue;
+        }
+        // Case 1: one root declares the name more than once, so the declared
+        // order says nothing about which of them is meant.
+        let mut by_root: BTreeMap<usize, usize> = BTreeMap::new();
+        let mut repeated: Option<usize> = None;
+        for index in &found {
+            let root = modules[*index].root();
+            let count = by_root.entry(root).or_insert(0);
+            *count += 1;
+            if *count > 1 {
+                repeated = Some(root);
+            }
+        }
+        if let Some(root) = repeated {
+            let count = by_root[&root];
+            ambiguous.insert(
+                name,
+                Collision {
+                    kind: "root",
+                    candidates: count,
+                    identities: std::vec![std::format!("root {root}")],
+                },
+            );
+            continue;
+        }
+        // Otherwise the earliest declared root resolves it.
+        let winner = found
+            .iter()
+            .min_by_key(|index| modules[**index].root())
+            .copied()
+            .expect("a name with candidates has at least one");
+        resolved.insert(name, winner);
+    }
+    Resolution {
+        resolved,
+        ambiguous,
+    }
+}
+
 /// Checks module identity and the import graph of a source set.
 ///
 /// Per-module checks stay with `Checker::check`; this adds only what needs more
 /// than one module to see.
 pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let mut by_name: BTreeMap<String, usize> = BTreeMap::new();
-    let mut duplicates: BTreeMap<String, usize> = BTreeMap::new();
-    for (index, module) in modules.iter().enumerate() {
-        let name = module.declared_name();
-        *duplicates.entry(name.clone()).or_insert(0) += 1;
-        by_name.entry(name).or_insert(index);
-    }
-    let ambiguous: BTreeSet<&String> = duplicates
-        .iter()
-        .filter(|(_, count)| **count > 1)
-        .map(|(name, _)| name)
-        .collect();
+    let resolution = resolve_names(modules);
+    let by_name = &resolution.resolved;
 
     for module in modules {
         let name = module.declared_name();
@@ -147,7 +279,7 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
                 .map(|segment| segment.text(module.source))
                 .collect::<Vec<_>>()
                 .join(".");
-            if ambiguous.contains(&target) {
+            if let Some(collision) = resolution.ambiguous.get(&target) {
                 diagnostics.push(
                     Diagnostic::new(
                         "E1605_AMBIGUOUS_IMPORT",
@@ -159,7 +291,9 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
                     .with_module(module.identity())
                     .with_field("import", target.clone())
                     .with_field("importer", module.declared_name())
-                    .with_field("candidates", duplicates[&target]),
+                    .with_field("candidates", collision.candidates)
+                    .with_field("collision", collision.kind)
+                    .with_field("collided", collision.identities.join(", ")),
                 );
                 continue;
             }
