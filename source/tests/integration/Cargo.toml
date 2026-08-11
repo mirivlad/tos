@@ -10,3 +10,7 @@ publish = false
 tos-capsule = { path = "../../crates/capsule", features = ["host"] }
 tos-hash = { path = "../../crates/tos-hash" }
 tos-boot-protocol = { path = "../../crates/boot-protocol" }
+[dev-dependencies]
+tos-core = { path = "../../crates/tos-core" }
+tos-ir = { path = "../../crates/tos-ir" }
+tos-verifier = { path = "../../crates/tos-verifier" }

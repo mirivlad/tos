@@ -170,7 +170,7 @@ pub fn lower_module(
         capability_interface_digest: context.capability_interface_digest.clone(),
     };
 
-    Ok(Module {
+    let mut module = Module {
         header,
         types: lowerer.types,
         imports,
@@ -179,7 +179,101 @@ pub fn lower_module(
         constants: lowerer.constants,
         functions,
         source_map: lowerer.source_map,
-    })
+    };
+    canonicalize_functions(&mut module);
+    canonicalize_source_map(&mut module);
+    Ok(module)
+}
+
+/// Puts the function table and the export list in canonical order.
+///
+/// docs/43 section 2 orders functions by fully qualified source name and the
+/// exported signatures with them. Lowering walks source order, so the tables
+/// are permuted here and every index that names a function — a local call, a
+/// spawned body, a registered cleanup — is remapped through the same
+/// permutation.
+fn canonicalize_functions(module: &mut Module) {
+    let mut order: Vec<usize> = (0..module.functions.len()).collect();
+    order.sort_by(|left, right| {
+        module.functions[*left]
+            .signature
+            .name
+            .cmp(&module.functions[*right].signature.name)
+    });
+    let mut moved = std::vec![0usize; order.len()];
+    for (position, old) in order.iter().enumerate() {
+        moved[*old] = position;
+    }
+    let sorted: Vec<Function> = order
+        .iter()
+        .map(|old| module.functions[*old].clone())
+        .collect();
+    module.functions = sorted;
+    for function in &mut module.functions {
+        for block in &mut function.blocks {
+            for instruction in &mut block.instructions {
+                match &mut instruction.op {
+                    Op::Call {
+                        target: CallTarget::Local(index),
+                        ..
+                    } => *index = moved.get(*index).copied().unwrap_or(*index),
+                    Op::Spawn { body, .. } | Op::RegisterCleanup { body } => {
+                        *body = moved.get(*body).copied().unwrap_or(*body)
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    module.exports = module
+        .functions
+        .iter()
+        .filter(|function| function.signature.visibility == Visibility::Public)
+        .map(|function| function.signature.clone())
+        .collect();
+}
+
+/// Puts the source map in the canonical order docs/43 section 2 fixes.
+///
+/// Entries are interned in first-use order while lowering, which is the order
+/// the walk happens to reach spans in, not the order the schema requires. They
+/// are sorted by source unit then byte start and end, and every reference is
+/// remapped through the same permutation, so the module means exactly what it
+/// meant before.
+fn canonicalize_source_map(module: &mut Module) {
+    let mut order: Vec<usize> = (0..module.source_map.len()).collect();
+    order.sort_by(|left, right| {
+        let one = &module.source_map[*left];
+        let other = &module.source_map[*right];
+        (&one.path, one.byte_start, one.byte_end).cmp(&(
+            &other.path,
+            other.byte_start,
+            other.byte_end,
+        ))
+    });
+    let mut moved = std::vec![0usize; order.len()];
+    for (position, old) in order.iter().enumerate() {
+        moved[*old] = position;
+    }
+    let sorted: Vec<SourceMapEntry> = order
+        .iter()
+        .map(|old| module.source_map[*old].clone())
+        .collect();
+    module.source_map = sorted;
+    for entry in &mut module.source_map {
+        if let Some(parent) = entry.derived_from {
+            entry.derived_from = moved.get(parent).copied();
+        }
+    }
+    for function in &mut module.functions {
+        function.source = moved.get(function.source).copied().unwrap_or(0);
+        for block in &mut function.blocks {
+            block.source = moved.get(block.source).copied().unwrap_or(0);
+            for instruction in &mut block.instructions {
+                instruction.source = moved.get(instruction.source).copied().unwrap_or(0);
+            }
+        }
+    }
 }
 
 struct Lowerer<'source> {

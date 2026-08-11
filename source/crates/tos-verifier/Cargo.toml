@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-verifier"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Independent verifier for tos-ir/v1: revalidates untrusted IR and issues verified-module receipts."
+publish = false
+
+[lib]
+name = "tos_verifier"
+
+[dependencies]
+tos-ir = { path = "../tos-ir" }
+tos-hash = { path = "../tos-hash" }

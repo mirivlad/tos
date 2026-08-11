@@ -77,7 +77,10 @@ version = "0.1.0"
 dependencies = [
  "tos-boot-protocol",
  "tos-capsule",
+ "tos-core",
  "tos-hash",
+ "tos-ir",
+ "tos-verifier",
 ]
 
 [[package]]
@@ -88,4 +91,12 @@ dependencies = [
  "tos-capsule",
  "tos-hash",
  "tos-serial",
+]
+
+[[package]]
+name = "tos-verifier"
+version = "0.1.0"
+dependencies = [
+ "tos-hash",
+ "tos-ir",
 ]
