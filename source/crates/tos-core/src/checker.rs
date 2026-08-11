@@ -103,6 +103,7 @@ impl Checker {
         diagnostics.extend(crate::capability::check_capabilities(source, schema));
         diagnostics.extend(crate::boundary::check_boundary(source, schema));
         diagnostics.extend(crate::defer::check_defer_bodies(source, schema));
+        diagnostics.extend(crate::metering::check_metering(source, schema));
         diagnostics.extend(crate::profile::check_profile(source, schema));
         diagnostics
     }
