@@ -114,7 +114,7 @@ performance gate. The gate is open. See `known_failures`.
 | capability forgery / ambient authority | Present (`E1501`, `E1502`, `V2013_CAPABILITY`). |
 | ownership and data-race negatives | Present (`E1301`–`E1305`, `V2020_OWNERSHIP`). |
 | atomic-order negatives | Present (`E1410`, `V2032_ATOMIC_ORDER`). |
-| resource exhaustion | Partial. Fuel, recursion, tasks, **allocation**, **cleanup** and **workers** are reserved before the effect and released when the frame that charged them returns; the verifier additionally bounds cleanups per exit statically. `sync` and `shared` are **not** metered, and are not claimed: the operations that would consume them — lock acquisition and `share` — do not exist until ADR-0036 is implemented and ADR-0037 is accepted. |
+| resource exhaustion | All ten declared limits are enforced. Fuel, recursion, tasks, **allocation**, **cleanup**, **workers**, **sync** and **shared** are reserved before the effect and released when the frame that charged them returns; the verifier additionally bounds cleanups per exit statically. `sync` counts live guards, whose lifetime ADR-0036 bounds to the frame that took them; `shared` charges a `Shared<T>` on the same cell model `allocation` uses. `stack` and `imports` are static declarations the frontend and verifier check rather than run-time counters. |
 | source-map identity forgery | Present (`V2040_SOURCE_MAP`). |
 | cache substitution | Present (`Rejection::KeyDoesNotMatchIdentity`). |
 | runtime independence from the host | **Partly discharged, and now gated rather than argued.** All five production crates are `#![no_std] + alloc` and build for `x86_64-unknown-none`; two preflight gates enforce it — a source gate that no production module names a host facility and that every crate declares `#![no_std]`, and a build gate that compiles all five for the freestanding target. `crates/tos-runtime` supplies the ADR-0041 grant and heap. What remains is linking and running a freestanding **binary**: the crates are proved host-free, the assembled runtime is not yet. |
@@ -132,10 +132,10 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
 
 1. *(Resolved.)* **`/system/boot/init.tos` is a TOS Core module and executes.**
    It declares `module system.boot.init`, its resource envelope, a record and
-   three functions, and it runs through the ordinary reference path on the boot
+   three functions, and runs through the ordinary reference path on the boot
    path. `tests/integration/tests/init_boot.rs` takes the boot content out of
    the golden capsule — the bytes a booting machine actually receives — and runs
-   them, and `crates/tos-pipeline/tests/boot_module.rs` runs the file itself.
+   them; `crates/tos-pipeline/tests/boot_module.rs` runs the file itself.
 2. *(Resolved.)* **The freestanding runtime runs on the boot path.**
    `crates/tos-pipeline` composes reader, parser, checker, module resolution,
    lowerer, independent verifier and bounded engine; the nucleus derives a
@@ -144,43 +144,36 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    text. Verified in QEMU under the ADR-0040 profile by
    `host-tools/qemu-test/stage2-runtime.sh`, which checks the stage order, the
    verifier's receipt, the returned value, every accounting pair against its own
-   limit, the arena peak against the grant and the stack use against the stack —
-   not merely that the events appeared.
-3. **The Stage 2 performance gate is open.** The native half of the ratio is
-   taken. The reference half is now *takeable* — the reference path executes
-   under the ADR-0040 profile — but it has not been taken, and no budget is
-   asserted from the native record.
-4. *(Resolved.)* **ADR-0036 is implemented.** The three guard constructors, the
-   three lock operations, `E1402_INVALID_GUARD_LIFETIME` with all six
-   `operation` values and its precedence over `E1304`/`E1305`, and `V2031_SYNC`
-   reached by the verifier's own traversal with forged-IR negatives.
-   `sync` accounting still has nothing to meter: see item 6.
-5. **ADR-0037 is accepted but not yet implemented.** `Region<mut T>`,
-   `DmaRegion<mut T>`, `share`, the transfer and share model, `V2021_REGION` and
-   `shared` accounting are decided and unbuilt. Its diagnostic dependency —
-   `E1215_ARGUMENT_TYPE_MISMATCH` — **is** implemented and bound to the corpus.
-6. **`sync` and `shared` are not metered.** The engine executes no lock
-   operation and no `share`, so there is nothing to count. `sync` follows the
-   engine's side of ADR-0036, which is not built; `shared` follows item 5.
-7. **The conformance corpus has no ADR-0036 vectors.** The nine cases ADR-0036
-   section 7 lists are covered by `crates/tos-core/tests/guards.rs` and by the
-   forged-IR negatives in `tests/integration/tests/pipeline.rs`, and they are
-   not yet expressed as `docs/language/conformance/v1` vectors with
-   `EXPECTATIONS.md` rows.
-8. **A maximal dependency closure does not fit the reference platform.** The two
-   published ceilings of docs/44 section 2 multiply to a closure whose
-   resolution needs about 3.2 GiB, measured by slope; ADR-0040's platform has
-   256 MiB. This implementation resolves roughly 19 ceiling-sized modules, or
-   256 modules averaging 8 KiB. Neither ceiling is weakened, and no accepted
-   document requires the maximal closure to resolve in 256 MiB.
-   `docs/evidence/STAGE2_ARENA_BOUND.md` records the measurement and names the
-   architectural fix — resolving over per-module summaries rather than parse
-   trees — which is not done.
-9. **ADR-0042 is Proposed and unresolved.** Boot ABI v1 does not settle whether
-   identifiers from another vocabulary may be interleaved with its success
-   sequence, nor what result code means "the canonical boot module did not
-   execute". The implementation fails closed with the existing
-   `RESULT_CAPSULE_INVALID` and changes no normative text meanwhile.
+   limit, the arena peak against the grant and the stack use against the stack.
+   `host-tools/qemu-test/boot-module-failure.sh` proves the other direction: a
+   module the checker refuses halts with `RESULT_BOOT_MODULE_FAILED`.
+3. *(Resolved.)* **ADR-0036 is implemented end to end.** The three guard
+   constructors, the three lock operations, `E1402_INVALID_GUARD_LIFETIME` with
+   all six `operation` values and its precedence over `E1304`/`E1305`,
+   `V2031_SYNC` reached by the verifier's own traversal, the engine executing a
+   lock operation, and `sync` metered against live guards.
+4. *(Resolved.)* **ADR-0037 is implemented end to end.** Region modes in the
+   type surface and in the IR type table, `share` as a predeclared operation
+   with its own IR node, `E1215_ARGUMENT_TYPE_MISMATCH` for an argument that
+   does not satisfy it, `E1201_ASSIGN_TO_IMMUTABLE` for a write through an
+   immutable grant, the capture reasons, `V2021_REGION` in the verifier, and
+   `shared` metered. The file's `Proposed`/`pending` state, which contradicted
+   the earlier Architect decision, is corrected.
+5. *(Resolved.)* **Set-wide resolution no longer retains parse trees.**
+   `check_module_summaries` resolves over a derived per-module summary —
+   name, path, content identity, imports, declared types, qualified uses — so a
+   loader holds one parse tree at a time. Verdicts are unchanged and tested both
+   ways. `docs/evidence/STAGE2_ARENA_BOUND.md` carries the measured scaling.
+6. **The Stage 2 performance gate is open.** The native half is taken. The
+   reference half is takeable — `host-tools/qemu-test/stage2-reference-performance.sh`
+   measures it on the real path under the ADR-0040 profile — but the recorded
+   pair and its ratio are not yet in `docs/evidence/STAGE2_PERFORMANCE_P1.md`,
+   and no budget is asserted from the native record alone.
+7. **Differential testing is N/A, not passed.** docs/44 asks for agreement
+   between independent implementations, and there is one engine. A second
+   implementation is the only thing that can change this.
+8. **Evidence is P1.** One machine, one build, no CI reproduction and no
+   independent reproduction (docs/35). Nothing here claims P2 or P3.
 
 ## architect_approval
 
