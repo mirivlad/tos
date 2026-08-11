@@ -14,6 +14,7 @@ docs/01_MANIFESTO.md
 docs/02_SYSTEM_INVARIANTS.md
 docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md
 source/interfaces/boot/BOOT_ABI_V1.md
+source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md
 source/interfaces/boot/CAPSULE_FORMAT_V1.md
 source/interfaces/boot/CAPSULE_PROVENANCE_V1.md
 docs/21_ARCHITECTURE_PRESERVATION_POLICY.md

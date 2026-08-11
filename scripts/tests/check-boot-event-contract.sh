@@ -32,7 +32,8 @@ for event in \
     TOS.BOOT.ENTRY TOS.CAPSULE.OK TOS.BOOT.HANDOFF TOS.NUCLEUS.ENTRY \
     TOS.BOOTTEXT.PATH TOS.BOOTTEXT.LINE TOS.BOOTTEXT.DIGEST \
     TOS.IDENTITY TOS.HALT TOS.BOOT.FAILC TOS.BOOT.FAILI TOS.ABI.FAIL \
-    TOS.MEM.FAIL TOS.CAPSULE.FAIL TOS.IDENTITY.MISMATCH TOS.PANIC TOS.EXCEPTION
+    TOS.MEM.FAIL TOS.CAPSULE.FAIL TOS.IDENTITY.MISMATCH TOS.PANIC TOS.EXCEPTION \
+    TOS.BOOTMODULE.FAIL TOS.RUN.UNSTARTABLE
 do
     require_text "$event" "$ABI"
     if [ "$event" = TOS.EXCEPTION ]; then
@@ -49,6 +50,23 @@ do
 done
 
 require_text 'MAY add a reason token' "$ABI"
+
+# ADR-0042: the success identifiers are an ordered subsequence, and the only
+# identifiers admitted between them are those of an accepted versioned interface
+# contract. Both halves are checked: the permission without the restriction
+# would be a licence for any namespace at all.
+require_text 'ordered subsequence' "$ABI"
+require_text 'accepted versioned interface' "$ABI"
+require_text 'RESULT_BOOT_MODULE_FAILED' "$ABI"
+require_text 'RESULT_BOOT_MODULE_FAILED' "$NUCLEUS"
+require_text 'RESULT_BOOT_MODULE_FAILED' "$ROOT/source/crates/boot-protocol/src/lib.rs"
+RUNTIME_CONTRACT="$ROOT/source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md"
+[ -f "$RUNTIME_CONTRACT" ] || fail 'the delegated TOS.RUN.* contract is missing'
+for event in TOS.RUN.BEGIN TOS.RUN.STAGE TOS.RUN.COMPLETED TOS.RUN.REFUSED \
+    TOS.RUN.TRAP TOS.RUN.VERIFIED TOS.RUN.ACCOUNTING TOS.RUN.MEMORY TOS.RUN.STACK
+do
+    require_text "$event" "$RUNTIME_CONTRACT"
+done
 require_text 'optional fields' "$ABI"
 require_text 'TOS.BOOTTEXT.LINE is optional' "$ABI"
 

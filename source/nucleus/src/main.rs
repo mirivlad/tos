@@ -20,8 +20,9 @@ use core::arch::asm;
 use core::panic::PanicInfo;
 
 use tos_boot_protocol::{
-    BootInfo, MemoryRange, RESULT_ABI_INVALID, RESULT_CAPSULE_INVALID, RESULT_HALT_OK,
-    RESULT_MEMORY_INVALID, RESULT_PANIC, RESULT_PORT, SRC_KIND_DETACHED, SRC_KIND_GIT,
+    BootInfo, MemoryRange, RESULT_ABI_INVALID, RESULT_BOOT_MODULE_FAILED, RESULT_CAPSULE_INVALID,
+    RESULT_HALT_OK, RESULT_MEMORY_INVALID, RESULT_PANIC, RESULT_PORT, SRC_KIND_DETACHED,
+    SRC_KIND_GIT,
 };
 use tos_capsule::parse;
 #[cfg(feature = "test-crypto-baseline")]
@@ -297,13 +298,18 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // being waved through. The nucleus owns memory discovery and hands the
     // runtime one bounded region (ADR-0041); the runtime cannot name BootInfo.
     match runtime::execute_boot_text(bi, bi_address, descs, boot.name, boot.content, kind) {
-        Ok(true) => {}
-        Ok(false) => {
-            // Every stage already reported why, in full, over serial. The
-            // capsule's canonical boot text did not execute, so the boot fails
-            // closed with the code the nucleus already uses for capsule content
-            // it rejects after handoff.
-            cap_fail();
+        Ok(Ok(())) => {}
+        Ok(Err(stage)) => {
+            // Boot ABI and capsule validation succeeded and this nucleus is
+            // healthy; what failed is the canonical boot module. ADR-0042 gives
+            // that its own result code, because collapsing it into
+            // RESULT_CAPSULE_INVALID would send an operator looking for a
+            // supply or integrity problem when the problem is in the source.
+            // Every stage already reported why, in full, over serial.
+            tos_serial::puts(b"TOS.BOOTMODULE.FAIL stage=");
+            tos_serial::puts(stage.as_bytes());
+            tos_serial::puts(b"\r\n");
+            result_port(RESULT_BOOT_MODULE_FAILED);
         }
         Err(reason) => {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=");

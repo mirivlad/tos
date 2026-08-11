@@ -55,6 +55,18 @@ pub const RESULT_CAPSULE_INVALID: u8 = 0x21;
 pub const RESULT_ABI_INVALID: u8 = 0x22;
 pub const RESULT_MEMORY_INVALID: u8 = 0x23;
 pub const RESULT_EXCEPTION: u8 = 0x24;
+/// The canonical boot module did not complete (ADR-0042).
+///
+/// Its exact condition: boot ABI and capsule validation succeeded and the
+/// nucleus remained operational, but the canonical boot module did not complete
+/// successfully through the required Stage 2 execution path — a frontend or
+/// checker refusal, a lowering or pipeline failure, an independent-verifier
+/// refusal, or an engine trap.
+///
+/// It is never issued for a nucleus panic, a malformed capsule or a `BootInfo`
+/// failure: those states have their own codes, and collapsing them would tell
+/// an operator to look in the wrong place.
+pub const RESULT_BOOT_MODULE_FAILED: u8 = 0x25;
 
 /// Memory-range descriptor (24 bytes, little-endian).
 #[repr(C)]

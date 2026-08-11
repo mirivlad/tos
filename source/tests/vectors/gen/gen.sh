@@ -39,6 +39,14 @@ printf '/system/boot/init.tos\t%s\n/system/version\t%s\n' "$INIT" "$GEN/.version
 $TOOL --detached --licence "$NOTICES" \
     --out "$OUT/valid-001.bin" "$GEN/.valid.manifest"
 
+# --- boot-module-invalid : well-formed capsule, boot module the checker refuses
+# The capsule is valid in every way the nucleus checks before Stage 2, so a boot
+# from it reaches the reference path and stops there. That is the exact
+# condition of RESULT_BOOT_MODULE_FAILED (ADR-0042).
+printf '/system/boot/init.tos\t%s\n' "$GEN/boot-module-invalid.tos" > "$GEN/.badmodule.manifest"
+$TOOL --detached --licence "$NOTICES" \
+    --out "$OUT/boot-module-invalid.bin" "$GEN/.badmodule.manifest"
+
 # --- invalid-missing-boot : no canonical boot file ---
 printf '/system/version\t%s\n' "$GEN/.version.txt" > "$GEN/.missing.manifest"
 $TOOL --detached --out "$OUT/invalid-missing-boot.bin" "$GEN/.missing.manifest"

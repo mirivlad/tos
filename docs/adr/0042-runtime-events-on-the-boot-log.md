@@ -2,12 +2,15 @@
 
 # ADR-0042: Runtime events on the Boot ABI v1 serial log
 
-- Status: **Proposed** (awaiting Project Architect decision)
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-12
 - Decision level: 2 — settles how a versioned interface contract admits events
-  belonging to another interface, and whether a boot has a result code for the
+  belonging to another interface, and gives a boot a result code for the
   canonical boot module failing to execute
-- Project Architect approval: *(none — this ADR is not accepted)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12, with one
+  amendment: the result code of gap 2 is named `RESULT_BOOT_MODULE_FAILED`
+  rather than `RESULT_RUNTIME_REFUSED`, and the delegation of gap 1 is to an
+  *accepted versioned interface contract* rather than to any unknown namespace
 
 ## Context
 
@@ -130,7 +133,49 @@ emits and binding nobody.
 2. **Leave it descriptive** and let each consumer pin the producer's version
    instead of a contract.
 
-## Recommendation
+## Decision
+
+### Gap 1 — the success order is a required ordered subsequence
+
+The Boot ABI v1 success identifiers are a mandatory **ordered subsequence** of
+the shared diagnostic transport. Between them there MAY appear identifiers
+belonging to **another accepted versioned interface contract**.
+
+This is not permission for arbitrary unknown `TOS.*` namespaces. A delegated
+namespace must belong to an accepted contract; anything else remains an unknown
+`TOS.*` identifier, and the existing rule for one is unchanged. The Boot ABI
+terminal result stays authoritative for whether the boot succeeded — an
+interleaved contract reports its own subject, never the boot's verdict.
+
+### Gap 2 — `RESULT_BOOT_MODULE_FAILED = 0x25`
+
+```text
+RESULT_BOOT_MODULE_FAILED = 0x25
+```
+
+**Exact condition.** Boot ABI and capsule validation succeeded and the nucleus
+remained operational, but the canonical boot module did not complete
+successfully through the required Stage 2 execution path.
+
+It covers a frontend or checker refusal, a lowering or pipeline failure, an
+independent-verifier refusal, and an engine trap or failure. Which one it was is
+reported by the `TOS.RUN.*` events, not by the code.
+
+The code is **not** to be issued for a nucleus panic, a malformed capsule, or a
+`BootInfo` failure; those keep their own codes and their own meanings. A
+consumer that predates `0x25` is still obliged to treat an unknown non-success
+result as a failure, so fail-closed compatibility is preserved without that
+consumer having to be updated.
+
+### Gap 3 — the runtime vocabulary is promoted
+
+`TOS.RUN.*` belongs to `source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md`,
+an accepted Tier 2 versioned interface contract under
+`docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`, listed in
+`docs/SPECIFICATION_SOURCES.txt`. That contract is the delegated namespace gap 1
+admits.
+
+## Recommendation (as proposed, before the decision above)
 
 **Gap 1: option 1, with option 2's wording folded in.** It is the smallest
 change that makes the existing implementations correct, it does not touch a
@@ -154,35 +199,32 @@ binding nobody is a contract in everything but name. Option 2 makes every
 consumer depend on an implementation version, which is the coupling
 `source/interfaces/` exists to prevent.
 
-## What the implementation does while this is Proposed
+## What the implementation does now that this is Accepted
 
-Nothing here is treated as decided.
-
-- Boot ABI v1's normative text is **unchanged**. No identifier, field, result
-  code or ordering statement has been edited.
-- The runtime vocabulary is described in `docs/evidence/STAGE2_RUNTIME_EVENTS.md`,
-  which states plainly that it is not a normative contract and records this
-  question as open rather than answering it. Nothing was added under
-  `source/interfaces/`, where placement would imply an authority it has not
-  been granted.
-- The nucleus fails the boot **closed** when the canonical boot module does not
-  complete, using `RESULT_CAPSULE_INVALID` (gap 2, option 2's behaviour without
-  gap 2, option 2's claim). If option 1 is chosen, this becomes a new code and
-  the change is confined to one match arm and one constant.
-- Consumers in this repository implement reading A, which they already did.
+- Boot ABI v1 section 2 gains `RESULT_BOOT_MODULE_FAILED = 0x25` with the exact
+  condition above; section 7 gains the ordered-subsequence rule and the
+  delegated-namespace restriction. No existing identifier, field, result code or
+  ordering statement is altered.
+- `source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md` is the accepted Tier 2
+  contract for `TOS.RUN.*`; `docs/evidence/STAGE2_RUNTIME_EVENTS.md` is gone
+  rather than left as a second description that could drift from it.
+- The nucleus issues `RESULT_BOOT_MODULE_FAILED` when the canonical boot module
+  does not complete, and keeps `RESULT_CAPSULE_INVALID` for capsule content it
+  rejects. The QEMU negative suite covers the new code end to end.
 
 ## Consequences
 
-If gap 1 is settled as recommended, no code changes: the implementation already
-matches. If it is settled the other way, the runtime needs a separate transport
-or Boot ABI v2, and the QEMU harness's event checking changes with it.
+A consumer can now separate three states by exit code alone: a capsule that is
+not a capsule, a nucleus that failed, and a canonical boot module that did not
+execute. An operator's next action differs for each, and until now the third was
+indistinguishable from the first.
 
-If gap 2 is settled as recommended, `RESULT_RUNTIME_REFUSED` is added to
-`crates/boot-protocol`, the nucleus's failure arm uses it, and the negative
-QEMU suite gains a case for a boot module that does not verify. Until then a
-consumer cannot distinguish that state from a malformed capsule by exit code
-alone, and must read the event log — which is why the `TOS.RUN.*` events are
-required rather than optional.
+The delegated-namespace rule is deliberately narrow. It buys extensibility at
+the price of one obligation: a component that wants to speak on the boot
+transport must first have an accepted contract for what it says. That is the
+same discipline every other interface here is under, and it is what keeps
+"unknown `TOS.*` means failure" a rule with teeth rather than a rule with a
+loophole.
 
 ## Alternatives considered
 

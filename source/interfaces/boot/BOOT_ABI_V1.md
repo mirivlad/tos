@@ -34,6 +34,20 @@ no Rust layout is authoritative; this byte layout is.
 | `RESULT_ABI_INVALID` | `0x22` | boot ABI rejected |
 | `RESULT_MEMORY_INVALID` | `0x23` | memory map rejected |
 | `RESULT_EXCEPTION` | `0x24` | caught CPU exception |
+| `RESULT_BOOT_MODULE_FAILED` | `0x25` | canonical boot module did not complete |
+
+`RESULT_BOOT_MODULE_FAILED` (ADR-0042) has one exact condition: **Boot ABI and
+capsule validation succeeded and the nucleus remained operational, but the
+canonical boot module did not complete successfully through the required
+Stage 2 execution path.** It covers a frontend or checker refusal, a lowering
+or pipeline failure, an independent-verifier refusal, and an engine trap or
+failure; which one it was is reported by the `TOS.RUN.*` events, not by the
+code. It MUST NOT be issued for a nucleus panic, a malformed capsule, or a
+`BootInfo` failure — those keep `RESULT_PANIC`, `RESULT_CAPSULE_INVALID`,
+`RESULT_ABI_INVALID` and `RESULT_MEMORY_INVALID` with their existing meanings.
+A consumer that predates this code is still obliged to treat an unknown
+non-success result as a failure, so fail-closed compatibility holds without it
+being updated.
 
 Result codes are written to `RESULT_PORT` as one `u8`; QEMU exits with
 `(value << 1) | 1` when `isa-debug-exit` is configured.
@@ -152,6 +166,17 @@ text has a first logical line. The other success identifiers and the shown
 fields are mandatory. A consumer may rely on the listed identifier order,
 including both `TOS.CAPSULE.OK` events.
 
+The listed success identifiers are a required **ordered subsequence** of the
+diagnostic transport, not a required contiguous block (ADR-0042). Between them
+there MAY appear identifiers belonging to another **accepted versioned interface
+contract** under `source/interfaces/`; `TOS.RUN.*`, defined by
+`source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md`, is one such delegated
+namespace. This is not permission for arbitrary unknown `TOS.*` namespaces: an
+identifier that belongs to no accepted contract remains unknown, and the rule
+for an unknown one is unchanged. The Boot ABI terminal result stays
+authoritative for whether the boot succeeded — a delegated contract reports its
+own subject and never the boot's verdict.
+
 ### Failure vocabulary and extension rule
 
 The following identifiers are stable Boot ABI v1 failures:
@@ -165,6 +190,8 @@ The following identifiers are stable Boot ABI v1 failures:
 | `TOS.CAPSULE.FAIL` | none | Nucleus rejected capsule data after handoff. |
 | `TOS.IDENTITY.MISMATCH` | `bootinfo-vs-capsule-header` | Nucleus rejected the mirrored identity. |
 | `TOS.PANIC` | `<component>` | Trusted component stopped by panic. |
+| `TOS.RUN.UNSTARTABLE` | `reason=<token>` | Nucleus could not start the Stage 2 execution path at all; no stage ran. Terminal result `RESULT_MEMORY_INVALID`. |
+| `TOS.BOOTMODULE.FAIL` | `stage=<pipeline-stage>` | The canonical boot module did not complete. Terminal result `RESULT_BOOT_MODULE_FAILED`; the `TOS.RUN.*` events carry the detail. |
 | `TOS.EXCEPTION` | `vector=<decimal> error=0x<hex> rip=0x<hex> cr2=<none\|0xhex>` | Nucleus caught a CPU exception and terminates with `RESULT_EXCEPTION`. |
 
 `TOS.BOOT.FAILI` is a stable identifier. Existing reason tokens retain their

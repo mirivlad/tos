@@ -160,9 +160,11 @@ pub enum Unstartable {
 
 /// Runs the capsule's canonical boot module and reports what happened.
 ///
-/// Returns `Ok(true)` when the module ran to completion. Everything else — a
-/// refusal by any stage, a trap, or the runtime failing to start — is reported
-/// in full over serial first, because a boot that stops here has to say what
+/// `Ok(Ok(()))` means the module ran to completion. `Ok(Err(stage))` names the
+/// stage that ended it — a refusal or a trap — which is what the caller turns
+/// into `RESULT_BOOT_MODULE_FAILED`. `Err` is the runtime failing to start at
+/// all, which is never a statement about the module. Every case is reported in
+/// full over serial first, because a boot that stops here has to say what
 /// stopped it.
 pub fn execute_boot_text(
     bi: &BootInfo,
@@ -171,7 +173,7 @@ pub fn execute_boot_text(
     boot_path: &[u8],
     boot_content: &[u8],
     source_kind: &[u8],
-) -> Result<bool, Unstartable> {
+) -> Result<Result<(), &'static str>, Unstartable> {
     let Ok(path) = core::str::from_utf8(boot_path) else {
         return Err(Unstartable::BootPathNotText);
     };
@@ -237,7 +239,10 @@ pub fn execute_boot_text(
             region.length()
         ));
     }
-    Ok(run.is_completed())
+    Ok(match run.failed_at() {
+        None => Ok(()),
+        Some(stage) => Err(stage.symbol()),
+    })
 }
 
 /// The declared source-set identity of the capsule's source tree.

@@ -38,7 +38,7 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 315
+- files in the release package: 314
 - active system invariants: 21
 - architecture decision records: 42 (40 accepted)
 
@@ -85,7 +85,7 @@ Architecture decision records
 - docs/adr/0039-nonconstructible-opaque-types.md — ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles [Accepted (Project Architect-approved), revision 3]
 - docs/adr/0040-stage2-reference-platform.md — ADR-0040: the Stage 2 reference platform profile [Accepted (Project Architect-approved)]
 - docs/adr/0041-runtime-memory-grant.md — ADR-0041: `RuntimeMemoryGrantV1` — the nucleus-to-runtime memory contract [Accepted (Project Architect-approved)]
-- docs/adr/0042-runtime-events-on-the-boot-log.md — ADR-0042: Runtime events on the Boot ABI v1 serial log [**Proposed** (awaiting Project Architect decision)]
+- docs/adr/0042-runtime-events-on-the-boot-log.md — ADR-0042: Runtime events on the Boot ABI v1 serial log [**Accepted** (Project Architect-approved)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

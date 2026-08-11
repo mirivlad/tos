@@ -143,6 +143,10 @@ qemu_stage2_runtime() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/stage2-runtime.sh \
         target/preflight-qemu/stage2-runtime)
 }
+qemu_boot_module_failure() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/boot-module-failure.sh \
+        target/preflight-qemu/boot-module-failure)
+}
 qemu_capsule_size_limit() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/capsule-size-limit.sh \
         target/preflight-qemu/capsule-size-limit)
@@ -187,6 +191,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU success boot" qemu_success
     run_gate "QEMU negative suite" qemu_negative
     run_gate "QEMU Stage 2 runtime path" qemu_stage2_runtime
+    run_gate "QEMU boot-module failure code" qemu_boot_module_failure
     run_gate "QEMU capsule size limit" qemu_capsule_size_limit
     run_gate "QEMU exception #UD" qemu_exception_ud2
     run_gate "QEMU exception #GP" qemu_exception_gp

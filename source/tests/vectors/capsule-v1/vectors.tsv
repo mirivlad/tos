@@ -10,6 +10,11 @@
 # below is the rule the parser reaches first, which is the rule the fixture
 # exists to pin.
 valid-001.bin	accept
+# A well-formed capsule whose canonical boot module the checker refuses. The
+# capsule format is valid — that is the point: it is how the boot path is shown
+# to reach Stage 2 and fail there with RESULT_BOOT_MODULE_FAILED (ADR-0042)
+# rather than being stopped by capsule validation.
+boot-module-invalid.bin	accept
 invalid-badmagic.bin	reject:BadMagic
 invalid-truncated.bin	reject:TotalLengthMismatch
 invalid-kind-none.bin	reject:UnsupportedIdentityKind
