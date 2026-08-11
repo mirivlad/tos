@@ -2,15 +2,15 @@
 
 # ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles
 
-- Status: **Proposed (revision 2)** — the code and the precedence are approved
-  in principle by the Project Architect; this text needs approval
+- Status: **Proposed (revision 3)** — the code and the precedence are accepted;
+  this revision narrows the operations to forms V1 grammar actually admits
 - Date: 2026-08-11
 - Decision level: 2 — allocates a diagnostic code conformance evidence will
   depend on
 - Project Architect approval: *(pending)*
-- Supersedes: revision 1, whose type set wrongly included `TaskResult<T>` — an
-  ordinary affine result value with predeclared constructors — and omitted
-  `Shared<T>`, which only a typed `share` contract may produce
+- Supersedes: revision 1, whose type set wrongly included `TaskResult<T>` and
+  omitted `Shared<T>`; and revision 2, which promised the code for constructor
+  and aggregate forms that V1 source cannot express in the first place
 
 ## Context
 
@@ -35,9 +35,20 @@ Stage `type`. An operation attempts to bring into existence a value of a type
 that V1 makes nonconstructible from source. The operations are:
 
 - an `as` conversion whose target type is one of the nonconstructible types;
-- an `as` conversion whose operand type is one of them;
-- a constructor call naming one of them;
-- a record or aggregate literal naming one of them as its constructor.
+- an `as` conversion whose operand type is one of them.
+
+That is the whole list, and it is short for a reason. A predeclared type is not
+an expression primary or callee in V1, so `Event()`, `Task(1i32)` and
+`Mutex(1i32)` are not fabrication attempts this code has to catch — they are
+names that resolve to nothing in value position, and the frontend already
+reports each as `E1202_UNKNOWN_VALUE_NAME`. Verified against the reference
+frontend, not assumed.
+
+Promising `E1213` for those forms would mean widening the grammar to let them
+through to the type stage purely so a diagnostic could fire, which is a worse
+outcome than the rejection they already get. The grammar is not widened, and any
+future V1 operation that can genuinely express such a fabrication comes under
+this code when it exists.
 
 The nonconstructible types are: `Task<T>`, `Shared<T>`, `Region<T>`,
 `DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, `Event`, `Semaphore`,
@@ -81,11 +92,14 @@ This code is about constructing one out of data, never about holding one.
 ### 4. Conformance evidence
 
 At least: a negative casting an integer to `Task<i32>`; a negative casting a
-`Mutex<i32>` to an integer; a negative calling a constructor on `Event`; a
-negative constructing a `Shared<i32>`; a positive building a `TaskResult<T>`
-with `Completed` and `Cancelled`, proving the code does not fire on a value
-source is meant to build; and a positive obtaining a task from `spawn` and using
-it, proving it does not fire on the legitimate path either.
+`Mutex<i32>` to an integer; a negative casting an integer to `Shared<i32>`; a
+positive building a `TaskResult<T>` with `Completed` and `Cancelled`, proving
+the code does not fire on a value source is meant to build; and a positive
+obtaining a task from `spawn` and using it, proving it does not fire on the
+legitimate path either.
+
+A vector for `Event()` is deliberately absent: R-vectors record the code a form
+actually produces, and that form produces `E1202_UNKNOWN_VALUE_NAME`.
 
 ## Architecture impact statement
 
@@ -99,8 +113,9 @@ it, proving it does not fire on the legitimate path either.
   of integer data is the same class of forgery as fabricating a capability, and
   it was silently accepted.
 - **Compatibility profile:** TOS Core 1.0.
-- **Tests:** the six conformance cases, checker unit tests for each operation,
-  for every type in the set, for `TaskResult<T>` staying outside it, and for the
+- **Tests:** the five conformance cases, checker unit tests for both `as`
+  directions, for every type in the set, for `TaskResult<T>` staying outside it,
+  for a predeclared type in value position still being `E1202`, and for the
   precedence against `E1212` and `E1502`, and the mechanical gate.
 
 ## Consequences
@@ -120,5 +135,10 @@ tooling could not tell a narrowing mistake from a forgery attempt.
 not authority, and widening a capability code to cover non-authority values
 would make every audit of that code less meaningful.
 
-**Leave the seven cases unreported.** Rejected: it leaves a stated rule
+**Leave the `as` cases unreported.** Rejected: it leaves a stated rule
 unenforced and a forgery path open.
+
+**Widen the grammar so `Event()` reaches the type stage and gets `E1213`.**
+Rejected: it would change what V1 source *is* to improve a diagnostic on a form
+that is already rejected, and a grammar that admits nonsense so a later stage can
+name it is worse than one that does not admit it.

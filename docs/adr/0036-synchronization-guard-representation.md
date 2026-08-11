@@ -2,12 +2,11 @@
 
 # ADR-0036: TOS Core V1 synchronization guard representation
 
-- Status: **Proposed (revision 2)** — direction approved by the Project
-  Architect; this text needs approval to become Accepted
+- Status: Accepted (Project Architect-approved)
 - Date: 2026-08-11
 - Decision level: 2 — adds type constructors and one diagnostic code to the
   accepted V1 surface, which conformance evidence and the IR type table depend on
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-11
 - Supersedes: revision 1 of this ADR, which left the normative "a guard may not
   be held across await" rule with no source diagnostic, said nothing about the
   lifetime relation between a guard and its lock, and did not say that the

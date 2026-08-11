@@ -2,11 +2,11 @@
 
 # ADR-0040: the Stage 2 reference platform profile
 
-- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Status: Accepted (Project Architect-approved)
 - Date: 2026-08-11
 - Decision level: 2 — fixes the platform a Stage 2 performance gate is measured
   on, which every later performance claim is stated against
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-11
 
 ## Context
 
@@ -43,9 +43,34 @@ firmware     the declared OVMF build of the Stage 1 gate
 
 One platform for both stages, for three reasons. It already exists and is
 already gated, so no second environment has to be kept honest. TCG on one vCPU
-is deterministic enough to compare across runs and slow enough that a budget met
-there is met anywhere. And a single profile keeps Stage 1 and Stage 2 numbers
-comparable, which they would not be if each stage picked its own.
+is deterministic enough that two runs are comparable. And a single profile keeps
+Stage 1 and Stage 2 numbers comparable, which they would not be if each stage
+picked its own.
+
+A record taken here demonstrates conformance **on this declared platform**. It
+says nothing about performance on other hardware or other emulators, and it is
+not evidence that a budget met here is met anywhere: a different CPU, a
+different accelerator or a different memory system can be faster or slower for
+reasons this profile does not model. The value of a fixed platform is
+comparability across runs and across stages, not extrapolation.
+
+### 1a. The measurement must run the real Stage 2 path
+
+The reference measurement executes the actual Stage 2 TOS runtime and recovery
+path. Running `tos-engine` inside an arbitrary Linux or host guest under the
+profile does **not** satisfy this gate: the guest's libc and host OS would
+become a runtime dependency of the measured path, which is exactly the
+dependency `docs/44` says is not a recovery or runtime dependency. A number
+produced that way would measure the host, and would let a host runtime enter the
+Stage 2 story through the performance gate.
+
+Native-host execution remains admissible as the **comparison baseline** of
+section 2 — that is what a baseline is for — and is never the production or
+reference execution path.
+
+The freestanding runtime this requires is the subject of the runtime-
+independence audit; until it exists, the reference half of the pair cannot be
+taken, and that is an open gate rather than a number taken elsewhere.
 
 ### 2. What "host reference interpreter time" means
 
@@ -103,7 +128,8 @@ decision when a Full engine exists.
 - **New dependencies:** none. Both halves of the ratio use tooling the
   repository already has.
 - **Tests:** the harness records which profile it ran under and refuses to
-  present a P2 claim for a record taken elsewhere.
+  present a P2 claim for a record taken elsewhere. A reference-profile record is
+  admissible only from the real Stage 2 runtime path of section 1a.
 
 ## Consequences
 
@@ -113,9 +139,9 @@ remaining work is mechanical: run the harness under the profile, retain both
 halves, and compute the ratio.
 
 The cost is that a Stage 2 performance number is a TCG number, so it is slower
-than the hardware a developer sits at. That is the intended trade — a budget met
-on the slowest gated profile is met everywhere, and the alternative is a number
-whose platform was chosen to suit it.
+than the hardware a developer sits at, and it is a statement about this platform
+only. That is the intended trade: the alternative is a number whose platform was
+chosen to suit it, which states nothing at all.
 
 ## Alternatives considered
 
