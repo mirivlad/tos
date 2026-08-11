@@ -97,6 +97,24 @@
 | R064 | `reject/argument-type-mismatch.tos` | Bootstrap | `E1215_ARGUMENT_TYPE_MISMATCH` with `callee=take`, `position=0`, `expected=bool`, `actual=string` | a resolved call's argument must satisfy its declared parameter type |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
+| A001 | `accept/guard-taken-and-released.tos` | Bootstrap | accepted | ADR-0036/0037 positive |
+| A002 | `accept/two-read-guards.tos` | Bootstrap | accepted | ADR-0036/0037 positive |
+| A003 | `accept/guard-moved-to-helper.tos` | Bootstrap | accepted | ADR-0036/0037 positive |
+| A004 | `accept/region-moved-into-task.tos` | Bootstrap | accepted | ADR-0036/0037 positive |
+| A005 | `accept/region-shared.tos` | Bootstrap | accepted | ADR-0036/0037 positive |
+| A006 | `accept/region-mut-write.tos` | Bootstrap | accepted | ADR-0036/0037 positive |
+| R065 | `reject/guard-into-task.tos` | Bootstrap | `E1402_INVALID_GUARD_LIFETIME` | ADR-0036/0037 negative |
+| R066 | `reject/guard-returned.tos` | Bootstrap | `E1402_INVALID_GUARD_LIFETIME` | ADR-0036/0037 negative |
+| R067 | `reject/guard-across-await.tos` | Bootstrap | `E1402_INVALID_GUARD_LIFETIME` | ADR-0036/0037 negative |
+| R068 | `reject/guard-into-record.tos` | Bootstrap | `E1402_INVALID_GUARD_LIFETIME` | ADR-0036/0037 negative |
+| R069 | `reject/lock-outlived-by-guard.tos` | Bootstrap | `E1402_INVALID_GUARD_LIFETIME` | ADR-0036/0037 negative |
+| R070 | `reject/forged-guard.tos` | Bootstrap | `E1213_NONCONSTRUCTIBLE_TYPE` | ADR-0036/0037 negative |
+| R071 | `reject/region-mut-into-task.tos` | Bootstrap | `E1304_INVALID_TASK_CAPTURE` | ADR-0036/0037 negative |
+| R072 | `reject/dma-region-into-task.tos` | Bootstrap | `E1304_INVALID_TASK_CAPTURE` | ADR-0036/0037 negative |
+| R073 | `reject/share-dma-region.tos` | Bootstrap | `E1215_ARGUMENT_TYPE_MISMATCH` | ADR-0036/0037 negative |
+| R074 | `reject/share-mutable-region.tos` | Bootstrap | `E1215_ARGUMENT_TYPE_MISMATCH` | ADR-0036/0037 negative |
+| R075 | `reject/region-used-after-share.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | ADR-0036/0037 negative |
+| R076 | `reject/write-through-immutable-region.tos` | Bootstrap | `E1201_ASSIGN_TO_IMMUTABLE` | ADR-0036/0037 negative |
 
 R029 and R030 also fix the precedence between the two codes for a character that
 cannot be tokenized: a non-ASCII scalar value outside a literal or comment is

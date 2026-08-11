@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.guard_across_await version 1.0 profile full;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 2, workers: 1, sync: 2, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// ADR-0036 section 3: no guard may be held across an await.
+pub fn main(cell: Mutex<i32>, work: Task<i32>) -> unit {
+    let guard = cell.lock();
+    let done = await work;
+}

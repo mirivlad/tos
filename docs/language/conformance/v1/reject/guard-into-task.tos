@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.guard_into_task version 1.0 profile full;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 2, workers: 1, sync: 2, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// ADR-0036 section 5: a guard crossing a task boundary is a guard lifetime
+// finding, not a capture finding.
+pub fn main(cell: Mutex<i32>) -> unit {
+    let guard = cell.lock();
+    let child = spawn async { let held = guard; };
+    let done = await child;
+}

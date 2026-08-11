@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.region_mut_into_task version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 2, workers: 1, sync: 2, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// ADR-0037 section 2: a mutably granted region is not Transferable.
+pub fn main(area: Region<mut i32>) -> unit {
+    let child = spawn parallel { let held = area; };
+    let done = join child;
+}

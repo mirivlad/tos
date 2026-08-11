@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.region_mut_write version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 2, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// ADR-0037: a mutably granted region is writable through.
+pub fn main(borrow mut area: Region<mut i32>) -> unit {
+    area[0] = 1i32;
+}
