@@ -55,7 +55,7 @@ identity_question      Is actual language semantics executing from canonical
 - `source/tests/arena-bound` — the arena measurement, whole pipeline through the
   bounded heap.
 - `source/tests/performance-core` — the `docs/35` Stage 2 measurement harness.
-- `docs/language/conformance/v1/` — 25 accepted and 60 rejected vectors, three
+- `docs/language/conformance/v1/` — 31 accepted and 76 rejected vectors, three
   driver-level resolution cases, and the expectations table binding them.
 - `TOS_DEVELOPMENT_SPECIFICATION.md`, `MANIFEST.txt`, `SHA256SUMS` — generated
   and in sync.

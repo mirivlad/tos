@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.share_dma_region version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 2, shared: 4KiB, cleanup: 16, recursion: 8, imports: 0]
+
+// ADR-0037: a DMA region is not Shareable, so share does not accept it.
+pub fn main(area: DmaRegion<i32>) -> unit {
+    let handle = share(area);
+}

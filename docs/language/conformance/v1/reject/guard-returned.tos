@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.guard_returned version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 2, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// ADR-0036: a guard may not leave the scope that took it.
+pub fn main(cell: Mutex<i32>) -> MutexGuard<i32> {
+    let guard = cell.lock();
+    return guard;
+}

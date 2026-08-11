@@ -1,0 +1,9 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.forged_guard version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 2, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// ADR-0036 section 1: there is no constructor syntax for a guard.
+pub fn main() -> unit {
+    let guard = MutexGuard(0i32);
+}

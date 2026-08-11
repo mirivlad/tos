@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.region_shared version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 2, shared: 4KiB, cleanup: 16, recursion: 8, imports: 0]
+
+// ADR-0037 section 3: using one region from several places is written
+// share(region), which yields the Copy handle Shared<T>.
+pub fn main(area: Region<i32>) -> Shared<Region<i32>> {
+    return share(area);
+}
