@@ -164,15 +164,29 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    name, path, content identity, imports, declared types, qualified uses — so a
    loader holds one parse tree at a time. Verdicts are unchanged and tested both
    ways. `docs/evidence/STAGE2_ARENA_BOUND.md` carries the measured scaling.
-6. **The Stage 2 performance gate is open.** The native half is taken. The
-   reference half is takeable — `host-tools/qemu-test/stage2-reference-performance.sh`
-   measures it on the real path under the ADR-0040 profile — but the recorded
-   pair and its ratio are not yet in `docs/evidence/STAGE2_PERFORMANCE_P1.md`,
-   and no budget is asserted from the native record alone.
-7. **Differential testing is N/A, not passed.** docs/44 asks for agreement
+6. **The Stage 2 performance gate is open, and now for a measured reason.**
+   The reference half is takeable and has been taken on the real path
+   (`docs/evidence/STAGE2_REFERENCE_PLATFORM_P1.md`): a million engine
+   operations run in 6.06 s on the ADR-0040 platform, ~20x the native cost,
+   which is an ordinary TCG factor. The docs/35 ratio is still not computed,
+   because the native half was taken on a different fixture and dividing one by
+   the other would produce a number that looks like a ratio and is not one.
+7. **The bounded heap does not scale, and the frontend budget cannot be met
+   until it does.** A 256 KiB module — the published source-unit ceiling — did
+   not finish the frontend within 900 s on the reference platform, against a
+   ~3 s expectation from the platform's ordinary factor.
+   `BoundedHeap::try_allocate` is first-fit by walking every block from the base
+   of the arena, so allocation cost grows with live blocks and the frontend
+   becomes superlinear in module size. Every result it produces is correct; the
+   cost of reaching them is not. No accepted document is violated and no
+   semantics change. The fix is a free list or a rover, and it is deliberately
+   not attempted in the change that found it — the heap's reclaim, coalescing
+   and layout invariants are proved by tests a rushed rewrite would be checked
+   against rather than designed for.
+8. **Differential testing is N/A, not passed.** docs/44 asks for agreement
    between independent implementations, and there is one engine. A second
    implementation is the only thing that can change this.
-8. **Evidence is P1.** One machine, one build, no CI reproduction and no
+9. **Evidence is P1.** One machine, one build, no CI reproduction and no
    independent reproduction (docs/35). Nothing here claims P2 or P3.
 
 ## architect_approval
