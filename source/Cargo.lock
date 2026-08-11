@@ -7,6 +7,15 @@ name = "tos-boot-protocol"
 version = "0.1.0"
 
 [[package]]
+name = "tos-cache"
+version = "0.1.0"
+dependencies = [
+ "tos-hash",
+ "tos-ir",
+ "tos-verifier",
+]
+
+[[package]]
 name = "tos-capsule"
 version = "0.1.0"
 dependencies = [
@@ -84,6 +93,7 @@ name = "tos-tests-integration"
 version = "0.1.0"
 dependencies = [
  "tos-boot-protocol",
+ "tos-cache",
  "tos-capsule",
  "tos-core",
  "tos-engine",

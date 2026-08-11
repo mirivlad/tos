@@ -15,3 +15,4 @@ tos-core = { path = "../../crates/tos-core" }
 tos-ir = { path = "../../crates/tos-ir" }
 tos-verifier = { path = "../../crates/tos-verifier" }
 tos-engine = { path = "../../crates/tos-engine" }
+tos-cache = { path = "../../crates/tos-cache" }
