@@ -6,7 +6,9 @@
 //! task may take across its boundary, and what a closure may capture.
 //!
 //! - `E1301_USE_AFTER_MOVE` — a place is used after its value moved out.
-//! - `E1302_CONFLICTING_BORROW` — a borrow overlaps an incompatible live one.
+//! - `E1302_CONFLICTING_BORROW` — an operation breaks the exclusivity of a live
+//!   borrow: an incompatible new borrow, an owner read or write while a mutable
+//!   borrow is live, or a move while any borrow is live (ADR-0035).
 //! - `E1303_MUTATE_WHILE_BORROWED` — a write lands on a shared-borrowed place.
 //! - `E1304_INVALID_TASK_CAPTURE` — a task captures a non-transferable value.
 //! - `E1305_INVALID_CLOSURE_CAPTURE` — a closure captures a forbidden value.
@@ -15,6 +17,11 @@
 //! runs from the same entry state and the results are joined, so a move in one
 //! arm never leaks into its sibling, and a move on any reachable path blocks a
 //! later use.
+//!
+//! `defer` uses that same flow rather than a second mechanism. Registration has
+//! no ownership effect; the body is walked on each path that actually leaves the
+//! enclosing block, after the action that caused the exit, in reverse
+//! registration order.
 //!
 //! Copy-ness and place types come from the typing slice, which stays the single
 //! source of truth. An undetermined type is `Copy`, so an unknown never
@@ -87,6 +94,16 @@ struct BindingInfo {
     barrier: Option<NonTransferable>,
 }
 
+/// A cleanup registered by `defer`, with the scope that registered it.
+///
+/// ADR-0035 binds the lexical names of a defer body to the binding identities
+/// visible at the point of registration, so the scope stack is captured here
+/// and restored when the body finally runs.
+struct PendingDefer<'ast> {
+    body: &'ast Block,
+    scopes: Vec<Vec<(String, BindingId)>>,
+}
+
 pub(crate) fn check_ownership(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> {
     let mut checker = OwnershipChecker {
         source,
@@ -103,6 +120,7 @@ pub(crate) fn check_ownership(source: &SourceUnit, schema: &Schema) -> Vec<Diagn
         bindings: BTreeMap::new(),
         scopes: Vec::new(),
         diagnostics: Vec::new(),
+        cleanup_reported: BTreeSet::new(),
     };
     for function in schema.functions() {
         let state = State::entry();
@@ -130,6 +148,12 @@ struct OwnershipChecker<'source> {
     bindings: BTreeMap<BindingId, BindingInfo>,
     scopes: Vec<Vec<(String, BindingId)>>,
     diagnostics: Vec<Diagnostic>,
+    /// Findings already reported from inside a cleanup body, by code and offset.
+    ///
+    /// One `defer` body is analysed once per exit path that runs it, which is
+    /// what makes a path-specific mistake visible. The body is still one place
+    /// in the source, so the same finding is reported once.
+    cleanup_reported: BTreeSet<(&'static str, usize)>,
 }
 
 impl<'source> OwnershipChecker<'source> {
@@ -241,21 +265,70 @@ impl<'source> OwnershipChecker<'source> {
 
     // ---------------------------------------------------------------- uses
 
-    /// Records a read of a place, reporting a use after move.
+    /// Whether a place is reached through its owning binding.
+    ///
+    /// ADR-0035 exempts the borrow binding itself: an operation performed
+    /// through a correct borrow is not an owner alias and stays legal according
+    /// to that borrow's kind.
+    fn is_owner_access(&self, place: &Place) -> bool {
+        !self
+            .info(place.binding())
+            .is_some_and(|info| info.barrier == Some(NonTransferable::Borrow))
+    }
+
+    /// Reports an operation that breaks the exclusivity of a live borrow.
+    ///
+    /// ADR-0035 makes `E1302_CONFLICTING_BORROW` the whole exclusivity
+    /// violation rather than only a second borrow, so the operation that broke
+    /// it is a field of the diagnostic.
+    fn report_conflict(
+        &mut self,
+        place: &Place,
+        operation: &'static str,
+        held: (Place, BorrowKind, Span),
+        span: Span,
+    ) {
+        let (held_place, held_kind, held_at) = held;
+        let spelled = self.spell(place);
+        let held_spelled = self.spell(&held_place);
+        let diagnostic = self
+            .report("E1302_CONFLICTING_BORROW", Stage::Ownership, span)
+            .with_field("place", spelled)
+            .with_field("operation", operation)
+            .with_field("conflicts_with", borrow_word(held_kind))
+            .with_field("held_place", held_spelled)
+            .with_field("held_at", held_at.start());
+        self.diagnostics.push(diagnostic);
+    }
+
+    /// Records a read of a place, reporting a use after move and an owner read
+    /// that goes around a live mutable borrow.
     fn read_place(&mut self, expression: &Expression, state: &mut State) {
         let Some((place, _)) = self.place_of(expression) else {
             return;
         };
-        let Some(record) = state.blocking_move(&place) else {
+        self.check_moved(&place, expression.span(), state);
+        if !self.is_owner_access(&place) {
+            return;
+        }
+        if let Some(held) = state.mutable_borrow_of(&place) {
+            let held = (held.place.clone(), held.kind, held.at);
+            self.report_conflict(&place, "read", held, expression.span());
+        }
+    }
+
+    /// Reports a use of a place whose value has moved out.
+    fn check_moved(&mut self, place: &Place, span: Span, state: &State) {
+        let Some(record) = state.blocking_move(place) else {
             return;
         };
         let moved = record.place.clone();
         let at = record.at;
         let certainty = record.certainty;
-        let spelled = self.spell(&place);
+        let spelled = self.spell(place);
         let moved_spelled = self.spell(&moved);
         let diagnostic = self
-            .report("E1301_USE_AFTER_MOVE", Stage::Ownership, expression.span())
+            .report("E1301_USE_AFTER_MOVE", Stage::Ownership, span)
             .with_field("place", spelled)
             .with_field("moved", moved_spelled)
             .with_field("moved_at", at.start())
@@ -279,10 +352,15 @@ impl<'source> OwnershipChecker<'source> {
             return;
         }
         // A borrow names someone else's value and cannot be moved from.
-        if self
-            .info(place.binding())
-            .is_some_and(|info| info.barrier == Some(NonTransferable::Borrow))
-        {
+        if !self.is_owner_access(&place) {
+            return;
+        }
+        // ADR-0035: a move invalidates the place, so any live borrow of an
+        // overlapping place — shared or mutable — loses what it borrowed. The
+        // value stays put, so no use-after-move cascades from the rejection.
+        if let Some(held) = state.any_borrow_of(&place) {
+            let held = (held.place.clone(), held.kind, held.at);
+            self.report_conflict(&place, "move", held, expression.span());
             return;
         }
         state.record_move(place, expression.span());
@@ -334,7 +412,7 @@ impl<'source> OwnershipChecker<'source> {
         span: Span,
         state: &mut State,
     ) {
-        self.walk_expression(operand, state);
+        self.walk_borrow_operand(operand, state);
         let Some((place, _)) = self.place_of(operand) else {
             return;
         };
@@ -347,6 +425,7 @@ impl<'source> OwnershipChecker<'source> {
             let diagnostic = self
                 .report("E1302_CONFLICTING_BORROW", Stage::Ownership, span)
                 .with_field("place", spelled)
+                .with_field("operation", "borrow")
                 .with_field("borrow", borrow_word(kind))
                 .with_field("conflicts_with", borrow_word(existing_kind))
                 .with_field("held_place", existing_spelled)
@@ -362,11 +441,49 @@ impl<'source> OwnershipChecker<'source> {
         });
     }
 
-    /// Reports a write that lands on a shared-borrowed place.
+    /// Evaluates the operand of a borrow.
+    ///
+    /// It is read like any other place for the purpose of a use after move, but
+    /// it is not an owner access: the only exclusivity question a borrow raises
+    /// is against another live borrow, which [`Self::take_borrow`] answers.
+    fn walk_borrow_operand(&mut self, operand: &Expression, state: &mut State) {
+        match operand.form() {
+            ExpressionForm::Name | ExpressionForm::Field | ExpressionForm::Index => {
+                if let Some((place, _)) = self.place_of(operand) {
+                    self.check_moved(&place, operand.span(), state);
+                }
+                if operand.form() == ExpressionForm::Index {
+                    if let Some(index) = operand.right() {
+                        self.walk_expression(index, state);
+                    }
+                }
+            }
+            ExpressionForm::Group => {
+                if let Some(inner) = operand.inner() {
+                    self.walk_borrow_operand(inner, state);
+                }
+            }
+            _ => self.walk_expression(operand, state),
+        }
+    }
+
+    /// Reports a write that goes around a live borrow of the written place.
+    ///
+    /// ADR-0035 splits the two cases: a live mutable borrow makes the owner
+    /// write an exclusivity violation (`E1302`), while a live shared borrow
+    /// makes it the specialized `E1303`.
     fn check_write(&mut self, target: &Expression, state: &mut State) {
         let Some((place, _)) = self.place_of(target) else {
             return;
         };
+        if !self.is_owner_access(&place) {
+            return;
+        }
+        if let Some(held) = state.mutable_borrow_of(&place) {
+            let held = (held.place.clone(), held.kind, held.at);
+            self.report_conflict(&place, "write", held, target.span());
+            return;
+        }
         let Some(existing) = state.shared_borrow_of(&place) else {
             return;
         };
@@ -465,25 +582,94 @@ impl<'source> OwnershipChecker<'source> {
         }
     }
 
+    // ------------------------------------------------------------- cleanup
+
+    /// Runs the cleanups a path leaving a block has registered.
+    ///
+    /// The action that caused the exit has already been evaluated by the time
+    /// this is called, so a cleanup observes the state that exit really leaves.
+    /// The bodies run in reverse registration order and the state one leaves is
+    /// the input of the next, which is what makes a consuming cleanup visible
+    /// to the cleanups registered before it.
+    fn unwind(&mut self, state: Option<State>, pending: &[PendingDefer<'_>]) -> Option<State> {
+        let mut state = state?;
+        for cleanup in pending.iter().rev() {
+            let saved = std::mem::replace(&mut self.scopes, cleanup.scopes.clone());
+            let reported = self.diagnostics.len();
+            let outcome = self.walk_block(cleanup.body, state.clone());
+            self.scopes = saved;
+            self.keep_new_cleanup_findings(reported);
+            // A defer body cannot divert control — `E1225_INVALID_DEFER` owns
+            // that — so normal completion is the ordinary channel; the others
+            // are joined rather than dropped so a rejected body still threads
+            // its facts on.
+            state = join_option(
+                join_option(outcome.normal, outcome.breaks),
+                join_option(outcome.continues, outcome.returns),
+            )
+            .unwrap_or(state);
+        }
+        Some(state)
+    }
+
+    /// Keeps only the cleanup findings not already reported for that source
+    /// position.
+    fn keep_new_cleanup_findings(&mut self, from: usize) {
+        let fresh: Vec<Diagnostic> = self.diagnostics.split_off(from);
+        for diagnostic in fresh {
+            let key = (diagnostic.code(), diagnostic.span().start());
+            if self.cleanup_reported.insert(key) {
+                self.diagnostics.push(diagnostic);
+            }
+        }
+    }
+
     // --------------------------------------------------------------- walks
 
-    fn walk_block(&mut self, block: &Block, state: State) -> Flow {
+    /// Walks a block, unwinding its registered cleanups on every path that
+    /// leaves it.
+    ///
+    /// ADR-0035: a `defer` statement only registers. The cleanups a path runs
+    /// are exactly those registered before that path left, so they are collected
+    /// as the statements are folded and run at the point a channel escapes, in
+    /// reverse registration order. Normal completion runs all of them. Only
+    /// after cleanup do the block's bindings leave scope.
+    fn walk_block<'ast>(&mut self, block: &'ast Block, state: State) -> Flow {
         self.push_scope();
         let depth = self.scopes.len();
+        let mut pending: Vec<PendingDefer<'ast>> = Vec::new();
         let mut flow = Flow::normal(state);
         for statement in block.statements() {
             let Some(current) = flow.normal.take() else {
-                // Everything after a break, continue or return is unreachable.
+                // Everything after a break, continue or return is unreachable,
+                // including any `defer` it would have registered.
                 break;
             };
             let next = self.walk_statement(statement, current);
+            if statement.form() == StatementForm::Defer {
+                if let Some(body) = statement.body() {
+                    // Binding identity is fixed lexically here, so a later
+                    // shadowing declaration cannot change what the body means.
+                    pending.push(PendingDefer {
+                        body,
+                        scopes: self.scopes.clone(),
+                    });
+                }
+            }
+            // A path that leaves the block at this statement runs exactly the
+            // cleanups registered so far; paths joined earlier already ran
+            // theirs.
+            let breaks = self.unwind(next.breaks, &pending);
+            let continues = self.unwind(next.continues, &pending);
+            let returns = self.unwind(next.returns, &pending);
             flow = Flow {
                 normal: next.normal,
-                breaks: join_option(flow.breaks, next.breaks),
-                continues: join_option(flow.continues, next.continues),
-                returns: join_option(flow.returns, next.returns),
+                breaks: join_option(flow.breaks, breaks),
+                continues: join_option(flow.continues, continues),
+                returns: join_option(flow.returns, returns),
             };
         }
+        flow.normal = self.unwind(flow.normal, &pending);
         let ids: Vec<BindingId> = self
             .scopes
             .last()
@@ -567,11 +753,10 @@ impl<'source> OwnershipChecker<'source> {
                 Some(body) => self.walk_block(body, state),
                 None => Flow::normal(state),
             },
-            // docs/40 section 5 registers a `defer` body now and runs it at
-            // scope exit. Which ownership state it observes there — what it
-            // captures, whether its cleanup consumes, and what the enclosing
-            // scope may still use in between — is not stated, so this slice
-            // analyses nothing inside it rather than choosing a semantics.
+            // ADR-0035: registering a cleanup reads, borrows and moves nothing.
+            // The body is analysed where it actually runs, which
+            // [`Self::walk_block`] does on each path that leaves the enclosing
+            // block.
             StatementForm::Defer => Flow::normal(state),
         }
     }
@@ -694,8 +879,11 @@ impl<'source> OwnershipChecker<'source> {
         let mut current = entry.clone();
         for _ in 0..MAX_LOOP_ROUNDS {
             let suppressed = self.diagnostics.len();
+            let seen = self.cleanup_reported.clone();
             let outcome = self.walk_block(body, current.clone());
             self.diagnostics.truncate(suppressed);
+            // A silent round must not mark a cleanup finding as already told.
+            self.cleanup_reported = seen;
             let back = join_option(outcome.normal, outcome.continues);
             let next = match back {
                 Some(back) => State::join(current.clone(), back),

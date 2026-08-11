@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.defer_move_then_cleanup version 1.0 profile full;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub record Handle [payload: bytes]
+
+pub fn close(handle: Handle) -> unit { }
+
+// The cleanup is checked where it runs. By the time the block is left the
+// handle has already moved, so the deferred release is the use that fails.
+pub fn main(handle: Handle) -> unit {
+    close(handle);
+    defer { close(handle); }
+}

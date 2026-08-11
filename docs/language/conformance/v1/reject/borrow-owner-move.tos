@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.borrow_owner_move version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub record Message [payload: bytes]
+
+pub fn take(message: Message) -> unit { }
+pub fn peek(borrow message: Message) -> unit { }
+
+// A move invalidates the place, so it may not happen while any borrow — here
+// an immutable one — still names it.
+pub fn main(message: Message) -> unit {
+    let view = borrow message;
+    take(message);
+}

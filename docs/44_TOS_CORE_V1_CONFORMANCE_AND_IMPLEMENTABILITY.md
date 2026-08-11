@@ -264,9 +264,9 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 
 | Code | Condition |
 |---|---|
-| `E1301_USE_AFTER_MOVE` | a place is used after its value moved out on some reachable path, by an assignment, an owning argument, a return, placement in an aggregate, a match subject, or a capture |
-| `E1302_CONFLICTING_BORROW` | a borrow overlaps a live borrow it may not coexist with: any mutable borrow alongside another borrow of an overlapping place |
-| `E1303_MUTATE_WHILE_BORROWED` | a write lands on a place that a live immutable borrow overlaps |
+| `E1301_USE_AFTER_MOVE` | a place is used after its value moved out on some reachable path, by an assignment, an owning argument, a return, placement in an aggregate, a match subject, or a capture; a deferred cleanup body is checked on the exit path that runs it |
+| `E1302_CONFLICTING_BORROW` | an operation violates the exclusivity of a live borrow of an overlapping place: a new borrow incompatible with a live overlapping borrow, an owner read or use while a mutable borrow is live, an owner mutation while a mutable borrow is live, or a move or other invalidation while any borrow is live; the `operation` field names which |
+| `E1303_MUTATE_WHILE_BORROWED` | a write lands on a place that a live immutable, shared borrow overlaps |
 | `E1304_INVALID_TASK_CAPTURE` | a task captures a value that is not `Transferable`: a borrow, a lock guard, a mutable region, a non-transferable capability, or a mutable binding by alias |
 | `E1305_INVALID_CLOSURE_CAPTURE` | a closure captures a borrow, a mutable binding by alias, a lock guard, a non-transferable capability, or a plain mutable region |
 

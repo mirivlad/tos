@@ -269,6 +269,24 @@ a defer records both the original and cleanup cause then terminates. This
 bounded rule gives cancellation deterministic cleanup without implicit general
 unwinding.
 
+A `defer` is deferred lexical cleanup, not a capture, and it is not a closure:
+the closure-capture rules of `E1305_INVALID_CLOSURE_CAPTURE` do not apply to it.
+Executing the `defer` statement registers the cleanup and nothing else. At that
+point the lexical names in its body bind to the binding identities visible at
+the point of registration, and the values of those bindings are neither read,
+borrowed nor moved. Shadowing after registration does not change which binding
+the body refers to. On each exit path the action that caused the exit is
+evaluated first, then the defers registered on the path actually taken run in
+reverse registration order, each observing the ownership and borrow state the
+previous one left; only then do bindings leave scope and their bounded `drop`
+run. A defer body is therefore checked against the ownership state that exists
+on the concrete exit path, so ordinary correct use of a resource between
+registering its cleanup and leaving the block is allowed, while a cleanup that
+cannot run soundly on a path that reaches it is rejected there. `return`,
+`break`, `continue` and normal block exit unwind the cleanups of exactly the
+lexical blocks they leave; `?` and cancellation use the same model rather than a
+second cleanup mechanism. See ADR-0035.
+
 ## 5. Ownership and borrows
 
 Safe non-`Copy` values are affine: every value has one owner and is moved when
@@ -290,9 +308,28 @@ or exactly one mutable borrow, never both. An immutable borrow cannot mutate
 the value; a mutable borrow cannot be aliased. The checker determines a borrow
 region from the smallest enclosing expression/block required by use. Because
 V1 borrowed values neither escape nor enter a task/aggregate, no inferred
-cross-function lifetime notation is needed. A conflicting borrow is
-`E1302_CONFLICTING_BORROW`; mutation while immutably borrowed is
-`E1303_MUTATE_WHILE_BORROWED`.
+cross-function lifetime notation is needed.
+
+`E1302_CONFLICTING_BORROW` covers any operation that violates the exclusivity of
+a live borrow of an overlapping place, not only the creation of a second borrow:
+a new borrow incompatible with a live overlapping one; an ordinary owner read or
+use of an overlapping place while a mutable borrow is live; an ordinary owner
+mutation of an overlapping place while a mutable borrow is live; and a move or
+other invalidation of an overlapping place while any borrow, shared or mutable,
+is live. `E1303_MUTATE_WHILE_BORROWED` is the specialized case of a write to an
+overlapping place while an immutable, shared borrow is live. The accepted matrix
+is
+
+```text
+shared borrow  + owner write   -> E1303
+mutable borrow + owner read    -> E1302
+mutable borrow + owner write   -> E1302
+any borrow     + owner move    -> E1302
+incompatible borrow pair       -> E1302
+```
+
+Operations performed through the correct borrow binding itself are not owner
+aliases and remain legal according to that borrow's kind. See ADR-0035.
 
 An owned record/array/enum may be partially moved only when the remaining value
 is never used except to move/drop its untouched fields. A mutable field borrow

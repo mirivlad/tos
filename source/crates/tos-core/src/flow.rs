@@ -244,6 +244,20 @@ impl State {
             .find(|record| record.kind == BorrowKind::Shared && record.place.overlaps(place))
     }
 
+    /// A live mutable borrow whose exclusivity an owner access to `place` breaks.
+    pub(crate) fn mutable_borrow_of(&self, place: &Place) -> Option<&BorrowRecord> {
+        self.borrows
+            .iter()
+            .find(|record| record.kind == BorrowKind::Mutable && record.place.overlaps(place))
+    }
+
+    /// Any live borrow of an overlapping place, which a move would invalidate.
+    pub(crate) fn any_borrow_of(&self, place: &Place) -> Option<&BorrowRecord> {
+        self.borrows
+            .iter()
+            .find(|record| record.place.overlaps(place))
+    }
+
     pub(crate) fn record_borrow(&mut self, record: BorrowRecord) {
         self.borrows.push(record);
     }

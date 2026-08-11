@@ -3652,6 +3652,291 @@ mod tests {
         assert_eq!(codes(&diagnostics, "E1304_INVALID_TASK_CAPTURE"), 0);
     }
 
+    // ADR-0035 makes `E1302_CONFLICTING_BORROW` the whole exclusivity
+    // violation. The five rows of its matrix are checked one by one.
+
+    #[test]
+    fn an_owner_read_under_a_mutable_borrow_is_rejected() {
+        let (source, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> i32 {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             let held = borrow mut counter; return counter.value; }}"
+        ));
+        let conflict = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1302_CONFLICTING_BORROW")
+            .expect("an owner read goes around the exclusive borrow");
+        assert_eq!(conflict.stage(), Stage::Ownership);
+        assert_eq!(conflict.field("operation"), Some("read"));
+        assert_eq!(conflict.field("place"), Some("counter.value"));
+        assert_eq!(conflict.field("conflicts_with"), Some("borrow mut"));
+        assert_eq!(conflict.span().text(&source), "counter.value");
+    }
+
+    #[test]
+    fn an_owner_write_under_a_mutable_borrow_is_rejected() {
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> unit {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             let held = borrow mut counter; counter.value = 1i32; }}"
+        ));
+        let conflict = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1302_CONFLICTING_BORROW")
+            .expect("an owner write goes around the exclusive borrow");
+        assert_eq!(conflict.field("operation"), Some("write"));
+        assert_eq!(
+            codes(&diagnostics, "E1303_MUTATE_WHILE_BORROWED"),
+            0,
+            "E1303 stays the shared-borrow case"
+        );
+    }
+
+    #[test]
+    fn a_move_under_a_live_borrow_is_rejected() {
+        let (_, diagnostics) = check(&std::format!(
+            "{AFFINE} fn peek(borrow message: Message) -> unit {{ }} \
+             pub fn main(message: Message) -> unit {{ \
+             let view = borrow message; take(message); }}"
+        ));
+        let conflict = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1302_CONFLICTING_BORROW")
+            .expect("a move invalidates what a live borrow named");
+        assert_eq!(conflict.field("operation"), Some("move"));
+        assert_eq!(conflict.field("conflicts_with"), Some("borrow"));
+        assert_eq!(
+            moves(&diagnostics),
+            0,
+            "the rejected move leaves the value in place"
+        );
+    }
+
+    #[test]
+    fn using_the_borrow_binding_itself_stays_legal() {
+        // ADR-0035: an operation through the correct borrow is not an owner
+        // alias. Reading through a shared borrow and writing through a mutable
+        // one are exactly as legal as before.
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> i32 {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             let held = borrow mut counter; write(borrow mut held); return read(borrow held); }}"
+        ));
+        assert_eq!(codes(&diagnostics, "E1302_CONFLICTING_BORROW"), 0);
+        assert_eq!(codes(&diagnostics, "E1303_MUTATE_WHILE_BORROWED"), 0);
+    }
+
+    #[test]
+    fn an_owner_read_under_a_shared_borrow_is_allowed() {
+        let (_, diagnostics) = check(&std::format!(
+            "{COUNTER} pub fn main() -> i32 {{ let mut counter = Counter(value: 0i32, other: 0i32); \
+             let view = borrow counter; return counter.value; }}"
+        ));
+        assert_eq!(
+            codes(&diagnostics, "E1302_CONFLICTING_BORROW"),
+            0,
+            "any number of immutable borrows may coexist with a read"
+        );
+    }
+
+    // ADR-0035 defer ownership semantics. `defer` needs the Full profile.
+
+    const CLEANUP: &str = "module system.boot version 1.0 profile full; \
+         resource [fuel: 1000] record Message [payload: bytes] \
+         fn take(message: Message) -> unit { } \
+         fn peek(borrow message: Message) -> unit { } ";
+
+    fn check_cleanup(body: &str) -> (SourceUnit, Vec<Diagnostic>) {
+        let text = std::format!("{CLEANUP}{body}");
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        (source, diagnostics)
+    }
+
+    /// Where the nth `defer` keyword starts, for asserting which body reported.
+    fn defer_at(source: &SourceUnit, nth: usize) -> usize {
+        let text = core::str::from_utf8(source.bytes()).expect("source is UTF-8");
+        text.match_indices("defer").nth(nth).expect("that defer").0
+    }
+
+    #[test]
+    fn registering_a_cleanup_leaves_the_resource_usable() {
+        let (_, diagnostics) = check_cleanup(
+            "pub fn main(message: Message) -> unit { \
+             defer { take(message); } peek(borrow message); peek(borrow message); }",
+        );
+        let ownership: Vec<&str> = diagnostics
+            .iter()
+            .filter(|d| d.stage() == Stage::Ownership)
+            .map(|d| d.code())
+            .collect();
+        assert!(
+            ownership.is_empty(),
+            "registration reads, borrows and moves nothing: {ownership:?}"
+        );
+    }
+
+    #[test]
+    fn a_move_before_a_deferred_consuming_use_is_reported_in_the_cleanup() {
+        let (source, diagnostics) = check_cleanup(
+            "pub fn main(message: Message) -> unit { take(message); defer { take(message); } }",
+        );
+        assert_eq!(moves(&diagnostics), 1);
+        let reported = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+            .unwrap();
+        assert!(
+            reported.span().start() > defer_at(&source, 0),
+            "the cleanup is what uses the moved value"
+        );
+    }
+
+    #[test]
+    fn a_return_path_runs_the_registered_cleanup() {
+        // Only the returning path has already moved the value, so the cleanup
+        // is rejected there and nowhere else.
+        let (source, diagnostics) = check_cleanup(
+            "pub fn main(ready: bool, message: Message) -> unit { \
+             defer { take(message); } if (ready) { take(message); return; } }",
+        );
+        assert_eq!(moves(&diagnostics), 1);
+        assert!(
+            diagnostics
+                .iter()
+                .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+                .unwrap()
+                .span()
+                .start()
+                > defer_at(&source, 0)
+        );
+    }
+
+    #[test]
+    fn a_break_runs_the_cleanups_of_the_block_it_leaves() {
+        let (source, diagnostics) = check_cleanup(
+            "pub fn main(message: Message) -> unit { \
+             loop { defer { take(message); } break; } take(message); }",
+        );
+        assert_eq!(moves(&diagnostics), 1);
+        assert!(
+            diagnostics
+                .iter()
+                .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+                .unwrap()
+                .span()
+                .start()
+                > defer_at(&source, 0),
+            "the break ran the loop body's cleanup, so the later use fails"
+        );
+    }
+
+    #[test]
+    fn a_break_does_not_run_the_cleanups_of_blocks_it_stays_inside() {
+        let (source, diagnostics) = check_cleanup(
+            "pub fn main(ready: bool, message: Message) -> unit { \
+             defer { take(message); } while (ready) { break; } take(message); }",
+        );
+        assert_eq!(
+            moves(&diagnostics),
+            1,
+            "only the cleanup itself may fail, not the use before it"
+        );
+        assert!(
+            diagnostics
+                .iter()
+                .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+                .unwrap()
+                .span()
+                .start()
+                > defer_at(&source, 0),
+            "the break left no enclosing block, so the outer cleanup did not run"
+        );
+    }
+
+    #[test]
+    fn nested_cleanups_run_in_reverse_registration_order() {
+        let (source, diagnostics) = check_cleanup(
+            "pub fn main(message: Message) -> unit { \
+             defer { take(message); } defer { take(message); } }",
+        );
+        assert_eq!(moves(&diagnostics), 1);
+        let reported = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+            .unwrap();
+        assert!(
+            reported.span().start() < defer_at(&source, 1),
+            "the later registration ran first, so the earlier one found nothing"
+        );
+    }
+
+    #[test]
+    fn one_cleanup_effect_is_visible_to_the_next() {
+        let (source, diagnostics) = check_cleanup(
+            "pub fn main(message: Message) -> unit { \
+             defer { peek(borrow message); } defer { take(message); } }",
+        );
+        assert_eq!(moves(&diagnostics), 1);
+        assert!(
+            diagnostics
+                .iter()
+                .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+                .unwrap()
+                .span()
+                .start()
+                < defer_at(&source, 1),
+            "the consuming cleanup ran first and the borrowing one saw it"
+        );
+    }
+
+    #[test]
+    fn shadowing_after_registration_does_not_rebind_the_cleanup() {
+        // Binding identity is fixed lexically where the cleanup registers, so
+        // the body still names the moved parameter, not the later local.
+        let (_, diagnostics) = check_cleanup(
+            "pub fn main(message: Message) -> unit { take(message); \
+             defer { take(message); } \
+             let message = Message(payload: b\"other\"); peek(borrow message); }",
+        );
+        assert_eq!(
+            moves(&diagnostics),
+            1,
+            "a late-bound cleanup would have found the fresh local instead"
+        );
+    }
+
+    #[test]
+    fn a_cleanup_registered_on_one_path_runs_on_that_path_only() {
+        let (_, diagnostics) = check_cleanup(
+            "pub fn main(ready: bool, message: Message) -> unit { \
+             if (ready) { defer { take(message); } } take(message); }",
+        );
+        assert_eq!(moves(&diagnostics), 1);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .find(|d| d.code() == "E1301_USE_AFTER_MOVE")
+                .unwrap()
+                .field("certainty"),
+            Some("on some paths"),
+            "the other path never registered the cleanup"
+        );
+    }
+
+    #[test]
+    fn a_cleanup_after_an_exit_never_registers() {
+        let (_, diagnostics) = check_cleanup(
+            "pub fn main(message: Message) -> unit { \
+             take(message); return; defer { take(message); } }",
+        );
+        assert_eq!(
+            moves(&diagnostics),
+            0,
+            "the return left before the registration was reached"
+        );
+    }
+
     #[test]
     fn a_type_argument_list_nested_directly_inside_another_parses() {
         // The lexer emits `>>` as one shift operator, so both argument lists

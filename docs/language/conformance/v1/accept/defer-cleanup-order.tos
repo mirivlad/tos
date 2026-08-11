@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.defer_cleanup_order version 1.0 profile full;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub record Handle [payload: bytes]
+
+pub fn close(handle: Handle) -> unit { }
+pub fn inspect(borrow handle: Handle) -> unit { }
+
+// Registering a cleanup neither reads, borrows nor moves the value, so the
+// handle stays usable for as long as the block does.
+pub fn used_after_registration(handle: Handle) -> unit {
+    defer { close(handle); }
+    inspect(borrow handle);
+    inspect(borrow handle);
+}
+
+// Cleanups run in reverse registration order, and the ownership state one
+// leaves is the input of the next, so two resources are released cleanly.
+pub fn released_in_reverse(first: Handle, second: Handle) -> unit {
+    defer { close(first); }
+    defer { close(second); }
+    inspect(borrow first);
+    inspect(borrow second);
+}
+
+// The returning path runs the cleanup too, and it is valid there.
+pub fn released_on_every_exit(ready: bool, handle: Handle) -> unit {
+    defer { close(handle); }
+    if (ready) { return; }
+    inspect(borrow handle);
+}
