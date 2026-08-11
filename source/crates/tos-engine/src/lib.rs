@@ -121,6 +121,8 @@ pub struct Outcome {
     pub cleanups_peak: u128,
     /// The most of the declared `shared` budget held at any one moment.
     pub shared_peak: u128,
+    /// The most synchronization guards live at any one moment.
+    pub sync_peak: u128,
 }
 
 /// Why a module could not be run at all, before any instruction executed.
@@ -179,6 +181,9 @@ pub fn run(
         shared_limit: envelope.shared,
         shared_held: 0,
         shared_peak: 0,
+        sync_limit: envelope.sync,
+        sync_held: 0,
+        sync_peak: 0,
         cleanup_limit: envelope.cleanup,
         cleanups_live: 0,
         cleanups_peak: 0,
@@ -186,6 +191,7 @@ pub fn run(
         workers_held: 0,
         frame_allocation: 0,
         frame_cleanups: 0,
+        frame_sync: 0,
     };
     // docs/41 section 6: a reservation is checked before the thing it pays for
     // happens. A module that declares no worker cannot run one instruction.
@@ -202,6 +208,7 @@ pub fn run(
         allocation_peak: engine.allocation_peak,
         cleanups_peak: engine.cleanups_peak,
         shared_peak: engine.shared_peak,
+        sync_peak: engine.sync_peak,
     }))
 }
 
@@ -214,6 +221,10 @@ struct Engine<'module> {
     max_depth: u128,
     task_limit: u128,
     tasks_started: u128,
+    /// Live synchronization guards, and the most ever live at once.
+    sync_limit: u128,
+    sync_held: u128,
+    sync_peak: u128,
     /// Bytes of the declared `shared` budget currently held, and the most ever
     /// held at once. ADR-0037 makes a `Shared<T>` count against it, so sharing
     /// is bounded by the envelope like every other resource.
@@ -233,6 +244,8 @@ struct Engine<'module> {
     workers_held: u128,
     /// What the frame currently running has charged, released when it returns.
     frame_allocation: u128,
+    /// Guards this frame took, released when it returns.
+    frame_sync: u128,
     frame_cleanups: u128,
 }
 
@@ -310,6 +323,23 @@ impl Engine<'_> {
         self.allocation_held += bytes;
         self.allocation_peak = self.allocation_peak.max(self.allocation_held);
         Ok(bytes)
+    }
+
+    /// Reserves one live synchronization guard.
+    fn reserve_sync(&mut self, source: SourceRef) -> Result<(), Trap> {
+        if self.sync_held + 1 > self.sync_limit {
+            return Err(Trap::new(
+                "RUNTIME_SYNC_LIMIT",
+                alloc::format!(
+                    "one more live guard exceeds the declared limit of {}",
+                    self.sync_limit
+                ),
+                source,
+            ));
+        }
+        self.sync_held += 1;
+        self.sync_peak = self.sync_peak.max(self.sync_held);
+        Ok(())
     }
 
     /// Charges the declared `shared` budget for a value about to be shared.
@@ -432,6 +462,7 @@ impl Engine<'_> {
         // many times it calls.
         let outer_allocation = core::mem::take(&mut self.frame_allocation);
         let outer_cleanups = core::mem::take(&mut self.frame_cleanups);
+        let outer_sync = core::mem::take(&mut self.frame_sync);
 
         let mut values: Vec<Option<Value>> = alloc::vec![None; function.values.len()];
         for (slot, argument) in arguments.into_iter().enumerate() {
@@ -462,6 +493,10 @@ impl Engine<'_> {
         self.release_allocation(charged);
         let registered = core::mem::replace(&mut self.frame_cleanups, outer_cleanups);
         self.release_cleanups(registered);
+        // A guard cannot outlive the frame that took it (ADR-0036), so the
+        // frame's guards are released with the frame.
+        let guards = core::mem::replace(&mut self.frame_sync, outer_sync);
+        self.sync_held = self.sync_held.saturating_sub(guards);
         outcome.map(|value| (value, values))
     }
 
@@ -744,6 +779,20 @@ impl Engine<'_> {
                         payload: alloc::vec![self.call(body, captures)?],
                     }
                 })
+            }
+            // Bootstrap serializes (docs/43 section 7), so a lock cannot block
+            // and there is no contention to model. What the engine can prove
+            // here is the accounting: docs/41 section 6 makes `sync` the
+            // maximum live synchronization objects and guards, and a guard may
+            // not be returned, stored in an aggregate or cross a boundary
+            // (ADR-0036), so its lifetime is inside the frame that took it.
+            // Charging at acquisition and releasing when that frame returns is
+            // therefore exact at frame granularity rather than an estimate.
+            Op::Lock { object, .. } => {
+                let value = self.operand(object, values, source)?;
+                self.reserve_sync(source)?;
+                self.frame_sync += 1;
+                Some(value)
             }
             // `share` consumes its argument and produces the same value behind
             // a `Shared` handle. Bootstrap has one context, so the sharing is
@@ -1358,6 +1407,8 @@ pub struct Accounting {
     pub worker_limit: u128,
     pub shared_peak: u128,
     pub shared_limit: u128,
+    pub sync_peak: u128,
+    pub sync_limit: u128,
 }
 
 impl Accounting {
@@ -1378,6 +1429,8 @@ impl Accounting {
             worker_limit: module.header.resource_envelope.workers,
             shared_peak: outcome.shared_peak,
             shared_limit: module.header.resource_envelope.shared,
+            sync_peak: outcome.sync_peak,
+            sync_limit: module.header.resource_envelope.sync,
         }
     }
 }

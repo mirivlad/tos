@@ -1047,6 +1047,37 @@ fn check_guard_lifetimes(module: &Module) -> Result<(), Finding> {
             let mut held: bool = false;
             for instruction in &block.instructions {
                 let at = alloc::format!("functions[{index}].blocks[{block_index}]");
+                // An acquisition must name a real synchronization object and
+                // produce the guard that object grants. Checking it here is
+                // what stops a forged module from calling anything a lock.
+                if let Op::Lock { object, mode } = &instruction.op {
+                    let object_ty = match object {
+                        Operand::Value(id) => function.values.get(*id).copied(),
+                        Operand::Constant(_) => None,
+                    };
+                    let expected = match (object_ty.and_then(|ty| module.types.get(ty)), mode) {
+                        (Some(TypeDef::Mutex(inner)), tos_ir::LockMode::Mutex) => {
+                            Some(TypeDef::MutexGuard(*inner))
+                        }
+                        (Some(TypeDef::RwLock(inner)), tos_ir::LockMode::Read) => {
+                            Some(TypeDef::ReadGuard(*inner))
+                        }
+                        (Some(TypeDef::RwLock(inner)), tos_ir::LockMode::Write) => {
+                            Some(TypeDef::WriteGuard(*inner))
+                        }
+                        _ => None,
+                    };
+                    let produced = instruction.result.and_then(|id| {
+                        function.values.get(id).and_then(|ty| module.types.get(*ty))
+                    });
+                    if expected.is_none() || produced != expected.as_ref() {
+                        return Err(Finding::new(
+                            "V2031_SYNC",
+                            at.clone(),
+                            "a lock operation does not name a synchronization object or does not produce its guard",
+                        ));
+                    }
+                }
                 let escaping = match &instruction.op {
                     Op::Spawn { captures, .. } => Some(("task_boundary", captures)),
                     Op::Closure { captures, .. } => Some(("task_boundary", captures)),

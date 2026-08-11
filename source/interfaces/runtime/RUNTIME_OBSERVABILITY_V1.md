@@ -96,7 +96,7 @@ Emitted before the outcome on a completed run.
 | Identifier | Required fields | Meaning |
 |---|---|---|
 | `TOS.RUN.VERIFIED` | `module=` `digest=sha256:<64 hex>` `verifier=` | The independent verifier issued a receipt for this exact module. |
-| `TOS.RUN.ACCOUNTING` | `fuel=` `depth=` `tasks=` `allocation=` `cleanup=` `workers=`, each `used/limit` | What the run consumed against what the module declared. |
+| `TOS.RUN.ACCOUNTING` | `fuel=` `depth=` `tasks=` `allocation=` `cleanup=` `workers=`, each `used/limit` | What the run consumed against what the module declared. `shared=` and `sync=` are appended in the same form. |
 
 `digest` is the complete `tos-ir/v1` module digest, and the engine ran the
 module that digest names — a receipt for another module is refused before any
