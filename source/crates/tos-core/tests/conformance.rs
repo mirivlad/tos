@@ -87,8 +87,19 @@ fn is_frontend_code(code: &str) -> bool {
 /// A vector recording one of these must now be rejected rather than merely
 /// parse; the list grows as each check lands, so a check cannot be implemented
 /// without its corpus evidence starting to bind.
-const IMPLEMENTED_CHECKS: [&str; 28] = [
+const IMPLEMENTED_CHECKS: [&str; 39] = [
     "E1202_UNKNOWN_VALUE_NAME",
+    "E1201_ASSIGN_TO_IMMUTABLE",
+    "E1603_MODULE_PATH_MISMATCH",
+    "E1604_IMPORT_NOT_FOUND",
+    "E1606_IMPORT_CYCLE",
+    "E1011_NON_ASCII_WHITESPACE",
+    "E1020_INVALID_INTEGER_LITERAL",
+    "E1225_INVALID_DEFER",
+    "E1601_UNSUPPORTED_LANGUAGE_VERSION",
+    "E1602_UNSUPPORTED_LANGUAGE_MINOR",
+    "E1801_FFI_NOT_AVAILABLE",
+    "E1802_UNSAFE_RATIONALE_REQUIRED",
     "E1605_AMBIGUOUS_IMPORT",
     "E1701_UNMETERED_LOOP",
     "E1401_UNJOINED_TASK",

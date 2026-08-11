@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.assign_to_immutable version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// A binding is immutable unless it is declared `mut`.
+pub fn main() -> i32 {
+    let total = 0i32;
+    total = 1i32;
+    return total;
+}

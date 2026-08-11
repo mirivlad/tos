@@ -84,6 +84,13 @@
 | R051 | `reject/undeclared-callee-effect.tos` | Bootstrap | `E1501_UNDECLARED_CAPABILITY_EFFECT` with `required_by=sample` | a call may not launder an effect the caller does not declare |
 | R052 | `reject/atomic-failure-order.tos` | Full | `E1410_INVALID_ATOMIC_ORDER` with `position=failure`, `success_order=Acquire` | a compare-exchange failure order may not be stronger than its success order |
 | R053 | `reject/cancel-without-join.tos` | Bootstrap | `E1401_UNJOINED_TASK` with `task=child` | `cancel` consumes no ownership and does not discharge the join obligation |
+| R054 | `reject/assign-to-immutable.tos` | Bootstrap | `E1201_ASSIGN_TO_IMMUTABLE` | a binding is immutable unless declared `mut` |
+| R055 | `reject/defer-returns.tos` | Full | `E1225_INVALID_DEFER` with `operation=return` | a cleanup block may not divert control out of itself |
+| R056 | `reject/unsupported-language-version.tos` | Bootstrap | `E1601_UNSUPPORTED_LANGUAGE_VERSION` | a V1 frontend accepts source-language major version 1 only |
+| R057 | `reject/extern-ffi.tos` | Full | `E1801_FFI_NOT_AVAILABLE` | V1 accepts no FFI interface schema |
+| R058 | `reject/unsafe-without-rationale.tos` | Full | `E1802_UNSAFE_RATIONALE_REQUIRED` | an `unsafe` block opens with a `SAFETY:` rationale |
+| R059 | `reject/unknown-resource-limit.tos` | Bootstrap | `E1704_UNKNOWN_RESOURCE_LIMIT` with `key=bandwidth` | the resource envelope has exactly ten keys |
+| R060 | `reject/unknown-record-field.tos` | Bootstrap | `E1207_UNKNOWN_RECORD_FIELD` with `field=z` | a named constructor supplies only declared fields |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 
