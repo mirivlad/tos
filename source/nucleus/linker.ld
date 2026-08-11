@@ -15,6 +15,7 @@ ENTRY(boot_entry)
 SECTIONS
 {
     . = 0x2000000;
+    __tos_image_start = .;
     .text : {
         KEEP(*(.text.boot_entry))
         *(.text .text.*)
@@ -23,5 +24,16 @@ SECTIONS
     .data : { *(.data .data.*) }
     .got : { *(.got .got.*) }
     .got.plt : { *(.got.plt .got.plt.*) }
+    /* End of the LOADED image: with --oformat=binary this is exactly the file
+       size, so a digest over [__tos_image_start, __tos_image_load_end) is a
+       digest of the artifact on disk and can be recomputed from it. */
+    __tos_image_load_end = .;
     .bss (NOLOAD) : { *(.bss .bss.*) }
+    /* End of everything the nucleus occupies in memory. The loader allocates
+       the image by FILE length, so .bss lies past the pages it reserved and the
+       memory map still reports that memory usable. Nothing but the nucleus can
+       know this extent, so the nucleus subtracts it before granting memory to
+       the runtime (crates/tos-runtime/src/region.rs). */
+    . = ALIGN(4096);
+    __tos_image_end = .;
 }

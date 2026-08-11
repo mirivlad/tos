@@ -1,10 +1,64 @@
-<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
-# TOS boot text — Stage 1
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The canonical boot module of TOS.
+//
+// This text is the installed form. Nothing derives it, and nothing stands
+// between it and execution: the nucleus hands these bytes to the ordinary
+// reference path — reader, parser, checker, module resolution, lowering,
+// independent verifier, bounded engine — and reports what came back. There is
+// no boot-only interpreter and no pre-built IR for this file. If a stage
+// refuses it, the boot stops and says which stage refused and where.
+//
+// Everything the module is allowed to consume is declared below and enforced
+// by the engine before any effect. `fuel` bounds the work, `recursion` bounds
+// the call depth, and `allocation` bounds what the program may hold — none of
+// which is the same thing as the memory the implementation running it needs.
 
-This is the canonical boot text of the Stage 1 capsule. It is **illustrative**:
-TOS Core is not a language yet (see ADR-0015; a parser is gated at Stage 1.5).
-The lines below are read by the nucleus only to verify that the canonical boot
-file resolves and to expose its first logical line over serial.
+module system.boot.init version 1.0 profile bootstrap;
 
-# TOS boot text
-print("hello from tos stage 1")
+resource [
+    fuel: 65536,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 0
+]
+
+// One step of the boot sequence, and what it is worth to the total.
+pub record Phase [
+    order: i32,
+    weight: i32
+]
+
+// The contribution of a single phase.
+fn contribution(phase: Phase) -> i32 {
+    return phase.order * phase.weight;
+}
+
+// Walks `count` phases in order and totals their contributions.
+//
+// The result depends on evaluation order, on record field access and on
+// arithmetic over declared widths, so an engine that got any of those wrong
+// returns a different number rather than the same number by luck.
+pub fn walk(count: i32) -> i32 {
+    let mut total: i32 = 0i32;
+    let mut order: i32 = 1i32;
+    while (order <= count) {
+        let phase: Phase = Phase(order: order, weight: order + 1i32);
+        total = total + contribution(phase);
+        order = order + 1i32;
+    }
+    return total;
+}
+
+// The entry the runtime calls.
+//
+// Eight phases: 1*2 + 2*3 + ... + 8*9 = 240.
+pub fn main() -> i32 {
+    return walk(8i32);
+}

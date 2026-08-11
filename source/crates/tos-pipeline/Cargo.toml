@@ -1,0 +1,20 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-pipeline"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Composes the TOS Core V1 reference path: canonical source, frontend, IR, independent verifier, bounded engine."
+publish = false
+
+[dependencies]
+tos-core = { path = "../tos-core" }
+tos-ir = { path = "../tos-ir" }
+tos-verifier = { path = "../tos-verifier" }
+tos-engine = { path = "../tos-engine" }
+tos-hash = { path = "../tos-hash" }
+
+[dev-dependencies]
+tos-verifier = { path = "../tos-verifier" }
+tos-engine = { path = "../tos-engine" }
+tos-ir = { path = "../tos-ir" }

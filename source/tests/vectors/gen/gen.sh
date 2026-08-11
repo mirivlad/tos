@@ -30,8 +30,14 @@ cp "$VERSION" "$GEN/.version.txt"
 
 # --- valid-001 : canonical boot (real init.tos) + system/version + licence ---
 printf '/system/boot/init.tos\t%s\n/system/version\t%s\n' "$INIT" "$GEN/.version.txt" > "$GEN/.valid.manifest"
+# No --meta: a provenance manifest requires an SPDX expression in every piece
+# of source material, and `/system/version` is a bare version string that has
+# none. A golden parser vector is conformance evidence, not release provenance
+# — that path is exercised where it belongs, by the QEMU capsule built with
+# --git-commit and checked by scripts/check-capsule-provenance.py. Demanding
+# a manifest here only made this generator unable to reproduce its own output.
 $TOOL --detached --licence "$NOTICES" \
-    --out "$OUT/valid-001.bin" --meta "$GEN/.valid.meta" "$GEN/.valid.manifest"
+    --out "$OUT/valid-001.bin" "$GEN/.valid.manifest"
 
 # --- invalid-missing-boot : no canonical boot file ---
 printf '/system/version\t%s\n' "$GEN/.version.txt" > "$GEN/.missing.manifest"
