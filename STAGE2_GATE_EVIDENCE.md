@@ -51,12 +51,12 @@ identity_question      Is actual language semantics executing from canonical
 ## tests
 
 ```text
-371 tests pass across 29 binaries
+377 tests pass across 29 binaries
   234 tos-core unit tests
     2 conformance corpus gates (accept + reject)
     7 lowering gates (determinism, source maps, terminators, operands, digest)
    19 pipeline gates (verifier acceptance + forged-IR negatives by family)
-   28 execution gates (results, traps, tasks, cleanup, closures, accounting)
+   34 execution gates (results, traps, tasks, cleanup, closures, accounting)
     8 cache identity gates (key fields, fail-closed, delete and regenerate)
     1 boot-text gate (what init.tos is today)
   remainder: Stage 0/1 capsule, boot protocol, hash, serial, fuzz, performance
@@ -94,7 +94,7 @@ performance gate. The gate is open. See `known_failures`.
 | capability forgery / ambient authority | Present (`E1501`, `E1502`, `V2013_CAPABILITY`). |
 | ownership and data-race negatives | Present (`E1301`–`E1305`, `V2020_OWNERSHIP`). |
 | atomic-order negatives | Present (`E1410`, `V2032_ATOMIC_ORDER`). |
-| resource exhaustion | Partial. Fuel, recursion and the task budget are enforced at runtime; allocation, workers, sync, shared and cleanup are declared and verified but not metered during execution. |
+| resource exhaustion | Partial. Fuel, recursion, tasks, **allocation**, **cleanup** and **workers** are reserved before the effect and released when the frame that charged them returns; the verifier additionally bounds cleanups per exit statically. `sync` and `shared` are **not** metered, and are not claimed: the operations that would consume them — lock acquisition and `share` — do not exist until ADR-0036 is implemented and ADR-0037 is accepted. |
 | source-map identity forgery | Present (`V2040_SOURCE_MAP`). |
 | cache substitution | Present (`Rejection::KeyDoesNotMatchIdentity`). |
 | runtime independence from the host | **Open, audited.** `docs/evidence/STAGE2_RUNTIME_INDEPENDENCE_AUDIT.md`. The production code uses no host runtime facility — every `std` path it uses is in `alloc` or `core` — and the freestanding target is already gated. One gap is genuine: no heap allocator exists, and who owns memory in Stage 2 before Stage 3 is undecided. Until that is settled the `docs/44` claim is not discharged. |
@@ -134,7 +134,9 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    `E1213` to the `as` forms V1 grammar admits. Until both are accepted,
    `V2021_REGION` has no rules and casting an integer to `Task<i32>` is still
    accepted in silence.
-6. **Runtime resource metering is partial.** See `threat_model_coverage`.
+6. **`sync` and `shared` are not metered**, because nothing consumes them yet.
+   See `threat_model_coverage`; this follows items 4 and 5 rather than being
+   separate work.
 
 ## architect_approval
 

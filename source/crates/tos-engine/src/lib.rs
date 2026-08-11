@@ -108,6 +108,10 @@ pub struct Outcome {
     pub fuel_used: u128,
     pub max_call_depth: u128,
     pub tasks_started: u128,
+    /// The most of the declared allocation budget held at any one moment.
+    pub allocation_peak: u128,
+    /// The most cleanups registered and unrun at any one moment.
+    pub cleanups_peak: u128,
 }
 
 /// Why a module could not be run at all, before any instruction executed.
@@ -160,12 +164,31 @@ pub fn run(
         max_depth: 0,
         task_limit: envelope.tasks,
         tasks_started: 0,
+        allocation_limit: envelope.allocation,
+        allocation_held: 0,
+        allocation_peak: 0,
+        cleanup_limit: envelope.cleanup,
+        cleanups_live: 0,
+        cleanups_peak: 0,
+        worker_limit: envelope.workers,
+        workers_held: 0,
+        frame_allocation: 0,
+        frame_cleanups: 0,
     };
-    Ok(engine.call(index, arguments).map(|value| Outcome {
+    // docs/41 section 6: a reservation is checked before the thing it pays for
+    // happens. A module that declares no worker cannot run one instruction.
+    if let Err(trap) = engine.reserve_worker() {
+        return Ok(Err(trap));
+    }
+    let outcome = engine.call(index, arguments);
+    engine.release_worker();
+    Ok(outcome.map(|value| Outcome {
         value,
         fuel_used: engine.fuel_used,
         max_call_depth: engine.max_depth,
         tasks_started: engine.tasks_started,
+        allocation_peak: engine.allocation_peak,
+        cleanups_peak: engine.cleanups_peak,
     }))
 }
 
@@ -178,7 +201,29 @@ struct Engine<'module> {
     max_depth: u128,
     task_limit: u128,
     tasks_started: u128,
+    /// Bytes of the declared allocation budget currently held.
+    allocation_limit: u128,
+    allocation_held: u128,
+    allocation_peak: u128,
+    /// Cleanups registered and not yet left behind.
+    cleanup_limit: u128,
+    cleanups_live: u128,
+    cleanups_peak: u128,
+    /// Execution contexts reserved. Bootstrap serializes, so exactly one.
+    worker_limit: u128,
+    workers_held: u128,
+    /// What the frame currently running has charged, released when it returns.
+    frame_allocation: u128,
+    frame_cleanups: u128,
 }
+
+/// The accounted size of one runtime value.
+///
+/// docs/41 section 6 makes `allocation` a declared limit in bytes, so the
+/// engine has to say what a value costs. The cost is a property of the value's
+/// shape rather than of the host's representation of it: the same program on
+/// the same input accounts the same bytes on any engine that adopts this rule.
+const CELL_BYTES: u128 = 16;
 
 /// How a block finished.
 enum Exit {
@@ -202,6 +247,76 @@ impl Engine<'_> {
             ));
         }
         Ok(())
+    }
+
+    /// Reserves one execution context before any instruction runs.
+    fn reserve_worker(&mut self) -> Result<(), Trap> {
+        if self.workers_held + 1 > self.worker_limit {
+            return Err(Trap::new(
+                "RUNTIME_WORKER_LIMIT",
+                std::format!(
+                    "the declared worker budget of {} admits no execution context",
+                    self.worker_limit
+                ),
+                0,
+            ));
+        }
+        self.workers_held += 1;
+        Ok(())
+    }
+
+    fn release_worker(&mut self) {
+        self.workers_held = self.workers_held.saturating_sub(1);
+    }
+
+    /// Charges the declared allocation budget for a value about to be built.
+    ///
+    /// docs/41 section 6 requires the reservation to be checked *before* the
+    /// effect: the charge is made first, and the value is only constructed if it
+    /// fits. A module that would exceed its budget never builds the value at
+    /// all, so the trap is a refusal rather than a report after the fact.
+    fn reserve_allocation(&mut self, cells: usize, source: SourceRef) -> Result<u128, Trap> {
+        let bytes = CELL_BYTES * (cells as u128 + 1);
+        if self.allocation_held + bytes > self.allocation_limit {
+            return Err(Trap::new(
+                "RUNTIME_ALLOCATION_LIMIT",
+                std::format!(
+                    "{bytes} more bytes exceeds the declared budget of {}, of which {} is held",
+                    self.allocation_limit,
+                    self.allocation_held
+                ),
+                source,
+            ));
+        }
+        self.allocation_held += bytes;
+        self.allocation_peak = self.allocation_peak.max(self.allocation_held);
+        Ok(bytes)
+    }
+
+    /// Releases what a frame charged, when the frame's values go out of scope.
+    fn release_allocation(&mut self, bytes: u128) {
+        self.allocation_held = self.allocation_held.saturating_sub(bytes);
+    }
+
+    /// Reserves one live cleanup registration.
+    fn reserve_cleanup(&mut self, source: SourceRef) -> Result<(), Trap> {
+        if self.cleanups_live + 1 > self.cleanup_limit {
+            return Err(Trap::new(
+                "RUNTIME_CLEANUP_LIMIT",
+                std::format!(
+                    "the declared cleanup budget of {} is already fully registered",
+                    self.cleanup_limit
+                ),
+                source,
+            ));
+        }
+        self.cleanups_live += 1;
+        self.cleanups_peak = self.cleanups_peak.max(self.cleanups_live);
+        Ok(())
+    }
+
+    fn release_cleanups(&mut self, count: u128) {
+        self.cleanups_live = self.cleanups_live.saturating_sub(count);
     }
 
     /// Calls a function and writes back what it changed through a borrow.
@@ -266,6 +381,12 @@ impl Engine<'_> {
             ));
         }
 
+        // A frame's charges are its own: what it allocated and registered is
+        // released when it returns, so a bounded program stays bounded however
+        // many times it calls.
+        let outer_allocation = std::mem::take(&mut self.frame_allocation);
+        let outer_cleanups = std::mem::take(&mut self.frame_cleanups);
+
         let mut values: Vec<Option<Value>> = std::vec![None; function.values.len()];
         for (slot, argument) in arguments.into_iter().enumerate() {
             if slot < values.len() {
@@ -291,6 +412,10 @@ impl Engine<'_> {
             }
         };
         self.depth -= 1;
+        let charged = std::mem::replace(&mut self.frame_allocation, outer_allocation);
+        self.release_allocation(charged);
+        let registered = std::mem::replace(&mut self.frame_cleanups, outer_cleanups);
+        self.release_cleanups(registered);
         outcome.map(|value| (value, values))
     }
 
@@ -421,6 +546,11 @@ impl Engine<'_> {
         let produced = match op {
             Op::Const(constant) => Some(self.constant(*constant, source)?),
             Op::Aggregate { operands, .. } => {
+                // Reserve before building: docs/41 section 6 checks a
+                // reservation before the thing it pays for happens, so a value
+                // that would not fit is never constructed at all.
+                let charged = self.reserve_allocation(operands.len(), source)?;
+                self.frame_allocation += charged;
                 let mut elements = Vec::new();
                 for operand in operands {
                     elements.push(self.operand(operand, values, source)?);
@@ -430,6 +560,8 @@ impl Engine<'_> {
             Op::Variant {
                 index, operands, ..
             } => {
+                let charged = self.reserve_allocation(operands.len(), source)?;
+                self.frame_allocation += charged;
                 let mut payload = Vec::new();
                 for operand in operands {
                     payload.push(self.operand(operand, values, source)?);
@@ -579,8 +711,11 @@ impl Engine<'_> {
             }
             Op::RegisterCleanup { .. } => {
                 // ADR-0035: registering reads, borrows and moves nothing. It is
-                // what the `cleanup` limit counts, and the count is bounded by
-                // the verifier before execution begins.
+                // what the `cleanup` limit counts, and docs/41 section 6 makes
+                // that a live count, so it is charged here and released where
+                // the cleanups run.
+                self.reserve_cleanup(source)?;
+                self.frame_cleanups += 1;
                 None
             }
             Op::RunCleanups { calls } => {
@@ -1144,6 +1279,12 @@ pub struct Accounting {
     pub recursion_limit: u128,
     pub tasks_started: u128,
     pub task_limit: u128,
+    pub allocation_peak: u128,
+    pub allocation_limit: u128,
+    pub cleanups_peak: u128,
+    pub cleanup_limit: u128,
+    pub workers_reserved: u128,
+    pub worker_limit: u128,
 }
 
 impl Accounting {
@@ -1155,6 +1296,13 @@ impl Accounting {
             recursion_limit: module.header.resource_envelope.recursion,
             tasks_started: outcome.tasks_started,
             task_limit: module.header.resource_envelope.tasks,
+            allocation_peak: outcome.allocation_peak,
+            allocation_limit: module.header.resource_envelope.allocation,
+            cleanups_peak: outcome.cleanups_peak,
+            cleanup_limit: module.header.resource_envelope.cleanup,
+            // Bootstrap serializes, so one context is reserved for the run.
+            workers_reserved: 1,
+            worker_limit: module.header.resource_envelope.workers,
         }
     }
 }
