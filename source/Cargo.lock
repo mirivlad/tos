@@ -85,7 +85,10 @@ version = "0.1.0"
 dependencies = [
  "tos-capsule",
  "tos-core",
+ "tos-engine",
  "tos-hash",
+ "tos-ir",
+ "tos-verifier",
 ]
 
 [[package]]

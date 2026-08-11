@@ -10,7 +10,9 @@
 //! Exits 0 on pass, 1 on failure.
 
 use tos_capsule::parse;
-use tos_core::{Parser, SourceReader};
+use tos_core::{lower_module, Checker, ModuleContext, Parser, SourceReader};
+use tos_ir::Module;
+use tos_verifier::{verify, Limits, ResolutionSnapshot};
 
 const BASE: &[u8] = include_bytes!("../../vectors/capsule-v1/valid-001.bin");
 
@@ -60,6 +62,7 @@ fn main() {
     }
 
     fuzz_tos_core(&mut rng, rounds);
+    fuzz_forged_ir(&mut rng, rounds);
 
     // A mutated input must never parse. The only Ok case allowed would be a
     // zero-flip mutation, which cannot occur (flips >= 1), and pure garbage is
@@ -68,7 +71,7 @@ fn main() {
         eprintln!("FUZZ FAIL: {accepted} mutated/garbage inputs accepted");
         std::process::exit(1);
     }
-    println!("FUZZ PASS rounds={rounds} (total parsers, no panics, no false accepts)");
+    println!("FUZZ PASS rounds={rounds} (total parsers and verifier, no panics, no false accepts)");
 }
 
 /// Canonical source the textual mutation rounds start from.
@@ -112,6 +115,158 @@ fn fuzz_tos_core(rng: &mut Rng, rounds: usize) {
         if outcome.into_accepted().is_none() {
             eprintln!("FUZZ FAIL: clean outcome produced no tree");
             std::process::exit(1);
+        }
+    }
+}
+
+/// Source the forged-IR rounds start from, so mutations begin from real IR.
+const IR_BASE: &str = "module app.fuzz version 1.0 profile bootstrap; \
+     resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+     sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0] \
+     pub record Point [x: i32, y: i32] \
+     pub fn origin() -> Point { return Point(x: 0i32, y: 0i32); } \
+     pub fn total(point: Point) -> i32 { return point.x + point.y; }";
+
+/// Drives the independent verifier over structurally forged IR.
+///
+/// docs/44 section 3 requires evidence that malformed or forged IR never
+/// panics. Bytes cannot express that here — docs/43 section 1 freezes no
+/// encoding — so the mutations are structural: indices are moved out of range,
+/// identities are replaced, tables are reordered and instructions are dropped,
+/// which is exactly what a forged in-memory object looks like.
+///
+/// The property is not "everything is rejected": some mutations produce IR that
+/// is still valid. The property is that the verifier always *answers* — a
+/// receipt or one deterministic finding — and that a receipt it grants names
+/// the digest of the module it actually saw.
+fn fuzz_forged_ir(rng: &mut Rng, rounds: usize) {
+    let Some(base) = build_base_module() else {
+        eprintln!("FUZZ FAIL: the forged-IR base module did not build");
+        std::process::exit(1);
+    };
+    let snapshot = ResolutionSnapshot::default();
+    let limits = Limits::default();
+    // The unmutated module must verify, or every later round measures nothing.
+    if verify(&base, &snapshot, &limits).is_err() {
+        eprintln!("FUZZ FAIL: the forged-IR base module does not verify");
+        std::process::exit(1);
+    }
+
+    for _ in 0..rounds {
+        let mut module = base.clone();
+        let mutations = 1 + (rng.next() % 4) as usize;
+        for _ in 0..mutations {
+            forge(rng, &mut module);
+        }
+        match verify(&module, &snapshot, &limits) {
+            Ok(receipt) => {
+                // A receipt is only ever for the module the verifier saw.
+                if receipt.module_digest != tos_ir::module_digest(&module) {
+                    eprintln!("FUZZ FAIL: a receipt names a different module");
+                    std::process::exit(1);
+                }
+            }
+            Err(finding) => {
+                if finding.code.is_empty() {
+                    eprintln!("FUZZ FAIL: a finding carries no code");
+                    std::process::exit(1);
+                }
+            }
+        }
+    }
+}
+
+fn build_base_module() -> Option<Module> {
+    let source = SourceReader::read(IR_BASE.as_bytes()).ok()?;
+    let schema = Parser::parse_schema(&source).into_accepted()?;
+    if !Checker::check(&source, &schema).is_empty() {
+        return None;
+    }
+    let context = ModuleContext {
+        source_set: String::from("tos-fuzz"),
+        path: String::from("app/fuzz.tos"),
+        content_id: String::from("sha256:0000"),
+        dependency_digest: String::from("sha256:0000"),
+        capability_interface_digest: String::from("sha256:0000"),
+    };
+    lower_module(&source, &schema, &context).ok()
+}
+
+/// Applies one structural forgery to a module.
+fn forge(rng: &mut Rng, module: &mut Module) {
+    let choice = rng.next() % 12;
+    let wild = |rng: &mut Rng, bound: usize| (rng.next() as usize) % (bound * 4 + 7);
+    match choice {
+        0 => module.header.schema_id = String::from("tos-ir/forged"),
+        1 => module.header.content_id = String::from("forged"),
+        2 => module.header.path = String::from("elsewhere/other.tos"),
+        3 => module.header.resource_envelope.workers = 1 + u128::from(rng.next() % 8),
+        4 => module.exports.reverse(),
+        5 => module.functions.reverse(),
+        6 => {
+            let bound = module.types.len();
+            module.types.push(tos_ir::TypeDef::Option(wild(rng, bound)));
+        }
+        7 => {
+            if let Some(entry) = module.source_map.first_mut() {
+                entry.content_id = String::from("forged");
+            }
+        }
+        8 => {
+            let count = module.functions.len();
+            if count > 0 {
+                let at = (rng.next() as usize) % count;
+                let blocks = module.functions[at].blocks.len();
+                if blocks > 0 {
+                    let block = (rng.next() as usize) % blocks;
+                    let target = wild(rng, blocks);
+                    module.functions[at].blocks[block].terminator = tos_ir::Terminator::Branch {
+                        target,
+                        arguments: Vec::new(),
+                    };
+                }
+            }
+        }
+        9 => {
+            let count = module.functions.len();
+            if count > 0 {
+                let at = (rng.next() as usize) % count;
+                let values = module.functions[at].values.len();
+                let blocks = module.functions[at].blocks.len();
+                if blocks > 0 {
+                    let block = (rng.next() as usize) % blocks;
+                    let operand = tos_ir::Operand::Value(wild(rng, values));
+                    module.functions[at].blocks[block].terminator =
+                        tos_ir::Terminator::Return(Some(operand));
+                }
+            }
+        }
+        10 => {
+            let count = module.functions.len();
+            if count > 0 {
+                let at = (rng.next() as usize) % count;
+                let blocks = module.functions[at].blocks.len();
+                if blocks > 0 {
+                    let block = (rng.next() as usize) % blocks;
+                    module.functions[at].blocks[block].instructions.pop();
+                }
+            }
+        }
+        _ => {
+            let count = module.functions.len();
+            if count > 0 {
+                let at = (rng.next() as usize) % count;
+                let blocks = module.functions[at].blocks.len();
+                if blocks > 0 {
+                    let block = (rng.next() as usize) % blocks;
+                    if let Some(instruction) =
+                        module.functions[at].blocks[block].instructions.first_mut()
+                    {
+                        instruction.source = wild(rng, 4);
+                        instruction.unsafe_interface = Some(String::from("host.forged/v1"));
+                    }
+                }
+            }
         }
     }
 }
