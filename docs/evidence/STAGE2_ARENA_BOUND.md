@@ -32,18 +32,19 @@ fragments a little further on every repetition is not a recovery oracle.
 
 | workload | arena needed |
 |---|---|
-| one module at the published 256 KiB source ceiling | **52 268 096 B — 49.85 MiB** |
-| a source set processed module by module (16 × 32 KiB) | **52 268 096 B — 49.85 MiB** |
+| one module at the published 256 KiB source ceiling | **52 808 656 B — 50.36 MiB** |
+| a source set of 256 modules processed one at a time | **52 808 656 B — 50.36 MiB** |
 | 64 repeated whole-pipeline executions | frontier unchanged after the first |
-| set-wide resolution, 256 modules of 8 KiB | 107 579 136 B — 102.60 MiB *(fitted)* |
-| set-wide resolution, 256 modules at the 256 KiB ceiling | 3 455 961 328 B — 3.22 GiB *(fitted)* |
+| set-wide resolution over parse trees, 256 modules of 8 KiB | 109 953 616 B — 104.86 MiB *(measured)* |
+| set-wide resolution over parse trees, 256 ceiling-sized modules | 3 594 357 104 B — 3.35 GiB *(fitted from a measured slope)* |
+| **set-wide resolution over derived summaries, per ceiling-sized module** | **221 488 B — 0.21 MiB** |
 
 Each run produced the right answer. A measurement of a pipeline that did not
 compute anything would measure nothing.
 
 ### The executable path does not accumulate across modules
 
-Processing sixteen modules one at a time, releasing each module's state before
+Processing **256** modules one at a time, releasing each module's state before
 the next begins, moved the frontier by **0 bytes**. Not "a little": none.
 
 The mechanism is not luck. `peak_extent` is a high-water mark, and the heap is
@@ -64,46 +65,59 @@ The layout is asserted, not only the total. Accumulating fragmentation breaks th
 block census long before it breaks the committed figure, so a test that compared
 totals alone would pass while the arena slowly shattered.
 
-### Set-wide resolution is the one linear term, and it is measured
+### Resolution over summaries is the architecture; the slope says so
 
-docs/42 module resolution is the part of the path that cannot be phased away.
-`check_module_set` compares every module's declared name, imports and type table
-against every other's, and it reads them **from parse trees** — so every module
-of a closure is live at once, and this term is linear in the closure size.
+docs/42 module resolution is the part of the path that cannot be phased away
+module by module: it compares every module's declared name, imports and type
+surface against every other's. What *can* change is what it reads them from.
 
-The slope is measured, not assumed: 1, 8 and 32 modules of 8 KiB give
-419 928 bytes per module; 1, 2 and 4 modules at the 256 KiB ceiling give
-13 499 848 bytes per module. Both are ~51× the module's source size, which is
-what a parse tree costs.
+Reading parse trees costs **14 040 456 bytes per ceiling-sized module**, measured
+at 1, 2 and 4 modules — about 54x the module's own source, which is what a parse
+tree costs. Reading derived summaries costs **221 488 bytes per ceiling-sized
+module**, measured at 1 and 8. That is a **63x reduction**, and it puts the
+largest closure the two published ceilings admit together — 256 modules of
+256 KiB — at roughly **57 MB** of live resolution state instead of 3.35 GiB.
 
-## The constraint this exposes
+The reason the reduction is that large is structural rather than incidental: a
+summary holds a module's *interface*, and an interface does not grow with a
+body. There is a test asserting that a module with a two-hundred-function body
+summarizes to exactly the same size as one with a single function.
 
-The two published ceilings of docs/44 section 2 are independent: a source unit
-may be 256 KiB, and a dependency closure may hold 256 modules. Their product is
-a closure whose resolution needs **~3.2 GiB** with the current architecture, and
-the ADR-0040 reference platform has 256 MiB.
+## The constraint this removes, and the one that remains
 
-So, on the reference platform, this implementation resolves a closure of roughly
-**19 ceiling-sized modules**, or **256 modules averaging about 8 KiB** — not the
-maximal closure the ceilings jointly admit. That is an implementation limit and
-it is stated as one: no accepted document requires a maximal closure to resolve
-in 256 MiB, and nothing here weakens either published ceiling.
+Before the summary architecture, the two published ceilings of docs/44 section 2
+multiplied to a closure whose resolution needed ~3.35 GiB against the ADR-0040
+platform's 256 MiB — so this implementation resolved roughly 19 ceiling-sized
+modules rather than the 256 the ceilings jointly admit. docs/44 permits a
+declared lower implementation cap, so that was never a contradiction in the
+language; it was an architecture nobody should be asked to keep.
 
-It is also avoidable, and worth recording as the next architectural step rather
-than as a defect. Resolution needs each module's declared name, its imports and
-its declared type names — a bounded summary of a few kilobytes — not its parse
-tree. Extracting summaries in a first pass and resolving over those would make
-the linear term about three orders of magnitude smaller and leave the bound at
-"the largest single module", which the phased measurement above already shows is
-where the executable path sits. That refactor is not done.
+At 221 488 bytes per module, a full 256-module closure of ceiling-sized modules
+needs about 57 MB of resolution state. That fits the reference platform with
+room for the arena the executable path needs, and it is bounded by interfaces
+rather than by bodies — so it stays fitting as modules grow.
+
+What remains is **time, not memory**. A ceiling-sized module does not finish the
+frontend within 900 seconds on the reference platform, because
+`BoundedHeap::try_allocate` searches first-fit by walking every block from the
+base of the arena and the frontend allocates constantly. Every figure above is
+correct; several of them took minutes to obtain that should have taken seconds.
+`docs/evidence/STAGE2_REFERENCE_PLATFORM_P1.md` records that finding and why the
+fix is not attempted in the change that found it.
 
 ## What is not claimed
 
 - Not P2 or P3: one machine, one build, no CI reproduction and no independent
   reproduction (docs/35).
-- The two ceiling-closure figures are **fitted from a measured slope**, and are
-  labelled so wherever they appear. The 256-module ceiling-sized case needs more
-  memory than the machine this was measured on has, which is itself the finding.
+- The tree-based ceiling-closure figure is **fitted from a measured slope**, and
+  is labelled so wherever it appears. Measuring it outright needed more memory
+  than the machine has — which is itself the finding, and the reason the
+  architecture changed.
+- The summary figure at the 256-module ceiling is likewise **extrapolated from
+  a measured per-module cost** (1 and 8 ceiling-sized modules). Its linearity is
+  structural — a summary holds one module's interface and nothing shared — but
+  the 256-module point has not been measured directly, and this record does not
+  say it has.
 - The measured figures cover the reference implementation. Another conforming
   implementation's arena is its own to measure.
 - The grant the nucleus makes is a separate, declared decision
