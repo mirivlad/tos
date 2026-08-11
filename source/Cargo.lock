@@ -79,6 +79,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tos-runtime"
+version = "0.1.0"
+
+[[package]]
 name = "tos-serial"
 version = "0.1.0"
 
