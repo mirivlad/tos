@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `d5274a08e27887bf14056a9b306120d1c1f9fc395d6979b41d0d0d35d08bb442`  
+Source-manifest SHA-256: `b143083f49ef32e3a467fdba564fb611540143e612e3cb5cddf6a2be79f8c85d`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4819,6 +4819,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1211_INDEX_TYPE_MISMATCH` | an array, slice or region index is not of exact type `size`, and is not an integer literal contextually typed as one |
 | `E1212_INVALID_AS_CONVERSION` | an `as` conversion between ordinary value types is not an integer widening that preserves signedness; a conversion touching a capability or another nonconstructible type is routed to `E1502` or `E1213` and is not this code |
 | `E1213_NONCONSTRUCTIBLE_TYPE` | an `as` conversion whose target or operand type is one V1 source may not fabricate a value of — `Task`, `Shared`, `Region`, `DmaRegion`, `Mutex`, `RwLock`, `Channel`, `Event`, `Semaphore`, `Barrier`, `Latch`, an atomic, a slice, or a function or closure type. `TaskResult<T>` is not among them: `Completed` and `Cancelled` build one. A predeclared type in value position is `E1202`, not this (ADR-0039) |
+| `E1215_ARGUMENT_TYPE_MISMATCH` | an argument of a resolved call or predeclared operation does not satisfy the declared exact type or the operation's type requirement, and no more specific code describes it. The residual of `E1210`, `E1211`, `E1212`, `E1213`, `E1502` and `E1222`, never a catch-all for an unresolved callee, which is a resolution finding with precedence. Fields: `callee`, `position` or `parameter`, `expected`, `actual`; an operation requirement may use `requirement` and `reason` instead (ADR-0037) |
 | `E1220_NONEXHAUSTIVE_MATCH` | a `match` over an enum, `Option`, `Result` or `TaskResult` leaves a variant uncovered and has no wildcard or binding arm |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
 

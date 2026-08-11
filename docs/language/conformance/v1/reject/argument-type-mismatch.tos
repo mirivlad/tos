@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.argument_type_mismatch version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub fn take(flag: bool) -> unit { }
+
+// A resolved call whose argument does not satisfy the declared parameter type,
+// and which no more specific code describes.
+pub fn main() -> unit {
+    take("text");
+}

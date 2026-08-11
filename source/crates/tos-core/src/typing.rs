@@ -462,6 +462,23 @@ impl<'source> TypeChecker<'source> {
                     self.bind_pattern(pattern, &bound);
                 }
             }
+            // An expression statement is still a typed position: its call's
+            // arguments and its operands disagree or they do not, and whether
+            // the value is used cannot change that.
+            StatementForm::Expression | StatementForm::Cancel => {
+                if let Some(expression) = statement.expression() {
+                    let _ = self.type_of(expression);
+                }
+            }
+            // A control head is an expression too, and so is a `for` sequence.
+            StatementForm::If
+            | StatementForm::While
+            | StatementForm::Match
+            | StatementForm::For => {
+                if let Some(head) = statement.expression() {
+                    let _ = self.type_of(head);
+                }
+            }
             _ => {}
         }
         for nested in [statement.body(), statement.else_body()]
@@ -801,6 +818,51 @@ impl<'source> TypeChecker<'source> {
             .unwrap_or(Type::Unknown)
     }
 
+    /// Reports an argument that does not satisfy its declared parameter type.
+    ///
+    /// ADR-0037 allocates `E1215_ARGUMENT_TYPE_MISMATCH` as the residual code
+    /// for a resolved call: the specialized codes keep their conditions, and
+    /// this covers what none of them describes. It is deliberately not a
+    /// catch-all — an unresolved callee or name is a resolution finding and has
+    /// precedence — and it says nothing when either side is undetermined,
+    /// because that would be a guess rather than a disagreement.
+    fn check_argument_agreement(
+        &mut self,
+        callee: &str,
+        position: usize,
+        span: crate::Span,
+        wanted: &Type,
+        given: &Type,
+    ) {
+        if matches!(wanted, Type::Unknown) || matches!(given, Type::Unknown) {
+            return;
+        }
+        // Integer disagreement is `E1210` and is already reported; reporting it
+        // again here would give one mistake two codes.
+        if is_integer_family(wanted) && is_integer_family(given) {
+            return;
+        }
+        if matches!(given, Type::UnsuffixedInteger) && is_integer_family(wanted) {
+            return;
+        }
+        if wanted.agrees_with(given) {
+            return;
+        }
+        self.diagnostics.push(
+            Diagnostic::new(
+                "E1215_ARGUMENT_TYPE_MISMATCH",
+                Severity::Error,
+                Stage::Type,
+                span,
+                self.source,
+            )
+            .with_field("callee", callee.to_string())
+            .with_field("position", position)
+            .with_field("expected", wanted.spell())
+            .with_field("actual", given.spell()),
+        );
+    }
+
     fn call_type(&mut self, expression: &'source Expression) -> Type {
         let actual = self.type_arguments(expression.arguments());
         let Some(callee) = expression.callee() else {
@@ -821,10 +883,14 @@ impl<'source> TypeChecker<'source> {
                 .all(|argument| argument.name().is_none())
                 && parameters.len() == actual.len()
             {
-                for ((wanted, given), argument) in
-                    parameters.iter().zip(&actual).zip(expression.arguments())
+                for (position, ((wanted, given), argument)) in parameters
+                    .iter()
+                    .zip(&actual)
+                    .zip(expression.arguments())
+                    .enumerate()
                 {
                     self.check_integer_agreement(argument.span(), wanted, given, "argument");
+                    self.check_argument_agreement(name, position, argument.span(), wanted, given);
                 }
             }
             return result;
