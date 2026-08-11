@@ -2,13 +2,16 @@
 
 # ADR-0037: TOS Core V1 region and DMA-region transferability
 
-- Status: **Proposed (revision 3)** — the region model is accepted; this
-  revision adds the `share` operation the model needs and stops at one boundary
-  it uncovers
+- Status: **Accepted (revision 3)** — the region model, the `share` operation it
+  needs, and the diagnostic for the boundary it uncovered
 - Date: 2026-08-11
 - Decision level: 2 — fixes the `Transferable`, shareable and mutable facts of
-  two accepted V1 type constructors
-- Project Architect approval: *(pending)*
+  two accepted V1 type constructors, and adds one predeclared operation
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-11 — revision 3
+  accepted together with option 2 of section 5,
+  `E1215_ARGUMENT_TYPE_MISMATCH`. This file carried `Proposed`/`pending` after
+  that decision was made; the state is corrected here rather than left to be
+  read as an open question
 - Supersedes: revision 1, whose share model let a shareable DMA region become
   `Shared<DmaRegion<T>>` and be copied into several tasks; and revision 2, which
   used a `share(region)` form that the accepted V1 word inventory and
@@ -112,7 +115,7 @@ access behind one. It carries its argument, its result type and its source span,
 resulting `Shared<T>` counts against the module's declared `shared` resource
 limit, so sharing is bounded by the envelope like every other resource.
 
-### 5. One boundary this uncovers — an Architect decision
+### 5. One boundary this uncovers — settled as option 2
 
 A `share` whose argument is not Shareable — `share(dma)`, `share(mutable)` —
 has **no diagnostic code to report it**. The registry has no general
@@ -135,11 +138,16 @@ stops here and proposes the narrow options:
    types, and widening an accepted stable condition to cover unrelated cases is
    what the registry discipline exists to prevent.
 
-Option 2 is the recommendation: the gap it closes is real and larger than
-`share`, and one general code is easier for conformance tooling to reason about
-than a family of operation-specific ones. But allocating a code is a versioned
-language decision, so it is the Project Architect's, and this ADR is not
-Accepted until it is made.
+**Decision: option 2.** `E1215_ARGUMENT_TYPE_MISMATCH` is allocated as the
+general code for an argument that does not satisfy a declared parameter or
+predeclared-operation requirement. The gap it closes is real and larger than
+`share` — an ordinary call with a wrongly typed argument had no code either —
+and one general code is easier for conformance tooling to reason about than a
+family of operation-specific ones.
+
+A `share` whose argument is not Shareable is therefore
+`E1215_ARGUMENT_TYPE_MISMATCH` with the operation and the offending type in its
+fields, not a code invented for `share` alone.
 
 ### 6. Diagnostics
 

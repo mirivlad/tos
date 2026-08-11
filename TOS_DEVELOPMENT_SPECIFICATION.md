@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `178ef5061666ab9363a3d9ff54da445df1524835824324236a51e7b0dd97484a`  
+Source-manifest SHA-256: `b37dfc8ca00c8112042d80726be5d8a690e71fd54503ba215a99201a4c6f3e21`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -3344,7 +3344,7 @@ primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes un
 predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock MutexGuard ReadGuard WriteGuard Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice array
 atomic-order: Relaxed Acquire Release AcqRel SeqCst
 predeclared-value: Some None Ok Err Completed Cancelled
-predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul
+predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul share
 special-token: _
 ```
 <!-- stage2-word-inventory:end -->
@@ -3489,8 +3489,8 @@ constructed_type = "Option" "<" type ">"
                 | "Task" "<" type ">"
                 | "TaskResult" "<" type ">"
                 | "Shared" "<" type ">"
-                | "Region" "<" type ">"
-                | "DmaRegion" "<" type ">"
+                | "Region" "<" [ "mut" ] type ">"
+                | "DmaRegion" "<" [ "mut" ] type ">"
                 | "Mutex" "<" type ">"
                 | "RwLock" "<" type ">"
                 | "MutexGuard" "<" type ">"
@@ -4005,8 +4005,34 @@ may obtain it only from an authority-bearing typed service operation, access it
 only with checked `read`, `write`, or `slice` contracts, and never observe its
 physical address. `DmaRegion<T>` additionally records a nucleus-granted DMA
 mapping and device-domain authority; safe code may not construct, cast to, or
-serialize it as an integer. Whether a particular region is shareable/mutable
-is stated in its capability contract and independently checked in IR.
+serialize it as an integer.
+
+A region's rights are part of its type (ADR-0037). The granted mode is written
+inside the type argument — `Region<mut T>`, `DmaRegion<mut T>` — and `mut` is
+admitted in a type for exactly these two constructors and nowhere else. The four
+facts follow from the mode and are independently rechecked in IR:
+
+| Type | `Copy` | mutable | Shareable | `Transferable` |
+|---|---|---|---|---|
+| `Region<T>` | no | no | yes | yes |
+| `Region<mut T>` | no | yes | no | no |
+| `DmaRegion<T>` | no | no | no | no |
+| `DmaRegion<mut T>` | no | yes | no | no |
+
+Both DMA variants are conservative in V1: a shareable `DmaRegion<T>` could
+become a `Shared<DmaRegion<T>>`, and a `Shared<T>` is `Copy`, so the handle
+could be copied into several tasks — the crossing the DMA rule exists to forbid.
+
+Using one region from several tasks is written `share(region)`, a predeclared
+operation typed `share(T) -> Shared<T>` only when `T` is transitively immutable
+and Shareable. It consumes its argument, so the original name is moved-from and
+using it is `E1301_USE_AFTER_MOVE`. An argument that does not satisfy the
+requirement is `E1215_ARGUMENT_TYPE_MISMATCH`. Writing through a `Region<T>` is
+`E1201_ASSIGN_TO_IMMUTABLE`, and capturing a non-`Transferable` region into a
+task or closure is `E1304_INVALID_TASK_CAPTURE` or
+`E1305_INVALID_CLOSURE_CAPTURE` with `reason=mutable region` or
+`reason=DMA region`. The `Shared<T>` a `share` produces counts against the
+module's declared `shared` resource limit.
 
 A value may cross a task boundary only if it is `Transferable`: owned affine
 values transfer their sole ownership; immutable `Copy`/`Shared<T>` values are
@@ -12595,13 +12621,16 @@ release point would depend on binding structure rather than on ownership.
 
 # ADR-0037: TOS Core V1 region and DMA-region transferability
 
-- Status: **Proposed (revision 3)** — the region model is accepted; this
-  revision adds the `share` operation the model needs and stops at one boundary
-  it uncovers
+- Status: **Accepted (revision 3)** — the region model, the `share` operation it
+  needs, and the diagnostic for the boundary it uncovered
 - Date: 2026-08-11
 - Decision level: 2 — fixes the `Transferable`, shareable and mutable facts of
-  two accepted V1 type constructors
-- Project Architect approval: *(pending)*
+  two accepted V1 type constructors, and adds one predeclared operation
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-11 — revision 3
+  accepted together with option 2 of section 5,
+  `E1215_ARGUMENT_TYPE_MISMATCH`. This file carried `Proposed`/`pending` after
+  that decision was made; the state is corrected here rather than left to be
+  read as an open question
 - Supersedes: revision 1, whose share model let a shareable DMA region become
   `Shared<DmaRegion<T>>` and be copied into several tasks; and revision 2, which
   used a `share(region)` form that the accepted V1 word inventory and
@@ -12705,7 +12734,7 @@ access behind one. It carries its argument, its result type and its source span,
 resulting `Shared<T>` counts against the module's declared `shared` resource
 limit, so sharing is bounded by the envelope like every other resource.
 
-### 5. One boundary this uncovers — an Architect decision
+### 5. One boundary this uncovers — settled as option 2
 
 A `share` whose argument is not Shareable — `share(dma)`, `share(mutable)` —
 has **no diagnostic code to report it**. The registry has no general
@@ -12728,11 +12757,16 @@ stops here and proposes the narrow options:
    types, and widening an accepted stable condition to cover unrelated cases is
    what the registry discipline exists to prevent.
 
-Option 2 is the recommendation: the gap it closes is real and larger than
-`share`, and one general code is easier for conformance tooling to reason about
-than a family of operation-specific ones. But allocating a code is a versioned
-language decision, so it is the Project Architect's, and this ADR is not
-Accepted until it is made.
+**Decision: option 2.** `E1215_ARGUMENT_TYPE_MISMATCH` is allocated as the
+general code for an argument that does not satisfy a declared parameter or
+predeclared-operation requirement. The gap it closes is real and larger than
+`share` — an ordinary call with a wrongly typed argument had no code either —
+and one general code is easier for conformance tooling to reason about than a
+family of operation-specific ones.
+
+A `share` whose argument is not Shareable is therefore
+`E1215_ARGUMENT_TYPE_MISMATCH` with the operation and the offending type in its
+fields, not a code invented for `share` alone.
 
 ### 6. Diagnostics
 

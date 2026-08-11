@@ -481,3 +481,96 @@ fn a_returned_guard_is_rejected() {
 fn alloc_vec(value: usize) -> Vec<tos_ir::Operand> {
     vec![tos_ir::Operand::Value(value)]
 }
+
+/// The verifier reaches the ADR-0037 region rules by its own traversal.
+#[test]
+fn sharing_a_region_that_is_not_shareable_is_rejected() {
+    let mut module = sample_module();
+    let protected = module.types.len();
+    module
+        .types
+        .push(tos_ir::TypeDef::Int(tos_ir::IntKind::I32));
+    let dma = module.types.len();
+    module.types.push(tos_ir::TypeDef::DmaRegion(protected));
+    let shared = module.types.len();
+    module.types.push(tos_ir::TypeDef::Shared(dma));
+    let function = &mut module.functions[0];
+    let source = function.blocks[0].source;
+    let held = function.values.len();
+    function.values.push(dma);
+    let result = function.values.len();
+    function.values.push(shared);
+    function.blocks[0].instructions.push(tos_ir::Instruction {
+        result: Some(result),
+        ty: shared,
+        op: Op::Share {
+            operand: tos_ir::Operand::Value(held),
+        },
+        source,
+        runtime_contract: None,
+        unsafe_block: false,
+        unsafe_interface: None,
+    });
+    expect_rejection(&module, "V2021_REGION");
+}
+
+#[test]
+fn sharing_a_mutably_granted_region_is_rejected() {
+    let mut module = sample_module();
+    let protected = module.types.len();
+    module
+        .types
+        .push(tos_ir::TypeDef::Int(tos_ir::IntKind::I32));
+    let region = module.types.len();
+    module.types.push(tos_ir::TypeDef::RegionMut(protected));
+    let shared = module.types.len();
+    module.types.push(tos_ir::TypeDef::Shared(region));
+    let function = &mut module.functions[0];
+    let source = function.blocks[0].source;
+    let held = function.values.len();
+    function.values.push(region);
+    let result = function.values.len();
+    function.values.push(shared);
+    function.blocks[0].instructions.push(tos_ir::Instruction {
+        result: Some(result),
+        ty: shared,
+        op: Op::Share {
+            operand: tos_ir::Operand::Value(held),
+        },
+        source,
+        runtime_contract: None,
+        unsafe_block: false,
+        unsafe_interface: None,
+    });
+    expect_rejection(&module, "V2021_REGION");
+}
+
+#[test]
+fn a_non_transferable_region_crossing_a_task_boundary_is_rejected() {
+    let mut module = sample_module();
+    let protected = module.types.len();
+    module
+        .types
+        .push(tos_ir::TypeDef::Int(tos_ir::IntKind::I32));
+    let region = module.types.len();
+    module.types.push(tos_ir::TypeDef::DmaRegionMut(protected));
+    let function = &mut module.functions[0];
+    let source = function.blocks[0].source;
+    let held = function.values.len();
+    function.values.push(region);
+    let result = function.values.len();
+    function.values.push(region);
+    function.blocks[0].instructions.push(tos_ir::Instruction {
+        result: Some(result),
+        ty: region,
+        op: Op::Spawn {
+            body: 1usize,
+            captures: vec![tos_ir::Operand::Value(held)],
+        },
+        source,
+        runtime_contract: None,
+        unsafe_block: false,
+        unsafe_interface: None,
+    });
+    expect_rejection(&module, "V2021_REGION");
+}

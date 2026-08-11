@@ -364,8 +364,34 @@ may obtain it only from an authority-bearing typed service operation, access it
 only with checked `read`, `write`, or `slice` contracts, and never observe its
 physical address. `DmaRegion<T>` additionally records a nucleus-granted DMA
 mapping and device-domain authority; safe code may not construct, cast to, or
-serialize it as an integer. Whether a particular region is shareable/mutable
-is stated in its capability contract and independently checked in IR.
+serialize it as an integer.
+
+A region's rights are part of its type (ADR-0037). The granted mode is written
+inside the type argument — `Region<mut T>`, `DmaRegion<mut T>` — and `mut` is
+admitted in a type for exactly these two constructors and nowhere else. The four
+facts follow from the mode and are independently rechecked in IR:
+
+| Type | `Copy` | mutable | Shareable | `Transferable` |
+|---|---|---|---|---|
+| `Region<T>` | no | no | yes | yes |
+| `Region<mut T>` | no | yes | no | no |
+| `DmaRegion<T>` | no | no | no | no |
+| `DmaRegion<mut T>` | no | yes | no | no |
+
+Both DMA variants are conservative in V1: a shareable `DmaRegion<T>` could
+become a `Shared<DmaRegion<T>>`, and a `Shared<T>` is `Copy`, so the handle
+could be copied into several tasks — the crossing the DMA rule exists to forbid.
+
+Using one region from several tasks is written `share(region)`, a predeclared
+operation typed `share(T) -> Shared<T>` only when `T` is transitively immutable
+and Shareable. It consumes its argument, so the original name is moved-from and
+using it is `E1301_USE_AFTER_MOVE`. An argument that does not satisfy the
+requirement is `E1215_ARGUMENT_TYPE_MISMATCH`. Writing through a `Region<T>` is
+`E1201_ASSIGN_TO_IMMUTABLE`, and capturing a non-`Transferable` region into a
+task or closure is `E1304_INVALID_TASK_CAPTURE` or
+`E1305_INVALID_CLOSURE_CAPTURE` with `reason=mutable region` or
+`reason=DMA region`. The `Shared<T>` a `share` produces counts against the
+module's declared `shared` resource limit.
 
 A value may cross a task boundary only if it is `Transferable`: owned affine
 values transfer their sole ownership; immutable `Copy`/`Shared<T>` values are

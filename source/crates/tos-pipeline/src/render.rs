@@ -113,7 +113,8 @@ pub fn site(site: &Site) -> String {
 pub fn accounting(completion: &Completion) -> String {
     let accounting = &completion.accounting;
     format!(
-        "fuel={}/{} depth={}/{} tasks={}/{} allocation={}/{} cleanup={}/{} workers={}/{}",
+        "fuel={}/{} depth={}/{} tasks={}/{} allocation={}/{} cleanup={}/{} workers={}/{} \
+         shared={}/{}",
         accounting.fuel_used,
         accounting.fuel_limit,
         accounting.max_call_depth,
@@ -126,6 +127,10 @@ pub fn accounting(completion: &Completion) -> String {
         accounting.cleanup_limit,
         accounting.workers_reserved,
         accounting.worker_limit,
+        // Appended after the fields the accepted contract requires, which is
+        // exactly what its extension rule admits.
+        accounting.shared_peak,
+        accounting.shared_limit,
     )
 }
 

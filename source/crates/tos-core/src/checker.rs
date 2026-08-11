@@ -62,7 +62,9 @@ impl LimitKind {
 /// Value names the language supplies without declaration (docs/39 section 2).
 const PREDECLARED_VALUES: [&str; 6] = ["Some", "None", "Ok", "Err", "Completed", "Cancelled"];
 
-const PREDECLARED_FUNCTIONS: [&str; 11] = [
+const PREDECLARED_FUNCTIONS: [&str; 12] = [
+    // ADR-0037: sharing is an explicit typed operation, never an implicit copy.
+    "share",
     "to_i8",
     "to_i16",
     "to_i32",

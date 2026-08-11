@@ -890,6 +890,133 @@ fn overlaps(one: &tos_ir::Place, other: &tos_ir::Place) -> bool {
 /// instruction produces, and joining, awaiting, returning or handing it to
 /// another operation discharges it. `cancel` alone does not, which is the one
 /// case docs/41 states outright.
+/// The ADR-0037 facts of a region type, reached from the IR type table alone.
+///
+/// The mode is a distinct constructor in the IR, so the verifier reads it
+/// rather than inferring it. Both DMA variants are conservative in V1: a
+/// shareable `DmaRegion<T>` could become a `Shared<DmaRegion<T>>`, and a
+/// `Shared<T>` is `Copy`, so the handle could be copied into several tasks.
+fn region_facts(module: &Module, ty: TypeId) -> Option<(bool, bool)> {
+    // (shareable, transferable)
+    match module.types.get(ty) {
+        Some(TypeDef::Region(_)) => Some((true, true)),
+        Some(TypeDef::RegionMut(_)) => Some((false, false)),
+        Some(TypeDef::DmaRegion(_)) | Some(TypeDef::DmaRegionMut(_)) => Some((false, false)),
+        _ => None,
+    }
+}
+
+/// Whether a type is transitively immutable, as `share` requires.
+fn transitively_immutable(module: &Module, ty: TypeId, depth: usize) -> bool {
+    if depth > tos_ir::MAX_TYPE_DEPTH {
+        return false;
+    }
+    match module.types.get(ty) {
+        None => false,
+        Some(TypeDef::RegionMut(_)) | Some(TypeDef::DmaRegionMut(_)) => false,
+        Some(TypeDef::MutexGuard(_))
+        | Some(TypeDef::ReadGuard(_))
+        | Some(TypeDef::WriteGuard(_)) => false,
+        Some(TypeDef::Option(inner))
+        | Some(TypeDef::Task(inner))
+        | Some(TypeDef::TaskResult(inner))
+        | Some(TypeDef::Shared(inner))
+        | Some(TypeDef::Region(inner))
+        | Some(TypeDef::DmaRegion(inner))
+        | Some(TypeDef::Mutex(inner))
+        | Some(TypeDef::RwLock(inner))
+        | Some(TypeDef::Channel(inner))
+        | Some(TypeDef::Slice(inner))
+        | Some(TypeDef::Array(inner, _)) => transitively_immutable(module, *inner, depth + 1),
+        Some(TypeDef::Result(ok, error)) => {
+            transitively_immutable(module, *ok, depth + 1)
+                && transitively_immutable(module, *error, depth + 1)
+        }
+        Some(TypeDef::Tuple(elements)) => elements
+            .iter()
+            .all(|element| transitively_immutable(module, *element, depth + 1)),
+        Some(TypeDef::Nominal {
+            fields, variants, ..
+        }) => {
+            fields
+                .iter()
+                .all(|field| transitively_immutable(module, *field, depth + 1))
+                && variants.iter().all(|variant| {
+                    variant
+                        .payload
+                        .iter()
+                        .all(|payload| transitively_immutable(module, *payload, depth + 1))
+                })
+        }
+        Some(_) => true,
+    }
+}
+
+/// The ADR-0037 region rules, reached by this verifier's own traversal.
+///
+/// The checker enforces the same rules over source. Neither takes the other's
+/// word for it: docs/43 section 5 forbids the frontend's success from being an
+/// input here, so a region rule only the checker could catch is a rule an
+/// alternate frontend could skip.
+fn check_regions(module: &Module) -> Result<(), Finding> {
+    for (index, function) in module.functions.iter().enumerate() {
+        for (block_index, block) in function.blocks.iter().enumerate() {
+            for instruction in &block.instructions {
+                let at = alloc::format!("functions[{index}].blocks[{block_index}]");
+                match &instruction.op {
+                    Op::Share { operand } => {
+                        let Operand::Value(id) = operand else {
+                            return Err(Finding::new(
+                                "V2021_REGION",
+                                at,
+                                "share applied to a constant",
+                            ));
+                        };
+                        let Some(ty) = function.values.get(*id).copied() else {
+                            return Err(Finding::new("V2021_REGION", at, "share of no value"));
+                        };
+                        if region_facts(module, ty).is_some_and(|(shareable, _)| !shareable) {
+                            return Err(Finding::new(
+                                "V2021_REGION",
+                                at,
+                                "share of a region that is not shareable",
+                            ));
+                        }
+                        if !transitively_immutable(module, ty, 0) {
+                            return Err(Finding::new(
+                                "V2021_REGION",
+                                at,
+                                "share of a value that is not transitively immutable",
+                            ));
+                        }
+                    }
+                    Op::Spawn { captures, .. } | Op::Closure { captures, .. } => {
+                        for capture in captures {
+                            let Operand::Value(id) = capture else {
+                                continue;
+                            };
+                            let Some(ty) = function.values.get(*id).copied() else {
+                                continue;
+                            };
+                            if region_facts(module, ty)
+                                .is_some_and(|(_, transferable)| !transferable)
+                            {
+                                return Err(Finding::new(
+                                    "V2021_REGION",
+                                    at.clone(),
+                                    "a region that is not Transferable crosses a task or closure boundary",
+                                ));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Whether a type is one of the three ADR-0036 lock guards.
 fn is_guard(module: &Module, ty: TypeId) -> bool {
     matches!(
@@ -974,6 +1101,7 @@ fn check_guard_lifetimes(module: &Module) -> Result<(), Finding> {
 
 fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
     check_guard_lifetimes(module)?;
+    check_regions(module)?;
     for (index, function) in module.functions.iter().enumerate() {
         let at = alloc::format!("function {index}");
         let mut pending: BTreeSet<usize> = BTreeSet::new();

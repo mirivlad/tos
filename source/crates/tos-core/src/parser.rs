@@ -194,6 +194,14 @@ pub enum TypeSyntax {
     Constructed {
         name: Span,
         arguments: Vec<TypeSyntax>,
+        /// `mut` written inside the type argument (ADR-0037).
+        ///
+        /// The grammar admits it for `Region` and `DmaRegion` only, and it is
+        /// not a general mutability qualifier: a region's rights are part of
+        /// its type because the four facts of ADR-0037 section 2 differ between
+        /// the granted modes, and a type that did not carry the mode would make
+        /// them unknowable at the point they matter.
+        mutable: bool,
         span: Span,
     },
     Array {
@@ -2557,11 +2565,21 @@ impl<'source> TokenCursor<'source> {
                 },
             });
         }
+        // `mut` is grammatical only here, and only for the two region
+        // constructors. Anywhere else it is not a type qualifier at all, and
+        // the parse fails where it stands rather than inventing a rule.
+        let mutable = matches!(name.text(self.source), "Region" | "DmaRegion")
+            && self.current_text() == "mut"
+            && {
+                self.advance();
+                true
+            };
         let arguments = self.parse_comma_list(ListCloser::Angle, Self::parse_type);
         let end = self.expect_close_angle()?;
         Ok(TypeSyntax::Constructed {
             name,
             arguments,
+            mutable,
             span: Span {
                 start,
                 end: end.end(),
