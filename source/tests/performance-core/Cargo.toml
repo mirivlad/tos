@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-core-performance"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Stage 2 measurement harness: the docs/35 frontend-to-verifier and interpreter budgets."
+publish = false
+
+[dependencies]
+tos-core = { path = "../../crates/tos-core" }
+tos-ir = { path = "../../crates/tos-ir" }
+tos-verifier = { path = "../../crates/tos-verifier" }
+tos-engine = { path = "../../crates/tos-engine" }
+tos-hash = { path = "../../crates/tos-hash" }

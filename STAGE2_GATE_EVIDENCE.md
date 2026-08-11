@@ -54,12 +54,17 @@ identity_question      Is actual language semantics executing from canonical
 
 ## performance_report
 
-**Absent.** No docs/35 measurement has been run for the Stage 2 components. The
-existing `tests/performance` smoke covers Stage 1 capsule work only. The
-required reference-platform procedure — parse/type-check/lower/verify a 256 KiB
-canonical module, the one-million-operation integer benchmark, quota rejection,
-with warmups, sample counts and median/p95/p99 — has not been performed, and no
-P-level is claimed.
+**P1, locally measured.** `docs/evidence/STAGE2_PERFORMANCE_P1.md` retains the
+raw 3-warmup/21-sample median/p95/p99 record for the two Stage 2 metrics and the
+quota-rejection ratio, with the environment and toolchain it was taken on and
+the exact command to reproduce it. That lifts both metrics off P0, which docs/35
+forbids for a stage's own metrics.
+
+It is **not** a closure. docs/35 wants the declared reference platform, and this
+machine is not it; the gate stays open until the same procedure runs there. The
+one-million-operation budget is stated relative to a host reference interpreter
+under the same semantic implementation, and no second implementation exists yet,
+so the absolute number is retained and the ratio is not claimed.
 
 ## threat_model_coverage
 
@@ -91,19 +96,20 @@ than approximations.
    capsule's illustrative boot text — the file says so — and the nucleus reads
    it as text. Making it a TOS Core module changes the Stage 1 capsule's boot
    text, which is an Architect decision, not an implementation one.
-2. **Lowering covers 28 of 38 accepted vectors.** `async fn`, `spawn`,
-   closures, `defer`, `for`, `cancel`, `unsafe` and payload-binding `match`
-   arms produce a named gap. Each is a construct, not a defect.
-3. **No cache or provenance plane.** docs/43 section 6 cache identity, deletion
-   and regeneration, and source-mutation invalidation are unimplemented.
-4. **No performance evidence.** See above.
+2. *(Resolved.)* Lowering covers all 38 accepted vectors; no named gap remains.
+3. *(Resolved.)* The cache identity plane is implemented in `crates/tos-cache`:
+   the docs/43 section 6 key, fail-closed lookup, substitution refusal, and
+   deletion followed by regeneration to the same identity.
+4. **Performance evidence is P1, not reference-platform.** See above.
 5. *(Resolved.)* The missing `Signed-off-by` on `80bfcc1` was repaired under a
    one-time Architect authorization; every tree hash is unchanged and the
    mapping is in `PROVENANCE_HISTORY_REWRITE.md`. `preflight --full` passes.
-6. **Open contract questions**, recorded in `PROGRESS.md`: region and lock-guard
-   `Transferable` and the missing guard type constructor; the
-   nonconstructible-type error for non-capability opaque handles; module-root
-   precedence for `E1605`.
+6. **Four contract decisions await approval.** ADR-0036 (guard representation),
+   ADR-0037 (region transferability), ADR-0038 (module-root precedence and the
+   exact `E1605` condition) and ADR-0039 (`E1213_NONCONSTRUCTIBLE_TYPE`) are
+   written with their full decision text and are **Proposed**. None is
+   implemented; each needs one Project Architect approval line, and that line is
+   not the implementation's to write.
 
 ## architect_approval
 
