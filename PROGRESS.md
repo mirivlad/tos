@@ -1279,32 +1279,35 @@ engine identity → cache key. Тест проверяет каждое звен
 
 ### Требуют решения Project Architect
 
-**C. Transferable для region и lock guard.** После пункта 6 у чекера нет
-способа отличить transferable region от нетрансферабельного и объект
-синхронизации от выданного им guard. Оба требуют capability-contract среза;
-до него по ним не сообщается ничего.
+**C. Contract gaps оформлены как ADR-0036…0039 (Proposed).** Четыре границы,
+на которых реализация останавливалась, теперь описаны как узкие versioned
+language decisions с точным текстом решения, а не угаданы в коде. Ни один из
+них не реализуется до подписи Project Architect: в статусе стоит
+`Proposed`, строка approval пустая, и подделывать её нельзя.
 
-ADR-0035 §3 подтвердил принцип: `Transferable`/shareable/mutable берутся из
-доказанного type/interface/capability contract, имя конструктора доказательством
-не является, а отсутствие информации не порождает выдуманный `E1304`. Интерфейс
-ownership подготовлен так, чтобы позже различать `KnownTransferable`,
-`KnownNonTransferable(reason)` и `Undetermined`, не дублируя type resolution.
-
-**C-1. Representation guard'ов (вопрос следующего concurrency-среза.)** docs/41
-§4 говорит, что `lock` выдаёт *affine mutable guard*, а `RwLock<T>` —
-несколько immutable read guards либо один affine write guard, и что guard не
-может пересечь границу задачи. При этом V1 type surface в docs/39 §3
-(`predeclared-type` и правило `type`) не содержит конструктора типа guard:
-перечислены `Mutex<T>` и `RwLock<T>`, но не тип значения, которое возвращает
-операция взятия блокировки. docs/40 §6 упоминает "lock guard" как класс
-non-Transferable значений, не называя его типа. Поэтому checker не может
-установить, что некоторое значение *является* guard'ом, иначе как угадав по
-имени конструктора — что ADR-0035 §3 прямо запрещает.
-
-Пока representation не назван принятым документом, guard-зависимые проверки не
-реализуются, и `MutexGuard<T>` или эквивалент не изобретается. Это blocker
-именно среза synchronization/capability, а не ownership: остальные части
-Stage 2 от него не зависят.
+- **ADR-0036 — representation guard'ов.** docs/41 §4 выдаёт lock affine guard,
+  но V1 type surface его не называет, поэтому checker не мог установить, что
+  значение *является* guard'ом иначе как угадав по конструктору объекта, что
+  ADR-0035 §3 запрещает. Предложены `MutexGuard<T>`, `ReadGuard<T>`,
+  `WriteGuard<T>`, операции `lock`/`read`/`write` и правило, что освобождение —
+  это bounded `drop` guard'а, а не операция `unlock`, оставляющая имя после
+  освобождения.
+- **ADR-0037 — Transferable для Region/DmaRegion.** Права региона живут в
+  гранте, а V1 не даёт способа его записать. Предложено внести режим в тип
+  (`Region<T>` против `Region<mut T>`) и зафиксировать таблицу
+  Copy/shareable/mutable/Transferable; DMA-регион не Transferable ни в одном
+  режиме.
+- **ADR-0038 — precedence module roots и точное условие `E1605`.** Две фразы
+  docs/42 §1 противоречат друг другу: упорядоченный список корней делает
+  неоднозначность невозможной, но код для неё выделен. Предложено читать
+  порядок как порядок поиска (первый корень выигрывает — это и есть layering),
+  а `E1605` — как коллизию между несколькими *достижимыми объявленными*
+  зависимостями, которую порядок не должен замалчивать.
+- **ADR-0039 — `E1213_NONCONSTRUCTIBLE_TYPE`.** docs/40 §3 требует
+  «corresponding nonconstructible-type error» для семи opaque-типов, но его не
+  называет, поэтому приведение целого к `Task<i32>` сейчас принимается молча.
+  Предложен код, список нонконструируемых типов и precedence
+  `E1502` → `E1213` → `E1212`.
 
 ## Граница закрытого Stage 1
 

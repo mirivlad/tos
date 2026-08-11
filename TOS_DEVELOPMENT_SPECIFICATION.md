@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `63fcdddc8f08a4b36307475e5dc77c5ecb701bef93af1146f1c4cbc66f6e05a5`  
+Source-manifest SHA-256: `4f95e4eeb5a8948019250d6acd3a47cbb33dcf89c15db2d301154d57044e7bf8`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -12166,6 +12166,469 @@ capability and synchronization contract, and this ADR must not settle unrelated
 semantics.
 
 <!-- END docs/adr/0035-defer-ownership-and-borrow-conflicts.md -->
+
+---
+
+<!-- BEGIN docs/adr/0036-synchronization-guard-representation.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0036: TOS Core V1 synchronization guard representation
+
+- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Date: 2026-08-11
+- Decision level: 2 — adds type constructors to the accepted V1 type surface,
+  which conformance evidence and the IR type table depend on
+- Project Architect approval: *(pending)*
+
+## Context
+
+`docs/41` section 4 gives `Mutex<T>` a lock that "grants an affine mutable
+guard", and `RwLock<T>` "multiple immutable read guards or one affine write
+guard". A guard "cannot await, cross a task boundary, or be dropped after its
+lock resource disappears". `docs/40` section 6 lists a lock guard among the
+values that are not `Transferable`.
+
+The V1 type surface names no guard. `docs/39` section 3 lists `Mutex` and
+`RwLock` among the parameterized constructors, but nothing for the value a lock
+operation yields, and `docs/39` gives no `lock` operation either. So a checker
+cannot establish that a value *is* a guard except by guessing from the
+constructor name of the object it came from — which ADR-0035 section 3 forbids,
+because a synchronization object is not its guard.
+
+The consequence is concrete: the ownership slice reports nothing for guards, the
+IR has no type for one, and the verifier cannot check the guard rules `docs/43`
+section 3 lists under its synchronization family. Every one of those is blocked
+on the same missing name.
+
+## Decision
+
+### 1. Three guard type constructors join the V1 type surface
+
+```text
+MutexGuard<T>      the affine mutable guard a Mutex<T> lock grants
+ReadGuard<T>       an immutable read guard an RwLock<T> grants
+WriteGuard<T>      the affine write guard an RwLock<T> grants
+```
+
+Each takes exactly one type argument, the type the lock protects. They join the
+`predeclared-type`/`constructed_type` productions of `docs/39` section 3 and the
+fixed-arity table of `docs/40` section 2, so `E1204_TYPE_ARGUMENT_ARITY` covers
+them without a new rule.
+
+They are **not constructible from source**. There is no constructor syntax for a
+guard; a guard value exists only as the result of a lock operation. Writing one
+as a constructor is the nonconstructible-type error of ADR-0039.
+
+### 2. Lock operations
+
+```text
+Mutex<T>.lock()      -> MutexGuard<T>
+RwLock<T>.read()     -> ReadGuard<T>
+RwLock<T>.write()    -> WriteGuard<T>
+```
+
+Each is a typed operation on the synchronization object, in the same
+receiver-operation form the atomics already use. Releasing is the guard's
+bounded `drop`: there is no `unlock` operation taking a guard, because a
+released guard that still had a name would be exactly the use-after-release the
+affine rule exists to prevent.
+
+### 3. What the three types are
+
+- `MutexGuard<T>` and `WriteGuard<T>` are affine and non-`Copy`, grant mutable
+  access to the protected value, and are **not** `Transferable`: they may not
+  cross a task boundary, be captured by a task or closure, be returned, stored
+  in an aggregate, or sent through a channel.
+- `ReadGuard<T>` is affine and non-`Copy` and grants immutable access. It is
+  likewise not `Transferable`.
+- No guard may be held across an `await`.
+
+A guard's scope is its binding's block. Its `drop` releases the lock and is
+bounded: it allocates nothing, awaits nothing and acquires no authority.
+
+### 4. Diagnostics
+
+No new source diagnostic is allocated. A guard crossing a task or closure
+boundary is `E1304_INVALID_TASK_CAPTURE` or `E1305_INVALID_CLOSURE_CAPTURE` with
+`reason=lock guard`, which is the reason `docs/40` section 6 already names. A
+guard held across `await` is `E1401`-adjacent but distinct, and is deliberately
+**left open**: it needs the async slice, and this ADR does not decide it.
+
+The verifier family `V2031_SYNC` gains the guard rules: a guard operand may not
+appear in a spawn capture, a closure capture, an aggregate, a return, or a
+channel operation.
+
+### 5. Conformance evidence
+
+At least: a positive taking and releasing a mutex guard within a block; a
+positive taking two read guards of one `RwLock`; a negative capturing a guard
+into a task; a negative returning a guard; and a negative applying a constructor
+to a guard type.
+
+## Architecture impact statement
+
+- **Change level:** 2. **Invariants affected:** none amended; I-09 and I-15 are
+  served by naming what was described but unnamed.
+- **Canonical representation:** unchanged. No accepted source becomes invalid —
+  V1 source cannot name a guard today, so nothing can break.
+- **Trusted-base impact:** none. **Threat-model impact:** positive: the guard
+  rules become checkable instead of unstated.
+- **Compatibility profile:** TOS Core 1.0; the three constructors are fixed for
+  V1 and change only through a versioned language decision.
+- **Tests:** the five conformance cases above, checker unit tests per rule, and
+  the mechanical gate binding the constructors to the arity table.
+
+## Consequences
+
+The synchronization slice becomes implementable, and `V2031_SYNC` stops being a
+family with no rules. The cost is three more names fixed for V1.
+
+## Alternatives considered
+
+**Infer a guard from the receiver's type.** Rejected: it is the guess ADR-0035
+forbids, and it cannot distinguish a guard from the object once the value is
+passed on.
+
+**One `Guard<T>` for all three.** Rejected: a read guard and a write guard have
+different aliasing rules, and one type would make the difference invisible
+exactly where the verifier has to see it.
+
+**Model release as an `unlock(guard)` operation.** Rejected: it leaves a named
+guard after release, which is the use-after-release the affine rule prevents.
+
+<!-- END docs/adr/0036-synchronization-guard-representation.md -->
+
+---
+
+<!-- BEGIN docs/adr/0037-region-transferability.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0037: TOS Core V1 region and DMA-region transferability
+
+- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Date: 2026-08-11
+- Decision level: 2 — fixes the `Transferable`, shareable and mutable facts of
+  two accepted V1 type constructors
+- Project Architect approval: *(pending)*
+
+## Context
+
+`docs/40` section 6 lists "a mutable region" among the values a task may not
+capture, and `docs/40` section 5 makes regions non-`Copy`. `docs/42` section 4
+makes a capability transferable only when its interface declares it so.
+
+Nothing says how a checker decides whether a given `Region<T>` is mutable or
+shareable. The type constructor alone does not say — a region granted read-only
+and a region granted for writing have the same written type — so the ownership
+slice classified nothing and reported nothing, which is where the implementation
+correctly stopped rather than guessing.
+
+The missing piece is that a region's rights live in its **grant**, and V1 source
+has no way to write a grant down.
+
+## Decision
+
+### 1. A region's rights are part of its type
+
+`Region<T>` and `DmaRegion<T>` gain a declared access mode, written as the
+grant that produced them:
+
+```text
+Region<T>          an immutably granted region: readable, shareable, Transferable
+Region<mut T>      a mutably granted region: readable and writable, not shareable,
+                   not Transferable
+DmaRegion<T>       as Region<T>, and additionally never Transferable
+DmaRegion<mut T>   as Region<mut T>
+```
+
+`mut` inside the type argument is the only place V1 admits it in a type, and it
+is admitted for exactly these two constructors. It is not a general mutability
+qualifier and introduces no `mut T` elsewhere.
+
+### 2. The three facts
+
+| Type | `Copy` | shareable | mutable | `Transferable` |
+|---|---|---|---|---|
+| `Region<T>` | no | yes | no | yes |
+| `Region<mut T>` | no | no | yes | no |
+| `DmaRegion<T>` | no | yes | no | no |
+| `DmaRegion<mut T>` | no | no | yes | no |
+
+A DMA region is never `Transferable` in V1 regardless of mode: it names device-
+visible memory, and moving that across a task boundary is a decision the device
+and driver model has to make, not the language.
+
+### 3. Diagnostics
+
+No new code. Capturing a non-`Transferable` region into a task is
+`E1304_INVALID_TASK_CAPTURE` with `reason=mutable region` or `reason=DMA
+region`; into a closure it is `E1305_INVALID_CLOSURE_CAPTURE` with the same
+reasons. Writing through a `Region<T>` is `E1201_ASSIGN_TO_IMMUTABLE`.
+
+`V2021_REGION` gains these as verifier rules, so the IR carries the mode in its
+type table and the verifier rechecks it rather than trusting the frontend.
+
+### 4. Conformance evidence
+
+At least: a positive sharing a `Region<T>` between two tasks; a negative
+capturing a `Region<mut T>` into a task; a negative capturing a `DmaRegion<T>`
+into a task; a negative writing through a `Region<T>`; and a positive writing
+through a `Region<mut T>`.
+
+## Architecture impact statement
+
+- **Change level:** 2. **Invariants affected:** none amended.
+- **Canonical representation:** unchanged; no accepted source uses a region
+  today, so nothing becomes invalid.
+- **Threat-model impact:** positive: a mutable region crossing a task boundary
+  is the shared-mutable case `docs/44` section 3 requires a negative for, and it
+  becomes decidable.
+- **Compatibility profile:** TOS Core 1.0.
+- **Tests:** the five conformance cases, checker unit tests per row of the
+  table, and verifier negatives for `V2021_REGION`.
+
+## Consequences
+
+Region rules become checkable, and the shared-mutable negative the threat model
+requires becomes expressible in source. The cost is one narrow syntactic
+extension, `mut` inside two type arguments.
+
+## Alternatives considered
+
+**Keep the mode in the capability contract and out of the type.** Rejected for
+V1: it makes the fact invisible to a single-module check and to the IR type
+table, so neither the checker nor the verifier could enforce it without
+consulting an external contract the language does not name.
+
+**Two more constructors, `MutRegion<T>` and `MutDmaRegion<T>`.** Rejected: four
+names for two concepts, and the relationship between them would be spelled
+nowhere.
+
+<!-- END docs/adr/0037-region-transferability.md -->
+
+---
+
+<!-- BEGIN docs/adr/0038-module-root-precedence.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0038: TOS Core V1 module-root precedence and the exact `E1605` condition
+
+- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Date: 2026-08-11
+- Decision level: 2 — fixes a stable diagnostic condition and the resolution
+  rule conformance evidence depends on
+- Project Architect approval: *(pending)*
+
+## Context
+
+`docs/42` section 1 gives module resolution "a declared ordered list of module
+roots and dependency source-set identities", and says "a missing or ambiguous
+import is `E1604_IMPORT_NOT_FOUND` or `E1605_AMBIGUOUS_IMPORT`".
+
+Those two sentences disagree. If the root list is ordered and the first match
+wins, no import matching under several roots is ambiguous — the order decides —
+and `E1605` names a condition the rule prevents. If instead more than one
+candidate is ambiguous regardless of order, the order is doing something else,
+and the document does not say what.
+
+The implementation stopped at that boundary: it reports `E1605` only for the one
+case it can decide without choosing between the readings — a declared source set
+holding the same module name twice, where nothing in the input decides at all.
+
+## Decision
+
+### 1. The order is a search order, and shadowing is not silent
+
+The declared list of module roots is searched in order. The **first** root that
+declares a module name resolves that name. That makes resolution deterministic
+and total.
+
+Ordering is not permission to shadow silently. A name declared by more than one
+root is `E1605_AMBIGUOUS_IMPORT` **when more than one of the roots that declare
+it is reachable from the importing module's declared dependency set**. A root
+that the importer does not depend on is not a candidate and does not make
+anything ambiguous.
+
+The two sentences are reconciled this way: the order makes resolution decidable
+for the ordinary case of a private root layered over a shared one, and the code
+covers the case where two *declared dependencies* both offer the name, which is
+a configuration mistake no ordering should paper over.
+
+### 2. The exact condition
+
+`E1605_AMBIGUOUS_IMPORT` is reported when either holds:
+
+1. the declared source set contains more than one module with the requested
+   name, and nothing in the set orders them; or
+2. more than one declared module root reachable from the importer declares the
+   requested name.
+
+The diagnostic carries the requested import, the importer, the number of
+candidates, and — when the roots are known — their ordered identities.
+
+`E1604_IMPORT_NOT_FOUND` remains the case of no candidate at all. A missing
+import takes precedence over an ambiguous one only when there is genuinely no
+candidate; the two conditions are disjoint.
+
+### 3. What resolution may read
+
+Unchanged and restated because it bounds this rule: only the declared roots,
+declared dependency source-set identities, the importer's own header, the
+declared lock or manifest, and the effective import limit. Never an ambient
+directory, the host filesystem outside those roots, the network, the clock, a
+random source or an undeclared environment variable.
+
+### 4. Conformance evidence
+
+At least: a positive where a private root shadows a shared one and the first
+root wins; a negative where two reachable roots declare the same name; and the
+existing unit case where one source set holds a name twice. The first two need a
+root-list input, so they are driver-level vectors rather than single files, and
+the expectations table records them as such.
+
+## Architecture impact statement
+
+- **Change level:** 2. **Invariants affected:** none amended; I-15 is served by
+  replacing two sentences that disagree with one rule.
+- **Canonical representation:** unchanged.
+- **Threat-model impact:** positive: `docs/44` section 3 requires an
+  import-ambiguity negative, and this makes it precise.
+- **Compatibility profile:** TOS Core 1.0.
+- **Tests:** the three cases above plus the mechanical gate binding the code to
+  the registry.
+
+## Consequences
+
+`E1605` stops being a code whose condition the resolution rule prevents. A
+layered root list — the ordinary way to override one module of a shared set —
+keeps working, and a genuine collision between two declared dependencies is
+named instead of silently decided.
+
+## Alternatives considered
+
+**First root always wins, `E1605` never fires.** Rejected: it makes an allocated
+code unreachable and turns a dependency collision into a silent choice.
+
+**Any multiple match is ambiguous, order is irrelevant.** Rejected: it breaks
+layering, which is what an *ordered* list is for, and the document says ordered.
+
+**Leave it to the compilation driver.** Rejected: resolution determinism is a
+language property under `docs/42`, not a tool preference.
+
+<!-- END docs/adr/0038-module-root-precedence.md -->
+
+---
+
+<!-- BEGIN docs/adr/0039-nonconstructible-opaque-types.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles
+
+- Status: **Proposed** — needs Project Architect approval to become Accepted
+- Date: 2026-08-11
+- Decision level: 2 — allocates a diagnostic code conformance evidence will
+  depend on
+- Project Architect approval: *(pending)*
+
+## Context
+
+`docs/40` section 3 says an attempt to use `as` with a capability, region, DMA
+region, task, synchronization object, function, closure or pointer-like host
+value "is not a generic conversion error: it is `E1502_FORGED_CAPABILITY` for a
+capability and **the corresponding nonconstructible-type error** for the other
+opaque types".
+
+No accepted document names that error. So the implementation reports nothing for
+seven of the eight cases: casting a task, a region, a mutex, a closure or a
+function is silently accepted by the type slice, because `E1212` is explicitly
+excluded and nothing else applies. That is the gap recorded in `PROGRESS.md` as
+an unresolved contract boundary, and it is the last one blocking a complete
+`as`-conversion rule.
+
+## Decision
+
+### 1. `E1213_NONCONSTRUCTIBLE_TYPE`
+
+Stage `type`. An operation attempts to bring into existence a value of a type
+that V1 makes nonconstructible from source. The operations are:
+
+- an `as` conversion whose target type is one of the nonconstructible types;
+- an `as` conversion whose operand type is one of them;
+- a constructor call naming one of them;
+- a record or aggregate literal naming one of them as its constructor.
+
+The nonconstructible types are: `Task<T>`, `TaskResult<T>`, `Region<T>`,
+`DmaRegion<T>`, `Mutex<T>`, `RwLock<T>`, `Channel<T>`, `Event`, `Semaphore`,
+`Barrier`, `Latch`, the three atomic types, the three guard types of ADR-0036,
+`slice<T>`, and any function or closure type.
+
+The diagnostic carries the type as spelled and which operation attempted it.
+
+### 2. Precedence
+
+1. a capability is `E1502_FORGED_CAPABILITY` — it is more specific and names
+   authority, which is the thing that matters most;
+2. any other nonconstructible type is `E1213_NONCONSTRUCTIBLE_TYPE`;
+3. only a conversion between ordinary value types reaches
+   `E1212_INVALID_AS_CONVERSION`.
+
+One attempt produces one diagnostic. `E1212` is never reported for a type this
+code covers, which is what `docs/40` section 3 means by "not a generic
+conversion error".
+
+### 3. What it does not cover
+
+A nonconstructible value obtained the way the language provides — a task from
+`spawn`, a guard from a lock, a region from a grant — is ordinary and correct.
+This code is about constructing one out of data, never about holding one.
+
+### 4. Conformance evidence
+
+At least: a negative casting an integer to `Task<i32>`; a negative casting a
+`Mutex<i32>` to an integer; a negative calling a constructor on `Event`; and a
+positive obtaining a task from `spawn` and using it, proving the code does not
+fire on the legitimate path.
+
+## Architecture impact statement
+
+- **Change level:** 2. **Invariants affected:** none amended; I-09 is served —
+  the code becomes part of the versioned diagnostic boundary; I-15 is served by
+  replacing "the corresponding nonconstructible-type error" with a name.
+- **Canonical representation:** unchanged. No accepted source becomes invalid:
+  every case this rejects was already an error under `docs/40` section 3, with
+  no code to report it.
+- **Threat-model impact:** positive. Fabricating a task, a lock or a region out
+  of integer data is the same class of forgery as fabricating a capability, and
+  it was silently accepted.
+- **Compatibility profile:** TOS Core 1.0.
+- **Tests:** the four conformance cases, checker unit tests for each operation
+  and for the precedence against `E1212` and `E1502`, and the mechanical gate.
+
+## Consequences
+
+The `as` rule of `docs/40` section 3 becomes completely implementable, and the
+last silent acceptance in the type slice closes.
+
+The cost is one more code fixed for TOS Core 1.0.
+
+## Alternatives considered
+
+**Reuse `E1212_INVALID_AS_CONVERSION`.** Rejected: `docs/40` section 3 says in
+so many words that this is not a generic conversion error, and conformance
+tooling could not tell a narrowing mistake from a forgery attempt.
+
+**Reuse `E1502_FORGED_CAPABILITY` for everything opaque.** Rejected: a task is
+not authority, and widening a capability code to cover non-authority values
+would make every audit of that code less meaningful.
+
+**Leave the seven cases unreported.** Rejected: it leaves a stated rule
+unenforced and a forgery path open.
+
+<!-- END docs/adr/0039-nonconstructible-opaque-types.md -->
 
 ---
 
