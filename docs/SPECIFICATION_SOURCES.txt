@@ -97,3 +97,7 @@ docs/adr/0032-parser-diagnostics-and-recovery.md
 docs/adr/0033-pattern-name-resolution.md
 docs/adr/0034-type-name-and-arity-diagnostics.md
 docs/adr/0035-defer-ownership-and-borrow-conflicts.md
+docs/adr/0036-synchronization-guard-representation.md
+docs/adr/0037-region-transferability.md
+docs/adr/0038-module-root-precedence.md
+docs/adr/0039-nonconstructible-opaque-types.md
