@@ -25,8 +25,26 @@
 //! than aborting. `alloc::GlobalAlloc` cannot: its contract is a null pointer,
 //! which `alloc` turns into `handle_alloc_error`. So the arena is sized from a
 //! measured bound rather than relied on to refuse gracefully — the second of
-//! the two disciplines ADR-0041 accepts — and [`BoundedHeap::high_water`]
-//! exists so that bound can be measured rather than assumed.
+//! the two disciplines ADR-0041 accepts.
+//!
+//! **What that bound must be.** A sum of requested payloads is *not* a bound on
+//! the arena a run needs. Every block carries tags, a request is rounded up to
+//! the grain, a remainder too small to be its own block stays with the
+//! allocation, and a hole below the highest live block is arena the run still
+//! needed. [`BoundedHeap::peak_extent`] is therefore the metric: the highest
+//! address the arena was ever carried to, minus the base. An arena of that size
+//! serves the same sequence identically, because first-fit's choices do not
+//! depend on how much region lies beyond them. [`BoundedHeap::committed`] is the
+//! live figure, counted in whole blocks including their tags, so a free returns
+//! exactly what its claim took.
+//!
+//! **Alignment is real.** A `GlobalAlloc` cannot assume its dependency closure
+//! never asks for more than the block grain — a `repr(align(64))` type anywhere
+//! would be enough — so every allocation carries a fixed prefix holding the
+//! distance back to its block header, and a strongly aligned request is served
+//! by placing the payload at the first suitably aligned address inside a block
+//! large enough to hold it. One code path, no mode flag, and the cost is
+//! measured by `peak_extent` rather than assumed away.
 
 #![no_std]
 
@@ -84,9 +102,16 @@ struct Tag {
 const TAG_BYTES: usize = core::mem::size_of::<Tag>();
 /// Header and footer, which every block carries.
 const OVERHEAD: usize = 2 * TAG_BYTES;
-/// Every block is aligned to this, so a payload satisfies any alignment up to it
-/// without the allocator needing to shift the payload inside the block.
+/// Blocks and payload starts are multiples of this.
 const GRAIN: usize = 16;
+
+/// Bytes reserved before every returned pointer.
+///
+/// Its last `usize` holds the distance back to the block header. That is what
+/// lets one `deallocate` path serve both an ordinary allocation and one whose
+/// payload was pushed forward to meet a strong alignment: the pointer always
+/// knows where its block is, so nothing has to be inferred from its address.
+const PREFIX: usize = GRAIN;
 
 const fn round_up(value: usize, to: usize) -> usize {
     value.div_ceil(to) * to
@@ -96,10 +121,14 @@ const fn round_up(value: usize, to: usize) -> usize {
 pub struct BoundedHeap {
     base: usize,
     length: usize,
-    /// Bytes of payload currently handed out, for the accounting a runtime
-    /// needs and for measuring the bound the arena must exceed.
-    in_use: usize,
-    high_water: usize,
+    /// Bytes of the region currently committed to live blocks, tags included.
+    ///
+    /// Counted in whole blocks rather than in requested payload, so a free
+    /// returns exactly what its claim took even when the block kept a remainder
+    /// too small to split off.
+    committed: usize,
+    /// The highest address the arena was ever carried to, relative to `base`.
+    frontier: usize,
     /// Whether the region has been laid out with its initial free block.
     ready: bool,
 }
@@ -117,8 +146,8 @@ impl BoundedHeap {
         BoundedHeap {
             base: 0,
             length: 0,
-            in_use: 0,
-            high_water: 0,
+            committed: 0,
+            frontier: 0,
             ready: false,
         }
     }
@@ -156,8 +185,8 @@ impl BoundedHeap {
         let usable = (grant.length - OVERHEAD) / GRAIN * GRAIN;
         self.base = grant.base;
         self.length = usable + OVERHEAD;
-        self.in_use = 0;
-        self.high_water = 0;
+        self.committed = 0;
+        self.frontier = 0;
         // SAFETY: the caller's promise covers `length` bytes from `base`, and
         // `usable + OVERHEAD` is no larger than the granted length.
         unsafe { write_tags(self.base, usable, true) };
@@ -165,17 +194,24 @@ impl BoundedHeap {
         Ok(())
     }
 
-    /// Bytes of payload currently handed out.
-    pub fn in_use(&self) -> usize {
-        self.in_use
+    /// Bytes of the region committed to live blocks, tags included.
+    pub fn committed(&self) -> usize {
+        self.committed
     }
 
-    /// The most ever handed out at one moment.
+    /// The arena size this run would have needed.
     ///
-    /// This is the measurement ADR-0041's second discipline needs: an arena is
-    /// sized above a measured bound rather than trusted to refuse gracefully.
-    pub fn high_water(&self) -> usize {
-        self.high_water
+    /// The measurement ADR-0041's second discipline requires. It is the highest
+    /// address the arena was ever carried to, so it includes every block's
+    /// tags, the rounding to the grain, a remainder too small to split off, and
+    /// any hole below the frontier — all of which are arena the run needed even
+    /// though none of them is requested payload.
+    ///
+    /// It never falls when a block is freed. That is deliberate: a bound that
+    /// shrank would understate what a later identical run requires, and a bound
+    /// must err upward.
+    pub fn peak_extent(&self) -> usize {
+        self.frontier
     }
 
     /// Total usable bytes, excluding the first block's own tags.
@@ -196,14 +232,10 @@ impl BoundedHeap {
         if !self.ready || layout.size() == 0 {
             return None;
         }
-        // A block is `GRAIN`-aligned, so any alignment up to `GRAIN` is
-        // satisfied by the block itself. A larger one is over-allocated and the
-        // payload start is advanced, which the free path recovers by reading
-        // the tag that precedes the returned pointer.
-        if layout.align() > GRAIN {
-            return None;
-        }
-        let wanted = round_up(layout.size(), GRAIN);
+        let align = layout.align().max(GRAIN);
+        // A block's payload starts `GRAIN`-aligned, so the worst case is
+        // needing to skip almost a whole alignment step past the prefix.
+        let need = round_up(PREFIX + layout.size() + (align - GRAIN), GRAIN);
 
         let mut cursor = self.base;
         let end = self.base + self.length;
@@ -214,26 +246,34 @@ impl BoundedHeap {
             if tag.size == 0 {
                 break;
             }
-            if tag.free && tag.size >= wanted {
+            if tag.free && tag.size >= need {
                 // SAFETY: the block at `cursor` is free and large enough.
-                unsafe { self.occupy(cursor, tag.size, wanted) };
-                self.in_use += wanted;
-                self.high_water = self.high_water.max(self.in_use);
-                return Some((cursor + TAG_BYTES) as *mut u8);
+                let kept = unsafe { self.occupy(cursor, tag.size, need) };
+                let payload = cursor + TAG_BYTES;
+                let pointer = round_up(payload + PREFIX, align);
+                debug_assert!(pointer + layout.size() <= payload + kept);
+                // SAFETY: `pointer - WORD` lies inside this block's payload,
+                // because `pointer` is at least `PREFIX` past its start.
+                unsafe { write_backlink(pointer, pointer - cursor) };
+                self.committed += kept + OVERHEAD;
+                self.frontier = self.frontier.max(cursor + kept + OVERHEAD - self.base);
+                return Some(pointer as *mut u8);
             }
             cursor += tag.size + OVERHEAD;
         }
         None
     }
 
-    /// Marks a block used, splitting off the remainder when it is worth a block.
+    /// Marks a block used, splitting off the remainder when it is worth a
+    /// block, and returns the payload size the block actually kept.
     ///
-    /// # Safety
+    /// The return value is what the accounting must use: when the remainder is
+    /// too small to stand alone it stays with this allocation, and charging
+    /// only the requested amount would let the eventual free return more than
+    /// the claim took.
     ///
-    /// `at` is a free block header whose payload is `size`, and `wanted` is a
-    /// `GRAIN` multiple no larger than `size`.
-    // SAFETY: `at` is a free block header of `size`, and `wanted` is a grain multiple no larger, so the split stays inside the block.
-    unsafe fn occupy(&mut self, at: usize, size: usize, wanted: usize) {
+    // SAFETY: `at` is a free block header whose payload is `size`, and `wanted` is a grain multiple no larger, so the split stays inside the block.
+    unsafe fn occupy(&mut self, at: usize, size: usize, wanted: usize) -> usize {
         let leftover = size - wanted;
         if leftover >= OVERHEAD + GRAIN {
             // SAFETY: the split stays inside the original block.
@@ -241,11 +281,12 @@ impl BoundedHeap {
                 write_tags(at, wanted, false);
                 write_tags(at + wanted + OVERHEAD, leftover - OVERHEAD, true);
             }
+            wanted
         } else {
-            // Too small to be a block of its own; it stays with this one, which
-            // is what keeps every block at least `GRAIN` of payload.
+            // Too small to be a block of its own; it stays with this one.
             // SAFETY: `at` is a block header.
             unsafe { write_tags(at, size, false) };
+            size
         }
     }
 
@@ -260,7 +301,17 @@ impl BoundedHeap {
         if !self.ready || pointer.is_null() {
             return;
         }
-        let header = pointer as usize - TAG_BYTES;
+        let address = pointer as usize;
+        if address < self.base + TAG_BYTES + WORD || address >= self.base + self.length {
+            return;
+        }
+        // SAFETY: every pointer this heap returned carries its distance back to
+        // its own header in the word before it.
+        let back = unsafe { read_backlink(address) };
+        if back > address - self.base {
+            return;
+        }
+        let header = address - back;
         if header < self.base || header >= self.base + self.length {
             return;
         }
@@ -269,7 +320,7 @@ impl BoundedHeap {
         if tag.free {
             return;
         }
-        self.in_use = self.in_use.saturating_sub(tag.size);
+        self.committed = self.committed.saturating_sub(tag.size + OVERHEAD);
 
         let mut start = header;
         let mut size = tag.size;
@@ -338,6 +389,27 @@ impl BoundedHeap {
     }
 }
 
+/// One machine word, which is what a backlink is.
+const WORD: usize = core::mem::size_of::<usize>();
+
+/// Records how far back a returned pointer's block header lies.
+///
+// SAFETY: `pointer - WORD` lies inside the block's own payload.
+unsafe fn write_backlink(pointer: usize, distance: usize) {
+    // SAFETY: the caller guarantees the word before `pointer` belongs to this
+    // block, and only this function writes it.
+    unsafe { ptr::write_unaligned((pointer - WORD) as *mut usize, distance) }
+}
+
+/// Reads the distance back to a pointer's block header.
+///
+// SAFETY: `pointer` was returned by `try_allocate` on this heap.
+unsafe fn read_backlink(pointer: usize) -> usize {
+    // SAFETY: the caller guarantees `pointer` came from this heap, so the word
+    // before it is the backlink `write_backlink` wrote.
+    unsafe { ptr::read_unaligned((pointer - WORD) as *const usize) }
+}
+
 /// Writes a block's header and footer.
 ///
 /// # Safety
@@ -402,11 +474,11 @@ impl GlobalHeap {
         unsafe { (*self.heap.get()).adopt(grant) }
     }
 
-    /// Bytes handed out, and the most ever handed out at once.
+    /// Bytes committed to live blocks, and the arena size this run needed.
     pub fn usage(&self) -> (usize, usize) {
         // SAFETY: single-context use; see the type's note.
         let heap = unsafe { &*self.heap.get() };
-        (heap.in_use(), heap.high_water())
+        (heap.committed(), heap.peak_extent())
     }
 
     pub fn block_census(&self) -> (usize, usize) {

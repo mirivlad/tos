@@ -58,8 +58,17 @@ Everything else is internal and checked: block walks stay inside the region,
 splits stay inside the block they split, and `deallocate` re-checks that a
 pointer lies in the arena before reading its tag.
 
+Every returned pointer carries, in the word before it, the distance back to its
+block header. That is what lets one `deallocate` path serve both an ordinary
+allocation and one whose payload was pushed forward to meet a strong alignment:
+the pointer knows where its block is, so nothing is inferred from its address.
+`deallocate` still range-checks the recovered header before reading its tag.
+
 Adversarial coverage is in `crates/tos-runtime/tests/heap.rs`: malformed grants
 refused by reason, allocations proved disjoint and writable, reclaim after a
 full-arena allocation, coalescing from both directions, a thousand
 allocate-and-free rounds that must return the arena to its exact starting
-layout, and exhaustion that refuses without damaging anything live.
+layout, exhaustion that refuses without damaging anything live, alignments from
+16 to 4096 served and verified, and the two accounting properties an arena bound
+depends on — a free returns exactly what its claim took, and the bound exceeds
+the requested payload because metadata and holes are arena the run needed.
