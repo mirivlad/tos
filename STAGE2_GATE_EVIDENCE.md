@@ -17,7 +17,7 @@ source_commit          see `git rev-parse HEAD`; the SHA mapping for the one
                        PROVENANCE_HISTORY_REWRITE.md
 architecture_version   TOS Core 1.0; tos-ir/v1; accepted ADR-0027, ADR-0028,
                        ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036,
-                       ADR-0038, ADR-0040
+                       ADR-0038, ADR-0039, ADR-0040, ADR-0041
 identity_question      Is actual language semantics executing from canonical
                        text with a verifiable mapping to runtime behavior?
 ```
@@ -26,7 +26,7 @@ identity_question      Is actual language semantics executing from canonical
 
 | `docs/37` Stage 2 evidence | State |
 |---|---|
-| normative grammar and semantics | **Present.** `docs/39`–`docs/44` accepted. The diagnostic registry holds 59 codes; every one is implemented, deliberately unreachable under V1, or blocked on a decision named below. |
+| normative grammar and semantics | **Present.** `docs/39`–`docs/44` accepted. The diagnostic registry holds 61 codes; every one is implemented, deliberately unreachable under V1, or blocked on a decision named below. |
 | source → AST → typed IR → execution trace | **Present.** `SourceReader → Parser → Checker → Lowerer → tos-ir/v1 → Verifier → reference engine` runs end to end. All 25 accepted vectors and all 6 canonical examples lower; every IR operation carries a source-map entry and every runtime trap names one. |
 | independent verifier | **Present.** `crates/tos-verifier` depends only on `tos-ir` and `tos-hash`; fifteen `V20xx` families; nineteen structured forged-IR negatives plus 200 000 fuzz rounds per preflight. |
 | cache deletion/regeneration test | **Present.** `crates/tos-cache`; clearing the store and regenerating from the same canonical source reproduces the same key, receipt and result. |
@@ -119,24 +119,24 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    taken; the reference half needs a freestanding Stage 2 runtime to execute
    under the ADR-0040 profile, which item 3 blocks. No budget is asserted from
    the native record.
-3. **Runtime independence is not discharged.** The audit finds one architectural
-   gap — no heap allocator, and no decision on who owns memory in Stage 2 before
-   Stage 3 — and presents three options without choosing. This blocks the
-   ADR-0040 reference measurement, which may not be taken through a host binary,
-   and therefore blocks candidate-complete.
+3. **Runtime independence is decided but not discharged.** The audit's gap is
+   settled by ADR-0041 — the nucleus grants one bounded region and the runtime
+   never discovers memory — and the work it authorizes is unbuilt. Until it is,
+   the ADR-0040 reference measurement cannot be taken on the real path and
+   Stage 2 cannot be candidate-complete.
 4. **ADR-0036 is accepted but not yet implemented.** Guard types, the lifetime
    relation, `E1402_INVALID_GUARD_LIFETIME` and the matching `V2031_SYNC` rules
-   are decided and unbuilt.
-5. **Two contract decisions are still open.** ADR-0037 revision 3 adds `share`
-   as a predeclared operation and stops at one boundary it uncovers: a `share`
-   with a non-Shareable argument has no diagnostic code, because the registry
-   has no argument-type-mismatch code at all. ADR-0039 revision 3 narrows
-   `E1213` to the `as` forms V1 grammar admits. Until both are accepted,
-   `V2021_REGION` has no rules and casting an integer to `Task<i32>` is still
-   accepted in silence.
-6. **`sync` and `shared` are not metered**, because nothing consumes them yet.
-   See `threat_model_coverage`; this follows items 4 and 5 rather than being
-   separate work.
+   are decided and unbuilt, so `V2031_SYNC` still has no rules and `sync` has
+   nothing to meter.
+5. **ADR-0037 is accepted but not yet implemented.** `Region<mut T>`,
+   `DmaRegion<mut T>`, `share`, the transfer and share model, `V2021_REGION` and
+   `shared` accounting are decided and unbuilt. Its diagnostic dependency —
+   `E1215_ARGUMENT_TYPE_MISMATCH` — **is** implemented and bound to the corpus.
+6. **ADR-0041 is accepted but not yet implemented.** The memory grant, the
+   allocator, the `no_std` conversion and the freestanding runtime are decided
+   and unbuilt, which is what blocks items 1, 2 and 3.
+7. **`sync` and `shared` are not metered**, because nothing consumes them yet.
+   That follows items 4 and 5 rather than being separate work.
 
 ## architect_approval
 
