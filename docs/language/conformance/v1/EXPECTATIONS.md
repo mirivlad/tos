@@ -94,6 +94,7 @@
 | R061 | `reject/nonconstructible-task-cast.tos` | Bootstrap | `E1213_NONCONSTRUCTIBLE_TYPE` with `type=Task<i32>`, `operation=as` | a task is obtained from `spawn`, never fabricated from data |
 | R062 | `reject/nonconstructible-shared-cast.tos` | Bootstrap | `E1213_NONCONSTRUCTIBLE_TYPE` with `type=Shared<i32>` | a `Shared<T>` comes only from the typed share contract |
 | R063 | `reject/nonconstructible-mutex-operand.tos` | Bootstrap | `E1213_NONCONSTRUCTIBLE_TYPE` with `type=Mutex<i32>` | the operand side of `as` is closed too |
+| R064 | `reject/argument-type-mismatch.tos` | Bootstrap | `E1215_ARGUMENT_TYPE_MISMATCH` with `callee=take`, `position=0`, `expected=bool`, `actual=string` | a resolved call's argument must satisfy its declared parameter type |
 | R029 | `reject/unexpected-character-at.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 287, line 7 column 12 | `@` begins no lexical form |
 | R030 | `reject/unexpected-character-dollar.tos` | Bootstrap | `E1013_UNEXPECTED_CHARACTER` at byte 288, line 7 column 9 | `$` begins no lexical form |
 
