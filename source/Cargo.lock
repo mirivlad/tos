@@ -26,11 +26,19 @@ name = "tos-core"
 version = "0.1.0"
 dependencies = [
  "tos-hash",
+ "tos-ir",
 ]
 
 [[package]]
 name = "tos-hash"
 version = "0.1.0"
+
+[[package]]
+name = "tos-ir"
+version = "0.1.0"
+dependencies = [
+ "tos-hash",
+]
 
 [[package]]
 name = "tos-nucleus"
