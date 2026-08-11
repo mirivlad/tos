@@ -102,7 +102,12 @@ release_manifest() { python3 "$ROOT/tools/build-release-manifest.py" --check; }
 spdx() { sh "$ROOT/scripts/check-spdx.sh"; }
 dco() { sh "$ROOT/scripts/check-dco.sh"; }
 fmt() { (cd "$ROOT/source" && cargo fmt --all -- --check); }
-tests() { (cd "$ROOT/source" && cargo test); }
+# `cargo test` covers the workspace default members. The UEFI loader is not one
+# — it is a target-only crate — so its host unit tests were never being run by
+# this gate despite existing. They are named explicitly.
+tests() {
+    (cd "$ROOT/source" && cargo test && cargo test -p tos-uefi-loader)
+}
 clippy_host() { (cd "$ROOT/source" && cargo clippy --all-targets -- -D warnings); }
 clippy_uefi() {
     (cd "$ROOT/source" && cargo clippy -p tos-uefi-loader \
@@ -133,6 +138,10 @@ qemu_success() {
 qemu_negative() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/negative-suite.sh \
         target/preflight-qemu/negative)
+}
+qemu_stage2_runtime() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/stage2-runtime.sh \
+        target/preflight-qemu/stage2-runtime)
 }
 qemu_capsule_size_limit() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/capsule-size-limit.sh \
@@ -177,6 +186,7 @@ if [ "$MODE" = full ]; then
     run_gate "build nucleus" build_nucleus
     run_gate "QEMU success boot" qemu_success
     run_gate "QEMU negative suite" qemu_negative
+    run_gate "QEMU Stage 2 runtime path" qemu_stage2_runtime
     run_gate "QEMU capsule size limit" qemu_capsule_size_limit
     run_gate "QEMU exception #UD" qemu_exception_ud2
     run_gate "QEMU exception #GP" qemu_exception_gp
