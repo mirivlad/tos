@@ -104,6 +104,48 @@ pub struct ResolutionSnapshot {
 /// The validation order is the one docs/43 section 5 fixes, and it stops at the
 /// first primary finding: a later check reading a table an earlier one rejected
 /// would be reporting a consequence, not a defect.
+/// The verifier's steps, in the order [`verify`] runs them.
+///
+/// Named so a caller can run one at a time and see what each costs. Which step
+/// costs what is invisible from a total, and optimising a verifier by guess is
+/// how a verifier stops verifying.
+pub const VERIFY_STEPS: [&str; 9] = [
+    "limits",
+    "schema",
+    "source_identity",
+    "table_order",
+    "types_and_imports",
+    "control_flow",
+    "ownership_and_profile",
+    "tasks_sync_atomics_unsafe",
+    "source_maps",
+];
+
+/// Runs one named step against untrusted IR.
+///
+/// The verifier still derives everything it needs from the module itself; this
+/// only exposes the sequence it already runs. No clock lives here — the crate is
+/// `no_std` and a caller that wants a timing brings its own.
+pub fn verify_step(
+    name: &str,
+    module: &Module,
+    snapshot: &ResolutionSnapshot,
+    limits: &Limits,
+) -> Option<Result<(), Finding>> {
+    Some(match name {
+        "limits" => check_limits(module, limits),
+        "schema" => check_schema(module),
+        "source_identity" => check_source_identity(module),
+        "table_order" => check_table_order(module),
+        "types_and_imports" => check_types_and_imports(module, snapshot),
+        "control_flow" => check_control_flow(module),
+        "ownership_and_profile" => check_ownership_and_profile(module),
+        "tasks_sync_atomics_unsafe" => check_tasks_sync_atomics_unsafe(module),
+        "source_maps" => check_source_maps(module),
+        _ => return None,
+    })
+}
+
 pub fn verify(
     module: &Module,
     snapshot: &ResolutionSnapshot,
@@ -1347,6 +1389,11 @@ fn check_source_maps(module: &Module) -> Result<(), Finding> {
 }
 
 /// A digest over the source map alone, so a receipt binds the map it checked.
+/// Exposed so its cost can be measured apart from the module digest.
+pub fn source_map_digest_of(entries: &[SourceMapEntry]) -> String {
+    source_map_digest(entries)
+}
+
 fn source_map_digest(entries: &[SourceMapEntry]) -> String {
     let mut bytes: Vec<u8> = Vec::new();
     for entry in entries {
