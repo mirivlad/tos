@@ -588,6 +588,14 @@ impl<'source> Lowerer<'source> {
         }
     }
 
+    /// Whether the module declares a `const` of this name.
+    fn declares_const(&self, name: &str) -> bool {
+        self.schema
+            .consts()
+            .iter()
+            .any(|declaration| declaration.name().text(self.source) == name)
+    }
+
     fn gap(&self, construct: &'static str, span: Span) -> Gap {
         Gap {
             construct,
@@ -1787,7 +1795,18 @@ impl<'source> Lowerer<'source> {
             ExpressionForm::Name => {
                 let name = expression.span().text(self.source);
                 let Some(slot) = builder.lookup(name) else {
-                    return Err(self.gap("unbound place", expression.span()));
+                    // A module-level `const` is an accepted V1 item form that
+                    // the parser and the checker both admit, and that this
+                    // lowerer does not yet represent. Naming it as the gap it
+                    // is keeps the refusal honest: "unbound place" describes a
+                    // lowering data structure, and would send a reader looking
+                    // for a typo in source that is perfectly well formed.
+                    let construct = if self.declares_const(name) {
+                        "module-level const"
+                    } else {
+                        "unbound place"
+                    };
+                    return Err(self.gap(construct, expression.span()));
                 };
                 Ok(Place {
                     root: slot,
@@ -1882,6 +1901,9 @@ impl<'source> Lowerer<'source> {
                         unsafe_interface: None,
                     });
                     return Ok(Operand::Value(value));
+                }
+                if self.declares_const(name) {
+                    return Err(self.gap("module-level const", expression.span()));
                 }
                 Err(self.gap("unresolved value name", expression.span()))
             }

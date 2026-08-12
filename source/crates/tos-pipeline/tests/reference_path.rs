@@ -351,3 +351,32 @@ fn a_guard_released_with_its_frame_does_not_accumulate() {
         "two sequential frames must not hold two guards at once"
     );
 }
+
+/// A module-level `const` is an accepted V1 item form (docs/39 section 4,
+/// docs/42 section 1) that this lowerer does not represent. Until ADR-0052
+/// settles what a constant means and how `tos-ir/v1` carries one, the boundary
+/// has to be visible: the refusal names the construct rather than describing a
+/// lowering data structure, and it refuses rather than executing something the
+/// source did not say.
+#[test]
+fn a_module_level_const_is_a_named_gap_rather_than_a_confusing_refusal() {
+    let text = format!(
+        "{PRELUDE} pub const LIMIT: i32 = 7i32; \
+         pub fn main() -> i32 {{ return LIMIT; }}"
+    );
+    let run = execute(&request(&text, "main"), Vec::new(), &mut Silent);
+    let Run::NotLowered(gap) = &run else {
+        panic!("expected a named lowering gap, got {run:?}");
+    };
+    assert_eq!(gap.construct, "module-level const");
+    assert_eq!(run.failed_at(), Some(PipelineStage::Lower));
+
+    // Declaring one and never reading it still lowers: the gap is the read, and
+    // reporting it at the declaration would refuse source this lowerer can run.
+    let declared_only = format!(
+        "{PRELUDE} pub const LIMIT: i32 = 7i32; \
+         pub fn main() -> i32 {{ return 7i32; }}"
+    );
+    let run = execute(&request(&declared_only, "main"), Vec::new(), &mut Silent);
+    assert!(run.is_completed(), "unread const must not block lowering");
+}
