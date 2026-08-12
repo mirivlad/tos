@@ -40,7 +40,7 @@ Composition (derived, not hand-maintained)
 ------------------------------------------
 - files in the release package: 339
 - active system invariants: 21
-- architecture decision records: 43 (40 accepted)
+- architecture decision records: 44 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -86,7 +86,8 @@ Architecture decision records
 - docs/adr/0040-stage2-reference-platform.md — ADR-0040: the Stage 2 reference platform profile [Accepted (Project Architect-approved)]
 - docs/adr/0041-runtime-memory-grant.md — ADR-0041: `RuntimeMemoryGrantV1` — the nucleus-to-runtime memory contract [Accepted (Project Architect-approved)]
 - docs/adr/0042-runtime-events-on-the-boot-log.md — ADR-0042: Runtime events on the Boot ABI v1 serial log [**Accepted** (Project Architect-approved)]
-- docs/adr/0043-stage2-performance-budgets.md — ADR-0043: The Stage 2 quantitative performance budgets [**Proposed** (awaiting Project Architect decision)]
+- docs/adr/0043-stage2-performance-budgets.md — ADR-0043: The Stage 2 quantitative performance budgets [**Accepted** (Project Architect-approved)]
+- docs/adr/0044-versioned-module-digest.md — ADR-0044: A versioned module-digest scheme [**Proposed** (awaiting Project Architect decision)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

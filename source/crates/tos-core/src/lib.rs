@@ -35,7 +35,7 @@ mod summary;
 mod types;
 mod typing;
 
-pub use checker::Checker;
+pub use checker::{check_slice, Checker, CHECK_SLICES};
 pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
 pub use lower::{lower_module, Gap, ModuleContext, FRONTEND_IDENTITY};
 pub use modules::{check_module_set, check_module_summaries, check_source_set, ModuleEntry};

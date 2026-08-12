@@ -88,7 +88,7 @@ Hard budgets:
 Reference-platform budgets for the bootstrap profile:
 
 - parse, type-check, lower and verify a 256 KiB canonical module in no more than 500 ms p95;
-- execute the standard one-million-operation integer/control-flow benchmark in no more than 10 times the host reference interpreter time under the same semantic implementation;
+- execute the standard one-million-operation integer/control-flow benchmark in no more than 22 times the host reference interpreter time under the same semantic implementation (ADR-0043; the original 10 was a research assumption, and a component decomposition of the production engine measured every semantic component of that workload at 15.1–17.9x on the accepted ADR-0040 platform);
 - reject quota-exceeding source within 2 times the accepted-input budget rather than degrading without bound.
 
 These are initial research gates, not claims of application-language competitiveness.
