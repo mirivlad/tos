@@ -169,17 +169,29 @@ representation at run time. Type imports are still out of scope here.
 ### Task 5: The boot path runs a set
 
 **Files:**
-- Modify: `source/nucleus/src/runtime.rs`
-- Modify: `source/host-tools/qemu-test/`
-- Modify: `source/system/boot/`
+- Modify: `source/nucleus/src/main.rs`, `source/nucleus/src/runtime.rs`
+- Create: `source/host-tools/qemu-test/module-set.sh`
+- Create: `source/tests/vectors/module-set/{init,arith}.tos`
+- Modify: `scripts/preflight.sh`, `source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md`
 
-- [ ] Read every module the capsule carries, not only the canonical boot file,
-  and hand the pipeline a set.
-- [ ] A boot module that imports a library module from the capsule runs on the
-  real boot path and returns its answer.
-- [ ] The serial contract is unchanged: the same `TOS.RUN.*` events, with the
-  closure visible in `TOS.RUN.BEGIN` or an additive event under the delegated
-  namespace rather than a new vocabulary.
+- [x] Every `.tos` file the capsule carries becomes a unit of the set. The
+  version marker and the licence notice do not: offering them would ask the
+  frontend to parse a file that never claimed to be a module. The count is
+  bounded by a nucleus constant rather than by capsule input.
+- [x] A capsule whose boot module imports a second module of the same capsule
+  boots under the ordinary artifacts and firmware and returns `i32:42` — a value
+  neither module computes alone, so the answer is evidence the call crossed the
+  boundary. Gated by `module-set.sh` in the full preflight.
+- [x] The serial vocabulary is unchanged. `modules=` is appended to
+  `TOS.RUN.BEGIN` under the contract's own extension rule and documented there:
+  `path` names the entry, and a run that resolved a set executed more than that.
+- [x] The canonical boot path is unaffected and still reports `value=i32:240`,
+  now with `modules=1`.
+
+*Found doing it:* the unit vector was first built before the heap adopted its
+grant, and the boot panicked. That is ADR-0041's property working — a runtime
+with no grant has no memory — and the fix is to build the set after adoption,
+where every other allocation of the run already happens.
 
 ### Task 6: Measure the closure
 

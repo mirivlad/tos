@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `ba666cb03d86269068a0bec347ea9f476737a8057013262ff9beba9690312585`  
+Source-manifest SHA-256: `201f8470f3147b5faef5f57edb87c4dcacef167236b0f9f12000d7ab4002761a`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1505,8 +1505,12 @@ it MUST NOT remove one, reorder the required ones, or change what one means.
 
 | Identifier | Required fields | Meaning |
 |---|---|---|
-| `TOS.RUN.BEGIN` | `path=` `bytes=` `entry=` `grant_base=0x<hex>` `grant_length=` `grant_version=` | A run is starting over the named source with the named memory grant. |
+| `TOS.RUN.BEGIN` | `path=` `bytes=` `entry=` `grant_base=0x<hex>` `grant_length=` `grant_version=`, and `modules=` when the run is over a source set | A run is starting over the named source with the named memory grant. |
 | `TOS.RUN.STAGE` | `name=<read\|parse\|check\|resolve\|lower\|verify\|execute>` | The named stage is being **entered**. |
+
+`modules` is an appended field under section 2's extension rule: `path` names
+the entry module, and a run that resolved a set executed more than that. A log
+showing only the entry would understate what ran.
 
 `TOS.RUN.STAGE` is emitted before the stage runs, not after. A stage that never
 returns is then named by the last event in the log, which is the only way a
