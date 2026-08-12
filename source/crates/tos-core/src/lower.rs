@@ -66,7 +66,21 @@ pub struct ModuleContext {
     pub capability_interface_digest: String,
 }
 
-/// Lowers one checked module.
+/// A module this one imports, already lowered.
+///
+/// Lowering a set is ordered so that a module's dependencies are lowered before
+/// it. What a dependency contributes is its *computed* identity and its
+/// exported signatures — never a declaration about itself that this module took
+/// on trust.
+#[derive(Clone, Copy, Debug)]
+pub struct ResolvedImport<'a> {
+    /// The dotted module name, as the importing module writes it.
+    pub name: &'a str,
+    /// The lowered dependency.
+    pub module: &'a Module,
+}
+
+/// Lowers one checked module that imports nothing this lowering must resolve.
 ///
 /// The schema must already have passed `Checker::check` with no error: docs/43
 /// section 4 makes those proofs a precondition of emitting IR.
@@ -74,6 +88,22 @@ pub fn lower_module(
     source: &SourceUnit,
     schema: &Schema,
     context: &ModuleContext,
+) -> Result<Module, Gap> {
+    lower_module_in_set(source, schema, context, &[])
+}
+
+/// Lowers one checked module of a source set, with its dependencies resolved.
+///
+/// Two things need the dependencies and cannot be honest without them: an
+/// import's `module_content_id`, which must be the identity of the module that
+/// actually resolved rather than a blank; and the type of a cross-module call,
+/// which is the callee's declared result. A lowering that guessed either would
+/// hand the verifier a claim the source never made.
+pub fn lower_module_in_set(
+    source: &SourceUnit,
+    schema: &Schema,
+    context: &ModuleContext,
+    imports: &[ResolvedImport<'_>],
 ) -> Result<Module, Gap> {
     let profile = match schema.outline().prefix().header().profile() {
         crate::parser::Profile::Full => Profile::Full,
@@ -103,6 +133,7 @@ pub fn lower_module(
         nominals: BTreeMap::new(),
         variant_owner: BTreeMap::new(),
         functions_by_name: BTreeMap::new(),
+        resolved: imports,
         functions: Vec::new(),
         const_stack: Vec::new(),
     };
@@ -128,14 +159,23 @@ pub fn lower_module(
                     ty,
                 });
             }
-            crate::parser::ImportKind::Module => imports.push(tos_ir::Import {
-                module_name: path,
-                // A single-module lowering knows the name it imported, not the
-                // content of the module behind it; the source-set step binds
-                // that identity into the dependency digest.
-                module_content_id: String::new(),
-                binding,
-            }),
+            crate::parser::ImportKind::Module => {
+                // The identity of the module that actually resolved, computed
+                // by whoever read it. A module cannot state its own content id
+                // and an importer must not invent one, so an unresolved import
+                // carries an empty identity rather than a plausible-looking
+                // string: the verifier can then tell "not resolved" from
+                // "resolved to that".
+                let module_content_id = lowerer
+                    .resolved_import(&path)
+                    .map(|import| import.module.header.content_id.clone())
+                    .unwrap_or_default();
+                imports.push(tos_ir::Import {
+                    module_name: path,
+                    module_content_id,
+                    binding,
+                })
+            }
         }
     }
     for (index, function) in schema.functions().iter().enumerate() {
@@ -331,6 +371,8 @@ struct Lowerer<'source> {
     /// Functions in the order they were lowered: declarations first, with each
     /// nested body appended where the walk reached it.
     functions: Vec<Function>,
+    /// The dependencies of this module, already lowered.
+    resolved: &'source [ResolvedImport<'source>],
     /// Module-level constants currently being substituted, innermost last.
     ///
     /// ADR-0052 makes a constant its value, so a use is lowered by lowering its
@@ -594,6 +636,145 @@ impl<'source> Lowerer<'source> {
                 Ok(self.intern(TypeDef::Function(lowered, result)))
             }
         }
+    }
+
+    /// The dotted module name a local import binding points at.
+    fn import_target(&self, binding: &str) -> Option<String> {
+        self.schema
+            .outline()
+            .prefix()
+            .imports()
+            .iter()
+            .filter(|import| import.kind() == crate::parser::ImportKind::Module)
+            .find(|import| import.binding().text(self.source) == binding)
+            .map(|import| {
+                import
+                    .path()
+                    .iter()
+                    .map(|segment| segment.text(self.source))
+                    .collect::<Vec<_>>()
+                    .join(".")
+            })
+    }
+
+    /// The resolved dependency an import names, if the caller supplied it.
+    fn resolved_import(&self, name: &str) -> Option<&'source ResolvedImport<'source>> {
+        self.resolved.iter().find(|import| import.name == name)
+    }
+
+    /// The declared result type of a function exported by an imported module.
+    ///
+    /// `base` is the local binding the import introduced, not the module name,
+    /// so the binding is resolved to its target first.
+    fn imported_result_type(
+        &mut self,
+        base: &str,
+        operation: &str,
+        at: Span,
+    ) -> Result<TypeId, Gap> {
+        let Some(target) = self.import_target(base) else {
+            return Ok(self.unit_type());
+        };
+        let Some(resolved) = self.resolved_import(&target) else {
+            // No dependency was supplied. The import is unresolved, the call
+            // cannot be typed, and `unit` is the only honest placeholder — the
+            // empty content id above says the same thing about the same import.
+            return Ok(self.unit_type());
+        };
+        let Some(signature) = resolved
+            .module
+            .exports
+            .iter()
+            .find(|export| export.name == operation)
+        else {
+            return Err(self.gap("call to a name the imported module does not export", at));
+        };
+        Ok(self.adopt_type(resolved.module, signature.result))
+    }
+
+    /// Re-interns a type from another module's table into this one.
+    ///
+    /// Type ids are per-module indices, so a type carried across a boundary is
+    /// rebuilt rather than copied. Nominal identity survives, because a nominal
+    /// carries the content id of the module that declared it: the same type
+    /// from the same module interns to one entry here however many imports
+    /// reach it.
+    fn adopt_type(&mut self, from: &Module, ty: TypeId) -> TypeId {
+        let Some(definition) = from.types.get(ty) else {
+            return self.unit_type();
+        };
+        let rebuilt = match definition.clone() {
+            TypeDef::Option(inner) => TypeDef::Option(self.adopt_type(from, inner)),
+            TypeDef::Task(inner) => TypeDef::Task(self.adopt_type(from, inner)),
+            TypeDef::TaskResult(inner) => TypeDef::TaskResult(self.adopt_type(from, inner)),
+            TypeDef::Shared(inner) => TypeDef::Shared(self.adopt_type(from, inner)),
+            TypeDef::Region(inner) => TypeDef::Region(self.adopt_type(from, inner)),
+            TypeDef::RegionMut(inner) => TypeDef::RegionMut(self.adopt_type(from, inner)),
+            TypeDef::DmaRegion(inner) => TypeDef::DmaRegion(self.adopt_type(from, inner)),
+            TypeDef::DmaRegionMut(inner) => TypeDef::DmaRegionMut(self.adopt_type(from, inner)),
+            TypeDef::Mutex(inner) => TypeDef::Mutex(self.adopt_type(from, inner)),
+            TypeDef::RwLock(inner) => TypeDef::RwLock(self.adopt_type(from, inner)),
+            TypeDef::MutexGuard(inner) => TypeDef::MutexGuard(self.adopt_type(from, inner)),
+            TypeDef::ReadGuard(inner) => TypeDef::ReadGuard(self.adopt_type(from, inner)),
+            TypeDef::WriteGuard(inner) => TypeDef::WriteGuard(self.adopt_type(from, inner)),
+            TypeDef::Channel(inner) => TypeDef::Channel(self.adopt_type(from, inner)),
+            TypeDef::Slice(inner) => TypeDef::Slice(self.adopt_type(from, inner)),
+            TypeDef::Result(ok, error) => {
+                let ok = self.adopt_type(from, ok);
+                let error = self.adopt_type(from, error);
+                TypeDef::Result(ok, error)
+            }
+            TypeDef::Array(element, length) => {
+                let element = self.adopt_type(from, element);
+                TypeDef::Array(element, length)
+            }
+            TypeDef::Tuple(elements) => TypeDef::Tuple(
+                elements
+                    .into_iter()
+                    .map(|element| self.adopt_type(from, element))
+                    .collect(),
+            ),
+            TypeDef::Function(parameters, result) => {
+                let parameters = parameters
+                    .into_iter()
+                    .map(|parameter| self.adopt_type(from, parameter))
+                    .collect();
+                let result = self.adopt_type(from, result);
+                TypeDef::Function(parameters, result)
+            }
+            TypeDef::Nominal {
+                module_content_id,
+                export_name,
+                kind,
+                fields,
+                variants,
+            } => {
+                let fields = fields
+                    .into_iter()
+                    .map(|field| self.adopt_type(from, field))
+                    .collect();
+                let variants = variants
+                    .into_iter()
+                    .map(|variant| Variant {
+                        name: variant.name,
+                        payload: variant
+                            .payload
+                            .into_iter()
+                            .map(|element| self.adopt_type(from, element))
+                            .collect(),
+                    })
+                    .collect();
+                TypeDef::Nominal {
+                    module_content_id,
+                    export_name,
+                    kind,
+                    fields,
+                    variants,
+                }
+            }
+            scalar => scalar,
+        };
+        self.intern(rebuilt)
     }
 
     /// Whether the module declares a `const` of this name.
@@ -2384,9 +2565,11 @@ impl<'source> Lowerer<'source> {
             for argument in expression.arguments() {
                 operands.push(self.lower_expression(argument.value(), builder)?);
             }
-            // A single-module lowering knows the callee's name, not its
-            // signature; the source-set step binds the imported type.
-            let ty = self.unit_type();
+            // The callee's declared result, re-interned into this module's
+            // type table. Lowering a call as `unit` because the signature was
+            // out of reach would tell the verifier the program returns
+            // something it does not.
+            let ty = self.imported_result_type(&base, &operation, expression.span())?;
             let value = builder.define(ty);
             builder.push(Instruction {
                 result: Some(value),

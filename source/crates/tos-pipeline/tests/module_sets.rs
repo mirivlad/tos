@@ -339,3 +339,111 @@ fn an_empty_set_is_not_a_run() {
         Some(SetError::NoUnits)
     );
 }
+
+/// The import carries the identity of the module that actually resolved.
+///
+/// An empty content id would mean "not resolved", and a plausible-looking one
+/// invented by the importer would be worse than either: the verifier could not
+/// tell a real resolution from a claimed one.
+#[test]
+fn an_import_carries_the_resolved_module_content_id() {
+    let math = lib(
+        "system.lib.math",
+        "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+    );
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.math as math;",
+        "pub fn main() -> i32 { return 1i32; }",
+    );
+    let outcome = set(
+        &[
+            ("system/boot/init.tos", &entry),
+            ("system/lib/math.tos", &math),
+        ],
+        "system/boot/init.tos",
+    );
+    let Run::Completed(completion) = &outcome else {
+        panic!("expected a completed run, got {outcome:?}");
+    };
+    // The dependency's own content id, computed from its bytes by the same
+    // function the pipeline used, and reachable through the entry's identity.
+    let expected = tos_pipeline::content_id(math.as_bytes());
+    assert!(
+        completion.receipt.dependency_digest != tos_pipeline::list_digest(&[])
+            && !expected.is_empty(),
+        "the dependency digest must be over a real dependency"
+    );
+    assert_eq!(
+        completion.receipt.dependency_digest,
+        tos_pipeline::list_digest(&[("system.lib.math", expected.as_str())]),
+        "the digest must be over the resolved name and computed content id"
+    );
+}
+
+/// Executing across a module boundary is Task 4. Until the engine holds a
+/// closure, the call is a defined refusal rather than a wrong answer — and the
+/// refusal names the missing capability of the engine, not a defect in source.
+#[test]
+fn a_cross_module_call_refuses_in_the_engine_and_not_earlier() {
+    let outcome = set(
+        &[
+            (
+                "system/boot/init.tos",
+                &module(
+                    "system.boot.init",
+                    "import system.lib.math as math;",
+                    "pub fn main() -> i32 { return math.double(21i32); }",
+                ),
+            ),
+            (
+                "system/lib/math.tos",
+                &lib(
+                    "system.lib.math",
+                    "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+                ),
+            ),
+        ],
+        "system/boot/init.tos",
+    );
+    assert_eq!(
+        outcome.failed_at(),
+        Some(PipelineStage::Execute),
+        "read, parse, check, resolve, lower and verify must all accept it: {outcome:?}"
+    );
+    let Run::Trapped { code, .. } = &outcome else {
+        panic!("expected a trap, got {outcome:?}");
+    };
+    assert_eq!(*code, "RUNTIME_UNRESOLVED_IMPORT");
+}
+
+/// A call to a name the imported module does not export is a lowering gap, not
+/// a `unit`-typed call the verifier would have to take on trust.
+#[test]
+fn a_call_to_a_name_the_dependency_does_not_export_refuses_at_lowering() {
+    let outcome = set(
+        &[
+            (
+                "system/boot/init.tos",
+                &module(
+                    "system.boot.init",
+                    "import system.lib.math as math;",
+                    "pub fn main() -> i32 { return math.absent(1i32); }",
+                ),
+            ),
+            (
+                "system/lib/math.tos",
+                &lib(
+                    "system.lib.math",
+                    "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+                ),
+            ),
+        ],
+        "system/boot/init.tos",
+    );
+    assert_eq!(
+        outcome.failed_at(),
+        Some(PipelineStage::Lower),
+        "{outcome:?}"
+    );
+}

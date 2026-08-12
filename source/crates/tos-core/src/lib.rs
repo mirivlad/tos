@@ -38,7 +38,9 @@ mod typing;
 
 pub use checker::{check_slice, Checker, CHECK_SLICES};
 pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
-pub use lower::{lower_module, Gap, ModuleContext, FRONTEND_IDENTITY};
+pub use lower::{
+    lower_module, lower_module_in_set, Gap, ModuleContext, ResolvedImport, FRONTEND_IDENTITY,
+};
 pub use modules::{check_module_set, check_module_summaries, check_source_set, ModuleEntry};
 pub use parser::{
     Block, BorrowMode, CallArgument, ConstDeclaration, EnumDeclaration, EnumVariant,
