@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `ae9a008198f20b05e7a86fda3b513b9452c70a2ad252228fa0854ada4df0bf30`  
+Source-manifest SHA-256: `73c9a967bd56427754aec99499f89273bca023b6cb832e568a82b506f4e93225`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -7051,7 +7051,7 @@ Hard budgets:
 Reference-platform budgets for the bootstrap profile:
 
 - parse, type-check, lower and verify a 256 KiB canonical module in no more than 500 ms p95;
-- execute the standard one-million-operation integer/control-flow benchmark in no more than 10 times the host reference interpreter time under the same semantic implementation;
+- execute the standard one-million-operation integer/control-flow benchmark in no more than 22 times the host reference interpreter time under the same semantic implementation (ADR-0043; the original 10 was a research assumption, and a component decomposition of the production engine measured every semantic component of that workload at 15.1–17.9x on the accepted ADR-0040 platform);
 - reject quota-exceeding source within 2 times the accepted-input budget rather than degrading without bound.
 
 These are initial research gates, not claims of application-language competitiveness.
