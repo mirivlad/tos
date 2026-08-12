@@ -1,0 +1,125 @@
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# TOS Capability Contract — Version 1
+
+Status: **Proposed.** Not authority, and deliberately not yet under
+`source/interfaces/`: that directory carries accepted contracts only, which is
+an invariant `scripts/tests/check-interface-contract-authority.sh` enforces.
+On acceptance of ADR-0048 this document is published unchanged as
+`source/interfaces/system/CAPABILITY_V1.md`, carries the accepted status line and is
+added to `docs/SPECIFICATION_SOURCES.txt`.
+
+Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
+the language half of the model already fixed by docs/42 §2 under ADR-0028.
+
+## 1. Role
+
+docs/42 §2 fixed what a capability means *in source*: a request rather than a
+grant, an opaque value of a nominal type, unforgeable, non-encodable,
+non-recreatable, attenuable only downward. It also said the concrete interfaces
+belong to later stages and must be separately versioned. This is that contract
+for Stage 3: what a handle **is**, who owns the table, and what the nucleus does
+when one is presented.
+
+The language contract and this one must agree at exactly one point: a value the
+checker treats as a capability corresponds to an entry in the holder's table,
+and nothing else in the system does.
+
+## 2. Representation
+
+A capability is named by a **handle**: a process-local index into a
+nucleus-owned table. It is not a pointer, not a token, not a signed bearer
+value, and it carries no rights in its own bits.
+
+| Property | Rule |
+|---|---|
+| Scope | process-local; the same index in two processes names different things, or nothing |
+| Storage | the table lives in nucleus memory and is not mapped into the process |
+| Contents | object, rights, scope, lifetime, generation |
+| Validity | index in range **and** generation matching |
+
+The generation is what makes a stale handle detectably stale. Releasing a
+capability and reusing its slot must not let an old index silently address the
+new occupant — the same reasoning that puts a generation in a memory grant
+(ADR-0050 §2).
+
+Because the table is nucleus-owned, docs/42's non-forgeability rules cost the
+implementation nothing to honour: a process cannot construct a handle, because
+constructing one would mean writing into a table it cannot address. A guessed
+index either misses, or hits an entry the process was already given.
+
+## 3. What a capability names
+
+```text
+capability = object + rights + scope + lifetime + generation
+```
+
+- **object**: the endpoint, region, process or interface publication it refers
+  to; never a class of objects, never "all of them";
+- **rights**: a finite set from the object type's declared rights;
+- **scope**: the range or subset the rights apply to, where the object has one;
+- **lifetime**: bounded by the object, and never longer than the grantor's own.
+
+A capability with unbounded scope is not a capability, it is ambient authority
+with a handle in front of it. docs/02 rules out ambient global privilege, and
+this is where that rule is enforced or lost.
+
+## 4. Attenuation, delegation, transfer, revocation
+
+**Attenuation** produces a new capability whose rights, scope and lifetime are
+each a subset of the input's. The nucleus checks the subset relation; it does
+not take the caller's word. Widening is not an error code, it is impossible to
+express: there is no operation that adds a right.
+
+**Delegation** is sending a capability over an endpoint (`IPC_V1` §6). The
+receiver gets its own handle, in its own table, with its own generation. Nothing
+about the sender's index is visible.
+
+**Transfer** of a linear capability consumes the sender's handle atomically with
+the receiver's acquisition. A failed send does not consume; a successful send
+does not leave a copy. There is no window in which both hold it, and none in
+which neither does.
+
+**Revocation** exists where the object's owning service defines it, as docs/12
+requires. Stage 3 provides the mechanism the owner needs — invalidating derived
+capabilities by generation — and does not invent a global revoke: a system-wide
+revoke primitive would be an ambient authority to destroy authority.
+
+## 5. Validation cost
+
+Validation is index bounds, generation compare, type compare and a rights mask
+test: **constant time with respect to the number of capabilities the process
+holds**, as docs/35 §Stage 3 requires. If an implementation ever needs a
+structure whose lookup is not constant-time, the alternative bound is documented
+and tested rather than quietly accepted, because a validation cost that grows
+with holdings is a denial-of-service channel against the most privileged
+processes.
+
+## 6. Interface publication
+
+The right to publish an interface is itself a capability, whose nominal type is
+the interface (ADR-0051 §2). A process that holds it may register; one that does
+not, cannot. There is no self-declared `provides`, and the registry never holds
+an entry no one granted.
+
+## 7. Conformance evidence
+
+1. **Forgery**: a process that writes arbitrary values where its handles live
+   gains nothing; handles are indices into a table it cannot address.
+2. **Guessing**: iterating every index in range yields only capabilities the
+   process was granted, and out-of-range indices yield `E_BAD_HANDLE`.
+3. **Staleness**: a released handle reused for a different object refuses the
+   old index by generation.
+4. **Attenuation**: for a generated set of right/scope pairs, no attenuation
+   produces a superset in any dimension.
+5. **Linearity**: after a successful transfer the sender's handle is invalid and
+   the receiver's is valid — checked for both a normal send and a send that
+   fails midway.
+6. **Confused deputy**: a broker holding a strong capability, asked by a weak
+   client to act on an object the client cannot name, refuses; the refusal is
+   attributable to the client in the audit record. This is the test docs/37
+   names explicitly, and it is the one that fails quietly in systems that pass
+   the other five.
+7. **Denial**: a module requesting a capability policy withholds starts with
+   `CapabilityDenied`, not with a null, a zero handle or a working default.
