@@ -34,14 +34,6 @@ fn answer(body: &str) -> String {
     render::value(&completion.value)
 }
 
-fn codes(body: &str) -> Vec<&'static str> {
-    let text = format!("{PRELUDE} {body}");
-    match run(&text) {
-        Run::Diagnosed { diagnostics, .. } => diagnostics.iter().map(|d| d.code()).collect(),
-        _ => Vec::new(),
-    }
-}
-
 // ------------------------------------------------------- tuple subjects
 
 #[test]
@@ -57,16 +49,15 @@ fn tuple_match_single_arm() {
 
 #[test]
 fn tuple_match_arm_then_wildcard() {
-    let body = "pub fn main() -> i32 { let pair = (2i32, 3i32); \
-         match (pair) { (a, b) => { return a * b; } _ => { return 0i32; } } }";
-    let found = codes(body);
-    if found.is_empty() {
-        assert_eq!(answer(body), "i32:6", "the first matching arm must win");
-    } else {
-        // If the contract refuses an unreachable arm, it must say so with a
-        // diagnostic rather than by the lowerer refusing to represent it.
-        assert!(!found.is_empty(), "a refusal must name a code");
-    }
+    // ADR-0047: the tuple arm matches first, so it runs and the wildcard is
+    // unreachable. Unreachable arms are permitted and have no diagnostic.
+    assert_eq!(
+        answer(
+            "pub fn main() -> i32 { let pair = (2i32, 3i32); \
+             match (pair) { (a, b) => { return a * b; } _ => { return 0i32; } } }"
+        ),
+        "i32:6"
+    );
 }
 
 #[test]
@@ -82,12 +73,13 @@ fn wildcard_only_match_on_a_tuple() {
 
 #[test]
 fn bare_binding_match_on_a_tuple() {
-    let body = "pub fn main() -> i32 { let pair = (2i32, 3i32); \
-         match (pair) { whole => { return 5i32; } } }";
-    let found = codes(body);
-    if found.is_empty() {
-        assert_eq!(answer(body), "i32:5");
-    }
+    assert_eq!(
+        answer(
+            "pub fn main() -> i32 { let pair = (2i32, 3i32); \
+             match (pair) { whole => { return 5i32; } } }"
+        ),
+        "i32:5"
+    );
 }
 
 #[test]
@@ -105,12 +97,13 @@ fn nested_tuple_match() {
 
 #[test]
 fn wildcard_match_on_an_integer() {
-    let body = "pub fn main() -> i32 { let value = 4i32; \
-         match (value) { _ => { return value; } } }";
-    let found = codes(body);
-    if found.is_empty() {
-        assert_eq!(answer(body), "i32:4");
-    }
+    assert_eq!(
+        answer(
+            "pub fn main() -> i32 { let value = 4i32; \
+             match (value) { _ => { return value; } } }"
+        ),
+        "i32:4"
+    );
 }
 
 // ------------------------------------------------------- enum subjects
@@ -131,34 +124,29 @@ fn enum_constructor_arms_execute() {
 
 #[test]
 fn an_irrefutable_arm_before_a_variant_arm_keeps_source_order() {
-    // The ordering question: if V1 means "first matching arm", a catch-all
-    // before a variant arm must win and the later arm must not run.
-    let body = format!(
-        "{MODE} pub fn pick(mode: Mode) -> i32 {{ \
-         match (mode) {{ _ => {{ return 1i32; }} Fast => {{ return 2i32; }} }} }} \
-         pub fn main() -> i32 {{ return pick(Fast); }}"
+    // ADR-0047 point 3: the first matching arm runs. A catch-all before a
+    // variant arm wins, and the variant arm is unreachable.
+    assert_eq!(
+        answer(&format!(
+            "{MODE} pub fn pick(mode: Mode) -> i32 {{ \
+             match (mode) {{ _ => {{ return 1i32; }} Fast => {{ return 2i32; }} }} }} \
+             pub fn main() -> i32 {{ return pick(Fast); }}"
+        )),
+        "i32:1",
+        "ADR-0047: the first matching arm runs, so the catch-all wins"
     );
-    let found = codes(&body);
-    if found.is_empty() {
-        assert_eq!(
-            answer(&body),
-            "i32:1",
-            "a catch-all before a variant arm must win under source order"
-        );
-    }
 }
 
 #[test]
 fn a_binding_catch_all_before_a_variant_arm_keeps_source_order() {
-    let body = format!(
-        "{MODE} pub fn pick(mode: Mode) -> i32 {{ \
-         match (mode) {{ other => {{ return 1i32; }} Fast => {{ return 2i32; }} }} }} \
-         pub fn main() -> i32 {{ return pick(Fast); }}"
+    assert_eq!(
+        answer(&format!(
+            "{MODE} pub fn pick(mode: Mode) -> i32 {{ \
+             match (mode) {{ other => {{ return 1i32; }} Fast => {{ return 2i32; }} }} }} \
+             pub fn main() -> i32 {{ return pick(Fast); }}"
+        )),
+        "i32:1"
     );
-    let found = codes(&body);
-    if found.is_empty() {
-        assert_eq!(answer(&body), "i32:1");
-    }
 }
 
 #[test]
@@ -175,14 +163,15 @@ fn option_constructor_arms_execute() {
 
 // ------------------------------------------------- adversarial: no Gap at all
 
-/// No source the checker accepts may reach a lowering `Gap`.
+/// Every fixture here is valid V1, so every one must produce its exact result.
 ///
-/// This is the audit's standing question in test form. Each fixture below is
-/// valid V1 by the accepted grammar and type semantics, so each must reach the
-/// engine — a `Gap` here is a contract the implementation does not meet, and a
-/// checker refusal would have to name a code rather than be silent.
+/// This is the audit's standing question in test form, and it asks the whole
+/// question rather than half of it: not "did lowering avoid a `Gap`" but "did
+/// the checker, the lowerer, the independent verifier and the engine agree on
+/// one meaning and produce it". A `Gap`, a diagnostic, a trap and a wrong
+/// answer all fail it.
 #[test]
-fn no_accepted_source_in_this_matrix_reaches_a_lowering_gap() {
+fn every_valid_fixture_in_this_matrix_produces_its_exact_result() {
     let fixtures = [
         "pub fn main() -> i32 { let pair = (1i32, 2i32); \
          match (pair) { (a, b) => { return a + b; } } }",
