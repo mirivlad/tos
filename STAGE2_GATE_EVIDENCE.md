@@ -101,7 +101,7 @@ identity_question      Is actual language semantics executing from canonical
 
 ## performance_report
 
-**Both halves taken, by the normative procedure, at commit `fca219a`.**
+**Both halves taken, by the normative procedure, at commit `46911ef`.**
 3 warmups, 21 samples, median/p95/p99, one commit, one set of fixtures emitted
 by the harness that measures them natively so both halves see the same bytes,
 and the reference half run through the real freestanding Stage 2 path on the
@@ -110,9 +110,9 @@ every raw sample.
 
 | metric | native p95 | reference p95 | budget | verdict |
 |---|---|---|---|---|
-| frontend, 256 KiB module | 119 468 us | 1 227 354 us | 1 500 000 us (ADR-0045) | **PASS** |
-| engine, 1e6 operations | 205 880 us | 4 147 373 us | ratio ≤ 22x (ADR-0043) | **PASS** (20.1x) |
-| quota rejection | — | 506 038 us | ≤ 2x accepted | **PASS** (0.412) |
+| frontend, 256 KiB module | 120 943 us | 1 212 216 us | 1 500 000 us (ADR-0045) | **PASS** |
+| engine, 1e6 operations | 207 873 us | 3 655 641 us | ratio ≤ 22x (ADR-0043) | **PASS** (17.6x) |
+| quota rejection | — | 469 738 us | ≤ 2x accepted | **PASS** (0.388) |
 
 ADR-0040 fixes the reference platform and reads the docs/35 execution budget as
 the ratio of that platform's time to the native-host time of the same engine at
