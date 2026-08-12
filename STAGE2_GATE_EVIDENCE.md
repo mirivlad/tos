@@ -93,7 +93,7 @@ identity_question      Is actual language semantics executing from canonical
 
 ## performance_report
 
-**Both halves taken, by the normative procedure, at commit `cf806de`.**
+**Both halves taken, by the normative procedure, at commit `fca219a`.**
 3 warmups, 21 samples, median/p95/p99, one commit, one set of fixtures emitted
 by the harness that measures them natively so both halves see the same bytes,
 and the reference half run through the real freestanding Stage 2 path on the
@@ -102,9 +102,9 @@ every raw sample.
 
 | metric | native p95 | reference p95 | budget | verdict |
 |---|---|---|---|---|
-| frontend, 256 KiB module | 116 701 us | 1 140 356 us | 1 500 000 us (ADR-0045) | **PASS** |
-| engine, 1e6 operations | 201 501 us | 3 993 138 us | ratio ≤ 22x (ADR-0043) | **PASS** (19.8x) |
-| quota rejection | — | 522 418 us | ≤ 2x accepted | **PASS** (0.458) |
+| frontend, 256 KiB module | 119 468 us | 1 227 354 us | 1 500 000 us (ADR-0045) | **PASS** |
+| engine, 1e6 operations | 205 880 us | 4 147 373 us | ratio ≤ 22x (ADR-0043) | **PASS** (20.1x) |
+| quota rejection | — | 506 038 us | ≤ 2x accepted | **PASS** (0.412) |
 
 ADR-0040 fixes the reference platform and reads the docs/35 execution budget as
 the ratio of that platform's time to the native-host time of the same engine at
@@ -173,15 +173,16 @@ did not look, so each entry below states what was checked as well as what stands
    operational reason, **not** a Stage 2 blocker: the current scheme is correct,
    receipts and caches are derived artifacts, and no accepted contract is
    violated by keeping it.
-4. **The lowerer has a stated boundary, and it is measured rather than implied.**
-   `Gap` names any construct it cannot represent. Of the 29 single-module
-   accepted conformance vectors, **29 reach the independent verifier and the
-   engine** and none stops at lowering
-   (`crates/tos-pipeline/tests/corpus_coverage.rs`, which ratchets that number).
-   The remaining `Gap` arms are almost all guards against malformed input the
-   checker has already rejected; the genuine feature gaps — destructuring `let`
-   patterns, tuple match patterns — are not exercised by any accepted vector and
-   are recorded here rather than discovered later.
+4. **The lowerer's boundary is measured against the contract, not the corpus.**
+   The pattern gap the last audit dismissed on corpus grounds is closed:
+   destructuring `let`, nested tuple patterns and single-arm tuple `match` all
+   lower, execute and are covered by conformance vectors (ADR-0046). The
+   corpus ratchet — 35 of 35 single-module accepted vectors reach the verifier
+   and the engine — is retained as a *regression* gate and explicitly does not
+   claim language coverage; `crates/tos-pipeline/tests/patterns.rs` exercises the
+   grammar's pattern families directly and asserts that no construct the checker
+   accepts reaches a `Gap`. The remaining `Gap` arms are guards against
+   malformed input the checker has already rejected.
 
 ## architect_approval
 
