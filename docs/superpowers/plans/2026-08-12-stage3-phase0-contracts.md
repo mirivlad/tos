@@ -2,12 +2,13 @@
 
 # Stage 3 Phase 0: process, IPC and capability contracts
 
-> **For agentic workers:** This plan is documentation-only. Do not implement a
-> process model, address spaces, scheduler, capability table, IPC transport,
-> supervisor or service manifest before the Project Architect accepts
-> ADR-0048…0051 and the four interface contracts they authorize.
+> **Status: complete.** ADR-0048…0051 were accepted on 2026-08-12 and the four
+> contracts are published. This plan was documentation-only and stayed that way:
+> no process model, address space, scheduler, capability table, IPC transport,
+> supervisor or manifest implementation was written under it. Implementation
+> begins with Phase 1, against the signed contracts.
 
-**Goal:** publish a complete, reviewable Proposed contract set for Stage 3 —
+**Goal:** publish a complete, reviewable contract set for Stage 3 —
 the isolation boundary, the nucleus/process interface, the capability and IPC
 model, process identity and the service manifest surface — so that Stage 3
 production implementation can begin against a signed contract rather than
@@ -19,12 +20,16 @@ process, and reach the nucleus only through a versioned system ABI. Authority is
 carried by unforgeable capability handles held in a nucleus-owned per-process
 table. Every process carries a source identity asserted by whoever launched it.
 
-**Tech stack:** Markdown contracts under `docs/superpowers/specs/`, ADRs under
-`docs/adr/`, canonical `.tos` examples for the manifest surface. The contracts
-move to `source/interfaces/system/` on acceptance and not before: that directory
-carries accepted authority only, and `check-interface-contract-authority.sh`
-enforces it. No production code, no new runtime dependency, no change to any
-accepted Stage 2 contract.
+**Tech stack:** Markdown contracts and ADRs, plus canonical `.tos` examples for
+the manifest surface. No production code, no new runtime dependency, no change to
+any accepted Stage 2 contract.
+
+**Outcome:** ADR-0048…0051 accepted 2026-08-12; the four contracts published
+under `source/interfaces/system/` and registered in
+`docs/SPECIFICATION_SOURCES.txt`. They were drafted in
+`docs/superpowers/specs/` and moved on signature, because
+`source/interfaces/` carries accepted authority only and
+`check-interface-contract-authority.sh` enforces it.
 
 ## Global constraints
 
@@ -32,10 +37,9 @@ accepted Stage 2 contract.
   contract, ownership/resource semantics, Boot ABI v1, cache/provenance
   identity and the Stage 2 closure evidence are not reopened. If Stage 3 needs
   one of them changed, stop at that boundary and say so.
-- Every contract published here is **Proposed** until the Project Architect
-  signs it. A Proposed contract is not added to
-  `docs/SPECIFICATION_SOURCES.txt`: the consolidated view carries accepted
-  authority only.
+- A contract is **Proposed** until the Project Architect signs it, and a
+  Proposed contract is not added to `docs/SPECIFICATION_SOURCES.txt`: the
+  consolidated view carries accepted authority only.
 - Stage 3 authorizes no Stage 4+ work: no drivers, PCI, MMIO, DMA, filesystem,
   repository-as-system, network, shell or UI.
 - The identity plane is not deferred. A process that cannot say which source it
@@ -94,15 +98,13 @@ accepted Stage 2 contract.
 - [x] Fix the Stage 3 manifest by splitting it along authority: what a module
   needs stays in accepted V1 source, what it offers becomes a capability
   request, and how it is supervised becomes the supervisor's policy source.
-- [ ] Restate docs/11's example in accepted V1 form and narrow docs/45's
-  sentence to what remains true. *(deferred until ADR-0051 is accepted: these
-  are accepted Tier 2 documents.)*
+- [x] Restate docs/11's example in accepted V1 form and narrow docs/45's
+  sentence to what remains true. *(done on acceptance, 2026-08-12.)*
 
 ### Task 5: Publish the nucleus/process system ABI
 
 **Files:**
-- Create: `docs/superpowers/specs/2026-08-12-stage3-system-abi-v1.md`
-- Publish on acceptance: `source/interfaces/system/SYSTEM_ABI_V1.md`
+- Create: `source/interfaces/system/SYSTEM_ABI_V1.md`
 
 - [x] Entry mechanism, register convention, operation numbering, argument and
   result encoding, error space, and the rule that no operation may block
@@ -116,8 +118,7 @@ accepted Stage 2 contract.
 ### Task 6: Publish the capability contract
 
 **Files:**
-- Create: `docs/superpowers/specs/2026-08-12-stage3-capability-v1.md`
-- Publish on acceptance: `source/interfaces/system/CAPABILITY_V1.md`
+- Create: `source/interfaces/system/CAPABILITY_V1.md`
 
 - [x] Handle representation, per-process table ownership, and why a handle
   cannot be guessed, forged, encoded into bits or recovered after consumption.
@@ -130,8 +131,7 @@ accepted Stage 2 contract.
 ### Task 7: Publish the IPC contract
 
 **Files:**
-- Create: `docs/superpowers/specs/2026-08-12-stage3-ipc-v1.md`
-- Publish on acceptance: `source/interfaces/system/IPC_V1.md`
+- Create: `source/interfaces/system/IPC_V1.md`
 
 - [x] Endpoint model, message shape, maximum inline size, capability transfer,
   shared-region transfer, bounded queues and explicit backpressure.
@@ -145,8 +145,7 @@ accepted Stage 2 contract.
 ### Task 8: Publish the process identity contract
 
 **Files:**
-- Create: `docs/superpowers/specs/2026-08-12-stage3-process-identity-v1.md`
-- Publish on acceptance: `source/interfaces/system/PROCESS_IDENTITY_V1.md`
+- Create: `source/interfaces/system/PROCESS_IDENTITY_V1.md`
 
 - [x] The docs/10 identity fields, and for each one **who asserts it**: the
   launcher, the nucleus, or the process itself. Self-reported introspection is
@@ -158,9 +157,8 @@ accepted Stage 2 contract.
 ### Task 9: Cover the new boundary in the threat model and the budgets
 
 **Files:**
-- Create: `docs/evidence/STAGE3_THREAT_ENTRIES.md`
-- Modify: `docs/34_THREAT_MODEL.md` *(on acceptance)*
-- Modify: `docs/35_PERFORMANCE_CONTRACTS.md` *(on acceptance)*
+- Modify: `docs/34_THREAT_MODEL.md`
+- Modify: `docs/35_PERFORMANCE_CONTRACTS.md`
 
 - [x] Stage 3 threat entries with adversary powers, required responses, negative
   tests and honest evidence levels, written against the existing T0–T9 classes
@@ -169,9 +167,9 @@ accepted Stage 2 contract.
 - [x] The in-process function-call benchmark defined in `IPC_V1` §8, before any
   measurement exists, so the relative IPC budget cannot be satisfied by choosing
   a slow denominator.
-- [ ] Merge both into the accepted documents once ADR-0048…0051 are signed.
-  Neither accepted document is edited to describe a boundary that has not been
-  accepted.
+- [x] Merged into the accepted documents on signature, 2026-08-12. The draft
+  `docs/evidence/STAGE3_THREAT_ENTRIES.md` was removed rather than kept beside
+  the accepted text: two copies of one normative statement drift.
 
 ### Task 10: Record the phase
 
@@ -179,9 +177,9 @@ accepted Stage 2 contract.
 - Modify: `PROGRESS.md`
 - Regenerate: `TOS_DEVELOPMENT_SPECIFICATION.md`, `MANIFEST.txt`, `SHA256SUMS`
 
-- [ ] Record what is Proposed, what is measured, what is still unknown, and the
+- [x] Record what is Proposed, what is measured, what is still unknown, and the
   single decision required before Phase 1 begins.
-- [ ] Keep the generated artifacts current at the publishing commit.
+- [x] Keep the generated artifacts current at the publishing commit.
 
 ---
 

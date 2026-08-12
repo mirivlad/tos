@@ -206,6 +206,139 @@ bytes are loaded and whether the owner can see that they were loaded — not the
 behavior once running. This limit is stated rather than mitigated, and T7 remains
 the governing adversary class.
 
+## Stage 3 — the capability, IPC and process boundary in detail
+
+Trust boundary 7 — nucleus to user-space service through the capability and IPC
+boundary — is created by Stage 3 under ADR-0048…0051. The subsystem paragraph
+above names the threat families; this section is the detail the change rule
+requires before Stage 3 can close. Adversary classes, assets and required
+properties are the existing ones; nothing here adds a class or an asset.
+
+### X3.1 — Authority acquired without a grant (T1, T2 → A3, S3)
+
+A process obtains authority it was never granted: forging a handle, guessing an
+index, re-encoding a handle's bits into a value, reusing a released handle after
+its slot is recycled, or presenting a handle of one type where another is
+expected.
+
+Controls: handles are process-local indices into a nucleus-owned table with
+generations; validation checks range, generation, type and rights
+(`interfaces/system/CAPABILITY_V1.md` §2). Negative tests: that contract §7.1–3.
+Evidence level target at closure **E3** — the guessing and staleness cases are
+fuzzable and must be fuzzed, not argued.
+
+### X3.2 — Authority widened by attenuation (T2 → A3, S4)
+
+Attenuation returns a capability with more rights, wider scope or longer
+lifetime than its input, through an arithmetic or subset-check defect.
+
+Controls: the nucleus computes and checks the subset relation in all three
+dimensions, and no operation adds a right (`CAPABILITY_V1` §4). Negative test:
+§7.4, generated over right/scope pairs rather than a hand-picked few. **E3**.
+
+### X3.3 — Confused deputy (T1, T2 → A3, A8)
+
+A weak client persuades a broker holding a strong capability to act on an object
+the client cannot name. This is the failure that survives when the mechanical
+capability tests all pass.
+
+Controls: a broker acts only on objects named by capabilities the client passed;
+refusal is attributable to the client in the audit record (`CAPABILITY_V1` §7.6;
+docs/37 Stage 3 evidence). **E2** at Stage 3 close, **E3** once a second broker
+service exists to test against.
+
+### X3.4 — Isolation breach between processes (T1, T2 → A4, A9)
+
+A process reads or writes another process's memory or the nucleus's: addressing
+outside its grant, racing a region transfer, or reading frames that belonged to
+a dead process.
+
+Controls: hardware address spaces (ADR-0048); grants bounded and
+generation-tagged with frames cleared before reuse (ADR-0050 §3); linear region
+transfer unmaps at the sender (`interfaces/system/IPC_V1.md` §5). **E2**, with
+the frame-reuse case at **E3** because it is the one that fails silently.
+
+### X3.5 — Denial of service through the nucleus (T1, T2 → A9)
+
+A process fills queues to grow nucleus memory, holds a receiver blocked forever,
+spins without entering the ABI, or makes capability validation expensive by
+holding many capabilities.
+
+Controls: bounded queues with visible backpressure and no allocation to accept a
+message (`IPC_V1` §7); timer preemption independent of process cooperation
+(ADR-0049); constant-time validation in the holder's capability count
+(`CAPABILITY_V1` §5); every blocking operation cancellable
+(`interfaces/system/SYSTEM_ABI_V1.md` §6). **E2**.
+
+Explicit Stage 3 non-goal: fair-share scheduling and priority-inversion control.
+Round-robin within one band is what ADR-0049 fixes.
+
+### X3.6 — The system ABI as an attack surface (T1, T2 → A4, S2)
+
+A process drives the ABI with out-of-domain arguments, unknown operation
+numbers, or addresses it hopes the nucleus will dereference.
+
+Controls: a closed status space; no operation dereferences a process-supplied
+address; buffers are named by region handles; an unknown operation returns
+`E_NOT_SUPPORTED` rather than being ignored (`SYSTEM_ABI_V1` §3, §4, §7).
+**E3** — the ABI is the one Stage 3 surface taking wholly untrusted input in
+registers, and it is fuzzable exactly as the capsule parser was.
+
+### X3.7 — Escalation by process creation (T2 → A3, A8)
+
+A service creates a process to obtain authority it does not hold, or grants a
+child more than it holds itself.
+
+Controls: `process_create` requires a process-authority capability ordinary
+services do not hold; a launcher cannot install a capability it does not itself
+hold, and the granted set is asserted by the nucleus rather than by the
+launcher's claim (`SYSTEM_ABI_V1` §5,
+`interfaces/system/PROCESS_IDENTITY_V1.md` §3). **E2**.
+
+### X3.8 — Identity forged by the process it describes (T2 → A6, A1, S12)
+
+A process reports a module digest, source set or capability set it does not
+have, and the false claim reaches the audit record.
+
+Controls: the audit record is the launch record, asserted by the holder of
+`process_create` from the bytes it passed; self-reports are separately
+identified and never the audit record; disagreement is itself an event
+(`PROCESS_IDENTITY_V1` §2, §6, negative test §7.2). **E2**.
+
+### X3.9 — A commit identity the system never read (T2, T6 → A1, A6, S1)
+
+A Stage 3 process is recorded as belonging to a system commit although Stage 3
+has no repository and read no commit, and the false record propagates into
+activation and rollback reasoning later.
+
+Controls: the system commit id is **absent** for capsule-launched processes and
+is asserted absent by test, not left to convention (`PROCESS_IDENTITY_V1` §5,
+§7.5). **E2**.
+
+This is the Stage 3 form of the failure Stage 1 was built to prevent — an
+invented official commit. It is cheap to introduce by accident and expensive to
+detect later.
+
+### X3.10 — Privileged policy migrating into the nucleus (T0 → A1, A8)
+
+Service logic moves into the nucleus because IPC is inconvenient, and the system
+becomes a conventional microkernel with textual decoration.
+
+Controls: a design threat, checked as docs/31 checks it — a dependency and
+surface inventory at Stage 3 close showing that no service logic entered the
+nucleus and that every privileged behaviour is exercised by a source-identified
+textual process. **E1**, honestly: a reviewable property, not a tested one.
+
+### What Stage 3 does not claim
+
+- no protection against T7 or T8, which remain outside containment;
+- no timing or micro-architectural side-channel protection between processes;
+  clearing reused frames closes the direct-disclosure path and nothing more;
+- no time source a process can trust — monotonic ticks exist for scheduling
+  (ADR-0049) and trusted time is Stage 7;
+- no revocation of already-delegated authority beyond what an owning service
+  implements (`CAPABILITY_V1` §4).
+
 ## Accepted non-goals for early stages
 
 - confidentiality or integrity against malicious firmware;

@@ -38,7 +38,7 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 364
+- files in the release package: 359
 - active system invariants: 21
 - architecture decision records: 51 (40 accepted)
 
@@ -91,10 +91,10 @@ Architecture decision records
 - docs/adr/0045-stage2-frontend-budget.md — ADR-0045: The Stage 2 frontend performance budget [**Accepted** (Project Architect-approved)]
 - docs/adr/0046-irrefutable-binding-patterns.md — ADR-0046: `let` and `for` patterns must be irrefutable [**Accepted** (Project Architect-approved)]
 - docs/adr/0047-match-arm-selection-order.md — ADR-0047: Which `match` arm runs when several could [**Accepted** (Project Architect-approved)]
-- docs/adr/0048-stage3-isolation-and-execution-boundary.md — ADR-0048: Where TOS Core executes relative to the isolation boundary [**Proposed**]
-- docs/adr/0049-stage3-interrupt-and-preemption-baseline.md — ADR-0049: Interrupts and preemption [**Proposed**]
-- docs/adr/0050-per-process-memory-grants.md — ADR-0050: Per-process memory grants [**Proposed**]
-- docs/adr/0051-service-manifest-surface.md — ADR-0051: What a service manifest is, and where it lives [**Proposed**]
+- docs/adr/0048-stage3-isolation-and-execution-boundary.md — ADR-0048: Where TOS Core executes relative to the isolation boundary [**Accepted** (Project Architect-approved)]
+- docs/adr/0049-stage3-interrupt-and-preemption-baseline.md — ADR-0049: Interrupts and preemption [**Accepted** (Project Architect-approved)]
+- docs/adr/0050-per-process-memory-grants.md — ADR-0050: Per-process memory grants [**Accepted** (Project Architect-approved)]
+- docs/adr/0051-service-manifest-surface.md — ADR-0051: What a service manifest is, and where it lives [**Accepted** (Project Architect-approved)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

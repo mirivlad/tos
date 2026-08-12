@@ -2,11 +2,11 @@
 
 # ADR-0049: Interrupts and preemption
 
-- Status: **Proposed**
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-12
 - Decision level: 2 — extends the accepted ADR-0023 exception baseline within
   the boundary ADR-0048 fixes; no Boot ABI v1 layout or result-code change
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
 
 ## Context
 

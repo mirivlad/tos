@@ -2,12 +2,10 @@
 
 # TOS Capability Contract — Version 1
 
-Status: **Proposed.** Not authority, and deliberately not yet under
-`source/interfaces/`: that directory carries accepted contracts only, which is
-an invariant `scripts/tests/check-interface-contract-authority.sh` enforces.
-On acceptance of ADR-0048 this document is published unchanged as
-`source/interfaces/system/CAPABILITY_V1.md`, carries the accepted status line and is
-added to `docs/SPECIFICATION_SOURCES.txt`.
+Status: **Accepted Tier 2 interface contract.**
+
+Accepted by ADR-0048 (Project Architect-approved, 2026-08-12), which fixes the
+boundary this contract describes.
 
 Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
 contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to

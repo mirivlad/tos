@@ -2,11 +2,11 @@
 
 # ADR-0048: Where TOS Core executes relative to the isolation boundary
 
-- Status: **Proposed**
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-12
 - Decision level: 3 — moves a trust boundary and fixes the nucleus/process
   interface for every later stage
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
 
 ## Context
 

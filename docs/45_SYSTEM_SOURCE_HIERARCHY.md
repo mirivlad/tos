@@ -99,9 +99,16 @@ installed system.
 
 Textual components launched as isolated processes under
 `docs/10_PROCESS_SERVICE_IPC.md`, `docs/11_DRIVER_MODEL.md` and
-`docs/07_LANGUAGE_FRONTENDS.md`. Each component's manifest is declared inside
-its own module source, as shown in `docs/11_DRIVER_MODEL.md`; TOS does not keep
-a parallel manifest directory that could drift from the code it describes.
+`docs/07_LANGUAGE_FRONTENDS.md`. What a component **needs** — its capability
+requests, resource envelope, imports and exports — is declared inside its own
+module source in accepted TOS Core V1 form, as shown in
+`docs/11_DRIVER_MODEL.md`; TOS does not keep a parallel description of the code
+that could drift from the code it describes.
+
+How a component is **supervised** — restart policy, health probes, state
+namespace, shutdown timeout — is not a description of the code but a decision
+about it, made by the authority that launches it, and lives in `policy/` below.
+ADR-0051 fixes that split.
 
 ### `lib/`
 
