@@ -1,82 +1,69 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
-# Stage 2 performance — the complete paired measurement
+# Stage 2 performance — normative pair at commit f05e7c8
 
-Evidence level: **P1** (locally measured, docs/35). Verdict: **2 FAIL, 1 PASS**, retained.
-Procedure: the normative one — 3 warmups, 21 samples, median/p95/p99, one commit,
-one set of fixtures, both halves.
-Fixtures: emitted by `tos-core-performance --emit-fixture`, so the native and
-reference halves measure the **same bytes**. Frontend fixture is 262 114 bytes,
-content `sha256:40ea301db1e52502190794049cecf65ddc40a76cde07a98181cca9a1aa433a98`.
+Evidence level: **P1** (locally measured, docs/35). Verdict: **1 FAIL, 2 PASS**.
+Procedure: the normative one — 3 warmups, 21 samples, median/p95/p99, one
+commit, one set of fixtures, both halves.
+Fixtures: emitted by `tos-core-performance --emit-fixture`, so both halves
+measure the **same bytes**. Frontend fixture 262 114 bytes, content
+`sha256:40ea301db1e52502190794049cecf65ddc40a76cde07a98181cca9a1aa433a98`.
 Reference platform: ADR-0040 — q35, qemu64, 1 vCPU, 256 MiB, TCG, OVMF, through
 the real freestanding Stage 2 path.
-Producers: `tos-core-performance --profile native`,
-`host-tools/qemu-test/stage2-reference-performance.sh`.
 
 ## The pair
 
 | metric | native p95 | reference p95 | budget | verdict |
 |---|---|---|---|---|
-| frontend, 256 KiB module | 160 893 us | **1 490 798 us** | 500 000 us | **FAIL** (2.98x over) |
-| engine, 1e6 operations | 333 743 us | 5 541 378 us | ratio ≤ 10x | **FAIL** (16.6x) |
-| quota rejection | 66 668 us | 763 305 us | ≤ 2x accepted | **PASS** (0.512) |
+| frontend, 256 KiB module | 124 379 us | **1 225 348 us** | 500 000 us | **FAIL** (2.45x over) |
+| engine, 1e6 operations | 217 473 us | 4 154 811 us | ratio ≤ 22x (ADR-0043) | **PASS** (19.1x) |
+| quota rejection | — | 511 207 us | ≤ 2x accepted | **PASS** (0.417) |
 
-Reference medians: frontend 1 437 944 us, engine 5 317 426 us, rejection
-713 676 us. Every raw sample is in `target/.../reference.json` and in the
-harness output; nothing is summarised without the samples behind it.
+Reference medians: frontend 1 195 871 us, engine 3 974 852 us, rejection
+487 687 us. All raw samples are in the harness output and `reference.json`.
 
-## The implementation is understood
+## A fact the Architect should have about the engine threshold
 
-Two defects were found and fixed before this measurement, and each was fixed
-rather than argued around:
-
-1. **The heap searched every block on every allocation.** Segregated free lists
-   replaced it; the search cost no longer depends on how many blocks exist, and
-   the claim is a measured series rather than a timing
-   (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`).
-2. **The lowerer rendered a debug string to intern every type.** Keying the
-   index on the definition itself took the reference frontend from *not
-   finishing in 900 seconds* to 1.49 s — while costing 7% natively
-   (`docs/evidence/STAGE2_FREESTANDING_PRIMITIVES.md`).
-
-One hypothesis was tested and **refuted**: the freestanding memory primitives
-are word-oriented in the real binary, not byte-at-a-time. No work was done on a
-defect that did not exist.
-
-The evidence that no third pathology is hiding is that the platform factor is
-now **uniform**:
+ADR-0043's 22x was accepted as "about +30% on the measured figure", where the
+measured figure was 16.8x. The ratio has since drifted:
 
 ```text
-frontend  reference / native = 1 490 798 / 160 893 =  9.3x
-engine    reference / native = 5 541 378 / 333 743 = 16.6x
+before the per-instruction clone fix   333 743 / 5 541 378 = 16.6x
+after it                               209 128 / 3 628 441 = 17.3x
+this normative pair                    217 473 / 4 154 811 = 19.1x
 ```
 
-Before the fixes these differed by three orders of magnitude. Two independent
-workloads landing within a factor of two of each other is what "the platform
-costs what the platform costs" looks like from outside.
+The drift is upward as the native half gets faster, which is what a fixed guest
+overhead does to a ratio: shrinking the denominator raises the quotient. **The
+real headroom against 22x is therefore about 13%, not 30%.** The gate passes and
+the margin is thinner than the number was chosen to give. That is stated here
+rather than left for someone to rediscover; whether 22x should move is the
+Architect's, and this ADR-0043 is already accepted at 22x.
 
-## Why the engine ratio is not an implementation question
+## Frontend: still FAIL, and where it goes
 
-The engine budget is a **ratio of the same implementation to itself** on two
-platforms. Optimising the engine moves the numerator and the denominator
-together, so the ratio barely moves. A 10x budget stated that way is a claim
-about how much slower TCG is than the host — not about the engine — and the
-measurement says TCG is 16.6x for this workload.
+```text
+read       0.4 ms     transport validity (ASCII fast path)
+parse      5.7 ms
+check     26.1 ms     ten slices; typing now derived once, not three times
+lower     23.5 ms
+verify    48.3 ms     of which 35.3 ms is the module digest
+```
 
-The only things that can bring that ratio to 10x are a different platform
-(ADR-0040 chose TCG deliberately, so it is reproducible on any host) or a
-different number. That is a structural argument, not a plea, and it is what
-ADR-0043 carries.
+The single largest item in the whole frontend is **SHA-256 over the canonical
+hash stream** — 33 ms of a ~104 ms total. The stream is 5 975 526 bytes for a
+262 114-byte module, a 22.8x expansion caused by encoding every count and length
+as a 16-byte `u128`. `docs/evidence/STAGE2_MODULE_DIGEST.md` has the
+decomposition and **ADR-0044 (Proposed)** the question, because the stream is the
+module's identity rather than an internal representation.
 
-The frontend budget is different in kind: 500 ms is absolute, so implementation
-work *can* reach it. It needs the native frontend at roughly 54 ms rather than
-161 ms — about 3x — and no defect explaining that gap has been identified.
+Nothing here says 500 ms is unreachable. It says the largest identified cost is
+now understood, has a known shape, and needs a decision that is not the
+implementation's to make.
 
-## What is not claimed
+## History
 
-- P1. One machine, one build. Not P2, not P3.
-- No fixture was changed, no boundary reinterpreted, no budget adjusted to fit.
-- The rejection ratio passes **on the reference platform**, not only natively.
-- The measurement boundaries are protected against the earlier defect where a
-  span between two result events measured line formatting rather than work:
-  `reference-performance-report.py` refuses a reduction whose boundary cannot
-  contain the work it claims to measure.
+The previous normative pair (engine 16.6x against the then-current 10x budget,
+frontend 2.98x over) is retained in the git history of this file and is not
+rewritten. It was taken before the engine's per-instruction clone, the
+transport-validation fast path, the verifier's eager finding locations and the
+checker's triple typing derivation were fixed.

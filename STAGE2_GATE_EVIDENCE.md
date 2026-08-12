@@ -172,38 +172,30 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    pre-existing regressions unchanged
    (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`). The arena-bound sweep went from
    hours to 16.5 s and the measured bound moved by under 0.1%.
-7. **The Stage 2 performance gate FAILS on two of three metrics**, measured by
-   the normative procedure — 3 warmups, 21 samples, median/p95/p99, one commit,
-   one set of fixtures, both halves
+7. **The Stage 2 performance gate FAILS on one of three metrics**, measured by
+   the normative procedure at commit f05e7c8
    (`docs/evidence/STAGE2_PERFORMANCE_PAIR_P1.md`).
 
    | metric | reference p95 | budget | verdict |
    |---|---|---|---|
-   | frontend, 256 KiB | 1 490 798 us | 500 000 us | **FAIL** (2.98x) |
-   | engine, 1e6 ops | 5 541 378 us | ratio ≤ 10x | **FAIL** (16.6x) |
-   | quota rejection | 763 305 us | ≤ 2x accepted | **PASS** (0.512) |
+   | frontend, 256 KiB | 1 225 348 us | 500 000 us | **FAIL** (2.45x) |
+   | engine, 1e6 ops | 4 154 811 us | ratio ≤ 22x | **PASS** (19.1x) |
+   | quota rejection | 511 207 us | ≤ 2x accepted | **PASS** (0.417) |
 
-   Five implementation defects have now been found and fixed — the heap's
-   whole-arena search, the lowerer's `format!` per intern, the engine's
-   per-instruction clone, a whole-source NFC normalization that ASCII makes
-   unnecessary, and eagerly formatted verifier finding locations — and one
-   hypothesis, byte-at-a-time freestanding memory primitives, was tested against
-   the real binary and **refuted**. The current figures after all five are
-   frontend 124 ms native / 1.28 s reference (2.56x over budget) and an engine
-   ratio of 16.8x; `docs/evidence/STAGE2_PERFORMANCE_DECOMPOSITION.md` carries
-   the per-stage breakdown and the finding that a 1.6x engine speedup left the
-   ratio unchanged. The platform factor is now uniform across two very different
-   workloads (9.3x and 16.6x) where it previously differed by three orders of
-   magnitude, which is the evidence that no third pathology is hiding.
-   **ADR-0043 (Proposed)** carries the two failures with their measurements and
-   settles them separately. Its engine part is now supported by a semantic
-   decomposition (`docs/evidence/STAGE2_ENGINE_DECOMPOSITION.md`): every
-   component of the benchmark lies in a 15.1–17.9x band, so the aggregate hides
-   no pathological path, and it recommends a specific threshold with its
-   reasoning exposed. Its frontend part records that 38.8 ms of the 54.7 ms
-   verifier stage is the module digest required by docs/43 section 5, whose cost
-   is dominated by a fixed 16-byte encoding of every count — an `tos-ir/v1`
-   identity question, not taken unilaterally.
+   The engine budget is ADR-0043's, accepted at 22x on the strength of a
+   component decomposition measuring every semantic component of the workload at
+   15.1–17.9x (`docs/evidence/STAGE2_ENGINE_DECOMPOSITION.md`). One fact for the
+   record: the ratio has drifted upward as the native half got faster — 16.6x,
+   17.3x, now 19.1x — so the headroom against 22x is about 13% rather than the
+   30% the threshold was reasoned from.
+
+   The frontend's largest single item is SHA-256 over the canonical hash stream,
+   33 ms of a ~104 ms total, because the stream is 22.8x the module's own size.
+   **ADR-0044 (Proposed)** asks whether the digest scheme should be versioned and
+   the encoding changed; it is an identity question, not an implementation one.
+   Six implementation defects have been found and fixed across the performance
+   work, and one hypothesis (byte-at-a-time freestanding memory primitives) was
+   tested against the real binary and refuted.
 8. **Differential testing is N/A, not passed.** docs/44 asks for agreement
    between independent implementations, and there is one engine. A second
    implementation is the only thing that can change this.
