@@ -112,6 +112,34 @@ exporter's content id is already inside the importer's `dependency_digest`, so
 changing the constant changes the importing module's digest and invalidates its
 cache. docs/42's promise is kept, and `tos-ir/v1` is untouched.
 
+## What neither option is
+
+A reader comparing the two naturally asks whether the runtime option lets a
+constant be initialized from something supplied at launch. It does not, and the
+question is worth answering in the ADR because the answer is a property of the
+language rather than of either option.
+
+A module has no parameters. Nothing is passed to it. Under B an initializer runs
+before any function runs, so the only things it can read are literals, other
+constants and its own imports — the same inputs A has, with the addition that it
+may *compute* over them by calling functions. B buys computation, not
+configuration.
+
+Values that genuinely come from outside arrive by a different route, and V1
+already fixes it: a launcher grants authority as a capability, and docs/42 §2
+states in terms that a capability "cannot be a `const`, record field, serialized
+value, numeric conversion, equality key, or deserialized replacement". A module
+that must behave differently per deployment reads that difference through a
+capability operation or, from Stage 5, through `/config` — never through a
+constant, under either option here.
+
+The distinction matters for a second reason. Under A a launcher can read a
+module's constants **before** starting it, from source or from the lowered
+module, which is the same property ADR-0051 relies on when it has the launcher
+decide a capability grant from the verified module image. Under B a constant's
+value does not exist until the module has run, so it cannot participate in any
+decision made before launch.
+
 ## Options
 
 **A — a constant is a compile-time value.** The initializer is a
@@ -199,6 +227,34 @@ those do not stay small.
 If the Project Architect wants the runtime object, B is the honest way to get
 it, and it should be taken deliberately with its initialization contract written
 first — not arrived at by letting `const` quietly widen.
+
+## What each option costs a working system
+
+Stated concretely, because "compile-time versus runtime" understates how
+differently the two behave in this system.
+
+| | A | B |
+|---|---|---|
+| When the value exists | at lowering | after the module's initializer runs |
+| Readable before launch | yes — from source and from the module image | no |
+| In the module digest | yes: changing it changes the digest and invalidates the cache | no: only the code that computes it is |
+| Startup | unchanged | gains an initialization phase that can fail |
+| Failure modes at start | `CapabilityDenied` | `CapabilityDenied`, plus a trapping initializer, plus an unsatisfiable initialization order |
+| Resource accounting | none to charge | initializer work is charged to nothing V1 defines |
+| Process memory | none; values are substituted | constants occupy the process's grant for its lifetime |
+| Ordering across a closure | none | a defined order, and a diagnostic for cycles |
+| What a programmer gives up | a constant computed by a call | nothing, at the cost of everything in this column |
+
+The rows about the module digest and about readability before launch are the
+ones specific to TOS rather than to language design in general, and they point
+the same way. A constant that is part of the module digest makes cache
+invalidation exact — change the number, get a different module identity. A
+constant a launcher can read before starting a process is a constant that can
+take part in a launch decision, which is how ADR-0051 has manifests work.
+
+Under A, a table that genuinely needs computing is computed by a function and
+passed, or — from Stage 3 — computed once by a service and served over IPC. The
+expressiveness gap is real and it is bounded.
 
 The honest cost of A is stated plainly: no `const` computed by a function, and
 an aggregate constant paid for at each use. The first is a real restriction that
