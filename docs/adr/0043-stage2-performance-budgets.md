@@ -9,48 +9,57 @@
 
 ## Context
 
-Stage 2 now has one paired measurement: the same fixtures, at one commit,
-measured natively and on the ADR-0040 reference platform through the real
-freestanding path (`docs/evidence/STAGE2_PERFORMANCE_PAIR_P1.md`). Two of the
-three docs/35 bootstrap-profile budgets are not met.
+Stage 2 now has a complete paired measurement taken by the normative procedure:
+3 warmups, 21 samples, median/p95/p99, one commit, one set of fixtures emitted
+by the harness that measures them natively, both halves
+(`docs/evidence/STAGE2_PERFORMANCE_PAIR_P1.md`).
 
-```text
-engine    reference p95 5 473 077 us / native p95 325 350 us = 16.8x   budget 10x
-frontend  256 KiB fixture does not complete on the platform            budget 500 ms p95
-reject    0.397 natively                                               budget 2.000  (PASS)
-```
+| metric | native p95 | reference p95 | budget | verdict |
+|---|---|---|---|---|
+| frontend, 256 KiB module | 160 893 us | 1 490 798 us | 500 000 us | **FAIL** (2.98x over) |
+| engine, 1e6 operations | 333 743 us | 5 541 378 us | ratio ≤ 10x | **FAIL** (16.6x) |
+| quota rejection | 66 668 us | 763 305 us | ≤ 2x accepted | **PASS** (0.512) |
 
-**This ADR does not ask for a revision yet.** It exists because the question is
-now live and because the evidence that would justify one is a specific thing
-that has not been gathered.
+**The implementation defects are gone, and they were found rather than argued
+around.** Two were fixed:
 
-One implementation defect has already been found and fixed rather than argued
-around: the heap searched first-fit by walking every block, so the frontend was
-superlinear in its input. Fixing it took the arena-bound sweep from hours to
-16.5 s (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`) and did **not** bring the
-frontend inside budget. That is the pattern this ADR wants to protect: a budget
-is revised after the implementation defects are gone, not instead of finding
-them.
+- the heap searched every block on every allocation, making the frontend
+  superlinear in its input (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`);
+- the lowerer rendered `format!("{:?}")` to intern every type, which cost 7%
+  natively and over 600x on the reference platform
+  (`docs/evidence/STAGE2_FREESTANDING_PRIMITIVES.md`).
+
+One hypothesis — that the freestanding memory primitives were byte-at-a-time —
+was **tested against the real binary and refuted**. They are `rep movsq`,
+`rep stosq` and a 16-byte `memcmp`. No substrate was written for a defect that
+did not exist.
+
+The evidence that nothing else is hiding is that the platform factor is now
+uniform across two very different workloads: 9.3x for the copy- and
+allocation-heavy frontend, 16.6x for the arithmetic-heavy engine. Before the
+fixes those differed by three orders of magnitude.
+
+### The two failures are not the same kind of failure
+
+**The engine budget is a ratio of one implementation to itself on two
+platforms.** Optimising the engine moves numerator and denominator together, so
+the ratio barely moves. Stated that way, "within 10x" is a claim about how much
+slower TCG is than the host — not a claim about the engine — and the measurement
+says TCG costs 16.6x for this workload. No amount of engine work reaches 10x;
+only a different platform or a different number does.
+
+**The frontend budget is absolute**, so implementation work can reach it. 500 ms
+on the reference platform needs the native frontend at roughly 54 ms against
+today's 161 ms — about 3x. No defect explaining that gap has been identified,
+and no claim is made here that none exists.
 
 ## The precedent this follows
 
 Stage 1's initial 250 ms threshold was empirically falsified rather than
-defended: the number was written before anything ran, the measurement disagreed,
-and the threshold moved because the evidence said so. The same discipline
-applies here, in the same order — measure, find the defects, fix them, and only
+defended: the number was written before anything ran, the measurement
+disagreed, and the threshold moved because the evidence said so. The order
+matters and has been followed — measure, find the defects, fix them, and only
 then ask whether the number itself was research optimism.
-
-## What is not yet known
-
-The engine ratio of 16.8x is measured on work that is arithmetic- and
-control-flow-heavy and barely copies. The frontend is copy-heavy and is at least
-three orders of magnitude slower than that factor predicts. The leading
-hypothesis is that `x86_64-unknown-none` takes `memcpy`, `memset`, `memmove` and
-`memcmp` from `compiler_builtins`, whose portable implementations move a byte at
-a time, while the host build gets vectorised ones.
-
-That hypothesis is testable and untested. Until it is tested, nobody knows
-whether the frontend budget is unreachable or merely unreached.
 
 ## Options
 
@@ -69,16 +78,27 @@ whether the frontend budget is unreachable or merely unreached.
 
 ## Recommendation
 
-**Option 1.** No budget should move while a known-untested implementation
-hypothesis could account for the whole gap. Two of the three budgets are missed
-by amounts that differ by three orders of magnitude, which is itself evidence
-that they are missed for different reasons — and a single defect explaining the
-larger one would change what the smaller one should be compared against.
+**For the engine ratio: option 2, revise the number.** The argument is
+structural rather than a plea. A budget expressed as `reference / native` of the
+same binary measures the platform and cannot be met by improving the thing being
+measured. ADR-0040 chose TCG precisely so the platform is reproducible on any
+host, and that choice has a cost which is now measured: 16.6x on this workload.
+A budget of 20x would be met with margin and would still fail a genuine
+regression; a budget of 10x is unreachable by construction on this platform.
 
-If the hypothesis is refuted and the frontend is still out of budget with no
-identified defect left, options 2 and 3 become the honest ones, and this ADR
-should return carrying the measurements that justify each specific number rather
-than a request to relax them together.
+**For the frontend budget: option 1, revise nothing yet.** 500 ms is absolute
+and implementation work can move it. The gap is about 3x in native terms, which
+is large but not the kind of gap that says a target is impossible, and no
+profiling has yet been done on the frontend's *remaining* cost — only on the two
+defects that dominated it. Asking for this number to move before that work is
+exactly what this ADR refuses for the engine's sake.
+
+**For quota rejection: nothing.** It passes on the reference platform at 0.512
+against a budget of 2.000.
+
+Whichever way each is settled, they should be settled **separately**. They fail
+for different reasons, by amounts that differ by an order of magnitude, and
+moving them together would hide that.
 
 ## Consequences
 

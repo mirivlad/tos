@@ -172,22 +172,27 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    pre-existing regressions unchanged
    (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`). The arena-bound sweep went from
    hours to 16.5 s and the measured bound moved by under 0.1%.
-7. **The Stage 2 performance gate FAILS, measured as a pair.** Both halves are
-   the same fixture at the same commit
+7. **The Stage 2 performance gate FAILS on two of three metrics**, measured by
+   the normative procedure — 3 warmups, 21 samples, median/p95/p99, one commit,
+   one set of fixtures, both halves
    (`docs/evidence/STAGE2_PERFORMANCE_PAIR_P1.md`).
-   - engine: reference p95 5 473 077 us / native p95 325 350 us = **16.8x**
-     against a 10x budget;
-   - frontend: the 256 KiB fixture does not complete on the reference platform,
-     reaching `lower` and not `verify` within ten minutes, against a 500 ms
-     budget;
-   - quota rejection: 0.397 natively (budget 2.000), not measurable on the
-     reference platform until the frontend is.
-   The allocator defect that caused the previous failure is fixed and was not
-   the whole cause. The remaining cost is not allocation search; the leading
-   hypothesis is the freestanding target's byte-at-a-time `memcpy`, stated as a
-   hypothesis and not yet proved. **ADR-0043 (Proposed)** records what a
-   revision of the quantitative budgets would have to rest on, and is not
-   accepted on the Architect's behalf.
+
+   | metric | reference p95 | budget | verdict |
+   |---|---|---|---|
+   | frontend, 256 KiB | 1 490 798 us | 500 000 us | **FAIL** (2.98x) |
+   | engine, 1e6 ops | 5 541 378 us | ratio ≤ 10x | **FAIL** (16.6x) |
+   | quota rejection | 763 305 us | ≤ 2x accepted | **PASS** (0.512) |
+
+   Both known implementation defects are fixed — the heap's whole-arena search
+   and the lowerer's `format!` per intern — and one hypothesis, byte-at-a-time
+   freestanding memory primitives, was tested against the real binary and
+   **refuted**. The platform factor is now uniform across two very different
+   workloads (9.3x and 16.6x) where it previously differed by three orders of
+   magnitude, which is the evidence that no third pathology is hiding.
+   **ADR-0043 (Proposed)** carries the two failures with their measurements and
+   recommends settling them separately: the engine ratio measures the platform
+   and cannot be met by improving the engine, while the frontend budget is
+   absolute and implementation work can still move it.
 8. **Differential testing is N/A, not passed.** docs/44 asks for agreement
    between independent implementations, and there is one engine. A second
    implementation is the only thing that can change this.
