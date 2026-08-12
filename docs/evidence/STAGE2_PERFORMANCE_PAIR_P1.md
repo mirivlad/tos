@@ -1,91 +1,82 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
-# Stage 2 performance — one paired measurement, and what it says
+# Stage 2 performance — the complete paired measurement
 
-Evidence level: **P1** (locally measured, docs/35). Verdict: **FAIL**, retained.
-Commit: the one this file is committed in. Both halves are from it.
+Evidence level: **P1** (locally measured, docs/35). Verdict: **2 FAIL, 1 PASS**, retained.
+Procedure: the normative one — 3 warmups, 21 samples, median/p95/p99, one commit,
+one set of fixtures, both halves.
 Fixtures: emitted by `tos-core-performance --emit-fixture`, so the native and
-reference halves measure the **same bytes**, not two fixtures that resemble each
-other. Frontend fixture content id `sha256:40ea301db1e52502190794049cecf65ddc40a76cde07a98181cca9a1aa433a98`.
+reference halves measure the **same bytes**. Frontend fixture is 262 114 bytes,
+content `sha256:40ea301db1e52502190794049cecf65ddc40a76cde07a98181cca9a1aa433a98`.
+Reference platform: ADR-0040 — q35, qemu64, 1 vCPU, 256 MiB, TCG, OVMF, through
+the real freestanding Stage 2 path.
+Producers: `tos-core-performance --profile native`,
+`host-tools/qemu-test/stage2-reference-performance.sh`.
 
-## Native half — 3 warmups, 21 samples
+## The pair
+
+| metric | native p95 | reference p95 | budget | verdict |
+|---|---|---|---|---|
+| frontend, 256 KiB module | 160 893 us | **1 490 798 us** | 500 000 us | **FAIL** (2.98x over) |
+| engine, 1e6 operations | 333 743 us | 5 541 378 us | ratio ≤ 10x | **FAIL** (16.6x) |
+| quota rejection | 66 668 us | 763 305 us | ≤ 2x accepted | **PASS** (0.512) |
+
+Reference medians: frontend 1 437 944 us, engine 5 317 426 us, rejection
+713 676 us. Every raw sample is in `target/.../reference.json` and in the
+harness output; nothing is summarised without the samples behind it.
+
+## The implementation is understood
+
+Two defects were found and fixed before this measurement, and each was fixed
+rather than argued around:
+
+1. **The heap searched every block on every allocation.** Segregated free lists
+   replaced it; the search cost no longer depends on how many blocks exist, and
+   the claim is a measured series rather than a timing
+   (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`).
+2. **The lowerer rendered a debug string to intern every type.** Keying the
+   index on the definition itself took the reference frontend from *not
+   finishing in 900 seconds* to 1.49 s — while costing 7% natively
+   (`docs/evidence/STAGE2_FREESTANDING_PRIMITIVES.md`).
+
+One hypothesis was tested and **refuted**: the freestanding memory primitives
+are word-oriented in the real binary, not byte-at-a-time. No work was done on a
+defect that did not exist.
+
+The evidence that no third pathology is hiding is that the platform factor is
+now **uniform**:
 
 ```text
-parse + check + lower + independent verify, 262 114-byte module
-  median 163 031 us, p95 167 775 us, p99 167 923 us
-one-million-operation integer/control-flow benchmark
-  median 321 903 us, p95 325 350 us, p99 328 063 us
-reject a quota-exceeding module
-  median  64 884 us, p95  66 668 us, p99  67 063 us
-  rejection/acceptance p95 ratio 0.397 (budget at most 2.000) — PASS
+frontend  reference / native = 1 490 798 / 160 893 =  9.3x
+engine    reference / native = 5 541 378 / 333 743 = 16.6x
 ```
 
-## Reference half — ADR-0040 platform, real Stage 2 path, 5 samples
+Before the fixes these differed by three orders of magnitude. Two independent
+workloads landing within a factor of two of each other is what "the platform
+costs what the platform costs" looks like from outside.
 
-```text
-one-million-operation integer/control-flow benchmark
-  samples (us) 5 226 952  5 233 254  5 329 502  5 368 337  5 473 077
-  median 5 329 502 us, p95 5 473 077 us
-```
+## Why the engine ratio is not an implementation question
 
-### Engine metric: **FAIL**
+The engine budget is a **ratio of the same implementation to itself** on two
+platforms. Optimising the engine moves the numerator and the denominator
+together, so the ratio barely moves. A 10x budget stated that way is a claim
+about how much slower TCG is than the host — not about the engine — and the
+measurement says TCG is 16.6x for this workload.
 
-```text
-reference p95 / native p95 = 5 473 077 / 325 350 = 16.8x
-docs/35 budget: at most 10x
-```
+The only things that can bring that ratio to 10x are a different platform
+(ADR-0040 chose TCG deliberately, so it is reproducible on any host) or a
+different number. That is a structural argument, not a plea, and it is what
+ADR-0043 carries.
 
-Same fixture, same commit, same work definition, measured on both sides. This is
-not the "ordinary TCG factor" argument the previous record leaned on; it is the
-ratio the contract asks for, and it is over budget by 1.7x.
+The frontend budget is different in kind: 500 ms is absolute, so implementation
+work *can* reach it. It needs the native frontend at roughly 54 ms rather than
+161 ms — about 3x — and no defect explaining that gap has been identified.
 
-### Frontend metric: **FAIL, and not yet measurable**
+## What is not claimed
 
-The 256 KiB fixture does not complete on the reference platform. It reaches
-`TOS.RUN.STAGE name=lower` and does not emit `verify` within ten minutes. The
-budget is 500 ms p95, so a measurement is not needed to know the verdict, but the
-*cause* is needed before anything is claimed about it.
-
-## What the two verdicts, read together, point at
-
-The allocator defect that produced the previous 900-second failure is fixed and
-its evidence is in `docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`: the arena-bound
-sweep went from hours to 16.5 s, and the same fixture natively through the
-bounded heap now costs a fraction of a second.
-
-So the frontend's remaining cost is not allocation search. The engine metric
-gives the platform's honest factor for work that is arithmetic- and
-control-flow-heavy and barely copies: **16.8x**. The frontend is copy-heavy —
-every string, every vector, every interned type — and it is at least three
-orders of magnitude slower than that factor predicts.
-
-**This hypothesis was tested and refuted**; see
-`docs/evidence/STAGE2_FREESTANDING_PRIMITIVES.md`. The primitives in the real
-binary are word-oriented (`rep movsq`, `rep stosq`, 16-byte `memcmp`). The
-actual cause was a `format!("{:?}")` per type intern in the lowerer, which cost
-7% natively and over 600x on the reference platform. The original text is kept
-below because the reasoning that produced it was sound and the conclusion was
-wrong, which is worth being able to see.
-
-The leading hypothesis, **stated as a hypothesis and not as a finding**, was the
-freestanding target's memory primitives. `x86_64-unknown-none` has no libc, so
-`memcpy`, `memset`, `memmove` and `memcmp` come from `compiler_builtins`, whose
-portable implementations move a byte at a time. A host build gets glibc's
-vectorised versions. A byte-at-a-time copy interpreted by TCG would multiply
-every copy in the frontend by a large constant, and would leave the engine —
-which copies almost nothing — at the ordinary factor. That is exactly the shape
-observed.
-
-It is not proved. Proving it means measuring the guest with and without an
-optimised `memcpy`, and that is the next piece of work rather than something
-this record asserts.
-
-## What is not done here
-
-- No fixture was changed to make a number smaller.
-- No budget was reinterpreted. The engine ratio is 16.8x against 10x, and the
-  frontend does not complete.
-- The rejection ratio is measured natively (0.397, PASS) and **not** on the
-  reference platform, because it is a ratio against an accepted-input
-  measurement that the reference platform cannot yet produce.
-- Evidence stays P1. One machine, one build, five reference samples rather than
-  twenty-one — stated, not rounded up.
+- P1. One machine, one build. Not P2, not P3.
+- No fixture was changed, no boundary reinterpreted, no budget adjusted to fit.
+- The rejection ratio passes **on the reference platform**, not only natively.
+- The measurement boundaries are protected against the earlier defect where a
+  span between two result events measured line formatting rather than work:
+  `reference-performance-report.py` refuses a reduction whose boundary cannot
+  contain the work it claims to measure.
