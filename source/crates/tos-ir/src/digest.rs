@@ -22,6 +22,17 @@ use crate::{
 };
 
 /// The digest of a module, as `sha256:<hex>`.
+/// The canonical byte stream a module's digest is taken over.
+///
+/// Exposed so the cost of *building* the stream can be measured apart from the
+/// cost of hashing it. They are different problems with different fixes, and a
+/// combined figure cannot tell them apart.
+pub fn canonical_stream(module: &Module) -> Vec<u8> {
+    let mut writer = Writer::default();
+    write_module(&mut writer, module);
+    writer.bytes
+}
+
 pub fn module_digest(module: &Module) -> String {
     let mut writer = Writer::default();
     write_module(&mut writer, module);

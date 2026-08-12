@@ -79,9 +79,19 @@ struct Guard {
 }
 
 pub(crate) fn check_guards(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> {
+    let types = binding_types(source, schema);
+    check_guards_with(source, schema, &types)
+}
+
+/// The same slice, given the binding types rather than deriving them.
+pub(crate) fn check_guards_with<'source>(
+    source: &'source SourceUnit,
+    schema: &'source Schema,
+    types: &'source BTreeMap<usize, Type>,
+) -> Vec<Diagnostic> {
     let mut checker = GuardChecker {
         source,
-        types: binding_types(source, schema),
+        types,
         scopes: Vec::new(),
         diagnostics: Vec::new(),
     };
@@ -125,7 +135,7 @@ struct Entry {
 
 struct GuardChecker<'source> {
     source: &'source SourceUnit,
-    types: BTreeMap<usize, Type>,
+    types: &'source BTreeMap<usize, Type>,
     /// Bindings in scope, innermost last.
     scopes: Vec<BTreeMap<String, Entry>>,
     diagnostics: Vec<Diagnostic>,

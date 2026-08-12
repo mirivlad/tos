@@ -207,10 +207,10 @@ fn main() {
         &execution,
     );
     let execution_p95 = percentile(&execution, 95);
-    println!("  docs/35 budget: within 10x a host reference interpreter");
+    println!("  docs/35 budget: within 22x a host reference interpreter (ADR-0043)");
     match (profile.as_str(), baseline) {
         ("reference", Some(native)) => println!(
-            "  reference/native p95 ratio: {:.3} (docs/35 budget: at most 10.000), native baseline {native} us",
+            "  reference/native p95 ratio: {:.3} (docs/35 budget: at most 22.000), native baseline {native} us",
             execution_p95 as f64 / native.max(1) as f64
         ),
         ("reference", None) => println!(
@@ -305,6 +305,18 @@ fn report_stages(text: &str) {
         let found = Checker::check(&source, &schema);
         assert!(found.is_empty());
     });
+    // The checker is a sequence of independent slices. Which of them costs what
+    // is not visible from the total, and merging slices for speed without
+    // knowing that would be trading a correctness property for a guess.
+    let slices: Vec<(&str, u128)> = tos_core::CHECK_SLICES
+        .iter()
+        .map(|name| {
+            let samples = measure(|| {
+                tos_core::check_slice(name, &source, &schema).expect("a known slice");
+            });
+            (*name, percentile(&samples, 50))
+        })
+        .collect();
     let context = ModuleContext {
         source_set: String::from("tos-performance"),
         path: String::from("system/boot/init.tos"),
@@ -321,12 +333,33 @@ fn report_stages(text: &str) {
     });
     // The receipt binds to the module's complete digest (docs/43 section 5), so
     // verification necessarily hashes the whole module. Timing it separately
-    // says how much of `verify` is the checking and how much is the binding.
+    // says how much of `verify` is the checking and how much is the binding —
+    // and the parts below say what the binding is actually made of, because
+    // "hashing is slow" and "building the stream is slow" call for different
+    // work and only a measurement tells them apart.
     let digest = measure(|| {
         let _ = tos_ir::module_digest(&module);
     });
+    let stream = tos_ir::canonical_stream(&module);
+    let stream_len = stream.len();
+    let build = measure(|| {
+        let _ = tos_ir::canonical_stream(&module);
+    });
+    let hash = measure(|| {
+        let _ = tos_hash::sha256(&stream);
+    });
+    let render = measure(|| {
+        let digest = tos_hash::sha256(&stream);
+        let mut hex = [0u8; 64];
+        tos_hash::hex(&digest, &mut hex);
+        let _ = format!("sha256:{}", core::str::from_utf8(&hex).unwrap());
+    });
     println!();
     println!("frontend stages, median us (the same fixture, one stage at a time)");
+    println!(
+        "canonical hash stream: {stream_len} bytes for a {} byte module",
+        text.len()
+    );
     for (name, samples) in [
         ("read", &read),
         ("parse", &parse),
@@ -334,8 +367,15 @@ fn report_stages(text: &str) {
         ("lower", &lower),
         ("verify", &verify),
         ("  of which digest", &digest),
+        ("    stream build", &build),
+        ("    sha-256", &hash),
+        ("    hash+render", &render),
     ] {
         println!("  {name:<7} {}", percentile(samples, 50));
+    }
+    println!("checker slices, median us");
+    for (name, median) in slices {
+        println!("    {name:<14} {median}");
     }
 }
 

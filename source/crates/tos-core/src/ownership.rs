@@ -122,9 +122,25 @@ struct PendingDefer<'ast> {
 }
 
 pub(crate) fn check_ownership(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> {
+    let types = binding_types(source, schema);
+    check_ownership_with(source, schema, &types)
+}
+
+/// The same slice, given the binding types rather than deriving them.
+///
+/// Binding types are a *derived fact about this module's own source*, and three
+/// slices need them. Deriving them three times was three full typing passes for
+/// one answer. Sharing the map changes nothing about what each slice concludes
+/// or what it may conclude on its own — the standalone entry point above still
+/// derives its own — it only stops the same work being done again.
+pub(crate) fn check_ownership_with<'source>(
+    source: &'source SourceUnit,
+    schema: &'source Schema,
+    types: &'source BTreeMap<usize, Type>,
+) -> Vec<Diagnostic> {
     let mut checker = OwnershipChecker {
         source,
-        types: binding_types(source, schema),
+        types,
         fields: record_fields(source, schema),
         capabilities: schema
             .outline()
@@ -159,7 +175,7 @@ pub(crate) fn check_ownership(source: &SourceUnit, schema: &Schema) -> Vec<Diagn
 
 struct OwnershipChecker<'source> {
     source: &'source SourceUnit,
-    types: BTreeMap<usize, Type>,
+    types: &'source BTreeMap<usize, Type>,
     fields: BTreeMap<String, Vec<(String, Type)>>,
     capabilities: BTreeSet<String>,
     bindings: BTreeMap<BindingId, BindingInfo>,

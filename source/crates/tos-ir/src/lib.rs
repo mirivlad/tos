@@ -29,7 +29,7 @@ use alloc::vec::Vec;
 
 pub mod digest;
 
-pub use digest::module_digest;
+pub use digest::{canonical_stream, module_digest};
 
 /// The schema every V1 module declares.
 pub const SCHEMA_ID: &str = "tos-ir/v1";

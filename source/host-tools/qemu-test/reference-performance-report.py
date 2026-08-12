@@ -27,6 +27,10 @@ STAGES = 7
 #: docs/35 budgets for the bootstrap profile on the reference platform.
 FRONTEND_BUDGET_US = 500_000
 REJECTION_RATIO_BUDGET = 2.0
+#: ADR-0043: the engine ratio a disproportionate reference-platform regression
+#: has to break. Ordinary regressions move both halves and are caught by
+#: retained benchmark history instead.
+ENGINE_RATIO_BUDGET = 22.0
 
 
 def events(out: Path, workload: str, sample: int) -> list[dict]:
@@ -145,7 +149,8 @@ def main() -> int:
     )
     print(
         "execution ratio: divide the reference p95 above by the native p95 of "
-        "the same fixture at this commit (docs/35 budget: at most 10x)"
+        f"the same fixture at this commit (docs/35 budget: at most "
+        f"{ENGINE_RATIO_BUDGET:.0f}x, ADR-0043)"
     )
     return 0
 

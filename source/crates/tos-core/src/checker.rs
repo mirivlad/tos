@@ -98,11 +98,18 @@ impl Checker {
         diagnostics.extend(crate::types::check_public_signatures(source, schema));
         diagnostics.extend(crate::exhaustiveness::check_exhaustiveness(source, schema));
         diagnostics.extend(crate::returns::check_returns(source, schema));
+        // Typing is derived once and handed to the slices that need it. Three
+        // slices used to derive it separately, which was three full passes for
+        // one answer; none of them concludes anything different for being given
+        // it, and each still derives its own when run alone.
         diagnostics.extend(crate::typing::check_typing(source, schema));
-        diagnostics.extend(crate::ownership::check_ownership(source, schema));
+        let bindings = crate::typing::binding_types(source, schema);
+        diagnostics.extend(crate::ownership::check_ownership_with(
+            source, schema, &bindings,
+        ));
         diagnostics.extend(crate::mutability::check_mutability(source, schema));
         diagnostics.extend(crate::concurrency::check_concurrency(source, schema));
-        diagnostics.extend(crate::guards::check_guards(source, schema));
+        diagnostics.extend(crate::guards::check_guards_with(source, schema, &bindings));
         diagnostics.extend(crate::capability::check_capabilities(source, schema));
         diagnostics.extend(crate::boundary::check_boundary(source, schema));
         diagnostics.extend(crate::defer::check_defer_bodies(source, schema));
@@ -110,6 +117,47 @@ impl Checker {
         diagnostics.extend(crate::profile::check_profile(source, schema));
         diagnostics
     }
+}
+
+/// The checker's slices, in the order `Checker::check` runs them.
+///
+/// The checker is a sequence of independent slices, each reporting only what it
+/// can establish on its own. Which of them costs what is invisible from the
+/// total, and merging slices for speed without knowing that would trade a
+/// correctness property for a guess — so the slices are nameable and runnable
+/// one at a time.
+pub const CHECK_SLICES: [&str; 10] = [
+    "names",
+    "types",
+    "visibility",
+    "exhaustiveness",
+    "returns",
+    "typing",
+    "ownership",
+    "mutability",
+    "concurrency",
+    "guards",
+];
+
+/// Runs one named slice of the checker, for profiling and for a test that needs
+/// one slice's verdict rather than the whole checker's.
+///
+/// No clock lives here: `tos-core` is `no_std` and has no business knowing what
+/// time it is. A caller that wants a timing brings its own.
+pub fn check_slice(name: &str, source: &SourceUnit, schema: &Schema) -> Option<Vec<Diagnostic>> {
+    Some(match name {
+        "names" => resolve_value_names(source, schema),
+        "types" => crate::types::check_types(source, schema),
+        "visibility" => crate::types::check_public_signatures(source, schema),
+        "exhaustiveness" => crate::exhaustiveness::check_exhaustiveness(source, schema),
+        "returns" => crate::returns::check_returns(source, schema),
+        "typing" => crate::typing::check_typing(source, schema),
+        "ownership" => crate::ownership::check_ownership(source, schema),
+        "mutability" => crate::mutability::check_mutability(source, schema),
+        "concurrency" => crate::concurrency::check_concurrency(source, schema),
+        "guards" => crate::guards::check_guards(source, schema),
+        _ => return None,
+    })
 }
 
 /// Resolves every value name against the scope it appears in.

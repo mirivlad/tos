@@ -2,10 +2,13 @@
 
 # ADR-0043: The Stage 2 quantitative performance budgets
 
-- Status: **Proposed** (awaiting Project Architect decision)
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-12
 - Decision level: 2 — the numbers in docs/35 that a Stage gate is measured against
-- Project Architect approval: *(none — this ADR is not accepted)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12, accepting the
+  engine part with an amended threshold (22x rather than the 25x recommended
+  here) and a correction to what a ratio gate is for. The frontend and
+  quota-rejection budgets are **unchanged** by this decision.
 
 ## Context
 
@@ -137,26 +140,37 @@ then ask whether the number itself was research optimism.
 
 ## Recommendation
 
-**For the engine ratio: option 2, revise the number — the evidence is now in.**
+**For the engine ratio (as recommended before the decision): option 2, revise
+the number — the evidence is now in.**
 Both experiments the question needed have been run. A 1.6x general optimisation
 left the ratio unchanged, and the decomposition shows every component of the
 workload inside a 15.1–17.9x band with no path deviating. A budget expressed as
 `reference / native` of one implementation measures the platform, and this
 platform costs about 16x for the operations this benchmark performs.
 
-**A recommended threshold, and why that number.** Not `current p95 + epsilon` —
-a budget must still catch a real regression. The components span 15.1x to 17.9x
-with the full benchmark at 16.8x, so the honest centre of the distribution is
-about 16x and its observed spread is roughly ±10%. A threshold of **25x** sits
-above the slowest component measured (23.3x, aggregate construction, which a
-future workload could include), leaves about 1.5x of headroom over today's
-figure for ordinary variation between hosts, and would still fail immediately on
-a regression of the kind already found in this project — the per-instruction
-clone was worth 1.6x, and the allocator defect was worth far more.
+**The accepted threshold is 22x.** The components of the standard workload span
+15.1x to 17.9x and the full workload sits at 16.8x, so 22x is about +30% on the
+measured figure — enough headroom for ordinary variation between hosts, and
+consistent with the blocking-regression policy of docs/35.
 
-A tighter number would fail on a machine slightly slower than this one; a looser
-one would stop detecting anything. This recommendation is made with its
-reasoning exposed so the Architect can move it on its merits.
+The 23.3x of aggregate construction is deliberately **not** used to set this
+number. The standard million-operation benchmark performs no aggregate
+construction, and sizing a budget from a component the workload does not contain
+would be sizing it from something it never measures.
+
+**What a ratio gate is for, corrected.** An earlier draft of this ADR argued
+that 25x "would still fail immediately on a regression of the kind already found
+in this project — the per-instruction clone was worth 1.6x". The experiment in
+`docs/evidence/STAGE2_ENGINE_DECOMPOSITION.md` shows the opposite: removing that
+clone moved native and reference together and left the ratio at 16.8x. A
+platform-neutral regression is invisible to a ratio by construction.
+
+So a ratio gate detects a **disproportionate reference-platform regression** —
+something that costs the guest much more than the host, as the whole-arena
+allocator search and the per-intern debug string both did. Ordinary regressions
+are caught by retained benchmark history against the docs/35 regression policy,
+which is a different instrument for a different failure. Claiming one does the
+other's job is what this correction removes.
 
 **For the frontend budget: option 1, revise nothing yet.** 500 ms is absolute
 and implementation work has already moved it twice. The remaining gap is 2.56x,
