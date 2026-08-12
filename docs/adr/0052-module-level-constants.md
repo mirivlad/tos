@@ -65,35 +65,74 @@ Two of the three questions above are language semantics — what may initialize 
 constant and when it evaluates — and their answers are observable in traps and
 in evaluation order, which docs/40 fixes precisely for everything else.
 
-The third is worse: making `pub const` importable, as docs/42 already promises,
-requires `tos-ir/v1` to carry a named constant and an import of one. **That is
-an extension of a closed Stage 2 contract**, and the rule this project works
-under says to stop at that boundary rather than widen it inside an
-implementation.
+The third looked worse than it is, and the first draft of this ADR said so:
+making `pub const` importable, as docs/42 promises, appeared to require
+`tos-ir/v1` to carry a named constant and an import of one — an extension of a
+closed contract. That is true only if a constant is a runtime object. Section
+"What V1 already decided" below shows it is not, and the conclusion changes.
+
+## What V1 already decided
+
+The accepted contract is not silent about what kind of thing a constant is. It
+says so in the one place a constant is unavoidably used:
+
+- `array_type = "array" "<" type "," const_expression ">"`, and
+  `const_primary = integer | size | identifier | "(" const_expression ")"`;
+- docs/40: "`array<T, N>` takes one type argument and one **compile-time** `size`
+  constant".
+
+The `identifier` admitted in a `const_expression` can only be a named constant.
+So V1 already requires a module-level constant to be evaluable at compile time —
+otherwise `array<T, CAPACITY>` cannot be written, and the grammar admits it.
+
+That settles question 1 in the language's own terms rather than by an
+implementer's preference, and it settles question 2 as a consequence: a value
+computed at compile time has no evaluation moment to place, no trap to order and
+no accounting to charge.
+
+It also dissolves question 3. A compile-time constant does not need to exist in
+the IR at all — like a type, it is consumed during lowering. A `pub const`
+imported by another module is resolved by the same source-set step that binds an
+imported function's signature: the importer substitutes the value, and the
+exporter's content id is already inside the importer's `dependency_digest`, so
+changing the constant changes the importing module's digest and invalidates its
+cache. docs/42's promise is kept, and `tos-ir/v1` is untouched.
 
 ## Options
 
-**A — literal-initialized constants, substituted at use.** Narrow the initializer
-to literals and constructors over literals: no calls, no effects, nothing that
-can trap. Lowering substitutes the value at each use, which needs no IR change
-for scalars and, for aggregates, emits the same construction the source would
-have written inline. Evaluation-order questions disappear because the
-initializer cannot observe anything. Cross-module constant import stays
-unimplemented, so docs/42's sentence is narrowed to say constants are
-module-local in V1 and importable from V1.1.
+**A — a constant is a compile-time value.** The initializer is a
+`const_expression` — the arithmetic form V1 already defines — extended to
+literals of every scalar type, and to record, enum and array constructors whose
+arguments are themselves constant. No calls, no effects, nothing that can trap
+or observe anything. Lowering substitutes the value at each use, including
+across a module boundary, so `pub const` is importable as docs/42 says.
 
-*Cost:* a documented narrowing of two accepted sentences, and an aggregate
-constant costs its construction at every use rather than once.
+Written out, that admits everything a systems module actually wants:
 
-**B — full constants with module initialization.** Admit an arbitrary
-expression, evaluate once before any function runs, and give `tos-ir/v1` a named
-constant table plus constant imports. This is what docs/42 promises, read
-literally.
+```tos
+pub const PAGE:     size   = 4096;
+pub const WINDOW:   size   = PAGE * 4;
+pub const ENDPOINT: string = "net.adapter.v1";
+pub const LIMITS:   Limits = Limits(depth: 8i32, width: 4i32);
 
-*Cost:* a module-initialization phase V1 does not have, with its own ordering,
-trap and resource-accounting rules across a dependency closure; an extension to
-a closed IR contract; and new verifier rules for both. This is a language
-version's worth of work, not a gap fix.
+pub fn buffer() -> array<u8, WINDOW> { … }
+```
+
+*Cost:* a constant cannot be the result of a call, and an aggregate constant is
+constructed at each use rather than once. Neither is free, and both are stated
+below rather than buried.
+
+**B — a constant is a runtime object, initialized once.** Admit an arbitrary
+expression, evaluate it once before any function runs, and give `tos-ir/v1` a
+named constant table plus constant imports.
+
+*Cost:* a module-initialization phase V1 does not have. That phase would execute
+source **outside any function's declared resource envelope and outside any
+verifier receipt bound to a call** — the two properties Stage 2 closed on. It
+would also need a defined initialization order across a dependency closure, and
+initialization order between compilation units is a famous source of defects in
+every language that has it. This is not merely expensive; for this language it
+is worse.
 
 **C — remove `const` from the V1 surface.** Retract the item form.
 
@@ -103,16 +142,32 @@ recommended.
 
 ## Recommendation
 
-**A.** It makes an accepted form work, keeps `tos-ir/v1` closed, introduces no
-evaluation phase the language does not otherwise have, and leaves B available as
-a V1.1 decision once there is a real service source set asking for shared
-constants across modules. The narrowing it requires is two sentences, and both
-would otherwise be promises the implementation cannot keep.
+**A**, and the reason is what V1 already says rather than what is cheap to
+build. `array<T, N>` requires a compile-time `size` constant and the grammar
+lets a named constant be that `N`. A language cannot hold both "constants are
+compile-time" for array sizes and "constants are runtime objects" everywhere
+else without deciding which one `CAPACITY` is at the point of use. V1 already
+chose; this ADR writes the choice down and follows it to its consequences.
 
-Under A the implementation work is Level 1: restrict the checker to
-literal-and-constructor initializers with a diagnostic for anything else, and
-substitute at use in lowering. The diagnostic code is part of this decision, not
-an implementation choice, and is assigned when the option is chosen.
+B is rejected on architecture, not on effort. TOS accounts every execution
+against a declared envelope and executes nothing the verifier has not issued a
+receipt for. A module-initialization phase is, by construction, execution with
+neither. Buying convenience with an exception to both is the trade this project
+does not make.
+
+The honest cost of A is stated plainly: no `const` computed by a function, and
+an aggregate constant paid for at each use. The first is a real restriction that
+a later language version may lift with a proper compile-time-evaluation model —
+which is a much larger and better-founded decision than smuggling one in through
+an initializer. The second is a code-size question, not a semantics question,
+and an optimizer may share identical constructions later without changing what
+the source means.
+
+Under A the implementation work is Level 1: restrict the checker to constant
+initializers with a diagnostic for anything else, and substitute at use in
+lowering, including across a module boundary through the Phase 1 source-set
+step. The diagnostic code is part of this decision, not an implementation
+choice, and is assigned when the option is chosen.
 
 ## Boundary
 
@@ -120,3 +175,20 @@ Nothing is implemented under this ADR until it is accepted. The current state �
 declaration accepted, use refused with a named gap — is the honest interim, and
 Stage 3 Phase 1 scopes itself to function imports so that it does not depend on
 the answer.
+
+## Revision note
+
+The first draft of this ADR recommended A partly on cost: it kept `tos-ir/v1`
+closed and avoided work. That was a weak reason for a language decision, and the
+Project Architect asked whether the recommendation came from ease of
+implementation or from what makes a better language.
+
+Re-examined on the language question, the recommendation stands and two of its
+terms change. The initializer is V1's own `const_expression` rather than
+literals only, because `const BUFFER: size = PAGE * 4;` is a legitimate and
+common pattern that the array-size grammar already admits — forbidding it would
+have made a worse language to save an implementation from constant folding. And
+cross-module constant import is kept rather than narrowed out of docs/42,
+because a compile-time constant needs no IR representation to cross a module
+boundary. The cost argument turned out to be an artifact of assuming a constant
+is a runtime object.
