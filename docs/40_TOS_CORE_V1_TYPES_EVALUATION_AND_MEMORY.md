@@ -126,6 +126,34 @@ expression type. Assignment requires a mutable binding or a place reached
 through one active mutable borrow. Assigning to a nonmutable place is
 `E1201_ASSIGN_TO_IMMUTABLE`.
 
+A module-level `const name: T = expression;` declares a **compile-time value**,
+not a runtime object (ADR-0052). Its initializer is a constant expression: a
+scalar literal; a `const_expression` whose `identifier` names another constant,
+of this module or an imported one; or a record, enum tuple, named-field variant
+or array constructor whose arguments are themselves constant expressions. A
+call, an effect, a borrow and a capability are all excluded — the last already
+by section 2 of `docs/42`. An initializer that is not a constant expression is
+`E1224_NONCONSTANT_INITIALIZER`.
+
+The constant *is* its value: it is substituted where it is used, including
+across a module boundary, and V1 therefore has no module-initialization phase.
+There is no moment at which a constant is computed, so there is no evaluation
+order to fix between constants, no trap a constant can raise, and no resource
+its declaration consumes. This is what lets `array<T, N>` take a named constant
+as its compile-time `size`, and what lets a launcher read a module's constants
+before starting it.
+
+What is fixed is that an initializer causes nothing to run. Projection,
+indexing and conversion are excluded **inside an initializer** in V1 for want of
+their own compile-time rules, and report the same code; a later version may
+admit them, because they create no evaluation moment. Reading a field of a
+constant in ordinary code is unaffected: `LIMITS.depth` in a function body is
+the constant substituted and then projected, like any other value. A call is different in kind and stays excluded: a
+runtime-initialized object, if V1's successors want one, is a separate item form
+with its own keyword and its own initialization contract, since admitting calls
+into a `const` initializer would move when existing source evaluates without
+changing its text.
+
 Function parameters without `borrow` consume an owned argument unless its type
 is `Copy`. `borrow parameter: T` creates an immutable temporary borrow;
 `borrow mut parameter: T` creates an exclusive mutable temporary borrow. V1

@@ -114,6 +114,7 @@ impl Checker {
         diagnostics.extend(crate::boundary::check_boundary(source, schema));
         diagnostics.extend(crate::defer::check_defer_bodies(source, schema));
         diagnostics.extend(crate::metering::check_metering(source, schema));
+        diagnostics.extend(crate::constants::check_constants(source, schema));
         diagnostics.extend(crate::profile::check_profile(source, schema));
         diagnostics
     }
@@ -126,8 +127,9 @@ impl Checker {
 /// total, and merging slices for speed without knowing that would trade a
 /// correctness property for a guess — so the slices are nameable and runnable
 /// one at a time.
-pub const CHECK_SLICES: [&str; 10] = [
+pub const CHECK_SLICES: [&str; 11] = [
     "names",
+    "constants",
     "types",
     "visibility",
     "exhaustiveness",
@@ -147,6 +149,7 @@ pub const CHECK_SLICES: [&str; 10] = [
 pub fn check_slice(name: &str, source: &SourceUnit, schema: &Schema) -> Option<Vec<Diagnostic>> {
     Some(match name {
         "names" => resolve_value_names(source, schema),
+        "constants" => crate::constants::check_constants(source, schema),
         "types" => crate::types::check_types(source, schema),
         "visibility" => crate::types::check_public_signatures(source, schema),
         "exhaustiveness" => crate::exhaustiveness::check_exhaustiveness(source, schema),

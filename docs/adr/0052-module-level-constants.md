@@ -2,11 +2,64 @@
 
 # ADR-0052: What a module-level `const` is
 
-- Status: **Proposed**
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-12
 - Decision level: 2 — fixes the observable meaning of an accepted V1 item form,
   and decides whether `tos-ir/v1` gains a representation for it
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
+
+## Decision
+
+**Option A. A module-level constant is a compile-time value.** In full:
+
+1. **Initializer.** A `const` initializer is a *constant expression*: a literal
+   of any scalar type; a `const_expression` as V1 already defines it, whose
+   `identifier` names another constant of the same module or an imported one;
+   or a record, enum tuple, named-field variant or array constructor whose
+   arguments are themselves constant expressions. Nothing else — no call, no
+   effect, no borrow, no capability. A capability was already forbidden by
+   docs/42 §2 and stays forbidden.
+2. **Meaning.** The constant *is* its value. Lowering substitutes that value at
+   each use. There is no module-initialization phase, no evaluation moment to
+   order, no trap to place and no resource to charge.
+3. **Across modules.** `pub const` is importable exactly as docs/42 §1 says.
+   The importing module substitutes the value during lowering, and the
+   exporting module's content id is already inside the importer's
+   `dependency_digest`, so changing an exported constant changes the importing
+   module's digest and invalidates its cache.
+4. **`tos-ir/v1` is unchanged.** A compile-time constant is consumed during
+   lowering, like a type. No named constant table and no constant import are
+   added, and this decision does not reopen the IR contract.
+5. **Diagnostic.** An initializer that is not a constant expression is
+   `E1224_NONCONSTANT_INITIALIZER`, reported at the check stage against the
+   initializer's span, with field `reason`. It is the residual for this
+   condition: an unknown name is still `E1202`, a wrong type is still the type
+   codes, and a capability in a `const` remains `E1502`.
+6. **Never widened into execution.** What is fixed is not the list of forms
+   but the property behind it: **an initializer may not cause anything to run.**
+   A later version may admit further *pure* forms — projection of a constant
+   aggregate, a constant conversion — because those do not create an evaluation
+   moment; each still needs its own compile-time rules, so each is its own small
+   decision. What is closed is the other direction. If a runtime-initialized
+   object is ever wanted, it arrives as its own item form with its own keyword,
+   its own initialization contract and its own accounting story — never by
+   relaxing what may initialize a `const`. Admitting a call later would silently
+   change *when* existing source evaluates, and source that changes meaning
+   without changing text is what a versioned language contract exists to
+   prevent.
+
+   V1 therefore excludes projection, indexing and conversion in an initializer
+   as well, and reports them under the same code. They are excluded for want of
+   rules, not because they execute.
+
+The normative statement of 1–4 goes in `docs/40` section 2 and the code in
+`docs/44`'s table; this ADR is the decision, those are the contract.
+
+Implementation order: within one module now, across modules with the Stage 3
+Phase 1 source-set step, which is the same step that binds an imported
+function's signature. Until that step exists, an imported constant is not
+resolvable and its use refuses at lowering with a named gap rather than being
+guessed.
 
 ## The gap
 

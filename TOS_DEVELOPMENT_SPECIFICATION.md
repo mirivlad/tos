@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `f474d2696f704c13d0397b459afe8c3742625f9be81d66719fa1c35dedc3fd22`  
+Source-manifest SHA-256: `b32f61090466f2ff87820d7a3a87adf5d2c546ce54802fc9ebe5ef392d1009ba`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -4330,6 +4330,34 @@ expression type. Assignment requires a mutable binding or a place reached
 through one active mutable borrow. Assigning to a nonmutable place is
 `E1201_ASSIGN_TO_IMMUTABLE`.
 
+A module-level `const name: T = expression;` declares a **compile-time value**,
+not a runtime object (ADR-0052). Its initializer is a constant expression: a
+scalar literal; a `const_expression` whose `identifier` names another constant,
+of this module or an imported one; or a record, enum tuple, named-field variant
+or array constructor whose arguments are themselves constant expressions. A
+call, an effect, a borrow and a capability are all excluded — the last already
+by section 2 of `docs/42`. An initializer that is not a constant expression is
+`E1224_NONCONSTANT_INITIALIZER`.
+
+The constant *is* its value: it is substituted where it is used, including
+across a module boundary, and V1 therefore has no module-initialization phase.
+There is no moment at which a constant is computed, so there is no evaluation
+order to fix between constants, no trap a constant can raise, and no resource
+its declaration consumes. This is what lets `array<T, N>` take a named constant
+as its compile-time `size`, and what lets a launcher read a module's constants
+before starting it.
+
+What is fixed is that an initializer causes nothing to run. Projection,
+indexing and conversion are excluded **inside an initializer** in V1 for want of
+their own compile-time rules, and report the same code; a later version may
+admit them, because they create no evaluation moment. Reading a field of a
+constant in ordinary code is unaffected: `LIMITS.depth` in a function body is
+the constant substituted and then projected, like any other value. A call is different in kind and stays excluded: a
+runtime-initialized object, if V1's successors want one, is a separate item form
+with its own keyword and its own initialization contract, since admitting calls
+into a `const` initializer would move when existing source evaluates without
+changing its text.
+
 Function parameters without `borrow` consume an owned argument unless its type
 is `Copy`. `borrow parameter: T` creates an immutable temporary borrow;
 `borrow mut parameter: T` creates an exclusive mutable temporary borrow. V1
@@ -5608,6 +5636,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1206_MISSING_RECORD_FIELD` | a named constructor omits a field its record or named-field variant declares |
 | `E1207_UNKNOWN_RECORD_FIELD` | a named constructor supplies a field its record or named-field variant does not declare |
 | `E1222_RETURN_TYPE_MISMATCH` | a `return` carries a value whose type is not the declared result type, or omits a value in a non-`unit` function |
+| `E1224_NONCONSTANT_INITIALIZER` | a module-level `const` initializer is not a constant expression: it calls, borrows, performs an effect, or names something that is not another constant (ADR-0052). Field: `reason`. An unknown name is `E1202` and a capability in a `const` is `E1502`; both take precedence, because this code is about the *form* of an initializer whose parts already resolve |
 | `E1225_INVALID_DEFER` | a `defer` body performs `return`, `break`, `continue`, `await`, `join`, spawns work, or acquires a new resource |
 | `E1210_INTEGER_TYPE_MISMATCH` | a value of one integer type is assigned or passed where a different integer type is required; an unsuffixed literal takes the required type instead |
 | `E1211_INDEX_TYPE_MISMATCH` | an array, slice or region index is not of exact type `size`, and is not an integer literal contextually typed as one |

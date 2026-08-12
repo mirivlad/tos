@@ -17,6 +17,7 @@ mod boundary;
 mod capability;
 mod checker;
 mod concurrency;
+mod constants;
 mod defer;
 mod diagnostic;
 mod exhaustiveness;

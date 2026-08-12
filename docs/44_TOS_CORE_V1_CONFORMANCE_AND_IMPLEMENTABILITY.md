@@ -235,6 +235,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1206_MISSING_RECORD_FIELD` | a named constructor omits a field its record or named-field variant declares |
 | `E1207_UNKNOWN_RECORD_FIELD` | a named constructor supplies a field its record or named-field variant does not declare |
 | `E1222_RETURN_TYPE_MISMATCH` | a `return` carries a value whose type is not the declared result type, or omits a value in a non-`unit` function |
+| `E1224_NONCONSTANT_INITIALIZER` | a module-level `const` initializer is not a constant expression: it calls, borrows, performs an effect, or names something that is not another constant (ADR-0052). Field: `reason`. An unknown name is `E1202` and a capability in a `const` is `E1502`; both take precedence, because this code is about the *form* of an initializer whose parts already resolve |
 | `E1225_INVALID_DEFER` | a `defer` body performs `return`, `break`, `continue`, `await`, `join`, spawns work, or acquires a new resource |
 | `E1210_INTEGER_TYPE_MISMATCH` | a value of one integer type is assigned or passed where a different integer type is required; an unsuffixed literal takes the required type instead |
 | `E1211_INDEX_TYPE_MISMATCH` | an array, slice or region index is not of exact type `size`, and is not an integer literal contextually typed as one |
