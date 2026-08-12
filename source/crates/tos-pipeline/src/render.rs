@@ -150,9 +150,18 @@ pub fn accounting(completion: &Completion) -> String {
 pub fn events(run: &Run) -> alloc::vec::Vec<String> {
     let mut out = alloc::vec::Vec::new();
     match run {
-        Run::SourceRejected { code, byte_offset } => {
+        Run::SourceRejected {
+            code,
+            byte_offset,
+            path,
+        } => {
+            // `path` is appended after the fields the accepted contract
+            // requires, which is exactly what its extension rule admits: a set
+            // has more than one unit, and an offset without a unit names
+            // nothing.
             out.push(format!(
-                "TOS.RUN.REFUSED stage=read code={code} byte={byte_offset}"
+                "TOS.RUN.REFUSED stage=read code={code} byte={byte_offset} path={}",
+                field(path)
             ));
         }
         Run::Diagnosed { stage, diagnostics } => {

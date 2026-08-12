@@ -95,9 +95,15 @@ pub fn failure(run: &Run, path: &[u8]) -> Option<(&'static str, Location)> {
     let mut location = Location::new();
     let code = match run {
         Run::Completed(_) => return None,
-        Run::SourceRejected { code, byte_offset } => {
+        Run::SourceRejected {
+            code,
+            byte_offset,
+            path: unit,
+        } => {
+            // The refused unit rather than the entry: in a set they differ, and
+            // an offset into the wrong file is worse than no offset at all.
             location
-                .push(path)
+                .push(unit.as_bytes())
                 .push(b" byte ")
                 .push_number(*byte_offset);
             code

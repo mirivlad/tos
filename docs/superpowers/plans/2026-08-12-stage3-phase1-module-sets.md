@@ -75,12 +75,25 @@ representation at run time. Type imports are still out of scope here.
 - Modify: `source/crates/tos-pipeline/src/lib.rs`
 - Modify: `source/crates/tos-pipeline/tests/reference_path.rs`
 
-- [ ] Admit a set of modules with one named entry module, keeping the existing
-  single-module entry point working unchanged.
-- [ ] Resolve the set with `check_module_set` and report a resolution refusal as
-  the existing `Diagnosed { stage: Resolve }`, not as a new outcome.
-- [ ] Order the closure deterministically, and refuse a cycle by diagnostic
-  rather than by recursion.
+- [x] `execute_set` takes `SetRequest { source_set, units, entry_path, entry }`
+  and `execute` is its one-unit case, so every existing caller — the boot path
+  included — is unchanged and provably so: a test asserts both paths produce the
+  same module digest and content id.
+- [x] Per-module checks run with each module's identity attached; the set is
+  then resolved by `check_module_set`, and a refusal is the existing
+  `Diagnosed { stage: Resolve }`. Missing import, cycle and path/name
+  disagreement are covered by tests.
+- [x] The closure is ordered breadth-first from the entry over imports in source
+  order, so the order is the same on every run. Resolution has already refused a
+  cycle, and the walk guards anyway rather than resting on that.
+- [x] A request naming an entry the set does not contain is **not** a `Run`: it
+  is `SetError`, returned before the first stage is announced. Reporting it as a
+  `stage=resolve` refusal would have broken the accepted event contract, which
+  requires `count=` and diagnostics there — and would have blamed a program for
+  the caller's mistake.
+- [x] The dependency digest is over the entry's real reachable closure. Two sets
+  differing only in a dependency produce different module digests; an
+  unreachable module changes nothing.
 
 ### Task 2: Real dependency identity
 

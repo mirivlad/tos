@@ -1,0 +1,341 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Source sets through the reference path (Stage 3 Phase 1, docs/42 section 1).
+//!
+//! A service is a separate module, so a supervisor has nothing to launch until
+//! a set of modules can be read, checked and resolved as a set. These tests are
+//! about the set: what only more than one module can be wrong about, and what
+//! the entry's identity says about the modules behind it.
+
+use tos_pipeline::{
+    execute, execute_set, PipelineStage, Request, Run, SetError, SetRequest, Silent, Unit,
+};
+
+/// `source = module_header import_decl* item*`: imports come before items, and
+/// the resource declaration is an item.
+fn module(name: &str, imports: &str, body: &str) -> String {
+    format!(
+        "module {name} version 1.0 profile bootstrap; {imports} \
+         resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 4] {body}"
+    )
+}
+
+fn lib(name: &str, body: &str) -> String {
+    module(name, "", body)
+}
+
+fn attempt(units: &[(&str, &str)], entry_path: &str) -> Result<Run, SetError> {
+    let units: Vec<Unit<'_>> = units
+        .iter()
+        .map(|(path, text)| Unit {
+            path,
+            bytes: text.as_bytes(),
+        })
+        .collect();
+    execute_set(
+        &SetRequest {
+            source_set: "tos-module-set-tests",
+            units: &units,
+            entry_path,
+            entry: "main",
+        },
+        Vec::new(),
+        &mut Silent,
+    )
+}
+
+fn set(units: &[(&str, &str)], entry_path: &str) -> Run {
+    attempt(units, entry_path).expect("the set names an entry it contains")
+}
+
+/// The single-module entry point is the one-unit case of the set, and it must
+/// keep behaving exactly as it did: every existing caller, including the boot
+/// path, goes through it.
+#[test]
+fn one_module_through_the_set_path_is_the_single_module_path() {
+    let text = lib(
+        "system.boot.init",
+        "pub fn main() -> i32 { return 6i32 * 7i32; }",
+    );
+    let single = execute(
+        &Request {
+            source_set: "tos-module-set-tests",
+            path: "system/boot/init.tos",
+            bytes: text.as_bytes(),
+            entry: "main",
+        },
+        Vec::new(),
+        &mut Silent,
+    );
+    let as_set = set(&[("system/boot/init.tos", &text)], "system/boot/init.tos");
+
+    let (Run::Completed(single), Run::Completed(as_set)) = (single, as_set) else {
+        panic!("both must complete");
+    };
+    // Same module identity, not merely the same answer: a set of one that
+    // computed a different digest would mean the two paths disagree about what
+    // was run.
+    assert_eq!(single.receipt.module_digest, as_set.receipt.module_digest);
+    assert_eq!(single.receipt.content_id, as_set.receipt.content_id);
+}
+
+#[test]
+fn a_two_module_set_is_read_checked_and_resolved() {
+    let outcome = set(
+        &[
+            (
+                "system/boot/init.tos",
+                &module(
+                    "system.boot.init",
+                    "import system.lib.math as math;",
+                    "pub fn main() -> i32 { return 1i32; }",
+                ),
+            ),
+            (
+                "system/lib/math.tos",
+                &lib(
+                    "system.lib.math",
+                    "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+                ),
+            ),
+        ],
+        "system/boot/init.tos",
+    );
+    // Resolution is what this task delivers; executing across the boundary is
+    // Task 4, and the outcome must not pretend otherwise.
+    assert!(
+        outcome.failed_at().is_none() || outcome.failed_at() > Some(PipelineStage::Resolve),
+        "the set must get past resolution: {outcome:?}"
+    );
+}
+
+/// The dependency digest describes what the entry depends on. Two sets whose
+/// dependency differs cannot share a module digest, or a cache keyed by it
+/// would hand back a module built against other source.
+#[test]
+fn a_changed_dependency_changes_the_entry_module_identity() {
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.math as math;",
+        "pub fn main() -> i32 { return 1i32; }",
+    );
+    let first = set(
+        &[
+            ("system/boot/init.tos", &entry),
+            (
+                "system/lib/math.tos",
+                &lib(
+                    "system.lib.math",
+                    "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+                ),
+            ),
+        ],
+        "system/boot/init.tos",
+    );
+    let second = set(
+        &[
+            ("system/boot/init.tos", &entry),
+            (
+                "system/lib/math.tos",
+                &lib(
+                    "system.lib.math",
+                    "pub fn double(value: i32) -> i32 { return value * 3i32; }",
+                ),
+            ),
+        ],
+        "system/boot/init.tos",
+    );
+    let (Run::Completed(first), Run::Completed(second)) = (first, second) else {
+        panic!("both sets must complete");
+    };
+    assert_eq!(
+        first.receipt.content_id, second.receipt.content_id,
+        "the entry's own source did not change"
+    );
+    assert_ne!(
+        first.receipt.dependency_digest, second.receipt.dependency_digest,
+        "a different dependency must produce a different dependency digest"
+    );
+    assert_ne!(
+        first.receipt.module_digest, second.receipt.module_digest,
+        "the module digest must carry the dependency digest"
+    );
+}
+
+/// A module nothing imports is not part of what runs, so it is not part of what
+/// the entry's identity describes.
+#[test]
+fn an_unreachable_module_is_not_in_the_dependency_digest() {
+    let entry = lib("system.boot.init", "pub fn main() -> i32 { return 1i32; }");
+    let alone = set(&[("system/boot/init.tos", &entry)], "system/boot/init.tos");
+    let with_spectator = set(
+        &[
+            ("system/boot/init.tos", &entry),
+            (
+                "system/lib/unused.tos",
+                &lib(
+                    "system.lib.unused",
+                    "pub fn ignored() -> i32 { return 0i32; }",
+                ),
+            ),
+        ],
+        "system/boot/init.tos",
+    );
+    let (Run::Completed(alone), Run::Completed(with_spectator)) = (alone, with_spectator) else {
+        panic!("both must complete");
+    };
+    assert_eq!(
+        alone.receipt.module_digest,
+        with_spectator.receipt.module_digest
+    );
+}
+
+#[test]
+fn an_import_no_module_provides_is_refused_at_resolution() {
+    let outcome = set(
+        &[(
+            "system/boot/init.tos",
+            &module(
+                "system.boot.init",
+                "import system.lib.absent as absent;",
+                "pub fn main() -> i32 { return 1i32; }",
+            ),
+        )],
+        "system/boot/init.tos",
+    );
+    assert_eq!(outcome.failed_at(), Some(PipelineStage::Resolve));
+    let Run::Diagnosed { diagnostics, .. } = &outcome else {
+        panic!("expected diagnostics, got {outcome:?}");
+    };
+    assert!(
+        diagnostics
+            .iter()
+            .any(|entry| entry.code() == "E1604_IMPORT_NOT_FOUND"),
+        "{diagnostics:?}"
+    );
+}
+
+/// An import cycle is refused by diagnostic, not by recursion: the walk that
+/// orders a closure must never be the thing that discovers a cycle.
+#[test]
+fn an_import_cycle_is_refused_at_resolution() {
+    let outcome = set(
+        &[
+            (
+                "system/boot/init.tos",
+                &module(
+                    "system.boot.init",
+                    "import system.lib.other as other;",
+                    "pub fn main() -> i32 { return 1i32; }",
+                ),
+            ),
+            (
+                "system/lib/other.tos",
+                &module(
+                    "system.lib.other",
+                    "import system.boot.init as back;",
+                    "pub fn helper() -> i32 { return 1i32; }",
+                ),
+            ),
+        ],
+        "system/boot/init.tos",
+    );
+    assert_eq!(outcome.failed_at(), Some(PipelineStage::Resolve));
+    let Run::Diagnosed { diagnostics, .. } = &outcome else {
+        panic!("expected diagnostics, got {outcome:?}");
+    };
+    assert!(
+        diagnostics
+            .iter()
+            .any(|entry| entry.code() == "E1606_IMPORT_CYCLE"),
+        "{diagnostics:?}"
+    );
+}
+
+/// A module whose name does not derive from its path is a set-wide finding: one
+/// module alone cannot see that it disagrees with where it is stored.
+#[test]
+fn a_module_at_the_wrong_path_is_refused_at_resolution() {
+    let outcome = set(
+        &[(
+            "system/boot/other.tos",
+            &lib("system.boot.init", "pub fn main() -> i32 { return 1i32; }"),
+        )],
+        "system/boot/other.tos",
+    );
+    assert_eq!(outcome.failed_at(), Some(PipelineStage::Resolve));
+}
+
+#[test]
+fn a_transport_refusal_names_the_unit_it_came_from() {
+    let units = [
+        (
+            "system/boot/init.tos",
+            lib("system.boot.init", "pub fn main() -> i32 { return 1i32; }"),
+        ),
+        ("system/lib/broken.tos", String::from("\u{feff}module x;")),
+    ];
+    let units: Vec<(&str, &str)> = units
+        .iter()
+        .map(|(path, text)| (*path, text.as_str()))
+        .collect();
+    let outcome = set(&units, "system/boot/init.tos");
+    let Run::SourceRejected { code, path, .. } = &outcome else {
+        panic!("expected a transport refusal, got {outcome:?}");
+    };
+    assert_eq!(*code, "E1002_BOM_FORBIDDEN");
+    assert_eq!(path, "system/lib/broken.tos");
+}
+
+/// A request naming an entry the set does not contain is the caller's mistake,
+/// not a refusal of anyone's source — so it is not a `Run` at all, and no stage
+/// is announced for it.
+#[test]
+fn a_set_without_the_declared_entry_is_not_a_run() {
+    struct Watcher(Vec<PipelineStage>);
+    impl tos_pipeline::Trace for Watcher {
+        fn entering(&mut self, stage: PipelineStage) {
+            self.0.push(stage);
+        }
+    }
+
+    let text = lib("system.lib.math", "pub fn main() -> i32 { return 1i32; }");
+    let unit = Unit {
+        path: "system/lib/math.tos",
+        bytes: text.as_bytes(),
+    };
+    let mut watcher = Watcher(Vec::new());
+    let outcome = execute_set(
+        &SetRequest {
+            source_set: "tos-module-set-tests",
+            units: core::slice::from_ref(&unit),
+            entry_path: "system/boot/init.tos",
+            entry: "main",
+        },
+        Vec::new(),
+        &mut watcher,
+    );
+    let Err(error) = outcome else {
+        panic!("expected a request error, not a run");
+    };
+    assert_eq!(
+        error,
+        SetError::EntryModuleAbsent {
+            path: String::from("system/boot/init.tos")
+        }
+    );
+    assert_eq!(error.symbol(), "entry-module-absent");
+    assert!(
+        watcher.0.is_empty(),
+        "no stage may be announced: {:?}",
+        watcher.0
+    );
+}
+
+#[test]
+fn an_empty_set_is_not_a_run() {
+    assert_eq!(
+        attempt(&[], "system/boot/init.tos").err(),
+        Some(SetError::NoUnits)
+    );
+}

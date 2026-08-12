@@ -46,7 +46,7 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_core::{
-    check_module_set, lower_module, Checker, Gap, ModuleContext, ModuleEntry, Parser, SourceReader,
+    check_module_set, lower_module, Gap, ModuleContext, ModuleEntry, Parser, SourceReader,
     SourceUnit,
 };
 
@@ -77,6 +77,56 @@ pub struct Request<'a> {
     pub bytes: &'a [u8],
     /// The exported function to run.
     pub entry: &'a str,
+}
+
+/// One source unit of a set: where it is stored and what it says.
+#[derive(Clone, Copy, Debug)]
+pub struct Unit<'a> {
+    /// Canonical repository path, module-root relative.
+    pub path: &'a str,
+    /// The source bytes exactly as stored.
+    pub bytes: &'a [u8],
+}
+
+/// What the pipeline is asked to run, when it is a set rather than one module.
+///
+/// The entry is named by path rather than by position, because a caller that
+/// hands over a directory listing has paths and not an order, and an order it
+/// invented would decide which module is the program.
+#[derive(Clone, Copy, Debug)]
+pub struct SetRequest<'a> {
+    /// The declared source set these modules belong to.
+    pub source_set: &'a str,
+    /// Every unit of the set, including the entry.
+    pub units: &'a [Unit<'a>],
+    /// The path of the unit whose exported function is run.
+    pub entry_path: &'a str,
+    /// The exported function to run.
+    pub entry: &'a str,
+}
+
+/// Why a set could not be run at all.
+///
+/// Not a [`Run`]: no stage ran, nothing was refused, and nothing is wrong with
+/// the source. The request itself does not describe something runnable, and a
+/// caller that reported this as a refusal would be blaming a program for its
+/// own mistake.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SetError {
+    /// No unit of the set is stored at the declared entry path.
+    EntryModuleAbsent { path: String },
+    /// The set is empty.
+    NoUnits,
+}
+
+impl SetError {
+    /// A stable reason token, for a caller reporting this over an event log.
+    pub fn symbol(&self) -> &'static str {
+        match self {
+            SetError::EntryModuleAbsent { .. } => "entry-module-absent",
+            SetError::NoUnits => "no-units",
+        }
+    }
 }
 
 /// A stage of the reference path.
@@ -149,9 +199,14 @@ pub struct Completion {
 #[derive(Clone, Debug)]
 pub enum Run {
     /// The bytes are not a transport-valid source unit (docs/39 section 1).
+    ///
+    /// `path` names the unit that was refused. A transport refusal never
+    /// reaches a diagnostic, so nothing else in the result can say which of a
+    /// set's units the offset belongs to.
     SourceRejected {
         code: &'static str,
         byte_offset: usize,
+        path: String,
     },
     /// The frontend refused the module, at the stage that refused it.
     ///
@@ -209,76 +264,153 @@ impl Run {
 /// the first one that refuses ends the run: a later stage reading a table an
 /// earlier stage rejected would be reporting a consequence, not a defect.
 pub fn execute(request: &Request<'_>, arguments: Vec<Value>, trace: &mut dyn Trace) -> Run {
+    let unit = Unit {
+        path: request.path,
+        bytes: request.bytes,
+    };
+    // A single unit is always stored at its own path, so the set cannot fail
+    // its precondition and there is nothing for this caller to handle.
+    match execute_set(
+        &SetRequest {
+            source_set: request.source_set,
+            units: core::slice::from_ref(&unit),
+            entry_path: request.path,
+            entry: request.entry,
+        },
+        arguments,
+        trace,
+    ) {
+        Ok(run) => run,
+        Err(_) => unreachable!("a one-unit set contains its own entry path"),
+    }
+}
+
+/// Runs a source set: several canonical units, one of which is the entry.
+///
+/// The same reference path in the same order, over more than one module. Every
+/// unit is read, parsed and checked; the set is then resolved as a set, which
+/// is where a name that resolves to nothing, a module stored at a path its name
+/// does not derive, and an import cycle are found. None of those can be seen
+/// from inside one module, which is why resolution is its own stage rather than
+/// a part of checking.
+pub fn execute_set(
+    request: &SetRequest<'_>,
+    arguments: Vec<Value>,
+    trace: &mut dyn Trace,
+) -> Result<Run, SetError> {
+    // Checked before the first stage is announced, so a request that cannot run
+    // produces no stage events at all. A log that announced `read` and then
+    // said the entry was missing would describe a run that never started.
+    if request.units.is_empty() {
+        return Err(SetError::NoUnits);
+    }
+    let Some(entry_index) = request
+        .units
+        .iter()
+        .position(|unit| unit.path == request.entry_path)
+    else {
+        return Err(SetError::EntryModuleAbsent {
+            path: request.entry_path.to_string(),
+        });
+    };
+
     trace.entering(PipelineStage::Read);
-    let source = match SourceReader::read(request.bytes) {
-        Ok(source) => source,
-        Err(error) => {
-            return Run::SourceRejected {
-                code: error.code().symbol(),
-                byte_offset: error.byte_offset(),
+    let mut sources = Vec::with_capacity(request.units.len());
+    for unit in request.units {
+        match SourceReader::read(unit.bytes) {
+            Ok(source) => sources.push(source),
+            Err(error) => {
+                return Ok(Run::SourceRejected {
+                    code: error.code().symbol(),
+                    byte_offset: error.byte_offset(),
+                    // Which unit is not obvious once there is more than one,
+                    // and a transport refusal never reaches a diagnostic that
+                    // could carry a module identity.
+                    path: unit.path.to_string(),
+                });
             }
         }
-    };
+    }
 
     trace.entering(PipelineStage::Parse);
-    let parsed = Parser::parse_schema(&source);
-    let diagnostics = parsed.diagnostics().to_vec();
-    let Some(schema) = parsed.into_accepted() else {
-        return Run::Diagnosed {
-            stage: PipelineStage::Parse,
-            diagnostics,
+    let mut schemas = Vec::with_capacity(sources.len());
+    for source in &sources {
+        let parsed = Parser::parse_schema(source);
+        let diagnostics = parsed.diagnostics().to_vec();
+        let Some(schema) = parsed.into_accepted() else {
+            return Ok(Run::Diagnosed {
+                stage: PipelineStage::Parse,
+                diagnostics,
+            });
         };
-    };
+        schemas.push(schema);
+    }
+
+    let entries: Vec<ModuleEntry<'_>> = request
+        .units
+        .iter()
+        .zip(sources.iter().zip(schemas.iter()))
+        .map(|(unit, (source, schema))| ModuleEntry::new(unit.path, source, schema))
+        .collect();
 
     trace.entering(PipelineStage::Check);
-    let diagnostics = Checker::check(&source, &schema);
+    // Each module's diagnostics carry its identity, because a line and column
+    // mean nothing across a set without saying which module they are in.
+    let mut diagnostics = Vec::new();
+    for entry in &entries {
+        diagnostics.extend(entry.check());
+    }
     if diagnostics.iter().any(is_error) {
-        return Run::Diagnosed {
+        return Ok(Run::Diagnosed {
             stage: PipelineStage::Check,
             diagnostics,
-        };
+        });
     }
 
     trace.entering(PipelineStage::Resolve);
-    let entry = ModuleEntry::new(request.path, &source, &schema);
-    let diagnostics = check_module_set(core::slice::from_ref(&entry));
+    let diagnostics = check_module_set(&entries);
     if diagnostics.iter().any(is_error) {
-        return Run::Diagnosed {
+        return Ok(Run::Diagnosed {
             stage: PipelineStage::Resolve,
             diagnostics,
-        };
+        });
     }
+    // Ordered and reachable: a module the entry cannot reach is not part of
+    // what runs, and ordering it anyway would put it in the dependency digest.
+    let closure = closure_of(&entries, entry_index);
 
     trace.entering(PipelineStage::Lower);
+    let source = &sources[entry_index];
+    let schema = &schemas[entry_index];
     let context = ModuleContext {
         source_set: request.source_set.to_string(),
-        path: request.path.to_string(),
+        path: request.entry_path.to_string(),
         content_id: content_id(source.bytes()),
-        // Both digests are over the resolved list, which is empty for a module
-        // with no imports. An empty list has a digest; a placeholder would make
-        // the receipt name a resolution that never happened.
-        dependency_digest: list_digest(&[]),
+        // Over the resolved closure, in its resolved order: an empty list has a
+        // digest, and a placeholder would make the receipt name a resolution
+        // that never happened.
+        dependency_digest: closure_digest(&entries, &closure, entry_index),
         capability_interface_digest: list_digest(&[]),
     };
-    let module = match lower_module(&source, &schema, &context) {
+    let module = match lower_module(source, schema, &context) {
         Ok(module) => module,
-        Err(gap) => return Run::NotLowered(gap),
+        Err(gap) => return Ok(Run::NotLowered(gap)),
     };
 
     trace.entering(PipelineStage::Verify);
     let snapshot = ResolutionSnapshot::default();
     let receipt = match verify(&module, &snapshot, &Limits::default()) {
         Ok(receipt) => receipt,
-        Err(finding) => return Run::Unverified(finding),
+        Err(finding) => return Ok(Run::Unverified(finding)),
     };
 
     trace.entering(PipelineStage::Execute);
-    match run(&module, &receipt, request.entry, arguments) {
+    Ok(match run(&module, &receipt, request.entry, arguments) {
         Err(refusal) => Run::Refused(refusal),
         Ok(Err(trap)) => Run::Trapped {
             code: trap.code,
             detail: trap.detail.clone(),
-            at: site_of(&module, &source, &trap),
+            at: site_of(&module, source, &trap),
         },
         Ok(Ok(outcome)) => {
             let accounting = Accounting::of(&module, &outcome);
@@ -288,7 +420,59 @@ pub fn execute(request: &Request<'_>, arguments: Vec<Value>, trace: &mut dyn Tra
                 accounting,
             }))
         }
+    })
+}
+
+/// The entry module's dependency closure, in a deterministic order.
+///
+/// Breadth-first from the entry over each module's imports in source order, so
+/// the same set produces the same order on every run and on every machine.
+/// Resolution has already refused a cycle and an unresolvable import, so this
+/// walk cannot loop and cannot be asked for a module that is not there; it
+/// still guards, because a total function is cheaper than a proof that its
+/// caller ordering never changes.
+fn closure_of(entries: &[ModuleEntry<'_>], entry: usize) -> Vec<usize> {
+    let summaries: Vec<_> = entries.iter().map(ModuleEntry::summarize).collect();
+    let by_name: alloc::collections::BTreeMap<&str, usize> = summaries
+        .iter()
+        .enumerate()
+        .map(|(index, summary)| (summary.name.as_str(), index))
+        .collect();
+
+    let mut order = Vec::new();
+    let mut seen = alloc::collections::BTreeSet::new();
+    let mut queue = alloc::collections::VecDeque::new();
+    queue.push_back(entry);
+    seen.insert(entry);
+    while let Some(index) = queue.pop_front() {
+        order.push(index);
+        for import in &summaries[index].imports {
+            if let Some(&target) = by_name.get(import.target.as_str()) {
+                if seen.insert(target) {
+                    queue.push_back(target);
+                }
+            }
+        }
     }
+    order
+}
+
+/// `sha256:<hex>` over the entry's resolved dependencies, name and content id.
+///
+/// The entry is excluded: a module's dependency digest describes what it
+/// depends on, and including itself would make the digest change for a reason
+/// that is already the content id.
+fn closure_digest(entries: &[ModuleEntry<'_>], closure: &[usize], entry: usize) -> String {
+    let summaries: Vec<_> = closure
+        .iter()
+        .filter(|index| **index != entry)
+        .map(|index| entries[*index].summarize())
+        .collect();
+    let pairs: Vec<(&str, &str)> = summaries
+        .iter()
+        .map(|summary| (summary.name.as_str(), summary.content_id.as_str()))
+        .collect();
+    list_digest(&pairs)
 }
 
 fn is_error(diagnostic: &Diagnostic) -> bool {
