@@ -71,7 +71,7 @@ events.
 
 | `stage=` | Further required fields |
 |---|---|
-| `read` | `code=` `byte=` |
+| `read` | `code=` `byte=`, and `path=` when the run was over a source set |
 | `parse`, `check`, `resolve` | `count=`, preceded by `count` × `TOS.RUN.DIAGNOSTIC` |
 | `lower` | `construct=` `bytes=<start>..<end>` |
 | `verify` | `code=` `at=` `detail=` |
@@ -82,6 +82,11 @@ model: `<CODE> severity= stage= bytes=<start>..<end> at=<line>:<column>`, then
 the module identity when the diagnostic carries one, then the diagnostic's
 structured fields in their own order. The byte span is the normative locator;
 line and column are derived from it.
+
+`path` on a `read` refusal is an appended field under section 2's extension
+rule, and it exists because a set has more than one unit: a byte offset with no
+unit names nothing. A transport refusal never reaches a diagnostic, so nothing
+else in the event can say which unit was refused.
 
 A refusal by `parse`, `check` or `resolve` is a statement about the *program*.
 A refusal by `lower` is a statement about the *lowerer* — the source is valid
