@@ -1,17 +1,19 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 
-# Stage 2 gate evidence — candidate record
+# Stage 2 gate evidence — closure record
 
 This is the `docs/37` gate report for Stage 2. It describes **one state at one
 HEAD**: no section carries a claim from an earlier pass. History belongs in
 `PROGRESS.md`; this file says what is true now.
 
-It is **not** a closure claim. Every mandatory Stage 2 gate is met on the
-evidence below; what remains under `known_failures` is `N/A` by an accepted
-contract, an honest evidence level, or a decision the Architect has directed is
-not a blocker. `architect_approval` is empty because only the Project Architect
-grants it, and a candidate record that filled it in would be claiming the thing
-it exists to ask for.
+**Stage 2 is closed.** The Project Architect reviewed this record at commit
+`e38785cb828dea67c86ecb0bc0873a607d5d3bca` and closed the stage on 2026-08-12;
+`architect_approval` below carries the decision, and
+`source/legal/publication-records/e38785cb828dea67c86ecb0bc0873a607d5d3bca-stage2-closure-approval.md`
+is the commit-addressed record of it. What remains under `known_failures` is
+`N/A` by an accepted contract, an honest evidence level, or a decision the
+Architect acknowledged and did not treat as a blocker — closure does not convert
+any of them into a claim.
 
 ```text
 stage                  2 — Executed-source identity
@@ -202,5 +204,22 @@ did not look, so each entry below states what was checked as well as what stands
 
 ## architect_approval
 
-*(empty — Stage 2 is a candidate for review, not closed. Only the Project
-Architect grants this, and it is not the implementation's to write.)*
+```text
+Project Architect:  Vladimir Tomashevskiy
+Date:               2026-08-12
+Decision:           Stage 2 — Executed-source identity — CLOSED
+Candidate reviewed: e38785cb828dea67c86ecb0bc0873a607d5d3bca
+```
+
+The Stage 2 identity question is answered in the affirmative: actual TOS Core V1
+language semantics execute from canonical text through the production source
+reader, parser, checker, deterministic `tos-ir/v1` lowerer, independent verifier
+and bounded reference engine, with verifiable source and runtime identity on the
+real freestanding path. All mandatory Stage 2 gates are satisfied.
+
+The remaining P1 evidence level, the differential-testing `N/A` state for the
+current single-engine set, and Proposed ADR-0044 are acknowledged and are not
+Stage 2 closure blockers.
+
+This approval closes Stage 2 only. It does not authorize Stage 3 production
+implementation.
