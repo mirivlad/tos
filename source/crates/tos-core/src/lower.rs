@@ -317,9 +317,9 @@ struct Lowerer<'source> {
     profile: Profile,
     context: &'source ModuleContext,
     types: Vec<TypeDef>,
-    type_index: BTreeMap<String, TypeId>,
+    type_index: BTreeMap<TypeDef, TypeId>,
     constants: Vec<Constant>,
-    constant_index: BTreeMap<String, usize>,
+    constant_index: BTreeMap<Constant, usize>,
     source_map: Vec<SourceMapEntry>,
     source_index: BTreeMap<(usize, usize), usize>,
     /// Local nominal types by export name, with their ordered field names.
@@ -335,25 +335,37 @@ struct Lowerer<'source> {
 impl<'source> Lowerer<'source> {
     // ------------------------------------------------------------- interning
 
+    /// Interns a type, returning the id of an identical one when it exists.
+    ///
+    /// The index is keyed on the definition itself. It used to be keyed on
+    /// `format!("{definition:?}")`, which allocated a string, ran the whole
+    /// `core::fmt` machinery and then compared strings — on **every** type
+    /// reference in the module. Lowering a module at the published 256 KiB
+    /// ceiling interns tens of thousands of times, so that was tens of
+    /// thousands of allocations and formatted strings to answer a question a
+    /// structural comparison answers by looking at a discriminant.
+    ///
+    /// Structural equality is also the *correct* key: two definitions are the
+    /// same type exactly when they are equal, whereas a debug rendering is a
+    /// presentation that merely happened to be injective.
     fn intern(&mut self, definition: TypeDef) -> TypeId {
-        let key = alloc::format!("{definition:?}");
-        if let Some(&existing) = self.type_index.get(&key) {
+        if let Some(&existing) = self.type_index.get(&definition) {
             return existing;
         }
         let id = self.types.len();
+        self.type_index.insert(definition.clone(), id);
         self.types.push(definition);
-        self.type_index.insert(key, id);
         id
     }
 
+    /// Interns a constant, on the same principle as [`Self::intern`].
     fn intern_constant(&mut self, constant: Constant) -> usize {
-        let key = alloc::format!("{constant:?}");
-        if let Some(&existing) = self.constant_index.get(&key) {
+        if let Some(&existing) = self.constant_index.get(&constant) {
             return existing;
         }
         let id = self.constants.len();
+        self.constant_index.insert(constant.clone(), id);
         self.constants.push(constant);
-        self.constant_index.insert(key, id);
         id
     }
 
@@ -2337,7 +2349,7 @@ impl<'source> Lowerer<'source> {
                 .map(|operand| {
                     operand.unwrap_or(Operand::Constant(
                         self.constant_index
-                            .get(&alloc::format!("{:?}", Constant::Unit))
+                            .get(&Constant::Unit)
                             .copied()
                             .unwrap_or(0),
                     ))
