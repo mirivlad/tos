@@ -34,7 +34,7 @@ identity_question      Is actual language semantics executing from canonical
 
 | `docs/37` Stage 2 evidence | State |
 |---|---|
-| normative grammar and semantics | **Present.** `docs/39`–`docs/44` accepted. The diagnostic registry holds 62 codes; every one is implemented, deliberately unreachable under V1, or blocked on a decision named below. |
+| normative grammar and semantics | **Present.** `docs/39`–`docs/44` accepted. The diagnostic registry holds 63 codes; every one is implemented, deliberately unreachable under V1, or blocked on a decision named below. |
 | source → AST → typed IR → execution trace | **Present.** `SourceReader → Parser → Checker → Lowerer → tos-ir/v1 → Verifier → reference engine` runs end to end. Of the 29 single-module accepted vectors, 29 reach the independent verifier and the bounded engine and none stops at lowering — measured by `crates/tos-pipeline/tests/corpus_coverage.rs`, which ratchets the number rather than asserting it once. Every IR operation carries a source-map entry and every runtime trap names one. |
 | independent verifier | **Present.** `crates/tos-verifier` depends only on `tos-ir` and `tos-hash`; fifteen `V20xx` families; 23 structured forged-IR negatives — including `V2031_SYNC` and `V2021_REGION`, reached without any frontend involvement — plus 200 000 fuzz rounds per preflight. |
 | cache deletion/regeneration test | **Present.** `crates/tos-cache`; clearing the store and regenerating from the same canonical source reproduces the same key, receipt and result. |
@@ -63,7 +63,7 @@ identity_question      Is actual language semantics executing from canonical
 - `source/tests/arena-bound` — the arena measurement, whole pipeline through the
   bounded heap.
 - `source/tests/performance-core` — the `docs/35` Stage 2 measurement harness.
-- `docs/language/conformance/v1/` — 31 accepted and 76 rejected vectors, three
+- `docs/language/conformance/v1/` — 37 accepted and 80 rejected vectors, three
   driver-level resolution cases, and the expectations table binding them.
 - `TOS_DEVELOPMENT_SPECIFICATION.md`, `MANIFEST.txt`, `SHA256SUMS` — generated
   and in sync.
@@ -71,24 +71,32 @@ identity_question      Is actual language semantics executing from canonical
 ## tests
 
 ```text
-429 tests pass across 39 binaries
-  230 tos-core unit tests
+490 tests pass across 46 binaries
+  237 tos-core unit tests
    15 guard-lifetime gates (ADR-0036: each operation value, the precedence over
       E1304/E1305, and the positives a guard must keep)
+   12 region gates (ADR-0037: the four facts, share, write-through, captures)
+    7 irrefutability gates (ADR-0046: let and for, recursive, match unaffected)
+    7 summary gates (resolution over summaries reaches the same verdicts)
     2 conformance corpus gates (accept + reject)
     7 lowering gates (determinism, source maps, terminators, operands, digest)
-   22 pipeline gates (verifier acceptance + forged-IR negatives by family,
-      including V2031_SYNC reached without any frontend involvement)
+   25 pipeline gates (verifier acceptance + 23 forged-IR negatives by family,
+      including V2031_SYNC and V2021_REGION reached without any frontend)
    34 execution gates (results, traps, tasks, cleanup, closures, accounting)
-   13 reference-path gates (every stage entered in order, each stage's refusal
-      reaching the caller intact, and the canonical boot module executing)
+   19 reference-path gates (every stage entered in order, each stage's refusal
+      reaching the caller intact, sync and shared accounting, the canonical
+      boot module executing)
+   10 match-shape gates (every arm shape the contract admits, executed)
+    8 pattern gates (destructuring to an executed result, ownership preserved)
+    1 corpus coverage ratchet (35 of 35 single-module accepted vectors reach
+      the verifier and the engine; a corpus gate, not a language-coverage claim)
     8 cache identity gates (key fields, fail-closed, delete and regenerate)
    10 region-chooser gates (a grant never overlaps live memory, and one the
       chooser makes is one the heap accepts)
-   11 heap gates (grant validation, reclaim, coalescing, exhaustion, 1000-round
-      reuse returning the arena to its starting layout)
+   19 heap gates (grant validation, reclaim, coalescing, exhaustion, repeated
+      layout, and the search-work series that bounds allocation cost)
   remainder: Stage 0/1 capsule, boot protocol, hash, serial, fuzz, performance
-./scripts/preflight.sh --full   34 of 34 gates pass
+./scripts/preflight.sh --full   35 of 35 gates pass
 ```
 
 ## performance_report
@@ -179,10 +187,17 @@ did not look, so each entry below states what was checked as well as what stands
    lower, execute and are covered by conformance vectors (ADR-0046). The
    corpus ratchet — 35 of 35 single-module accepted vectors reach the verifier
    and the engine — is retained as a *regression* gate and explicitly does not
-   claim language coverage; `crates/tos-pipeline/tests/patterns.rs` exercises the
-   grammar's pattern families directly and asserts that no construct the checker
-   accepts reaches a `Gap`. The remaining `Gap` arms are guards against
-   malformed input the checker has already rejected.
+   claim language coverage. `crates/tos-pipeline/tests/patterns.rs` and
+   `match_matrix.rs` exercise the grammar's pattern and `match` families
+   directly and require an **executed result** for valid source rather than
+   accepting a refusal. The remaining `Gap` arms are guards against malformed
+   input the checker has already rejected.
+5. **ADR-0047 is Proposed: which `match` arm runs when several could.** docs/40
+   fixes evaluation order everywhere else and does not say this, and nothing
+   forbids an unreachable arm — so an accepted program exists whose result the
+   contract does not determine. The implementation takes the first matching arm
+   in source order, states that it is the defensible reading rather than a
+   decision taken on the Architect's behalf, and tests it.
 
 ## architect_approval
 

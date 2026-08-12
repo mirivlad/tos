@@ -1431,13 +1431,47 @@ impl<'source> Lowerer<'source> {
         let subject = self.lower_expression(head, builder)?;
         let join_block = builder.new_block(at);
 
-        // A tuple pattern is irrefutable (ADR-0046), so a match whose only arm
-        // is one is an unconditional destructure with a body — there is nothing
-        // to discriminate on, and `MatchEnum` would be describing a choice that
-        // does not exist. It lowers exactly as the equivalent `let` does, which
-        // is what keeps one pattern model rather than two.
+        // Arms are taken in **source order**, and the first irrefutable one ends
+        // the match: nothing written after it can be reached. An irrefutable arm
+        // is a wildcard, a bare binding, or a tuple pattern (ADR-0046).
+        //
+        // This shape matters for more than tidiness. Lowering a wildcard as a
+        // *default* while still building a variant map from every later arm let
+        // a variant arm written after a catch-all run instead of it, which is
+        // the opposite of what source order says. And a subject that is not a
+        // sum type has no variants to map at all: emitting `MatchEnum` for one
+        // produced IR the verifier accepted and the engine trapped on, which is
+        // worse than refusing to lower it.
         let branches = statement.branches();
-        if branches.len() == 1 && branches[0].pattern().form() == PatternForm::Tuple {
+        let irrefutable = |pattern: &crate::parser::Pattern| match pattern.form() {
+            PatternForm::Wildcard | PatternForm::Tuple => true,
+            PatternForm::Name if !pattern.is_qualified() => pattern
+                .name()
+                .map(|name| self.variant_index(name.text(self.source)).is_none())
+                .unwrap_or(false),
+            _ => false,
+        };
+        let first_irrefutable = branches
+            .iter()
+            .position(|branch| irrefutable(branch.pattern()));
+        // Arms after the first irrefutable one are unreachable and contribute
+        // nothing; the checker owns whether writing one is an error.
+        let reachable = match first_irrefutable {
+            Some(index) => &branches[..=index],
+            None => branches,
+        };
+
+        // No variant arm at all: the match discriminates on nothing, so it is an
+        // unconditional bind-and-run of its first arm.
+        if reachable.iter().all(|branch| irrefutable(branch.pattern())) {
+            let Some(branch) = reachable.first() else {
+                builder.set_terminator(Terminator::Branch {
+                    target: join_block,
+                    arguments: Vec::new(),
+                });
+                builder.current = join_block;
+                return Ok(());
+            };
             let arm_block = builder.new_block(at);
             builder.set_terminator(Terminator::Branch {
                 target: arm_block,
@@ -1445,9 +1479,14 @@ impl<'source> Lowerer<'source> {
             });
             builder.current = arm_block;
             let depth = builder.scope.len();
-            let subject_ty = builder.type_of(&subject);
-            self.bind_pattern(branches[0].pattern(), subject_ty, subject, builder, at)?;
-            self.lower_block(branches[0].body(), builder)?;
+            match branch.pattern().form() {
+                PatternForm::Tuple => {
+                    let subject_ty = builder.type_of(&subject);
+                    self.bind_pattern(branch.pattern(), subject_ty, subject.clone(), builder, at)?;
+                }
+                _ => self.bind_match_pattern(branch.pattern(), &subject, builder, at)?,
+            }
+            self.lower_block(branch.body(), builder)?;
             builder.scope.truncate(depth);
             if !builder.is_terminated() {
                 builder.set_terminator(Terminator::Branch {
@@ -1462,7 +1501,7 @@ impl<'source> Lowerer<'source> {
         let mut arms: Vec<(usize, usize)> = Vec::new();
         let mut wildcard: Option<usize> = None;
         let mut bodies: Vec<(usize, &'source crate::parser::MatchBranch)> = Vec::new();
-        for branch in statement.branches() {
+        for branch in reachable {
             let arm_block = builder.new_block(at);
             bodies.push((arm_block, branch));
             match branch.pattern().form() {
@@ -1474,13 +1513,15 @@ impl<'source> Lowerer<'source> {
                     let spelled = name.text(self.source);
                     match self.variant_index(spelled) {
                         Some(index) => arms.push((index, arm_block)),
-                        // A bare binding pattern catches everything the earlier
-                        // arms did not (ADR-0033).
+                        // A bare binding catches everything the arms before it
+                        // did not (ADR-0033).
                         None => wildcard = Some(arm_block),
                     }
                 }
                 PatternForm::Tuple => {
-                    return Err(self.gap("tuple match pattern", branch.span()));
+                    // A tuple pattern is irrefutable, so it is the last
+                    // reachable arm and catches whatever preceded it did not.
+                    wildcard = Some(arm_block);
                 }
             }
         }
