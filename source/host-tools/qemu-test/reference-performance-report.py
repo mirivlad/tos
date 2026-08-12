@@ -25,7 +25,10 @@ from pathlib import Path
 STAGES = 7
 
 #: docs/35 budgets for the bootstrap profile on the reference platform.
-FRONTEND_BUDGET_US = 500_000
+#: ADR-0045 revised the frontend from a 500 ms research estimate to a measured
+#: 1500 ms. A hard threshold catches a large degradation; smaller regressions
+#: are the business of retained benchmark history under the docs/35 policy.
+FRONTEND_BUDGET_US = 1_500_000
 REJECTION_RATIO_BUDGET = 2.0
 #: ADR-0043: the engine ratio a disproportionate reference-platform regression
 #: has to break. Ordinary regressions move both halves and are caught by
