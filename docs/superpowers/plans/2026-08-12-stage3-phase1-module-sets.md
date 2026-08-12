@@ -143,14 +143,28 @@ representation at run time. Type imports are still out of scope here.
 
 **Files:**
 - Modify: `source/crates/tos-engine/src/lib.rs`
-- Modify: `source/crates/tos-engine/tests/`
+- Modify: `source/crates/tos-pipeline/src/lib.rs`
+- Modify: `source/tests/integration/tests/execution.rs`
 
-- [ ] Execute with a verified module set, resolving `CallTarget::Imported`
-  against the closure and its receipts.
-- [ ] Keep the receipt discipline: a module executes because its own receipt
-  matches it, never because the module that calls it was verified.
-- [ ] Account fuel, depth and allocation across the boundary against the entry
-  module's declared envelope, and state in the test what that means.
+- [x] `run_set(&[Verified], entry, name, arguments)` resolves
+  `CallTarget::Imported` against the set and nothing else: the engine never
+  loads, searches for or fabricates a module. `run` is its one-module case.
+- [x] Every receipt is checked **before anything runs**, not when a call reaches
+  it — otherwise a program could choose which modules get checked by choosing
+  which branch it takes. A module runs because its own receipt matches it.
+- [x] The right name is not enough: a set holding another revision of the module
+  under the same name is refused, because the caller was lowered and verified
+  against a particular identity and running against another executes code it was
+  never checked with.
+- [x] One run, one budget. docs/41 section 6 admits a call only when the
+  callee's declared contract fits the caller's envelope, so the entry's envelope
+  governs and a boundary is not a way to obtain a second one. The test asserts
+  the fuel limit is the entry's and that the callee's work is charged to it.
+- [x] A trap carries its own resolved source-map entry across a boundary. An
+  index is only meaningful in its own module's table, so a trap resolved against
+  the caller's map would name a real line in the wrong file — which is worse
+  than naming none. Tested: a divide-by-zero inside a dependency is located in
+  the dependency.
 
 ### Task 5: The boot path runs a set
 

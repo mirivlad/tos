@@ -94,8 +94,20 @@ pub enum Value {
 pub struct Trap {
     pub code: &'static str,
     pub detail: String,
-    /// The source-map entry index of the operation that trapped.
+    /// The source-map entry index of the operation that trapped, in the module
+    /// that trapped.
     pub source: SourceRef,
+    /// The resolved source-map entry, when the trap crossed a module boundary.
+    ///
+    /// An index is only meaningful in its own module's table. Once a trap
+    /// leaves the module that raised it, the index alone would resolve against
+    /// the wrong map and name a real location in the wrong file — which is
+    /// worse than naming none. It is resolved where the module is still in
+    /// hand, and the innermost module wins.
+    ///
+    /// Boxed because a trap travels inside every `Result` the engine returns,
+    /// and a rare field carried by value would make the common path pay for it.
+    pub site: Option<alloc::boxed::Box<tos_ir::SourceMapEntry>>,
 }
 
 impl Trap {
@@ -104,6 +116,7 @@ impl Trap {
             code,
             detail: detail.to_string(),
             source,
+            site: None,
         }
     }
 }
@@ -141,15 +154,59 @@ pub enum Refusal {
 /// The receipt is checked against the module's own digest first: an engine
 /// accepts executable IR only with a receipt for that exact module (docs/43
 /// section 5).
+/// One module of a set, with the receipt the verifier issued for it.
+///
+/// Paired rather than parallel, because the pairing is the property: a module
+/// runs because its **own** receipt matches it, and no module is ever admitted
+/// on the strength of the one that calls it.
+#[derive(Clone, Copy, Debug)]
+pub struct Verified<'a> {
+    pub module: &'a Module,
+    pub receipt: &'a VerifiedModule,
+}
+
+/// Runs an entry function of one verified module.
 pub fn run(
     module: &Module,
     receipt: &VerifiedModule,
     entry: &str,
     arguments: Vec<Value>,
 ) -> Result<Result<Outcome, Trap>, Refusal> {
-    if receipt.module_digest != tos_ir::module_digest(module) {
-        return Err(Refusal::ReceiptDoesNotMatch);
+    run_set(&[Verified { module, receipt }], 0, entry, arguments)
+}
+
+/// Runs an entry function of one module of a verified set.
+///
+/// A cross-module call is resolved against this set and nothing else: the
+/// engine never loads, searches for or fabricates a module, so a call that
+/// names something the set does not contain refuses rather than finding
+/// something else.
+///
+/// **The run is governed by the entry module's declared envelope.** docs/41
+/// section 6 fixes that: a call is permitted only when the callee's declared
+/// worst-case contract fits the caller's envelope, so one run has one budget,
+/// and a callee's own declaration is a statement about the callee rather than a
+/// second budget that resets when the boundary is crossed.
+pub fn run_set(
+    set: &[Verified<'_>],
+    entry_module: usize,
+    entry: &str,
+    arguments: Vec<Value>,
+) -> Result<Result<Outcome, Trap>, Refusal> {
+    // Every module of the set, before any of them runs: a receipt checked only
+    // when a call reaches it would let a program choose which modules get
+    // checked by choosing which branch it takes.
+    for verified in set {
+        if verified.receipt.module_digest != tos_ir::module_digest(verified.module) {
+            return Err(Refusal::ReceiptDoesNotMatch);
+        }
     }
+    let Some(entry_verified) = set.get(entry_module) else {
+        return Err(Refusal::NoSuchEntry(entry.to_string()));
+    };
+    let module = entry_verified.module;
+    let receipt = entry_verified.receipt;
+    let _ = receipt;
     let Some(index) = module
         .functions
         .iter()
@@ -168,6 +225,7 @@ pub fn run(
     let envelope = &module.header.resource_envelope;
     let mut engine = Engine {
         module,
+        set,
         fuel_limit: envelope.fuel,
         recursion_limit: envelope.recursion.max(1),
         fuel_used: 0,
@@ -213,7 +271,11 @@ pub fn run(
 }
 
 struct Engine<'module> {
+    /// The module whose function is executing. It changes for the duration of a
+    /// cross-module call and is restored when that call returns.
     module: &'module Module,
+    /// Every module this run may reach, each with its own receipt.
+    set: &'module [Verified<'module>],
     fuel_limit: u128,
     recursion_limit: u128,
     fuel_used: u128,
@@ -435,6 +497,92 @@ impl Engine<'_> {
 
     fn call(&mut self, index: usize, arguments: Vec<Value>) -> Result<Value, Trap> {
         Ok(self.call_capturing(index, arguments)?.0)
+    }
+
+    /// Calls a function of another module of the set.
+    ///
+    /// The callee executes with its own module in view and the run's single
+    /// budget: fuel, depth and allocation are the entry's, because docs/41
+    /// section 6 admits a call only when the callee's declared contract already
+    /// fits the caller's envelope. Crossing a module boundary is therefore not
+    /// a way to obtain a second budget.
+    fn call_imported(
+        &mut self,
+        import: usize,
+        name: &str,
+        arguments: Vec<Value>,
+        source: SourceRef,
+    ) -> Result<Value, Trap> {
+        let Some(declared) = self.module.imports.get(import) else {
+            return Err(Trap::new(
+                "RUNTIME_UNRESOLVED_IMPORT",
+                "a call names an import the module does not declare",
+                source,
+            ));
+        };
+        let Some(callee) = self
+            .set
+            .iter()
+            .find(|verified| verified.module.header.module_name == declared.module_name)
+        else {
+            return Err(Trap::new(
+                "RUNTIME_UNRESOLVED_IMPORT",
+                alloc::format!("{} is not in this run's module set", declared.module_name),
+                source,
+            ));
+        };
+        // The identity the caller was lowered against, not merely the name: a
+        // set holding a different revision of the module under the same name is
+        // not the module this caller was checked against.
+        if !declared.module_content_id.is_empty()
+            && declared.module_content_id != callee.module.header.content_id
+        {
+            return Err(Trap::new(
+                "RUNTIME_UNRESOLVED_IMPORT",
+                alloc::format!(
+                    "{} in this set is {}, and the caller was lowered against {}",
+                    declared.module_name,
+                    callee.module.header.content_id,
+                    declared.module_content_id
+                ),
+                source,
+            ));
+        }
+        let Some(index) = callee.module.functions.iter().position(|function| {
+            function.signature.name == name
+                && function.signature.visibility == tos_ir::Visibility::Public
+        }) else {
+            return Err(Trap::new(
+                "RUNTIME_UNRESOLVED_IMPORT",
+                alloc::format!("{} exports no {name}", declared.module_name),
+                source,
+            ));
+        };
+        if callee.module.functions[index].signature.parameters.len() != arguments.len() {
+            return Err(Trap::new(
+                "RUNTIME_UNRESOLVED_IMPORT",
+                alloc::format!(
+                    "{}.{name} takes a different number of arguments",
+                    declared.module_name
+                ),
+                source,
+            ));
+        }
+
+        let caller = core::mem::replace(&mut self.module, callee.module);
+        let outcome = self.call(index, arguments);
+        self.module = caller;
+        outcome.map_err(|mut trap| {
+            if trap.site.is_none() {
+                trap.site = callee
+                    .module
+                    .source_map
+                    .get(trap.source)
+                    .cloned()
+                    .map(alloc::boxed::Box::new);
+            }
+            trap
+        })
     }
 
     /// Calls a function and returns its result with the final state of its
@@ -691,12 +839,8 @@ impl Engine<'_> {
                     CallTarget::Local(index) => {
                         Some(self.call_with_writeback(*index, arguments, operands, values, source)?)
                     }
-                    CallTarget::Imported { .. } => {
-                        return Err(Trap::new(
-                            "RUNTIME_UNRESOLVED_IMPORT",
-                            "a cross-module call needs the imported module's IR",
-                            source,
-                        ))
+                    CallTarget::Imported { import, name } => {
+                        Some(self.call_imported(*import, name, arguments, source)?)
                     }
                     CallTarget::Predeclared(name) => {
                         Some(self.predeclared(name, arguments, source)?)
@@ -1365,11 +1509,12 @@ fn unary(op: UnaryOp, operand: Value, source: SourceRef) -> Result<Value, Trap> 
 /// The source-map entry a trap points at, for a runtime diagnostic.
 ///
 /// docs/43 section 6: a runtime failure names the exact source it came from.
-pub fn trap_source<'module>(
-    module: &'module Module,
-    trap: &Trap,
-) -> Option<&'module tos_ir::SourceMapEntry> {
-    module.source_map.get(trap.source)
+pub fn trap_source<'a>(module: &'a Module, trap: &'a Trap) -> Option<&'a tos_ir::SourceMapEntry> {
+    // A trap that crossed a module boundary carries its own resolved entry;
+    // only a trap raised in `module` may be resolved against `module`'s table.
+    trap.site
+        .as_deref()
+        .or_else(|| module.source_map.get(trap.source))
 }
 
 /// How many cells a value occupies in the engine's declared cost model.

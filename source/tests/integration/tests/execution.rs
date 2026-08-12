@@ -629,3 +629,199 @@ fn trap_in(text: &str, entry: &str, arguments: Vec<Value>) -> tos_engine::Trap {
         .expect("the entry exists")
         .expect_err("the fixture must trap")
 }
+
+// ---------------------------------------------------------------------------
+// A verified set (Stage 3 Phase 1 Task 4)
+//
+// The engine resolves a cross-module call against the set it was given and
+// nothing else. What matters here is not that the call works — the pipeline
+// tests cover that — but what the engine refuses: a receipt that does not match
+// its module, a module the set does not contain, and a module that is present
+// under the right name and is not the revision the caller was checked against.
+// ---------------------------------------------------------------------------
+
+/// Lowers and verifies one module of a set, under a name and path of its own.
+fn member(name: &str, path: &str, body: &str) -> (Module, VerifiedModule) {
+    let text = format!(
+        "module {name} version 1.0 profile bootstrap; \
+         resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 4] {body}"
+    );
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("source parses");
+    assert!(
+        Checker::check(&source, &schema).is_empty(),
+        "the set takes checked source only"
+    );
+    let context = ModuleContext {
+        source_set: String::from("tos-conformance-v1"),
+        path: String::from(path),
+        content_id: content_id(text.as_bytes()),
+        dependency_digest: String::from("sha256:0000"),
+        capability_interface_digest: String::from("sha256:0000"),
+    };
+    let module =
+        tos_core::lower_module_in_set(&source, &schema, &context, &[]).expect("member lowers");
+    let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect("member verifies");
+    (module, receipt)
+}
+
+/// The dependency, and an entry that calls it. Built with the dependency's real
+/// identity bound into the entry's import, exactly as the pipeline does.
+fn calling_pair() -> ((Module, VerifiedModule), (Module, VerifiedModule)) {
+    let dependency = member(
+        "system.lib.math",
+        "system/lib/math.tos",
+        "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+    );
+    let text = "module system.boot.init version 1.0 profile bootstrap; \
+         import system.lib.math as math; \
+         resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 4] \
+         pub fn main() -> i32 { return math.double(21i32); }";
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("entry parses");
+    assert!(Checker::check(&source, &schema).is_empty());
+    let context = ModuleContext {
+        source_set: String::from("tos-conformance-v1"),
+        path: String::from("system/boot/init.tos"),
+        content_id: content_id(text.as_bytes()),
+        dependency_digest: String::from("sha256:0000"),
+        capability_interface_digest: String::from("sha256:0000"),
+    };
+    let module = tos_core::lower_module_in_set(
+        &source,
+        &schema,
+        &context,
+        &[tos_core::ResolvedImport {
+            name: "system.lib.math",
+            module: &dependency.0,
+        }],
+    )
+    .expect("entry lowers");
+    let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect("entry verifies");
+    (dependency, (module, receipt))
+}
+
+#[test]
+fn a_call_across_the_set_returns_the_callee_result() {
+    let (dependency, entry) = calling_pair();
+    let set = [
+        tos_engine::Verified {
+            module: &dependency.0,
+            receipt: &dependency.1,
+        },
+        tos_engine::Verified {
+            module: &entry.0,
+            receipt: &entry.1,
+        },
+    ];
+    let outcome = tos_engine::run_set(&set, 1, "main", Vec::new())
+        .expect("the entry is runnable")
+        .expect("the run completes");
+    assert_eq!(outcome.value, Value::Int(IntKind::I32, 42));
+}
+
+/// A module runs because its own receipt matches it. A dependency admitted on
+/// the strength of its caller's receipt would make the receipt a statement
+/// about the set, and it is a statement about one module.
+#[test]
+fn a_dependency_whose_receipt_does_not_match_it_refuses_the_whole_run() {
+    let (dependency, entry) = calling_pair();
+    let mut forged = dependency.1.clone();
+    forged.module_digest = String::from("sha256:not-this-module");
+    let set = [
+        tos_engine::Verified {
+            module: &dependency.0,
+            receipt: &forged,
+        },
+        tos_engine::Verified {
+            module: &entry.0,
+            receipt: &entry.1,
+        },
+    ];
+    match tos_engine::run_set(&set, 1, "main", Vec::new()) {
+        Err(Refusal::ReceiptDoesNotMatch) => {}
+        other => panic!("a mismatched dependency receipt was accepted: {other:?}"),
+    }
+}
+
+/// Every receipt is checked before anything runs, not when a call reaches it: a
+/// program must not be able to choose which modules get checked by choosing
+/// which branch it takes.
+#[test]
+fn a_receipt_is_checked_even_for_a_dependency_the_run_never_calls() {
+    let (dependency, _) = calling_pair();
+    let alone = member(
+        "system.boot.init",
+        "system/boot/init.tos",
+        "pub fn main() -> i32 { return 7i32; }",
+    );
+    let mut forged = dependency.1.clone();
+    forged.module_digest = String::from("sha256:not-this-module");
+    let set = [
+        tos_engine::Verified {
+            module: &dependency.0,
+            receipt: &forged,
+        },
+        tos_engine::Verified {
+            module: &alone.0,
+            receipt: &alone.1,
+        },
+    ];
+    match tos_engine::run_set(&set, 1, "main", Vec::new()) {
+        Err(Refusal::ReceiptDoesNotMatch) => {}
+        other => panic!("an unused module's receipt went unchecked: {other:?}"),
+    }
+}
+
+#[test]
+fn a_call_to_a_module_the_set_does_not_contain_traps() {
+    let (_, entry) = calling_pair();
+    let set = [tos_engine::Verified {
+        module: &entry.0,
+        receipt: &entry.1,
+    }];
+    let trap = tos_engine::run_set(&set, 0, "main", Vec::new())
+        .expect("the entry is runnable")
+        .expect_err("a call with nothing to call must trap");
+    assert_eq!(trap.code, "RUNTIME_UNRESOLVED_IMPORT");
+}
+
+/// The right name is not enough. A set holding another revision of the module
+/// under the same name is not the module this caller was lowered and verified
+/// against, and running against it would silently execute code the caller was
+/// never checked with.
+#[test]
+fn a_dependency_of_another_revision_under_the_same_name_traps() {
+    let (_, entry) = calling_pair();
+    let other = member(
+        "system.lib.math",
+        "system/lib/math.tos",
+        "pub fn double(value: i32) -> i32 { return value * 3i32; }",
+    );
+    let set = [
+        tos_engine::Verified {
+            module: &other.0,
+            receipt: &other.1,
+        },
+        tos_engine::Verified {
+            module: &entry.0,
+            receipt: &entry.1,
+        },
+    ];
+    let trap = tos_engine::run_set(&set, 1, "main", Vec::new())
+        .expect("the entry is runnable")
+        .expect_err("a substituted dependency must trap");
+    assert_eq!(trap.code, "RUNTIME_UNRESOLVED_IMPORT");
+    assert!(
+        trap.detail.contains("lowered against"),
+        "the trap must say what disagreed: {trap:?}"
+    );
+}
