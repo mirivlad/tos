@@ -81,14 +81,28 @@ says so in the one place a constant is unavoidably used:
 - docs/40: "`array<T, N>` takes one type argument and one **compile-time** `size`
   constant".
 
-The `identifier` admitted in a `const_expression` can only be a named constant.
-So V1 already requires a module-level constant to be evaluable at compile time —
-otherwise `array<T, CAPACITY>` cannot be written, and the grammar admits it.
+The `identifier` admitted in a `const_expression` can only be a named constant:
+V1 grants no user generics, so there is nothing else a name in that position
+could denote. So V1 already requires **some** module-level constant to be
+evaluable at compile time — otherwise `array<T, CAPACITY>` cannot be written,
+and the grammar admits it.
 
-That settles question 1 in the language's own terms rather than by an
-implementer's preference, and it settles question 2 as a consequence: a value
-computed at compile time has no evaluation moment to place, no trap to order and
-no accounting to charge.
+**"Some" is the exact strength of this argument, and it is worth not
+overstating.** It does not follow that *every* `const` must be compile-time. A
+language may hold one form that is compile-time and another that is a runtime
+object — C++ separates `const` from `constexpr`, Rust separates `const` from
+`static` — and it may equally hold a single runtime form with a narrower
+syntactic rule for the array-size position alone. Both are coherent designs, and
+option B below is stated in that stronger form rather than the strawman the first
+draft attacked.
+
+What the argument does settle is that a design in which `CAPACITY` is a runtime
+object *everywhere* is not available: the array-size position needs a
+compile-time value, and something has to supply it.
+
+Given a compile-time form, question 2 answers itself: a value computed at
+compile time has no evaluation moment to place, no trap to order and no
+accounting to charge.
 
 It also dissolves question 3. A compile-time constant does not need to exist in
 the IR at all — like a type, it is consumed during lowering. A `pub const`
@@ -118,42 +132,73 @@ pub const LIMITS:   Limits = Limits(depth: 8i32, width: 4i32);
 pub fn buffer() -> array<u8, WINDOW> { … }
 ```
 
+A carries one further clause, which exists because of what it forecloses: **the
+initializer form is not widened later.** If a runtime-initialized object is ever
+wanted, it arrives as its own item form with its own keyword, its own
+initialization contract and its own accounting story — never by relaxing what
+may initialize a `const`. Widening it later would silently change *when* existing
+source evaluates, and source that changes meaning without changing text is the
+one outcome a versioned language contract exists to prevent.
+
 *Cost:* a constant cannot be the result of a call, and an aggregate constant is
 constructed at each use rather than once. Neither is free, and both are stated
 below rather than buried.
 
-**B — a constant is a runtime object, initialized once.** Admit an arbitrary
-expression, evaluate it once before any function runs, and give `tos-ir/v1` a
-named constant table plus constant imports.
+**B — a constant is a runtime object, with a compile-time rule for array sizes.**
+`const` denotes a value initialized once before any function runs, admitting an
+arbitrary expression; the array-size position separately requires its identifier
+to name a constant whose initializer is a literal constant expression. This is
+coherent, and it is roughly where C++ stood before `constexpr`.
 
-*Cost:* a module-initialization phase V1 does not have. That phase would execute
-source **outside any function's declared resource envelope and outside any
-verifier receipt bound to a call** — the two properties Stage 2 closed on. It
-would also need a defined initialization order across a dependency closure, and
-initialization order between compilation units is a famous source of defects in
-every language that has it. This is not merely expensive; for this language it
-is worse.
+*Cost, in two parts.* The first is that `const` means two different things
+depending on where it is read, and the reader must know the position to know
+which. `array<u8, CAPACITY>` compiles or does not depending on how `CAPACITY`
+was written, and the diagnostic for the bad case has to explain a distinction the
+declaration itself does not show.
 
-**C — remove `const` from the V1 surface.** Retract the item form.
+The second is architectural: a module-initialization phase V1 does not have,
+executing source **outside any function's declared resource envelope and outside
+any verifier receipt bound to a call** — the two properties Stage 2 closed on.
+It would also need a defined initialization order across a dependency closure,
+and initialization order between compilation units is a famous defect source in
+every language that has it.
 
-*Cost:* changes the accepted grammar, contradicts docs/42 twice, and removes a
-form that costs nothing under option A. Listed for completeness and not
-recommended.
+B is a live option; it is not the cheap one and it is not obviously the nicer
+language, but it is the one that eventually gives a service a real shared,
+once-computed table. A chooses to make that a separate, explicit, later decision
+instead of the default meaning of the word `const`.
+
+**C — remove `const` from the V1 surface.** Not a live option, and it is listed
+only so its absence is not mistaken for an oversight: it would change the
+accepted grammar, contradict docs/42 twice, and delete the only form that can
+supply the `identifier` the array-size grammar already admits. An option list
+padded with a non-option to look balanced is its own kind of dishonesty.
 
 ## Recommendation
 
-**A**, and the reason is what V1 already says rather than what is cheap to
-build. `array<T, N>` requires a compile-time `size` constant and the grammar
-lets a named constant be that `N`. A language cannot hold both "constants are
-compile-time" for array sizes and "constants are runtime objects" everywhere
-else without deciding which one `CAPACITY` is at the point of use. V1 already
-chose; this ADR writes the choice down and follows it to its consequences.
+**A** — as one of two live options, not as the only survivor.
 
-B is rejected on architecture, not on effort. TOS accounts every execution
-against a declared envelope and executes nothing the verifier has not issued a
-receipt for. A module-initialization phase is, by construction, execution with
-neither. Buying convenience with an exception to both is the trade this project
-does not make.
+The choice between A and B is not about what is cheap to build; both are
+implementable. It is about which of two things the word `const` should mean, and
+about when TOS is willing to execute source outside its own accounting.
+
+A says a constant is a value the compiler knows, and takes as its cost that a
+constant cannot be computed by running something. B says a constant is an object
+the system creates, and takes as its cost a phase in which source runs with no
+declared resource envelope and no verifier receipt — plus a `const` whose
+meaning depends on where it is read, since the array-size position still needs a
+compile-time value.
+
+The recommendation is A because those two costs are not comparable in this
+system. "You cannot call a function to build a constant" is a restriction a
+programmer meets at the declaration, reads in one diagnostic, and works around
+in one line. "Some source executes before anything is accounted for or verified"
+is an exception to the two properties Stage 2 was closed on, and exceptions to
+those do not stay small.
+
+If the Project Architect wants the runtime object, B is the honest way to get
+it, and it should be taken deliberately with its initialization contract written
+first — not arrived at by letting `const` quietly widen.
 
 The honest cost of A is stated plainly: no `const` computed by a function, and
 an aggregate constant paid for at each use. The first is a real restriction that
@@ -192,3 +237,14 @@ cross-module constant import is kept rather than narrowed out of docs/42,
 because a compile-time constant needs no IR representation to cross a module
 boundary. The cost argument turned out to be an artifact of assuming a constant
 is a runtime object.
+
+A second question followed — whether one option was now left. It was not, and
+the revision that produced the answer had overstated its own argument. The
+array-size grammar proves that *some* constant must be compile-time, not that
+every one must be; a language may carry two forms, or one runtime form with a
+narrower rule for array sizes. B is therefore restated in its strongest form
+rather than as the strawman the previous draft attacked, C is marked as the
+non-option it is instead of padding the list, and A gains the clause that its
+initializer is never widened later — which is the property the question
+surfaced, and the one that keeps existing source from changing meaning without
+changing text.
