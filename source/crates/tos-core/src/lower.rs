@@ -1431,6 +1431,34 @@ impl<'source> Lowerer<'source> {
         let subject = self.lower_expression(head, builder)?;
         let join_block = builder.new_block(at);
 
+        // A tuple pattern is irrefutable (ADR-0046), so a match whose only arm
+        // is one is an unconditional destructure with a body — there is nothing
+        // to discriminate on, and `MatchEnum` would be describing a choice that
+        // does not exist. It lowers exactly as the equivalent `let` does, which
+        // is what keeps one pattern model rather than two.
+        let branches = statement.branches();
+        if branches.len() == 1 && branches[0].pattern().form() == PatternForm::Tuple {
+            let arm_block = builder.new_block(at);
+            builder.set_terminator(Terminator::Branch {
+                target: arm_block,
+                arguments: Vec::new(),
+            });
+            builder.current = arm_block;
+            let depth = builder.scope.len();
+            let subject_ty = builder.type_of(&subject);
+            self.bind_pattern(branches[0].pattern(), subject_ty, subject, builder, at)?;
+            self.lower_block(branches[0].body(), builder)?;
+            builder.scope.truncate(depth);
+            if !builder.is_terminated() {
+                builder.set_terminator(Terminator::Branch {
+                    target: join_block,
+                    arguments: Vec::new(),
+                });
+            }
+            builder.current = join_block;
+            return Ok(());
+        }
+
         let mut arms: Vec<(usize, usize)> = Vec::new();
         let mut wildcard: Option<usize> = None;
         let mut bodies: Vec<(usize, &'source crate::parser::MatchBranch)> = Vec::new();

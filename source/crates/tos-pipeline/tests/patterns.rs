@@ -109,3 +109,49 @@ fn the_verifier_accepts_destructured_ir_on_its_own_terms() {
     assert!(completion.receipt.module_digest.starts_with("sha256:"));
     assert_eq!(render::value(&completion.value), "i32:1");
 }
+
+/// What the *checker* does with a tuple pattern in `match`, and in `for`.
+///
+/// The lowerer still has `Gap` arms for both. The audit question is whether any
+/// source the checker accepts reaches them — a gap behind a rule that already
+/// refuses the construct is unreachable, not unimplemented.
+#[test]
+fn a_tuple_match_pattern_is_settled_by_the_checker_not_left_to_the_lowerer() {
+    let text = format!(
+        "{PRELUDE} pub fn main() -> i32 {{ let pair = (1i32, 2i32); \
+         match (pair) {{ (a, b) => {{ return a + b; }} }} }}"
+    );
+    let outcome = run(&text);
+    match &outcome {
+        // Either the checker refuses it — in which case the lowerer's Gap is
+        // unreachable from accepted source — or it reaches an executed result.
+        // A `Gap` would be the contract violation.
+        Run::Diagnosed { diagnostics, .. } => {
+            assert!(
+                !diagnostics.is_empty(),
+                "a refusal must say why: {:?}",
+                render::events(&outcome)
+            );
+        }
+        Run::Completed(_) => {}
+        other => panic!("neither checked nor executed: {other:?}"),
+    }
+    assert!(
+        !matches!(outcome, Run::NotLowered(_)),
+        "the checker accepted a construct the lowerer cannot represent"
+    );
+}
+
+#[test]
+fn a_for_over_a_sequence_is_settled_by_the_checker_not_left_to_the_lowerer() {
+    let text = format!(
+        "{PRELUDE} pub fn main() -> i32 {{ let values: array<i32, 2> = [1i32, 2i32]; \
+         let mut total = 0i32; for value in values {{ total = total + value; }} return total; }}"
+    );
+    let outcome = run(&text);
+    assert!(
+        !matches!(outcome, Run::NotLowered(_)),
+        "the checker accepted a construct the lowerer cannot represent: {:?}",
+        render::events(&outcome)
+    );
+}
