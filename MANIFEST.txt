@@ -40,7 +40,7 @@ Composition (derived, not hand-maintained)
 ------------------------------------------
 - files in the release package: 341
 - active system invariants: 21
-- architecture decision records: 44 (40 accepted)
+- architecture decision records: 45 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -88,6 +88,7 @@ Architecture decision records
 - docs/adr/0042-runtime-events-on-the-boot-log.md — ADR-0042: Runtime events on the Boot ABI v1 serial log [**Accepted** (Project Architect-approved)]
 - docs/adr/0043-stage2-performance-budgets.md — ADR-0043: The Stage 2 quantitative performance budgets [**Accepted** (Project Architect-approved)]
 - docs/adr/0044-versioned-module-digest.md — ADR-0044: A versioned module-digest scheme [**Proposed** (awaiting Project Architect decision)]
+- docs/adr/0045-stage2-frontend-budget.md — ADR-0045: The Stage 2 frontend performance budget [**Proposed** (awaiting Project Architect decision)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

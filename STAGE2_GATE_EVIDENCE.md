@@ -173,29 +173,23 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`). The arena-bound sweep went from
    hours to 16.5 s and the measured bound moved by under 0.1%.
 7. **The Stage 2 performance gate FAILS on one of three metrics**, measured by
-   the normative procedure at commit f05e7c8
+   the normative procedure at commit `cf806de`
    (`docs/evidence/STAGE2_PERFORMANCE_PAIR_P1.md`).
 
    | metric | reference p95 | budget | verdict |
    |---|---|---|---|
-   | frontend, 256 KiB | 1 225 348 us | 500 000 us | **FAIL** (2.45x) |
-   | engine, 1e6 ops | 4 154 811 us | ratio ≤ 22x | **PASS** (19.1x) |
-   | quota rejection | 511 207 us | ≤ 2x accepted | **PASS** (0.417) |
+   | frontend, 256 KiB | 1 140 356 us | 500 000 us | **FAIL** (2.28x) |
+   | engine, 1e6 ops | 3 993 138 us | ratio ≤ 22x | **PASS** (19.8x) |
+   | quota rejection | 522 418 us | ≤ 2x accepted | **PASS** (0.458) |
 
-   The engine budget is ADR-0043's, accepted at 22x on the strength of a
-   component decomposition measuring every semantic component of the workload at
-   15.1–17.9x (`docs/evidence/STAGE2_ENGINE_DECOMPOSITION.md`). One fact for the
-   record: the ratio has drifted upward as the native half got faster — 16.6x,
-   17.3x, now 19.1x — so the headroom against 22x is about 13% rather than the
-   30% the threshold was reasoned from.
-
-   The frontend's largest single item is SHA-256 over the canonical hash stream,
-   33 ms of a ~104 ms total, because the stream is 22.8x the module's own size.
-   **ADR-0044 (Proposed)** asks whether the digest scheme should be versioned and
-   the encoding changed; it is an identity question, not an implementation one.
-   Six implementation defects have been found and fixed across the performance
-   work, and one hypothesis (byte-at-a-time freestanding memory primitives) was
-   tested against the real binary and refuted.
+   Six general implementation defects were found and fixed by this gate, and the
+   reference frontend went from not completing in 900 s to 1.14 s. The remaining
+   cost is decomposed and explained: of a 47.5 ms verifier stage, **46.6 ms is
+   identity hashing and 1.2 ms is the nine verification checks**.
+   **ADR-0045 (Proposed)** asks for the 500 ms research estimate to be revised to
+   a measured 1500 ms, independently of ADR-0043 and ADR-0044.
+   **ADR-0044 (Proposed)** records the identity encoding as a future improvement
+   and is explicitly **not** a Stage 2 blocker by Architect direction.
 8. **Differential testing is N/A, not passed.** docs/44 asks for agreement
    between independent implementations, and there is one engine. A second
    implementation is the only thing that can change this.

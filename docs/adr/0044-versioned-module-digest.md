@@ -22,10 +22,29 @@ digest total                   34 607 us   — about a third of the frontend
 ```
 
 Building the stream is cheap and hashing it is not, because the stream is 22.8
-times the size of the module it describes. The expansion has one dominant cause:
-every count and every length is encoded as a **16-byte big-endian `u128`**,
-whatever its magnitude. A module at the published ceiling has tens of thousands
-of such values and nearly all of them fit in one or two bytes.
+times the size of the module it describes. Two causes, measured separately:
+
+**1. Every count and every length is a 16-byte big-endian `u128`**, whatever its
+magnitude. A module at the published ceiling has tens of thousands of such
+values and nearly all of them fit in one or two bytes.
+
+**2. The source map repeats module-level identity in every entry.** Each of the
+12 058 entries of this fixture carries its own `source_set`, `path`,
+`content_id`, `frontend_identity`, `language_version` and
+`unicode_normalization_baseline` — six strings that are *identical across the
+whole map*, a fact `check_source_maps` explicitly verifies. That costs three
+times over:
+
+```text
+lower    six String allocations per entry — 72 348 for this module
+digest   those strings serialized into the module's canonical stream
+verify   source_map_digest re-serializes four of them per entry: 12 267 us
+```
+
+The verifier's own figures make the shape plain: of a 47.5 ms `verify` stage,
+34.4 ms is the module digest, **12.3 ms is the source-map digest**, and the nine
+actual verification checks together cost **1.2 ms**. The independent verifier's
+*verification* is nearly free; its *identity binding* is the entire cost.
 
 An attempt to recover the cost without touching the encoding was measured and
 failed: hashing the stream incrementally rather than buffering it was *slower*.
@@ -82,6 +101,14 @@ That is a versioned interface between components, and it is not changed quietly.
    string; unknown schemes fail closed. Expected to cut the stream by most of the
    22.8x expansion and the digest cost with it, though the exact figure needs
    measuring rather than predicting.
+2b. **Module-level identity, referenced rather than repeated.** A source map
+   whose entries carry a span and a reference to one module-level identity
+   record, instead of six copies of it each. This is the larger of the two
+   causes and it touches more than the digest: it would remove 72 348 string
+   allocations from lowering and most of the source-map digest's input. It is
+   listed here rather than pursued separately because it changes the same thing
+   — what the canonical stream contains — and splitting one identity change
+   across two decisions would be worse than making it once.
 3. **Hash the structure without materialising a stream.** A tree hash over the
    module's shape. Larger change, and it makes the canonical form harder to state
    and to reimplement independently, which is a cost paid by every future
@@ -104,11 +131,15 @@ receipt and cache in existence. This is a decision to take deliberately.
 
 ## Consequences
 
-If accepted, the frontend's largest single cost falls substantially and the
-docs/35 500 ms budget becomes materially more reachable — but this ADR is not a
-performance-budget argument and should not be read as one. If rejected, the cost
-is understood, documented, and permanent, and ADR-0043's frontend part should
-say so.
+If accepted, the frontend's largest single cost falls substantially — but this
+ADR is not a performance-budget argument and must not be read as one. The
+Project Architect has directed that it is **not** a Stage 2 blocker and is not
+to be implemented to move a benchmark; it is a documented future improvement
+waiting on an operational reason, such as receipt or cache persistence, boot-time
+pressure, many modules, or transport over storage or a network.
+
+If rejected, the cost is understood, documented and permanent, and the frontend
+budget decision must account for it.
 
 ## Alternatives considered
 
