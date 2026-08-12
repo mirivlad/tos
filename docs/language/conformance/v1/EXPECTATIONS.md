@@ -115,6 +115,16 @@
 | R074 | `reject/share-mutable-region.tos` | Bootstrap | `E1215_ARGUMENT_TYPE_MISMATCH` | ADR-0036/0037 negative |
 | R075 | `reject/region-used-after-share.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | ADR-0036/0037 negative |
 | R076 | `reject/write-through-immutable-region.tos` | Bootstrap | `E1201_ASSIGN_TO_IMMUTABLE` | ADR-0036/0037 negative |
+| A007 | `accept/tuple-destructuring-let.tos` | Bootstrap | accepted | ADR-0046 irrefutable binding pattern |
+| A008 | `accept/nested-tuple-destructuring-let.tos` | Bootstrap | accepted | ADR-0046 irrefutable binding pattern |
+| A009 | `accept/wildcard-inside-tuple-pattern.tos` | Bootstrap | accepted | ADR-0046 irrefutable binding pattern |
+| A010 | `accept/sole-variant-destructuring-let.tos` | Bootstrap | accepted | ADR-0046 irrefutable binding pattern |
+| A011 | `accept/destructuring-copy-components.tos` | Bootstrap | accepted | ADR-0046 irrefutable binding pattern |
+| A012 | `accept/destructuring-affine-component.tos` | Bootstrap | accepted | ADR-0046 irrefutable binding pattern |
+| R077 | `reject/refutable-option-let.tos` | Bootstrap | `E1223_REFUTABLE_PATTERN` | ADR-0046 refutable binding pattern |
+| R078 | `reject/refutable-result-let.tos` | Bootstrap | `E1223_REFUTABLE_PATTERN` | ADR-0046 refutable binding pattern |
+| R079 | `reject/refutable-enum-let.tos` | Bootstrap | `E1223_REFUTABLE_PATTERN` | ADR-0046 refutable binding pattern |
+| R080 | `reject/refutable-component-in-tuple-let.tos` | Bootstrap | `E1223_REFUTABLE_PATTERN` | ADR-0046 refutable binding pattern |
 
 R029 and R030 also fix the precedence between the two codes for a character that
 cannot be tokenized: a non-ASCII scalar value outside a literal or comment is

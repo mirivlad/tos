@@ -1,4 +1,30 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+# Stage 2 runtime independence — HISTORICAL, superseded
+
+> **Status: superseded.** This audit describes the state *before* ADR-0041 and
+> its conclusion — that Stage 2 could not close — was correct when written and
+> is no longer true. It is kept because it is what produced ADR-0041, and
+> rewriting it to look as though the gap never existed would delete the reason
+> the decision was made.
+>
+> The gap it found is closed by:
+>
+> - **ADR-0041 `RuntimeMemoryGrantV1`** — the nucleus grants one bounded region
+>   and the runtime never discovers memory;
+> - **a bounded reclaiming allocator** with real free, bidirectional coalescing
+>   and a search whose cost does not grow with the arena
+>   (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`);
+> - **`no_std` production crates** on the `x86_64-unknown-none` target, gated by
+>   both a source gate and a build gate;
+> - **a real guest Stage 2 pipeline**: the capsule's canonical boot module goes
+>   through reader, parser, checker, resolution, lowering, the independent
+>   verifier and the bounded engine inside QEMU, verified by
+>   `host-tools/qemu-test/stage2-runtime.sh`.
+>
+> The original text follows unchanged.
+
+---
+
 
 # Stage 2 runtime-independence audit
 

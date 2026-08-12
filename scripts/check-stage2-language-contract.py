@@ -182,6 +182,7 @@ def main() -> int:
             ("E1213_NONCONSTRUCTIBLE_TYPE", "type"),
             ("E1215_ARGUMENT_TYPE_MISMATCH", "type"),
             ("E1220_NONEXHAUSTIVE_MATCH", "type"),
+            ("E1223_REFUTABLE_PATTERN", "type"),
             ("E1221_MISSING_RETURN", "type"),
             ("E1222_RETURN_TYPE_MISMATCH", "type"),
             ("E1225_INVALID_DEFER", "type"),

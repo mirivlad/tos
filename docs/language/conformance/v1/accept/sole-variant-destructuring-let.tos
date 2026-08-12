@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.sole_variant_destructuring_let version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// Refutability is a fact about the type's alternatives, not the pattern's
+// shape: an enum with one variant has nothing else to be.
+pub enum Only [Just]
+
+pub fn main(value: Only) -> unit {
+    let Just = value;
+}

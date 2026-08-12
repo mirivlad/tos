@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.nested_tuple_destructuring_let version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// Irrefutability is recursive, so nesting is admitted to any depth.
+pub fn main() -> i32 {
+    let nested = (1i32, (2i32, 3i32));
+    let (head, (left, right)) = nested;
+    return head + left * right;
+}

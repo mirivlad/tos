@@ -6,10 +6,12 @@
 //! accepted conformance vector through the whole reference path and records
 //! exactly where each one stops.
 //!
-//! It deliberately does **not** assert that everything lowers. Some accepted V1
-//! syntax has no lowering yet, and that is a stated limit rather than a defect
-//! to hide — but it has to be counted, and a *regression* in coverage has to
-//! fail something.
+//! **This measures corpus coverage, not language coverage.** A corpus contains
+//! what someone put in it; the contract contains what docs/39–44 accept. This
+//! test is a regression gate on the first and is not evidence of the second —
+//! confusing them is exactly how a lowering gap survived an earlier closure
+//! audit. `crates/tos-pipeline/tests/patterns.rs` exercises the grammar's
+//! pattern families directly, for that reason.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -21,7 +23,7 @@ use tos_pipeline::{execute, PipelineStage, Request, Run, Silent};
 ///
 /// A ratchet: it may rise, and a fall means a construct that used to reach IR
 /// no longer does.
-const AT_LEAST_VERIFIED: usize = 29;
+const AT_LEAST_VERIFIED: usize = 35;
 
 fn accept_dir() -> PathBuf {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR")))

@@ -589,6 +589,7 @@ impl<'source> TypeChecker<'source> {
                     .unwrap_or(Type::Unknown);
                 let bound = declared.unwrap_or(inferred);
                 if let Some(pattern) = statement.pattern() {
+                    self.require_irrefutable(pattern, &bound, "let");
                     self.bind_pattern(pattern, &bound);
                 }
             }
@@ -606,7 +607,21 @@ impl<'source> TypeChecker<'source> {
             | StatementForm::Match
             | StatementForm::For => {
                 if let Some(head) = statement.expression() {
-                    let _ = self.type_of(head);
+                    let sequence = self.type_of(head);
+                    if statement.form() == StatementForm::For {
+                        // A `for` binds one element per iteration, so its
+                        // pattern must match every element it will be given.
+                        if let Some(pattern) = statement.pattern() {
+                            let element = match &sequence {
+                                Type::Array(element) => (**element).clone(),
+                                Type::Constructed(name, arguments) if name == "slice" => {
+                                    arguments.first().cloned().unwrap_or(Type::Unknown)
+                                }
+                                _ => Type::Unknown,
+                            };
+                            self.require_irrefutable(pattern, &element, "for");
+                        }
+                    }
                 }
             }
             _ => {}
@@ -631,6 +646,117 @@ impl<'source> TypeChecker<'source> {
     ///
     /// Destructured positions need the ADR-0033 expected-type resolution to
     /// know which variant a pattern names, so they bind as `Unknown` here.
+    /// Reports a pattern that may fail to match where one may not (ADR-0046).
+    ///
+    /// `let` and `for` bind unconditionally: there is no arm to fall through to
+    /// and no result to signal a miss with. A refutable pattern there would
+    /// need a hidden runtime trap or a hidden conditional branch, and V1 has
+    /// neither — so it is refused at compile time instead.
+    ///
+    /// **Precedence.** Nothing is reported until the pattern has a settled
+    /// meaning: an undetermined type, an unresolved constructor or a payload
+    /// whose arity does not match are other slices' findings, and reporting
+    /// refutability for a pattern nobody has resolved would be describing a
+    /// construct that does not yet mean anything.
+    fn require_irrefutable(
+        &mut self,
+        pattern: &'source Pattern,
+        bound: &Type,
+        context: &'static str,
+    ) {
+        if matches!(bound, Type::Unknown) {
+            return;
+        }
+        let Some(reason) = self.refutable_because(pattern, bound) else {
+            return;
+        };
+        self.diagnostics.push(
+            Diagnostic::new(
+                "E1223_REFUTABLE_PATTERN",
+                Severity::Error,
+                Stage::Type,
+                pattern.span(),
+                self.source,
+            )
+            .with_field("context", context)
+            .with_field("reason", reason)
+            .with_field("expected", bound.spell()),
+        );
+    }
+
+    /// Why a pattern may fail to match a value of `bound`, when it may.
+    ///
+    /// Irrefutability is recursive: a tuple pattern is irrefutable exactly when
+    /// every element of it is, and a constructor pattern is irrefutable only
+    /// when its type has no other variant to be.
+    fn refutable_because(&self, pattern: &'source Pattern, bound: &Type) -> Option<&'static str> {
+        match pattern.form() {
+            PatternForm::Wildcard => None,
+            PatternForm::Name if !pattern.is_qualified() => {
+                let spelled = pattern.name().map(|name| name.text(self.source));
+                match spelled.and_then(|name| self.declarations.variants.get(name)) {
+                    // A name that is a variant of the bound type is a
+                    // constructor pattern, not a binding (ADR-0033).
+                    Some((owner, _)) => self.variant_is_alone(owner),
+                    None => None,
+                }
+            }
+            PatternForm::Name => {
+                let spelled = pattern.path().last().map(|last| last.text(self.source));
+                match spelled.and_then(|name| self.declarations.variants.get(name)) {
+                    Some((owner, _)) => self.variant_is_alone(owner),
+                    None => None,
+                }
+            }
+            PatternForm::Destructure => {
+                let spelled = pattern.path().last().map(|last| last.text(self.source));
+                let Some((owner, payload)) =
+                    spelled.and_then(|name| self.declarations.variants.get(name))
+                else {
+                    // An unresolved constructor is a resolution finding.
+                    return None;
+                };
+                if let Some(reason) = self.variant_is_alone(owner) {
+                    return Some(reason);
+                }
+                // A sole variant still binds its payload, and a refutable
+                // component makes the whole pattern refutable.
+                if payload.len() != pattern.elements().len() {
+                    return None;
+                }
+                pattern
+                    .elements()
+                    .iter()
+                    .zip(payload)
+                    .find_map(|(element, ty)| self.refutable_because(element, ty))
+            }
+            PatternForm::Tuple => {
+                let Type::Tuple(elements) = bound else {
+                    return None;
+                };
+                if elements.len() != pattern.elements().len() {
+                    return None;
+                }
+                pattern
+                    .elements()
+                    .iter()
+                    .zip(elements)
+                    .find_map(|(element, ty)| self.refutable_because(element, ty))
+            }
+        }
+    }
+
+    /// Whether an enum has a variant this pattern would fail to match.
+    fn variant_is_alone(&self, owner: &str) -> Option<&'static str> {
+        let siblings = self
+            .declarations
+            .variants
+            .values()
+            .filter(|(enum_name, _)| enum_name == owner)
+            .count();
+        (siblings > 1).then_some("the type has other variants this pattern does not match")
+    }
+
     fn bind_pattern(&mut self, pattern: &'source Pattern, bound: &Type) {
         match pattern.form() {
             PatternForm::Name if !pattern.is_qualified() => {
