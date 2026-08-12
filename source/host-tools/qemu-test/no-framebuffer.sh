@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# The human-facing boot console changes nothing.
+#
+# The boot console is best-effort by contract: the framebuffer may be absent,
+# unsupported or unusable, and the boot must be the same boot without it. That
+# claim is only worth as much as the machine that tests it, so this boots the
+# ordinary artifacts twice on the same profile — once with a display adapter and
+# once with none at all, which is what makes the firmware hand over a BootInfo
+# declaring no framebuffer — and requires that the two runs agree.
+#
+# Agreement is checked on the whole `TOS.*` event stream, not on the result code
+# alone: identical events, in order, with identical values. Only the fields of
+# TOS.BOOT.HANDOFF that describe the platform itself are masked, because a
+# machine without a display adapter genuinely has a different framebuffer tuple
+# and a different loader stack address — that difference is the input to this
+# test, not a result of it.
+#
+#   bash host-tools/qemu-test/no-framebuffer.sh [OUT_DIR]
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+OUT="${1:-target/qemu-no-framebuffer}"
+mkdir -p "$OUT"
+OUT="$(cd "$OUT" && pwd)"
+
+fail() { echo "no-framebuffer: FAIL: $*" >&2; exit 1; }
+
+bash "$HERE/run.sh" --out "$OUT/with" --expect 33 >"$OUT/with.log" 2>&1 ||
+    fail "the ordinary boot did not pass; see $OUT/with.log"
+bash "$HERE/run.sh" --out "$OUT/without" --no-framebuffer --expect 33 \
+    >"$OUT/without.log" 2>&1 ||
+    fail "the boot without a framebuffer did not pass; see $OUT/without.log"
+
+# The events, with the platform's own description of itself masked out.
+events() {
+    tr -d '\r' < "$1" | grep '^TOS\.' |
+        sed -E 's/(fb_(format|width|height|pitch)|stack)=[^ ]*/\1=<platform>/g'
+}
+
+events "$OUT/with/serial.log" > "$OUT/with.events"
+events "$OUT/without/serial.log" > "$OUT/without.events"
+
+# Without this the test could pass on two identical runs that both had a
+# framebuffer, and would be evidence for nothing.
+grep -q 'TOS\.BOOT\.HANDOFF .*fb_format=0 ' <(tr -d '\r' < "$OUT/without/serial.log") ||
+    fail "the second boot still had a framebuffer; the test proves nothing"
+grep -q 'TOS\.BOOT\.HANDOFF .*fb_format=[1-9]' <(tr -d '\r' < "$OUT/with/serial.log") ||
+    fail "the first boot had no framebuffer; the test proves nothing"
+
+if ! diff -u "$OUT/with.events" "$OUT/without.events" > "$OUT/events.diff"; then
+    cat "$OUT/events.diff" >&2
+    fail "the boot event stream differs when there is no framebuffer"
+fi
+
+COUNT=$(wc -l < "$OUT/with.events")
+echo "NO-FRAMEBUFFER PASS: $COUNT boot events identical with and without a framebuffer"

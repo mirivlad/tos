@@ -21,7 +21,7 @@
 #                                    [--expect N]
 #                                    [--require "EV ..."] [--forbid "EV ..."]
 #                                    [--timeout SECONDS] [--event-timestamps FILE] [--accel tcg|kvm]
-#                                    [--interactive --display gtk|sdl]
+#                                    [--interactive --display gtk|sdl] [--no-framebuffer]
 #
 # --expect defaults to 33 (HALT_OK). --require/--forbid default to the event
 # set implied by --expect (see below) and may be overridden for a new scenario.
@@ -46,6 +46,7 @@ INTERACTIVE=0
 DISPLAY_BACKEND=""
 EVENT_TIMESTAMPS=""
 QEMU_ACCEL=""
+NO_FRAMEBUFFER=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -59,6 +60,7 @@ while [ $# -gt 0 ]; do
         --timeout)  QEMU_TIMEOUT="$2"; shift 2 ;;
         --event-timestamps) EVENT_TIMESTAMPS="$2"; shift 2 ;;
         --accel)    QEMU_ACCEL="$2"; shift 2 ;;
+        --no-framebuffer) NO_FRAMEBUFFER=1; shift ;;
         --interactive) INTERACTIVE=1; shift ;;
         --display)  DISPLAY_BACKEND="$2"; shift 2 ;;
         -h|--help)  sed -n '3,28p' "$0"; exit 0 ;;
@@ -205,6 +207,12 @@ QEMU_ARGS=(
 # preparation, firmware, device and event-capture path.
 if [ -n "$QEMU_ACCEL" ]; then
     QEMU_ARGS+=( -accel "$QEMU_ACCEL" )
+fi
+# Without a display adapter the firmware has no GOP, so BootInfo declares the
+# framebuffer absent. The machine is otherwise the same one, which is the point:
+# the boot has to reach the same result with nothing to draw on.
+if [ "$NO_FRAMEBUFFER" -eq 1 ]; then
+    QEMU_ARGS+=( -vga none )
 fi
 if [ "$INTERACTIVE" -eq 0 ]; then
     QEMU_ARGS+=( -device isa-debug-exit )

@@ -9,8 +9,22 @@
 
 #![cfg(test)]
 
+// The nucleus is a freestanding binary, so its human-facing boot presentation
+// is compiled here to be tested on the host. These are the same source files
+// the nucleus builds: a second copy of a renderer would prove nothing about the
+// one that actually draws the screen. Only the parts the boot path uses are
+// exercised from here, hence the module-wide dead-code allowance.
+#[allow(dead_code)]
 #[path = "../../../nucleus/src/framebuffer.rs"]
 mod framebuffer;
+
+#[allow(dead_code)]
+#[path = "../../../nucleus/src/console.rs"]
+mod console;
+
+#[allow(dead_code)]
+#[path = "../../../nucleus/src/boot_report.rs"]
+mod boot_report;
 
 use tos_capsule::{parse, CapsError, FLAG_BOOT_CANONICAL, SRC_KIND_DETACHED};
 use tos_hash::{sha256, Sha256};

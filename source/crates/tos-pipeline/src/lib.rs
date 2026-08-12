@@ -46,9 +46,17 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_core::{
-    check_module_set, lower_module, Checker, Diagnostic, Gap, ModuleContext, ModuleEntry, Parser,
-    Position, Severity, SourceReader, SourceUnit,
+    check_module_set, lower_module, Checker, Gap, ModuleContext, ModuleEntry, Parser, SourceReader,
+    SourceUnit,
 };
+
+/// The frontend types this crate's own results are made of.
+///
+/// `Run` hands a caller diagnostics, positions and severities; a caller that
+/// cannot name them would have to depend on the frontend directly in order to
+/// read a value this crate gave it, which is a dependency on the stage that
+/// produced the result rather than on the result.
+pub use tos_core::{Diagnostic, Position, Severity};
 use tos_engine::{run, Accounting, Refusal, Value};
 use tos_ir::Module;
 use tos_verifier::{verify, Finding, Limits, ResolutionSnapshot, VerifiedModule};

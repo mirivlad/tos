@@ -3,14 +3,24 @@
 //!
 //! Entry convention (boot ABI v1): `rdi` = physical address of a
 //! [`BootInfo`]. The nucleus validates the ABI record and the capsule, emits
-//! the serial boot-event log (BOOT_ABI_V1.md §6), then halts via the QEMU
-//! isa-debug-exit port with a stable result code.
+//! the serial boot-event log (BOOT_ABI_V1.md §6), runs the canonical boot
+//! module, then halts via the QEMU isa-debug-exit port with a stable result
+//! code.
+//!
+//! Once the ABI record and the memory map have been accepted, the same facts
+//! are also drawn on the framebuffer for a person watching the machine start
+//! (see [`console`]). That presentation is best-effort throughout: it is
+//! created only if there is a framebuffer to create it on, every call into it
+//! is allowed to do nothing, and no result below depends on it. The serial
+//! events remain the normative record.
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
+mod boot_report;
+mod console;
 mod exception;
 mod framebuffer;
 mod runtime;
@@ -18,6 +28,8 @@ mod stack;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
+
+use console::{BootConsole, Text};
 
 use tos_boot_protocol::{
     BootInfo, MemoryRange, RESULT_ABI_INVALID, RESULT_BOOT_MODULE_FAILED, RESULT_CAPSULE_INVALID,
@@ -71,6 +83,17 @@ fn mem_fail() -> ! {
 fn cap_fail() -> ! {
     tos_serial::puts(b"TOS.CAPSULE.FAIL\r\n");
     result_port(RESULT_CAPSULE_INVALID)
+}
+
+/// Show a failure on the boot console, when there is one to show.
+///
+/// Deliberately returns nothing and decides nothing: the caller has already
+/// reported the failure over serial and is on its way to a result code. This is
+/// the picture of that decision, never the decision.
+fn console_failed(console: &mut Option<BootConsole<'static>>, code: &[u8], detail: &[u8]) {
+    if let Some(console) = console {
+        console.fail(code, detail);
+    }
 }
 
 /// Test-only baseline for the exact SHA-256 operations on a successful boot.
@@ -201,12 +224,36 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         mem_fail();
     }
 
+    // --- 2b. the framebuffer becomes usable here, and not before ---
+    // The console is a report about this machine, so it may not be built out of
+    // values the machine has not accepted yet. Everything it needs has now been
+    // checked: BOOT_ABI_V1 validation accepted the framebuffer tuple over raw
+    // bytes — address, geometry, byte pitch and a supported format — and the
+    // memory map that describes the range has been accepted as a whole. Neither
+    // check was weakened to get a picture on screen sooner.
+    //
+    // The two facts already established are drawn retrospectively; everything
+    // after this point is drawn as it happens. With no usable framebuffer this
+    // is `None` and every call below does nothing, which is the whole of the
+    // best-effort contract: the boot is identical, minus the picture.
+    //
+    // SAFETY: the checks named above are exactly what `framebuffer::map`
+    // requires of its caller, and this is the only borrow of the framebuffer
+    // taken anywhere in the nucleus.
+    let mut console = unsafe { framebuffer::map(bi) }.map(BootConsole::new);
+    if let Some(console) = &mut console {
+        console.fact(b"Boot ABI v1", None);
+        console.fact(b"Memory map validated", None);
+        console.begin(b"Verifying capsule", None);
+    }
+
     // --- 3. capsule: plain digest, then full structural validation ---
     // Overflow safety: slice length must fit in usize (x86_64: u64). Range
     // containment within a declared memory map entry is enforced separately by
     // check_capsule_in_memory above (memory_map_length is unrelated to the
     // capsule size, so it is NOT compared against capsule_length).
     if bi.capsule_phys == 0 || bi.capsule_length == 0 || bi.capsule_length > usize::MAX as u64 {
+        console_failed(&mut console, b"CAPSULE_ABSENT", b"");
         cap_fail();
     }
     // SAFETY: the loader reserved the capsule range in the same identity map;
@@ -215,11 +262,15 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         core::slice::from_raw_parts(bi.capsule_phys as *const u8, bi.capsule_length as usize)
     };
     if sha256(cap_bytes) != bi.capsule_digest {
+        console_failed(&mut console, b"CAPSULE_DIGEST_MISMATCH", b"");
         cap_fail();
     }
     let cap = match parse(cap_bytes) {
         Ok(c) => c,
-        Err(_) => cap_fail(),
+        Err(_) => {
+            console_failed(&mut console, b"CAPSULE_MALFORMED", b"");
+            cap_fail()
+        }
     };
 
     #[cfg(feature = "test-crypto-baseline")]
@@ -242,7 +293,18 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         .is_err()
     {
         tos_serial::puts(b"TOS.IDENTITY.MISMATCH bootinfo-vs-capsule-header\r\n");
+        console_failed(
+            &mut console,
+            b"IDENTITY_MISMATCH",
+            b"bootinfo-vs-capsule-header",
+        );
         cap_fail();
+    }
+
+    // Digest, structure and the identity mirror all held: this is the point at
+    // which "the capsule is what it says it is" became true.
+    if let Some(console) = &mut console {
+        console.succeed();
     }
 
     tos_serial::puts(b"TOS.CAPSULE.OK files=");
@@ -252,7 +314,10 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // --- 4. canonical boot text ---
     let boot = match cap.boot_file() {
         Some(f) => f,
-        None => cap_fail(),
+        None => {
+            console_failed(&mut console, b"BOOT_MODULE_MISSING", b"");
+            cap_fail()
+        }
     };
     tos_serial::puts(b"TOS.BOOTTEXT.PATH ");
     tos_serial::puts(boot.name);
@@ -268,6 +333,9 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::puts(b"TOS.BOOTTEXT.DIGEST ");
     tos_serial::put_hex32(&boot_digest);
     tos_serial::puts(b"\r\n");
+    if let Some(console) = &mut console {
+        console.fact(b"Canonical boot module", Some(boot.name));
+    }
 
     // --- 5. identity record ---
     // Provenance is read from the parsed capsule header, never hardcoded and
@@ -289,6 +357,15 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::puts(b" capsule_digest=");
     tos_serial::put_hex32(&bi.capsule_digest);
     tos_serial::puts(b" arch=0.2.1 builder=1\r\n");
+    if let Some(console) = &mut console {
+        // The same values the event above carries, shortened to what fits a
+        // line a person reads. The full identity stays on serial.
+        let mut hex = [0u8; 64];
+        tos_hash::hex(&ch.source_identity_value, &mut hex);
+        let mut detail = Text::<32>::new();
+        detail.push(kind).push(b" ").push(&hex[..12]);
+        console.fact(b"Source identity", Some(detail.as_bytes()));
+    }
 
     // --- 6. Stage 2: run the canonical boot module ---
     // The capsule's boot text is a TOS Core module, and it goes through the
@@ -297,7 +374,19 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // frontend, the verifier or the engine refuses stops the boot rather than
     // being waved through. The nucleus owns memory discovery and hands the
     // runtime one bounded region (ADR-0041); the runtime cannot name BootInfo.
-    match runtime::execute_boot_text(bi, bi_address, descs, boot.name, boot.content, kind) {
+    // The console goes with it: what the reference path is doing is the part of
+    // this boot a person can actually watch, and the pipeline already announces
+    // every stage before it runs.
+    let outcome = runtime::execute_boot_text(
+        bi,
+        bi_address,
+        descs,
+        boot.name,
+        boot.content,
+        kind,
+        console.as_mut(),
+    );
+    match outcome {
         Ok(Ok(())) => {}
         Ok(Err(stage)) => {
             // Boot ABI and capsule validation succeeded and this nucleus is
@@ -312,23 +401,27 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             result_port(RESULT_BOOT_MODULE_FAILED);
         }
         Err(reason) => {
-            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=");
-            tos_serial::puts(match reason {
-                runtime::Unstartable::NoGrant(_) => b"no-grant" as &[u8],
+            let reason: &[u8] = match reason {
+                runtime::Unstartable::NoGrant(_) => b"no-grant",
                 runtime::Unstartable::HeapRejectedGrant => b"heap-rejected-grant",
                 runtime::Unstartable::BootPathNotText => b"boot-path-not-text",
-            });
+            };
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=");
+            tos_serial::puts(reason);
             tos_serial::puts(b"\r\n");
+            console_failed(&mut console, b"RUNTIME_UNSTARTABLE", reason);
             mem_fail();
         }
     }
 
-    // --- 7. best-effort human-facing diagnostic ---
-    // All boot decisions, source identity checks and canonical boot-text work
-    // above have succeeded. Rendering cannot affect the result.
-    // SAFETY: BootInfo validation and ADR-0022's loader checks established a
-    // mapped, reserved framebuffer range; rendering is best-effort only.
-    unsafe { framebuffer::render_stage1_status(bi) };
+    // --- 7. the boot log has done its work ---
+    // Every stage of the reference path completed and the canonical boot module
+    // ran to completion, so the log is replaced by the final screen. Nothing
+    // continues after this: the two lines it shows say exactly that, and no
+    // rendering here can affect the result already decided above.
+    if let Some(console) = &mut console {
+        console.final_screen();
+    }
 
     // --- 8. halt with success code ---
     tos_serial::puts(b"TOS.HALT ok=0x10\r\n");
