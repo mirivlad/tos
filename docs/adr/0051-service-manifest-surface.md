@@ -2,12 +2,12 @@
 
 # ADR-0051: What a service manifest is, and where it lives
 
-- Status: **Proposed**
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-12
 - Decision level: 2 — resolves a contradiction between accepted Tier 2 documents
   and fixes the Stage 3 manifest surface without changing TOS Core V1 or
   `tos-ir/v1`
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
 
 ## The contradiction, reported rather than resolved quietly
 

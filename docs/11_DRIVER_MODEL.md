@@ -33,28 +33,46 @@ A driver instance receives only capabilities for its assigned device and support
 
 It does not receive arbitrary physical memory or unrelated devices.
 
-## Driver manifest example
+## Driver manifest
+
+A component declares what it needs in its own module source, using the accepted
+TOS Core V1 forms. There is no `manifest` item in the V1 grammar, and ADR-0051
+explains why one is not needed: everything a launcher must know before it starts
+a component is already in the module header and already in the verified IR.
 
 ```tos
-module drivers.virtio.net
+module drivers.virtio.net version 1.0 profile bootstrap;
 
-manifest driver {
-    matches pci(vendor: 0x1af4, device: [0x1000, 0x1041])
-    runtime_profile "bootstrap-capable"
+resource [fuel: 4000000, stack: 128KiB, allocation: 64KiB, tasks: 4, workers: 1,
+          sync: 2, shared: 0B, cleanup: 32, recursion: 16, imports: 4]
 
-    requires {
-        capability pci.configure
-        capability mmio.map
-        capability irq.bind
-        capability dma.allocate(max: 64 MiB)
-        capability service.publish("net.adapter.v1")
-    }
-
-    provides "net.adapter.v1"
-    state none
-    restart restartable
-}
+import capability platform.pci.FunctionConfig as pci;
+import capability platform.mmio.RegionMap as mmio;
+import capability platform.irq.Binding as irq;
+import capability platform.dma.Allocator as dma;
+import capability net.adapter.V1Publisher as publisher;
 ```
+
+Three things are worth reading twice.
+
+The right to publish `net.adapter.v1` is **requested**, not asserted: the
+capability's nominal type is the interface it publishes, so the launcher decides
+whether this component may offer it. docs/37 names "textual manifest grants
+itself authority" as a Stage 3 failure condition, and a self-declared `provides`
+line is exactly that.
+
+Resource bounds are the module's declared envelope, which the verifier already
+checks — not a second set of numbers beside it that could disagree.
+
+Restart policy, health probes, state namespace and shutdown timeout are absent,
+because they are decisions *about* this component rather than descriptions *of*
+it. They belong to whoever has authority to launch it, and live in
+`/system/policy/` as canonical source.
+
+Device matching — which hardware this driver claims — is a Stage 4 question with
+its own answer to find. It is not an authority a launcher grants but a query a
+bus manager evaluates, and ADR-0051 deliberately leaves it open rather than
+settling it a stage early.
 
 ## Driver interfaces
 

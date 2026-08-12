@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `c3798f9f13f82f9f53f9fc046f8d909f080803669f1b8f8be735b0eda3258b38`  
+Source-manifest SHA-256: `f474d2696f704c13d0397b459afe8c3742625f9be81d66719fa1c35dedc3fd22`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2106,6 +2106,547 @@ capsule.  A schema extension requires a new version or an accepted ADR; a
 consumer MUST NOT silently reinterpret v1 fields.
 
 <!-- END source/interfaces/boot/CAPSULE_PROVENANCE_V1.md -->
+
+---
+
+<!-- BEGIN source/interfaces/system/SYSTEM_ABI_V1.md -->
+
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# TOS System ABI — Version 1
+
+Status: **Accepted Tier 2 interface contract.**
+
+Accepted by ADR-0048 (Project Architect-approved, 2026-08-12), which fixes the
+boundary this contract describes.
+
+Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs.
+
+Producer: the nucleus. Consumers: every Stage 3 process, through its runtime.
+Companions: `CAPABILITY_V1.md`, `IPC_V1.md`, `PROCESS_IDENTITY_V1.md`.
+
+## 1. Role
+
+ADR-0048 places TOS Core execution at CPL 3 in its own address space. This
+contract is the only edge across that boundary: everything a process can ask the
+system to do, it asks here.
+
+Boot ABI v1 is the loader-to-nucleus handoff and is unchanged by this document.
+`RuntimeMemoryGrant` (ADR-0041, ADR-0050) is how a runtime gets memory and is
+also a separate contract with its own version. Three edges, three versions; a
+change to one is not a change to the others.
+
+## 2. What this ABI is not
+
+It is not a POSIX-shaped system-call surface, and it is not a place to add
+operations because a service needs something. It carries mechanism the nucleus
+alone can provide: address spaces, execution contexts, capability handles, IPC
+transport, and the small amount of time a scheduler needs. Filesystems, devices,
+repositories, networks and consoles are services reached through IPC, not
+operations added here. **If an operation could be a service, it is a service.**
+
+## 3. Entry
+
+| Property | Value |
+|---|---|
+| Mechanism | `syscall` / `sysret` (x86_64), IA32_LSTAR-based |
+| Operation selector | `rax` |
+| Arguments | `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9` — six, by value |
+| Result | `rax` = status, `rdx` = value |
+| Clobbered | `rcx`, `r11` by the instruction itself |
+| Preserved | every other general-purpose register |
+| Flags | interrupts masked on entry, restored on return |
+
+`int 0x80` is not an entry. There is exactly one mechanism, so there is exactly
+one path to audit.
+
+Arguments are values and handles, never pointers the nucleus dereferences
+without bounds. Where an operation needs a buffer, the buffer is named by a
+handle to a region the process already holds (`IPC_V1` §5), so the nucleus never
+walks an address a process chose.
+
+## 4. Status space
+
+`rax` returns zero for success or a negative status. The space is small and
+closed: an operation returns a status from this table or it is a defect.
+
+| Status | Meaning |
+|---|---|
+| `OK` | the operation completed |
+| `E_NO_CAPABILITY` | the handle was absent, wrong type, or lacked the right |
+| `E_BAD_HANDLE` | the handle index is outside the process's table |
+| `E_BAD_ARGUMENT` | an argument was outside its declared domain |
+| `E_WOULD_BLOCK` | a non-blocking operation had nothing to do |
+| `E_CANCELLED` | a blocking operation was cancelled |
+| `E_LIMIT` | a declared bound would be exceeded |
+| `E_NOT_SUPPORTED` | the operation exists in a later version of this ABI |
+
+`E_NO_CAPABILITY` and `E_BAD_HANDLE` are distinct on purpose and must not be
+merged for tidiness: the first says the process holds the wrong authority, the
+second says it named nothing at all, and an audit log that cannot tell them
+apart cannot describe an attack.
+
+There is no `E_PERMISSION` in the ambient sense. Authority is a handle or it
+does not exist.
+
+## 5. Operations
+
+Every operation names the capability it requires. **An operation reachable
+without a capability is a design defect, not a convenience.** The two exceptions
+are marked and are exactly those a process can only apply to itself.
+
+| Operation | Requires | Effect |
+|---|---|---|
+| `endpoint_send` | endpoint handle with `send` | `IPC_V1` §3 |
+| `endpoint_receive` | endpoint handle with `receive` | `IPC_V1` §3 |
+| `endpoint_call` | endpoint handle with `call` | request/reply, `IPC_V1` §4 |
+| `endpoint_reply` | reply handle (single use) | `IPC_V1` §4 |
+| `capability_attenuate` | the capability being attenuated | `CAPABILITY_V1` §4 |
+| `capability_release` | the capability being released | consumes the handle |
+| `region_share` | region handle with `share` | `IPC_V1` §5 |
+| `process_create` | process-authority capability | creates a process |
+| `process_terminate` | process-authority capability for that process | ends it |
+| `context_yield` | *(self only)* | gives up the rest of the quantum |
+| `time_monotonic` | *(self only)* | reads the monotonic tick |
+
+`process_create` is the operation a supervisor holds and an ordinary service
+does not. That distinction is the whole of Stage 3's authority story: a process
+that cannot create processes cannot escalate by spawning.
+
+## 6. Blocking and cancellation
+
+An operation that can block declares a cancellation path, and cancellation is
+observable as `E_CANCELLED` rather than as a value that looks like a result.
+No operation blocks indefinitely without one: an unkillable process is an
+authority the system cannot revoke.
+
+Blocking is always on a handle the process holds. There is no wait-for-anything
+primitive, because it would let a process wait on authority it was never given.
+
+## 7. Versioning
+
+The version is a whole-contract version, reported in process identity
+(`PROCESS_IDENTITY_V1` §3). Operation numbers are assigned once and never
+reused: a retired operation returns `E_NOT_SUPPORTED` forever rather than being
+recycled into a different meaning.
+
+A process built against a later minor version that calls an unknown operation
+receives `E_NOT_SUPPORTED` and is not terminated for asking. A nucleus that
+silently ignores an unknown operation is a defect: silence is indistinguishable
+from success.
+
+## 8. Conformance evidence
+
+A conforming implementation demonstrates, as automated tests:
+
+1. every operation in §5 refuses with `E_NO_CAPABILITY` when the required
+   capability is absent, including when a handle of a *different* type is
+   supplied at the same index;
+2. an out-of-range handle index yields `E_BAD_HANDLE` and never a fault;
+3. no operation dereferences a process-supplied address;
+4. an unknown operation number yields `E_NOT_SUPPORTED` and leaves the process
+   runnable;
+5. a blocking operation returns `E_CANCELLED` when its process is asked to stop,
+   and its resources are accounted back;
+6. the register-preservation rule holds across every operation, checked by a
+   process that fills every preserved register and compares after return;
+7. the ABI version a process reports matches the nucleus that served it.
+
+<!-- END source/interfaces/system/SYSTEM_ABI_V1.md -->
+
+---
+
+<!-- BEGIN source/interfaces/system/CAPABILITY_V1.md -->
+
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# TOS Capability Contract — Version 1
+
+Status: **Accepted Tier 2 interface contract.**
+
+Accepted by ADR-0048 (Project Architect-approved, 2026-08-12), which fixes the
+boundary this contract describes.
+
+Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
+the language half of the model already fixed by docs/42 §2 under ADR-0028.
+
+## 1. Role
+
+docs/42 §2 fixed what a capability means *in source*: a request rather than a
+grant, an opaque value of a nominal type, unforgeable, non-encodable,
+non-recreatable, attenuable only downward. It also said the concrete interfaces
+belong to later stages and must be separately versioned. This is that contract
+for Stage 3: what a handle **is**, who owns the table, and what the nucleus does
+when one is presented.
+
+The language contract and this one must agree at exactly one point: a value the
+checker treats as a capability corresponds to an entry in the holder's table,
+and nothing else in the system does.
+
+## 2. Representation
+
+A capability is named by a **handle**: a process-local index into a
+nucleus-owned table. It is not a pointer, not a token, not a signed bearer
+value, and it carries no rights in its own bits.
+
+| Property | Rule |
+|---|---|
+| Scope | process-local; the same index in two processes names different things, or nothing |
+| Storage | the table lives in nucleus memory and is not mapped into the process |
+| Contents | object, rights, scope, lifetime, generation |
+| Validity | index in range **and** generation matching |
+
+The generation is what makes a stale handle detectably stale. Releasing a
+capability and reusing its slot must not let an old index silently address the
+new occupant — the same reasoning that puts a generation in a memory grant
+(ADR-0050 §2).
+
+Because the table is nucleus-owned, docs/42's non-forgeability rules cost the
+implementation nothing to honour: a process cannot construct a handle, because
+constructing one would mean writing into a table it cannot address. A guessed
+index either misses, or hits an entry the process was already given.
+
+## 3. What a capability names
+
+```text
+capability = object + rights + scope + lifetime + generation
+```
+
+- **object**: the endpoint, region, process or interface publication it refers
+  to; never a class of objects, never "all of them";
+- **rights**: a finite set from the object type's declared rights;
+- **scope**: the range or subset the rights apply to, where the object has one;
+- **lifetime**: bounded by the object, and never longer than the grantor's own.
+
+A capability with unbounded scope is not a capability, it is ambient authority
+with a handle in front of it. docs/02 rules out ambient global privilege, and
+this is where that rule is enforced or lost.
+
+## 4. Attenuation, delegation, transfer, revocation
+
+**Attenuation** produces a new capability whose rights, scope and lifetime are
+each a subset of the input's. The nucleus checks the subset relation; it does
+not take the caller's word. Widening is not an error code, it is impossible to
+express: there is no operation that adds a right.
+
+**Delegation** is sending a capability over an endpoint (`IPC_V1` §6). The
+receiver gets its own handle, in its own table, with its own generation. Nothing
+about the sender's index is visible.
+
+**Transfer** of a linear capability consumes the sender's handle atomically with
+the receiver's acquisition. A failed send does not consume; a successful send
+does not leave a copy. There is no window in which both hold it, and none in
+which neither does.
+
+**Revocation** exists where the object's owning service defines it, as docs/12
+requires. Stage 3 provides the mechanism the owner needs — invalidating derived
+capabilities by generation — and does not invent a global revoke: a system-wide
+revoke primitive would be an ambient authority to destroy authority.
+
+## 5. Validation cost
+
+Validation is index bounds, generation compare, type compare and a rights mask
+test: **constant time with respect to the number of capabilities the process
+holds**, as docs/35 §Stage 3 requires. If an implementation ever needs a
+structure whose lookup is not constant-time, the alternative bound is documented
+and tested rather than quietly accepted, because a validation cost that grows
+with holdings is a denial-of-service channel against the most privileged
+processes.
+
+## 6. Interface publication
+
+The right to publish an interface is itself a capability, whose nominal type is
+the interface (ADR-0051 §2). A process that holds it may register; one that does
+not, cannot. There is no self-declared `provides`, and the registry never holds
+an entry no one granted.
+
+## 7. Conformance evidence
+
+1. **Forgery**: a process that writes arbitrary values where its handles live
+   gains nothing; handles are indices into a table it cannot address.
+2. **Guessing**: iterating every index in range yields only capabilities the
+   process was granted, and out-of-range indices yield `E_BAD_HANDLE`.
+3. **Staleness**: a released handle reused for a different object refuses the
+   old index by generation.
+4. **Attenuation**: for a generated set of right/scope pairs, no attenuation
+   produces a superset in any dimension.
+5. **Linearity**: after a successful transfer the sender's handle is invalid and
+   the receiver's is valid — checked for both a normal send and a send that
+   fails midway.
+6. **Confused deputy**: a broker holding a strong capability, asked by a weak
+   client to act on an object the client cannot name, refuses; the refusal is
+   attributable to the client in the audit record. This is the test docs/37
+   names explicitly, and it is the one that fails quietly in systems that pass
+   the other five.
+7. **Denial**: a module requesting a capability policy withholds starts with
+   `CapabilityDenied`, not with a null, a zero handle or a working default.
+
+<!-- END source/interfaces/system/CAPABILITY_V1.md -->
+
+---
+
+<!-- BEGIN source/interfaces/system/IPC_V1.md -->
+
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# TOS IPC Contract — Version 1
+
+Status: **Accepted Tier 2 interface contract.**
+
+Accepted by ADR-0048 (Project Architect-approved, 2026-08-12), which fixes the
+boundary this contract describes.
+
+Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs.
+
+## 1. Role
+
+docs/10 fixes the primitive set the nucleus provides — typed endpoint handles,
+send and receive, capability transfer, region transfer, notification,
+cancellation, lifecycle — and puts request/reply, streams, pub/sub and discovery
+in textual libraries and services above them. This contract is the primitive
+half.
+
+The distinction matters for what is *not* here: there is no service discovery by
+name, no broadcast, no routing and no message bus. Discovery returns handles
+under a namespace capability (docs/10), which makes it a service.
+
+## 2. Endpoints
+
+An endpoint is an object; an endpoint **handle** is a capability naming it with
+rights (`CAPABILITY_V1` §3). Rights are `send`, `receive`, `call`, and they are
+separate: holding the right to be called is not the right to call.
+
+An endpoint has exactly one receive-rights holder at a time. A second one would
+make delivery non-deterministic in a way no schema could describe.
+
+## 3. Messages
+
+```text
+message = inline bytes + transferred capabilities + transferred regions
+```
+
+| Property | Bound |
+|---|---|
+| Inline payload | fixed maximum, declared by this contract version, small enough to copy without allocation |
+| Transferred capabilities | fixed maximum per message |
+| Transferred regions | fixed maximum per message |
+
+Anything larger travels as a region (§5). The inline maximum is a constant of
+the contract, not a per-endpoint parameter, because a per-endpoint size makes
+the nucleus's fast path depend on data it must first go and read.
+
+A message is delivered whole or not at all. There is no partial receive, so a
+receiver never has to reason about a half-message.
+
+## 4. Request and reply
+
+`endpoint_call` sends and blocks for the reply. The nucleus creates a single-use
+reply capability and gives it to the receiver; replying consumes it. A receiver
+that never replies does not hold the caller forever: the caller's cancellation
+path (`SYSTEM_ABI_V1` §6) is the release valve, and the reply capability's
+lifetime is bounded by the caller's.
+
+Single-use is the property that keeps a reply from becoming an unbounded channel
+back into the caller.
+
+## 5. Regions
+
+A large payload is a memory region transferred as a capability, exactly as
+docs/42 §2 requires — `Region<T>` originates only through a capability
+operation, with element type, alignment, access, size, lifetime and transfer
+rules declared by the interface.
+
+The nucleus maps and unmaps; it does not copy the payload through itself. A
+transferred region leaves the sender's address space at transfer, if the
+interface declares the transfer linear; a shared region is mapped in both under
+the access mode the grant declares, and `Shared`/`mut` rules from docs/40–41
+govern what may be done with it.
+
+## 6. Capability transfer
+
+Capabilities travelling in a message follow `CAPABILITY_V1` §4: the receiver
+gets its own handle, linear capabilities are consumed atomically, and a message
+that fails to deliver transfers nothing.
+
+## 7. Queues and backpressure
+
+Every endpoint queue is bounded. When it is full a sender is told — `E_LIMIT`
+for a non-blocking send, blocking with a cancellation path otherwise. **The
+system never grows a queue to accept a message.** docs/10 states the reason:
+unbounded memory growth through message accumulation is a denial of service that
+looks like generosity.
+
+Backpressure is visible to the sender. A dropped message with a success status
+would make every protocol above this one unsound.
+
+## 8. Budgets this contract must meet
+
+From docs/35 §Stage 3, restated as obligations on the implementation:
+
+- no dynamic allocation in the nucleus fast path;
+- at most two payload copies for an inline message;
+- large payloads by region, never copied through the nucleus;
+- at most four user/kernel boundary crossings per request/reply, excluding
+  scheduler preemption;
+- capability validation constant-time in the holder's capability count.
+
+### The benchmark the relative budget is measured against
+
+docs/35 bounds p99 request/reply for a 64-byte message at "no more than 8 times
+an in-process function-call benchmark". That denominator is defined **here, and
+before any measurement exists**, because a benchmark chosen afterwards can be
+made slow enough to pass anything:
+
+> The in-process function-call benchmark is a call to an exported TOS Core
+> function taking one 64-byte value parameter and returning `unit`, executed by
+> the same engine build, in the same process, on the same reference platform
+> (ADR-0040), measured over the same sample discipline docs/35 requires of the
+> IPC series: 3 warm-ups, 21 measurements, p99 reported alongside median.
+
+It is an in-process *TOS Core* call, not a Rust call and not an empty loop: the
+budget asks what IPC costs relative to what this system's own code already
+costs. The absolute 200 µs bound is measured independently, and both are
+reported, because either alone can be satisfied while the other is missed.
+
+## 9. Conformance evidence
+
+1. A message larger than the inline maximum is refused, not truncated.
+2. A full queue produces `E_LIMIT` or a cancellable block, never a silent drop
+   and never an allocation.
+3. A failed send transfers no capability and no region: checked by attempting a
+   send that fails after the capability check.
+4. An endpoint with one receiver cannot acquire a second.
+5. A caller cancelled while blocked in `endpoint_call` returns `E_CANCELLED`,
+   and the receiver's reply capability is invalidated rather than leaked.
+6. A region transferred linearly is unmapped from the sender at transfer,
+   demonstrated by a fault on the sender's next access.
+7. The §8 budgets are measured on the ADR-0040 platform against the §8
+   benchmark, with the boundary-crossing and copy counts *counted*, not
+   estimated.
+
+<!-- END source/interfaces/system/IPC_V1.md -->
+
+---
+
+<!-- BEGIN source/interfaces/system/PROCESS_IDENTITY_V1.md -->
+
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# TOS Process Identity — Version 1
+
+Status: **Accepted Tier 2 interface contract.**
+
+Accepted by ADR-0048 (Project Architect-approved, 2026-08-12), which fixes the
+boundary this contract describes.
+
+Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs.
+
+## 1. Role
+
+docs/03 calls the identity plane part of the operating-system model rather than
+optional debugging metadata, and docs/10 lists the fields a process identity
+carries. docs/02 I-16 requires that every running non-nucleus component be able
+to report the source it came from.
+
+This contract fixes the part that decides whether any of that is evidence:
+**who asserts each field.**
+
+## 2. Why the asserter is the contract
+
+A process that reports its own module digest is reporting a claim. If the
+process is defective or hostile, the claim is worth nothing, and an audit record
+built from it is worth less than nothing because it looks like evidence.
+
+So identity has two kinds of record, and they are never merged:
+
+- the **launch record**, made by whoever held the `process_create` capability,
+  from the bytes and the grant it actually passed;
+- **self-report**, produced by the process about itself, available for
+  debugging, always labelled, never the audit record.
+
+Where the two disagree, the launch record governs and the disagreement is itself
+an event worth emitting.
+
+## 3. Fields
+
+| Field | Asserted by | Notes |
+|---|---|---|
+| process instance id | nucleus | unique for the life of the boot; never reused |
+| module name | launcher | read from the verified module header |
+| source content id | launcher | `sha256:` over the normalized source it passed |
+| source set | launcher | capsule or commit; §5 |
+| system commit id | launcher | absent in Stage 3; §5 |
+| language/frontend id | launcher | from the module header |
+| IR schema id | launcher | from the module header |
+| verifier identity | launcher | the verifier that issued the receipt |
+| runtime engine id | launcher | ADR-0048: the engine is a per-process artifact and is named |
+| system ABI version | nucleus | `SYSTEM_ABI_V1` §7 |
+| granted capability set | nucleus | what was actually installed in the table, not what was requested |
+| requested capability set | launcher | from the module's `capability_imports` |
+| memory grant | nucleus | base, length, generation (ADR-0050) |
+| parent supervisor | nucleus | the creating process's instance id |
+| start time | nucleus | monotonic tick (ADR-0049) |
+| restart generation | supervisor | §4 |
+
+Two entries deserve their reason stated. The **granted** set is asserted by the
+nucleus and kept separate from the **requested** set, because the gap between
+them is the only durable record that policy did something; a single merged field
+would hide every denial. The **runtime engine id** is a consequence of ADR-0048:
+once the engine runs per process, "which engine executed this" stops being a
+property of the system and becomes a property of the process.
+
+## 4. Restart
+
+A restart produces a new process instance id and increments the restart
+generation, keeping the same module and supervisor lineage. Identity is not
+reused: an instance id that came back would make two different executions
+indistinguishable in the log.
+
+docs/37 requires that service restart preserve identity and audit records. That
+means the lineage — module, source content id, supervisor, generation sequence —
+survives, not that the instance is the same one.
+
+## 5. What Stage 3 honestly cannot say
+
+Stage 3 has no repository. A process launched from the capsule has a source set
+naming the capsule and its digest, and its **system commit id is absent, not
+guessed**. Writing the capsule's build commit there would report a commit the
+system never read, which is exactly the failure Stage 1 was built to prevent.
+
+Stage 5 replaces the capsule source set with the selected commit's tree, and the
+field becomes present. Until then, absence is the true value.
+
+## 6. Observability
+
+Process identity is reported through the existing delegated runtime vocabulary
+rather than a competing one: identifiers under `TOS.RUN.*`, one event per line,
+same discipline as `RUNTIME_OBSERVABILITY_V1`. Extending that contract to a new
+producer is a versioned change to it, not a new namespace, because two event
+vocabularies describing one system eventually disagree.
+
+Self-reports, when emitted, are distinguishable from launch records by
+identifier. A reader must never have to guess which kind of claim it is holding.
+
+## 7. Conformance evidence
+
+1. The launch record for a process is reproducible from the artifact: recompute
+   the source content id from the capsule bytes and get the same value.
+2. A process that lies about itself changes only its self-report; the audit
+   record is unchanged and the disagreement is emitted.
+3. A denied capability appears as a difference between the requested and granted
+   sets, and the process's `CapabilityDenied` startup failure names it.
+4. Restart increments the generation, changes the instance id, and preserves the
+   module and supervisor lineage.
+5. The system commit id is absent for every capsule-launched Stage 3 process —
+   asserted by a test, so that a later stage cannot make it present by accident.
+6. Every field in §3 has exactly one asserter in the implementation, checked by
+   a test that no field is written from two sources.
+
+<!-- END source/interfaces/system/PROCESS_IDENTITY_V1.md -->
 
 ---
 
@@ -5893,9 +6434,16 @@ installed system.
 
 Textual components launched as isolated processes under
 `docs/10_PROCESS_SERVICE_IPC.md`, `docs/11_DRIVER_MODEL.md` and
-`docs/07_LANGUAGE_FRONTENDS.md`. Each component's manifest is declared inside
-its own module source, as shown in `docs/11_DRIVER_MODEL.md`; TOS does not keep
-a parallel manifest directory that could drift from the code it describes.
+`docs/07_LANGUAGE_FRONTENDS.md`. What a component **needs** — its capability
+requests, resource envelope, imports and exports — is declared inside its own
+module source in accepted TOS Core V1 form, as shown in
+`docs/11_DRIVER_MODEL.md`; TOS does not keep a parallel description of the code
+that could drift from the code it describes.
+
+How a component is **supervised** — restart policy, health probes, state
+namespace, shutdown timeout — is not a description of the code but a decision
+about it, made by the authority that launches it, and lives in `policy/` below.
+ADR-0051 fixes that split.
 
 ### `lib/`
 
@@ -6156,28 +6704,46 @@ A driver instance receives only capabilities for its assigned device and support
 
 It does not receive arbitrary physical memory or unrelated devices.
 
-## Driver manifest example
+## Driver manifest
+
+A component declares what it needs in its own module source, using the accepted
+TOS Core V1 forms. There is no `manifest` item in the V1 grammar, and ADR-0051
+explains why one is not needed: everything a launcher must know before it starts
+a component is already in the module header and already in the verified IR.
 
 ```tos
-module drivers.virtio.net
+module drivers.virtio.net version 1.0 profile bootstrap;
 
-manifest driver {
-    matches pci(vendor: 0x1af4, device: [0x1000, 0x1041])
-    runtime_profile "bootstrap-capable"
+resource [fuel: 4000000, stack: 128KiB, allocation: 64KiB, tasks: 4, workers: 1,
+          sync: 2, shared: 0B, cleanup: 32, recursion: 16, imports: 4]
 
-    requires {
-        capability pci.configure
-        capability mmio.map
-        capability irq.bind
-        capability dma.allocate(max: 64 MiB)
-        capability service.publish("net.adapter.v1")
-    }
-
-    provides "net.adapter.v1"
-    state none
-    restart restartable
-}
+import capability platform.pci.FunctionConfig as pci;
+import capability platform.mmio.RegionMap as mmio;
+import capability platform.irq.Binding as irq;
+import capability platform.dma.Allocator as dma;
+import capability net.adapter.V1Publisher as publisher;
 ```
+
+Three things are worth reading twice.
+
+The right to publish `net.adapter.v1` is **requested**, not asserted: the
+capability's nominal type is the interface it publishes, so the launcher decides
+whether this component may offer it. docs/37 names "textual manifest grants
+itself authority" as a Stage 3 failure condition, and a self-declared `provides`
+line is exactly that.
+
+Resource bounds are the module's declared envelope, which the verifier already
+checks — not a second set of numbers beside it that could disagree.
+
+Restart policy, health probes, state namespace and shutdown timeout are absent,
+because they are decisions *about* this component rather than descriptions *of*
+it. They belong to whoever has authority to launch it, and live in
+`/system/policy/` as canonical source.
+
+Device matching — which hardware this driver claims — is a Stage 4 question with
+its own answer to find. It is not an authority a launcher grants but a query a
+bus manager evaluates, and ADR-0051 deliberately leaves it open rather than
+settling it a stage early.
 
 ## Driver interfaces
 
@@ -6597,6 +7163,139 @@ TOS does not analyze what a vendor object does. The controls constrain which
 bytes are loaded and whether the owner can see that they were loaded — not their
 behavior once running. This limit is stated rather than mitigated, and T7 remains
 the governing adversary class.
+
+## Stage 3 — the capability, IPC and process boundary in detail
+
+Trust boundary 7 — nucleus to user-space service through the capability and IPC
+boundary — is created by Stage 3 under ADR-0048…0051. The subsystem paragraph
+above names the threat families; this section is the detail the change rule
+requires before Stage 3 can close. Adversary classes, assets and required
+properties are the existing ones; nothing here adds a class or an asset.
+
+### X3.1 — Authority acquired without a grant (T1, T2 → A3, S3)
+
+A process obtains authority it was never granted: forging a handle, guessing an
+index, re-encoding a handle's bits into a value, reusing a released handle after
+its slot is recycled, or presenting a handle of one type where another is
+expected.
+
+Controls: handles are process-local indices into a nucleus-owned table with
+generations; validation checks range, generation, type and rights
+(`interfaces/system/CAPABILITY_V1.md` §2). Negative tests: that contract §7.1–3.
+Evidence level target at closure **E3** — the guessing and staleness cases are
+fuzzable and must be fuzzed, not argued.
+
+### X3.2 — Authority widened by attenuation (T2 → A3, S4)
+
+Attenuation returns a capability with more rights, wider scope or longer
+lifetime than its input, through an arithmetic or subset-check defect.
+
+Controls: the nucleus computes and checks the subset relation in all three
+dimensions, and no operation adds a right (`CAPABILITY_V1` §4). Negative test:
+§7.4, generated over right/scope pairs rather than a hand-picked few. **E3**.
+
+### X3.3 — Confused deputy (T1, T2 → A3, A8)
+
+A weak client persuades a broker holding a strong capability to act on an object
+the client cannot name. This is the failure that survives when the mechanical
+capability tests all pass.
+
+Controls: a broker acts only on objects named by capabilities the client passed;
+refusal is attributable to the client in the audit record (`CAPABILITY_V1` §7.6;
+docs/37 Stage 3 evidence). **E2** at Stage 3 close, **E3** once a second broker
+service exists to test against.
+
+### X3.4 — Isolation breach between processes (T1, T2 → A4, A9)
+
+A process reads or writes another process's memory or the nucleus's: addressing
+outside its grant, racing a region transfer, or reading frames that belonged to
+a dead process.
+
+Controls: hardware address spaces (ADR-0048); grants bounded and
+generation-tagged with frames cleared before reuse (ADR-0050 §3); linear region
+transfer unmaps at the sender (`interfaces/system/IPC_V1.md` §5). **E2**, with
+the frame-reuse case at **E3** because it is the one that fails silently.
+
+### X3.5 — Denial of service through the nucleus (T1, T2 → A9)
+
+A process fills queues to grow nucleus memory, holds a receiver blocked forever,
+spins without entering the ABI, or makes capability validation expensive by
+holding many capabilities.
+
+Controls: bounded queues with visible backpressure and no allocation to accept a
+message (`IPC_V1` §7); timer preemption independent of process cooperation
+(ADR-0049); constant-time validation in the holder's capability count
+(`CAPABILITY_V1` §5); every blocking operation cancellable
+(`interfaces/system/SYSTEM_ABI_V1.md` §6). **E2**.
+
+Explicit Stage 3 non-goal: fair-share scheduling and priority-inversion control.
+Round-robin within one band is what ADR-0049 fixes.
+
+### X3.6 — The system ABI as an attack surface (T1, T2 → A4, S2)
+
+A process drives the ABI with out-of-domain arguments, unknown operation
+numbers, or addresses it hopes the nucleus will dereference.
+
+Controls: a closed status space; no operation dereferences a process-supplied
+address; buffers are named by region handles; an unknown operation returns
+`E_NOT_SUPPORTED` rather than being ignored (`SYSTEM_ABI_V1` §3, §4, §7).
+**E3** — the ABI is the one Stage 3 surface taking wholly untrusted input in
+registers, and it is fuzzable exactly as the capsule parser was.
+
+### X3.7 — Escalation by process creation (T2 → A3, A8)
+
+A service creates a process to obtain authority it does not hold, or grants a
+child more than it holds itself.
+
+Controls: `process_create` requires a process-authority capability ordinary
+services do not hold; a launcher cannot install a capability it does not itself
+hold, and the granted set is asserted by the nucleus rather than by the
+launcher's claim (`SYSTEM_ABI_V1` §5,
+`interfaces/system/PROCESS_IDENTITY_V1.md` §3). **E2**.
+
+### X3.8 — Identity forged by the process it describes (T2 → A6, A1, S12)
+
+A process reports a module digest, source set or capability set it does not
+have, and the false claim reaches the audit record.
+
+Controls: the audit record is the launch record, asserted by the holder of
+`process_create` from the bytes it passed; self-reports are separately
+identified and never the audit record; disagreement is itself an event
+(`PROCESS_IDENTITY_V1` §2, §6, negative test §7.2). **E2**.
+
+### X3.9 — A commit identity the system never read (T2, T6 → A1, A6, S1)
+
+A Stage 3 process is recorded as belonging to a system commit although Stage 3
+has no repository and read no commit, and the false record propagates into
+activation and rollback reasoning later.
+
+Controls: the system commit id is **absent** for capsule-launched processes and
+is asserted absent by test, not left to convention (`PROCESS_IDENTITY_V1` §5,
+§7.5). **E2**.
+
+This is the Stage 3 form of the failure Stage 1 was built to prevent — an
+invented official commit. It is cheap to introduce by accident and expensive to
+detect later.
+
+### X3.10 — Privileged policy migrating into the nucleus (T0 → A1, A8)
+
+Service logic moves into the nucleus because IPC is inconvenient, and the system
+becomes a conventional microkernel with textual decoration.
+
+Controls: a design threat, checked as docs/31 checks it — a dependency and
+surface inventory at Stage 3 close showing that no service logic entered the
+nucleus and that every privileged behaviour is exercised by a source-identified
+textual process. **E1**, honestly: a reviewable property, not a tested one.
+
+### What Stage 3 does not claim
+
+- no protection against T7 or T8, which remain outside containment;
+- no timing or micro-architectural side-channel protection between processes;
+  clearing reused frames closes the direct-disclosure path and nothing more;
+- no time source a process can trust — monotonic ticks exist for scheduling
+  (ADR-0049) and trusted time is Stage 7;
+- no revocation of already-delegated authority beyond what an owning service
+  implements (`CAPABILITY_V1` §4).
 
 ## Accepted non-goals for early stages
 
@@ -7101,6 +7800,15 @@ Reference-platform budget:
 - p99 request/reply latency for a 64-byte message between two runnable processes is no more than 8 times an in-process function-call benchmark and no more than 200 microseconds on the declared QEMU CI profile.
 
 Both relative and absolute limits are required because either alone can mislead.
+
+The in-process function-call benchmark is fixed by
+`source/interfaces/system/IPC_V1.md` section 8, and was fixed there before any
+IPC measurement existed: a call to an exported TOS Core function taking one
+64-byte value parameter and returning `unit`, executed by the same engine build,
+in the same process, on the ADR-0040 reference platform, under the sample
+discipline this document requires of the IPC series. The denominator is defined
+in advance because a benchmark chosen afterwards can be made slow enough to
+satisfy any ratio, which would turn the relative limit into a fitted number.
 
 ## Stage 4 — VirtIO block textual driver
 
@@ -13470,6 +14178,1482 @@ whether actual language semantics execute, and with a host runtime underneath,
 that execution is a host execution.
 
 <!-- END docs/adr/0041-runtime-memory-grant.md -->
+
+---
+
+<!-- BEGIN docs/adr/0042-runtime-events-on-the-boot-log.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0042: Runtime events on the Boot ABI v1 serial log
+
+- Status: **Accepted** (Project Architect-approved)
+- Date: 2026-08-12
+- Decision level: 2 — settles how a versioned interface contract admits events
+  belonging to another interface, and gives a boot a result code for the
+  canonical boot module failing to execute
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12, with one
+  amendment: the result code of gap 2 is named `RESULT_BOOT_MODULE_FAILED`
+  rather than `RESULT_RUNTIME_REFUSED`, and the delegation of gap 1 is to an
+  *accepted versioned interface contract* rather than to any unknown namespace
+
+## Context
+
+Stage 2 now runs the capsule's canonical boot module on the real boot path. The
+reference runtime reports what it did in the `TOS.RUN.*` vocabulary described
+in `docs/evidence/STAGE2_RUNTIME_EVENTS.md`, on the same serial
+transport that carries the Boot ABI v1 events, between `TOS.IDENTITY` and
+`TOS.HALT`.
+
+Boot ABI v1 was fixed when nothing ran, and it does not settle what a
+conforming consumer should now do. A third question follows from where the new
+vocabulary is allowed to live.
+
+### Gap 1: interleaving is neither permitted nor forbidden
+
+`interfaces/boot/BOOT_ABI_V1.md` section 7 says a successful boot "emits the
+following identifiers in this exact order", that "a consumer may rely on the
+listed identifier order", and — in the failure section — that:
+
+> A consumer MUST treat an unknown non-success `TOS.*` failure or result as
+> failure, not as a successful boot.
+
+Its explicit extension rule covers two things and only two: optional `key=value`
+fields appended after a mandatory prefix, and new `TOS.BOOT.FAILI` reason
+tokens. It says nothing about new *identifiers*.
+
+**Minimal counterexample.** This is the log of a boot that succeeded in every
+respect, abbreviated to the identifiers:
+
+```text
+TOS.BOOT.ENTRY
+TOS.CAPSULE.OK
+TOS.BOOT.HANDOFF
+TOS.NUCLEUS.ENTRY
+TOS.CAPSULE.OK
+TOS.BOOTTEXT.PATH
+TOS.BOOTTEXT.DIGEST
+TOS.IDENTITY
+TOS.RUN.BEGIN            <- not in the v1 vocabulary
+TOS.RUN.COMPLETED        <- not in the v1 vocabulary
+TOS.HALT
+```
+
+Two conforming readings disagree about it:
+
+- **A.** Every listed identifier appears in the listed relative order, and
+  `TOS.HALT ok=0x10` with result `0x10` is the terminal result. The boot
+  succeeded.
+- **B.** `TOS.RUN.COMPLETED` is an unknown `TOS.*` identifier that is not one of
+  the listed success identifiers. Under the sentence quoted above it is an
+  unknown non-success result and the consumer must treat the boot as failed.
+
+Reading B rejects a boot that did strictly more than v1 describes and did it
+correctly. Reading A is what every consumer in this repository implements today
+(`host-tools/qemu-test/run.sh` checks the listed identifiers as an ordered
+subsequence), but no accepted document says A is the right reading, and a v1
+consumer written outside this repository could reasonably implement B.
+
+### Gap 2: no result code for a boot module that did not execute
+
+Boot ABI v1 section 2 fixes the result codes: `RESULT_HALT_OK` (`0x10`),
+`RESULT_PANIC`, `RESULT_CAPSULE_INVALID`, `RESULT_ABI_INVALID`,
+`RESULT_MEMORY_INVALID`, `RESULT_EXCEPTION`. None of them means "the capsule was
+valid, the nucleus was healthy, and the canonical boot module did not execute".
+
+That state is now reachable in three distinct ways that Boot ABI v1 cannot tell
+apart: the frontend refused the module, the independent verifier refused the IR
+the frontend emitted, or the engine trapped. Each is reported in full in the
+`TOS.RUN.*` events, and each currently halts with `RESULT_CAPSULE_INVALID`.
+
+That code is defensible — its meaning is "nucleus rejected capsule data after
+handoff", and the canonical boot text is capsule data the nucleus rejected — but
+it collapses "this program is wrong" into the same signal as "these bytes are
+not a capsule", and a consumer that only reads the exit code cannot separate
+them.
+
+### Gap 3: the runtime vocabulary has no accepted home
+
+`TOS.RUN.*` is an interface: a harness, an operator's tooling and a future
+Stage 3 supervisor all read it. An accepted versioned interface contract lives
+under `source/interfaces/` and carries Tier 2 authority
+(`docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`), which requires an Architect
+decision this vocabulary has not had. It therefore sits in
+`docs/evidence/STAGE2_RUNTIME_EVENTS.md`, describing what the implementation
+emits and binding nobody.
+
+## Options
+
+### For gap 1
+
+1. **State that the success order is a required subsequence.** Add to Boot ABI
+   v1 section 7 that identifiers defined by other interface contracts MAY be
+   interleaved, that the listed identifiers must still appear in the listed
+   relative order, and that the "unknown non-success" sentence applies to
+   identifiers that report a *result of the boot*, not to identifiers belonging
+   to another declared contract.
+2. **Reserve a namespace.** Say that `TOS.RUN.*` — or, more generally, any
+   identifier under a prefix Boot ABI v1 does not define — is outside this
+   contract and carries no boot verdict.
+3. **Forbid interleaving.** Require every event on the boot transport to belong
+   to Boot ABI v1, which would mean either adding the runtime vocabulary to Boot
+   ABI v1 or giving the runtime a separate transport.
+4. **Bump to Boot ABI v2** and settle it there.
+
+### For gap 2
+
+1. **Add `RESULT_RUNTIME_REFUSED`** as a new stable result code, meaning the
+   canonical boot module did not execute; the `TOS.RUN.*` events say which stage
+   refused and why.
+2. **Keep `RESULT_CAPSULE_INVALID`** and state in Boot ABI v1 that it also
+   covers canonical boot content that did not execute.
+3. **Halt with `RESULT_HALT_OK`** and leave the outcome to the event log.
+   Rejected below.
+
+### For gap 3
+
+1. **Promote it** to `source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md` as
+   an accepted Tier 2 interface contract, listed in
+   `docs/SPECIFICATION_SOURCES.txt`.
+2. **Leave it descriptive** and let each consumer pin the producer's version
+   instead of a contract.
+
+## Decision
+
+### Gap 1 — the success order is a required ordered subsequence
+
+The Boot ABI v1 success identifiers are a mandatory **ordered subsequence** of
+the shared diagnostic transport. Between them there MAY appear identifiers
+belonging to **another accepted versioned interface contract**.
+
+This is not permission for arbitrary unknown `TOS.*` namespaces. A delegated
+namespace must belong to an accepted contract; anything else remains an unknown
+`TOS.*` identifier, and the existing rule for one is unchanged. The Boot ABI
+terminal result stays authoritative for whether the boot succeeded — an
+interleaved contract reports its own subject, never the boot's verdict.
+
+### Gap 2 — `RESULT_BOOT_MODULE_FAILED = 0x25`
+
+```text
+RESULT_BOOT_MODULE_FAILED = 0x25
+```
+
+**Exact condition.** Boot ABI and capsule validation succeeded and the nucleus
+remained operational, but the canonical boot module did not complete
+successfully through the required Stage 2 execution path.
+
+It covers a frontend or checker refusal, a lowering or pipeline failure, an
+independent-verifier refusal, and an engine trap or failure. Which one it was is
+reported by the `TOS.RUN.*` events, not by the code.
+
+The code is **not** to be issued for a nucleus panic, a malformed capsule, or a
+`BootInfo` failure; those keep their own codes and their own meanings. A
+consumer that predates `0x25` is still obliged to treat an unknown non-success
+result as a failure, so fail-closed compatibility is preserved without that
+consumer having to be updated.
+
+### Gap 3 — the runtime vocabulary is promoted
+
+`TOS.RUN.*` belongs to `source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md`,
+an accepted Tier 2 versioned interface contract under
+`docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`, listed in
+`docs/SPECIFICATION_SOURCES.txt`. That contract is the delegated namespace gap 1
+admits.
+
+## Recommendation (as proposed, before the decision above)
+
+**Gap 1: option 1, with option 2's wording folded in.** It is the smallest
+change that makes the existing implementations correct, it does not touch a
+single mandatory field, identifier or result code, and it preserves the property
+consumers actually rely on — that the v1 identifiers appear, in order, and that
+the terminal result is unambiguous. Option 3 would push the runtime onto a
+second transport for no gain, and reserving a prefix (option 2) is worth saying
+explicitly so the next contract does not need this ADR again.
+
+**Gap 2: option 1.** A new result code costs a constant and separates two states
+that a consumer has a real reason to separate: a capsule that is not a capsule
+is an integrity or supply problem, while a boot module that does not verify is a
+source problem, and an operator's next action differs. Option 3 is rejected
+outright: a boot whose canonical module did not execute is not a successful
+boot, and reporting `0x10` for it would make the exit code lie about the state
+of the system — exactly the failure mode "fail closed" exists to prevent.
+
+**Gap 3: option 1.** The events are already load-bearing — a preflight gate
+fails the build on their content — and an interface that gates a build while
+binding nobody is a contract in everything but name. Option 2 makes every
+consumer depend on an implementation version, which is the coupling
+`source/interfaces/` exists to prevent.
+
+## What the implementation does now that this is Accepted
+
+- Boot ABI v1 section 2 gains `RESULT_BOOT_MODULE_FAILED = 0x25` with the exact
+  condition above; section 7 gains the ordered-subsequence rule and the
+  delegated-namespace restriction. No existing identifier, field, result code or
+  ordering statement is altered.
+- `source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md` is the accepted Tier 2
+  contract for `TOS.RUN.*`; `docs/evidence/STAGE2_RUNTIME_EVENTS.md` is gone
+  rather than left as a second description that could drift from it.
+- The nucleus issues `RESULT_BOOT_MODULE_FAILED` when the canonical boot module
+  does not complete, and keeps `RESULT_CAPSULE_INVALID` for capsule content it
+  rejects. The QEMU negative suite covers the new code end to end.
+
+## Consequences
+
+A consumer can now separate three states by exit code alone: a capsule that is
+not a capsule, a nucleus that failed, and a canonical boot module that did not
+execute. An operator's next action differs for each, and until now the third was
+indistinguishable from the first.
+
+The delegated-namespace rule is deliberately narrow. It buys extensibility at
+the price of one obligation: a component that wants to speak on the boot
+transport must first have an accepted contract for what it says. That is the
+same discipline every other interface here is under, and it is what keeps
+"unknown `TOS.*` means failure" a rule with teeth rather than a rule with a
+loophole.
+
+## Alternatives considered
+
+**Say nothing and keep shipping.** Rejected. The ambiguity is real, an outside
+v1 consumer could correctly reject a working boot, and a Stage 2 closure that
+rested on a reading no document states would be resting on a habit.
+
+**Fix Boot ABI v1 directly and note it in the gate record.** Rejected. The boot
+ABI is a versioned public contract; editing its normative text without an
+Architect decision is exactly the change this project does not make, however
+small and however obviously right the edit looks.
+
+<!-- END docs/adr/0042-runtime-events-on-the-boot-log.md -->
+
+---
+
+<!-- BEGIN docs/adr/0043-stage2-performance-budgets.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0043: The Stage 2 quantitative performance budgets
+
+- Status: **Accepted** (Project Architect-approved)
+- Date: 2026-08-12
+- Decision level: 2 — the numbers in docs/35 that a Stage gate is measured against
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12, accepting the
+  engine part with an amended threshold (22x rather than the 25x recommended
+  here) and a correction to what a ratio gate is for. The frontend and
+  quota-rejection budgets are **unchanged** by this decision.
+
+## Context
+
+Stage 2 now has a complete paired measurement taken by the normative procedure:
+3 warmups, 21 samples, median/p95/p99, one commit, one set of fixtures emitted
+by the harness that measures them natively, both halves
+(`docs/evidence/STAGE2_PERFORMANCE_PAIR_P1.md`).
+
+| metric | native p95 | reference p95 | budget | verdict |
+|---|---|---|---|---|
+| frontend, 256 KiB module | 160 893 us | 1 490 798 us | 500 000 us | **FAIL** (2.98x over) |
+| engine, 1e6 operations | 333 743 us | 5 541 378 us | ratio ≤ 10x | **FAIL** (16.6x) |
+| quota rejection | 66 668 us | 763 305 us | ≤ 2x accepted | **PASS** (0.512) |
+
+**The implementation defects are gone, and they were found rather than argued
+around.** Two were fixed:
+
+- the heap searched every block on every allocation, making the frontend
+  superlinear in its input (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`);
+- the lowerer rendered `format!("{:?}")` to intern every type, which cost 7%
+  natively and over 600x on the reference platform
+  (`docs/evidence/STAGE2_FREESTANDING_PRIMITIVES.md`).
+
+One hypothesis — that the freestanding memory primitives were byte-at-a-time —
+was **tested against the real binary and refuted**. They are `rep movsq`,
+`rep stosq` and a 16-byte `memcmp`. No substrate was written for a defect that
+did not exist.
+
+The evidence that nothing else is hiding is that the platform factor is now
+uniform across two very different workloads: 9.3x for the copy- and
+allocation-heavy frontend, 16.6x for the arithmetic-heavy engine. Before the
+fixes those differed by three orders of magnitude.
+
+### The two failures are not the same kind of failure
+
+**The engine budget is a ratio of one implementation to itself on two
+platforms.** Optimising the engine moves numerator and denominator together, so
+the ratio barely moves. That was an argument when this ADR was first written; it
+is now a measurement (`docs/evidence/STAGE2_PERFORMANCE_DECOMPOSITION.md`):
+
+```text
+                 native p95     reference p95     ratio
+engine, before     333 743 us     5 541 378 us     16.6x
+engine, after      215 529 us     3 628 441 us     16.8x
+```
+
+A general optimisation worth **1.6x** — removing a per-instruction clone from
+the interpreter's hottest loop — left the ratio where it was, at about 16.7x.
+
+That is strong evidence that the ratio is dominated by the cost of the ADR-0040
+TCG platform rather than by this engine, and the decomposition that was missing
+has now been taken (`docs/evidence/STAGE2_ENGINE_DECOMPOSITION.md`):
+
+| component | ratio |
+|---|---|
+| dispatch + branch + fuel (the bare loop) | 16.9x |
+| integer arithmetic | 17.9x |
+| comparison | 15.4x |
+| conditional branch | 16.2x |
+| local load/store | 15.1x |
+| call / return / frame | 15.5x |
+| aggregate construction | 23.3x |
+
+Every semantic component the million-operation benchmark actually performs lies
+between **15.1x and 17.9x**. The aggregate 16.8x is the weighted average of that
+band, not an average hiding an outlier — which is precisely what the
+decomposition existed to rule out.
+
+The single outlier, aggregate construction at 23.3x, is the only component that
+allocates: the gap is the bounded heap against the host allocator, and the
+benchmark contains no aggregate construction at all.
+
+Two independent experiments therefore agree. A 1.6x general speedup did not move
+the ratio, and no component of the workload deviates from the band. Within this
+architecture the ratio is a platform property.
+
+**The frontend budget is absolute**, so implementation work can reach it, and
+work since has moved it. Three further general inefficiencies were found and
+fixed — the engine's per-instruction clone, a whole-source NFC normalization
+that ASCII makes unnecessary (`read` 23.3 ms → 0.4 ms), and eagerly formatted
+verifier finding locations. The frontend now stands at 124 ms native and
+1.28 s reference against a 500 ms budget: **2.56x over**, down from 2.98x.
+
+The stages that remain are `check` (~33 ms), `lower` (~28 ms) and `verify`
+(~55 ms). `verify` has now been profiled one level down, and **38.8 ms of its
+54.7 ms is the module digest** — a third of the entire frontend. That work is
+not optional: docs/43 section 5 binds the receipt to the module's complete
+digest, and a verifier that skipped it would be issuing a receipt for something
+it had not identified.
+
+Its cost is dominated by the *size* of the canonical stream being hashed, and
+that in turn by the encoding: every count and every length is written as a
+16-byte big-endian `u128`, whatever its magnitude. A module at the ceiling has
+tens of thousands of counts. A variable-length encoding would cut the stream
+substantially — but the stream **is** the module identity, so changing it
+changes every module digest and every receipt and cache key derived from one.
+That is an `tos-ir/v1` contract question and is not taken unilaterally; it is
+recorded here as the largest identified frontend cost with a known shape.
+
+One optimisation was tried and **rejected by measurement**: hashing the stream
+incrementally instead of buffering it, to avoid a multi-megabyte allocation. It
+was slower — a compression function called with small fragments pays its
+per-call cost repeatedly, and a fixed intermediate window only added a copy. The
+buffered form is kept because it measured faster, and the attempt is recorded so
+it is not repeated.
+
+## The precedent this follows
+
+Stage 1's initial 250 ms threshold was empirically falsified rather than
+defended: the number was written before anything ran, the measurement
+disagreed, and the threshold moved because the evidence said so. The order
+matters and has been followed — measure, find the defects, fix them, and only
+then ask whether the number itself was research optimism.
+
+## Options
+
+1. **Do not revise anything yet.** Prove or refute the `memcpy` hypothesis,
+   supply optimised memory primitives for the freestanding target if it holds,
+   re-measure, and bring this ADR back with numbers from an implementation whose
+   known defects are gone.
+2. **Revise the engine ratio** from 10x to a number the reference platform can
+   hold, on the evidence that TCG interpretation of a bounded reference engine
+   costs what it costs.
+3. **Revise the frontend budget** from 500 ms p95 to a measured figure.
+4. **Change the reference platform** — KVM instead of TCG, or a larger machine —
+   so the budgets stand. Rejected as a suggestion: ADR-0040 chose TCG so the
+   platform is reproducible on any host, and choosing a faster platform after
+   seeing the number is what ADR-0040 exists to prevent.
+
+## Recommendation
+
+**For the engine ratio (as recommended before the decision): option 2, revise
+the number — the evidence is now in.**
+Both experiments the question needed have been run. A 1.6x general optimisation
+left the ratio unchanged, and the decomposition shows every component of the
+workload inside a 15.1–17.9x band with no path deviating. A budget expressed as
+`reference / native` of one implementation measures the platform, and this
+platform costs about 16x for the operations this benchmark performs.
+
+**The accepted threshold is 22x.** The components of the standard workload span
+15.1x to 17.9x and the full workload sits at 16.8x, so 22x is about +30% on the
+measured figure — enough headroom for ordinary variation between hosts, and
+consistent with the blocking-regression policy of docs/35.
+
+The 23.3x of aggregate construction is deliberately **not** used to set this
+number. The standard million-operation benchmark performs no aggregate
+construction, and sizing a budget from a component the workload does not contain
+would be sizing it from something it never measures.
+
+**What a ratio gate is for, corrected.** An earlier draft of this ADR argued
+that 25x "would still fail immediately on a regression of the kind already found
+in this project — the per-instruction clone was worth 1.6x". The experiment in
+`docs/evidence/STAGE2_ENGINE_DECOMPOSITION.md` shows the opposite: removing that
+clone moved native and reference together and left the ratio at 16.8x. A
+platform-neutral regression is invisible to a ratio by construction.
+
+So a ratio gate detects a **disproportionate reference-platform regression** —
+something that costs the guest much more than the host, as the whole-arena
+allocator search and the per-intern debug string both did. Ordinary regressions
+are caught by retained benchmark history against the docs/35 regression policy,
+which is a different instrument for a different failure. Claiming one does the
+other's job is what this correction removes.
+
+**For the frontend budget: option 1, revise nothing yet.** 500 ms is absolute
+and implementation work has already moved it twice. The remaining gap is 2.56x,
+and the three stages that hold the remaining cost have not been profiled
+internally. Asking for this number to move before that work is exactly what this
+ADR refuses to do for the engine's sake, and it would be no more honest here.
+
+**For quota rejection: nothing.** It passes on the reference platform at 0.512
+against a budget of 2.000.
+
+Whichever way each is settled, they should be settled **separately**. They fail
+for different reasons, by amounts that differ by an order of magnitude, and
+moving them together would hide that.
+
+## Consequences
+
+The Stage 2 performance gate stays **FAIL** with retained evidence. Stage 2 is
+not a candidate for closure while it does. That is the intended consequence: a
+gate that moves to meet the implementation stops being a gate.
+
+## Alternatives considered
+
+**Report the frontend budget as met on a smaller module.** Rejected outright.
+The budget is written against the published source-unit ceiling, and measuring
+something else and reporting it as the same thing is the failure mode every
+evidence rule in this project exists to prevent.
+
+**Compare the reference half against a "typical TCG factor" rather than a
+measured native half.** Rejected: that is what the previous record did, and it
+produced a number that could not be checked. The pair is now measured on one
+fixture at one commit, which is why the 16.8x figure can be argued with.
+
+<!-- END docs/adr/0043-stage2-performance-budgets.md -->
+
+---
+
+<!-- BEGIN docs/adr/0045-stage2-frontend-budget.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0045: The Stage 2 frontend performance budget
+
+- Status: **Accepted** (Project Architect-approved)
+- Date: 2026-08-12
+- Decision level: 2 — a quantitative Stage 2 gate in docs/35
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12, at the
+  recommended 1500 ms p95, with one correction: the claim that any of the six
+  fixed defects reappearing would necessarily break the threshold was stronger
+  than the evidence and has been removed.
+- Relation to other ADRs: independent of ADR-0043 (engine ratio, Accepted at
+  22x) and of ADR-0044 (module digest scheme, Proposed). Neither is a condition
+  of this one, and this one is not an extension of either.
+
+## The claim
+
+The docs/35 Stage 2 frontend budget — **500 ms p95 on the ADR-0040 reference
+platform** for `parse + check + lower + independent verify` of a 256 KiB
+canonical module — was a research estimate written before a working Stage 2
+implementation existed. It has done its job as a gate, and the evidence now says
+it was empirically falsified.
+
+## Final normative measurement
+
+Commit `cf806de`. Procedure: 3 warmups, 21 samples, median/p95/p99, one commit,
+one set of fixtures emitted by the harness that measures them natively, both
+halves, real freestanding path on q35/qemu64/1 vCPU/256 MiB/TCG.
+Fixture 262 114 bytes, `sha256:40ea301db1e52502190794049cecf65ddc40a76cde07a98181cca9a1aa433a98`.
+
+| metric | native p95 | reference p95 | budget | verdict |
+|---|---|---|---|---|
+| frontend, 256 KiB | 116 701 us | **1 140 356 us** | 500 000 us | **FAIL** (2.28x) |
+| engine, 1e6 ops | 201 501 us | 3 993 138 us | ≤ 22x | PASS (19.8x) |
+| quota rejection | — | 522 418 us | ≤ 2x accepted | PASS (0.458) |
+
+Frontend reference median 1 103 605 us; min 1 042 931, max 1 150 025.
+
+## Where the time goes
+
+Native stage decomposition of the same fixture:
+
+```text
+read       0.4 ms   transport validity
+parse      5.7 ms   grammar
+check     26.1 ms   ten independent slices
+lower     23.5 ms   tos-ir/v1 construction
+verify    47.5 ms   independent verification
+```
+
+One level down, and this is the finding that decides the ADR:
+
+```text
+verify                    47.5 ms
+  module digest           34.4 ms   SHA-256 over a 5 975 526-byte canonical stream
+  source-map digest       12.3 ms   re-serializes 4 strings x 12 058 entries
+  the nine checks          1.2 ms   limits, schema, identity, table order,
+                                    types/imports, control flow, ownership,
+                                    tasks/sync/atomics/unsafe, source maps
+```
+
+**The independent verifier's verification costs 1.2 ms. Its identity binding
+costs 46.6 ms.** The verifier is not slow; hashing the module's identity is.
+
+Checker slices (median us): ownership 9 537, guards 4 893, typing 4 745,
+visibility 2 907, names 2 541, types 1 604, concurrency 751, mutability 406,
+exhaustiveness 389, returns 268. No slice dominates and none is doing another's
+work since the triple typing derivation was removed.
+
+## Implementation defects that were found and fixed
+
+The gate earned its place. Six real defects, each general and each wrong for
+every input, not just this benchmark:
+
+1. the bounded heap searched every block on every allocation, making the
+   frontend superlinear in its input (`STAGE2_ALLOCATOR_SEARCH.md`);
+2. the lowerer rendered `format!("{:?}")` to intern every type — 7% natively and
+   over 600x on the reference platform (`STAGE2_FREESTANDING_PRIMITIVES.md`);
+3. the engine cloned every instruction it executed;
+4. transport validation normalized the whole source to compare it with itself,
+   when ASCII is NFC-stable by definition — 23.3 ms to 0.4 ms;
+5. the verifier formatted a finding location for every entry it checked, on the
+   success path;
+6. `ownership` and `guards` each re-derived the whole typing analysis, so a
+   module was typed three times to answer one question.
+
+Between the first measurement and this one the reference frontend went from
+**not completing in 900 seconds** to 1.14 s.
+
+## Optimisations investigated and rejected
+
+- **Freestanding memory primitives.** Hypothesised as byte-at-a-time; the real
+  binary's `memcpy` is `rep movsq`, `memset` is `rep stosq`, `memcmp` compares
+  16 bytes an iteration. Refuted against the artifact; no work done.
+- **Streaming the digest instead of buffering it.** Measured *slower* — a
+  compression function called with small fragments pays its per-call cost
+  repeatedly, and a fixed intermediate window only added a copy. Reverted.
+- **Caching the module digest in `Module`.** Rejected on correctness: three
+  components derive it independently precisely so none takes another's word for
+  which module a receipt describes.
+- **Merging checker slices.** Not done. The slices are independent because each
+  reports only what it can establish alone; merging them for speed would trade a
+  correctness property for a benchmark.
+
+## The remaining cost, and why it is the work
+
+After the six fixes, the ~104 ms native frontend is:
+
+- **~47 ms identity** — the module digest a receipt must bind to (docs/43
+  section 5) and the source-map digest the receipt carries. Necessary work;
+  its *encoding* is wasteful and that is ADR-0044's question, deliberately not
+  answered here and explicitly not a Stage 2 blocker.
+- **~26 ms checking** — types, ownership, effects, resources, concurrency,
+  guards, exhaustiveness, returns, mutability, names, across ten slices that are
+  separate on purpose.
+- **~24 ms lowering** — deterministic IR construction and a 12 058-entry source
+  map. Source-map fidelity is what makes a runtime failure name the text that
+  caused it; it is not overhead to be trimmed.
+- **~6 ms parsing** and **~0.4 ms transport validation**.
+
+Reaching 500 ms would require either changing the identity contract prematurely
+(ADR-0044, which the Architect has directed is not a Stage 2 blocker), or
+sacrificing the independence of the checker's slices, or micro-optimising
+against TCG — none of which improves TOS.
+
+## Options
+
+1. **Keep 500 ms.** Stage 2 cannot close, and the gate now measures the
+   platform and the identity encoding rather than finding defects.
+2. **Revise to a measured threshold.** Recommended.
+3. **Change the reference platform** (KVM, a larger machine). Rejected:
+   ADR-0040 chose TCG so the platform is reproducible on any host, and choosing
+   a faster platform after seeing the number is what ADR-0040 exists to prevent.
+4. **Measure a smaller module.** Rejected outright: the budget is written
+   against the published source-unit ceiling, and measuring something else and
+   reporting it as the same thing is what every evidence rule here prevents.
+
+## Recommendation
+
+**Option 2, with a threshold of 1500 ms p95.**
+
+Not `current p95 + epsilon`. The reasoning:
+
+- the measured p95 is 1 140 ms, so this is about **1.3x** it;
+- within a single 21-sample run the frontend spans 1 043–1 150 ms, so ordinary
+  variation is already ~10%, and a threshold inside 20% would fail on a machine
+  slightly slower than this one;
+- it sits above every frontend figure measured across the whole campaign except
+  the very first (1.49 s, before three of the six fixes). A hard threshold
+  catches a *large* degradation: the allocator defect made a ceiling-sized
+  module unmeasurable and the interning defect cost over 600x on this platform,
+  and either would break 1500 ms by a wide margin. It does **not** follow that
+  every one of the six would — the NFC pass was 23 ms natively, and whether its
+  return crosses a threshold 360 ms above the current figure is not something
+  this ADR has measured. Smaller regressions are the business of retained
+  benchmark history under the docs/35 regression policy, not of this number;
+- it leaves room for the frontend to grow as TOS Core gains checked rules,
+  without reopening this ADR for ordinary measurement drift.
+
+If ADR-0044 is later accepted and implemented, the frontend's largest single
+cost falls and this threshold should be revisited **downward** — which is the
+right direction for a budget to move and a reason to keep it in evidence.
+
+## Relation to the docs/35 regression policy
+
+A threshold catches a step change; it does not catch slow erosion. Retained
+benchmark history against the docs/35 regression policy is the instrument for
+that, and this ADR does not ask it to do a threshold's job — the mistake
+ADR-0043 had to correct for the engine ratio.
+
+## Consequences
+
+If accepted, all three Stage 2 performance metrics pass on measured evidence and
+the gate stops blocking closure. If rejected, Stage 2 does not close, and the
+reason on record is a number written before the thing it measures existed.
+
+<!-- END docs/adr/0045-stage2-frontend-budget.md -->
+
+---
+
+<!-- BEGIN docs/adr/0046-irrefutable-binding-patterns.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0046: `let` and `for` patterns must be irrefutable
+
+- Status: **Accepted** (Project Architect-approved)
+- Date: 2026-08-12
+- Decision level: 2 — settles a question ADR-0033 left open and adds one stable
+  diagnostic to the accepted V1 surface
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
+
+## Context
+
+The accepted grammar of docs/39 admits a pattern in three places:
+
+```text
+let_stmt     = "let" "mut"? pattern ...
+for_stmt     = "for" pattern "in" ...
+match_branch = pattern "=>" block
+```
+
+and the accepted type semantics already fixes the expected type of a pattern in
+each. ADR-0033 settled how a bare name in a pattern resolves, and left one
+question open: whether a `let` or `for` pattern may be *refutable* — may fail to
+match the value it is given.
+
+The question is not theoretical. `match` has arms: a pattern that does not match
+falls through to one that does, and `E1220_NONEXHAUSTIVE_MATCH` makes sure one
+always does. `let` and `for` have no such structure. They bind unconditionally.
+
+So a refutable pattern in either would need one of: a hidden runtime trap, a
+hidden conditional branch, or a silently ignored mismatch. V1 has none of these
+and should acquire none of them by accident.
+
+## Decision
+
+### 1. `match` is unchanged
+
+Refutable patterns are admitted, as they always were. Exhaustiveness is checked
+by `E1220_NONEXHAUSTIVE_MATCH`.
+
+### 2. A `let` pattern must be irrefutable for the type of its initializer
+
+```tos
+let x = value;                       // accepted
+let _ = value;                       // accepted
+let (a, b) = pair;                   // accepted
+let (head, (left, right)) = nested;  // accepted
+```
+
+A refutable pattern is a compile-time error:
+
+```tos
+let Some(x) = value;      // rejected: Option has None
+let Ok(x) = result;       // rejected: Result has Err
+let Fast = mode;          // rejected: Mode has other variants
+```
+
+### 3. A `for` pattern must be irrefutable for the element type
+
+Each iteration binds one element. A refutable pattern there would be a filter or
+a failure branch wearing a loop's clothes, and the loop's meaning stays simple
+by refusing it.
+
+### 4. Irrefutability is recursive
+
+- `_` is irrefutable.
+- A bare binding name is irrefutable.
+- A tuple pattern is irrefutable exactly when **every** element is.
+- A constructor pattern — an enum variant, `Some`, `Ok`, `Completed` — is
+  irrefutable only when its type has **no other variant to be**, and then only
+  when every sub-pattern of its payload is irrefutable.
+
+A single-variant enum is therefore destructurable in `let`: refutability is a
+fact about the type's alternatives, not about the pattern's shape.
+
+### 5. `E1223_REFUTABLE_PATTERN`
+
+Stage `type`. It means exactly *a pattern may fail to match where the context
+binds unconditionally* — not a type mismatch, and not non-exhaustiveness.
+Structured fields: `context` (`let` or `for`), `reason`, `expected`. The span is
+the pattern's.
+
+### 6. Precedence
+
+Nothing is reported until the pattern has a settled meaning. In order:
+
+1. an unresolved pattern name or constructor path — `E1202_UNKNOWN_VALUE_NAME`;
+2. a constructor that is not a variant of the expected type, or a payload whose
+   arity or types disagree — the existing type codes;
+3. an undetermined initializer or element type — nothing is reported at all,
+   because a guess is not a finding;
+4. **only then** refutability.
+
+Reporting that a pattern *may fail to match* a construct nobody has resolved
+would be describing something that does not yet mean anything.
+
+### 7. Ownership is unaffected
+
+Destructuring is not a new ownership rule. A `Copy` component stays usable, an
+affine component moves, and what remains of the aggregate follows the existing
+partial-move rules of docs/40 section 5. The checker remains the source-level
+proof; lowering expresses it.
+
+### 8. No hidden runtime failure
+
+Nothing in this decision introduces a trap, a branch or a silent mismatch. A
+program that compiles binds exactly what it says it binds.
+
+## Conformance evidence
+
+Positives: tuple destructuring `let`; nested tuple destructuring; a wildcard
+inside a tuple pattern; a sole-variant constructor in `let`; destructuring a
+`Copy` component and an affine one; a refutable pattern in `match`.
+Negatives: `Some(...)`, `Ok(...)` and a multi-variant enum constructor in `let`;
+a refutable component inside an otherwise irrefutable tuple pattern.
+
+## Architecture impact statement
+
+- **Change level:** 2. **Invariants affected:** none amended; I-09 is served —
+  `E1223` joins the versioned diagnostic boundary.
+- **Canonical representation:** unchanged.
+- **`tos-ir/v1`:** unchanged. Destructuring lowers to the `Move` through a
+  `PlaceStep::Field` that the language already uses for any other aggregate
+  access, so the independent verifier sees no new construct and its existing
+  ownership and type rules apply without amendment.
+- **Trusted-base impact:** none. **Threat-model impact:** positive — a rule that
+  was undecided is now checked.
+- **Compatibility profile:** TOS Core 1.0.
+
+## Consequences
+
+A question ADR-0033 left open is closed, and the production lowerer can stop
+refusing valid V1 source. `let` and `for` keep their unconditional meaning, and
+the one construct that could have quietly acquired a runtime failure does not.
+
+## Alternatives considered
+
+**Allow refutable `let` with a runtime trap.** Rejected: it makes a binding into
+a conditional failure that the source does not show, and docs/41 traps are for
+dynamic preconditions rather than for pattern shape.
+
+**Allow refutable `let` as a silent no-op.** Rejected outright: a binding that
+sometimes does not happen, with no diagnostic and no branch, is the worst of the
+three options.
+
+**Leave it undecided and keep the lowerer's `Gap`.** Rejected: the grammar and
+the type semantics already admit these patterns, so the checker accepts source
+the production path cannot represent. That is a contract the implementation does
+not meet, which is what this ADR exists to fix.
+
+<!-- END docs/adr/0046-irrefutable-binding-patterns.md -->
+
+---
+
+<!-- BEGIN docs/adr/0047-match-arm-selection-order.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0047: Which `match` arm runs when several could
+
+- Status: **Accepted** (Project Architect-approved)
+- Date: 2026-08-12
+- Decision level: 2 — the observable meaning of an accepted V1 statement
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
+
+## The gap
+
+docs/40 section 4 fixes evaluation order in detail — calls left to right,
+operands left before right, aggregate fields in lexical source order, "match
+subject evaluates before patterns". It fixes exhaustiveness: a `match` on an
+enum, `Option` or `Result` must cover every case, and "an `_` arm is
+exhaustive".
+
+It does not say **which arm runs when more than one matches**.
+
+That is not a hypothetical. Nothing in the accepted contract forbids an
+unreachable arm, so this is valid V1 source:
+
+```tos
+match (mode) {
+    _    => { return 1i32; }
+    Fast => { return 2i32; }
+}
+```
+
+Both arms match a `Fast`. The contract admits the program and does not say
+whether it returns 1 or 2.
+
+## How it was found
+
+The Stage 2 closure audit measured it rather than reasoned about it. The
+implementation returned **2**: the lowerer built a variant-to-target map from
+every arm and used the wildcard only as a default for variants no arm named, so
+a variant arm written *after* a catch-all displaced it. Whatever the answer
+should be, an implementation should not arrive at one by accident.
+
+## Options
+
+1. **First matching arm in source order.** The earlier arm wins; later arms that
+   could also match are unreachable. This is what every language with pattern
+   matching that TOS Core resembles does, and it is the only reading consistent
+   with docs/40's insistence on lexical order everywhere else.
+2. **Most specific arm wins.** A variant arm beats a catch-all wherever it
+   appears. Defensible in isolation and hostile in practice: reordering arms
+   would stop changing behaviour, and a reader could not tell which arm runs
+   without a specificity calculation the source does not show.
+3. **Reject unreachable arms with a diagnostic.** Makes the question moot by
+   forbidding the program. It is a real option, but it is a new rule and a new
+   code, and it should not be adopted merely because it is convenient for a
+   lowerer.
+
+## Decision
+
+**Option 1.** TOS Core V1 `match` has this normative semantics:
+
+1. The subject is evaluated **exactly once**, before any arm is selected.
+2. Arms are considered in **strict lexical source order**.
+3. The **first** arm whose pattern matches the subject is the arm that runs.
+4. Once an arm is selected, later arms take no part in selection and their
+   bodies do not execute.
+5. **Exactly one** arm body executes.
+6. The existing exhaustiveness rules are unchanged.
+7. A wildcard and a bare binding are catch-alls under the existing rules.
+8. An irrefutable tuple pattern likewise makes every later arm unreachable.
+9. **Unreachable arms are permitted in V1.** No compile-time diagnostic for one
+   is introduced now.
+10. Forbidding unreachable arms later would be a separate versioned language
+    decision, and it would not change the first-match rule this ADR fixes.
+
+## Why option 1 (as recommended before the decision)
+
+It is the reading the rest of docs/40 already implies, it makes an arm's
+position meaningful in the way a reader expects, and it needs no new diagnostic.
+Option 3 could be adopted **in addition** later without conflicting with it.
+
+## What the implementation does
+
+Exactly this, and it already did before the decision — the lowerer takes arms in
+source order and stops at the first irrefutable one, so a catch-all before a
+variant arm wins and the later arm is unreachable. `tos-ir/v1` is unchanged:
+first-match needs no new IR construct, only an ordered `MatchEnum` map whose
+default is the first irrefutable arm.
+
+The tests are now written as the decision requires: a program this ADR makes
+valid must reach `Run::Completed` with its exact V1 result, and a diagnostic is
+no longer an acceptable alternative outcome for one
+(`crates/tos-pipeline/tests/match_matrix.rs`).
+
+## Consequences
+
+docs/40 section 4 gains the rule beside the existing evaluation-order sentences,
+and the implementation is already correct against it. The class of accepted V1
+programs whose result the contract did not determine is now empty.
+
+Permitting unreachable arms is a deliberate choice, not an omission: a rule that
+forbade them would be a new diagnostic and a new conformance obligation, and
+point 10 keeps that a separate decision rather than something this one implies.
+
+<!-- END docs/adr/0047-match-arm-selection-order.md -->
+
+---
+
+<!-- BEGIN docs/adr/0048-stage3-isolation-and-execution-boundary.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0048: Where TOS Core executes relative to the isolation boundary
+
+- Status: **Accepted** (Project Architect-approved)
+- Date: 2026-08-12
+- Decision level: 3 — moves a trust boundary and fixes the nucleus/process
+  interface for every later stage
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
+
+## Context
+
+Stage 2 is closed. The nucleus validates the boot ABI record and the capsule,
+runs one canonical module through the reference path and halts. That module runs
+**in the nucleus's own address space, at CPL 0, on the nucleus's stack, out of a
+single heap adopted once** (ADR-0041). There is exactly one execution context in
+the system, `run()` is run-to-completion, and maskable interrupts have been
+disabled since the loader handed over (ADR-0023).
+
+Stage 3 is the process, IPC and capability substrate. docs/16 lists isolated
+address spaces and a scheduler among its deliverables; docs/37 asks whether
+"textual processes exercise real capability/IPC contracts rather than running as
+decorative scripts around privileged binary services"; docs/03 fixes eight trust
+zones with the nucleus alone at the top.
+
+None of that can be implemented without first answering one question, because
+every other Stage 3 decision is downstream of it: **when a TOS Core module runs
+as a process, where does it run relative to the isolation boundary?**
+
+The accepted documents constrain the answer without settling it. docs/42 §2
+already gives the language its half of the contract — a capability import is a
+request, not a grant; a denied request produces the typed launch error
+`CapabilityDenied`; a handle cannot be forged, encoded into bits or recreated
+after consumption — and states explicitly that the real interfaces "belong to
+later stages and must be separately versioned". So the language is ready. The
+mechanism is not, and choosing the mechanism badly would either erase the
+architecture or reopen Stage 2.
+
+## Decision
+
+**TOS Core modules execute at CPL 3, in their own address space, one runtime
+instance per process. The nucleus provides mechanism only — address spaces,
+scheduling, capability tables, IPC transport — and is reachable only through the
+versioned system ABI published as `SYSTEM_ABI_V1`.**
+
+Concretely:
+
+1. A process is an address space, a capability table, one or more execution
+   contexts, a memory grant (ADR-0050) and a runtime instance executing exactly
+   one verified TOS Core module.
+2. The nucleus owns the page tables, the frame allocator, the scheduler, the
+   capability tables and the IPC transport. It owns no service policy.
+3. Preemption is a timer interrupt (ADR-0049). A process is interrupted the way
+   any user-mode code is interrupted.
+4. `/system/boot/init.tos` becomes the first process rather than a function the
+   nucleus calls. Stage 3 replaces the Stage 2 halt with a launch.
+
+## Why, and what the alternatives cost
+
+**Alternative B — software isolation: keep everything at CPL 0 and let the
+verifier and the engine be the boundary.** Rejected on two grounds, one
+documentary and one architectural.
+
+Documentary: docs/16 names isolated address spaces as a Stage 3 deliverable, and
+docs/37 asks Stage 3 to demonstrate real enforcement. B would require amending
+an accepted stage contract to describe the thing that was built — a Level 3/4
+amendment whose only motivation is that it is easier.
+
+Architectural, and this is the heavier objection: with everything in one address
+space, preemption has to come from inside the interpreter, so the engine needs a
+yield/resume contract. That reaches straight back into accepted Stage 2
+semantics — the deterministic evaluation order of docs/40, the resource and
+scheduling neutrality rules of docs/41, and the accounting model ADR-0043's
+budget is measured against. **B buys a simpler scheduler by reopening the
+language runtime contract Stage 2 just closed**, which is the trade this project
+does not make.
+
+**Alternative C — hardware address spaces with the engine mapped read-only into
+each.** Not a different boundary; it is an implementation of this decision that
+shares one physical copy of the runtime text. It is explicitly permitted later
+without a new ADR, because it changes what is mapped, not who is isolated from
+whom.
+
+## Consequences that must not be discovered later
+
+**The verifier stops being the isolation mechanism.** After this decision, one
+process cannot reach another's memory because the hardware does not map it, not
+because the IR was checked. The verifier keeps its Stage 2 role — source-to-IR
+integrity, declared resources, capability-operation legality — and loses the
+role it never formally had. Nothing in the system's isolation may be justified
+by "the verifier accepted it", and no later change may quietly make process
+safety depend on verification again.
+
+**The engine becomes a per-process derived artifact with an identity.** A ring-3
+runtime is a binary loaded into each process. docs/10 already requires a
+"runtime engine ID" in process identity, so this is not a new field, but it is
+now load-bearing: the capsule must carry the runtime image, its identity must be
+reported, and it is a derived artifact whose provenance rules (AGENTS.md §9)
+apply in full.
+
+**Fuel stops being a fairness mechanism and stays a declared bound.** With timer
+preemption, a process that ignores its own accounting cannot starve the system.
+The declared resource envelope remains what the module promised about itself and
+what the verifier checks; it is not the scheduler's admission control.
+
+**Identity must name its asserter.** A process that reports its own module
+digest is reporting a claim, not evidence. The record that belongs in the
+identity plane and the audit log is the one made by whoever had the capability
+to create the process — the launcher computed the source identity from the bytes
+it passed in. Self-reported introspection remains available and is labelled as
+such. `PROCESS_IDENTITY_V1` must state, field by field, who asserts it.
+
+**Two copies of the boot text stop being acceptable by accident.** Once init is
+a process, the capsule's copy and the repository-backed copy of
+`/system/boot/init.tos` are related by the handoff protocol of docs/04. Stage 3
+does not implement the repository, so Stage 3 launches from the capsule and must
+say so in the identity record rather than implying a commit it did not read.
+
+## What this ADR authorizes, and what it does not
+
+It authorizes Stage 3 production implementation to begin **only after** ADR-0049
+(interrupts and preemption), ADR-0050 (per-process memory grants) and ADR-0051
+(service manifest surface) are accepted and the four interface contracts —
+`SYSTEM_ABI_V1`, `CAPABILITY_V1`, `IPC_V1`, `PROCESS_IDENTITY_V1` — are
+published into `source/interfaces/system/`. A partial contract set is not a
+partial authorization.
+
+Those four are drafted alongside this ADR in `docs/superpowers/specs/` and stay
+there until acceptance. `source/interfaces/` carries accepted authority only —
+`scripts/tests/check-interface-contract-authority.sh` enforces exactly that —
+and a proposal filed where accepted contracts live would be authority a document
+assigned to itself.
+
+It authorizes nothing in Stage 4 or later: no PCI, MMIO, IRQ or DMA interface,
+no filesystem, no repository-backed `/system`, no network, no shell, no UI. A
+Stage 3 process that needs one of those is evidence that the slice is wrong, not
+grounds for a small exception.
+
+It does not change TOS Core V1, `tos-ir/v1`, the verifier contract, Boot ABI v1,
+capsule format or provenance identity, and it does not reopen the Stage 2
+closure.
+
+## Evidence required before Stage 3 can close
+
+From docs/37 §Stage 3, made concrete:
+
+- process source identity bound to a commit or capsule blob, asserted by the
+  launcher, present in the audit record and reproducible from the artifact;
+- an explicit granted capability set per process, and a denied request that
+  produces `CapabilityDenied` at startup rather than a fabricated success;
+- negative tests: a process cannot read or write nucleus memory or another
+  process's memory; cannot execute a privileged instruction; cannot acquire
+  authority by guessing, forging or re-encoding a handle; a confused-deputy
+  attempt through a broker fails and is attributable;
+- a fault in one process kills that process and leaves the system and its peers
+  running;
+- privileged policy lives in a source-identified textual process, not in the
+  nucleus; the dependency inventory shows no service logic moved inward for
+  convenience (docs/31);
+- service restart preserves identity and audit records;
+- the docs/35 Stage 3 IPC budgets measured against a benchmark defined before
+  the first measurement.
+
+## The risk this decision is most exposed to
+
+docs/19 states it plainly: years of ordinary boot, scheduler, PCI and driver
+work could produce a conventional microkernel with scripts before Git-native
+identity becomes visible. Ring 3, a scheduler and an IPC path are exactly that
+kind of work, and doing them well is not evidence that TOS still exists.
+
+The mitigation is structural, not editorial. The identity plane is implemented
+with the first process, not after the substrate feels finished; and no
+privileged service may ship as a binary on the argument that IPC is not ready
+yet. If a service cannot be written as canonical text, the substrate is
+unfinished — which is a reason to stop, not a reason to write the service in
+Rust and call it Stage 3.
+
+<!-- END docs/adr/0048-stage3-isolation-and-execution-boundary.md -->
+
+---
+
+<!-- BEGIN docs/adr/0049-stage3-interrupt-and-preemption-baseline.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0049: Interrupts and preemption
+
+- Status: **Accepted** (Project Architect-approved)
+- Date: 2026-08-12
+- Decision level: 2 — extends the accepted ADR-0023 exception baseline within
+  the boundary ADR-0048 fixes; no Boot ABI v1 layout or result-code change
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
+
+## Context
+
+ADR-0023 is explicit about what it is not: "Maskable external interrupts remain
+disabled. Vectors above 31 do not form an interrupt ABI in Stage 1, and an
+exception is fatal: Stage 1 does not resume with `iretq`." That was the right
+Stage 1 and Stage 2 decision. A boot path that validates a capsule and runs one
+module to completion has nothing to schedule and nothing to be interrupted for,
+and every disabled mechanism is a mechanism that cannot go wrong.
+
+ADR-0048 makes processes preemptible user-mode contexts. That requires the three
+things ADR-0023 deliberately withheld: an enabled interrupt source, vectors
+above 31 with a stable meaning, and a handler that returns.
+
+## Decision
+
+**Maskable interrupts are enabled once, by the nucleus, after the process
+substrate is initialized and before the first process is scheduled. The only
+Stage 3 interrupt source is a monotonic timer, and its only Stage 3 purpose is
+preemption and timekeeping.**
+
+1. **Controller.** The legacy 8259 PIC is masked entirely. Interrupt routing is
+   through the local APIC, using its timer in periodic or TSC-deadline mode; the
+   I/O APIC is configured but no external device source is routed in Stage 3,
+   because Stage 3 has no drivers. The concrete calibration source and mode are
+   implementation choices recorded in the interface contract, not in this ADR.
+2. **Vector space.** Vectors 0–31 keep their ADR-0023 meaning exactly. Stage 3
+   claims a small, documented range above 31: one timer vector and one spurious
+   vector. Every other vector above 31 stays absent, and an interrupt on an
+   unclaimed vector is a fault, not a no-op.
+3. **Resumption.** Exceptions taken at CPL 0 remain fatal on the ADR-0023 terms
+   and keep `RESULT_EXCEPTION`. What becomes resumable is different in kind: an
+   interrupt taken at CPL 3 returns through `iretq` to the interrupted process
+   or to another one. A fault taken at CPL 3 does not return to the faulting
+   process — it terminates that process and the system keeps running. **A fault
+   in the nucleus is still the end of the boot; a fault in a process is not.**
+4. **Preemption model.** Round-robin over runnable contexts within one priority
+   band, with a fixed quantum. Stage 3 does not introduce priorities, deadlines,
+   fair-share accounting or an SMP scheduler: one CPU is brought up, and the
+   Full-profile SMP path of docs/41 remains a later stage's work.
+5. **Nucleus interrupt safety.** The nucleus does not allocate, take a
+   blocking lock or perform unbounded work in interrupt context. This is the
+   same discipline ADR-0023 imposed on the exception handler, extended to the
+   only handler that now returns.
+6. **Timekeeping.** The timer establishes a monotonic tick. Stage 3 exposes it
+   only as far as a scheduler and a bounded IPC timeout need. Wall-clock time,
+   a `system.time.Clock` capability implementation and any notion of a trusted
+   time source are out of scope; docs/34 assigns time threats to Stage 7.
+
+## What this deliberately does not do
+
+- No external device interrupt is routed. The first one belongs to Stage 4 with
+  its own contract, and routing one early to "test the path" would create an
+  undocumented driver boundary.
+- No interrupt is visible to a TOS Core module. A process learns about time and
+  events through IPC, never by taking a vector.
+- Nested interrupts are not enabled. The timer handler runs with interrupts
+  masked.
+
+## Consequences
+
+Enabling interrupts changes what "the nucleus is quiescent" means for every
+existing measurement. Stage 1 and Stage 2 evidence was gathered with interrupts
+off, and a preempted measurement is a different measurement. Any Stage 3 timing
+evidence states the quantum and whether preemption was active; existing Stage 1
+and Stage 2 numbers are not re-labelled as Stage 3 numbers.
+
+The Stage 1 exception-injection gates keep working unchanged, because they run
+before the substrate is initialized and therefore before interrupts are enabled.
+
+## Evidence required
+
+- A boot with the timer enabled and no process running reaches the existing
+  result code with the existing serial contract: enabling the mechanism does not
+  change the outcome by itself.
+- Two runnable processes each make progress without either yielding — measured,
+  not asserted, by an observable both processes advance.
+- An interrupt on an unclaimed vector above 31 is diagnosed as a fault rather
+  than silently ignored.
+- A CPL 3 fault terminates exactly one process, is attributed to it in the audit
+  record, and leaves its peers running; the same fault at CPL 0 still ends the
+  boot with `RESULT_EXCEPTION`.
+- A process spinning without a system call is preempted, which is the property
+  that makes fuel unnecessary for fairness (ADR-0048).
+
+<!-- END docs/adr/0049-stage3-interrupt-and-preemption-baseline.md -->
+
+---
+
+<!-- BEGIN docs/adr/0050-per-process-memory-grants.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0050: Per-process memory grants
+
+- Status: **Accepted** (Project Architect-approved)
+- Date: 2026-08-12
+- Decision level: 2 — extends the accepted `RuntimeMemoryGrantV1` interface to
+  more than one runtime, within the boundary ADR-0048 fixes
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
+
+## Context
+
+ADR-0041 settled who owns memory in Stage 2 with one sentence worth preserving
+exactly: the nucleus grants, and the runtime never discovers. The runtime
+"receives a base and a length or it does not run". The implementation carries
+that property literally — `GlobalHeap` refuses every allocation until a grant is
+adopted, so a runtime with no grant has no memory.
+
+That contract was written for exactly one runtime. Its shape is right and its
+property is the one Stage 3 needs; what it lacks is plurality. There is one
+global allocator, one adoption, and no owner of physical frames — the region is
+derived once from the memory map by subtracting everything that is spoken for.
+
+Stage 3 has many processes, each with its own address space and its own runtime
+instance, created and destroyed while the system runs.
+
+## Decision
+
+**The nucleus owns a physical frame allocator. Every process receives its
+backing store as a `RuntimeMemoryGrant` derived from that allocator. The
+grant contract keeps its shape and its property; what changes is that there is
+now more than one grant and that grants are reclaimed.**
+
+### 1. The frame allocator is nucleus-owned and boot-derived
+
+At boot the nucleus takes the same memory topology Stage 1 already validates,
+subtracts the same occupied spans the Stage 2 derivation subtracts — its own
+image including `.bss`, the capsule, the handoff record, the converted map, the
+framebuffer, its own stack — and the remainder becomes the frame allocator's
+pool rather than a single region handed to a single runtime.
+
+The subtraction rule does not weaken. Memory a process could write over is not
+protected by one component's bookkeeping being correct.
+
+### 2. A grant is per process, and its version says so
+
+`RuntimeMemoryGrantV2` keeps V1's fields — version, base, length, alignment,
+nucleus identity — and adds what a plural world needs:
+
+```text
+RuntimeMemoryGrantV2 {
+  version           the grant contract version
+  base              start of the granted region, in the process's address space
+  length            bytes granted
+  alignment         guaranteed alignment of `base`, a power of two
+  identity          which nucleus build produced the grant
+  owner             the process instance this grant belongs to
+  generation        incremented on reuse of the same physical frames
+}
+```
+
+`owner` and `generation` exist so that a stale grant is detectably stale. Frames
+reused by a later process must not let an old reference be mistaken for a live
+one — the same reasoning that made the Stage 2 grant carry a nucleus identity
+rather than trusting the caller's word.
+
+V1 is not retracted or reinterpreted. A nucleus that grants to one runtime with
+no process substrate is still a V1 grant, and the Stage 2 evidence taken against
+it stays valid.
+
+### 3. Death returns memory, and returns it clean
+
+When a process ends — normally, by fault, or by supervisor decision — its grant
+is reclaimed by the nucleus. Reclaimed frames are cleared before they back
+another process's grant. Uncleared reuse would make one process's data
+observable to the next through nothing but timing, which is a disclosure channel
+the isolation boundary is supposed to close.
+
+### 4. What a process may ask for, and what it may not
+
+A process's grant size is decided by its launcher from the module's declared
+resource envelope and the launcher's policy, not requested by the running
+process. Growth, if it is ever admitted, is a capability operation with its own
+contract; Stage 3 does not admit it. A process that exhausts its grant fails on
+its own declared terms and does not take memory from anyone else.
+
+Shared memory between processes is not a second grant mechanism. It is the
+region transfer described by `IPC_V1`, originating from a capability operation
+exactly as docs/42 §2 requires of `Region<T>`.
+
+## Consequences
+
+The single `#[global_allocator]` disappears from the nucleus binary as the
+system's allocator. It remains the shape of the *per-process runtime's*
+allocator, which is where ADR-0041's property belongs; the nucleus keeps its own
+bounded, non-allocating discipline in interrupt and IPC paths (ADR-0049, docs/35
+§Stage 3).
+
+The measured Stage 2 arena bound stays meaningful for one module in one process
+and does not silently become a system-wide claim. A multi-process bound is a new
+measurement.
+
+## Evidence required
+
+- A process cannot address a frame outside its grant; the attempt faults and is
+  attributed to that process.
+- Frames from a dead process are cleared before reuse, demonstrated by writing a
+  pattern, ending the process, and reading the frames from its successor.
+- A stale grant reference — right base, wrong generation — is refused rather
+  than honoured.
+- Creating and destroying processes in a loop returns the pool to its initial
+  free extent: the substrate does not leak the memory of the dead.
+- With no process substrate active, the Stage 2 single-grant path still produces
+  its existing `TOS.RUN.MEMORY` evidence unchanged.
+
+<!-- END docs/adr/0050-per-process-memory-grants.md -->
+
+---
+
+<!-- BEGIN docs/adr/0051-service-manifest-surface.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0051: What a service manifest is, and where it lives
+
+- Status: **Accepted** (Project Architect-approved)
+- Date: 2026-08-12
+- Decision level: 2 — resolves a contradiction between accepted Tier 2 documents
+  and fixes the Stage 3 manifest surface without changing TOS Core V1 or
+  `tos-ir/v1`
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
+
+## The contradiction, reported rather than resolved quietly
+
+Three accepted documents disagree, and AGENTS.md §2 requires that be said out
+loud rather than settled by picking the convenient one.
+
+`docs/11_DRIVER_MODEL.md` shows a manifest as a syntactic block in TOS source:
+
+```tos
+manifest driver {
+    matches pci(vendor: 0x1af4, device: [0x1000, 0x1041])
+    requires { capability pci.configure ... }
+    provides "net.adapter.v1"
+    state none
+    restart restartable
+}
+```
+
+`docs/45_SYSTEM_SOURCE_HIERARCHY.md` points at that example as the normative
+pattern: "Each component's manifest is declared inside its own module source, as
+shown in `docs/11_DRIVER_MODEL.md`; TOS does not keep a parallel manifest
+directory that could drift from the code it describes."
+
+`docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`, accepted under ADR-0028, admits six
+item forms — `resource`, `record`, `enum`, `const`, `fn`, `extern` — and no
+`manifest`. The word is not reserved and the form does not parse. **No accepted
+grammar admits the source docs/11 shows.**
+
+So docs/11's block is not currently TOS Core. It is a sketch of a surface that
+was never specified, and docs/45 elevated the sketch to a pattern.
+
+## What the accepted contracts already carry
+
+Before inventing a surface, it is worth reading what a verified module already
+tells a launcher without being executed. `tos-ir/v1` puts all of this in the
+module image:
+
+| Manifest concern (docs/10) | Already in the accepted contract |
+|---|---|
+| module entry point | `Header.module_name`, exported `Signature`s |
+| requested capabilities | `CapabilityImport { interface, binding, ty }`, plus `Header.capability_interface_digest` over the ordered list |
+| required interfaces / startup dependencies | `Import`s and `Header.dependency_digest` |
+| resource limits | `Header.resource_envelope` — the ten declared limits |
+| declared effects per entry point | `Signature.effects`, "by interface path" |
+| source identity | `Header.content_id`, `source_set`, `path`, `frontend_identity`, `profile` |
+
+That is most of a manifest, it is verified rather than asserted, it is covered by
+the module digest, and it cannot drift from the code because it *is* the code's
+header. The residue is: what the component **offers**, and how the system
+**supervises** it — `provides`, `restart`, `state`, health probes, shutdown
+timeout, and (for Stage 4) device matching.
+
+## Decision
+
+**The Stage 3 service manifest is not a new syntactic object. The residue is
+split by who has the authority to assert it.**
+
+### 1. What a module needs stays in the module, in accepted V1 form
+
+Capability requests, resources, imports, exports and declared effects are
+already V1 source and already in the verified IR. They are never duplicated into
+a manifest block; a second declaration of the same fact inside one file is the
+drift docs/45 warns about, moved indoors.
+
+### 2. What a module offers is a capability request, not a claim
+
+A service does not declare `provides "net.adapter.v1"`. It requests the
+authority to publish that interface, using the accepted capability-import form,
+where the nominal capability type **is** the interface being published:
+
+```tos
+import capability net.adapter.V1Publisher as publisher;
+```
+
+The launcher reads `capability_imports` from the verified IR, sees exactly which
+interface the module intends to publish, and grants or denies it under policy.
+Denial produces the typed `CapabilityDenied` that docs/42 §2 already specifies.
+
+This is not a workaround for a missing syntax; it is the stronger form.
+docs/37's Stage 3 failure conditions include "textual manifest grants itself
+authority", and a `provides` line that no one mediates is precisely that. Under
+this decision, publishing an interface is an authority the system grants, and
+the request for it is the declaration of intent — one fact, one place, one
+mediator.
+
+### 3. How a component is supervised is the supervisor's canonical text
+
+Restart policy, health-probe schedule, shutdown timeout, state namespace and
+restart-loop bounds are decisions *about* a component, not descriptions *of* it,
+and the entity with authority to make them is the one with the capability to
+launch it. They live in `/system/policy/` as canonical source keyed by module
+name, exactly where docs/45 already places policy — "canonical text like any
+other component; not a binary configuration database".
+
+This is not the "parallel manifest directory" docs/45 forbids. That prohibition
+is about a description of the code drifting from the code. Supervision policy is
+not a description of the code: it is the system's decision, it is reviewed and
+committed like any other source, and if it names a module that does not exist
+the supervisor says so at activation.
+
+### 4. docs/11 is corrected, not preserved as aspiration
+
+`docs/11_DRIVER_MODEL.md`'s manifest block is re-marked as illustrating a
+possible future surface that no accepted grammar admits, and its example is
+restated in accepted V1 form for the parts Stage 3 fixes. docs/45's sentence is
+narrowed to what remains true: what a component needs is declared inside its own
+module source.
+
+## What this deliberately leaves open
+
+Device matching — docs/11's `matches pci(vendor:…, device:[…])` — is a Stage 4
+question, and this ADR does not pre-decide it. It is a different problem:
+matching is a query evaluated by a bus manager against hardware, not an
+authority a launcher grants. Stage 4 may find it needs a surface; if so it will
+be argued on Stage 4's evidence rather than smuggled in now.
+
+Sugar remains available later. If, after real services exist, a `manifest` block
+proves worth a grammar change, it can be added to a future language version as
+sugar over the same accepted facts. Sugar over an established semantics is a
+small decision; a semantics invented in grammar first is not.
+
+## Consequence, and one measured finding it does not depend on
+
+A launcher must be able to read a module's header, capability imports and
+exports from the verified IR **without executing it**, because the capability
+decision happens before the process starts. `tos-ir/v1` already supports this;
+no schema change is required, which is the property that makes this decision
+cheap.
+
+A separate gap was measured while evaluating the alternatives and is recorded
+here so it is not mistaken for a consequence of this decision. A module-level
+`const` — an accepted V1 item form — is parsed and type-checked today and then
+dropped: reading one from a function refuses at lowering with
+`construct=unbound place`, and `tos-ir/v1`'s `Constant` is scalar-only with no
+named module-constant table. An earlier candidate design put the manifest in a
+record-valued `pub const`; it was rejected because making it work would have
+required changing `tos-ir/v1`, which is a closed Stage 2 contract. The lowering
+gap is real and belongs in Phase 1 as implementation of an accepted contract —
+but this decision does not stand on it.
+
+## Evidence required
+
+- A launcher decides the full capability grant of a service from its verified
+  module image alone, before that service's first instruction runs.
+- A service whose publish capability is denied fails to start with
+  `CapabilityDenied`, does not appear in the interface registry, and says so in
+  the audit record.
+- No component can publish an interface it did not request, and no request
+  grants itself.
+- A supervision policy naming an unknown module is refused at activation rather
+  than at first failure.
+- The corrected docs/11 example parses under the accepted V1 grammar. The
+  current one does not, which is how this contradiction became visible.
+
+<!-- END docs/adr/0051-service-manifest-surface.md -->
 
 ---
 

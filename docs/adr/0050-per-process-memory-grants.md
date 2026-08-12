@@ -2,11 +2,11 @@
 
 # ADR-0050: Per-process memory grants
 
-- Status: **Proposed**
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-12
 - Decision level: 2 — extends the accepted `RuntimeMemoryGrantV1` interface to
   more than one runtime, within the boundary ADR-0048 fixes
-- Project Architect approval: *(pending)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
 
 ## Context
 

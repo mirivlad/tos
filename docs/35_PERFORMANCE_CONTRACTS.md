@@ -109,6 +109,15 @@ Reference-platform budget:
 
 Both relative and absolute limits are required because either alone can mislead.
 
+The in-process function-call benchmark is fixed by
+`source/interfaces/system/IPC_V1.md` section 8, and was fixed there before any
+IPC measurement existed: a call to an exported TOS Core function taking one
+64-byte value parameter and returning `unit`, executed by the same engine build,
+in the same process, on the ADR-0040 reference platform, under the sample
+discipline this document requires of the IPC series. The denominator is defined
+in advance because a benchmark chosen afterwards can be made slow enough to
+satisfy any ratio, which would turn the relative limit into a fitted number.
+
 ## Stage 4 — VirtIO block textual driver
 
 Hard budgets after queue initialization:

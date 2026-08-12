@@ -17,6 +17,10 @@ source/interfaces/boot/BOOT_ABI_V1.md
 source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md
 source/interfaces/boot/CAPSULE_FORMAT_V1.md
 source/interfaces/boot/CAPSULE_PROVENANCE_V1.md
+source/interfaces/system/SYSTEM_ABI_V1.md
+source/interfaces/system/CAPABILITY_V1.md
+source/interfaces/system/IPC_V1.md
+source/interfaces/system/PROCESS_IDENTITY_V1.md
 docs/21_ARCHITECTURE_PRESERVATION_POLICY.md
 docs/37_STAGE_IDENTITY_GATES.md
 docs/03_ARCHITECTURE_OVERVIEW.md
@@ -104,3 +108,12 @@ docs/adr/0038-module-root-precedence.md
 docs/adr/0039-nonconstructible-opaque-types.md
 docs/adr/0040-stage2-reference-platform.md
 docs/adr/0041-runtime-memory-grant.md
+docs/adr/0042-runtime-events-on-the-boot-log.md
+docs/adr/0043-stage2-performance-budgets.md
+docs/adr/0045-stage2-frontend-budget.md
+docs/adr/0046-irrefutable-binding-patterns.md
+docs/adr/0047-match-arm-selection-order.md
+docs/adr/0048-stage3-isolation-and-execution-boundary.md
+docs/adr/0049-stage3-interrupt-and-preemption-baseline.md
+docs/adr/0050-per-process-memory-grants.md
+docs/adr/0051-service-manifest-surface.md
