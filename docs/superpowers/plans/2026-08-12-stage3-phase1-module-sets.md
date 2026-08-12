@@ -31,8 +31,10 @@ At `7b0847d`, on the production frontend:
 | `dependency_digest` is the digest of the empty list | `tos-pipeline` |
 | `tos-ir/v1` cannot carry a named module constant or import one | `Constant` is a scalar pool; `Import` has no constant form |
 
-The last row is why this phase is scoped to **function imports**. Constant and
-type imports wait for ADR-0052.
+The last row is why this phase was scoped to **function imports**. ADR-0052
+has since answered the constant half without touching the IR: a constant is a
+compile-time value, so it crosses a module boundary by substitution and needs no
+representation at run time. Type imports are still out of scope here.
 
 ## Global constraints
 
@@ -61,7 +63,11 @@ type imports wait for ADR-0052.
 - [x] Record in ADR-0052 that finishing the job needs a decision: what may
   initialize a constant, when it evaluates, and whether `tos-ir/v1` gains a
   named constant — the last being an extension of a closed contract.
-- [ ] Implement the chosen option. *(blocked on ADR-0052.)*
+- [x] Implement the chosen option. ADR-0052 accepted option A on 2026-08-12: a
+  constant is a compile-time value, its initializer is a constant expression,
+  and a use is the value substituted in place. `E1224_NONCONSTANT_INITIALIZER`
+  refuses an initializer that would execute. Cross-module constant import is the
+  same substitution and lands with Task 2's source-set step.
 
 ### Task 1: A source set reaches the pipeline
 

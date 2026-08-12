@@ -95,7 +95,7 @@ Architecture decision records
 - docs/adr/0049-stage3-interrupt-and-preemption-baseline.md — ADR-0049: Interrupts and preemption [**Accepted** (Project Architect-approved)]
 - docs/adr/0050-per-process-memory-grants.md — ADR-0050: Per-process memory grants [**Accepted** (Project Architect-approved)]
 - docs/adr/0051-service-manifest-surface.md — ADR-0051: What a service manifest is, and where it lives [**Accepted** (Project Architect-approved)]
-- docs/adr/0052-module-level-constants.md — ADR-0052: What a module-level `const` is [**Proposed**]
+- docs/adr/0052-module-level-constants.md — ADR-0052: What a module-level `const` is [**Accepted** (Project Architect-approved)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

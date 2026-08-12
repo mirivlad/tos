@@ -104,6 +104,7 @@ pub fn lower_module(
         variant_owner: BTreeMap::new(),
         functions_by_name: BTreeMap::new(),
         functions: Vec::new(),
+        const_stack: Vec::new(),
     };
 
     lowerer.intern_declared_types()?;
@@ -330,6 +331,13 @@ struct Lowerer<'source> {
     /// Functions in the order they were lowered: declarations first, with each
     /// nested body appended where the walk reached it.
     functions: Vec<Function>,
+    /// Module-level constants currently being substituted, innermost last.
+    ///
+    /// ADR-0052 makes a constant its value, so a use is lowered by lowering its
+    /// initializer here. The checker refuses a self-referential constant, and
+    /// this stack is what makes the lowerer total anyway: a cycle that reached
+    /// it would otherwise recurse until the stack ran out.
+    const_stack: Vec<&'source str>,
 }
 
 impl<'source> Lowerer<'source> {
@@ -590,10 +598,39 @@ impl<'source> Lowerer<'source> {
 
     /// Whether the module declares a `const` of this name.
     fn declares_const(&self, name: &str) -> bool {
+        self.const_declaration(name).is_some()
+    }
+
+    /// The declaration of a module-level `const`, by name.
+    fn const_declaration(&self, name: &str) -> Option<&'source crate::parser::ConstDeclaration> {
         self.schema
             .consts()
             .iter()
-            .any(|declaration| declaration.name().text(self.source) == name)
+            .find(|declaration| declaration.name().text(self.source) == name)
+    }
+
+    /// Lowers a use of a module-level constant by lowering its initializer.
+    ///
+    /// ADR-0052: the constant *is* its value, so there is nothing to look up at
+    /// run time and nothing to initialize before one. Substitution is also what
+    /// keeps `tos-ir/v1` unchanged — a compile-time constant never becomes a
+    /// runtime object.
+    fn lower_const_use(
+        &mut self,
+        name: &'source str,
+        at: Span,
+        builder: &mut BodyBuilder,
+    ) -> Result<Operand, Gap> {
+        let Some(declaration) = self.const_declaration(name) else {
+            return Err(self.gap("module-level const", at));
+        };
+        if self.const_stack.contains(&name) {
+            return Err(self.gap("constant cycle", declaration.value().span()));
+        }
+        self.const_stack.push(name);
+        let lowered = self.lower_expression(declaration.value(), builder);
+        self.const_stack.pop();
+        lowered
     }
 
     fn gap(&self, construct: &'static str, span: Span) -> Gap {
@@ -1786,6 +1823,43 @@ impl<'source> Lowerer<'source> {
         self.intern(TypeDef::Unit)
     }
 
+    /// Lowers a constant use into a value slot, for a place to project from.
+    fn materialize_const(
+        &mut self,
+        name: &'source str,
+        expression: &'source Expression,
+        builder: &mut BodyBuilder,
+    ) -> Result<ValueId, Gap> {
+        let at = self.map(expression.span());
+        let operand = self.lower_const_use(name, expression.span(), builder)?;
+        if let Operand::Value(value) = operand {
+            return Ok(value);
+        }
+        let declaration = self
+            .const_declaration(name)
+            .ok_or_else(|| self.gap("module-level const", expression.span()))?;
+        let ty = self.resolve_type(declaration.ty())?;
+        let slot = builder.define(ty);
+        builder.push(Instruction {
+            result: Some(slot),
+            ty,
+            op: match operand {
+                Operand::Constant(constant) => Op::Const(constant),
+                Operand::Value(source_value) => Op::Move {
+                    place: Place {
+                        root: source_value,
+                        path: Vec::new(),
+                    },
+                },
+            },
+            source: at,
+            runtime_contract: None,
+            unsafe_block: builder.in_unsafe,
+            unsafe_interface: None,
+        });
+        Ok(slot)
+    }
+
     fn lower_place(
         &mut self,
         expression: &'source Expression,
@@ -1795,18 +1869,18 @@ impl<'source> Lowerer<'source> {
             ExpressionForm::Name => {
                 let name = expression.span().text(self.source);
                 let Some(slot) = builder.lookup(name) else {
-                    // A module-level `const` is an accepted V1 item form that
-                    // the parser and the checker both admit, and that this
-                    // lowerer does not yet represent. Naming it as the gap it
-                    // is keeps the refusal honest: "unbound place" describes a
-                    // lowering data structure, and would send a reader looking
-                    // for a typo in source that is perfectly well formed.
-                    let construct = if self.declares_const(name) {
-                        "module-level const"
-                    } else {
-                        "unbound place"
-                    };
-                    return Err(self.gap(construct, expression.span()));
+                    // A constant is its value (ADR-0052), and a place needs a
+                    // value to project from, so the substituted initializer is
+                    // materialized into one slot here. Projection then proceeds
+                    // exactly as it would over any other temporary.
+                    if self.declares_const(name) {
+                        let root = self.materialize_const(name, expression, builder)?;
+                        return Ok(Place {
+                            root,
+                            path: Vec::new(),
+                        });
+                    }
+                    return Err(self.gap("unbound place", expression.span()));
                 };
                 Ok(Place {
                     root: slot,
@@ -1903,7 +1977,7 @@ impl<'source> Lowerer<'source> {
                     return Ok(Operand::Value(value));
                 }
                 if self.declares_const(name) {
-                    return Err(self.gap("module-level const", expression.span()));
+                    return self.lower_const_use(name, expression.span(), builder);
                 }
                 Err(self.gap("unresolved value name", expression.span()))
             }
