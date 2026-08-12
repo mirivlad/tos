@@ -373,6 +373,28 @@ fn report_stages(text: &str) {
     ] {
         println!("  {name:<7} {}", percentile(samples, 50));
     }
+    let map_digest = measure(|| {
+        let _ = tos_verifier::source_map_digest_of(&module.source_map);
+    });
+    println!(
+        "source map: {} entries, digest {} us",
+        module.source_map.len(),
+        percentile(&map_digest, 50)
+    );
+    println!("verifier steps, median us");
+    for name in tos_verifier::VERIFY_STEPS {
+        let samples = measure(|| {
+            tos_verifier::verify_step(
+                name,
+                &module,
+                &ResolutionSnapshot::default(),
+                &Limits::default(),
+            )
+            .expect("a known step")
+            .expect("the fixture verifies");
+        });
+        println!("    {name:<26} {}", percentile(&samples, 50));
+    }
     println!("checker slices, median us");
     for (name, median) in slices {
         println!("    {name:<14} {median}");
