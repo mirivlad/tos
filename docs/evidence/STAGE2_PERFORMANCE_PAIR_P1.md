@@ -40,15 +40,22 @@ normative pair at fca219a              205 880 / 4 147 373 = 20.1x
 normative pair at 46911ef              207 873 / 3 655 641 = 17.6x
 ```
 
-The drift is upward as the native half gets faster, which is what a fixed guest
-overhead does to a ratio: shrinking the denominator raises the quotient. **The
-drift is not monotone: the match-lowering fix brought the ratio back to 17.6x,
-leaving about 20% headroom against 22x.** The gate passes and the margin is thinner than the number was
-chosen to give. The Architect has directed that 22x is not reopened on P1
-single-machine variation; this is recorded so a future P2/CI record has
-something to compare against. That is stated here
-rather than left for someone to rediscover; whether 22x should move is the
-Architect's, and this ADR-0043 is already accepted at 22x.
+**The drift is not monotone.** It ran 16.6, 17.3, 19.1, 19.8, 20.1, then back to
+17.6, which leaves about 20% headroom against 22x at the current figure.
+
+An earlier version of this record attributed the last move to the match-lowering
+change, on the reasoning that source order stopped the lowerer building a
+variant map. **That explanation was wrong and is withdrawn.** The engine metric
+is measured from the last `TOS.RUN.STAGE` — the announcement that execution is
+beginning — to the first result event, so lowering has already finished before
+the span opens. A change to `lower_match` cannot move a number that starts after
+lowering ends.
+
+What the series shows instead is the honest limit of P1 evidence: single-machine
+run-to-run variation of this size, in both directions, means **no trend can be
+read from these points**. The measured figures stand; the causal story does not.
+ADR-0043's 22x is not reopened on this basis, and a P2 or CI record with repeated
+runs is what would turn this range into something a trend could be read from.
 
 ## Frontend: still FAIL, and where it goes
 
