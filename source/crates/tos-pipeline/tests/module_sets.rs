@@ -381,11 +381,11 @@ fn an_import_carries_the_resolved_module_content_id() {
     );
 }
 
-/// Executing across a module boundary is Task 4. Until the engine holds a
-/// closure, the call is a defined refusal rather than a wrong answer — and the
-/// refusal names the missing capability of the engine, not a defect in source.
+/// The whole point of a source set: a boot module calls a library module and
+/// gets its answer. Every stage of the reference path, across a real module
+/// boundary, ending in a value.
 #[test]
-fn a_cross_module_call_refuses_in_the_engine_and_not_earlier() {
+fn a_cross_module_call_runs_and_returns_the_callee_answer() {
     let outcome = set(
         &[
             (
@@ -406,15 +406,60 @@ fn a_cross_module_call_refuses_in_the_engine_and_not_earlier() {
         ],
         "system/boot/init.tos",
     );
+    let Run::Completed(completion) = &outcome else {
+        panic!("expected a completed run, got {outcome:?}");
+    };
+    assert_eq!(tos_pipeline::render::value(&completion.value), "i32:42");
+    // One run, one budget. docs/41 section 6 admits a call only when the
+    // callee's declared contract fits the caller's envelope, so crossing a
+    // module boundary is not a way to obtain a second one: the accounting
+    // reported is the entry's, and the callee's work is charged to it.
     assert_eq!(
-        outcome.failed_at(),
-        Some(PipelineStage::Execute),
-        "read, parse, check, resolve, lower and verify must all accept it: {outcome:?}"
+        completion.accounting.fuel_limit, 100000,
+        "the run is governed by the entry module's declared fuel"
     );
-    let Run::Trapped { code, .. } = &outcome else {
+    assert!(
+        completion.accounting.fuel_used > 0,
+        "the callee's work is charged to the run that made the call"
+    );
+    assert!(
+        completion.accounting.max_call_depth >= 2,
+        "a cross-module call is a call: it costs depth like any other"
+    );
+}
+
+/// A trap raised inside a dependency is located in the dependency's own source.
+/// The source-map index that names it is only meaningful in that module's
+/// table, so a trap that crossed a boundary and was resolved against the
+/// caller's map would name a real line in the wrong file.
+#[test]
+fn a_trap_inside_a_dependency_is_located_in_the_dependency() {
+    let outcome = set(
+        &[
+            (
+                "system/boot/init.tos",
+                &module(
+                    "system.boot.init",
+                    "import system.lib.math as math;",
+                    "pub fn main() -> i32 { return math.halve(1i32); }",
+                ),
+            ),
+            (
+                "system/lib/math.tos",
+                &lib(
+                    "system.lib.math",
+                    "pub fn halve(value: i32) -> i32 { return value / 0i32; }",
+                ),
+            ),
+        ],
+        "system/boot/init.tos",
+    );
+    let Run::Trapped { code, at, .. } = &outcome else {
         panic!("expected a trap, got {outcome:?}");
     };
-    assert_eq!(*code, "RUNTIME_UNRESOLVED_IMPORT");
+    assert_eq!(*code, "RUNTIME_DIVISION_BY_ZERO");
+    let at = at.as_ref().expect("the trap must be located");
+    assert_eq!(at.path, "system/lib/math.tos");
 }
 
 /// A call to a name the imported module does not export is a lowering gap, not

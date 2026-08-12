@@ -57,7 +57,7 @@ use tos_core::{
 /// read a value this crate gave it, which is a dependency on the stage that
 /// produced the result rather than on the result.
 pub use tos_core::{Diagnostic, Position, Severity};
-use tos_engine::{run, Accounting, Refusal, Value};
+use tos_engine::{run_set, Accounting, Refusal, Value, Verified};
 use tos_ir::Module;
 use tos_verifier::{verify, Finding, Limits, ResolutionSnapshot, VerifiedModule};
 
@@ -427,9 +427,11 @@ pub fn execute_set(
     // Every module, not only the entry. A dependency whose IR the verifier
     // never saw would be executing on its caller's receipt, and a receipt is a
     // statement about one module.
+    let mut receipts = Vec::with_capacity(lowered.len());
     for (_, dependency) in &lowered {
-        if let Err(finding) = verify(dependency, &snapshot, &Limits::default()) {
-            return Ok(Run::Unverified(finding));
+        match verify(dependency, &snapshot, &Limits::default()) {
+            Ok(receipt) => receipts.push(receipt),
+            Err(finding) => return Ok(Run::Unverified(finding)),
         }
     }
     let receipt = match verify(&module, &snapshot, &Limits::default()) {
@@ -438,22 +440,38 @@ pub fn execute_set(
     };
 
     trace.entering(PipelineStage::Execute);
-    Ok(match run(&module, &receipt, request.entry, arguments) {
-        Err(refusal) => Run::Refused(refusal),
-        Ok(Err(trap)) => Run::Trapped {
-            code: trap.code,
-            detail: trap.detail.clone(),
-            at: site_of(&module, source, &trap),
+    // Each module paired with its own receipt, the entry last. The engine
+    // rechecks every pairing before it runs anything: the verifier's word is
+    // carried, not taken.
+    let mut set: Vec<Verified<'_>> = lowered
+        .iter()
+        .map(|(_, dependency)| dependency)
+        .zip(receipts.iter())
+        .map(|(module, receipt)| Verified { module, receipt })
+        .collect();
+    set.push(Verified {
+        module: &module,
+        receipt: &receipt,
+    });
+    let entry_position = set.len() - 1;
+    Ok(
+        match run_set(&set, entry_position, request.entry, arguments) {
+            Err(refusal) => Run::Refused(refusal),
+            Ok(Err(trap)) => Run::Trapped {
+                code: trap.code,
+                detail: trap.detail.clone(),
+                at: site_of_in_set(&module, &sources, &entries, source, &trap),
+            },
+            Ok(Ok(outcome)) => {
+                let accounting = Accounting::of(&module, &outcome);
+                Run::Completed(Box::new(Completion {
+                    receipt,
+                    value: outcome.value,
+                    accounting,
+                }))
+            }
         },
-        Ok(Ok(outcome)) => {
-            let accounting = Accounting::of(&module, &outcome);
-            Run::Completed(Box::new(Completion {
-                receipt,
-                value: outcome.value,
-                accounting,
-            }))
-        }
-    })
+    )
 }
 
 /// What the resolved set provides, as the verifier is told it.
@@ -566,12 +584,28 @@ fn is_error(diagnostic: &Diagnostic) -> bool {
 }
 
 /// The source a trap came from, resolved to line and column.
-fn site_of(module: &Module, source: &SourceUnit, trap: &tos_engine::Trap) -> Option<Site> {
-    let entry = tos_engine::trap_source(module, trap)?;
+///
+/// A trap from a dependency carries byte offsets into *that* module's text, so
+/// the position is computed against the unit the source-map entry names.
+/// Computing it against the entry's text would produce a line and column that
+/// exist and are wrong, which is worse than none at all.
+fn site_of_in_set(
+    module: &Module,
+    sources: &[SourceUnit],
+    entries: &[ModuleEntry<'_>],
+    entry_source: &SourceUnit,
+    trap: &tos_engine::Trap,
+) -> Option<Site> {
+    let mapped = tos_engine::trap_source(module, trap)?;
+    let source = entries
+        .iter()
+        .position(|entry| entry.path() == mapped.path)
+        .and_then(|index| sources.get(index))
+        .unwrap_or(entry_source);
     Some(Site {
-        path: entry.path.clone(),
-        start: Position::at(source, entry.byte_start),
-        end: Position::at(source, entry.byte_end),
+        path: mapped.path.clone(),
+        start: Position::at(source, mapped.byte_start),
+        end: Position::at(source, mapped.byte_end),
     })
 }
 
