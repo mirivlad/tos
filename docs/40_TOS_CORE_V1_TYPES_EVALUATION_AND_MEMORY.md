@@ -251,7 +251,14 @@ without making their executable blocks expressions.
 `if`, `match`, `while`, `for`, `loop`, and `parallel` are statements, not
 expressions. An `if` branch, including `else`, is an executable block and has
 no value typing rule. A `match` arm is likewise an executable block; arms are
-not comma-separated. `match` must be exhaustive for an enum, `Option`, or
+not comma-separated. A `match` evaluates its subject exactly once, then considers its arms in strict
+lexical source order and runs the **first** arm whose pattern matches. Later
+arms take no part in selection once an arm is chosen, and exactly one arm body
+executes (ADR-0047). A wildcard, a bare binding and an irrefutable tuple pattern
+are therefore catch-alls that make every later arm unreachable. Unreachable arms
+are permitted in V1 and have no diagnostic.
+
+`match` must be exhaustive for an enum, `Option`, or
 `Result`; a missing case is `E1220_NONEXHAUSTIVE_MATCH`. An `_` arm is
 exhaustive. `break` has no value. Patterns bind by move unless the matched
 subject is an immutable `Copy` value; borrows must be made explicitly before

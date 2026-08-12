@@ -2,10 +2,10 @@
 
 # ADR-0047: Which `match` arm runs when several could
 
-- Status: **Proposed** (awaiting Project Architect decision)
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-12
 - Decision level: 2 — the observable meaning of an accepted V1 statement
-- Project Architect approval: *(none — this ADR is not accepted)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
 
 ## The gap
 
@@ -53,34 +53,53 @@ should be, an implementation should not arrive at one by accident.
    code, and it should not be adopted merely because it is convenient for a
    lowerer.
 
-## Recommendation
+## Decision
 
-**Option 1**, stated explicitly in docs/40 section 4 beside the existing
-evaluation-order sentences: *the first arm whose pattern matches, in source
-order, is the arm that runs.*
+**Option 1.** TOS Core V1 `match` has this normative semantics:
+
+1. The subject is evaluated **exactly once**, before any arm is selected.
+2. Arms are considered in **strict lexical source order**.
+3. The **first** arm whose pattern matches the subject is the arm that runs.
+4. Once an arm is selected, later arms take no part in selection and their
+   bodies do not execute.
+5. **Exactly one** arm body executes.
+6. The existing exhaustiveness rules are unchanged.
+7. A wildcard and a bare binding are catch-alls under the existing rules.
+8. An irrefutable tuple pattern likewise makes every later arm unreachable.
+9. **Unreachable arms are permitted in V1.** No compile-time diagnostic for one
+   is introduced now.
+10. Forbidding unreachable arms later would be a separate versioned language
+    decision, and it would not change the first-match rule this ADR fixes.
+
+## Why option 1 (as recommended before the decision)
 
 It is the reading the rest of docs/40 already implies, it makes an arm's
 position meaningful in the way a reader expects, and it needs no new diagnostic.
 Option 3 could be adopted **in addition** later without conflicting with it.
 
-## What the implementation does meanwhile
+It is the reading the rest of docs/40 already implies, it makes an arm's
+position meaningful in the way a reader expects, and it needs no new diagnostic.
+Option 3 could be adopted **in addition** later without conflicting with it.
 
-Option 1, and not silently. The lowerer now takes arms in source order and stops
-at the first irrefutable one, so a catch-all before a variant arm wins and the
-later arm is unreachable. Tests assert it
+## What the implementation does
+
+Exactly this, and it already did before the decision — the lowerer takes arms in
+source order and stops at the first irrefutable one, so a catch-all before a
+variant arm wins and the later arm is unreachable. `tos-ir/v1` is unchanged:
+first-match needs no new IR construct, only an ordered `MatchEnum` map whose
+default is the first irrefutable arm.
+
+The tests are now written as the decision requires: a program this ADR makes
+valid must reach `Run::Completed` with its exact V1 result, and a diagnostic is
+no longer an acceptable alternative outcome for one
 (`crates/tos-pipeline/tests/match_matrix.rs`).
-
-This is the defensible reading rather than a decision taken on the Architect's
-behalf: the behaviour is stated here, it is testable, and if option 2 or 3 is
-chosen the change is confined to `lower_match` and those tests.
 
 ## Consequences
 
-If option 1 is accepted, docs/40 gains one sentence and the implementation is
-already correct. If option 3 is added, a new diagnostic is needed and the corpus
-gains negatives. If option 2 is chosen, the lowerer's arm ordering is rewritten
-and the tests above invert.
+docs/40 section 4 gains the rule beside the existing evaluation-order sentences,
+and the implementation is already correct against it. The class of accepted V1
+programs whose result the contract did not determine is now empty.
 
-Until it is decided, an accepted V1 program exists whose result the contract
-does not determine — which is the reason this ADR exists and not a reason to
-guess more confidently.
+Permitting unreachable arms is a deliberate choice, not an omission: a rule that
+forbade them would be a new diagnostic and a new conformance obligation, and
+point 10 keeps that a separate decision rather than something this one implies.

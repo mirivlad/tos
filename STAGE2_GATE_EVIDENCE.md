@@ -24,7 +24,7 @@ source_commit          the commit this file is committed in; MANIFEST.txt and
 architecture_version   TOS Core 1.0; tos-ir/v1; accepted ADR-0027, ADR-0028,
                        ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036,
                        ADR-0037, ADR-0038, ADR-0039, ADR-0040, ADR-0041,
-                       ADR-0042, ADR-0043, ADR-0045, ADR-0046
+                       ADR-0042, ADR-0043, ADR-0045, ADR-0046, ADR-0047
                        (ADR-0044 is Proposed and is not a closure condition)
 identity_question      Is actual language semantics executing from canonical
                        text with a verifiable mapping to runtime behavior?
@@ -35,7 +35,7 @@ identity_question      Is actual language semantics executing from canonical
 | `docs/37` Stage 2 evidence | State |
 |---|---|
 | normative grammar and semantics | **Present.** `docs/39`–`docs/44` accepted. The diagnostic registry holds 63 codes; every one is implemented, deliberately unreachable under V1, or blocked on a decision named below. |
-| source → AST → typed IR → execution trace | **Present.** `SourceReader → Parser → Checker → Lowerer → tos-ir/v1 → Verifier → reference engine` runs end to end. Of the 29 single-module accepted vectors, 29 reach the independent verifier and the bounded engine and none stops at lowering — measured by `crates/tos-pipeline/tests/corpus_coverage.rs`, which ratchets the number rather than asserting it once. Every IR operation carries a source-map entry and every runtime trap names one. |
+| source → AST → typed IR → execution trace | **Present.** `SourceReader → Parser → Checker → Lowerer → tos-ir/v1 → Verifier → reference engine` runs end to end. Of the 35 single-module accepted vectors, 35 reach the independent verifier and the bounded engine and none stops at lowering — measured by `crates/tos-pipeline/tests/corpus_coverage.rs`, which ratchets the number rather than asserting it once. Every IR operation carries a source-map entry and every runtime trap names one. |
 | independent verifier | **Present.** `crates/tos-verifier` depends only on `tos-ir` and `tos-hash`; fifteen `V20xx` families; 23 structured forged-IR negatives — including `V2031_SYNC` and `V2021_REGION`, reached without any frontend involvement — plus 200 000 fuzz rounds per preflight. |
 | cache deletion/regeneration test | **Present.** `crates/tos-cache`; clearing the store and regenerating from the same canonical source reproduces the same key, receipt and result. |
 | source mutation invalidates old cache | **Present.** Each of the seventeen `docs/43` section 6 key fields is changed in turn and must move the key. |
@@ -71,7 +71,7 @@ identity_question      Is actual language semantics executing from canonical
 ## tests
 
 ```text
-490 tests pass across 46 binaries
+491 tests pass across 46 binaries
   237 tos-core unit tests
    15 guard-lifetime gates (ADR-0036: each operation value, the precedence over
       E1304/E1305, and the positives a guard must keep)
@@ -192,12 +192,13 @@ did not look, so each entry below states what was checked as well as what stands
    directly and require an **executed result** for valid source rather than
    accepting a refusal. The remaining `Gap` arms are guards against malformed
    input the checker has already rejected.
-5. **ADR-0047 is Proposed: which `match` arm runs when several could.** docs/40
-   fixes evaluation order everywhere else and does not say this, and nothing
-   forbids an unreachable arm — so an accepted program exists whose result the
-   contract does not determine. The implementation takes the first matching arm
-   in source order, states that it is the defensible reading rather than a
-   decision taken on the Architect's behalf, and tests it.
+5. **ADR-0047 is Accepted and implemented.** `match` evaluates its subject once,
+   considers arms in lexical source order, and runs the first whose pattern
+   matches; exactly one body executes and later arms are unreachable.
+   Unreachable arms are permitted and have no diagnostic. docs/40 section 4
+   carries the rule, `tos-ir/v1` is unchanged, and
+   `crates/tos-pipeline/tests/match_matrix.rs` requires an exact executed result
+   for every shape the contract admits rather than accepting a diagnostic.
 
 ## architect_approval
 
