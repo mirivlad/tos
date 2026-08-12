@@ -1,7 +1,7 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Stage 2 performance — normative pair at commit 46911ef
 
-Evidence level: **P1** (locally measured, docs/35). Verdict: **1 FAIL, 2 PASS**.
+Evidence level: **P1** (locally measured, docs/35). Verdict: **3 PASS**.
 Procedure: the normative one — 3 warmups, 21 samples, median/p95/p99, one
 commit, one set of fixtures, both halves.
 Fixtures: emitted by `tos-core-performance --emit-fixture`, so both halves
@@ -21,10 +21,10 @@ the real freestanding Stage 2 path.
 Reference medians: frontend 1 138 712 us, engine 3 603 540 us, rejection
 447 965 us. All raw samples are in the harness output and `reference.json`.
 
-Taken **after** the ADR-0046 pattern work, so it describes the implementation
-that is being offered for closure rather than one that predates it. No metric
-regressed: the frontend moved from 1 140 356 to 1 227 354 us, well inside the
-budget and inside the spread these figures have shown across runs.
+Taken **after** the ADR-0046 pattern work and the ADR-0047 match lowering, so it
+describes the implementation being offered for closure rather than one that
+predates it. Every metric is inside its accepted budget, and the frontend figure
+sits within the spread these runs have shown.
 
 ## A fact the Architect should have about the engine threshold
 
@@ -57,7 +57,7 @@ read from these points**. The measured figures stand; the causal story does not.
 ADR-0043's 22x is not reopened on this basis, and a P2 or CI record with repeated
 runs is what would turn this range into something a trend could be read from.
 
-## Frontend: still FAIL, and where it goes
+## Where the frontend's 104 ms goes
 
 ```text
 read       0.4 ms     transport validity (ASCII fast path)
@@ -78,13 +78,19 @@ identity strings in each of its 12 058 entries.
 
 `docs/evidence/STAGE2_MODULE_DIGEST.md` decomposes it and **ADR-0044 (Proposed)**
 carries the question; by Architect direction it is a documented future
-improvement rather than a Stage 2 blocker. **ADR-0045 (Proposed)** asks for the
-500 ms research estimate itself to be revised on this evidence.
+improvement rather than a Stage 2 blocker. **ADR-0045 (Accepted)** revised the
+frontend budget from the original 500 ms research estimate to the measured
+1500 ms this pair is judged against.
 
-## History
+## History — superseded measurements, kept as history
 
-The previous normative pair (engine 16.6x against the then-current 10x budget,
-frontend 2.98x over) is retained in the git history of this file and is not
-rewritten. It was taken before the engine's per-instruction clone, the
-transport-validation fast path, the verifier's eager finding locations and the
-checker's triple typing derivation were fixed.
+Nothing below describes the current implementation. It is retained because the
+budgets that now apply were decided on it.
+
+The first normative pair measured the engine at **16.6x against the then-current
+10x budget** and the frontend at **2.98x over the then-current 500 ms**. It was
+taken before the engine's per-instruction clone, the transport-validation fast
+path, the verifier's eager finding locations and the checker's triple typing
+derivation were fixed, and before ADR-0043 and ADR-0045 revised the two budgets
+on that evidence. Earlier revisions of this file are in the git history and are
+not rewritten.

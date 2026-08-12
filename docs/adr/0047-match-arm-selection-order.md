@@ -77,10 +77,6 @@ It is the reading the rest of docs/40 already implies, it makes an arm's
 position meaningful in the way a reader expects, and it needs no new diagnostic.
 Option 3 could be adopted **in addition** later without conflicting with it.
 
-It is the reading the rest of docs/40 already implies, it makes an arm's
-position meaningful in the way a reader expects, and it needs no new diagnostic.
-Option 3 could be adopted **in addition** later without conflicting with it.
-
 ## What the implementation does
 
 Exactly this, and it already did before the decision — the lowerer takes arms in
