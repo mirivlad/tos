@@ -1,4 +1,19 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+# Stage 2 performance record — superseded
+
+**Superseded by `docs/evidence/STAGE2_PERFORMANCE_PAIR_P1.md`.**
+
+This file recorded the native half alone, taken before the reference half
+could be measured on the real path and before the allocator defect of
+`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md` was found. Its numbers are
+historical: they came from a different allocator search and from fixtures
+that were not yet shared with the reference half. Nothing here should be
+read as current evidence, and nothing in it is used as closure evidence.
+
+The original text follows, unchanged, for comparison.
+
+---
+
 
 # Stage 2 performance record — native-host half of the pair
 

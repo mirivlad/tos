@@ -164,25 +164,30 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    name, path, content identity, imports, declared types, qualified uses — so a
    loader holds one parse tree at a time. Verdicts are unchanged and tested both
    ways. `docs/evidence/STAGE2_ARENA_BOUND.md` carries the measured scaling.
-6. **The Stage 2 performance gate is open, and now for a measured reason.**
-   The reference half is takeable and has been taken on the real path
-   (`docs/evidence/STAGE2_REFERENCE_PLATFORM_P1.md`): a million engine
-   operations run in 6.06 s on the ADR-0040 platform, ~20x the native cost,
-   which is an ordinary TCG factor. The docs/35 ratio is still not computed,
-   because the native half was taken on a different fixture and dividing one by
-   the other would produce a number that looks like a ratio and is not one.
-7. **The bounded heap does not scale, and the frontend budget cannot be met
-   until it does.** A 256 KiB module — the published source-unit ceiling — did
-   not finish the frontend within 900 s on the reference platform, against a
-   ~3 s expectation from the platform's ordinary factor.
-   `BoundedHeap::try_allocate` is first-fit by walking every block from the base
-   of the arena, so allocation cost grows with live blocks and the frontend
-   becomes superlinear in module size. Every result it produces is correct; the
-   cost of reaching them is not. No accepted document is violated and no
-   semantics change. The fix is a free list or a rover, and it is deliberately
-   not attempted in the change that found it — the heap's reclaim, coalescing
-   and layout invariants are proved by tests a rushed rewrite would be checked
-   against rather than designed for.
+6. *(Resolved.)* **The allocator's search no longer depends on the arena.**
+   Free blocks are threaded onto size-class lists; the request's own class gets
+   a fixed probe budget and any larger class fits without inspection. The
+   allocator counts its own probes, and the evidence is a series holding flat
+   while live blocks grow 64x, with eight adversarial patterns and the eleven
+   pre-existing regressions unchanged
+   (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`). The arena-bound sweep went from
+   hours to 16.5 s and the measured bound moved by under 0.1%.
+7. **The Stage 2 performance gate FAILS, measured as a pair.** Both halves are
+   the same fixture at the same commit
+   (`docs/evidence/STAGE2_PERFORMANCE_PAIR_P1.md`).
+   - engine: reference p95 5 473 077 us / native p95 325 350 us = **16.8x**
+     against a 10x budget;
+   - frontend: the 256 KiB fixture does not complete on the reference platform,
+     reaching `lower` and not `verify` within ten minutes, against a 500 ms
+     budget;
+   - quota rejection: 0.397 natively (budget 2.000), not measurable on the
+     reference platform until the frontend is.
+   The allocator defect that caused the previous failure is fixed and was not
+   the whole cause. The remaining cost is not allocation search; the leading
+   hypothesis is the freestanding target's byte-at-a-time `memcpy`, stated as a
+   hypothesis and not yet proved. **ADR-0043 (Proposed)** records what a
+   revision of the quantitative budgets would have to rest on, and is not
+   accepted on the Architect's behalf.
 8. **Differential testing is N/A, not passed.** docs/44 asks for agreement
    between independent implementations, and there is one engine. A second
    implementation is the only thing that can change this.
