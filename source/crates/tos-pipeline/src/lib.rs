@@ -46,8 +46,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_core::{
-    check_module_set, lower_module, Gap, ModuleContext, ModuleEntry, Parser, SourceReader,
-    SourceUnit,
+    check_module_set, lower_module_in_set, Gap, ModuleContext, ModuleEntry, Parser, ResolvedImport,
+    SourceReader, SourceUnit,
 };
 
 /// The frontend types this crate's own results are made of.
@@ -377,25 +377,45 @@ pub fn execute_set(
     }
     // Ordered and reachable: a module the entry cannot reach is not part of
     // what runs, and ordering it anyway would put it in the dependency digest.
+    // Dependencies come first, so each module is lowered after everything it
+    // imports and can be given their computed identities.
     let closure = closure_of(&entries, entry_index);
 
     trace.entering(PipelineStage::Lower);
+    let names: Vec<String> = entries.iter().map(|entry| entry.summarize().name).collect();
+    let mut lowered: Vec<(usize, Module)> = Vec::with_capacity(closure.len());
+    for &index in &closure {
+        let source = &sources[index];
+        let schema = &schemas[index];
+        // Each module's own dependency digest, over its own closure: a
+        // dependency's identity cannot be the entry's, or two modules that
+        // depend on different things would claim the same one.
+        let own_closure = closure_of(&entries, index);
+        let context = ModuleContext {
+            source_set: request.source_set.to_string(),
+            path: entries[index].path().to_string(),
+            content_id: content_id(source.bytes()),
+            dependency_digest: closure_digest(&entries, &own_closure, index),
+            capability_interface_digest: list_digest(&[]),
+        };
+        let imports: Vec<ResolvedImport<'_>> = lowered
+            .iter()
+            .map(|(at, module)| ResolvedImport {
+                name: names[*at].as_str(),
+                module,
+            })
+            .collect();
+        match lower_module_in_set(source, schema, &context, &imports) {
+            Ok(module) => lowered.push((index, module)),
+            Err(gap) => return Ok(Run::NotLowered(gap)),
+        }
+    }
     let source = &sources[entry_index];
-    let schema = &schemas[entry_index];
-    let context = ModuleContext {
-        source_set: request.source_set.to_string(),
-        path: request.entry_path.to_string(),
-        content_id: content_id(source.bytes()),
-        // Over the resolved closure, in its resolved order: an empty list has a
-        // digest, and a placeholder would make the receipt name a resolution
-        // that never happened.
-        dependency_digest: closure_digest(&entries, &closure, entry_index),
-        capability_interface_digest: list_digest(&[]),
-    };
-    let module = match lower_module(source, schema, &context) {
-        Ok(module) => module,
-        Err(gap) => return Ok(Run::NotLowered(gap)),
-    };
+    // The entry is the last lowered: `closure_of` puts dependencies first.
+    let module = lowered
+        .pop()
+        .map(|(_, module)| module)
+        .expect("the closure always contains the entry");
 
     trace.entering(PipelineStage::Verify);
     let snapshot = ResolutionSnapshot::default();
@@ -423,14 +443,17 @@ pub fn execute_set(
     })
 }
 
-/// The entry module's dependency closure, in a deterministic order.
+/// A module's dependency closure, dependencies first, deterministically.
 ///
-/// Breadth-first from the entry over each module's imports in source order, so
-/// the same set produces the same order on every run and on every machine.
+/// Depth-first over each module's imports in source order, emitting a module
+/// only after everything it imports: lowering needs its dependencies already
+/// lowered, and a digest needs a stable order. The same set therefore produces
+/// the same order on every run and on every machine.
+///
 /// Resolution has already refused a cycle and an unresolvable import, so this
-/// walk cannot loop and cannot be asked for a module that is not there; it
-/// still guards, because a total function is cheaper than a proof that its
-/// caller ordering never changes.
+/// walk cannot loop and cannot be asked for a module that is not there. It
+/// still guards, because a total function is cheaper than a proof that no
+/// caller ever reaches it in another order.
 fn closure_of(entries: &[ModuleEntry<'_>], entry: usize) -> Vec<usize> {
     let summaries: Vec<_> = entries.iter().map(ModuleEntry::summarize).collect();
     let by_name: alloc::collections::BTreeMap<&str, usize> = summaries
@@ -440,21 +463,38 @@ fn closure_of(entries: &[ModuleEntry<'_>], entry: usize) -> Vec<usize> {
         .collect();
 
     let mut order = Vec::new();
-    let mut seen = alloc::collections::BTreeSet::new();
-    let mut queue = alloc::collections::VecDeque::new();
-    queue.push_back(entry);
-    seen.insert(entry);
-    while let Some(index) = queue.pop_front() {
-        order.push(index);
-        for import in &summaries[index].imports {
-            if let Some(&target) = by_name.get(import.target.as_str()) {
-                if seen.insert(target) {
-                    queue.push_back(target);
-                }
-            }
+    let mut settled = alloc::collections::BTreeSet::new();
+    let mut open = alloc::collections::BTreeSet::new();
+    visit(
+        entry,
+        &summaries,
+        &by_name,
+        &mut settled,
+        &mut open,
+        &mut order,
+    );
+    order
+}
+
+fn visit(
+    index: usize,
+    summaries: &[tos_core::ModuleSummary],
+    by_name: &alloc::collections::BTreeMap<&str, usize>,
+    settled: &mut alloc::collections::BTreeSet<usize>,
+    open: &mut alloc::collections::BTreeSet<usize>,
+    order: &mut Vec<usize>,
+) {
+    if settled.contains(&index) || !open.insert(index) {
+        return;
+    }
+    for import in &summaries[index].imports {
+        if let Some(&target) = by_name.get(import.target.as_str()) {
+            visit(target, summaries, by_name, settled, open, order);
         }
     }
-    order
+    open.remove(&index);
+    settled.insert(index);
+    order.push(index);
 }
 
 /// `sha256:<hex>` over the entry's resolved dependencies, name and content id.

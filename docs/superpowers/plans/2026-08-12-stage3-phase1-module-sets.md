@@ -101,13 +101,20 @@ representation at run time. Type imports are still out of scope here.
 - Modify: `source/crates/tos-pipeline/src/lib.rs`
 - Modify: `source/crates/tos-core/src/lower.rs`
 
-- [ ] Bind each `Import.module_content_id` to the content id of the module that
-  actually resolved, computed rather than declared.
-- [ ] Compute `dependency_digest` over the real ordered closure, so two sets
-  that differ in a dependency cannot share a module digest.
-- [ ] Type a cross-module call from the callee's exported signature instead of
-  `unit`. A wrongly typed call is not a cosmetic defect: it is the frontend
-  telling the verifier something untrue.
+- [x] `lower_module_in_set(source, schema, context, &[ResolvedImport])` binds
+  each `Import.module_content_id` to the identity of the module that actually
+  resolved. Without a dependency the field stays **empty** rather than
+  plausible: the verifier can then tell "unresolved" from "resolved to that".
+- [x] `dependency_digest` is over the real closure (Task 1), and each module of
+  a set now gets its own — a dependency's digest is over its own closure, not
+  the entry's.
+- [x] A cross-module call carries the callee's declared result type, re-interned
+  into the caller's type table. Nominal identity survives the crossing, because
+  a nominal carries the content id of the module that declared it. A call to a
+  name the dependency does not export is a named lowering gap rather than a
+  `unit` the verifier would have to take on trust.
+- [x] The closure is lowered dependencies-first, in a deterministic depth-first
+  post-order, so every module is lowered after everything it imports.
 
 ### Task 3: The verifier sees the set it is judging
 
