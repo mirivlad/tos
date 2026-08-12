@@ -95,6 +95,13 @@ impl Finding {
 pub struct ResolutionSnapshot {
     /// Module names the declared source set provides, with their content IDs.
     pub modules: BTreeMap<String, String>,
+    /// The functions each of those modules exports, by module name.
+    ///
+    /// Enough to answer whether a cross-module call names something that
+    /// exists. Not the signature: comparing one would mean comparing types
+    /// across two modules' tables, which is a different and larger question,
+    /// and claiming to have done it here would be worse than not doing it.
+    pub exports: BTreeMap<String, BTreeSet<String>>,
     /// Capability interfaces the declared contract provides.
     pub capability_interfaces: BTreeSet<String>,
 }
@@ -138,7 +145,7 @@ pub fn verify_step(
         "source_identity" => check_source_identity(module),
         "table_order" => check_table_order(module),
         "types_and_imports" => check_types_and_imports(module, snapshot),
-        "control_flow" => check_control_flow(module),
+        "control_flow" => check_control_flow(module, snapshot),
         "ownership_and_profile" => check_ownership_and_profile(module),
         "tasks_sync_atomics_unsafe" => check_tasks_sync_atomics_unsafe(module),
         "source_maps" => check_source_maps(module),
@@ -156,7 +163,7 @@ pub fn verify(
     check_source_identity(module)?;
     check_table_order(module)?;
     check_types_and_imports(module, snapshot)?;
-    check_control_flow(module)?;
+    check_control_flow(module, snapshot)?;
     check_ownership_and_profile(module)?;
     check_tasks_sync_atomics_unsafe(module)?;
     check_source_maps(module)?;
@@ -422,13 +429,33 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
                 "an import names no module",
             ));
         }
-        if !snapshot.modules.is_empty() && !snapshot.modules.contains_key(&import.module_name) {
+        if snapshot.modules.is_empty() {
+            continue;
+        }
+        let Some(resolved) = snapshot.modules.get(&import.module_name) else {
             return Err(Finding::new(
                 "V2012_IMPORT",
                 alloc::format!("import {index}"),
                 alloc::format!(
                     "{} is not in the declared resolution snapshot",
                     import.module_name
+                ),
+            ));
+        };
+        // The frontend states what each import resolved to; the snapshot states
+        // what the source set actually provides. A module claiming an identity
+        // the snapshot does not agree with is claiming a resolution that did
+        // not happen, and the verifier is here precisely so the frontend's word
+        // is not the last one.
+        if !import.module_content_id.is_empty() && import.module_content_id != *resolved {
+            return Err(Finding::new(
+                "V2012_IMPORT",
+                alloc::format!("import {index}"),
+                alloc::format!(
+                    "{} resolved to {} in the snapshot, and the module claims {}",
+                    import.module_name,
+                    resolved,
+                    import.module_content_id
                 ),
             ));
         }
@@ -504,7 +531,7 @@ fn referenced_types(definition: &TypeDef) -> Vec<TypeId> {
 
 // ------------------------------------------------------------------ step 6
 
-fn check_control_flow(module: &Module) -> Result<(), Finding> {
+fn check_control_flow(module: &Module, snapshot: &ResolutionSnapshot) -> Result<(), Finding> {
     for (index, function) in module.functions.iter().enumerate() {
         let at = || alloc::format!("function {index}");
         if function.blocks.is_empty() {
@@ -537,7 +564,7 @@ fn check_control_flow(module: &Module) -> Result<(), Finding> {
         }
         for (block_index, block) in function.blocks.iter().enumerate() {
             let at = || alloc::format!("function {index} block {block_index}");
-            check_block(module, function, block, &at)?;
+            check_block(module, snapshot, function, block, &at)?;
         }
     }
     Ok(())
@@ -545,12 +572,13 @@ fn check_control_flow(module: &Module) -> Result<(), Finding> {
 
 fn check_block(
     module: &Module,
+    snapshot: &ResolutionSnapshot,
     function: &Function,
     block: &Block,
     at: &dyn Fn() -> String,
 ) -> Result<(), Finding> {
     for instruction in &block.instructions {
-        check_instruction(module, function, instruction, at)?;
+        check_instruction(module, snapshot, function, instruction, at)?;
     }
     let count = function.blocks.len();
     for target in terminator_targets(&block.terminator) {
@@ -597,6 +625,7 @@ fn check_block(
 
 fn check_instruction(
     module: &Module,
+    snapshot: &ResolutionSnapshot,
     function: &Function,
     instruction: &Instruction,
     at: &dyn Fn() -> String,
@@ -658,13 +687,26 @@ fn check_instruction(
                     ));
                 }
             }
-            CallTarget::Imported { import, .. } => {
-                if *import >= module.imports.len() {
+            CallTarget::Imported { import, name } => {
+                let Some(imported) = module.imports.get(*import) else {
                     return Err(Finding::new(
                         "V2012_IMPORT",
                         at(),
                         "a call names an import outside the table",
                     ));
+                };
+                // docs/43 section 4: a call names a declared imported or local
+                // function signature. Whether the imported module has that
+                // export is knowable only from the snapshot, so it is checked
+                // exactly when the snapshot says.
+                if let Some(exports) = snapshot.exports.get(&imported.module_name) {
+                    if !exports.contains(name) {
+                        return Err(Finding::new(
+                            "V2012_IMPORT",
+                            at(),
+                            alloc::format!("{} does not export {name}", imported.module_name),
+                        ));
+                    }
                 }
             }
             CallTarget::Predeclared(_) => {}

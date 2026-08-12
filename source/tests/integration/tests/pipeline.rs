@@ -246,8 +246,8 @@ fn a_capability_outside_the_declared_contract_is_rejected() {
         ty,
     });
     let declared = ResolutionSnapshot {
-        modules: Default::default(),
         capability_interfaces: ["system.audit.Logger".to_string()].into_iter().collect(),
+        ..Default::default()
     };
     match verify(&module, &declared, &Limits::default()) {
         Ok(_) => panic!("a capability outside the declared contract was accepted"),
@@ -573,4 +573,128 @@ fn a_non_transferable_region_crossing_a_task_boundary_is_rejected() {
         unsafe_interface: None,
     });
     expect_rejection(&module, "V2021_REGION");
+}
+
+// ---------------------------------------------------------------------------
+// The declared resolution snapshot (Stage 3 Phase 1 Task 3)
+//
+// docs/43 section 5 step 4 puts imports in the verifier's own validation order,
+// and section 4 says a call names a declared imported or local function
+// signature. Both are questions about a *set*, and the snapshot is how the
+// verifier is told what the set provides — without being told the frontend's
+// verdict about it. These forge the IR by hand for the same reason every other
+// test in this file does: a verifier that only ever sees what the frontend
+// produced is not independent of it.
+// ---------------------------------------------------------------------------
+
+const DEPENDENCY: &str = "system.lib.math";
+const DEPENDENCY_ID: &str = "sha256:dependency";
+
+/// The sample module, rewritten to import `system.lib.math` and to call one of
+/// its functions instead of computing `origin()` locally.
+fn importing_module(claimed_content_id: &str, called: &str) -> Module {
+    let mut module = sample_module();
+    // The sample declares no imports, and the envelope is checked before
+    // resolution is: a fixture that broke its own budget would be refused for
+    // the wrong reason.
+    module.header.resource_envelope.imports = 4;
+    module.imports.push(tos_ir::Import {
+        module_name: String::from(DEPENDENCY),
+        module_content_id: String::from(claimed_content_id),
+        binding: String::from("math"),
+    });
+    let function = &mut module.functions[0];
+    let block = &mut function.blocks[0];
+    for instruction in &mut block.instructions {
+        if matches!(instruction.op, tos_ir::Op::Aggregate { .. }) {
+            instruction.op = tos_ir::Op::Call {
+                target: tos_ir::CallTarget::Imported {
+                    import: 0,
+                    name: String::from(called),
+                },
+                operands: Vec::new(),
+            };
+            break;
+        }
+    }
+    module
+}
+
+fn resolution(exports: &[&str]) -> ResolutionSnapshot {
+    let mut declared = ResolutionSnapshot::default();
+    declared
+        .modules
+        .insert(String::from(DEPENDENCY), String::from(DEPENDENCY_ID));
+    declared
+        .modules
+        .insert(String::from("app.sample"), String::from("sha256:sample"));
+    declared.exports.insert(
+        String::from(DEPENDENCY),
+        exports.iter().map(|name| String::from(*name)).collect(),
+    );
+    declared
+}
+
+#[test]
+fn an_import_agreeing_with_the_declared_set_is_accepted() {
+    let module = importing_module(DEPENDENCY_ID, "origin");
+    verify(&module, &resolution(&["origin"]), &Limits::default())
+        .expect("an import that agrees with the set must verify");
+}
+
+/// The frontend states what an import resolved to; the snapshot states what the
+/// set provides. When they disagree, the module is claiming a resolution that
+/// did not happen — and the verifier exists so the frontend's word is not the
+/// last one.
+#[test]
+fn an_import_claiming_an_identity_the_declared_set_denies_is_rejected() {
+    let module = importing_module("sha256:something-else", "origin");
+    match verify(&module, &resolution(&["origin"]), &Limits::default()) {
+        Ok(_) => panic!("a forged dependency identity was accepted"),
+        Err(finding) => {
+            assert_eq!(finding.code, "V2012_IMPORT");
+            assert!(
+                finding.detail.contains("sha256:something-else"),
+                "the finding must name what was claimed: {finding:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn an_import_the_declared_set_does_not_provide_is_rejected() {
+    let module = importing_module(DEPENDENCY_ID, "origin");
+    let mut declared = resolution(&["origin"]);
+    declared.modules.remove(DEPENDENCY);
+    expect_rejection_against(&module, &declared, "V2012_IMPORT");
+}
+
+/// A call to a name the resolved module does not export is refused here, not
+/// only by the frontend that lowered it.
+#[test]
+fn a_call_to_a_name_the_resolved_module_does_not_export_is_rejected() {
+    let module = importing_module(DEPENDENCY_ID, "absent");
+    match verify(&module, &resolution(&["origin"]), &Limits::default()) {
+        Ok(_) => panic!("a call to a missing export was accepted"),
+        Err(finding) => {
+            assert_eq!(finding.code, "V2012_IMPORT");
+            assert!(finding.detail.contains("absent"), "{finding:?}");
+        }
+    }
+}
+
+/// Told nothing about the set, the verifier says nothing about resolution.
+/// Silence is not acceptance of a claim it was never given the means to check.
+#[test]
+fn an_empty_snapshot_leaves_resolution_unjudged() {
+    let module = importing_module("sha256:anything", "whatever");
+    verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect("resolution is not judged without a declared set");
+}
+
+fn expect_rejection_against(module: &Module, declared: &ResolutionSnapshot, code: &str) {
+    match verify(module, declared, &Limits::default()) {
+        Ok(_) => panic!("forged IR was accepted; expected {code}"),
+        Err(finding) => assert_eq!(finding.code, code, "{finding:?}"),
+    }
 }
