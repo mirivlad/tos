@@ -20,11 +20,17 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   v1, UEFI loader, nucleus, source identity, fail-closed evidence, P2
   performance evidence и Project Architect approval заархивированы. **Stage
   1.5 формально закрыт**: ADR-0027 accepted, evidence/TCB/recovery analysis и
-  Project Architect approval заархивированы. **Stage 2 Part B авторизован**:
-  ADR-0028 accepted. V1 surface contract фиксирует `[]`
-  для data/declaration lists, `{}` только для executable blocks, `()` для
-  arguments/grouping и explicit `return` без implicit tail values. Stage 2
-  production implementation начинается с reference frontend; Stage 3 не начат.
+  Project Architect approval заархивированы. **Stage 2 формально закрыт**
+  (2026-08-12, candidate `e38785cb828dea67c86ecb0bc0873a607d5d3bca`): canonical
+  TOS Core V1 source исполняется через production reader/parser/checker,
+  детерминированный `tos-ir/v1` lowerer, независимый verifier и bounded
+  reference engine на реальном freestanding boot path; approval заархивирован в
+  `source/legal/publication-records/`. Acknowledged и не являются blocker'ами:
+  evidence level P1, differential testing `N/A` при одном движке, Proposed
+  ADR-0044. V1 surface contract фиксирует `[]` для data/declaration lists, `{}`
+  только для executable blocks, `()` для arguments/grouping и explicit `return`
+  без implicit tail values. **Stage 3 production implementation не начат и не
+  авторизован.**
 - Вся работа ведётся в `source/` (решение owner; docs/17-монобренч на корень
   приостановлен до Stage 1 — scope-решение, не изменение контрактов).
 
