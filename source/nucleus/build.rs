@@ -14,5 +14,13 @@ fn main() {
     // + -no-pie makes every call direct.
     println!("cargo:rustc-link-arg-bins=-no-pie");
     println!("cargo:rustc-link-arg-bins=-T{}", ld.display());
-    println!("cargo:rustc-link-arg-bins=--oformat=binary");
+    // The audit build keeps the ELF container. Nothing else changes: the same
+    // objects, the same linker script, the same symbols. It exists because the
+    // production image has no symbol table by construction, and "what does this
+    // binary actually call for memcpy" is a question that can only be answered
+    // from an artifact that still says.
+    println!("cargo:rerun-if-env-changed=TOS_NUCLEUS_ELF");
+    if std::env::var_os("TOS_NUCLEUS_ELF").is_none() {
+        println!("cargo:rustc-link-arg-bins=--oformat=binary");
+    }
 }

@@ -58,7 +58,15 @@ control-flow-heavy and barely copies: **16.8x**. The frontend is copy-heavy —
 every string, every vector, every interned type — and it is at least three
 orders of magnitude slower than that factor predicts.
 
-The leading hypothesis, **stated as a hypothesis and not as a finding**, is the
+**This hypothesis was tested and refuted**; see
+`docs/evidence/STAGE2_FREESTANDING_PRIMITIVES.md`. The primitives in the real
+binary are word-oriented (`rep movsq`, `rep stosq`, 16-byte `memcmp`). The
+actual cause was a `format!("{:?}")` per type intern in the lowerer, which cost
+7% natively and over 600x on the reference platform. The original text is kept
+below because the reasoning that produced it was sound and the conclusion was
+wrong, which is worth being able to see.
+
+The leading hypothesis, **stated as a hypothesis and not as a finding**, was the
 freestanding target's memory primitives. `x86_64-unknown-none` has no libc, so
 `memcpy`, `memset`, `memmove` and `memcmp` come from `compiler_builtins`, whose
 portable implementations move a byte at a time. A host build gets glibc's

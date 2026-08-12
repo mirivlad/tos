@@ -43,7 +43,7 @@ pub const UNICODE_BASELINE: &str = "UCD-17.0.0/UAX15-r57/NFC";
 /// The source-map revision this schema emits.
 pub const SOURCE_MAP_REVISION: &str = "tos-source-map/v1";
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Profile {
     Bootstrap,
     Full,
@@ -63,7 +63,7 @@ impl Profile {
 /// Every table count, operand count and span in a module is bounded by this
 /// envelope together with the docs/44 hard limits, so the verifier reads it
 /// before it reads anything sized.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
 pub struct ResourceEnvelope {
     pub fuel: u128,
     pub stack: u128,
@@ -78,7 +78,7 @@ pub struct ResourceEnvelope {
 }
 
 /// The header of docs/43 section 2, in its canonical order.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Header {
     pub schema_id: String,
     pub language_version: String,
@@ -107,7 +107,7 @@ pub type ValueId = usize;
 pub type SourceRef = usize;
 
 /// Which guard a lock operation grants (ADR-0036 section 2).
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum LockMode {
     /// `Mutex<T>.lock()` -> `MutexGuard<T>`
     Mutex,
@@ -117,7 +117,7 @@ pub enum LockMode {
     Write,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum IntKind {
     I8,
     I16,
@@ -173,14 +173,14 @@ impl IntKind {
 }
 
 /// Whether a nominal type is a record or an enum.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum NominalKind {
     Record,
     Enum,
 }
 
 /// One variant of a nominal enum, with its ordered payload types.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Variant {
     pub name: String,
     pub payload: Vec<TypeId>,
@@ -191,7 +191,7 @@ pub struct Variant {
 /// docs/43 section 2 requires a nominal type to record its defining module
 /// content ID and export name: an IR type is not valid merely because its host
 /// representation has the same layout.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum TypeDef {
     Unit,
     Bool,
@@ -252,7 +252,7 @@ pub enum TypeDef {
 }
 
 /// A constant of the constant table.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Constant {
     Unit,
     Bool(bool),
@@ -263,14 +263,14 @@ pub enum Constant {
     Bytes(Vec<u8>),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Visibility {
     Private,
     Public,
 }
 
 /// An exact type and effect signature (docs/43 section 3).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Signature {
     pub name: String,
     pub visibility: Visibility,
@@ -281,14 +281,14 @@ pub struct Signature {
     pub effects: Vec<String>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum PassMode {
     Owned,
     SharedBorrow,
     MutableBorrow,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Parameter {
     pub name: String,
     pub ty: TypeId,
@@ -296,7 +296,7 @@ pub struct Parameter {
 }
 
 /// A module this one imports, with the signatures it uses from it.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Import {
     pub module_name: String,
     pub module_content_id: String,
@@ -304,7 +304,7 @@ pub struct Import {
 }
 
 /// A capability interface this module imports (docs/42 section 4).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct CapabilityImport {
     pub interface: String,
     pub binding: String,
@@ -312,7 +312,7 @@ pub struct CapabilityImport {
 }
 
 /// Where an operation came from (docs/43 section 6).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SourceMapEntry {
     pub source_set: String,
     pub path: String,
@@ -327,7 +327,7 @@ pub struct SourceMapEntry {
     pub derived_from: Option<SourceRef>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum BinaryOp {
     Add,
     Subtract,
@@ -380,19 +380,19 @@ impl BinaryOp {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum UnaryOp {
     Negate,
     Not,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum BorrowKind {
     Shared,
     Mutable,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum MemoryOrder {
     Relaxed,
     Acquire,
@@ -423,7 +423,7 @@ impl MemoryOrder {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum AtomicOp {
     Load,
     Store,
@@ -437,7 +437,7 @@ pub enum AtomicOp {
 }
 
 /// Which resource an accounting operation touches.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ResourceKind {
     Fuel,
     Stack,
@@ -451,7 +451,7 @@ pub enum ResourceKind {
 }
 
 /// What a call resolves to. A call never resolves a host symbol dynamically.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum CallTarget {
     /// A function of this module, by index.
     Local(FunctionId),
@@ -462,13 +462,13 @@ pub enum CallTarget {
 }
 
 /// A path into a binding: the places docs/40 section 5 states its rules over.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Place {
     pub root: ValueId,
     pub path: Vec<PlaceStep>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum PlaceStep {
     Field(usize),
     /// A constant index, or `None` when the index is not a constant.
@@ -481,7 +481,7 @@ pub enum PlaceStep {
 }
 
 /// An operand of an operation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Operand {
     /// A dominating SSA value or ownership slot.
     Value(ValueId),
@@ -490,7 +490,7 @@ pub enum Operand {
 }
 
 /// One semantic operation (docs/43 section 3).
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Op {
     /// Materializes a constant.
     Const(ConstId),
@@ -635,14 +635,14 @@ pub enum Op {
 }
 
 /// One deferred cleanup body and the operands it reads where it runs.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct CleanupCall {
     pub body: FunctionId,
     pub captures: Vec<Operand>,
 }
 
 /// One instruction: an optional typed result and the operation producing it.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Instruction {
     pub result: Option<ValueId>,
     pub ty: TypeId,
@@ -662,7 +662,7 @@ pub struct Instruction {
 }
 
 /// How a block ends. There is exactly one terminator and no fall-through.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Terminator {
     Return(Option<Operand>),
     Branch {
@@ -689,7 +689,7 @@ pub enum Terminator {
     Trap(String),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Block {
     pub parameters: Vec<TypeId>,
     pub instructions: Vec<Instruction>,
@@ -698,14 +698,14 @@ pub struct Block {
 }
 
 /// Why a function exists: a source declaration, or a body lowered out of one.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum FunctionOrigin {
     Declared,
     /// The body of a `spawn`, a closure, or a `defer` block.
     LoweredBody,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Function {
     pub signature: Signature,
     pub origin: FunctionOrigin,
@@ -721,7 +721,7 @@ pub struct Function {
 
 /// A complete `tos-ir/v1` module, in the canonical section order of docs/43
 /// section 2.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct Module {
     pub header: Header,
     pub types: Vec<TypeDef>,
