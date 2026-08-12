@@ -31,6 +31,8 @@ use tos_pipeline::{execute, render, PipelineStage, Request, Trace};
 use tos_runtime::region::{self, Span};
 use tos_runtime::GlobalHeap;
 
+use crate::boot_report::ConsoleReporter;
+use crate::console::BootConsole;
 use crate::stack;
 
 /// The heap of the Stage 2 reference runtime.
@@ -58,14 +60,25 @@ fn line(text: &str) {
 ///
 /// Before, not after: a stage that never returns is then named by the last
 /// event in the log, which is the only way a hang identifies itself from
-/// outside.
-struct SerialTrace;
+/// outside — on the serial log and, for the same reason, on the screen.
+///
+/// One fact, two audiences. The serial event is emitted first and
+/// unconditionally, because it is the normative one and must not depend on a
+/// framebuffer being present or a renderer doing anything; the console is the
+/// best-effort presentation of the same event. Neither consumer knows anything
+/// about the pipeline that the pipeline did not tell it.
+struct BootTrace<'a, 'fb> {
+    console: Option<ConsoleReporter<'a, 'fb>>,
+}
 
-impl Trace for SerialTrace {
+impl Trace for BootTrace<'_, '_> {
     fn entering(&mut self, stage: PipelineStage) {
         tos_serial::puts(b"TOS.RUN.STAGE name=");
         tos_serial::puts(stage.symbol().as_bytes());
         tos_serial::puts(b"\r\n");
+        if let Some(reporter) = &mut self.console {
+            reporter.entering(stage);
+        }
     }
 }
 
@@ -173,11 +186,19 @@ pub fn execute_boot_text(
     boot_path: &[u8],
     boot_content: &[u8],
     source_kind: &[u8],
+    mut console: Option<&mut BootConsole<'_>>,
 ) -> Result<Result<(), &'static str>, Unstartable> {
     let Ok(path) = core::str::from_utf8(boot_path) else {
         return Err(Unstartable::BootPathNotText);
     };
     let path = path.trim_start_matches('/');
+
+    // Discovering the region, adopting it and painting the stack is real work
+    // that can fail, so it is announced before it is attempted. A caller that
+    // sees `Unstartable` marks this row failed; nothing else opens it.
+    if let Some(console) = console.as_deref_mut() {
+        console.begin(b"Preparing runtime memory", None);
+    }
 
     let identity = build_identity();
     let running_on = stack::containing(all_spans(descs), stack::pointer());
@@ -211,6 +232,9 @@ pub fn execute_boot_text(
         grant.length,
         grant.version,
     ));
+    if let Some(console) = console.as_deref_mut() {
+        console.succeed();
+    }
 
     let source_set = source_set_identity(source_kind, &bi.capsule_source_identity);
     let request = Request {
@@ -219,9 +243,17 @@ pub fn execute_boot_text(
         bytes: boot_content,
         entry: BOOT_ENTRY,
     };
-    let run = execute(&request, alloc::vec::Vec::new(), &mut SerialTrace);
+    let mut trace = BootTrace {
+        console: console.map(|console| ConsoleReporter::new(console, path.as_bytes())),
+    };
+    let run = execute(&request, alloc::vec::Vec::new(), &mut trace);
+    // Serial first, and in full: the machine-readable log is the record of what
+    // happened, and the screen is a reading of it.
     for event in render::events(&run) {
         line(&event);
+    }
+    if let Some(reporter) = &mut trace.console {
+        reporter.finished(&run);
     }
 
     let (committed, peak) = HEAP.usage();

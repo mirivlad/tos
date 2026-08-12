@@ -31,6 +31,13 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   только для executable blocks, `()` для arguments/grouping и explicit `return`
   без implicit tail values. **Stage 3 production implementation не начат и не
   авторизован.**
+- **Stage 2 remains CLOSED.** Post-Stage-2 interstage work: **Human Boot
+  Observability / Boot Console** — human-facing журнал реальной загрузки поверх
+  уже существующих boot/runtime событий. Не стадия, не новый архитектурный
+  контракт, не Stage 3: boot console ненормативен, serial `TOS.*` / `TOS.RUN.*`
+  остаются нормативным каналом, framebuffer — best-effort и никогда не влияет на
+  boot outcome. Финальный экран означает успешное завершение Stage 2 runtime и
+  штатный halt, а не готовую интерактивную систему.
 - Вся работа ведётся в `source/` (решение owner; docs/17-монобренч на корень
   приостановлен до Stage 1 — scope-решение, не изменение контрактов).
 
@@ -1697,6 +1704,105 @@ per-allocation префикс, неотделённые остатки и дыр
 из нескольких модулей (docs/44 допускает closure до 256) требует собственного
 измерения; число оставлено в evidence, а не зашито константой, чтобы размер
 гранта оставался объявленным решением, а не магическим значением.
+
+### 2026-08-12 — Post-Stage-2 interstage: Human Boot Observability / Boot Console
+
+**Stage 2 остаётся CLOSED. Stage 3 не начат.** Это не стадия и не новая
+системная функциональность: это межстадийный UX-slice поверх уже существующего
+Stage 2 boot path. Ни один accepted contract не изменён — TOS Core V1,
+`tos-ir/v1`, verifier contract, ownership/resource semantics, Boot ABI v1,
+`RuntimeMemoryGrantV1`, cache/provenance identities, Stage 2 closure evidence и
+performance budgets остались как были. Level 1 по docs/21: реализация
+существующего контракта без изменения наблюдаемой семантики.
+
+**Что заменено.** Статический `render_stage1_status()` (`TRUSTED BOOT
+FOUNDATION / CAPSULE VERIFIED / SOURCE GIT / BOOT ABI V1 / STAGE 1`) больше не
+существует. Он описывал состояние, которого система уже не в том месте
+достигает, и был единственным human-facing screen'ом. Вместо него — три
+раздельных уровня: `nucleus/src/framebuffer.rs` (bounded primitives + полный
+printable-ASCII 5×7 glyph set), `nucleus/src/console.rs` (`BootConsole` —
+только boot observability: clear, header, строка статуса, current operation,
+success/failure, финальный экран) и `nucleus/src/boot_report.rs` (потребитель
+pipeline-событий). Терминала, ввода, scrollback, ANSI и tty здесь нет и не
+предполагается.
+
+**Framebuffer как consumer, а не как второй канал.** Один факт — два
+потребителя: нормативный serial event и best-effort картинка. Для стадий
+конвейера это существующий `Trace`: `SerialTrace` заменён на `BootTrace`,
+который сначала безусловно пишет `TOS.RUN.STAGE`, а затем — если консоль есть —
+отдаёт то же событие в `ConsoleReporter`. `Trace::entering` по контракту
+вызывается *до* стадии, поэтому строка `[ .. ]` появляется до работы: зависшая
+стадия называет себя сама. Диагностика на экране читается из структурного
+`Run`, а не парсится обратно из отрендеренного serial-текста.
+
+**Точка доверия к framebuffer'у.** Консоль создаётся только после того, как
+приняты (1) boot ABI record по сырым байтам, включая framebuffer tuple, адрес,
+геометрию, byte pitch и поддерживаемый формат, и (2) memory map целиком. Ни
+одна проверка не ослаблена ради более раннего вывода. Два уже доказанных факта
+рисуются ретроспективно (`Boot ABI v1`, `Memory map validated`), всё остальное —
+live.
+
+**Успех и отказ.** После полного прохода reader → parser → checker →
+resolution → lowering → verifier → engine экран очищается и показывает
+существующий canonical Pyro (`assets/mascot/tos_ascii-art2.txt`, тот же
+`include_bytes!`, та же provenance-запись, gate `check-embedded-artwork-
+provenance` зелёный) и две строки: `Stage 2 runtime complete.` /
+`System halted normally.` Это ровно то, что произошло; `TOS ready`,
+`Welcome`, `starting shell` не пишутся, потому что это была бы неправда. При
+отказе экран **не** очищается: успешные шаги остаются, отказавший шаг
+становится `[FAIL]`, ниже — код и location, `Boot stopped.`, и Pyro не
+появляется.
+
+**Проверено.**
+
+- `cargo test` — 38 host-тестов в integration lib (было 22): rendering safety
+  (RGBX/BGRX, clipping, invalid framebuffer = no-op, запись за пределы буфера на
+  1×1…320×200 с guard-байтами), state transitions (current → success,
+  current → failure), «`[ OK ]` не рисуется до возврата шага», stage ordering
+  против настоящего `tos_pipeline::execute`, final screen (лог заменён,
+  canonical Pyro присутствует и доминирует, обе строки на месте), failure
+  (Pyro нет, отказавший шаг виден, код/позиция взяты из структурного
+  диагностика).
+- QEMU: `run.sh --expect 33` PASS, `stage2-runtime.sh` PASS,
+  `boot-module-failure.sh` PASS (exit 75, stage=check) — result codes и serial
+  contract не изменились.
+- Новый gate `host-tools/qemu-test/no-framebuffer.sh` (+ `--no-framebuffer` в
+  `run.sh`, `-vga none`): два прогона на одном профиле, с адаптером и без;
+  23 события `TOS.*` совпали полностью, кроме полей самой платформы в
+  `TOS.BOOT.HANDOFF`. Это и есть доказательство того, что UI ничего не решает.
+- Ручная визуальная проверка реального QEMU-кадра (screendump через monitor):
+  success — Pyro во весь экран и две строки; failure — журнал сохранён,
+  `[FAIL] Checking source`, `E1222_RETURN_TYPE_MISMATCH`,
+  `system/boot/init.tos:30:12`, `Boot stopped.`
+
+**Стоимость на boot path измерена, а не оценена словами.** Один и тот же
+release-бинарь, один и тот же профиль q35/qemu64/TCG, окно
+`TOS.BOOT.ENTRY` → `TOS.BOOTTEXT.PATH`, 5 выборок: с framebuffer'ом
+80.8 / 91.4 / 81.2 / 84.0 / 89.4 ms, без него (`--no-framebuffer`)
+68.6 / 74.7 / 72.0 / 69.6 / 69.0 ms. Консоль стоит ≈13 ms, и почти всё это —
+одна очистка экрана 1280×800. На 16-МиБ workload'е ADR-0026 та же величина
+теряется в шуме: 7 выборок до изменения 2632…2863 ms (медиана 2727), после —
+2657…2770 ms (медиана 2702). Принятая метрика ADR-0026 — отношение
+full/crypto p95, а не абсолют; Stage 2 budgets (ADR-0043/0045) меряются
+host-side на reference path, где консоли нет вовсе.
+
+**Найденный (не внесённый этим slice'ом) дефект.**
+`host-tools/qemu-test/stage1-performance-conformance.sh` уже не проходит на
+чистом `7cb4b04`: fixture `tests/performance/stage1_capsule_workload.py`
+кладёт в capsule boot-текст `# Stage 1 performance fixture canonical boot
+text`, который не является модулем TOS Core, поэтому Stage 2 boot path
+корректно останавливается на `stage=parse` и выдаёт 75 вместо ожидаемых
+харнессом 33. Проверено stash'ем рабочего дерева и прогоном того же capsule на
+нетронутом HEAD. Этот gate не входит в `preflight.sh`; он требует отдельного
+решения (fixture с настоящим TOS Core модулем либо явное `--expect 75`), и
+намеренно не чинится здесь: это Stage 1/Stage 2 performance evidence, а не UX.
+
+**Известная граница.** Boot console ненормативна: нормативны serial-события.
+Финальный экран означает успешное завершение Stage 2 runtime и штатный halt, а
+не готовую интерактивную ОС. `[ OK ]` не появляется раньше, чем факт
+установлен; при переполнении экрана строки просто перестают рисоваться (никакого
+скроллинга и никакой записи за границы), а полная диагностика в любом случае
+остаётся на serial.
 
 ### Требуют решения Project Architect
 

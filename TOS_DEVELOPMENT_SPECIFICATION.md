@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `1073b1f97a440dbbee3a6d6f4c87f374736cec82418741cb3d936504c83d8bb1`  
+Source-manifest SHA-256: `c3798f9f13f82f9f53f9fc046f8d909f080803669f1b8f8be735b0eda3258b38`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -74,10 +74,10 @@ not install software. From the repository root, start the human-facing boot:
 This builds the Stage 1 release artifacts, prepares the capsule and ESP through
 the same harness used by CI, opens a GTK (or SDL fallback) QEMU display and
 streams serial boot events in the terminal. A successful boot reaches
-`TOS.HALT ok=0x10`, then the production nucleus stays halted so the visual
-Stage 1 Pyro diagnostic and verification panel remain visible until you close
-QEMU or press Ctrl+C. Its serial log is retained alongside the image
-preparation evidence.
+`TOS.HALT ok=0x10`, then the production nucleus stays halted so the final boot
+screen — the Pyro mascot over `Stage 2 runtime complete.` /
+`System halted normally.` — remains visible until you close QEMU or press
+Ctrl+C. Its serial log is retained alongside the image preparation evidence.
 
 For a headless automated check, run:
 
@@ -93,12 +93,34 @@ Serial and filtered event evidence is retained under
 the already-validated boot state; serial events remain the machine-readable
 evidence.
 
-The screen is not a desktop, shell or GUI subsystem. It is a best-effort
-Stage 1 diagnostic drawn directly to the validated RGBX8/BGRX8 framebuffer;
-it renders the separately identified CC-BY-SA-4.0 Pyro artwork only after a
-successful validation. Its checked source/provenance relationship is recorded
-in `assets/mascot/pyro-stage1-provenance.json`. When no framebuffer is
-available, boot evidence remains the serial log.
+The screen is not a desktop, shell, terminal or GUI subsystem, and it has no
+input. It is a bounded, best-effort boot console drawn directly to the
+validated RGBX8/BGRX8 framebuffer, and it shows only what the system has
+actually done: each boot step appears as `[ .. ]` before the step runs and
+becomes `[ OK ]` once it has returned. The console is created only after the
+boot ABI record and the memory map have been accepted, so the two facts already
+established when it opens are drawn retrospectively and everything after them
+is drawn live.
+
+On a successful boot the log has done its work and is replaced by a final
+screen: the separately identified CC-BY-SA-4.0 Pyro artwork, and under it
+
+```text
+Stage 2 runtime complete.
+System halted normally.
+```
+
+which is exactly what happened — the Stage 2 runtime finished and the machine
+halted. TOS does not continue into an interactive system at this stage, and the
+screen does not claim that it does. On failure the screen is not cleared: the
+steps that succeeded, the step that failed and its diagnostic code and location
+stay visible, and the mascot is not shown.
+
+The artwork's checked source/provenance relationship is recorded in
+`assets/mascot/pyro-stage1-provenance.json`. The console never affects a boot
+outcome; the serial `TOS.*` / `TOS.RUN.*` events remain the normative,
+machine-readable evidence, and when no framebuffer is available the boot is
+identical apart from the picture.
 
 Stage 1 is formally closed as a bootable TOS foundation with source-bound
 capsule identity and fail-closed validation. Stage 1.5 is formally closed with
