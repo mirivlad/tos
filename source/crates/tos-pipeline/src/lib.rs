@@ -418,7 +418,20 @@ pub fn execute_set(
         .expect("the closure always contains the entry");
 
     trace.entering(PipelineStage::Verify);
-    let snapshot = ResolutionSnapshot::default();
+    // What the source set actually provides, computed from what was lowered.
+    // The verifier is handed this and the IR, never the frontend's verdict:
+    // an import that names a module the set does not provide, or claims an
+    // identity the set disagrees with, is refused here even though the same
+    // frontend produced both.
+    let snapshot = snapshot_of(&lowered, &module);
+    // Every module, not only the entry. A dependency whose IR the verifier
+    // never saw would be executing on its caller's receipt, and a receipt is a
+    // statement about one module.
+    for (_, dependency) in &lowered {
+        if let Err(finding) = verify(dependency, &snapshot, &Limits::default()) {
+            return Ok(Run::Unverified(finding));
+        }
+    }
     let receipt = match verify(&module, &snapshot, &Limits::default()) {
         Ok(receipt) => receipt,
         Err(finding) => return Ok(Run::Unverified(finding)),
@@ -441,6 +454,39 @@ pub fn execute_set(
             }))
         }
     })
+}
+
+/// What the resolved set provides, as the verifier is told it.
+///
+/// Built from the modules that were actually lowered rather than from the
+/// request: a snapshot assembled from what a caller asked for would let the
+/// verifier confirm the caller's own assumption.
+fn snapshot_of(lowered: &[(usize, Module)], entry: &Module) -> ResolutionSnapshot {
+    let mut snapshot = ResolutionSnapshot::default();
+    for module in lowered
+        .iter()
+        .map(|(_, module)| module)
+        .chain(core::iter::once(entry))
+    {
+        snapshot.modules.insert(
+            module.header.module_name.clone(),
+            module.header.content_id.clone(),
+        );
+        snapshot.exports.insert(
+            module.header.module_name.clone(),
+            module
+                .exports
+                .iter()
+                .map(|export| export.name.clone())
+                .collect(),
+        );
+        for import in &module.capability_imports {
+            snapshot
+                .capability_interfaces
+                .insert(import.interface.clone());
+        }
+    }
+    snapshot
 }
 
 /// A module's dependency closure, dependencies first, deterministically.

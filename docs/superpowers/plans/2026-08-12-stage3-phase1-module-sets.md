@@ -120,13 +120,24 @@ representation at run time. Type imports are still out of scope here.
 
 **Files:**
 - Modify: `source/crates/tos-pipeline/src/lib.rs`
-- Modify: `source/crates/tos-verifier/tests/`
+- Modify: `source/crates/tos-verifier/src/lib.rs`
+- Modify: `source/tests/integration/tests/pipeline.rs`
 
-- [ ] Build a real `ResolutionSnapshot` from the resolved closure and verify
-  every module in it, not only the entry.
-- [ ] Negative tests: an import naming a module the snapshot does not provide;
-  a snapshot whose content id disagrees with the module lowered; a call to an
-  export the callee does not have.
+- [x] The snapshot is built from the modules that were actually **lowered**,
+  never from the request: one assembled from what a caller asked for would let
+  the verifier confirm the caller's own assumption.
+- [x] Every module of the closure is verified, not only the entry. A dependency
+  whose IR the verifier never saw would be executing on its caller's receipt,
+  and a receipt is a statement about one module.
+- [x] `ResolutionSnapshot` gains `exports` — the function names each module
+  provides. Not signatures: comparing those means comparing types across two
+  modules' tables, which is a larger question, and claiming to have done it
+  would be worse than not doing it.
+- [x] Negative tests, all on hand-forged IR so the verifier is not merely
+  agreeing with the frontend: an import the snapshot does not provide; an import
+  claiming an identity the snapshot denies; a call to a name the resolved module
+  does not export; and an empty snapshot leaving resolution unjudged, because
+  silence is not acceptance of a claim it was never given the means to check.
 
 ### Task 4: The engine holds a closure
 

@@ -447,3 +447,45 @@ fn a_call_to_a_name_the_dependency_does_not_export_refuses_at_lowering() {
         "{outcome:?}"
     );
 }
+
+/// The verifier is handed what the set actually provides, and it is handed
+/// every module — not only the entry. A dependency the verifier never saw would
+/// be running on its caller's receipt, and a receipt is a statement about one
+/// module.
+#[test]
+fn every_module_of_a_set_is_verified_against_the_resolved_snapshot() {
+    // The dependency is well-formed source whose *IR* the verifier must still
+    // judge on its own. If only the entry were verified, this set would run.
+    let outcome = set(
+        &[
+            (
+                "system/boot/init.tos",
+                &module(
+                    "system.boot.init",
+                    "import system.lib.math as math;",
+                    "pub fn main() -> i32 { return 1i32; }",
+                ),
+            ),
+            (
+                "system/lib/math.tos",
+                &lib(
+                    "system.lib.math",
+                    "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+                ),
+            ),
+        ],
+        "system/boot/init.tos",
+    );
+    assert!(outcome.is_completed(), "{outcome:?}");
+
+    // The receipt names the entry, and the verifier that issued it is the one
+    // the crate declares — not a stand-in the pipeline chose.
+    let Run::Completed(completion) = &outcome else {
+        unreachable!()
+    };
+    assert_eq!(completion.receipt.module_name, "system.boot.init");
+    assert_eq!(
+        completion.receipt.verifier_identity,
+        tos_verifier::VERIFIER_IDENTITY
+    );
+}
