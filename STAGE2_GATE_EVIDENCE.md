@@ -196,9 +196,14 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    workloads (9.3x and 16.6x) where it previously differed by three orders of
    magnitude, which is the evidence that no third pathology is hiding.
    **ADR-0043 (Proposed)** carries the two failures with their measurements and
-   recommends settling them separately: the engine ratio measures the platform
-   and cannot be met by improving the engine, while the frontend budget is
-   absolute and implementation work can still move it.
+   settles them separately. Its engine part is now supported by a semantic
+   decomposition (`docs/evidence/STAGE2_ENGINE_DECOMPOSITION.md`): every
+   component of the benchmark lies in a 15.1–17.9x band, so the aggregate hides
+   no pathological path, and it recommends a specific threshold with its
+   reasoning exposed. Its frontend part records that 38.8 ms of the 54.7 ms
+   verifier stage is the module digest required by docs/43 section 5, whose cost
+   is dominated by a fixed 16-byte encoding of every count — an `tos-ir/v1`
+   identity question, not taken unilaterally.
 8. **Differential testing is N/A, not passed.** docs/44 asks for agreement
    between independent implementations, and there is one engine. A second
    implementation is the only thing that can change this.

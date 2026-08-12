@@ -53,10 +53,34 @@ engine, after      215 529 us     3 628 441 us     16.8x
 ```
 
 A general optimisation worth **1.6x** — removing a per-instruction clone from
-the interpreter's hottest loop — left the ratio exactly where it was. Stated as
-`reference / native`, "within 10x" is a claim about how much slower TCG is than
-the host, not a claim about the engine. No amount of engine work reaches 10x;
-only a different platform or a different number does.
+the interpreter's hottest loop — left the ratio where it was, at about 16.7x.
+
+That is strong evidence that the ratio is dominated by the cost of the ADR-0040
+TCG platform rather than by this engine, and the decomposition that was missing
+has now been taken (`docs/evidence/STAGE2_ENGINE_DECOMPOSITION.md`):
+
+| component | ratio |
+|---|---|
+| dispatch + branch + fuel (the bare loop) | 16.9x |
+| integer arithmetic | 17.9x |
+| comparison | 15.4x |
+| conditional branch | 16.2x |
+| local load/store | 15.1x |
+| call / return / frame | 15.5x |
+| aggregate construction | 23.3x |
+
+Every semantic component the million-operation benchmark actually performs lies
+between **15.1x and 17.9x**. The aggregate 16.8x is the weighted average of that
+band, not an average hiding an outlier — which is precisely what the
+decomposition existed to rule out.
+
+The single outlier, aggregate construction at 23.3x, is the only component that
+allocates: the gap is the bounded heap against the host allocator, and the
+benchmark contains no aggregate construction at all.
+
+Two independent experiments therefore agree. A 1.6x general speedup did not move
+the ratio, and no component of the workload deviates from the band. Within this
+architecture the ratio is a platform property.
 
 **The frontend budget is absolute**, so implementation work can reach it, and
 work since has moved it. Three further general inefficiencies were found and
@@ -65,9 +89,28 @@ that ASCII makes unnecessary (`read` 23.3 ms → 0.4 ms), and eagerly formatted
 verifier finding locations. The frontend now stands at 124 ms native and
 1.28 s reference against a 500 ms budget: **2.56x over**, down from 2.98x.
 
-The stages that remain are `check` (32 ms), `lower` (25 ms) and `verify`
-(51 ms), and none has been profiled *inside*. It is too early to call this
-budget falsified; reaching it needs roughly another 2.4x from those three.
+The stages that remain are `check` (~33 ms), `lower` (~28 ms) and `verify`
+(~55 ms). `verify` has now been profiled one level down, and **38.8 ms of its
+54.7 ms is the module digest** — a third of the entire frontend. That work is
+not optional: docs/43 section 5 binds the receipt to the module's complete
+digest, and a verifier that skipped it would be issuing a receipt for something
+it had not identified.
+
+Its cost is dominated by the *size* of the canonical stream being hashed, and
+that in turn by the encoding: every count and every length is written as a
+16-byte big-endian `u128`, whatever its magnitude. A module at the ceiling has
+tens of thousands of counts. A variable-length encoding would cut the stream
+substantially — but the stream **is** the module identity, so changing it
+changes every module digest and every receipt and cache key derived from one.
+That is an `tos-ir/v1` contract question and is not taken unilaterally; it is
+recorded here as the largest identified frontend cost with a known shape.
+
+One optimisation was tried and **rejected by measurement**: hashing the stream
+incrementally instead of buffering it, to avoid a multi-megabyte allocation. It
+was slower — a compression function called with small fragments pays its
+per-call cost repeatedly, and a fixed intermediate window only added a copy. The
+buffered form is kept because it measured faster, and the attempt is recorded so
+it is not repeated.
 
 ## The precedent this follows
 
@@ -94,13 +137,26 @@ then ask whether the number itself was research optimism.
 
 ## Recommendation
 
-**For the engine ratio: option 2, revise the number.** The argument is
-structural rather than a plea. A budget expressed as `reference / native` of the
-same binary measures the platform and cannot be met by improving the thing being
-measured. ADR-0040 chose TCG precisely so the platform is reproducible on any
-host, and that choice has a cost which is now measured: 16.6x on this workload.
-A budget of 20x would be met with margin and would still fail a genuine
-regression; a budget of 10x is unreachable by construction on this platform.
+**For the engine ratio: option 2, revise the number — the evidence is now in.**
+Both experiments the question needed have been run. A 1.6x general optimisation
+left the ratio unchanged, and the decomposition shows every component of the
+workload inside a 15.1–17.9x band with no path deviating. A budget expressed as
+`reference / native` of one implementation measures the platform, and this
+platform costs about 16x for the operations this benchmark performs.
+
+**A recommended threshold, and why that number.** Not `current p95 + epsilon` —
+a budget must still catch a real regression. The components span 15.1x to 17.9x
+with the full benchmark at 16.8x, so the honest centre of the distribution is
+about 16x and its observed spread is roughly ±10%. A threshold of **25x** sits
+above the slowest component measured (23.3x, aggregate construction, which a
+future workload could include), leaves about 1.5x of headroom over today's
+figure for ordinary variation between hosts, and would still fail immediately on
+a regression of the kind already found in this project — the per-instruction
+clone was worth 1.6x, and the allocator defect was worth far more.
+
+A tighter number would fail on a machine slightly slower than this one; a looser
+one would stop detecting anything. This recommendation is made with its
+reasoning exposed so the Architect can move it on its merits.
 
 **For the frontend budget: option 1, revise nothing yet.** 500 ms is absolute
 and implementation work has already moved it twice. The remaining gap is 2.56x,
