@@ -147,6 +147,10 @@ qemu_no_framebuffer() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/no-framebuffer.sh \
         target/preflight-qemu/no-framebuffer)
 }
+qemu_module_set() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/module-set.sh \
+        target/preflight-qemu/module-set)
+}
 qemu_boot_module_failure() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/boot-module-failure.sh \
         target/preflight-qemu/boot-module-failure)
@@ -196,6 +200,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU negative suite" qemu_negative
     run_gate "QEMU Stage 2 runtime path" qemu_stage2_runtime
     run_gate "QEMU boot without a framebuffer" qemu_no_framebuffer
+    run_gate "QEMU multi-module capsule" qemu_module_set
     run_gate "QEMU boot-module failure code" qemu_boot_module_failure
     run_gate "QEMU capsule size limit" qemu_capsule_size_limit
     run_gate "QEMU exception #UD" qemu_exception_ud2

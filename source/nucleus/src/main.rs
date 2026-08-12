@@ -49,6 +49,15 @@ fn panic(_info: &PanicInfo) -> ! {
     result_port(RESULT_PANIC)
 }
 
+/// How many source modules one boot may carry.
+///
+/// A fixed bound, sized for a boot set and not derived from capsule input: the
+/// nucleus must not size an array from a number an attacker chose. docs/44
+/// admits a closure of up to 256 modules; a capsule offering more than this is
+/// refused rather than truncated, because a silently shortened set would run a
+/// program whose dependencies are missing.
+const MAX_BOOT_MODULES: usize = 64;
+
 /// Write an exit code to the QEMU isa-debug-exit port and stop.
 fn result_port(code: u8) -> ! {
     // SAFETY: RESULT_PORT is the fixed QEMU isa-debug-exit I/O port in the
@@ -377,12 +386,31 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // The console goes with it: what the reference path is doing is the part of
     // this boot a person can actually watch, and the pipeline already announces
     // every stage before it runs.
+    // Every `.tos` file the capsule carries is a module of the set. The rest of
+    // the capsule — the version marker, the licence notice — is not source and
+    // is not offered as such: a set that included them would ask the frontend
+    // to parse a file that never claimed to be a module.
+    let mut modules: [(&[u8], &[u8]); MAX_BOOT_MODULES] = [(&[], &[]); MAX_BOOT_MODULES];
+    let mut module_count = 0usize;
+    for file in cap.files() {
+        if !file.name.ends_with(b".tos") {
+            continue;
+        }
+        if module_count == modules.len() {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=too-many-modules\r\n");
+            console_failed(&mut console, b"TOO_MANY_MODULES", b"");
+            mem_fail();
+        }
+        modules[module_count] = (file.name, file.content);
+        module_count += 1;
+    }
+
     let outcome = runtime::execute_boot_text(
         bi,
         bi_address,
         descs,
         boot.name,
-        boot.content,
+        &modules[..module_count],
         kind,
         console.as_mut(),
     );
@@ -405,6 +433,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
                 runtime::Unstartable::NoGrant(_) => b"no-grant",
                 runtime::Unstartable::HeapRejectedGrant => b"heap-rejected-grant",
                 runtime::Unstartable::BootPathNotText => b"boot-path-not-text",
+                runtime::Unstartable::NoBootModule => b"no-boot-module",
             };
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=");
             tos_serial::puts(reason);

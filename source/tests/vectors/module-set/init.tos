@@ -1,0 +1,21 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A boot module that imports another module of the same capsule.
+//
+// This exists to prove one property of the boot path and nothing else: that a
+// capsule carrying more than one module runs as a set, with the import resolved
+// from the capsule rather than from anywhere else. It is a test fixture, not
+// canonical system source, and it never replaces /system/boot/init.tos.
+
+module system.boot.init version 1.0 profile bootstrap;
+
+import system.lib.arith as arith;
+
+resource [fuel: 65536, stack: 2MiB, allocation: 4KiB, tasks: 1, workers: 1,
+          sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 4]
+
+// 21 doubled is 42: a value no single module in this capsule computes on its
+// own, so the answer is evidence that the call crossed the boundary.
+pub fn main() -> i32 {
+    return arith.double(21i32);
+}

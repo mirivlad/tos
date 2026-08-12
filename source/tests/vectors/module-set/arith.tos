@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The library module the boot fixture imports. Test fixture, not canonical
+// system source.
+
+module system.lib.arith version 1.0 profile bootstrap;
+
+resource [fuel: 65536, stack: 2MiB, allocation: 4KiB, tasks: 1, workers: 1,
+          sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub fn double(value: i32) -> i32 {
+    return value * 2i32;
+}

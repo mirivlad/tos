@@ -43,8 +43,12 @@ it MUST NOT remove one, reorder the required ones, or change what one means.
 
 | Identifier | Required fields | Meaning |
 |---|---|---|
-| `TOS.RUN.BEGIN` | `path=` `bytes=` `entry=` `grant_base=0x<hex>` `grant_length=` `grant_version=` | A run is starting over the named source with the named memory grant. |
+| `TOS.RUN.BEGIN` | `path=` `bytes=` `entry=` `grant_base=0x<hex>` `grant_length=` `grant_version=`, and `modules=` when the run is over a source set | A run is starting over the named source with the named memory grant. |
 | `TOS.RUN.STAGE` | `name=<read\|parse\|check\|resolve\|lower\|verify\|execute>` | The named stage is being **entered**. |
+
+`modules` is an appended field under section 2's extension rule: `path` names
+the entry module, and a run that resolved a set executed more than that. A log
+showing only the entry would understate what ran.
 
 `TOS.RUN.STAGE` is emitted before the stage runs, not after. A stage that never
 returns is then named by the last event in the log, which is the only way a

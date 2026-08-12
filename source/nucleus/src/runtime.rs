@@ -27,7 +27,7 @@ use alloc::format;
 use alloc::string::String;
 
 use tos_boot_protocol::{BootInfo, MemoryRange, MEM_USABLE};
-use tos_pipeline::{execute, render, PipelineStage, Request, Trace};
+use tos_pipeline::{execute_set, render, PipelineStage, SetError, SetRequest, Trace, Unit};
 use tos_runtime::region::{self, Span};
 use tos_runtime::GlobalHeap;
 
@@ -169,6 +169,10 @@ pub enum Unstartable {
     NoGrant(region::GrantRefused),
     HeapRejectedGrant,
     BootPathNotText,
+    /// The capsule carries no module at the canonical boot path, or one of its
+    /// module paths is not text. Either way there is nothing to run, and it is
+    /// a statement about the capsule rather than about a program.
+    NoBootModule,
 }
 
 /// Runs the capsule's canonical boot module and reports what happened.
@@ -184,7 +188,7 @@ pub fn execute_boot_text(
     bi_address: u64,
     descs: &[MemoryRange],
     boot_path: &[u8],
-    boot_content: &[u8],
+    modules: &[(&[u8], &[u8])],
     source_kind: &[u8],
     mut console: Option<&mut BootConsole<'_>>,
 ) -> Result<Result<(), &'static str>, Unstartable> {
@@ -224,29 +228,65 @@ pub fn execute_boot_text(
         unsafe { stack::paint(region) }
     });
 
+    // Every module the capsule carries, not only the canonical boot text: a
+    // service is a separate module, and a boot module that imports one has
+    // nothing to import unless the set arrives whole. Paths are module-root
+    // relative, which is what docs/42 section 1 derives a module name from.
+    //
+    // Built here and not earlier: this is the first allocation of the run, and
+    // ADR-0041's property is that a runtime with no grant has no memory. A
+    // vector assembled before adoption is a panic, which is the allocator
+    // saying exactly that.
+    let mut units = alloc::vec::Vec::with_capacity(modules.len());
+    for (name, content) in modules {
+        let Ok(name) = core::str::from_utf8(name) else {
+            return Err(Unstartable::BootPathNotText);
+        };
+        units.push(Unit {
+            path: name.trim_start_matches('/'),
+            bytes: content,
+        });
+    }
+
+    let boot_bytes = units
+        .iter()
+        .find(|unit| unit.path == path)
+        .map(|unit| unit.bytes.len())
+        .unwrap_or(0);
+    // `modules` is appended after the fields the accepted contract requires,
+    // under its own extension rule: the set is now part of what a run is, and a
+    // log that showed only the entry would understate what was executed.
     line(&format!(
-        "TOS.RUN.BEGIN path={path} bytes={} entry={BOOT_ENTRY} nucleus=0x{identity:016x} \
-         grant_base=0x{:x} grant_length={} grant_version={}",
-        boot_content.len(),
+        "TOS.RUN.BEGIN path={path} bytes={boot_bytes} entry={BOOT_ENTRY} \
+         nucleus=0x{identity:016x} grant_base=0x{:x} grant_length={} grant_version={} \
+         modules={}",
         grant.base,
         grant.length,
         grant.version,
+        units.len(),
     ));
     if let Some(console) = console.as_deref_mut() {
         console.succeed();
     }
 
     let source_set = source_set_identity(source_kind, &bi.capsule_source_identity);
-    let request = Request {
+    let request = SetRequest {
         source_set: &source_set,
-        path,
-        bytes: boot_content,
+        units: &units,
+        entry_path: path,
         entry: BOOT_ENTRY,
     };
     let mut trace = BootTrace {
         console: console.map(|console| ConsoleReporter::new(console, path.as_bytes())),
     };
-    let run = execute(&request, alloc::vec::Vec::new(), &mut trace);
+    let run = match execute_set(&request, alloc::vec::Vec::new(), &mut trace) {
+        Ok(run) => run,
+        // The request does not describe something runnable. No stage ran, so
+        // this is not a refusal of anyone's source.
+        Err(SetError::EntryModuleAbsent { .. } | SetError::NoUnits) => {
+            return Err(Unstartable::NoBootModule)
+        }
+    };
     // Serial first, and in full: the machine-readable log is the record of what
     // happened, and the screen is a reading of it.
     for event in render::events(&run) {
