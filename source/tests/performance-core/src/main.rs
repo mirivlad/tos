@@ -35,6 +35,72 @@ use tos_verifier::{verify, Limits, ResolutionSnapshot};
 const WARMUPS: usize = 3;
 const SAMPLES: usize = 21;
 
+/// The engine decomposition fixtures.
+///
+/// Each runs the *same* loop the same number of times and differs only in what
+/// the body does, so the cost of one semantic component is the difference
+/// between a fixture and the empty one. They are built from the same shapes the
+/// million-operation benchmark uses — not invented to make a tidy table — and
+/// they run on the production engine, not a second interpreter written to
+/// measure the first.
+const DECOMPOSITION_ROUNDS: usize = 200_000;
+
+fn decomposition_fixture(kind: &str) -> Option<String> {
+    // The allocation budget is generous because a frame holds what it builds
+    // until it returns, and the aggregate fixture builds four values per
+    // iteration inside one frame. That is the engine's accounting working as
+    // docs/41 requires, not a leak, and shrinking the budget would measure the
+    // trap instead of the construction.
+    let head = "module system.boot.init version 1.0 profile bootstrap; \
+         resource [fuel: 100000000, stack: 64KiB, allocation: 1GiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0] ";
+    let rounds = DECOMPOSITION_ROUNDS;
+    let body = match kind {
+        // Dispatch, the loop compare, the conditional branch, the back edge and
+        // the fuel charged for each. Everything else is measured against this.
+        "empty" => String::new(),
+        // Four more integer additions per iteration.
+        "arithmetic" => String::from(
+            "total = total + 1i64; total = total + 2i64; \
+             total = total + 3i64; total = total + 4i64; ",
+        ),
+        // Four more comparisons, each consumed by a value rather than a branch.
+        "comparison" => String::from(
+            "let a = current < 5i64; let b = current > 5i64; \
+             let c = current <= 5i64; let d = current >= 5i64; ",
+        ),
+        // Four more conditional branches.
+        "branch" => String::from(
+            "if (current > 0i64) { total = total + 1i64; } \
+             if (current > 1i64) { total = total + 1i64; } \
+             if (current > 2i64) { total = total + 1i64; } \
+             if (current > 3i64) { total = total + 1i64; } ",
+        ),
+        // Four more local reads and writes, no arithmetic beyond the copy.
+        "locals" => String::from("let p = current; let q = p; let r = q; let s = r; "),
+        // Four more calls and returns, with the frame work each implies.
+        "call" => String::from(
+            "total = total + one(); total = total + one(); \
+             total = total + one(); total = total + one(); ",
+        ),
+        // Four more aggregate constructions: Value building and the allocation
+        // accounting that docs/41 requires before the effect.
+        "aggregate" => String::from(
+            "let g = Pair(x: current, y: current); let h = Pair(x: current, y: current); \
+             let i = Pair(x: current, y: current); let j = Pair(x: current, y: current); ",
+        ),
+        _ => return None,
+    };
+    Some(format!(
+        "{head} pub record Pair [x: i64, y: i64] \
+         pub fn one() -> i64 {{ return 1i64; }} \
+         pub fn main() -> i64 {{ \
+         let mut total = 0i64; let mut current = 0i64; \
+         while (current < {rounds}i64) {{ {body}current = current + 1i64; }} \
+         return total; }}"
+    ))
+}
+
 /// Prints one measured fixture verbatim and stops.
 ///
 /// The reference half of the pair is taken by booting these exact bytes as a
@@ -47,7 +113,29 @@ fn emit_fixture(kind: &str) -> Option<String> {
         "frontend" => Some(canonical),
         "execute" => Some(million_operation_module()),
         "reject" => Some(quota_exceeding_module(&canonical)),
-        _ => None,
+        other => decomposition_fixture(other),
+    }
+}
+
+/// Times each decomposition fixture natively, as the denominator of a ratio.
+fn report_decomposition() {
+    println!();
+    println!("engine decomposition, median us over {DECOMPOSITION_ROUNDS} iterations");
+    println!("(each component is four more operations per iteration than `empty`)");
+    for kind in [
+        "empty",
+        "arithmetic",
+        "comparison",
+        "branch",
+        "locals",
+        "call",
+        "aggregate",
+    ] {
+        let text = decomposition_fixture(kind).expect("a known fixture");
+        let samples = measure(|| {
+            run_benchmark(&text);
+        });
+        println!("  {kind:<11} {}", percentile(&samples, 50));
     }
 }
 
@@ -101,6 +189,10 @@ fn main() {
     report("parse + check + lower + verify, 256 KiB module", &frontend);
     println!("  docs/35 budget: 500 ms p95 on the reference platform");
 
+    if argument("--decompose").is_some() {
+        report_decomposition();
+        return;
+    }
     if argument("--stages").is_some() {
         report_stages(&module_text);
     }
@@ -227,6 +319,12 @@ fn report_stages(text: &str) {
     let verify = measure(|| {
         verify(&module, &ResolutionSnapshot::default(), &Limits::default()).expect("verifies");
     });
+    // The receipt binds to the module's complete digest (docs/43 section 5), so
+    // verification necessarily hashes the whole module. Timing it separately
+    // says how much of `verify` is the checking and how much is the binding.
+    let digest = measure(|| {
+        let _ = tos_ir::module_digest(&module);
+    });
     println!();
     println!("frontend stages, median us (the same fixture, one stage at a time)");
     for (name, samples) in [
@@ -235,6 +333,7 @@ fn report_stages(text: &str) {
         ("check", &check),
         ("lower", &lower),
         ("verify", &verify),
+        ("  of which digest", &digest),
     ] {
         println!("  {name:<7} {}", percentile(samples, 50));
     }
