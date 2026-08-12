@@ -43,15 +43,31 @@ fixes those differed by three orders of magnitude.
 
 **The engine budget is a ratio of one implementation to itself on two
 platforms.** Optimising the engine moves numerator and denominator together, so
-the ratio barely moves. Stated that way, "within 10x" is a claim about how much
-slower TCG is than the host — not a claim about the engine — and the measurement
-says TCG costs 16.6x for this workload. No amount of engine work reaches 10x;
+the ratio barely moves. That was an argument when this ADR was first written; it
+is now a measurement (`docs/evidence/STAGE2_PERFORMANCE_DECOMPOSITION.md`):
+
+```text
+                 native p95     reference p95     ratio
+engine, before     333 743 us     5 541 378 us     16.6x
+engine, after      215 529 us     3 628 441 us     16.8x
+```
+
+A general optimisation worth **1.6x** — removing a per-instruction clone from
+the interpreter's hottest loop — left the ratio exactly where it was. Stated as
+`reference / native`, "within 10x" is a claim about how much slower TCG is than
+the host, not a claim about the engine. No amount of engine work reaches 10x;
 only a different platform or a different number does.
 
-**The frontend budget is absolute**, so implementation work can reach it. 500 ms
-on the reference platform needs the native frontend at roughly 54 ms against
-today's 161 ms — about 3x. No defect explaining that gap has been identified,
-and no claim is made here that none exists.
+**The frontend budget is absolute**, so implementation work can reach it, and
+work since has moved it. Three further general inefficiencies were found and
+fixed — the engine's per-instruction clone, a whole-source NFC normalization
+that ASCII makes unnecessary (`read` 23.3 ms → 0.4 ms), and eagerly formatted
+verifier finding locations. The frontend now stands at 124 ms native and
+1.28 s reference against a 500 ms budget: **2.56x over**, down from 2.98x.
+
+The stages that remain are `check` (32 ms), `lower` (25 ms) and `verify`
+(51 ms), and none has been profiled *inside*. It is too early to call this
+budget falsified; reaching it needs roughly another 2.4x from those three.
 
 ## The precedent this follows
 
@@ -87,11 +103,10 @@ A budget of 20x would be met with margin and would still fail a genuine
 regression; a budget of 10x is unreachable by construction on this platform.
 
 **For the frontend budget: option 1, revise nothing yet.** 500 ms is absolute
-and implementation work can move it. The gap is about 3x in native terms, which
-is large but not the kind of gap that says a target is impossible, and no
-profiling has yet been done on the frontend's *remaining* cost — only on the two
-defects that dominated it. Asking for this number to move before that work is
-exactly what this ADR refuses for the engine's sake.
+and implementation work has already moved it twice. The remaining gap is 2.56x,
+and the three stages that hold the remaining cost have not been profiled
+internally. Asking for this number to move before that work is exactly what this
+ADR refuses to do for the engine's sake, and it would be no more honest here.
 
 **For quota rejection: nothing.** It passes on the reference platform at 0.512
 against a budget of 2.000.

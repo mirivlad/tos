@@ -464,15 +464,15 @@ fn referenced_types(definition: &TypeDef) -> Vec<TypeId> {
 
 fn check_control_flow(module: &Module) -> Result<(), Finding> {
     for (index, function) in module.functions.iter().enumerate() {
-        let at = alloc::format!("function {index}");
+        let at = || alloc::format!("function {index}");
         if function.blocks.is_empty() {
-            return Err(Finding::new("V2011_CFG", at, "a function has no blocks"));
+            return Err(Finding::new("V2011_CFG", at(), "a function has no blocks"));
         }
         for ty in &function.signature.parameters {
             if !module.has_type(ty.ty) {
                 return Err(Finding::new(
                     "V2010_TYPE",
-                    at,
+                    at(),
                     "a parameter type is outside the table",
                 ));
             }
@@ -480,7 +480,7 @@ fn check_control_flow(module: &Module) -> Result<(), Finding> {
         if !module.has_type(function.signature.result) {
             return Err(Finding::new(
                 "V2010_TYPE",
-                at,
+                at(),
                 "the result type is outside the table",
             ));
         }
@@ -488,13 +488,13 @@ fn check_control_flow(module: &Module) -> Result<(), Finding> {
             if !module.has_type(*ty) {
                 return Err(Finding::new(
                     "V2010_TYPE",
-                    at,
+                    at(),
                     "a value type is outside the table",
                 ));
             }
         }
         for (block_index, block) in function.blocks.iter().enumerate() {
-            let at = alloc::format!("function {index} block {block_index}");
+            let at = || alloc::format!("function {index} block {block_index}");
             check_block(module, function, block, &at)?;
         }
     }
@@ -505,7 +505,7 @@ fn check_block(
     module: &Module,
     function: &Function,
     block: &Block,
-    at: &str,
+    at: &dyn Fn() -> String,
 ) -> Result<(), Finding> {
     for instruction in &block.instructions {
         check_instruction(module, function, instruction, at)?;
@@ -515,7 +515,7 @@ fn check_block(
         if target >= count {
             return Err(Finding::new(
                 "V2011_CFG",
-                at,
+                at(),
                 alloc::format!("a terminator names block {target} of {count}"),
             ));
         }
@@ -536,7 +536,7 @@ fn check_block(
         if covered.len() != arms.len() {
             return Err(Finding::new(
                 "V2011_CFG",
-                at,
+                at(),
                 "a match arm map names a variant twice",
             ));
         }
@@ -544,7 +544,7 @@ fn check_block(
             if !covered.contains(&variant) {
                 return Err(Finding::new(
                     "V2011_CFG",
-                    at,
+                    at(),
                     alloc::format!("the match arm map leaves variant {variant} uncovered"),
                 ));
             }
@@ -557,12 +557,12 @@ fn check_instruction(
     module: &Module,
     function: &Function,
     instruction: &Instruction,
-    at: &str,
+    at: &dyn Fn() -> String,
 ) -> Result<(), Finding> {
     if !module.has_type(instruction.ty) {
         return Err(Finding::new(
             "V2010_TYPE",
-            at,
+            at(),
             "an instruction type is outside the table",
         ));
     }
@@ -570,14 +570,14 @@ fn check_instruction(
         if result >= function.values.len() {
             return Err(Finding::new(
                 "V2011_CFG",
-                at,
+                at(),
                 alloc::format!("an instruction defines value {result} outside the table"),
             ));
         }
         if function.values[result] != instruction.ty {
             return Err(Finding::new(
                 "V2010_TYPE",
-                at,
+                at(),
                 "an instruction result disagrees with the value table",
             ));
         }
@@ -589,7 +589,7 @@ fn check_instruction(
         if place.root >= function.values.len() {
             return Err(Finding::new(
                 "V2011_CFG",
-                at,
+                at(),
                 alloc::format!("a place names value {} outside the table", place.root),
             ));
         }
@@ -598,7 +598,7 @@ fn check_instruction(
                 if *value >= function.values.len() {
                     return Err(Finding::new(
                         "V2011_CFG",
-                        at,
+                        at(),
                         alloc::format!("an index names value {value} outside the table"),
                     ));
                 }
@@ -611,7 +611,7 @@ fn check_instruction(
                 if *index >= module.functions.len() {
                     return Err(Finding::new(
                         "V2011_CFG",
-                        at,
+                        at(),
                         "a call names a function outside the table",
                     ));
                 }
@@ -620,7 +620,7 @@ fn check_instruction(
                 if *import >= module.imports.len() {
                     return Err(Finding::new(
                         "V2012_IMPORT",
-                        at,
+                        at(),
                         "a call names an import outside the table",
                     ));
                 }
@@ -631,7 +631,7 @@ fn check_instruction(
             if *constant >= module.constants.len() {
                 return Err(Finding::new(
                     "V2011_CFG",
-                    at,
+                    at(),
                     "an instruction names a constant outside the table",
                 ));
             }
@@ -640,14 +640,14 @@ fn check_instruction(
             if *body >= module.functions.len() {
                 return Err(Finding::new(
                     "V2030_TASK_SCOPE",
-                    at,
+                    at(),
                     "a spawn names a body outside the function table",
                 ));
             }
             if captures.len() != module.functions[*body].signature.parameters.len() {
                 return Err(Finding::new(
                     "V2030_TASK_SCOPE",
-                    at,
+                    at(),
                     "a spawned body is given a different number of captures than it declares",
                 ));
             }
@@ -656,7 +656,7 @@ fn check_instruction(
             if *body >= module.functions.len() {
                 return Err(Finding::new(
                     "V2011_CFG",
-                    at,
+                    at(),
                     "a cleanup names a body outside the function table",
                 ));
             }
@@ -667,7 +667,7 @@ fn check_instruction(
             if calls.len() as u128 > module.header.resource_envelope.cleanup {
                 return Err(Finding::new(
                     "V2022_RESOURCE",
-                    at,
+                    at(),
                     alloc::format!(
                         "{} cleanups at one exit exceeds the declared limit of {}",
                         calls.len(),
@@ -679,14 +679,14 @@ fn check_instruction(
                 if call.body >= module.functions.len() {
                     return Err(Finding::new(
                         "V2011_CFG",
-                        at,
+                        at(),
                         "a cleanup names a body outside the function table",
                     ));
                 }
                 if module.functions[call.body].signature.parameters.len() != call.captures.len() {
                     return Err(Finding::new(
                         "V2011_CFG",
-                        at,
+                        at(),
                         "a cleanup is given a different number of operands than it declares",
                     ));
                 }
@@ -696,7 +696,7 @@ fn check_instruction(
             if *body >= module.functions.len() {
                 return Err(Finding::new(
                     "V2011_CFG",
-                    at,
+                    at(),
                     "a closure names a body outside the function table",
                 ));
             }
@@ -706,7 +706,7 @@ fn check_instruction(
             if captures.len() > declared {
                 return Err(Finding::new(
                     "V2011_CFG",
-                    at,
+                    at(),
                     "a closure carries more captures than its body declares",
                 ));
             }
@@ -719,7 +719,7 @@ fn check_instruction(
             ) {
                 return Err(Finding::new(
                     "V2010_TYPE",
-                    at,
+                    at(),
                     "a value call names an operand that is not of function type",
                 ));
             }
@@ -727,7 +727,7 @@ fn check_instruction(
         Op::Capability { import, .. } if *import >= module.capability_imports.len() => {
             return Err(Finding::new(
                 "V2013_CAPABILITY",
-                at,
+                at(),
                 "a capability operation names an import outside the table",
             ));
         }
@@ -736,7 +736,7 @@ fn check_instruction(
     if instruction.source >= module.source_map.len() {
         return Err(Finding::new(
             "V2040_SOURCE_MAP",
-            at,
+            at(),
             "an instruction has no source-map entry",
         ));
     }
@@ -747,14 +747,14 @@ fn check_operand(
     module: &Module,
     function: &Function,
     operand: &Operand,
-    at: &str,
+    at: &dyn Fn() -> String,
 ) -> Result<(), Finding> {
     match operand {
         Operand::Value(value) => {
             if *value >= function.values.len() {
                 return Err(Finding::new(
                     "V2011_CFG",
-                    at,
+                    at(),
                     alloc::format!("an operand names value {value} outside the table"),
                 ));
             }
@@ -763,7 +763,7 @@ fn check_operand(
             if *constant >= module.constants.len() {
                 return Err(Finding::new(
                     "V2011_CFG",
-                    at,
+                    at(),
                     alloc::format!("an operand names constant {constant} outside the table"),
                 ));
             }
@@ -802,7 +802,7 @@ fn operand_type(module: &Module, function: &Function, operand: &Operand) -> Opti
 fn check_ownership_and_profile(module: &Module) -> Result<(), Finding> {
     for (index, function) in module.functions.iter().enumerate() {
         for (block_index, block) in function.blocks.iter().enumerate() {
-            let at = alloc::format!("function {index} block {block_index}");
+            let at = || alloc::format!("function {index} block {block_index}");
             let mut moved: Vec<&tos_ir::Place> = Vec::new();
             for instruction in &block.instructions {
                 if let Op::Move { place } = &instruction.op {
@@ -813,7 +813,7 @@ fn check_ownership_and_profile(module: &Module) -> Result<(), Finding> {
                     if moved.iter().any(|existing| overlaps(existing, place)) {
                         return Err(Finding::new(
                             "V2020_OWNERSHIP",
-                            at,
+                            at(),
                             alloc::format!("value {} is moved twice on one path", place.root),
                         ));
                     }
@@ -962,30 +962,30 @@ fn check_regions(module: &Module) -> Result<(), Finding> {
     for (index, function) in module.functions.iter().enumerate() {
         for (block_index, block) in function.blocks.iter().enumerate() {
             for instruction in &block.instructions {
-                let at = alloc::format!("functions[{index}].blocks[{block_index}]");
+                let at = || alloc::format!("functions[{index}].blocks[{block_index}]");
                 match &instruction.op {
                     Op::Share { operand } => {
                         let Operand::Value(id) = operand else {
                             return Err(Finding::new(
                                 "V2021_REGION",
-                                at,
+                                at(),
                                 "share applied to a constant",
                             ));
                         };
                         let Some(ty) = function.values.get(*id).copied() else {
-                            return Err(Finding::new("V2021_REGION", at, "share of no value"));
+                            return Err(Finding::new("V2021_REGION", at(), "share of no value"));
                         };
                         if region_facts(module, ty).is_some_and(|(shareable, _)| !shareable) {
                             return Err(Finding::new(
                                 "V2021_REGION",
-                                at,
+                                at(),
                                 "share of a region that is not shareable",
                             ));
                         }
                         if !transitively_immutable(module, ty, 0) {
                             return Err(Finding::new(
                                 "V2021_REGION",
-                                at,
+                                at(),
                                 "share of a value that is not transitively immutable",
                             ));
                         }
@@ -1003,7 +1003,7 @@ fn check_regions(module: &Module) -> Result<(), Finding> {
                             {
                                 return Err(Finding::new(
                                     "V2021_REGION",
-                                    at.clone(),
+                                    at(),
                                     "a region that is not Transferable crosses a task or closure boundary",
                                 ));
                             }
@@ -1046,7 +1046,7 @@ fn check_guard_lifetimes(module: &Module) -> Result<(), Finding> {
         for (block_index, block) in function.blocks.iter().enumerate() {
             let mut held: bool = false;
             for instruction in &block.instructions {
-                let at = alloc::format!("functions[{index}].blocks[{block_index}]");
+                let at = || alloc::format!("functions[{index}].blocks[{block_index}]");
                 // An acquisition must name a real synchronization object and
                 // produce the guard that object grants. Checking it here is
                 // what stops a forged module from calling anything a lock.
@@ -1073,7 +1073,7 @@ fn check_guard_lifetimes(module: &Module) -> Result<(), Finding> {
                     if expected.is_none() || produced != expected.as_ref() {
                         return Err(Finding::new(
                             "V2031_SYNC",
-                            at.clone(),
+                            at(),
                             "a lock operation does not name a synchronization object or does not produce its guard",
                         ));
                     }
@@ -1090,7 +1090,7 @@ fn check_guard_lifetimes(module: &Module) -> Result<(), Finding> {
                         if guard_operand(module, function, operand).is_some() {
                             return Err(Finding::new(
                                 "V2031_SYNC",
-                                at.clone(),
+                                at(),
                                 alloc::format!("a guard operand escapes: {operation}"),
                             ));
                         }
@@ -1111,7 +1111,7 @@ fn check_guard_lifetimes(module: &Module) -> Result<(), Finding> {
                 if held && matches!(instruction.op, Op::Await { .. }) {
                     return Err(Finding::new(
                         "V2031_SYNC",
-                        at,
+                        at(),
                         "a guard is live across an await",
                     ));
                 }
@@ -1134,7 +1134,7 @@ fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
     check_guard_lifetimes(module)?;
     check_regions(module)?;
     for (index, function) in module.functions.iter().enumerate() {
-        let at = alloc::format!("function {index}");
+        let at = || alloc::format!("function {index}");
         let mut pending: BTreeSet<usize> = BTreeSet::new();
         for block in &function.blocks {
             for instruction in &block.instructions {
@@ -1151,7 +1151,7 @@ fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
                     // docs/44 section 7: V1 accepts no FFI interface schema.
                     return Err(Finding::new(
                         "V2033_UNSAFE",
-                        &at,
+                        at(),
                         alloc::format!("{interface} is not an accepted V1 interface"),
                     ));
                 }
@@ -1193,7 +1193,7 @@ fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
         if let Some(task) = pending.iter().next() {
             return Err(Finding::new(
                 "V2030_TASK_SCOPE",
-                &at,
+                at(),
                 alloc::format!("value {task} is a child that leaves its scope unconsumed"),
             ));
         }
@@ -1205,7 +1205,7 @@ fn check_atomic(
     operation: AtomicOp,
     order: MemoryOrder,
     failure_order: Option<MemoryOrder>,
-    at: &str,
+    at: &dyn Fn() -> String,
 ) -> Result<(), Finding> {
     let accepted = match operation {
         AtomicOp::Load => matches!(
@@ -1221,7 +1221,7 @@ fn check_atomic(
     if !accepted {
         return Err(Finding::new(
             "V2032_ATOMIC_ORDER",
-            at,
+            at(),
             alloc::format!(
                 "{} does not accept {}",
                 operation_name(operation),
@@ -1235,7 +1235,7 @@ fn check_atomic(
     if operation != AtomicOp::CompareExchange {
         return Err(Finding::new(
             "V2032_ATOMIC_ORDER",
-            at,
+            at(),
             "only compare_exchange carries a failure order",
         ));
     }
@@ -1245,14 +1245,14 @@ fn check_atomic(
     ) {
         return Err(Finding::new(
             "V2032_ATOMIC_ORDER",
-            at,
+            at(),
             alloc::format!("a failure order may not be {}", failure.spelled()),
         ));
     }
     if failure.rank() > order.rank() {
         return Err(Finding::new(
             "V2032_ATOMIC_ORDER",
-            at,
+            at(),
             alloc::format!(
                 "failure order {} is stronger than success order {}",
                 failure.spelled(),
@@ -1282,11 +1282,14 @@ fn operation_name(operation: AtomicOp) -> &'static str {
 fn check_source_maps(module: &Module) -> Result<(), Finding> {
     let header = &module.header;
     for (index, entry) in module.source_map.iter().enumerate() {
-        let at = alloc::format!("source map {index}");
+        // Built only when a finding needs it. Formatting a location for every
+        // entry allocates and runs `core::fmt` tens of thousands of times to
+        // describe a place nothing is wrong with.
+        let at = || alloc::format!("source map {index}");
         if entry.byte_start > entry.byte_end {
             return Err(Finding::new(
                 "V2040_SOURCE_MAP",
-                at,
+                at(),
                 "a span runs backwards",
             ));
         }
@@ -1298,7 +1301,7 @@ fn check_source_maps(module: &Module) -> Result<(), Finding> {
         {
             return Err(Finding::new(
                 "V2040_SOURCE_MAP",
-                at,
+                at(),
                 "an entry claims a source identity the header does not",
             ));
         }
@@ -1308,7 +1311,7 @@ fn check_source_maps(module: &Module) -> Result<(), Finding> {
         {
             return Err(Finding::new(
                 "V2040_SOURCE_MAP",
-                at,
+                at(),
                 "an entry disagrees with the header about the language contract",
             ));
         }
@@ -1316,7 +1319,7 @@ fn check_source_maps(module: &Module) -> Result<(), Finding> {
             if parent >= module.source_map.len() {
                 return Err(Finding::new(
                     "V2040_SOURCE_MAP",
-                    at,
+                    at(),
                     "a derivation parent is outside the table",
                 ));
             }
