@@ -7,13 +7,30 @@
 //! Nothing here probes a memory map, walks firmware tables or acquires an
 //! ambient allocator: a base and a length arrive, or the runtime does not run.
 //!
-//! The heap is a first-fit free list with boundary tags and immediate
-//! coalescing of both neighbours. That shape is chosen deliberately over a bump
-//! allocator: ADR-0041 refuses one that leaks between ordinary operations,
-//! because a reference runtime that must be restarted to reclaim memory is not
-//! a recovery oracle. Every free is a real free, and a block freed between two
-//! free blocks becomes one block again, so repeated execution returns the arena
-//! to the state it started in.
+//! The heap is a **segregated-fit** allocator: boundary tags, immediate
+//! coalescing of both neighbours, and free blocks threaded onto size-class
+//! lists. That shape is chosen deliberately over a bump allocator — ADR-0041
+//! refuses one that leaks between ordinary operations, because a reference
+//! runtime that must be restarted to reclaim memory is not a recovery oracle.
+//! Every free is a real free, and a block freed between two free blocks becomes
+//! one block again, so repeated execution returns the arena to the state it
+//! started in.
+//!
+//! **Why the free lists exist.** The first implementation searched first-fit by
+//! walking every block from the base of the arena, so the cost of one
+//! allocation grew with the number of blocks already in it. Measured on the
+//! reference platform, a 256 KiB module — the published source-unit ceiling —
+//! did not finish the frontend in 900 seconds, against a ~3 s expectation. Each
+//! result was correct; the cost of reaching it was quadratic in the work done.
+//!
+//! The search now costs a bounded number of probes that does not depend on how
+//! many blocks the arena holds, and the allocator counts its own probes so the
+//! claim is checkable rather than asserted (see [`BoundedHeap::search_work`]).
+//!
+//! **The free lists cost no memory.** A block's list links live in the payload
+//! of the block itself, which is free and therefore unused; the size-class
+//! heads are a fixed array inside this struct. The allocator never allocates
+//! for its own bookkeeping, which is what keeps a bounded arena bounded.
 //!
 //! **Two limits that are never the same thing.** [`RuntimeMemoryGrant::length`]
 //! is what the implementation has. A module's `resource [allocation: ...]` is
@@ -33,8 +50,8 @@
 //! allocation, and a hole below the highest live block is arena the run still
 //! needed. [`BoundedHeap::peak_extent`] is therefore the metric: the highest
 //! address the arena was ever carried to, minus the base. An arena of that size
-//! serves the same sequence identically, because first-fit's choices do not
-//! depend on how much region lies beyond them. [`BoundedHeap::committed`] is the
+//! serves the same sequence identically, because the search never looks past
+//! the blocks the region already holds. [`BoundedHeap::committed`] is the
 //! live figure, counted in whole blocks including their tags, so a free returns
 //! exactly what its claim took.
 //!
@@ -133,6 +150,21 @@ pub struct BoundedHeap {
     frontier: usize,
     /// Whether the region has been laid out with its initial free block.
     ready: bool,
+    /// The first free block of each size class, or 0 for none.
+    ///
+    /// A fixed array, not an allocation: an allocator that had to allocate to
+    /// describe its own free space could not be given a bounded region and
+    /// asked to stay inside it.
+    bins: [usize; BINS],
+    /// Which classes are non-empty, so the next larger one is a bit scan.
+    occupied_bins: u64,
+    /// Free-list nodes examined, and allocations served.
+    ///
+    /// Kept so the search's cost is *observable* rather than argued. A ratio
+    /// that stays flat while the arena fills is the evidence that the old
+    /// walk-every-block behaviour is gone.
+    probes: u64,
+    served: u64,
 }
 
 impl BoundedHeap {
@@ -151,6 +183,10 @@ impl BoundedHeap {
             committed: 0,
             frontier: 0,
             ready: false,
+            bins: [0; BINS],
+            occupied_bins: 0,
+            probes: 0,
+            served: 0,
         }
     }
 
@@ -189,10 +225,17 @@ impl BoundedHeap {
         self.length = usable + OVERHEAD;
         self.committed = 0;
         self.frontier = 0;
+        self.bins = [0; BINS];
+        self.occupied_bins = 0;
+        self.probes = 0;
+        self.served = 0;
         // SAFETY: the caller's promise covers `length` bytes from `base`, and
         // `usable + OVERHEAD` is no larger than the granted length.
         unsafe { write_tags(self.base, usable, true) };
         self.ready = true;
+        // SAFETY: the block was just written and is free, so its payload is
+        // this heap's to thread onto a free list.
+        unsafe { self.link_free(self.base, usable) };
         Ok(())
     }
 
@@ -221,6 +264,135 @@ impl BoundedHeap {
         self.length.saturating_sub(OVERHEAD)
     }
 
+    /// Free-list nodes examined, and allocations served.
+    ///
+    /// The first figure divided by the second is the search work per
+    /// allocation. It stays flat as the arena fills, which is the property the
+    /// original walk-every-block search did not have and could not be given.
+    pub fn search_work(&self) -> (u64, u64) {
+        (self.probes, self.served)
+    }
+
+    /// Threads a free block onto the list for its size class.
+    ///
+    /// # Safety
+    ///
+    /// `at` is a block header this heap owns, its tag says free, and its
+    /// payload is at least `GRAIN` bytes — enough for the two links.
+    // SAFETY: only the payload of a free block this heap owns is written, and a free block's payload belongs to the allocator.
+    unsafe fn link_free(&mut self, at: usize, size: usize) {
+        let bin = bin_of(size);
+        let head = self.bins[bin];
+        // SAFETY: `at` is a free block with at least `GRAIN` payload bytes, so
+        // the two link words lie inside it.
+        unsafe {
+            write_link(at, NEXT, head);
+            write_link(at, PREV, 0);
+            if head != 0 {
+                write_link(head, PREV, at);
+            }
+        }
+        self.bins[bin] = at;
+        self.occupied_bins |= 1u64 << bin;
+    }
+
+    /// Takes a free block off its size-class list.
+    ///
+    /// # Safety
+    ///
+    /// `at` is a block this heap threaded onto the list for `size`.
+    // SAFETY: only the link words of free blocks this heap owns are read and written.
+    unsafe fn unlink_free(&mut self, at: usize, size: usize) {
+        let bin = bin_of(size);
+        // SAFETY: `at` is on this list, so its links are the ones written by
+        // `link_free`, and its neighbours are blocks of the same list.
+        unsafe {
+            let next = read_link(at, NEXT);
+            let previous = read_link(at, PREV);
+            if previous == 0 {
+                self.bins[bin] = next;
+            } else {
+                write_link(previous, NEXT, next);
+            }
+            if next != 0 {
+                write_link(next, PREV, previous);
+            }
+        }
+        if self.bins[bin] == 0 {
+            self.occupied_bins &= !(1u64 << bin);
+        }
+    }
+
+    /// Finds a free block whose payload is at least `need`, and takes it off
+    /// its list.
+    ///
+    /// The cost is what makes this allocator usable. Only the request's own
+    /// size class can hold blocks too small for it, so that class is probed a
+    /// bounded number of times; every class above it holds blocks that are
+    /// certainly large enough, so the next non-empty one is a bit scan.
+    ///
+    /// The one unbounded path is deliberate: when no larger class has anything,
+    /// the rest of the exact class is walked before giving up. Refusing while a
+    /// block that fits is sitting in the arena would be an allocator that lies
+    /// about exhaustion, and that path is reached only when the arena is nearly
+    /// full — which is where a linear walk is both rare and affordable.
+    ///
+    /// # Safety
+    ///
+    /// The heap must have adopted a valid grant.
+    // SAFETY: the heap has adopted a live grant, so every address walked is inside memory the caller promised.
+    unsafe fn take_fitting(&mut self, need: usize) -> Option<usize> {
+        let bin = bin_of(need);
+        let mut cursor = self.bins[bin];
+        let mut probes = 0u32;
+        while cursor != 0 && probes < PROBE_LIMIT {
+            probes += 1;
+            // SAFETY: `cursor` is a free block this heap threaded on.
+            let size = unsafe { read_tag(cursor) }.size;
+            if size >= need {
+                self.probes += u64::from(probes);
+                // SAFETY: `cursor` is on the list for `size`.
+                unsafe { self.unlink_free(cursor, size) };
+                return Some(cursor);
+            }
+            // SAFETY: `cursor` is a free block, so its links are valid.
+            cursor = unsafe { read_link(cursor, NEXT) };
+        }
+
+        // Every class above this one holds blocks larger than any request of
+        // this class, so the first non-empty one fits without being examined.
+        let larger = self.occupied_bins & !((1u64 << bin) | ((1u64 << bin) - 1));
+        if larger != 0 {
+            let chosen = larger.trailing_zeros() as usize;
+            let at = self.bins[chosen];
+            self.probes += u64::from(probes) + 1;
+            // SAFETY: `at` heads a non-empty class, so it is a threaded block.
+            let size = unsafe { read_tag(at) }.size;
+            debug_assert!(size >= need);
+            // SAFETY: `at` is on the list for `size`.
+            unsafe { self.unlink_free(at, size) };
+            return Some(at);
+        }
+
+        // Nothing larger exists. Finish the exact class rather than refuse
+        // while a block that fits is still in the arena.
+        while cursor != 0 {
+            probes += 1;
+            // SAFETY: `cursor` is a free block this heap threaded on.
+            let size = unsafe { read_tag(cursor) }.size;
+            if size >= need {
+                self.probes += u64::from(probes);
+                // SAFETY: `cursor` is on the list for `size`.
+                unsafe { self.unlink_free(cursor, size) };
+                return Some(cursor);
+            }
+            // SAFETY: `cursor` is a free block, so its links are valid.
+            cursor = unsafe { read_link(cursor, NEXT) };
+        }
+        self.probes += u64::from(probes);
+        None
+    }
+
     /// Allocates, returning `None` rather than aborting.
     ///
     /// This is the fallible entry point. Callers that can refuse work should
@@ -238,32 +410,23 @@ impl BoundedHeap {
         // A block's payload starts `GRAIN`-aligned, so the worst case is
         // needing to skip almost a whole alignment step past the prefix.
         let need = round_up(PREFIX + layout.size() + (align - GRAIN), GRAIN);
+        self.served += 1;
 
-        let mut cursor = self.base;
-        let end = self.base + self.length;
-        while cursor + OVERHEAD <= end {
-            // SAFETY: `cursor` walks block headers laid out by `adopt` and
-            // maintained by every split and merge below, so it addresses a tag.
-            let tag = unsafe { read_tag(cursor) };
-            if tag.size == 0 {
-                break;
-            }
-            if tag.free && tag.size >= need {
-                // SAFETY: the block at `cursor` is free and large enough.
-                let kept = unsafe { self.occupy(cursor, tag.size, need) };
-                let payload = cursor + TAG_BYTES;
-                let pointer = round_up(payload + PREFIX, align);
-                debug_assert!(pointer + layout.size() <= payload + kept);
-                // SAFETY: `pointer - WORD` lies inside this block's payload,
-                // because `pointer` is at least `PREFIX` past its start.
-                unsafe { write_backlink(pointer, pointer - cursor) };
-                self.committed += kept + OVERHEAD;
-                self.frontier = self.frontier.max(cursor + kept + OVERHEAD - self.base);
-                return Some(pointer as *mut u8);
-            }
-            cursor += tag.size + OVERHEAD;
-        }
-        None
+        // SAFETY: the heap has adopted a live grant.
+        let at = unsafe { self.take_fitting(need) }?;
+        // SAFETY: `take_fitting` returned a block it removed from its list.
+        let size = unsafe { read_tag(at) }.size;
+        // SAFETY: the block is off every list, free, and large enough.
+        let kept = unsafe { self.occupy(at, size, need) };
+        let payload = at + TAG_BYTES;
+        let pointer = round_up(payload + PREFIX, align);
+        debug_assert!(pointer + layout.size() <= payload + kept);
+        // SAFETY: `pointer - WORD` lies inside this block's payload, because
+        // `pointer` is at least `PREFIX` past its start.
+        unsafe { write_backlink(pointer, pointer - at) };
+        self.committed += kept + OVERHEAD;
+        self.frontier = self.frontier.max(at + kept + OVERHEAD - self.base);
+        Some(pointer as *mut u8)
     }
 
     /// Marks a block used, splitting off the remainder when it is worth a
@@ -274,14 +437,17 @@ impl BoundedHeap {
     /// only the requested amount would let the eventual free return more than
     /// the claim took.
     ///
-    // SAFETY: `at` is a free block header whose payload is `size`, and `wanted` is a grain multiple no larger, so the split stays inside the block.
+    // SAFETY: `at` is a free block off every list whose payload is `size`, and `wanted` is a grain multiple no larger, so the split stays inside the block.
     unsafe fn occupy(&mut self, at: usize, size: usize, wanted: usize) -> usize {
         let leftover = size - wanted;
         if leftover >= OVERHEAD + GRAIN {
+            let remainder = at + wanted + OVERHEAD;
+            let remainder_size = leftover - OVERHEAD;
             // SAFETY: the split stays inside the original block.
             unsafe {
                 write_tags(at, wanted, false);
-                write_tags(at + wanted + OVERHEAD, leftover - OVERHEAD, true);
+                write_tags(remainder, remainder_size, true);
+                self.link_free(remainder, remainder_size);
             }
             wanted
         } else {
@@ -327,7 +493,9 @@ impl BoundedHeap {
         let mut start = header;
         let mut size = tag.size;
 
-        // Merge forward while the next block is free.
+        // Merge forward while the next block is free. A neighbour that is
+        // about to stop existing must leave its size-class list first, or the
+        // list would name memory that is no longer a block.
         loop {
             let next = start + size + OVERHEAD;
             if next + OVERHEAD > self.base + self.length {
@@ -338,6 +506,8 @@ impl BoundedHeap {
             if following.size == 0 || !following.free {
                 break;
             }
+            // SAFETY: a free block is always on the list for its own size.
+            unsafe { self.unlink_free(next, following.size) };
             size += following.size + OVERHEAD;
         }
 
@@ -354,12 +524,16 @@ impl BoundedHeap {
             if previous_start < self.base {
                 break;
             }
+            // SAFETY: a free block is always on the list for its own size.
+            unsafe { self.unlink_free(previous_start, previous.size) };
             size += previous.size + OVERHEAD;
             start = previous_start;
         }
 
         // SAFETY: `start .. start + size + OVERHEAD` is inside the region.
         unsafe { write_tags(start, size, true) };
+        // SAFETY: the merged block is free and at least `GRAIN` wide.
+        unsafe { self.link_free(start, size) };
     }
 
     /// How many blocks the region currently holds, and how many are free.
@@ -393,6 +567,50 @@ impl BoundedHeap {
 
 /// One machine word, which is what a backlink is.
 const WORD: usize = core::mem::size_of::<usize>();
+
+/// Size classes, one per power of two of a block's payload size.
+///
+/// Class `k` holds blocks whose payload is in `2^k .. 2^(k+1)`. That is the
+/// property the search rests on: a request whose own class is `k` is satisfied
+/// by *any* block from a class above `k`, so finding one costs a bit scan
+/// rather than a walk.
+const BINS: usize = 48;
+
+/// How many blocks of the request's own class are examined before the search
+/// gives up on an exact fit and takes a larger one.
+///
+/// Only this class can hold blocks too small for the request, so it is the only
+/// one that needs looking at, and a fixed budget keeps the common path bounded
+/// however long the list becomes.
+const PROBE_LIMIT: u32 = 8;
+
+/// The class a payload of this size belongs to.
+fn bin_of(size: usize) -> usize {
+    debug_assert!(size >= GRAIN);
+    let highest = usize::BITS - 1 - size.leading_zeros();
+    (highest as usize).min(BINS - 1)
+}
+
+/// Which of a free block's two link words is meant.
+const NEXT: usize = 0;
+const PREV: usize = WORD;
+
+/// Reads one of a free block's list links.
+///
+// SAFETY: `at` is a free block header this heap owns, so its first two payload words are the allocator's.
+unsafe fn read_link(at: usize, which: usize) -> usize {
+    // SAFETY: a free block's payload is at least `GRAIN` bytes and belongs to
+    // the allocator, so both link words lie inside it.
+    unsafe { ptr::read_unaligned((at + TAG_BYTES + which) as *const usize) }
+}
+
+/// Writes one of a free block's list links.
+///
+// SAFETY: `at` is a free block header this heap owns, so its first two payload words are the allocator's.
+unsafe fn write_link(at: usize, which: usize, value: usize) {
+    // SAFETY: as `read_link`.
+    unsafe { ptr::write_unaligned((at + TAG_BYTES + which) as *mut usize, value) }
+}
 
 /// Records how far back a returned pointer's block header lies.
 ///

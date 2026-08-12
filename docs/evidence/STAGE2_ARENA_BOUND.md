@@ -23,6 +23,10 @@ the allocation, and a hole below the highest live block is arena the run still
 needed. `peak_extent` includes all of it, and never falls when memory is freed —
 a bound must err upward.
 
+The allocator's *search* changed after these figures were first taken (see
+`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`); everything here was re-measured
+against the current implementation rather than carried over.
+
 `committed` is the live figure in whole blocks, and `block_census` is the layout.
 Both are needed: **equal live bytes do not prove an arena is in the same state.**
 The same total can sit in twice as many pieces, and a reference runtime that
@@ -32,12 +36,12 @@ fragments a little further on every repetition is not a recovery oracle.
 
 | workload | arena needed |
 |---|---|
-| one module at the published 256 KiB source ceiling | **52 808 656 B — 50.36 MiB** |
-| a source set of 256 modules processed one at a time | **52 808 656 B — 50.36 MiB** |
+| one module at the published 256 KiB source ceiling | **52 770 176 B — 50.33 MiB** |
+| a source set of 256 modules processed one at a time | **52 770 176 B — 50.33 MiB** |
 | 64 repeated whole-pipeline executions | frontier unchanged after the first |
-| set-wide resolution over parse trees, 256 modules of 8 KiB | 109 953 616 B — 104.86 MiB *(measured)* |
-| set-wide resolution over parse trees, 256 ceiling-sized modules | 3 594 357 104 B — 3.35 GiB *(fitted from a measured slope)* |
-| **set-wide resolution over derived summaries, per ceiling-sized module** | **221 488 B — 0.21 MiB** |
+| set-wide resolution over parse trees, 256 modules of 8 KiB | 109 953 632 B — 104.86 MiB *(measured)* |
+| set-wide resolution over parse trees, 256 ceiling-sized modules | 3 594 359 136 B — 3.35 GiB *(fitted from a measured slope)* |
+| **set-wide resolution over derived summaries, 256 ceiling-sized modules** | **54 539 456 B — 52.01 MiB** *(measured)* |
 
 Each run produced the right answer. A measurement of a pipeline that did not
 compute anything would measure nothing.
@@ -71,12 +75,13 @@ docs/42 module resolution is the part of the path that cannot be phased away
 module by module: it compares every module's declared name, imports and type
 surface against every other's. What *can* change is what it reads them from.
 
-Reading parse trees costs **14 040 456 bytes per ceiling-sized module**, measured
+Reading parse trees costs **14 040 464 bytes per ceiling-sized module**, measured
 at 1, 2 and 4 modules — about 54x the module's own source, which is what a parse
-tree costs. Reading derived summaries costs **221 488 bytes per ceiling-sized
-module**, measured at 1 and 8. That is a **63x reduction**, and it puts the
-largest closure the two published ceilings admit together — 256 modules of
-256 KiB — at roughly **57 MB** of live resolution state instead of 3.35 GiB.
+tree costs. Reading derived summaries costs **221 488 bytes** for one and
+**54 539 456 bytes for all 256**, both measured directly. That is a **66x
+reduction**, and it puts the largest closure the two published ceilings admit
+together — 256 modules of 256 KiB — at **52.01 MiB** of live resolution state
+instead of 3.35 GiB.
 
 The reason the reduction is that large is structural rather than incidental: a
 summary holds a module's *interface*, and an interface does not grow with a
@@ -92,18 +97,16 @@ modules rather than the 256 the ceilings jointly admit. docs/44 permits a
 declared lower implementation cap, so that was never a contradiction in the
 language; it was an architecture nobody should be asked to keep.
 
-At 221 488 bytes per module, a full 256-module closure of ceiling-sized modules
-needs about 57 MB of resolution state. That fits the reference platform with
-room for the arena the executable path needs, and it is bounded by interfaces
-rather than by bodies — so it stays fitting as modules grow.
+Measured, a full 256-module closure of ceiling-sized modules needs 52.01 MiB of
+resolution state. That fits the reference platform with room for the arena the
+executable path needs, and it is bounded by interfaces rather than by bodies —
+so it stays fitting as modules grow.
 
-What remains is **time, not memory**. A ceiling-sized module does not finish the
-frontend within 900 seconds on the reference platform, because
-`BoundedHeap::try_allocate` searches first-fit by walking every block from the
-base of the arena and the frontend allocates constantly. Every figure above is
-correct; several of them took minutes to obtain that should have taken seconds.
-`docs/evidence/STAGE2_REFERENCE_PLATFORM_P1.md` records that finding and why the
-fix is not attempted in the change that found it.
+The time cost that made the earlier version of this record end on a defect is
+also gone. Every figure here was re-measured after the allocator's search was
+replaced: the whole sweep now takes 16.5 seconds where the same sweep previously
+ran for hours. The memory figures moved by less than 0.1% — which is the point,
+because the search was the defect and the layout was not.
 
 ## What is not claimed
 
@@ -113,11 +116,9 @@ fix is not attempted in the change that found it.
   is labelled so wherever it appears. Measuring it outright needed more memory
   than the machine has — which is itself the finding, and the reason the
   architecture changed.
-- The summary figure at the 256-module ceiling is likewise **extrapolated from
-  a measured per-module cost** (1 and 8 ceiling-sized modules). Its linearity is
-  structural — a summary holds one module's interface and nothing shared — but
-  the 256-module point has not been measured directly, and this record does not
-  say it has.
+- The summary figure at the 256-module ceiling **is measured directly**, not
+  extrapolated. The tree-based figure at that point is not, and cannot be on
+  this machine.
 - The measured figures cover the reference implementation. Another conforming
   implementation's arena is its own to measure.
 - The grant the nucleus makes is a separate, declared decision
