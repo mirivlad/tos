@@ -183,10 +183,16 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
    | engine, 1e6 ops | 5 541 378 us | ratio ≤ 10x | **FAIL** (16.6x) |
    | quota rejection | 763 305 us | ≤ 2x accepted | **PASS** (0.512) |
 
-   Both known implementation defects are fixed — the heap's whole-arena search
-   and the lowerer's `format!` per intern — and one hypothesis, byte-at-a-time
-   freestanding memory primitives, was tested against the real binary and
-   **refuted**. The platform factor is now uniform across two very different
+   Five implementation defects have now been found and fixed — the heap's
+   whole-arena search, the lowerer's `format!` per intern, the engine's
+   per-instruction clone, a whole-source NFC normalization that ASCII makes
+   unnecessary, and eagerly formatted verifier finding locations — and one
+   hypothesis, byte-at-a-time freestanding memory primitives, was tested against
+   the real binary and **refuted**. The current figures after all five are
+   frontend 124 ms native / 1.28 s reference (2.56x over budget) and an engine
+   ratio of 16.8x; `docs/evidence/STAGE2_PERFORMANCE_DECOMPOSITION.md` carries
+   the per-stage breakdown and the finding that a 1.6x engine speedup left the
+   ratio unchanged. The platform factor is now uniform across two very different
    workloads (9.3x and 16.6x) where it previously differed by three orders of
    magnitude, which is the evidence that no third pathology is hiding.
    **ADR-0043 (Proposed)** carries the two failures with their measurements and

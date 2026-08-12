@@ -101,6 +101,10 @@ fn main() {
     report("parse + check + lower + verify, 256 KiB module", &frontend);
     println!("  docs/35 budget: 500 ms p95 on the reference platform");
 
+    if argument("--stages").is_some() {
+        report_stages(&module_text);
+    }
+
     let benchmark = million_operation_module();
     let execution = measure(|| {
         let value = run_benchmark(&benchmark);
@@ -185,6 +189,55 @@ fn explain(text: &str) -> Result<(), String> {
     verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .map(|_| ())
         .map_err(|finding| format!("verifier: {} — {}", finding.code, finding.detail))
+}
+
+/// Times each frontend stage separately, so the cost has a location.
+///
+/// A total tells you the frontend is slow. It does not tell you which stage to
+/// look at, and guessing which one is the mistake that produced a refuted
+/// hypothesis once already.
+fn report_stages(text: &str) {
+    let read = measure(|| {
+        SourceReader::read(text.as_bytes()).expect("transport-valid");
+    });
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid");
+    let parse = measure(|| {
+        Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("parses");
+    });
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("parses");
+    let check = measure(|| {
+        let found = Checker::check(&source, &schema);
+        assert!(found.is_empty());
+    });
+    let context = ModuleContext {
+        source_set: String::from("tos-performance"),
+        path: String::from("system/boot/init.tos"),
+        content_id: content_id(text.as_bytes()),
+        dependency_digest: String::from("sha256:0000"),
+        capability_interface_digest: String::from("sha256:0000"),
+    };
+    let lower = measure(|| {
+        lower_module(&source, &schema, &context).expect("lowers");
+    });
+    let module = lower_module(&source, &schema, &context).expect("lowers");
+    let verify = measure(|| {
+        verify(&module, &ResolutionSnapshot::default(), &Limits::default()).expect("verifies");
+    });
+    println!();
+    println!("frontend stages, median us (the same fixture, one stage at a time)");
+    for (name, samples) in [
+        ("read", &read),
+        ("parse", &parse),
+        ("check", &check),
+        ("lower", &lower),
+        ("verify", &verify),
+    ] {
+        println!("  {name:<7} {}", percentile(samples, 50));
+    }
 }
 
 /// Runs the whole production path and says whether it produced a receipt.

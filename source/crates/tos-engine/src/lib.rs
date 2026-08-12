@@ -506,16 +506,18 @@ impl Engine<'_> {
         block_index: usize,
         values: &mut [Option<Value>],
     ) -> Result<Exit, Trap> {
-        // Instructions and the terminator are read from the module each time
-        // rather than held across a call, so a nested call cannot observe a
-        // stale borrow of the table it is also reading.
-        let count = self.module.functions[function_index].blocks[block_index]
-            .instructions
-            .len();
-        for position in 0..count {
-            let instruction = self.module.functions[function_index].blocks[block_index]
-                .instructions[position]
-                .clone();
+        // The module outlives the engine, so a reference into it is not a
+        // borrow of `self` and does not conflict with the `&mut self` a nested
+        // call needs. Copying the reference out is what makes that visible to
+        // the borrow checker.
+        //
+        // This used to clone each instruction and the terminator. The clone was
+        // never needed — it was a way around a borrow that does not exist — and
+        // it copied an `Instruction` for every instruction executed, which is
+        // the single hottest thing an interpreter does.
+        let module = self.module;
+        let block = &module.functions[function_index].blocks[block_index];
+        for instruction in &block.instructions {
             self.spend(instruction.source)?;
             let produced = self.evaluate(&instruction.op, values, instruction.source)?;
             if let (Some(slot), Some(value)) = (instruction.result, produced) {
@@ -524,11 +526,7 @@ impl Engine<'_> {
                 }
             }
         }
-        let terminator = self.module.functions[function_index].blocks[block_index]
-            .terminator
-            .clone();
-        let source = self.module.functions[function_index].blocks[block_index].source;
-        self.terminate(&terminator, values, source)
+        self.terminate(&block.terminator, values, block.source)
     }
 
     fn terminate(

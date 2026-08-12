@@ -156,6 +156,21 @@ impl SourceReader {
         }
         let text =
             core::str::from_utf8(&lf).expect("validated input stays UTF-8 after CRLF replacement");
+        // Every ASCII scalar value is NFC-stable: none decomposes, none has a
+        // nonzero canonical combining class, and none composes with what
+        // precedes it. So an all-ASCII source unit *is* its own normal form,
+        // and normalizing it would allocate a second copy of the whole source
+        // to prove it equal to the first.
+        //
+        // docs/39 restricts identifiers to ASCII and admits Unicode only inside
+        // string data and comments, so this is the ordinary case rather than a
+        // special one — and the check that decides it is a scan with no
+        // allocation at all.
+        if lf.is_ascii() {
+            return Ok(SourceUnit {
+                bytes: lf.into_boxed_slice(),
+            });
+        }
         let nfc = nfc(text);
         if nfc.as_bytes() != lf {
             let offset = nfc
