@@ -1650,6 +1650,55 @@ impl<'source> Lowerer<'source> {
                 Ok(())
             }
             PatternForm::Wildcard => Ok(()),
+            // A tuple pattern destructures by *place*, recursively.
+            //
+            // `tos-ir/v1` already expresses this: a tuple element is a
+            // `PlaceStep::Field`, and taking one is the same `Move` the named
+            // case emits. So destructuring needs no new IR operation and no new
+            // schema — which also means the verifier's existing ownership and
+            // type rules see it exactly as they see any other move out of an
+            // aggregate, with no way to tell it came from a pattern.
+            //
+            // Nothing here decides ownership. The checker has already proved
+            // what may be moved and what may not; this expresses that proof.
+            PatternForm::Tuple => {
+                let Operand::Value(root) = value else {
+                    return Err(self.gap("destructuring a constant tuple", pattern.span()));
+                };
+                let Some(TypeDef::Tuple(elements)) = self.types.get(ty).cloned() else {
+                    return Err(self.gap("destructuring a non-tuple", pattern.span()));
+                };
+                if elements.len() != pattern.elements().len() {
+                    return Err(self.gap("tuple pattern arity", pattern.span()));
+                }
+                for (position, (element, element_ty)) in
+                    pattern.elements().iter().zip(elements).enumerate()
+                {
+                    // A wildcard binds nothing, so it takes nothing: emitting a
+                    // move for `_` would consume a component the program never
+                    // named.
+                    if element.form() == PatternForm::Wildcard {
+                        continue;
+                    }
+                    let taken = builder.define(element_ty);
+                    builder.push(Instruction {
+                        result: Some(taken),
+                        ty: element_ty,
+                        op: Op::Move {
+                            place: Place {
+                                root,
+                                path: alloc::vec![PlaceStep::Field(position)],
+                            },
+                        },
+                        source: at,
+                        runtime_contract: None,
+                        unsafe_block: builder.in_unsafe,
+                        unsafe_interface: None,
+                    });
+                    self.bind_pattern(element, element_ty, Operand::Value(taken), builder, at)?;
+                }
+                Ok(())
+            }
             _ => Err(self.gap("destructuring let pattern", pattern.span())),
         }
     }

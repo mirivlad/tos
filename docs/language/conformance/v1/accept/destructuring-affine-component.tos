@@ -1,0 +1,16 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.destructuring_affine_component version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// An affine component moves. The aggregate is partially moved afterwards,
+// which the existing partial-move rules govern unchanged.
+pub record Message [payload: bytes]
+
+pub fn take(message: Message) -> unit { }
+
+pub fn main() -> unit {
+    let pair = (Message(payload: b"hi"), 1i32);
+    let (message, count) = pair;
+    take(message);
+}

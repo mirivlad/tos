@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `f1ea1013ec6f21dc1d858b16a2267623490c6e84f47c9f5576d1154013081acb`  
+Source-manifest SHA-256: `4fcbba76c3efbed33195f99dc27a0b0399062f3e18b7d350f98ad7b7c6122c74`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -5044,6 +5044,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1212_INVALID_AS_CONVERSION` | an `as` conversion between ordinary value types is not an integer widening that preserves signedness; a conversion touching a capability or another nonconstructible type is routed to `E1502` or `E1213` and is not this code |
 | `E1213_NONCONSTRUCTIBLE_TYPE` | an `as` conversion whose target or operand type is one V1 source may not fabricate a value of — `Task`, `Shared`, `Region`, `DmaRegion`, `Mutex`, `RwLock`, `Channel`, `Event`, `Semaphore`, `Barrier`, `Latch`, an atomic, a slice, or a function or closure type. `TaskResult<T>` is not among them: `Completed` and `Cancelled` build one. A predeclared type in value position is `E1202`, not this (ADR-0039) |
 | `E1215_ARGUMENT_TYPE_MISMATCH` | an argument of a resolved call or predeclared operation does not satisfy the declared exact type or the operation's type requirement, and no more specific code describes it. The residual of `E1210`, `E1211`, `E1212`, `E1213`, `E1502` and `E1222`, never a catch-all for an unresolved callee, which is a resolution finding with precedence. Fields: `callee`, `position` or `parameter`, `expected`, `actual`; an operation requirement may use `requirement` and `reason` instead (ADR-0037) |
+| `E1223_REFUTABLE_PATTERN` | a `let` or `for` pattern may fail to match the value it binds, in a context that binds unconditionally (ADR-0046). Irrefutability is recursive: a tuple pattern is irrefutable exactly when every element is, and a constructor pattern only when its type has no other variant. Fields: `context` (`let` or `for`), `reason`, `expected`. Reported only once the pattern has a settled meaning — an undetermined type, an unresolved constructor or a mismatched payload arity are other codes' conditions and take precedence |
 | `E1220_NONEXHAUSTIVE_MATCH` | a `match` over an enum, `Option`, `Result` or `TaskResult` leaves a variant uncovered and has no wildcard or binding arm |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
 

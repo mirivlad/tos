@@ -6,18 +6,26 @@ This is the `docs/37` gate report for Stage 2. It describes **one state at one
 HEAD**: no section carries a claim from an earlier pass. History belongs in
 `PROGRESS.md`; this file says what is true now.
 
-It is **not** a closure claim. Mandatory gates are open, they are named under
-`known_failures`, and `architect_approval` is empty because only the Project
-Architect grants it.
+It is **not** a closure claim. Every mandatory Stage 2 gate is met on the
+evidence below; what remains under `known_failures` is `N/A` by an accepted
+contract, an honest evidence level, or a decision the Architect has directed is
+not a blocker. `architect_approval` is empty because only the Project Architect
+grants it, and a candidate record that filled it in would be claiming the thing
+it exists to ask for.
 
 ```text
 stage                  2 — Executed-source identity
-source_commit          see `git rev-parse HEAD`; the SHA mapping for the one
-                       authorized history repair is in
-                       PROVENANCE_HISTORY_REWRITE.md
+source_commit          the commit this file is committed in; MANIFEST.txt and
+                       SHA256SUMS in the same commit pin every file it
+                       describes, which is the repository's existing provenance
+                       convention and avoids a record that must name its own
+                       SHA. The SHA mapping for the one authorized history
+                       repair is in PROVENANCE_HISTORY_REWRITE.md
 architecture_version   TOS Core 1.0; tos-ir/v1; accepted ADR-0027, ADR-0028,
                        ADR-0032, ADR-0033, ADR-0034, ADR-0035, ADR-0036,
-                       ADR-0038, ADR-0039, ADR-0040, ADR-0041
+                       ADR-0037, ADR-0038, ADR-0039, ADR-0040, ADR-0041,
+                       ADR-0042, ADR-0043, ADR-0045, ADR-0046
+                       (ADR-0044 is Proposed and is not a closure condition)
 identity_question      Is actual language semantics executing from canonical
                        text with a verifiable mapping to runtime behavior?
 ```
@@ -132,7 +140,7 @@ cannot contain the work it claims to measure.
 | resource exhaustion | All ten declared limits are enforced. Fuel, recursion, tasks, **allocation**, **cleanup**, **workers**, **sync** and **shared** are reserved before the effect and released when the frame that charged them returns; the verifier additionally bounds cleanups per exit statically. `sync` counts live guards, whose lifetime ADR-0036 bounds to the frame that took them; `shared` charges a `Shared<T>` on the same cell model `allocation` uses. `stack` and `imports` are static declarations the frontend and verifier check rather than run-time counters. |
 | source-map identity forgery | Present (`V2040_SOURCE_MAP`). |
 | cache substitution | Present (`Rejection::KeyDoesNotMatchIdentity`). |
-| runtime independence from the host | **Partly discharged, and now gated rather than argued.** All five production crates are `#![no_std] + alloc` and build for `x86_64-unknown-none`; two preflight gates enforce it — a source gate that no production module names a host facility and that every crate declares `#![no_std]`, and a build gate that compiles all five for the freestanding target. `crates/tos-runtime` supplies the ADR-0041 grant and heap. What remains is linking and running a freestanding **binary**: the crates are proved host-free, the assembled runtime is not yet. |
+| runtime independence from the host | **Discharged, and gated rather than argued.** Every production crate is `#![no_std] + alloc` and builds for `x86_64-unknown-none`; two preflight gates enforce it — a source gate that no production module names a host facility and that every crate declares `#![no_std]`, and a build gate that compiles them for the freestanding target. `crates/tos-runtime` supplies the ADR-0041 grant and heap, and the assembled binary **runs**: the nucleus derives a grant from the validated memory map, installs the bounded heap, and drives the capsule's canonical boot module through the whole reference path inside QEMU (`host-tools/qemu-test/stage2-runtime.sh`, a preflight gate that checks the stage order, the receipt, the returned value, every accounting pair, the arena peak and the stack margin). The earlier audit that found this gap is retained and marked superseded at `docs/evidence/STAGE2_RUNTIME_INDEPENDENCE_AUDIT.md`. |
 | cross-engine semantic differential testing | **N/A for the current supported-engine set.** `docs/44` section 3 requires it "for every supported engine" and section 7 requires every engine to pass the same vectors. One engine is supported, so the requirement is vacuously satisfied. It becomes mandatory the moment a second engine is supported, and no engine will be built to satisfy a denominator. |
 
 ## compatibility_profiles
