@@ -27,6 +27,12 @@
 //! 4. **Set-wide resolution.** What it costs to have every module of a closure
 //!    resolvable at once, which is the one part that cannot be phased away
 //!    while resolution reads parse trees.
+//! 5. **An executed closure.** What one run needs when the whole closure is
+//!    read, checked, resolved, lowered, verified and executed together — with
+//!    the entry calling across the boundary, so the dependencies are not merely
+//!    present but reached. This is the number a launcher sizes a grant from,
+//!    and it is not the single-module bound: nothing about one module measured
+//!    alone says what several cost at once.
 //!
 //! The arena is a static region, which is what a nucleus grant is: a base and a
 //! length the runtime is given rather than finds. It is far larger than any
@@ -37,7 +43,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use tos_core::{ModuleEntry, ModuleSummary, Parser, Schema, SourceReader, SourceUnit};
-use tos_pipeline::{execute, Request, Run, Silent};
+use tos_pipeline::{execute, execute_set, Request, Run, SetRequest, Silent, Unit};
 use tos_runtime::{GlobalHeap, RuntimeMemoryGrant, GRANT_VERSION};
 
 /// The region the measurement runs in. A nucleus grant is the same shape.
@@ -145,6 +151,29 @@ fn mib(bytes: usize) -> f64 {
 
 fn main() {
     let full = std::env::args().any(|argument| argument == "--full");
+    // The executed-closure bound runs on its own, in its own process. The
+    // arena's frontier never falls, so a measurement that followed the
+    // 256 KiB-module one would report that measurement's high-water mark and
+    // call it the closure's — and a measurement that preceded it would leave
+    // its freed blocks under the published single-module bound. Separate
+    // processes are the only way each number is its own.
+    if std::env::args().any(|argument| argument == "--closure") {
+        println!("TOS implementation-arena bound: one executed closure");
+        println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
+        println!();
+        let sizes: &[usize] = if full { &[2, 4, 8, 16, 32] } else { &[2, 4, 8] };
+        let measured = an_executed_closure(sizes);
+        println!();
+        println!("== the bound ==");
+        for (count, peak) in &measured {
+            println!(
+                "one executed closure of {count:>3} modules  {:>12} bytes  ({:.2} MiB)",
+                peak,
+                mib(*peak)
+            );
+        }
+        return;
+    }
     println!("TOS Stage 2 implementation-arena bound");
     println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
     println!("mode: {}", if full { "full" } else { "fast" });
@@ -169,6 +198,7 @@ fn main() {
         phased,
         mib(phased)
     );
+
     println!(
         "set-wide resolution, {CLOSURE_CEILING} modules alive        {:>12} bytes  ({:.2} MiB){}",
         resolution.0,
@@ -337,6 +367,99 @@ fn repeated_execution() {
 /// does not grow with the number of modules — first-fit hands the next module
 /// the memory the previous one returned, and the frontier is a high-water mark
 /// that only a *deeper* run can move.
+/// One run over a whole closure: every module read, checked, resolved,
+/// lowered, verified and executed together, with the entry calling into each
+/// dependency so none of them is merely present.
+///
+/// Measured at several closure sizes rather than one, because the question a
+/// launcher asks is not "what does a closure cost" but "what does it cost as it
+/// grows". A single number would be a data point wearing a bound's clothes.
+fn an_executed_closure(sizes: &[usize]) -> Vec<(usize, usize)> {
+    println!();
+    println!("== one executed closure ==");
+    let mut measured = Vec::new();
+    for &count in sizes {
+        let dependencies: Vec<String> = (1..count).map(dependency_module).collect();
+        let entry = entry_calling(count - 1);
+        let mut units = vec![Unit {
+            path: "set/entry.tos",
+            bytes: entry.as_bytes(),
+        }];
+        let paths: Vec<String> = (1..count).map(module_path).collect();
+        for (index, text) in dependencies.iter().enumerate() {
+            units.push(Unit {
+                path: &paths[index],
+                bytes: text.as_bytes(),
+            });
+        }
+        let before = arena();
+        let run = execute_set(
+            &SetRequest {
+                source_set: "tos-arena-bound",
+                units: &units,
+                entry_path: "set/entry.tos",
+                entry: "main",
+            },
+            Vec::new(),
+            &mut Silent,
+        )
+        .expect("the set names an entry it contains");
+        let after = arena();
+        let Run::Completed(completion) = &run else {
+            panic!("the closure must complete: {:?}", run.failed_at());
+        };
+        // The answer is the sum of what every dependency returned, so a run
+        // that skipped one could not produce it.
+        let expected = (1..count as i128).sum::<i128>();
+        let tos_engine::Value::Int(_, number) = completion.value else {
+            panic!("the entry returns an integer");
+        };
+        assert_eq!(number, expected, "every dependency must have been reached");
+        println!(
+            "{count:>3} modules: peak extent {} bytes ({:.2} MiB); committed {} -> {}; blocks {} ({} free)",
+            after.frontier,
+            mib(after.frontier),
+            before.committed,
+            after.committed,
+            after.blocks,
+            after.free
+        );
+        measured.push((count, after.frontier));
+    }
+    measured
+}
+
+/// A dependency exporting one function that returns its own index.
+fn dependency_module(index: usize) -> String {
+    format!(
+        "module set.m{index} version 1.0 profile bootstrap; \
+         resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0] \
+         pub fn value{index}() -> i32 {{ return {index}i32; }} "
+    )
+}
+
+/// An entry importing every dependency and calling each one exactly once.
+fn entry_calling(count: usize) -> String {
+    let mut text = String::from("module set.entry version 1.0 profile bootstrap; ");
+    for index in 1..=count {
+        text.push_str(&format!("import set.m{index} as m{index}; "));
+    }
+    text.push_str(
+        "resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 256] \
+         pub fn main() -> i32 { return ",
+    );
+    for index in 1..=count {
+        if index > 1 {
+            text.push_str(" + ");
+        }
+        text.push_str(&format!("m{index}.value{index}()"));
+    }
+    text.push_str("; }");
+    text
+}
+
 fn a_source_set_one_module_at_a_time(count: usize) -> usize {
     println!();
     println!("== a source set, one module at a time ({count} modules) ==");

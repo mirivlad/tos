@@ -88,6 +88,52 @@ summary holds a module's *interface*, and an interface does not grow with a
 body. There is a test asserting that a module with a two-hundred-function body
 summarizes to exactly the same size as one with a single function.
 
+### One executed closure — measured, and measured separately
+
+Stage 3 Phase 1 gave the pipeline a source set: several modules read, checked,
+resolved, lowered, verified and executed as one run, with the entry calling
+across the boundary so the dependencies are reached and not merely present.
+That is the number a launcher would size a grant from, and it is not the
+single-module bound.
+
+Reproduce: `cargo run --release -p tos-arena-bound -- --closure` (add `--full`
+for 16 and 32 modules).
+
+| Closure | Peak extent | |
+|---|---|---|
+| 2 modules | 41 312 bytes | 0.04 MiB |
+| 4 modules | 83 552 bytes | 0.08 MiB |
+| 8 modules | 152 880 bytes | 0.15 MiB |
+| 16 modules | 309 280 bytes | 0.29 MiB |
+| 32 modules | 620 752 bytes | 0.59 MiB |
+
+The measured slope is about 19.3 KiB per module, and the series is linear across
+the range: a closure does not cost super-linearly in the number of modules.
+
+**It runs in its own process, and that is not a convenience.** The arena's
+frontier never falls, so a closure measured after the 256 KiB-module run would
+report *that* run's high-water mark and call it the closure's; and one measured
+before it would leave its freed blocks underneath the published single-module
+bound. Two numbers that must each be their own need two arenas, and an arena is
+adopted once.
+
+**What these modules are.** Each dependency here is a few hundred bytes — one
+exported function returning a constant — and the entry imports and calls every
+one of them. So this measures the cost of *many* modules, not of *large* ones.
+
+## What this closure figure does not say
+
+- It is not a bound for a closure of ceiling-sized modules. One module at the
+  256 KiB ceiling costs 50.47 MiB on its own, and 32 of those is a different
+  measurement that has not been taken. The two variables — module count and
+  module size — are measured one at a time here, and their product is not
+  claimed.
+- It is not the 256-module ceiling docs/44 admits. 32 is where this series
+  stops; the slope is linear over the measured range and a slope is not a proof
+  of what happens past it.
+- It does not include the nucleus's own memory, the capsule, or anything outside
+  the runtime's granted arena.
+
 ## The constraint this removes, and the one that remains
 
 Before the summary architecture, the two published ceilings of docs/44 section 2

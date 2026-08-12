@@ -2,6 +2,10 @@
 
 # Stage 3 Phase 1: multi-module source sets
 
+> **Status: complete (2026-08-13).** All six tasks are done, with one boundary
+> hit and reported rather than crossed: module-level constants needed a decision
+> before they could be finished, which became ADR-0052.
+>
 > **Scope rule:** this phase implements accepted contracts. It does not change
 > TOS Core V1, `tos-ir/v1`, the verifier contract or the Stage 2 closure. If a
 > task turns out to need one of those changed, stop at that boundary and say so
@@ -196,10 +200,18 @@ where every other allocation of the run already happens.
 ### Task 6: Measure the closure
 
 **Files:**
-- Modify: `source/tests/arena-bound/`
-- Modify: `PROGRESS.md`, `docs/evidence/`
+- Modify: `source/tests/arena-bound/src/main.rs`
+- Modify: `docs/evidence/STAGE2_ARENA_BOUND.md`, `PROGRESS.md`
 
-- [ ] Measure the arena bound for a multi-module closure and record it as its
-  own number. The existing single-module bound is not restated as a set bound.
-- [ ] State the closure size measured and what is still unmeasured, so the next
-  reader knows which claim is which.
+- [x] `--closure` measures one run over a whole closure — read, checked,
+  resolved, lowered, verified and executed together, with the entry calling into
+  every dependency so none is merely present. 2/4/8/16/32 modules: 41 312 →
+  620 752 bytes, a linear ~19.3 KiB per module.
+- [x] It runs in **its own process**, because the arena's frontier never falls:
+  measured after the 256 KiB-module run it would report that run's high-water
+  mark, and measured before it would leave its freed blocks under the published
+  single-module bound. The existing figures are untouched.
+- [x] What is unmeasured is stated where the number is: this is many *small*
+  modules, not a closure of ceiling-sized ones; module count and module size are
+  measured one at a time and their product is not claimed; 32 is where the
+  series stops and a linear slope is not a proof of what lies past it.
