@@ -2,10 +2,13 @@
 
 # ADR-0045: The Stage 2 frontend performance budget
 
-- Status: **Proposed** (awaiting Project Architect decision)
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-12
 - Decision level: 2 — a quantitative Stage 2 gate in docs/35
-- Project Architect approval: *(none — this ADR is not accepted)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12, at the
+  recommended 1500 ms p95, with one correction: the claim that any of the six
+  fixed defects reappearing would necessarily break the threshold was stronger
+  than the evidence and has been removed.
 - Relation to other ADRs: independent of ADR-0043 (engine ratio, Accepted at
   22x) and of ADR-0044 (module digest scheme, Proposed). Neither is a condition
   of this one, and this one is not an extension of either.
@@ -143,9 +146,14 @@ Not `current p95 + epsilon`. The reasoning:
   variation is already ~10%, and a threshold inside 20% would fail on a machine
   slightly slower than this one;
 - it sits above every frontend figure measured across the whole campaign except
-  the very first (1.49 s, before three of the six fixes), which means **any of
-  the six defects reappearing would break it** — including the cheapest, the NFC
-  pass, worth 23 ms native and more under TCG;
+  the very first (1.49 s, before three of the six fixes). A hard threshold
+  catches a *large* degradation: the allocator defect made a ceiling-sized
+  module unmeasurable and the interning defect cost over 600x on this platform,
+  and either would break 1500 ms by a wide margin. It does **not** follow that
+  every one of the six would — the NFC pass was 23 ms natively, and whether its
+  return crosses a threshold 360 ms above the current figure is not something
+  this ADR has measured. Smaller regressions are the business of retained
+  benchmark history under the docs/35 regression policy, not of this number;
 - it leaves room for the frontend to grow as TOS Core gains checked rules,
   without reopening this ADR for ordinary measurement drift.
 

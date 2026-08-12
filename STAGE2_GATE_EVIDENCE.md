@@ -26,9 +26,9 @@ identity_question      Is actual language semantics executing from canonical
 
 | `docs/37` Stage 2 evidence | State |
 |---|---|
-| normative grammar and semantics | **Present.** `docs/39`–`docs/44` accepted. The diagnostic registry holds 61 codes; every one is implemented, deliberately unreachable under V1, or blocked on a decision named below. |
-| source → AST → typed IR → execution trace | **Present.** `SourceReader → Parser → Checker → Lowerer → tos-ir/v1 → Verifier → reference engine` runs end to end. All 25 accepted vectors and all 6 canonical examples lower; every IR operation carries a source-map entry and every runtime trap names one. |
-| independent verifier | **Present.** `crates/tos-verifier` depends only on `tos-ir` and `tos-hash`; fifteen `V20xx` families; nineteen structured forged-IR negatives plus 200 000 fuzz rounds per preflight. |
+| normative grammar and semantics | **Present.** `docs/39`–`docs/44` accepted. The diagnostic registry holds 62 codes; every one is implemented, deliberately unreachable under V1, or blocked on a decision named below. |
+| source → AST → typed IR → execution trace | **Present.** `SourceReader → Parser → Checker → Lowerer → tos-ir/v1 → Verifier → reference engine` runs end to end. Of the 29 single-module accepted vectors, 29 reach the independent verifier and the bounded engine and none stops at lowering — measured by `crates/tos-pipeline/tests/corpus_coverage.rs`, which ratchets the number rather than asserting it once. Every IR operation carries a source-map entry and every runtime trap names one. |
+| independent verifier | **Present.** `crates/tos-verifier` depends only on `tos-ir` and `tos-hash`; fifteen `V20xx` families; 23 structured forged-IR negatives — including `V2031_SYNC` and `V2021_REGION`, reached without any frontend involvement — plus 200 000 fuzz rounds per preflight. |
 | cache deletion/regeneration test | **Present.** `crates/tos-cache`; clearing the store and regenerating from the same canonical source reproduces the same key, receipt and result. |
 | source mutation invalidates old cache | **Present.** Each of the seventeen `docs/43` section 6 key fields is changed in turn and must move the key. |
 | runtime introspection reports source and engine identity | **Present.** `RunningIdentity` carries module name, canonical path, content ID, frontend, verifier, engine, module digest, source-map digest and cache key, and the test that checks every link then runs what the identity names. |
@@ -85,23 +85,38 @@ identity_question      Is actual language semantics executing from canonical
 
 ## performance_report
 
-**One half of the required pair, taken.** `docs/evidence/STAGE2_PERFORMANCE_P1.md`
-retains the native-host record: raw 3-warmup/21-sample median/p95/p99 for both
-Stage 2 metrics and the quota-rejection ratio, with the toolchain, environment
-and the exact command.
+**Both halves taken, by the normative procedure, at commit `cf806de`.**
+3 warmups, 21 samples, median/p95/p99, one commit, one set of fixtures emitted
+by the harness that measures them natively so both halves see the same bytes,
+and the reference half run through the real freestanding Stage 2 path on the
+ADR-0040 platform. `docs/evidence/STAGE2_PERFORMANCE_PAIR_P1.md` holds it with
+every raw sample.
 
-ADR-0040 (**accepted**) fixes the Stage 2 reference platform as the
-q35/qemu64/one-vCPU/256-MiB/TCG profile Stage 1 already mandates, and reads the
-`docs/35` execution budget as the ratio of that platform's time to the
-native-host time of the same engine at the same commit. The harness takes the
-profile as a declared argument and records what it was told; it never concludes
-that the machine it runs on is the reference platform.
+| metric | native p95 | reference p95 | budget | verdict |
+|---|---|---|---|---|
+| frontend, 256 KiB module | 116 701 us | 1 140 356 us | 1 500 000 us (ADR-0045) | **PASS** |
+| engine, 1e6 operations | 201 501 us | 3 993 138 us | ratio ≤ 22x (ADR-0043) | **PASS** (19.8x) |
+| quota rejection | — | 522 418 us | ≤ 2x accepted | **PASS** (0.458) |
 
-The reference half is **not taken**, and cannot be until the runtime-independence
-gap closes: ADR-0040 section 1a requires the measurement to run the real Stage 2
-runtime path, so a number produced by running the engine inside a host guest
-would measure the host and would let a host runtime into Stage 2 through the
-performance gate. The gate is open. See `known_failures`.
+ADR-0040 fixes the reference platform and reads the docs/35 execution budget as
+the ratio of that platform's time to the native-host time of the same engine at
+the same commit. The harness takes the profile as a declared argument and
+records what it was told; it never concludes that the machine it runs on is the
+reference platform. Section 1a's requirement — that the measurement run the real
+Stage 2 runtime path rather than a host process wearing the platform's name — is
+met: the workload is the capsule's canonical boot module and it goes through
+reader, parser, checker, resolution, lowering, the independent verifier and the
+bounded engine inside the guest.
+
+Both revised budgets are Architect decisions on measured evidence, not
+adjustments to fit. ADR-0043 revised the engine ratio from 10x after a component
+decomposition put every semantic component of the workload in a 15.1–17.9x band;
+ADR-0045 revised the frontend from 500 ms after six general implementation
+defects the gate uncovered were fixed and the remaining cost was decomposed and
+explained. The measurement boundaries are protected against the earlier defect
+where a span between two result events measured line formatting rather than
+work: `reference-performance-report.py` refuses a reduction whose boundary
+cannot contain the work it claims to measure.
 
 ## threat_model_coverage
 
@@ -130,71 +145,35 @@ wrong answer, and none of them is lowered, so the layers do not disagree.
 
 ## known_failures
 
-1. *(Resolved.)* **`/system/boot/init.tos` is a TOS Core module and executes.**
-   It declares `module system.boot.init`, its resource envelope, a record and
-   three functions, and runs through the ordinary reference path on the boot
-   path. `tests/integration/tests/init_boot.rs` takes the boot content out of
-   the golden capsule — the bytes a booting machine actually receives — and runs
-   them; `crates/tos-pipeline/tests/boot_module.rs` runs the file itself.
-2. *(Resolved.)* **The freestanding runtime runs on the boot path.**
-   `crates/tos-pipeline` composes reader, parser, checker, module resolution,
-   lowerer, independent verifier and bounded engine; the nucleus derives a
-   `RuntimeMemoryGrantV1` from the validated memory map, installs the bounded
-   heap as its global allocator, and drives it over the capsule's canonical boot
-   text. Verified in QEMU under the ADR-0040 profile by
-   `host-tools/qemu-test/stage2-runtime.sh`, which checks the stage order, the
-   verifier's receipt, the returned value, every accounting pair against its own
-   limit, the arena peak against the grant and the stack use against the stack.
-   `host-tools/qemu-test/boot-module-failure.sh` proves the other direction: a
-   module the checker refuses halts with `RESULT_BOOT_MODULE_FAILED`.
-3. *(Resolved.)* **ADR-0036 is implemented end to end.** The three guard
-   constructors, the three lock operations, `E1402_INVALID_GUARD_LIFETIME` with
-   all six `operation` values and its precedence over `E1304`/`E1305`,
-   `V2031_SYNC` reached by the verifier's own traversal, the engine executing a
-   lock operation, and `sync` metered against live guards.
-4. *(Resolved.)* **ADR-0037 is implemented end to end.** Region modes in the
-   type surface and in the IR type table, `share` as a predeclared operation
-   with its own IR node, `E1215_ARGUMENT_TYPE_MISMATCH` for an argument that
-   does not satisfy it, `E1201_ASSIGN_TO_IMMUTABLE` for a write through an
-   immutable grant, the capture reasons, `V2021_REGION` in the verifier, and
-   `shared` metered. The file's `Proposed`/`pending` state, which contradicted
-   the earlier Architect decision, is corrected.
-5. *(Resolved.)* **Set-wide resolution no longer retains parse trees.**
-   `check_module_summaries` resolves over a derived per-module summary —
-   name, path, content identity, imports, declared types, qualified uses — so a
-   loader holds one parse tree at a time. Verdicts are unchanged and tested both
-   ways. `docs/evidence/STAGE2_ARENA_BOUND.md` carries the measured scaling.
-6. *(Resolved.)* **The allocator's search no longer depends on the arena.**
-   Free blocks are threaded onto size-class lists; the request's own class gets
-   a fixed probe budget and any larger class fits without inspection. The
-   allocator counts its own probes, and the evidence is a series holding flat
-   while live blocks grow 64x, with eight adversarial patterns and the eleven
-   pre-existing regressions unchanged
-   (`docs/evidence/STAGE2_ALLOCATOR_SEARCH.md`). The arena-bound sweep went from
-   hours to 16.5 s and the measured bound moved by under 0.1%.
-7. **The Stage 2 performance gate FAILS on one of three metrics**, measured by
-   the normative procedure at commit `cf806de`
-   (`docs/evidence/STAGE2_PERFORMANCE_PAIR_P1.md`).
+The six items this record carried through the performance work are resolved and
+are now history rather than caveats; the git log holds them. What remains is
+this, and it is short on purpose — an audit that finds nothing is an audit that
+did not look, so each entry below states what was checked as well as what stands.
 
-   | metric | reference p95 | budget | verdict |
-   |---|---|---|---|
-   | frontend, 256 KiB | 1 140 356 us | 500 000 us | **FAIL** (2.28x) |
-   | engine, 1e6 ops | 3 993 138 us | ratio ≤ 22x | **PASS** (19.8x) |
-   | quota rejection | 522 418 us | ≤ 2x accepted | **PASS** (0.458) |
-
-   Six general implementation defects were found and fixed by this gate, and the
-   reference frontend went from not completing in 900 s to 1.14 s. The remaining
-   cost is decomposed and explained: of a 47.5 ms verifier stage, **46.6 ms is
-   identity hashing and 1.2 ms is the nine verification checks**.
-   **ADR-0045 (Proposed)** asks for the 500 ms research estimate to be revised to
-   a measured 1500 ms, independently of ADR-0043 and ADR-0044.
-   **ADR-0044 (Proposed)** records the identity encoding as a future improvement
-   and is explicitly **not** a Stage 2 blocker by Architect direction.
-8. **Differential testing is N/A, not passed.** docs/44 asks for agreement
-   between independent implementations, and there is one engine. A second
-   implementation is the only thing that can change this.
-9. **Evidence is P1.** One machine, one build, no CI reproduction and no
-   independent reproduction (docs/35). Nothing here claims P2 or P3.
+1. **Differential testing is N/A, not passed.** docs/44 asks for agreement
+   between independent implementations, and there is exactly one engine. This is
+   not a defect to fix and not a gate to claim: a second implementation is the
+   only thing that can change it, and none exists.
+2. **Evidence is P1.** One machine, one build, no CI reproduction and no
+   independent reproduction (docs/35). Every measurement in this record says so,
+   and none is promoted for looking stable.
+3. **ADR-0044 is Proposed and unimplemented, deliberately.** The canonical
+   digest stream is 22.8x the module it describes, because every count is a
+   16-byte `u128` and the source map repeats six module-level identity strings
+   in each of its 12 058 entries. That is 46.6 ms of a 47.5 ms verifier stage.
+   By Architect direction it is a documented future improvement waiting on an
+   operational reason, **not** a Stage 2 blocker: the current scheme is correct,
+   receipts and caches are derived artifacts, and no accepted contract is
+   violated by keeping it.
+4. **The lowerer has a stated boundary, and it is measured rather than implied.**
+   `Gap` names any construct it cannot represent. Of the 29 single-module
+   accepted conformance vectors, **29 reach the independent verifier and the
+   engine** and none stops at lowering
+   (`crates/tos-pipeline/tests/corpus_coverage.rs`, which ratchets that number).
+   The remaining `Gap` arms are almost all guards against malformed input the
+   checker has already rejected; the genuine feature gaps — destructuring `let`
+   patterns, tuple match patterns — are not exercised by any accepted vector and
+   are recorded here rather than discovered later.
 
 ## architect_approval
 

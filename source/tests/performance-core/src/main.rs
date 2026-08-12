@@ -187,7 +187,7 @@ fn main() {
         assert!(reached, "the canonical fixture must reach a receipt");
     });
     report("parse + check + lower + verify, 256 KiB module", &frontend);
-    println!("  docs/35 budget: 500 ms p95 on the reference platform");
+    println!("  docs/35 budget: 1500 ms p95 on the reference platform (ADR-0045)");
 
     if argument("--decompose").is_some() {
         report_decomposition();
