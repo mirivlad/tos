@@ -35,7 +35,35 @@ use tos_verifier::{verify, Limits, ResolutionSnapshot};
 const WARMUPS: usize = 3;
 const SAMPLES: usize = 21;
 
+/// Prints one measured fixture verbatim and stops.
+///
+/// The reference half of the pair is taken by booting these exact bytes as a
+/// capsule's canonical boot module. Emitting them from the harness that
+/// measures them natively is what makes the two halves the same fixture rather
+/// than two fixtures that resemble each other.
+fn emit_fixture(kind: &str) -> Option<String> {
+    let canonical = canonical_module(256 * 1024);
+    match kind {
+        "frontend" => Some(canonical),
+        "execute" => Some(million_operation_module()),
+        "reject" => Some(quota_exceeding_module(&canonical)),
+        _ => None,
+    }
+}
+
 fn main() {
+    if let Some(kind) = argument("--emit-fixture") {
+        match emit_fixture(&kind) {
+            Some(text) => {
+                print!("{text}");
+                return;
+            }
+            None => {
+                eprintln!("usage: --emit-fixture frontend|execute|reject");
+                std::process::exit(2);
+            }
+        }
+    }
     let profile = argument("--profile").unwrap_or_else(|| String::from("native"));
     let baseline: Option<u128> = argument("--baseline").and_then(|value| value.parse().ok());
     if profile != "native" && profile != "reference" {
@@ -147,7 +175,7 @@ fn explain(text: &str) -> Result<(), String> {
     }
     let context = ModuleContext {
         source_set: String::from("tos-performance"),
-        path: String::from("app/bench.tos"),
+        path: String::from("system/boot/init.tos"),
         content_id: content_id(text.as_bytes()),
         dependency_digest: String::from("sha256:0000"),
         capability_interface_digest: String::from("sha256:0000"),
@@ -172,7 +200,7 @@ fn frontend_to_receipt(text: &str) -> bool {
     }
     let context = ModuleContext {
         source_set: String::from("tos-performance"),
-        path: String::from("app/bench.tos"),
+        path: String::from("system/boot/init.tos"),
         content_id: content_id(text.as_bytes()),
         dependency_digest: String::from("sha256:0000"),
         capability_interface_digest: String::from("sha256:0000"),
@@ -191,7 +219,7 @@ fn run_benchmark(text: &str) -> Value {
     assert!(Checker::check(&source, &schema).is_empty());
     let context = ModuleContext {
         source_set: String::from("tos-performance"),
-        path: String::from("app/bench.tos"),
+        path: String::from("system/boot/init.tos"),
         content_id: content_id(text.as_bytes()),
         dependency_digest: String::from("sha256:0000"),
         capability_interface_digest: String::from("sha256:0000"),
@@ -199,7 +227,7 @@ fn run_benchmark(text: &str) -> Value {
     let module = lower_module(&source, &schema, &context).expect("benchmark lowers");
     let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect("benchmark verifies");
-    run(&module, &receipt, "bench", vec![])
+    run(&module, &receipt, "main", vec![])
         .expect("the entry exists")
         .expect("the benchmark does not trap")
         .value
@@ -208,9 +236,10 @@ fn run_benchmark(text: &str) -> Value {
 /// A canonical module of about `bytes` bytes, built from ordinary declarations.
 fn canonical_module(bytes: usize) -> String {
     let mut text = String::from(
-        "module app.bench version 1.0 profile bootstrap; \
+        "module system.boot.init version 1.0 profile bootstrap; \
          resource [fuel: 100000000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
-         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0] ",
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0] \
+         pub fn main() -> i32 { return 0i32; } ",
     );
     let mut index = 0usize;
     loop {
@@ -232,10 +261,10 @@ fn canonical_module(bytes: usize) -> String {
 /// The standard one-million-operation integer and control-flow benchmark.
 fn million_operation_module() -> String {
     String::from(
-        "module app.bench version 1.0 profile bootstrap; \
+        "module system.boot.init version 1.0 profile bootstrap; \
          resource [fuel: 100000000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
          sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0] \
-         pub fn bench() -> i64 { \
+         pub fn main() -> i64 { \
          let mut total = 0i64; let mut current = 0i64; \
          while (current < 1000000i64) { total = total + 1i64; current = current + 1i64; } \
          return total; }",
