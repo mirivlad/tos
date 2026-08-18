@@ -17,6 +17,7 @@ test-paging-unmapped = []
 test-paging-readonly-text = []
 test-ring3-abi = []
 test-ring3-privileged = []
+test-ring3-nucleus = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

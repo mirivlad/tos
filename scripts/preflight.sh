@@ -184,6 +184,9 @@ qemu_process_abi() {
 qemu_process_privileged() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/process-isolation.sh privileged)
 }
+qemu_process_nucleus_memory() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/process-isolation.sh nucleus)
+}
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
@@ -229,6 +232,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU nucleus text is read-only" qemu_paging_readonly_text
     run_gate "QEMU system ABI at CPL 3" qemu_process_abi
     run_gate "QEMU privileged instruction at CPL 3" qemu_process_privileged
+    run_gate "QEMU process cannot write nucleus memory" qemu_process_nucleus_memory
 fi
 
 printf '\n'
