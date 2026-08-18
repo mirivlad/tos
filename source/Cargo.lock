@@ -101,7 +101,6 @@ dependencies = [
  "tos-frames",
  "tos-hash",
  "tos-launch",
- "tos-pipeline",
  "tos-runtime",
  "tos-serial",
 ]

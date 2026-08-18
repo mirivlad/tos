@@ -10,9 +10,12 @@
 .section .text
 
 /* rdi = entry point, rsi = top of the user stack, rdx = code selector,
-   rcx = data selector. The two selectors are passed in rather than written
-   here so that the GDT stays the single place that decides them.
-   Does not return. */
+   rcx = data selector, r8 = the launch record's address in the process's own
+   space. The selectors are passed in rather than written here so that the GDT
+   stays the single place that decides them, and the record is put into RDI at
+   the last instruction before the jump — a Rust call between here and there
+   would use RDI for its own first argument and the process would be entered
+   with a pointer to whatever that was. Does not return. */
 .global process_enter
 process_enter:
     /* The stack the edge re-enters the nucleus on. Everything pushed below
@@ -25,6 +28,7 @@ process_enter:
                                first stray one to a vector with no gate */
     push rdx                /* CS */
     push rdi                /* RIP */
+    mov rdi, r8             /* the process's one argument */
     iretq
 
 /* rdi = where to record the caller's context. Returns 0 to the caller that

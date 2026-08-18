@@ -19,7 +19,7 @@
 use core::ptr::addr_of_mut;
 
 use tos_frames::{Frames, FRAME_SIZE};
-use tos_launch::{Launch, LaunchUnit, ReportHeader, LAUNCH_VERSION};
+use tos_launch::{ImageHeader, Launch, LaunchUnit, ReportHeader, IMAGE_MAGIC, LAUNCH_VERSION};
 use tos_runtime::region::Span;
 
 use crate::paging::{self, AddressSpace, PagingRefused};
@@ -38,7 +38,7 @@ impl Context {
 }
 
 extern "C" {
-    fn process_enter(entry: u64, stack: u64, code: u64, data: u64) -> !;
+    fn process_enter(entry: u64, stack: u64, code: u64, data: u64, record: u64) -> !;
     fn process_capture(context: *mut Context) -> u64;
     fn process_resume(context: *mut Context, value: u64) -> !;
 }
@@ -107,6 +107,10 @@ pub enum Unlaunchable {
     Paging(PagingRefused),
     /// More source units than the launch record can carry.
     TooManyUnits,
+    /// The image's first bytes are not a runtime image header of a version this
+    /// nucleus knows, or the sections it declares do not fit the bytes it came
+    /// with.
+    NotARuntimeImage,
 }
 
 impl From<PagingRefused> for Unlaunchable {
@@ -161,7 +165,7 @@ pub fn drain_report() {
 /// and no other process is running.
 // SAFETY: the caller's promise that the two mappings and the edge exist is what
 // makes the process reachable; the capture below makes its end recoverable.
-pub unsafe fn run(entry: u64, stack: u64) -> Ended {
+pub unsafe fn run(entry: u64, stack: u64, record: u64) -> Ended {
     use crate::exception::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 
     // SAFETY: single-context nucleus with interrupts masked; this is the only
@@ -174,6 +178,7 @@ pub unsafe fn run(entry: u64, stack: u64) -> Ended {
                 stack,
                 u64::from(USER_CODE_SELECTOR),
                 u64::from(USER_DATA_SELECTOR),
+                record,
             )
         }
     };
@@ -277,16 +282,75 @@ pub unsafe fn launch(
     // nucleus has to be reachable from where the process runs.
     let mut space = paging::build(bi, descs, frames)?;
 
-    // The runtime image: read-only and executable. The bytes are the loader's
-    // copy, whose digest the nucleus verified before this call.
-    map_range(&mut space, frames, IMAGE, image, PRESENT_USER)?;
+    // The runtime image, split the way its own header says it is split. A
+    // process gets its text read-only and executable and its data writable and
+    // not executable, for the same reason the nucleus does: a mapping that is
+    // both is a defect. The header is read from the image rather than assumed,
+    // and every boundary in it is checked against the bytes that arrived.
+    // SAFETY: `image` is the range the loader reserved and the nucleus digested,
+    // identity-mapped and at least one frame long.
+    let header =
+        unsafe { core::ptr::with_exposed_provenance::<ImageHeader>(image.start as usize).read() };
+    if header.magic != IMAGE_MAGIC
+        || header.entry >= header.text
+        || header.text > header.file
+        || header.file > header.memory
+        || header.text % FRAME_SIZE != 0
+        || header.memory % FRAME_SIZE != 0
+        || header.text > image.length()
+    {
+        return Err(Unlaunchable::NotARuntimeImage);
+    }
+    map_range(
+        &mut space,
+        frames,
+        IMAGE,
+        Span::new(image.start, image.start + header.text),
+        PRESENT_USER,
+    )?;
+    // Data and `.bss` are fresh frames, not the loader's copy: two processes
+    // will share one image and must not share one writable page, and the file
+    // carries no `.bss` at all. What the file does carry is copied in; the rest
+    // is what a frame from the pool already is, which is zero.
+    let mut offset = header.text;
+    while offset < header.memory {
+        let frame = frames.allocate_frame().ok_or(Unlaunchable::OutOfFrames)?;
+        let carried = image.length().saturating_sub(offset).min(FRAME_SIZE);
+        if carried > 0 {
+            // SAFETY: `offset + carried` is inside the image range the caller
+            // named, and `frame` is a cleared frame this pool just handed out
+            // that nothing else references.
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    core::ptr::with_exposed_provenance::<u8>((image.start + offset) as usize),
+                    core::ptr::with_exposed_provenance_mut::<u8>(frame as usize),
+                    carried as usize,
+                )
+            };
+        }
+        space.map_page(
+            frames,
+            IMAGE + offset,
+            frame,
+            PRESENT_USER | WRITABLE | NO_EXECUTE,
+        )?;
+        offset += FRAME_SIZE;
+    }
     // The source set: read-only, not executable. A process that could write the
     // text it was verified against could execute something else.
+    //
+    // Mapped from the frame the capsule *starts in*, not from its first byte: a
+    // page table addresses frames, so a range beginning mid-frame would be
+    // mapped with its low bits silently dropped and every unit inside it would
+    // be offset by however far into the frame the capsule began. The skew is
+    // added back when each unit's address is computed, below.
+    let capsule_frame = capsule.start & !(FRAME_SIZE - 1);
+    let skew = capsule.start - capsule_frame;
     map_range(
         &mut space,
         frames,
         SOURCE,
-        capsule,
+        Span::new(capsule_frame, capsule.end),
         PRESENT_USER | NO_EXECUTE,
     )?;
 
@@ -310,12 +374,22 @@ pub unsafe fn launch(
     space.map_page(frames, RECORD, record, PRESENT_USER | NO_EXECUTE)?;
 
     // The record itself, written through the nucleus's identity map and read by
-    // the process through its own.
-    let capacity = (FRAME_SIZE as usize - size_of::<Launch>()) / size_of::<LaunchUnit>();
-    if units.len() > capacity {
+    // the process through its own. Everything it carries lives in one frame:
+    // the record, then the unit table, then the paths the units name. The one
+    // arithmetic that matters is the last: the tail begins after *the units
+    // there are*, not after the most that would fit, and the whole of it is
+    // checked against the frame before a single byte is written. Sized against
+    // capacity instead, as the first version of this was, the tail begins 16
+    // bytes from the end of the frame and the first path walks straight out of
+    // it — which it did, into a page table, and the fault it produced named a
+    // missing mapping rather than the write that removed it.
+    let table_bytes = units.len() * size_of::<LaunchUnit>();
+    let paths_bytes: usize = units.iter().map(|(path, _)| relative(path).len()).sum();
+    if size_of::<Launch>() + table_bytes + paths_bytes > FRAME_SIZE as usize {
         return Err(Unlaunchable::TooManyUnits);
     }
     let unit_table = RECORD + size_of::<Launch>() as u64;
+    let tail = size_of::<Launch>() as u64 + table_bytes as u64;
     let mut launch = Launch {
         version: LAUNCH_VERSION,
         unit_count: units.len() as u32,
@@ -342,16 +416,14 @@ pub unsafe fn launch(
         // its offset from the capsule's base. Nothing is copied: the process
         // reads the same bytes whose digest the boot already accounted for.
         let unit = LaunchUnit {
-            path: RECORD
-                + size_of::<Launch>() as u64
-                + (capacity * size_of::<LaunchUnit>()) as u64
-                + path_offset(units, index),
-            path_length: path.len() as u64,
-            bytes: SOURCE + (bytes.as_ptr() as u64 - capsule.start),
+            path: RECORD + tail + path_offset(units, index),
+            path_length: relative(path).len() as u64,
+            bytes: SOURCE + skew + (bytes.as_ptr() as u64 - capsule.start),
             bytes_length: bytes.len() as u64,
         };
-        // SAFETY: `index` is below `capacity`, so this entry is inside the
-        // record's frame, which the nucleus owns and has cleared.
+        // SAFETY: the bound checked above covers the whole unit table, so this
+        // entry is inside the record's frame, which the nucleus owns and has
+        // cleared.
         unsafe {
             core::ptr::with_exposed_provenance_mut::<LaunchUnit>(
                 (record + size_of::<Launch>() as u64) as usize,
@@ -361,15 +433,13 @@ pub unsafe fn launch(
         };
         // The paths are the capsule's names, which live in the capsule's name
         // arena rather than beside their content, so they are copied into the
-        // record's own tail.
-        let at = record
-            + size_of::<Launch>() as u64
-            + (capacity * size_of::<LaunchUnit>()) as u64
-            + path_offset(units, index);
-        for (offset, byte) in path.iter().enumerate() {
-            // SAFETY: the tail is inside the record's frame — `path_offset`
-            // sums the lengths of every earlier path and the loop below refuses
-            // to start when the sum leaves the frame.
+        // record's own tail — module-root relative, which is what docs/42
+        // section 1 derives a module name from, so the capsule's leading slash
+        // is not part of the name.
+        let at = record + tail + path_offset(units, index);
+        for (offset, byte) in relative(path).iter().enumerate() {
+            // SAFETY: the bound checked above covers the record, the whole unit
+            // table and every path, so this byte is inside the record's frame.
             unsafe {
                 core::ptr::with_exposed_provenance_mut::<u8>(at as usize)
                     .add(offset)
@@ -389,11 +459,16 @@ pub unsafe fn launch(
     // SAFETY: `space` maps this nucleus at the same addresses it is running at,
     // plus the process's own pages; interrupts are masked and nothing else runs.
     unsafe { space.activate() };
-    // SAFETY: the image is mapped executable at `IMAGE` and the stack writable
-    // below `STACK + STACK_FRAMES * FRAME_SIZE`; the edge was installed at
-    // nucleus entry; the record is at `RECORD`, which the entry convention
-    // passes in `rdi`.
-    let ended = unsafe { enter_with_record(IMAGE, STACK + STACK_FRAMES * FRAME_SIZE, RECORD) };
+    // SAFETY: the image is mapped executable at `IMAGE`, the stack writable
+    // below its top, and the record readable at `RECORD`; the edge was
+    // installed at nucleus entry.
+    let ended = unsafe {
+        run(
+            IMAGE + header.entry,
+            STACK + STACK_FRAMES * FRAME_SIZE,
+            RECORD,
+        )
+    };
 
     // SAFETY: the process is over, so its report region stops being one.
     unsafe {
@@ -407,6 +482,15 @@ pub unsafe fn launch(
     // SAFETY: the mapping is gone and the process that could reach it is over.
     unsafe { frames.release_frame(record) };
     Ok(ended)
+}
+
+/// A capsule path as a module-root-relative one: what docs/42 section 1
+/// derives a module name from, so the capsule's leading slash is not part of it.
+fn relative(path: &[u8]) -> &[u8] {
+    match path.split_first() {
+        Some((b'/', rest)) => rest,
+        _ => path,
+    }
 }
 
 /// Where unit `index`'s path goes in the record's tail.
@@ -454,22 +538,4 @@ fn map_fresh(
         )?;
     }
     Ok(first)
-}
-
-/// Enters a process with the launch record's address in `rdi`.
-///
-/// # Safety
-///
-/// As [`run`], plus: `record` addresses a readable launch record in the live
-/// address space.
-// SAFETY: the caller's promise about the three addresses is what makes the
-// entry convention hold.
-unsafe fn enter_with_record(entry: u64, stack: u64, record: u64) -> Ended {
-    // SAFETY: the record is passed in `rdi` by the entry stub, which is what
-    // the runtime image's entry convention reads it from.
-    unsafe {
-        core::arch::asm!("mov rdi, {}", in(reg) record, options(nomem, nostack, preserves_flags))
-    };
-    // SAFETY: as the caller's contract.
-    unsafe { run(entry, stack) }
 }

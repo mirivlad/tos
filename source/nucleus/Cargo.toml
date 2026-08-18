@@ -25,7 +25,6 @@ tos-boot-protocol = { path = "../crates/boot-protocol" }
 tos-capsule = { path = "../crates/capsule", default-features = false }
 tos-hash = { path = "../crates/tos-hash" }
 tos-serial = { path = "../crates/tos-serial" }
-tos-pipeline = { path = "../crates/tos-pipeline" }
 tos-runtime = { path = "../crates/tos-runtime" }
 tos-frames = { path = "../crates/tos-frames" }
 tos-launch = { path = "../crates/tos-launch" }
