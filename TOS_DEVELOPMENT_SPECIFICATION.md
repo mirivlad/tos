@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `7c717bec89467d6b0540609b2ac0f7ea947c940d8ea33cbf19e5a01e8aacd575`  
+Source-manifest SHA-256: `0030752235cbc33248fd7a1b0d74d2a993eb53524fe007e1bf5be9034e7efb6f`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1631,7 +1631,7 @@ own, because two vocabularies describing one system eventually disagree.
 | Identifier | Required fields | Meaning |
 |---|---|---|
 | `TOS.RUN.PROCESS_BEGIN` | `module=` `runtime_engine=sha256:<64 hex>` `system_commit=` `asserted_by=launcher` | A process is being launched over the named module by the named runtime image. |
-| `TOS.RUN.PROCESS_EXIT` | `asserted_by=nucleus` `self_reported_status=` | The process ended by saying so (`process_exit`, ADR-0054). |
+| `TOS.RUN.PROCESS_EXIT` | `asserted_by=nucleus` `self_reported_status=` `ticks=` | The process ended by saying so (`process_exit`, ADR-0054). `ticks` is how many timer interrupts were taken while a process was on the processor — the nucleus's number, because a process cannot observe how long it was off it. |
 | `TOS.RUN.PROCESS_FAULT` | `vector=` `error=0x<hex>` `rip=0x<hex>` `cr2=` `cpl=` | The process took a fault and ended. The system did not. |
 | `TOS.RUN.PROCESS_RECLAIMED` | `frames=` `available=` | What the pool took back when the process ended, and what it holds now. |
 

@@ -149,7 +149,7 @@ own, because two vocabularies describing one system eventually disagree.
 | Identifier | Required fields | Meaning |
 |---|---|---|
 | `TOS.RUN.PROCESS_BEGIN` | `module=` `runtime_engine=sha256:<64 hex>` `system_commit=` `asserted_by=launcher` | A process is being launched over the named module by the named runtime image. |
-| `TOS.RUN.PROCESS_EXIT` | `asserted_by=nucleus` `self_reported_status=` | The process ended by saying so (`process_exit`, ADR-0054). |
+| `TOS.RUN.PROCESS_EXIT` | `asserted_by=nucleus` `self_reported_status=` `ticks=` | The process ended by saying so (`process_exit`, ADR-0054). `ticks` is how many timer interrupts were taken while a process was on the processor — the nucleus's number, because a process cannot observe how long it was off it. |
 | `TOS.RUN.PROCESS_FAULT` | `vector=` `error=0x<hex>` `rip=0x<hex>` `cr2=` `cpl=` | The process took a fault and ended. The system did not. |
 | `TOS.RUN.PROCESS_RECLAIMED` | `frames=` `available=` | What the pool took back when the process ended, and what it holds now. |
 
