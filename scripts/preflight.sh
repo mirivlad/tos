@@ -171,6 +171,12 @@ qemu_paging_unmapped() {
 qemu_paging_readonly_text() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh readonly-text)
 }
+qemu_ring3_abi() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh ring3)
+}
+qemu_ring3_privileged() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh ring3-privileged)
+}
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
@@ -213,6 +219,8 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU exception #GP" qemu_exception_gp
     run_gate "QEMU unmapped page faults" qemu_paging_unmapped
     run_gate "QEMU nucleus text is read-only" qemu_paging_readonly_text
+    run_gate "QEMU system ABI at CPL 3" qemu_ring3_abi
+    run_gate "QEMU privileged instruction at CPL 3" qemu_ring3_privileged
 fi
 
 printf '\n'

@@ -21,12 +21,15 @@
 //!   section boundaries: text is read-only and executable, everything else is
 //!   writable and not executable. `CR0.WP` is set, because without it a ring-0
 //!   write ignores the read-only bit and the split would be decorative.
-//! - *A user-accessible mapping.* Nothing in this space has `U/S` set. Ring 3
-//!   arrives with its own space in a later task of this phase, and a process
-//!   that could reach the nucleus's mappings would make that task pointless.
+//! - *A user-accessible leaf.* No page of this space carries `U/S`, and a leaf
+//!   without it is supervisor-only however permissive the path above it is.
+//!   Ring 3 arrives with its own space in a later task of this phase, and a
+//!   process that could reach the nucleus's mappings would make that task
+//!   pointless.
 //! - *Memory that does not exist.* Only what the map describes, plus the
 //!   framebuffer the loader declared, is mapped at all.
 
+use crate::msr::{self, EFER_NXE, IA32_EFER};
 use tos_boot_protocol::{BootInfo, MemoryRange};
 use tos_frames::{Frames, FRAME_SIZE};
 use tos_runtime::region::Span;
@@ -34,6 +37,7 @@ use tos_runtime::region::Span;
 /// Page-table entry bits, as the architecture defines them.
 const PRESENT: u64 = 1;
 const WRITABLE: u64 = 1 << 1;
+const USER: u64 = 1 << 2;
 const WRITE_THROUGH: u64 = 1 << 3;
 const CACHE_DISABLE: u64 = 1 << 4;
 const HUGE: u64 = 1 << 7;
@@ -46,10 +50,6 @@ const HUGE_SIZE: u64 = 2 * 1024 * 1024;
 /// Entries in every table at every level.
 const ENTRIES: u64 = 512;
 
-/// `IA32_EFER`, and the bit that makes [`NO_EXECUTE`] legal rather than
-/// reserved.
-const IA32_EFER: u32 = 0xc000_0080;
-const EFER_NXE: u64 = 1 << 11;
 /// `CR0.WP` — without it a ring-0 store ignores a read-only mapping.
 const CR0_WP: u64 = 1 << 16;
 
@@ -99,14 +99,28 @@ impl AddressSpace {
         };
     }
 
-    /// The next table down, allocating it when it is absent.
+    /// The next table down, allocating it when it is absent and widening it
+    /// when the leaf below needs more than the path currently allows.
     ///
-    /// Interior entries are permissive — writable, user-inaccessible, and
-    /// executable — because the architecture takes the *intersection* of the
-    /// path: a restriction stated here would apply to everything below it,
-    /// including mappings that were never meant to be restricted. Every real
-    /// permission is stated on the leaf, where it describes one page.
-    fn descend(&self, frames: &mut Frames, table: u64, index: u64) -> Result<u64, PagingRefused> {
+    /// Interior entries are **permissive** — present, writable and, when
+    /// something below them is user-accessible, user-accessible too — because
+    /// the architecture takes the *intersection* along the path: a restriction
+    /// stated at an interior entry applies to everything under it, including
+    /// mappings that were never meant to be restricted. Every real permission
+    /// is stated on the leaf, where it describes exactly one page, and a leaf
+    /// without `U/S` stays supervisor-only however permissive its path is.
+    ///
+    /// The widening is not cosmetic. An interior entry created for a
+    /// supervisor-only mapping and then reused for a user page would leave the
+    /// user page unreachable — mapped, present, and faulting — which is the
+    /// kind of defect that reads as a hang.
+    fn descend(
+        &self,
+        frames: &mut Frames,
+        table: u64,
+        index: u64,
+        interior: u64,
+    ) -> Result<u64, PagingRefused> {
         let existing = Self::entry(table, index);
         if existing & PRESENT != 0 {
             if existing & HUGE != 0 {
@@ -115,11 +129,19 @@ impl AddressSpace {
                 // not something to paper over by dropping the huge mapping.
                 return Err(PagingRefused::Granularity(table));
             }
+            if existing & interior != interior {
+                Self::write(table, index, existing | interior);
+            }
             return Ok(existing & ADDRESS);
         }
         let frame = frames.allocate_frame().ok_or(PagingRefused::NoFrame)?;
-        Self::write(table, index, frame | PRESENT | WRITABLE);
+        Self::write(table, index, frame | PRESENT | WRITABLE | interior);
         Ok(frame)
+    }
+
+    /// What the path to a leaf with these flags must itself allow.
+    fn interior_for(flags: u64) -> u64 {
+        PRESENT | WRITABLE | (flags & USER)
     }
 
     /// Maps one 4 KiB page, identity or otherwise.
@@ -131,9 +153,10 @@ impl AddressSpace {
         flags: u64,
     ) -> Result<(), PagingRefused> {
         let (l4, l3, l2, l1) = indices(virt)?;
-        let pdpt = self.descend(frames, self.root, l4)?;
-        let pd = self.descend(frames, pdpt, l3)?;
-        let pt = self.descend(frames, pd, l2)?;
+        let interior = Self::interior_for(flags);
+        let pdpt = self.descend(frames, self.root, l4, interior)?;
+        let pd = self.descend(frames, pdpt, l3, interior)?;
+        let pt = self.descend(frames, pd, l2, interior)?;
         Self::write(pt, l1, (phys & ADDRESS) | flags | PRESENT);
         Ok(())
     }
@@ -147,8 +170,9 @@ impl AddressSpace {
         flags: u64,
     ) -> Result<(), PagingRefused> {
         let (l4, l3, l2, _) = indices(virt)?;
-        let pdpt = self.descend(frames, self.root, l4)?;
-        let pd = self.descend(frames, pdpt, l3)?;
+        let interior = Self::interior_for(flags);
+        let pdpt = self.descend(frames, self.root, l4, interior)?;
+        let pd = self.descend(frames, pdpt, l3, interior)?;
         Self::write(pd, l2, (phys & ADDRESS) | flags | HUGE | PRESENT);
         Ok(())
     }
@@ -169,7 +193,7 @@ impl AddressSpace {
         // SAFETY: `IA32_EFER` is architected on every x86_64 processor, `NXE`
         // is the bit that makes the `NX` flag legal rather than reserved, and
         // this must precede the load of tables that use it.
-        unsafe { write_msr(IA32_EFER, read_msr(IA32_EFER) | EFER_NXE) };
+        unsafe { msr::write(IA32_EFER, msr::read(IA32_EFER) | EFER_NXE) };
         // SAFETY: `CR0.WP` only makes ring-0 stores respect the read-only bit;
         // nothing in the nucleus writes its own text or rodata.
         unsafe {
@@ -195,31 +219,6 @@ fn indices(virt: u64) -> Result<(u64, u64, u64, u64), PagingRefused> {
         (virt >> 21) & (ENTRIES - 1),
         (virt >> 12) & (ENTRIES - 1),
     ))
-}
-
-/// SAFETY: `msr` is an architected model-specific register of this processor.
-// SAFETY: the caller names an architected MSR; the read has no memory operands.
-unsafe fn read_msr(msr: u32) -> u64 {
-    let (low, high): (u32, u32);
-    // SAFETY: `rdmsr` on an architected register; the caller's contract is that
-    // `msr` is one.
-    unsafe {
-        core::arch::asm!("rdmsr", in("ecx") msr, out("eax") low, out("edx") high,
-            options(nomem, nostack, preserves_flags))
-    };
-    u64::from(low) | (u64::from(high) << 32)
-}
-
-/// SAFETY: `msr` is an architected model-specific register and `value` is a
-/// legal content for it.
-// SAFETY: the caller names an architected MSR and a legal value for it.
-unsafe fn write_msr(msr: u32, value: u64) {
-    // SAFETY: `wrmsr` on an architected register with a value the caller
-    // declares legal; it has no memory operands.
-    unsafe {
-        core::arch::asm!("wrmsr", in("ecx") msr, in("eax") value as u32,
-            in("edx") (value >> 32) as u32, options(nomem, nostack, preserves_flags))
-    };
 }
 
 extern "C" {

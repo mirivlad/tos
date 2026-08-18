@@ -58,16 +58,16 @@ walks an address a process chose.
 `rax` returns zero for success or a negative status. The space is small and
 closed: an operation returns a status from this table or it is a defect.
 
-| Status | Meaning |
-|---|---|
-| `OK` | the operation completed |
-| `E_NO_CAPABILITY` | the handle was absent, wrong type, or lacked the right |
-| `E_BAD_HANDLE` | the handle index is outside the process's table |
-| `E_BAD_ARGUMENT` | an argument was outside its declared domain |
-| `E_WOULD_BLOCK` | a non-blocking operation had nothing to do |
-| `E_CANCELLED` | a blocking operation was cancelled |
-| `E_LIMIT` | a declared bound would be exceeded |
-| `E_NOT_SUPPORTED` | the operation exists in a later version of this ABI |
+| Status | Value | Meaning |
+|---|---|---|
+| `OK` | `0` | the operation completed |
+| `E_NO_CAPABILITY` | `-1` | the handle was absent, wrong type, or lacked the right |
+| `E_BAD_HANDLE` | `-2` | the handle index is outside the process's table |
+| `E_BAD_ARGUMENT` | `-3` | an argument was outside its declared domain |
+| `E_WOULD_BLOCK` | `-4` | a non-blocking operation had nothing to do |
+| `E_CANCELLED` | `-5` | a blocking operation was cancelled |
+| `E_LIMIT` | `-6` | a declared bound would be exceeded |
+| `E_NOT_SUPPORTED` | `-7` | the operation exists in a later version of this ABI |
 
 `E_NO_CAPABILITY` and `E_BAD_HANDLE` are distinct on purpose and must not be
 merged for tidiness: the first says the process holds the wrong authority, the
@@ -83,19 +83,24 @@ Every operation names the capability it requires. **An operation reachable
 without a capability is a design defect, not a convenience.** The two exceptions
 are marked and are exactly those a process can only apply to itself.
 
-| Operation | Requires | Effect |
-|---|---|---|
-| `endpoint_send` | endpoint handle with `send` | `IPC_V1` §3 |
-| `endpoint_receive` | endpoint handle with `receive` | `IPC_V1` §3 |
-| `endpoint_call` | endpoint handle with `call` | request/reply, `IPC_V1` §4 |
-| `endpoint_reply` | reply handle (single use) | `IPC_V1` §4 |
-| `capability_attenuate` | the capability being attenuated | `CAPABILITY_V1` §4 |
-| `capability_release` | the capability being released | consumes the handle |
-| `region_share` | region handle with `share` | `IPC_V1` §5 |
-| `process_create` | process-authority capability | creates a process |
-| `process_terminate` | process-authority capability for that process | ends it |
-| `context_yield` | *(self only)* | gives up the rest of the quantum |
-| `time_monotonic` | *(self only)* | reads the monotonic tick |
+| Number | Operation | Requires | Effect |
+|---|---|---|---|
+| 1 | `endpoint_send` | endpoint handle with `send` | `IPC_V1` §3 |
+| 2 | `endpoint_receive` | endpoint handle with `receive` | `IPC_V1` §3 |
+| 3 | `endpoint_call` | endpoint handle with `call` | request/reply, `IPC_V1` §4 |
+| 4 | `endpoint_reply` | reply handle (single use) | `IPC_V1` §4 |
+| 5 | `capability_attenuate` | the capability being attenuated | `CAPABILITY_V1` §4 |
+| 6 | `capability_release` | the capability being released | consumes the handle |
+| 7 | `region_share` | region handle with `share` | `IPC_V1` §5 |
+| 8 | `process_create` | process-authority capability | creates a process |
+| 9 | `process_terminate` | process-authority capability for that process | ends it |
+| 10 | `context_yield` | *(self only)* | gives up the rest of the quantum |
+| 11 | `time_monotonic` | *(self only)* | reads the monotonic tick |
+
+Operation `0` is not assigned and never will be. A register that was never
+written holds zero, so a zero selector is overwhelmingly likely to be a caller
+that forgot to name an operation; giving it a meaning would turn that mistake
+into a successful call.
 
 `process_create` is the operation a supervisor holds and an ordinary service
 does not. That distinction is the whole of Stage 3's authority story: a process
@@ -116,7 +121,12 @@ primitive, because it would let a process wait on authority it was never given.
 The version is a whole-contract version, reported in process identity
 (`PROCESS_IDENTITY_V1` §3). Operation numbers are assigned once and never
 reused: a retired operation returns `E_NOT_SUPPORTED` forever rather than being
-recycled into a different meaning.
+recycled into a different meaning. The assignment that rule governs is the one
+in the §5 table, and the status values are in §4; both were added to this
+contract when the first implementation of the edge was written, because a rule
+about numbers that never states the numbers cannot be conformed to. Neither is a
+new decision: no operation, status, right or guarantee changed, so this is still
+version 1.
 
 A process built against a later minor version that calls an unknown operation
 receives `E_NOT_SUPPORTED` and is not terminated for asking. A nucleus that
