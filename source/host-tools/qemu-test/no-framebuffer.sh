@@ -14,7 +14,9 @@
 # alone: identical events, in order, with identical values. Only the fields of
 # TOS.BOOT.HANDOFF that describe the platform itself are masked — the runtime
 # image's address among them, because where the firmware places an allocation is
-# the platform's decision and not the boot's — because a
+# the platform's decision and not the boot's, and the tick values, because a
+# clock that read the same on two different runs would be a clock that had
+# stopped — because a
 # machine without a display adapter genuinely has a different framebuffer tuple
 # and a different loader stack address — that difference is the input to this
 # test, not a result of it.
@@ -38,7 +40,7 @@ bash "$HERE/run.sh" --out "$OUT/without" --no-framebuffer --expect 33 \
 # The events, with the platform's own description of itself masked out.
 events() {
     tr -d '\r' < "$1" | grep '^TOS\.' |
-        sed -E 's/(fb_(format|width|height|pitch)|stack|runtime|available)=[^ ]*/\1=<platform>/g'
+        sed -E 's/(fb_(format|width|height|pitch)|stack|runtime|available|begin|end|waits)=[^ ]*/\1=<platform>/g'
 }
 
 events "$OUT/with/serial.log" > "$OUT/with.events"

@@ -17,6 +17,7 @@
 #![no_std]
 #![no_main]
 
+mod apic;
 mod console;
 mod exception;
 mod framebuffer;
@@ -483,6 +484,14 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // this image with its own text executable. Maskable interrupts are off and
     // this is the only context running.
     unsafe { space.activate() };
+
+    // Interrupts are enabled here and nowhere else: after the substrate exists
+    // and before the first process is entered, which is exactly where ADR-0049
+    // puts it. Stage 1 and Stage 2 were measured with them off, and no number
+    // taken then is relabelled by this.
+    // SAFETY: the IDT has gates for both claimed vectors, the local APIC page is
+    // mapped uncacheable in the space just activated, and nothing else runs.
+    unsafe { apic::start() };
 
     #[cfg(any(
         feature = "test-ring3-abi",

@@ -18,10 +18,10 @@
 //! - `context_yield` succeeds. With one runnable context, giving up the rest of
 //!   the quantum returns to the same context, and saying `OK` describes what
 //!   happened;
-//! - `time_monotonic` is the one operation of V1 this nucleus does not yet
-//!   implement. The tick it reads is the timer's (ADR-0049), the timer is not
-//!   up, and a fabricated number would be worse than a refusal. It is named
-//!   here so the gap is a statement rather than a silence.
+//! - `time_monotonic` reads the tick the timer establishes (ADR-0049). It
+//!   counts interrupts, not seconds: Stage 3 claims no wall-clock time and no
+//!   trusted time source, and a number presented as a duration would be a claim
+//!   this nucleus cannot support.
 
 use crate::exception::{KERNEL_SELECTOR_BASE, USER_SELECTOR_BASE};
 use crate::msr::{self, EFER_SCE, IA32_EFER, IA32_FMASK, IA32_LSTAR, IA32_STAR};
@@ -129,13 +129,12 @@ extern "C" fn syscall_dispatch(operation: u64, arguments: &Arguments) -> Answer 
             status: E_NO_CAPABILITY,
             value: 0,
         },
-        // Assigned, and not implemented here — see the module header. The
-        // status is the same one an unassigned number gets, which is the one
-        // thing about this arm that is not exact, and is why it is written down
-        // rather than left to be discovered.
+        // The monotonic tick, which counts timer interrupts and nothing else:
+        // Stage 3 claims no wall-clock time and no trusted time source, so this
+        // is a number that only ever goes up, not a duration.
         TIME_MONOTONIC => Answer {
-            status: E_NOT_SUPPORTED,
-            value: 0,
+            status: OK,
+            value: crate::apic::ticks(),
         },
         _ => Answer {
             status: E_NOT_SUPPORTED,

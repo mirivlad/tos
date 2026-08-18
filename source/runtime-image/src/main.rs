@@ -48,7 +48,32 @@ const EXIT_UNSTARTABLE: u64 = 2;
 
 /// Operations, as `SYSTEM_ABI_V1` §5 assigns them.
 const CONTEXT_YIELD: u64 = 10;
+const TIME_MONOTONIC: u64 = 11;
 const PROCESS_EXIT: u64 = 12;
+
+/// Reads the monotonic tick, or nothing when the nucleus does not offer one.
+///
+/// The tick is the nucleus's; this process can only ask for it, and asking
+/// twice is the only way anything in this system can observe that time passed
+/// while it ran.
+fn monotonic() -> Option<u64> {
+    let value: u64;
+    let status: i64;
+    // SAFETY: `time_monotonic` is self-only, takes no argument and returns its
+    // value in `rdx`; `rcx` and `r11` are clobbered by the instruction and are
+    // declared as such.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") TIME_MONOTONIC => status,
+            out("rdx") value,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        )
+    };
+    (status == 0).then_some(value)
+}
 
 /// Makes one system call.
 ///
@@ -242,6 +267,7 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
         units.len(),
     ));
 
+    let began = monotonic();
     let request = SetRequest {
         source_set: &alloc::string::String::from(source_set),
         units: &units,
@@ -275,6 +301,24 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
         report.line(&alloc::format!(
             "TOS.RUN.STACK used={used} capacity={}",
             stack_region.length()
+        ));
+    }
+
+    // The run itself is over in less than one tick, so the tick after it is the
+    // tick before it and nothing has been shown. What is worth showing is that
+    // time moves *while this process runs*: the loop below waits for the tick to
+    // change, which can only happen if an interrupt was taken at CPL 3 and this
+    // process was resumed afterwards. It is bounded, because a process that
+    // cannot be interrupted must say so rather than hang.
+    if let Some(began) = began {
+        let mut ended = began;
+        let mut attempts = 0u64;
+        while ended == began && attempts < 200_000 {
+            ended = monotonic().unwrap_or(began);
+            attempts += 1;
+        }
+        report.line(&alloc::format!(
+            "TOS.RUN.TICKS begin={began} end={ended} waits={attempts}"
         ));
     }
 
