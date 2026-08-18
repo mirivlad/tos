@@ -218,9 +218,29 @@ unsafe fn load_task_register(selector: u16) {
     asm!("ltr ax", in("ax") selector, options(nostack, preserves_flags));
 }
 
-/// Called only by the assembly stubs. It must never return.
+/// Called only by the assembly stubs.
+///
+/// It returns for exactly one reason: a fault taken at CPL 3 ends the process
+/// that took it and leaves the system running (ADR-0049 section 3), and
+/// `process::fault` reaches the nucleus's recorded context rather than this
+/// frame. Every other path from here is terminal.
 #[no_mangle]
-extern "C" fn exception_fatal(vector: u64, error: u64, rip: u64) -> ! {
+extern "C" fn exception_fatal(vector: u64, error: u64, rip: u64, cs: u64) -> ! {
+    let cr2 = if vector == 14 {
+        let cr2: u64;
+        // SAFETY: reading CR2 is a privileged x86_64 register read performed
+        // only in a fault handler; it has no memory operands.
+        unsafe {
+            asm!("mov {0}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+        }
+        Some(cr2)
+    } else {
+        None
+    };
+    if cs & 3 == 3 && crate::process::fault(vector, error, rip, cr2) {
+        // Unreachable: `process::fault` returning true means it did not return.
+        unreachable!()
+    }
     tos_serial::puts(b"TOS.EXCEPTION vector=");
     tos_serial::put_u32_decimal(vector as u32);
     tos_serial::puts(b" error=0x");
@@ -228,17 +248,12 @@ extern "C" fn exception_fatal(vector: u64, error: u64, rip: u64) -> ! {
     tos_serial::puts(b" rip=0x");
     tos_serial::put_hex64(rip);
     tos_serial::puts(b" cr2=");
-    if vector == 14 {
-        let cr2: u64;
-        // SAFETY: reading CR2 is a privileged x86_64 register read performed
-        // only in the fatal page-fault handler; it has no memory operands.
-        unsafe {
-            asm!("mov {0}, cr2", out(reg) cr2, options(nomem, nostack, preserves_flags));
+    match cr2 {
+        Some(address) => {
+            tos_serial::puts(b"0x");
+            tos_serial::put_hex64(address);
         }
-        tos_serial::puts(b"0x");
-        tos_serial::put_hex64(cr2);
-    } else {
-        tos_serial::puts(b"none");
+        None => tos_serial::puts(b"none"),
     }
     tos_serial::puts(b"\r\n");
     crate::result_port(RESULT_EXCEPTION)

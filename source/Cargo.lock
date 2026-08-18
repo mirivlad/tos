@@ -89,6 +89,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "tos-launch"
+version = "0.1.0"
+
+[[package]]
 name = "tos-nucleus"
 version = "0.1.0"
 dependencies = [
@@ -96,6 +100,7 @@ dependencies = [
  "tos-capsule",
  "tos-frames",
  "tos-hash",
+ "tos-launch",
  "tos-pipeline",
  "tos-runtime",
  "tos-serial",
@@ -115,6 +120,15 @@ dependencies = [
 [[package]]
 name = "tos-runtime"
 version = "0.1.0"
+
+[[package]]
+name = "tos-runtime-image"
+version = "0.1.0"
+dependencies = [
+ "tos-launch",
+ "tos-pipeline",
+ "tos-runtime",
+]
 
 [[package]]
 name = "tos-serial"

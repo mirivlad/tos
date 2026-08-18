@@ -633,6 +633,16 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
         Ok(b) => b,
         Err(_) => serial_fatal(b"TOS.BOOT.FAILI no-nucleus"),
     };
+    // The ring-3 runtime image (ADR-0053 option B). It is optional here and
+    // nowhere else: a machine that has none boots a nucleus that launches no
+    // process and says so, which is a truthful boot. A machine that has one but
+    // cannot read it is not the same case, and the difference is why absence is
+    // `Missing` and nothing else.
+    let runtime = match read_file(bt, root, "runtime.bin", None) {
+        Ok(b) => Some(b),
+        Err(ReadFileError::Missing) => None,
+        Err(_) => serial_fatal(b"TOS.BOOT.FAILI runtime-unreadable"),
+    };
     // SAFETY: root is the live FileProtocol handle returned by OpenVolume and
     // is not used after this Close.
     unsafe {
@@ -673,6 +683,43 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     // PoolBuf owns nucleus.len() initialized source bytes from ReadFile.
     unsafe {
         ptr::copy_nonoverlapping(nucleus.ptr, nucleus_phys as *mut u8, nucleus.len());
+    }
+
+    // --- runtime image: reserved pages, digested where they are ---
+    // Copied into its own allocation rather than left in the pool buffer,
+    // because the pool is loader memory that the nucleus is free to reclaim,
+    // and this is memory a process will be built out of. The digest is taken
+    // from the copy: digesting the source and mapping the destination would
+    // prove something about bytes that are no longer the ones in use.
+    let mut runtime_phys: u64 = 0;
+    let mut runtime_length: u64 = 0;
+    let mut runtime_digest = [0u8; 32];
+    if let Some(image) = &runtime {
+        let pages = image.len().div_ceil(0x1000);
+        // SAFETY: bt is live and runtime_phys is writable local storage for the
+        // bounded page count computed from the file length just read.
+        let st = unsafe {
+            ((*bt).allocate_pages)(
+                ALLOCATE_ANY_PAGES,
+                MEM_TYPE_LOADER_DATA,
+                pages,
+                &mut runtime_phys,
+            )
+        };
+        if efi_error(st) {
+            serial_fatal(b"TOS.BOOT.FAILI alloc-runtime");
+        }
+        // SAFETY: AllocatePages returned a fresh non-overlapping range of at
+        // least `image.len()` bytes; PoolBuf owns that many initialized source
+        // bytes from ReadFile.
+        unsafe {
+            ptr::copy_nonoverlapping(image.ptr, runtime_phys as *mut u8, image.len());
+        }
+        // SAFETY: the destination range was just allocated and written above,
+        // so it is mapped, initialized and owned by this loader.
+        let copied = unsafe { core::slice::from_raw_parts(runtime_phys as *const u8, image.len()) };
+        runtime_digest = sha256(copied);
+        runtime_length = image.len() as u64;
     }
 
     // --- stack pages (non-executable) ---
@@ -857,6 +904,11 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
                 platform.fb_phys,
                 u64::from(platform.fb_pitch) * u64::from(platform.fb_height),
             );
+            reserve_overlapping(
+                core::slice::from_raw_parts_mut(ranges, n),
+                runtime_phys,
+                runtime_length,
+            );
         }
 
         // SAFETY: bt and image_handle are still live UEFI entry values, and
@@ -898,6 +950,9 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     {
         bi.capsule_source_identity[0] ^= 0x01;
     }
+    bi.runtime_phys = runtime_phys;
+    bi.runtime_length = runtime_length;
+    bi.runtime_digest = runtime_digest;
     bi.memory_map_phys = range_buf.ptr as u64;
     bi.memory_map_length = range_len as u64;
     bi.memory_desc_size = tos_boot_protocol::MEM_DESC_SIZE;
@@ -933,6 +988,8 @@ pub extern "efiapi" fn efi_main(image_handle: *mut c_void, sys_table: *mut Syste
     tos_serial::put_hex64(stack_top);
     tos_serial::puts(b" bootinfo=0x");
     tos_serial::put_hex64(bi_phys);
+    tos_serial::puts(b" runtime=0x");
+    tos_serial::put_hex64(runtime_phys);
     tos_serial::puts(b" fb_format=");
     tos_serial::put_u32_decimal(platform.fb_format);
     tos_serial::puts(b" fb_width=");

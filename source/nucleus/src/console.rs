@@ -102,26 +102,6 @@ impl<const N: usize> Text<N> {
         self
     }
 
-    pub fn push_number(&mut self, value: usize) -> &mut Self {
-        // 20 digits is the widest u64 in decimal.
-        let mut digits = [0u8; 20];
-        let mut count = 0;
-        let mut rest = value;
-        loop {
-            digits[count] = b'0' + (rest % 10) as u8;
-            count += 1;
-            rest /= 10;
-            if rest == 0 || count == digits.len() {
-                break;
-            }
-        }
-        while count > 0 {
-            count -= 1;
-            self.push(&[digits[count]]);
-        }
-        self
-    }
-
     pub fn as_bytes(&self) -> &[u8] {
         &self.bytes[..self.length]
     }
@@ -257,11 +237,6 @@ impl<'a> BootConsole<'a> {
     /// The open step returned successfully.
     pub fn succeed(&mut self) {
         self.resolve(Status::Done);
-    }
-
-    /// Whether a step is waiting for its outcome.
-    pub fn is_busy(&self) -> bool {
-        self.open_row
     }
 
     /// The open step ended the boot. The log above it is kept: the point of the
@@ -430,17 +405,6 @@ mod tests {
     }
 
     #[test]
-    fn text_writes_decimal_numbers() {
-        let mut text = Text::<32>::new();
-        text.push(b"init.tos:").push_number(37).push(b":");
-        text.push_number(9);
-        assert_eq!(text.as_bytes(), b"init.tos:37:9");
-        let mut zero = Text::<4>::new();
-        zero.push_number(0);
-        assert_eq!(zero.as_bytes(), b"0");
-    }
-
-    #[test]
     fn header_is_drawn_on_a_cleared_surface() {
         let mut surface = Surface::new();
         surface.console();
@@ -456,7 +420,6 @@ mod tests {
         {
             let mut console = surface.console();
             console.begin(b"Reading canonical source", None);
-            assert!(console.is_busy());
         }
         assert!(surface.has(ACCENT), "a busy marker must be drawn");
         let busy_accent = surface.count(ACCENT);
@@ -466,7 +429,6 @@ mod tests {
             let mut console = surface.console();
             console.begin(b"Reading canonical source", None);
             console.succeed();
-            assert!(!console.is_busy());
         }
         assert!(
             surface.has(DONE),
@@ -489,7 +451,6 @@ mod tests {
             console.fact(b"Boot ABI v1", None);
             console.begin(b"Checking source", None);
             console.fail(b"E1223_REFUTABLE_PATTERN", b"system/boot/init.tos:37:9");
-            assert!(!console.is_busy());
         }
         assert!(
             surface.has(DONE),

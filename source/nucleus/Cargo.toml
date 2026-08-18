@@ -28,3 +28,4 @@ tos-serial = { path = "../crates/tos-serial" }
 tos-pipeline = { path = "../crates/tos-pipeline" }
 tos-runtime = { path = "../crates/tos-runtime" }
 tos-frames = { path = "../crates/tos-frames" }
+tos-launch = { path = "../crates/tos-launch" }

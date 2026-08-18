@@ -17,8 +17,8 @@ use tos_frames::{Frames, FRAME_SIZE};
 
 core::arch::global_asm!(include_str!("ring3.S"));
 
-use crate::exception::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
 use crate::paging::{AddressSpace, PagingRefused};
+use crate::process::{self, Ended};
 
 /// Where the excursion's two pages live in the address space.
 ///
@@ -28,7 +28,6 @@ const USER_CODE: u64 = 0x4000_0000;
 const USER_STACK: u64 = 0x4010_0000;
 
 extern "C" {
-    fn ring3_enter(entry: u64, stack: u64, code: u64, data: u64) -> !;
     #[cfg(feature = "test-ring3-abi")]
     static ring3_payload_start: u8;
     #[cfg(feature = "test-ring3-abi")]
@@ -71,36 +70,38 @@ impl Payload {
     }
 }
 
-/// Runs `payload` at CPL 3 and never returns.
+/// Runs `payload` at CPL 3 and reports how it ended.
+///
+/// Every payload here ends in a fault, which is the only way an excursion can
+/// end until a process can say it finished. That it comes back **at all**, and
+/// that the boot continues afterwards, is the property ADR-0049 section 3 asks
+/// for: a fault in a process is not the end of the system.
 ///
 /// # Safety
 ///
-/// `space` is the address space currently loaded in `CR3`, no other context is
-/// running, and the caller accepts that control does not come back: every
-/// payload here ends in a fault, which is the only way a Task 3 excursion can
-/// end — a process has no way to say it finished, and inventing one at the edge
-/// because the test needed it is precisely what this phase must not do.
+/// `space` is the address space currently loaded in `CR3` and no other context
+/// is running.
 // SAFETY: the caller's promise that this space is the live one is what makes
 // the two mappings below reachable by the payload.
 pub unsafe fn run(
     space: &mut AddressSpace,
     frames: &mut Frames,
     payload: Payload,
-) -> PagingRefused {
+) -> Result<Ended, PagingRefused> {
     const PRESENT_USER: u64 = 1 | (1 << 2);
     const WRITABLE: u64 = 1 << 1;
     const NO_EXECUTE: u64 = 1 << 63;
 
     let Some(code) = frames.allocate_frame() else {
-        return PagingRefused::NoFrame;
+        return Err(PagingRefused::NoFrame);
     };
     let Some(stack) = frames.allocate_frame() else {
-        return PagingRefused::NoFrame;
+        return Err(PagingRefused::NoFrame);
     };
 
     let bytes = payload.bytes();
     if bytes.len() > FRAME_SIZE as usize {
-        return PagingRefused::NoFrame;
+        return Err(PagingRefused::NoFrame);
     }
     // SAFETY: `code` is a cleared frame this pool just handed out and nothing
     // else references it; it is identity-mapped for the nucleus, and `bytes` is
@@ -116,17 +117,13 @@ pub unsafe fn run(
     // The code page is executable and not writable; the stack is writable and
     // not executable. A payload that could write its own text would be testing
     // a boundary this system does not offer.
-    if let Err(refused) = space.map_page(frames, USER_CODE, code, PRESENT_USER) {
-        return refused;
-    }
-    if let Err(refused) = space.map_page(
+    space.map_page(frames, USER_CODE, code, PRESENT_USER)?;
+    space.map_page(
         frames,
         USER_STACK,
         stack,
         PRESENT_USER | WRITABLE | NO_EXECUTE,
-    ) {
-        return refused;
-    }
+    )?;
     // SAFETY: `map_page` wrote entries into the live tree, so the processor's
     // TLB may still hold the absent state of these two addresses from an
     // earlier walk.
@@ -138,14 +135,20 @@ pub unsafe fn run(
     // SAFETY: both pages are mapped user-accessible in the live space, the
     // stack top is inside its own page and 16-byte aligned, and the GDT, TSS
     // and `syscall` MSRs were installed at nucleus entry.
+    let ended = unsafe { process::run(USER_CODE, USER_STACK + FRAME_SIZE) };
+
+    // The process is over, so its memory stops being its memory. Unmapped
+    // first and released second: a frame back in the pool while a mapping to it
+    // survives is a frame two owners can reach.
+    space.unmap_page(USER_CODE);
+    space.unmap_page(USER_STACK);
+    // SAFETY: both frames came from this pool, both mappings are gone, and
+    // nothing else references them; the process that did no longer exists.
     unsafe {
-        ring3_enter(
-            USER_CODE,
-            USER_STACK + FRAME_SIZE,
-            u64::from(USER_CODE_SELECTOR),
-            u64::from(USER_DATA_SELECTOR),
-        )
+        frames.release_frame(code);
+        frames.release_frame(stack);
     }
+    Ok(ended)
 }
 
 /// Drops one address's translation.

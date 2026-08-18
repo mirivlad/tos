@@ -69,14 +69,14 @@ interrupt ABI in v1. Every Stage 1 exception handler is fatal and MUST NOT
 resume through `iretq`. Vector 8 (#DF) MUST use a dedicated bounded
 nucleus-owned IST stack.
 
-## 4. BootInfo layout (224 bytes, little-endian, 8-aligned)
+## 4. BootInfo layout (272 bytes, little-endian, 8-aligned)
 
 | Offset | Size | Field | Rules |
 |---|---|---|---|
 | 0 | 8 | `magic` | must equal `MAGIC` |
 | 8 | 16 | `protocol_uuid` | must equal `PROTOCOL_UUID` |
 | 24 | 2 | `major` | must be 1 |
-| 26 | 2 | `minor` | 0; unknown minor with same major is rejected |
+| 26 | 2 | `minor` | 1; unknown minor with same major is rejected |
 | 28 | 4 | `total_size` | `>= STRUCT_SIZE`; extra bytes are reserved, must be zero |
 | 32 | 4 | `architecture_id` | must be `ARCH_X86_64` |
 | 36 | 4 | `boot_mode` | `BOOT_MODE_NORMAL` |
@@ -100,6 +100,26 @@ nucleus-owned IST stack.
 | 184 | 8 | `smbios` | physical address of SMBIOS table, 0 if absent |
 | 192 | 8 | `next` | 0; reserved extension pointer |
 | 200 | 24 | `reserved` | zero |
+| 224 | 8 | `runtime_phys` | physical address of the ring-3 runtime image, 0 if absent |
+| 232 | 8 | `runtime_length` | byte length of the runtime image, 0 if absent |
+| 240 | 32 | `runtime_digest` | SHA-256 of the runtime image bytes, zero if absent |
+
+### Minor 1: the runtime image
+
+Added by ADR-0053 (option B, Project Architect-approved, 2026-08-17). ADR-0048
+made the TOS Core runtime a per-process derived artifact; these three fields are
+how it reaches the machine — delivered by the loader beside the capsule, named
+here with an identity the nucleus recomputes rather than trusts.
+
+The three fields are **all present or all zero**. A record that declares an
+image without a length, or a length without a digest, or a range that wraps, is
+rejected: acting on it would mean choosing which half of the record to believe.
+All zero declares that no runtime image was supplied, which is legal — the
+nucleus then launches no process and says so, rather than substituting one.
+
+The extension is fail-closed in both directions by the rule minor 0 already
+carried: a nucleus rejects an unknown minor of the same major, so a v1.0 nucleus
+refuses a v1.1 record instead of reading past what it understands.
 
 ## 5. Memory-range descriptor (24 bytes)
 
