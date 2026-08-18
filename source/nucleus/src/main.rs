@@ -23,6 +23,7 @@ mod boot_report;
 mod console;
 mod exception;
 mod framebuffer;
+mod memory;
 mod runtime;
 mod stack;
 
@@ -405,10 +406,30 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         module_count += 1;
     }
 
+    // The frames of this machine become the nucleus's, once, here. Everything
+    // memory-shaped downstream — the runtime's grant today, an address space and
+    // a process tomorrow — comes out of this pool and nowhere else, which is
+    // what makes the nucleus the owner ADR-0050 section 1 describes rather than
+    // one more component that reads the map.
+    let running_on = memory::running_stack(descs);
+    // SAFETY: `bi` and `descs` passed the Boot ABI v1 validation performed
+    // above — the record over its raw bytes, the map for self-consistency and
+    // for containing the capsule — and `running_on` is the map entry holding
+    // this frame's own stack pointer.
+    let (mut frames, admission) = unsafe { memory::pool(bi, bi_address, descs, running_on) };
+    if admission.frames == 0 {
+        tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-frames\r\n");
+        console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-frames");
+        mem_fail();
+    }
+
     let outcome = runtime::execute_boot_text(
         bi,
-        bi_address,
-        descs,
+        runtime::Machine {
+            frames: &mut frames,
+            stack: running_on,
+            identity: memory::identity(),
+        },
         boot.name,
         &modules[..module_count],
         kind,

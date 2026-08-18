@@ -26,9 +26,10 @@
 use alloc::format;
 use alloc::string::String;
 
-use tos_boot_protocol::{BootInfo, MemoryRange, MEM_USABLE};
+use tos_boot_protocol::BootInfo;
+use tos_frames::Frames;
 use tos_pipeline::{execute_set, render, PipelineStage, SetError, SetRequest, Trace, Unit};
-use tos_runtime::region::{self, Span};
+use tos_runtime::region::{GrantRefused, Span};
 use tos_runtime::GlobalHeap;
 
 use crate::boot_report::ConsoleReporter;
@@ -41,12 +42,6 @@ use crate::stack;
 /// property ADR-0041 asks for: a runtime with no grant has no memory.
 #[global_allocator]
 pub static HEAP: GlobalHeap = GlobalHeap::new();
-
-extern "C" {
-    static __tos_image_start: u8;
-    static __tos_image_load_end: u8;
-    static __tos_image_end: u8;
-}
 
 /// The entry function the boot module must export.
 const BOOT_ENTRY: &str = "main";
@@ -82,81 +77,16 @@ impl Trace for BootTrace<'_, '_> {
     }
 }
 
-/// The span the nucleus occupies in memory, `.bss` included.
-fn image() -> Span {
-    // Only the addresses of these symbols are taken; no byte of the image is
-    // read through them, which is why no unsafe block is needed here.
-    Span::new(
-        core::ptr::addr_of!(__tos_image_start) as u64,
-        core::ptr::addr_of!(__tos_image_end) as u64,
-    )
-}
-
-/// A digest of the loaded nucleus image, truncated to name this build.
+/// What the nucleus brings to a run.
 ///
-/// `--oformat=binary` makes `[__tos_image_start, __tos_image_load_end)` exactly
-/// the bytes of `nucleus.bin`, so this identity can be recomputed from the
-/// artifact rather than taken on the running image's word.
-fn build_identity() -> u64 {
-    // SAFETY: the linker script places both symbols in the loaded image, in
-    // this order, and the range between them is mapped and readable.
-    let bytes = unsafe {
-        let start = core::ptr::addr_of!(__tos_image_start);
-        let end = core::ptr::addr_of!(__tos_image_load_end);
-        core::slice::from_raw_parts(start, end as usize - start as usize)
-    };
-    let digest = tos_hash::sha256(bytes);
-    u64::from_le_bytes([
-        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
-    ])
-}
-
-/// Every span the runtime must not be granted.
-///
-/// The loader reserves what it handed over, but it allocates the nucleus image
-/// by file length while `.bss` is `NOLOAD` — so the memory the nucleus's own
-/// statics occupy is still reported usable. The rest are subtracted although
-/// the map already marks them reserved: memory the runtime could write over is
-/// not a risk worth resting on one component's bookkeeping.
-fn occupied(bi: &BootInfo, bi_address: u64, stack: Option<Span>) -> ([Span; 6], usize) {
-    let mut spans = [Span::new(0, 0); 6];
-    let mut count = 0;
-    let mut push = |span: Option<Span>| {
-        if let Some(span) = span {
-            if span.length() > 0 && count < spans.len() {
-                spans[count] = span;
-                count += 1;
-            }
-        }
-    };
-    push(Some(image()));
-    push(Span::sized(bi.capsule_phys, bi.capsule_length));
-    push(Span::sized(
-        bi_address,
-        tos_boot_protocol::STRUCT_SIZE as u64,
-    ));
-    push(Span::sized(bi.memory_map_phys, bi.memory_map_length));
-    push(Span::sized(
-        bi.framebuffer_phys,
-        u64::from(bi.framebuffer_pitch) * u64::from(bi.framebuffer_height),
-    ));
-    push(stack);
-    (spans, count)
-}
-
-/// Free spans, as the region chooser wants them.
-fn free_spans(descs: &[MemoryRange]) -> impl Iterator<Item = Span> + '_ {
-    descs
-        .iter()
-        .filter(|descriptor| descriptor.ty == MEM_USABLE)
-        .filter_map(|descriptor| Span::sized(descriptor.phys_start, descriptor.phys_length))
-}
-
-/// Every span in the map, for locating the stack the nucleus is running on.
-fn all_spans(descs: &[MemoryRange]) -> impl Iterator<Item = Span> + '_ {
-    descs
-        .iter()
-        .filter_map(|descriptor| Span::sized(descriptor.phys_start, descriptor.phys_length))
+/// The three things the runtime cannot obtain for itself and must not try to:
+/// the frames the nucleus owns, the stack it is running on, and which nucleus
+/// build this is. Grouped because they always travel together — a run given two
+/// of them is a run that discovered the third.
+pub struct Machine<'a> {
+    pub frames: &'a mut Frames,
+    pub stack: Option<Span>,
+    pub identity: u64,
 }
 
 /// Why the runtime could not be started at all.
@@ -166,7 +96,7 @@ fn all_spans(descs: &[MemoryRange]) -> impl Iterator<Item = Span> + '_ {
 /// program it was going to run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Unstartable {
-    NoGrant(region::GrantRefused),
+    NoGrant(GrantRefused),
     HeapRejectedGrant,
     BootPathNotText,
     /// The capsule carries no module at the canonical boot path, or one of its
@@ -185,8 +115,7 @@ pub enum Unstartable {
 /// stopped it.
 pub fn execute_boot_text(
     bi: &BootInfo,
-    bi_address: u64,
-    descs: &[MemoryRange],
+    machine: Machine<'_>,
     boot_path: &[u8],
     modules: &[(&[u8], &[u8])],
     source_kind: &[u8],
@@ -196,26 +125,33 @@ pub fn execute_boot_text(
         return Err(Unstartable::BootPathNotText);
     };
     let path = path.trim_start_matches('/');
+    let Machine {
+        frames,
+        stack: running_on,
+        identity,
+    } = machine;
 
-    // Discovering the region, adopting it and painting the stack is real work
-    // that can fail, so it is announced before it is attempted. A caller that
-    // sees `Unstartable` marks this row failed; nothing else opens it.
+    // Taking the region from the pool, adopting it and painting the stack is
+    // real work that can fail, so it is announced before it is attempted. A
+    // caller that sees `Unstartable` marks this row failed; nothing else opens
+    // it.
     if let Some(console) = console.as_deref_mut() {
         console.begin(b"Preparing runtime memory", None);
     }
 
-    let identity = build_identity();
-    let running_on = stack::containing(all_spans(descs), stack::pointer());
-    let (spans, count) = occupied(bi, bi_address, running_on);
-    let grant = region::derive(free_spans(descs), &spans[..count], identity)
-        .map_err(Unstartable::NoGrant)?;
+    // The grant is carved from the frames the nucleus owns (ADR-0050 section
+    // 1), not from the largest hole in the map. It is still a V1 grant with V1's
+    // property — a runtime with no grant has no memory — and the pool keeps what
+    // it did not hand over, which is what a system that will create processes
+    // needs and what a single derivation could never leave behind.
+    let grant = frames.grant(identity).map_err(Unstartable::NoGrant)?;
 
-    // SAFETY: `grant` names a region the memory map reports usable and that the
-    // spans above proved disjoint from the nucleus image, the capsule, the
-    // handoff record, the converted map, the framebuffer and this stack. Stage
-    // 1 has no other memory consumer, and the region outlives the heap: the
-    // nucleus halts without releasing it. Adoption happens here, before the
-    // first allocation, from the single context that runs the runtime.
+    // SAFETY: `grant` names frames the pool admitted from usable map entries
+    // after subtracting the nucleus image, the capsule, the handoff record, the
+    // converted map, the framebuffer and this stack, and the pool has handed
+    // them to no one else. The region outlives the heap: the nucleus halts
+    // without releasing it. Adoption happens here, before the first allocation,
+    // from the single context that runs the runtime.
     unsafe { HEAP.adopt(&grant) }.map_err(|_| Unstartable::HeapRejectedGrant)?;
 
     // Painting the unused stack must follow adoption only because nothing

@@ -1,18 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! Choosing the one region a runtime is granted.
+//! What a granted region is, and what it may never be.
 //!
 //! ADR-0041 puts memory discovery in the nucleus and hands the runtime a single
-//! bounded region. This module is the *choosing*, kept apart from whoever knows
-//! the machine: it is given free spans and spans that are already spoken for,
-//! and returns a grant. It has no idea what a memory map, a firmware table or a
-//! boot record is, which is what keeps `tos-runtime` free of the boot ABI while
-//! still owning the rule that a grant may never overlap live memory.
+//! bounded region. This module holds the vocabulary both sides of that contract
+//! need — a physical span, the bounds a grant must satisfy, and the reasons a
+//! grant can be refused — kept apart from whoever knows the machine. It has no
+//! idea what a memory map, a firmware table or a boot record is, which is what
+//! keeps `tos-runtime` free of the boot ABI.
 //!
-//! **No allocation.** This runs before any heap exists. It builds no
-//! collection, keeps no scratch buffer, and consumes the free spans in one
-//! pass.
-
-use crate::{RuntimeMemoryGrant, GRANT_VERSION};
+//! **Who chooses the region.** Until Stage 3 this module also chose it, by
+//! taking the largest hole in the map. ADR-0050 section 1 moves that decision
+//! to the nucleus's frame allocator (`tos-frames`), because a system with many
+//! processes needs an owner of physical frames rather than one derivation
+//! performed once. The bounds below did not change hands with it: they are what
+//! a grant *is*, not who hands it out.
 
 /// Alignment guaranteed for the base of a granted region.
 pub const GRANT_ALIGNMENT: usize = 4096;
@@ -67,73 +68,4 @@ pub enum GrantRefused {
     NoRegion,
     /// The largest such span is smaller than [`MIN_GRANT`].
     TooSmall(u64),
-}
-
-/// The largest free piece that avoids every occupied span.
-///
-/// Only the largest piece matters, so the search never builds the set of
-/// pieces: every free piece begins either at a free span's start or at the end
-/// of an occupied span, and runs to the next occupied start or the free span's
-/// end. That is a bounded scan with no storage, which is what a pre-heap
-/// caller needs.
-pub fn largest_free(free: impl IntoIterator<Item = Span>, occupied: &[Span]) -> Option<Span> {
-    let mut best: Option<Span> = None;
-    for span in free {
-        let mut consider = |start: u64| {
-            if start >= span.end || occupied.iter().any(|taken| taken.holds(start)) {
-                return;
-            }
-            let mut end = span.end;
-            for taken in occupied {
-                if taken.start > start && taken.start < end {
-                    end = taken.start;
-                }
-            }
-            let base = align_up(start, GRANT_ALIGNMENT as u64);
-            if base >= end {
-                return;
-            }
-            let length = (end - base) / GRANT_ALIGNMENT as u64 * GRANT_ALIGNMENT as u64;
-            if length == 0 {
-                return;
-            }
-            let piece = Span::new(base, base + length);
-            if best.is_none_or(|current| piece.length() > current.length()) {
-                best = Some(piece);
-            }
-        };
-        consider(span.start);
-        for taken in occupied {
-            if taken.end > span.start && taken.end < span.end {
-                consider(taken.end);
-            }
-        }
-    }
-    best
-}
-
-fn align_up(value: u64, to: u64) -> u64 {
-    value.div_ceil(to) * to
-}
-
-/// Derives the one region a runtime is granted.
-///
-/// `identity` names the build making the grant, so a runtime that records what
-/// it was given also records who gave it.
-pub fn derive(
-    free: impl IntoIterator<Item = Span>,
-    occupied: &[Span],
-    identity: u64,
-) -> Result<RuntimeMemoryGrant, GrantRefused> {
-    let region = largest_free(free, occupied).ok_or(GrantRefused::NoRegion)?;
-    if region.length() < MIN_GRANT as u64 {
-        return Err(GrantRefused::TooSmall(region.length()));
-    }
-    Ok(RuntimeMemoryGrant {
-        version: GRANT_VERSION,
-        base: region.start as usize,
-        length: region.length().min(MAX_GRANT as u64) as usize,
-        alignment: GRANT_ALIGNMENT,
-        identity,
-    })
 }
