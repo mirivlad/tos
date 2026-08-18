@@ -134,56 +134,55 @@ not an operation invented at the edge because the boot needed one.
 - [x] The register-preservation rule is tested the way §8.6 asks: a ring-3
   caller fills every preserved register, makes the call, and compares.
 
-### Task 4: The runtime is a per-process artifact — **stopped at a boundary (2026-08-17)**
+### Task 4: The runtime is a per-process artifact — **done (2026-08-17)**
 
-> Carrying the image needs a decision no implementation may take quietly:
-> ADR-0053 (Proposed). The predicted completion boundary is confirmed and filed
-> as ADR-0054 (Proposed). Neither is implemented while its approval line is
-> empty.
+> The boundary this task stopped at was decided rather than crossed quietly:
+> ADR-0053 (option B) and ADR-0054 (option A) are accepted, and the work below
+> implements them.
 
 **Files:**
 - Create: `source/runtime-image/` (a `no_std` ring-3 binary over `tos-pipeline`)
 - Modify: `source/host-tools/capsule/…`, `source/nucleus/src/…`
 
-- [ ] The engine and the pipeline are built into a ring-3 image with its own
+- [x] The engine and the pipeline are built into a ring-3 image with its own
   identity, carried and named as a derived artifact under AGENTS.md §9 —
   ADR-0048's "the engine becomes a per-process derived artifact" made literal.
-- [ ] The image receives its module bytes and its grant from the launcher; it
+- [x] The image receives its module bytes and its grant from the launcher; it
   discovers nothing. `GlobalHeap` still refuses every allocation until a grant
   is adopted, which is ADR-0041's property surviving the move to ring 3.
-- [ ] Where the image is carried is decided by what the capsule format and its
+- [x] Where the image is carried is decided by what the capsule format and its
   provenance gates already admit. If carrying a binary artifact needs the format
   changed, that is a boundary and this task stops at it.
 
-### Task 5: The first process
+### Task 5: The first process — **done (2026-08-17)**
 
 **Files:**
 - Create: `source/nucleus/src/process.rs`
 - Modify: `source/nucleus/src/main.rs`, `source/nucleus/src/runtime.rs`
 
-- [ ] An address space, a grant (V2: `owner`, `generation`), a user stack, the
+- [x] An address space, a grant (V2: `owner`, `generation`), a user stack, the
   runtime image mapped, and entry at CPL 3. The nucleus's Stage 2 in-process
   call is replaced by a launch, not kept beside it as a fallback.
-- [ ] The launch record is emitted with the process, under `TOS.RUN.*` as
+- [x] The launch record is emitted with the process, under `TOS.RUN.*` as
   `PROCESS_IDENTITY_V1` §6 requires, with each field attributed to its asserter.
   `system commit id` is **absent**, because Stage 3 reads no repository, and a
   test asserts its absence so a later stage cannot make it present by accident.
-- [ ] The boot module runs to completion inside the process and returns
+- [x] The boot module runs to completion inside the process and returns
   `value=i32:240` — the Stage 2 answer, computed on the far side of the
   boundary. How completion is reported is the open boundary named above.
 
-### Task 6: A fault kills the process, not the system
+### Task 6: A fault kills the process, not the system — **done (2026-08-17)**
 
 **Files:**
 - Modify: `source/nucleus/src/exception.rs`, `source/nucleus/src/process.rs`
 - Create: `source/host-tools/qemu-test/process-isolation.sh`
 
-- [ ] A fault taken at CPL 3 terminates that process and is attributed to it;
+- [x] A fault taken at CPL 3 terminates that process and is attributed to it;
   a fault at CPL 0 still ends the boot with `RESULT_EXCEPTION` (ADR-0049 §3).
-- [ ] Negative gates, each a separate scenario: a process writing nucleus
+- [x] Negative gates, each a separate scenario: a process writing nucleus
   memory, a process reading another mapping it was not granted, and a process
   executing a privileged instruction. Each is refused by hardware and reported,
   and none of them is prevented by the verifier.
-- [ ] The grant of a dead process is reclaimed and its frames are cleared
+- [x] The grant of a dead process is reclaimed and its frames are cleared
   before reuse (ADR-0050 §3), proven by the pattern test of Task 1 applied
   across a process death rather than across a free.

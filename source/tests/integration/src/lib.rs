@@ -283,6 +283,13 @@ fn perf_smoke_1000_files() {
 
 #[test]
 fn boot_protocol_struct_sizes() {
-    assert_eq!(core::mem::size_of::<tos_boot_protocol::BootInfo>(), 224);
+    // Boot ABI v1.1 (ADR-0053): 224 bytes of v1.0 plus the runtime image
+    // triple. The number is read from the contract's own constant so that a
+    // layout change has to be a contract change.
+    assert_eq!(
+        core::mem::size_of::<tos_boot_protocol::BootInfo>(),
+        tos_boot_protocol::STRUCT_SIZE as usize
+    );
+    assert_eq!(tos_boot_protocol::STRUCT_SIZE, 272);
     assert_eq!(core::mem::size_of::<tos_boot_protocol::MemoryRange>(), 24);
 }

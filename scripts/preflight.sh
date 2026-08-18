@@ -131,6 +131,13 @@ build_nucleus() {
     (cd "$ROOT/source" && cargo build --release -p tos-nucleus \
         --target x86_64-unknown-none)
 }
+# The ring-3 runtime image is a boot artifact of its own (ADR-0053 option B):
+# the machine does not boot without it, so it is built beside the nucleus rather
+# than as part of it.
+build_runtime_image() {
+    (cd "$ROOT/source" && cargo build --release -p tos-runtime-image \
+        --target x86_64-unknown-none)
+}
 qemu_success() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/run.sh \
         --out target/preflight-qemu/success --expect 33)
@@ -171,11 +178,11 @@ qemu_paging_unmapped() {
 qemu_paging_readonly_text() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh readonly-text)
 }
-qemu_ring3_abi() {
-    (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh ring3)
+qemu_process_abi() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/process-isolation.sh abi)
 }
-qemu_ring3_privileged() {
-    (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh ring3-privileged)
+qemu_process_privileged() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/process-isolation.sh privileged)
 }
 
 run_gate "generated specification" specification
@@ -208,6 +215,7 @@ if [ "$MODE" = full ]; then
     run_gate "build capsule tool" build_capsule_tool
     run_gate "build UEFI loader" build_uefi
     run_gate "build nucleus" build_nucleus
+    run_gate "build runtime image" build_runtime_image
     run_gate "QEMU success boot" qemu_success
     run_gate "QEMU negative suite" qemu_negative
     run_gate "QEMU Stage 2 runtime path" qemu_stage2_runtime
@@ -219,8 +227,8 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU exception #GP" qemu_exception_gp
     run_gate "QEMU unmapped page faults" qemu_paging_unmapped
     run_gate "QEMU nucleus text is read-only" qemu_paging_readonly_text
-    run_gate "QEMU system ABI at CPL 3" qemu_ring3_abi
-    run_gate "QEMU privileged instruction at CPL 3" qemu_ring3_privileged
+    run_gate "QEMU system ABI at CPL 3" qemu_process_abi
+    run_gate "QEMU privileged instruction at CPL 3" qemu_process_privileged
 fi
 
 printf '\n'

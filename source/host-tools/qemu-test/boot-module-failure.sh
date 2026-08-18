@@ -38,8 +38,13 @@ fail() { echo "boot-module-failure: FAIL: $*" >&2; exit 1; }
 STAGE=$(grep -m1 '^TOS\.RUN\.REFUSED ' "$LOG" | tr ' ' '\n' | sed -n 's/^stage=//p')
 [ "$STAGE" = check ] || fail "the refusal came from stage '$STAGE', expected check"
 
+# After ADR-0048 the nucleus does not execute stages: the module runs in a
+# process, so what the nucleus can assert is that the process ended without
+# completing. Which stage refused is in the runtime's own events above, checked
+# immediately before this, which is where the contract already delegates the
+# detail.
 BOOTSTAGE=$(grep -m1 '^TOS\.BOOTMODULE\.FAIL ' "$LOG" | tr ' ' '\n' | sed -n 's/^stage=//p')
-[ "$BOOTSTAGE" = check ] || fail "TOS.BOOTMODULE.FAIL named stage '$BOOTSTAGE'"
+[ "$BOOTSTAGE" = process ] || fail "TOS.BOOTMODULE.FAIL named stage '$BOOTSTAGE'"
 
 # A diagnostic must carry the normative locator, or the log says a module failed
 # without saying where.

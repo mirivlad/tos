@@ -483,9 +483,17 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         // above and no other context is running.
         match unsafe { ring3::run(&mut space, &mut frames, payload) } {
             Ok(ended) => {
-                tos_serial::puts(b"TOS.TEST.RING3.ENDED vector=");
-                let process::Ended::Fault(vector) = ended;
-                tos_serial::put_u32_decimal(vector as u32);
+                tos_serial::puts(b"TOS.TEST.RING3.ENDED ");
+                match ended {
+                    process::Ended::Fault(vector) => {
+                        tos_serial::puts(b"vector=");
+                        tos_serial::put_u32_decimal(vector as u32);
+                    }
+                    process::Ended::Exited(status) => {
+                        tos_serial::puts(b"exit=");
+                        tos_serial::put_u32_decimal(status as u32);
+                    }
+                }
                 tos_serial::puts(b"\r\n");
             }
             Err(_) => {
