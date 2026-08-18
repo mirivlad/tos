@@ -232,10 +232,12 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     exception::test_injection();
 
     // --- 1. validate the boot ABI record over raw bytes ---
-    // SAFETY: the loader's BOOT_ABI_V1 handoff places all 224 BootInfo bytes
+    // SAFETY: the loader's BOOT_ABI_V1 handoff places all `STRUCT_SIZE` BootInfo
     // in its reserved identity-mapped pool allocation; bytes are validated
     // before this pointer is reinterpreted as BootInfo below.
-    let bi_bytes = unsafe { core::slice::from_raw_parts(bi_raw as *const u8, 224) };
+    let bi_bytes = unsafe {
+        core::slice::from_raw_parts(bi_raw as *const u8, tos_boot_protocol::STRUCT_SIZE as usize)
+    };
     if BootInfo::validate_bytes(bi_bytes).is_err() {
         abi_fail();
     }

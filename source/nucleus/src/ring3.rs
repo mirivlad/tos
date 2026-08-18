@@ -135,7 +135,7 @@ pub unsafe fn run(
     // SAFETY: both pages are mapped user-accessible in the live space, the
     // stack top is inside its own page and 16-byte aligned, and the GDT, TSS
     // and `syscall` MSRs were installed at nucleus entry.
-    let ended = unsafe { process::run(USER_CODE, USER_STACK + FRAME_SIZE) };
+    let ended = unsafe { process::run(USER_CODE, USER_STACK + FRAME_SIZE, 0) };
 
     // The process is over, so its memory stops being its memory. Unmapped
     // first and released second: a frame back in the pool while a mapping to it

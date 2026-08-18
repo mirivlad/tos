@@ -70,3 +70,29 @@ pub struct ReportHeader {
     pub written: u64,
     pub drained: u64,
 }
+
+/// The header a runtime image carries in its first bytes.
+///
+/// A raw image has no symbol table, so this is how it tells a nucleus which of
+/// its bytes are text — mapped read-only and executable — which are data, and
+/// how much memory it needs beyond what the file carries. The linker emits it
+/// from the section boundaries themselves, because the only thing that knows
+/// where a section ended is the thing that placed it.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ImageHeader {
+    pub magic: u64,
+    /// Offset of the entry point from the image's base.
+    pub entry: u64,
+    /// Bytes of read-only, executable text, from the base. Page-aligned.
+    pub text: u64,
+    /// Bytes the file carries. Page-aligned.
+    pub file: u64,
+    /// Bytes the image needs mapped, `.bss` included. Page-aligned.
+    pub memory: u64,
+}
+
+/// `"SOTIMG1\0"`, little-endian: the image format's version is in its magic,
+/// so a nucleus that reads an image of another version refuses it by the same
+/// comparison that finds one that is not an image at all.
+pub const IMAGE_MAGIC: u64 = 0x53_4f_54_49_4d_47_31_00;

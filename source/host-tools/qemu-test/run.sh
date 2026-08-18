@@ -18,6 +18,7 @@
 # Usage:
 #   bash host-tools/qemu-test/run.sh [OUT_DIR] [CAPSULE_FILE]
 #   bash host-tools/qemu-test/run.sh --out DIR [--capsule FILE] [--loader FILE] [--nucleus FILE]
+#                                    [--runtime-image FILE] [--no-runtime-image]
 #                                    [--expect N]
 #                                    [--require "EV ..."] [--forbid "EV ..."]
 #                                    [--timeout SECONDS] [--event-timestamps FILE] [--accel tcg|kvm]
@@ -54,6 +55,8 @@ while [ $# -gt 0 ]; do
         --capsule)  CAPSULE_IN="$2"; shift 2 ;;
         --loader)   LOADER_IN="$2"; shift 2 ;;
         --nucleus)  NUCLEUS_IN="$2"; shift 2 ;;
+        --runtime-image) RUNTIME_IMAGE_IN="$2"; shift 2 ;;
+        --no-runtime-image) NO_RUNTIME_IMAGE=1; shift ;;
         --expect)   EXPECT="$2"; shift 2 ;;
         --require)  REQUIRE="$2"; shift 2 ;;
         --forbid)   FORBID="$2"; shift 2 ;;
@@ -123,6 +126,11 @@ DEFAULT_LOADER="$ROOT/target/x86_64-unknown-uefi/release/tos-uefi-loader.efi"
 LOADER="${LOADER_IN:-$DEFAULT_LOADER}"
 NUCLEUS="$ROOT/target/x86_64-unknown-none/release/tos-nucleus"
 NUCLEUS="${NUCLEUS_IN:-$NUCLEUS}"
+# The ring-3 runtime image (ADR-0053 option B). It rides the ESP beside the
+# capsule and the nucleus, which is where the accepted architecture already
+# keeps derived boot binaries.
+RUNTIME_IMAGE="$ROOT/target/x86_64-unknown-none/release/tos-runtime-image"
+RUNTIME_IMAGE="${RUNTIME_IMAGE_IN:-$RUNTIME_IMAGE}"
 # Firmware discovery: the OVMF package installs its files under different names
 # per distribution and release (Debian/Ubuntu split CODE/VARS into *_4M.fd only
 # from the 2023 packages on). Search a candidate list of CODE/VARS *pairs* —
@@ -152,6 +160,10 @@ echo "firmware: $OVMF_CODE + $OVMF_VARS"
 for f in "$TOOL" "$LOADER" "$NUCLEUS" "$OVMF_CODE" "$OVMF_VARS"; do
     [ -f "$f" ] || { echo "missing: $f" >&2; exit 2; }
 done
+if [ "${NO_RUNTIME_IMAGE:-0}" -eq 0 ] && [ ! -f "$RUNTIME_IMAGE" ]; then
+    echo "missing: $RUNTIME_IMAGE" >&2
+    exit 2
+fi
 for t in qemu-system-x86_64 mformat mcopy mmd python3; do
     command -v "$t" >/dev/null || { echo "missing tool: $t" >&2; exit 2; }
 done
@@ -183,6 +195,12 @@ mmd -i "$ESP" ::/EFI/BOOT
 mcopy -i "$ESP" "$LOADER" ::/EFI/BOOT/BOOTX64.EFI
 mcopy -i "$ESP" "$OUT/capsule.bin" ::/capsule.bin
 mcopy -i "$ESP" "$NUCLEUS" ::/nucleus.bin
+# Deliberately conditional: a machine with no runtime image is a case the
+# nucleus has to report rather than paper over, and the gate for that needs an
+# ESP without one.
+if [ "${NO_RUNTIME_IMAGE:-0}" -eq 0 ]; then
+    mcopy -i "$ESP" "$RUNTIME_IMAGE" ::/runtime.bin
+fi
 
 # --- 3. boot ---
 cp "$OVMF_CODE" "$OUT/OVMF_CODE.fd"
