@@ -211,7 +211,7 @@ The following identifiers are stable Boot ABI v1 failures:
 | `TOS.IDENTITY.MISMATCH` | `bootinfo-vs-capsule-header` | Nucleus rejected the mirrored identity. |
 | `TOS.PANIC` | `<component>` | Trusted component stopped by panic. |
 | `TOS.RUN.UNSTARTABLE` | `reason=<token>` | Nucleus could not start the Stage 2 execution path at all; no stage ran. Terminal result `RESULT_MEMORY_INVALID`. |
-| `TOS.BOOTMODULE.FAIL` | `stage=<pipeline-stage>` | The canonical boot module did not complete. Terminal result `RESULT_BOOT_MODULE_FAILED`; the `TOS.RUN.*` events carry the detail. |
+| `TOS.BOOTMODULE.FAIL` | `stage=<pipeline-stage\|process>` | The canonical boot module did not complete. Terminal result `RESULT_BOOT_MODULE_FAILED`; the `TOS.RUN.*` events carry the detail. `stage=process` is what a nucleus reports once the module runs in a process (ADR-0048): it no longer executes stages, so the stage that refused is named by the runtime's own `TOS.RUN.REFUSED`, and asserting it here would be the nucleus repeating a claim it did not make. |
 | `TOS.EXCEPTION` | `vector=<decimal> error=0x<hex> rip=0x<hex> cr2=<none\|0xhex>` | Nucleus caught a CPU exception and terminates with `RESULT_EXCEPTION`. |
 
 `TOS.BOOT.FAILI` is a stable identifier. Existing reason tokens retain their
