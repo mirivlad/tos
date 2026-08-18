@@ -97,7 +97,7 @@ records = [json.loads(line) for line in open(path, encoding="utf-8")]
 for record in records:
     record.pop("lookup")
     record["mode"] = "unavoidable_crypto"
-    record["crypto_bytes_per_boot"] = 101203198
+    record["crypto_bytes_per_boot"] = 101203397
     record["crypto_hashes_per_boot"] = 2007
 with open(path, "w", encoding="utf-8") as output:
     for record in records:
@@ -149,7 +149,7 @@ if native["measurement"]["logical_sequence"] != "fresh parse -> fresh parse -> c
     raise SystemExit("FAIL: native report omitted the exact logical validation sequence")
 if comparison["qemu_to_native_p95_ratio"] != 20 / 120:
     raise SystemExit("FAIL: comparison did not retain p95 ratio")
-if crypto["crypto_accounting"]["bytes_per_boot"] != 101203198:
+if crypto["crypto_accounting"]["bytes_per_boot"] != 101203397:
     raise SystemExit("FAIL: crypto report did not retain byte accounting")
 if native["evidence_status"] != "P2" or crypto["evidence_status"] != "P2":
     raise SystemExit("FAIL: reports did not retain the requested P2 evidence status")
