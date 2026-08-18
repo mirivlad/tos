@@ -111,6 +111,20 @@ If A is accepted, the operation is number 12, `process_exit`, self-only, taking
 a status value, not returning; the nucleus asserts *that* the process exited and
 *when*, the process claims *with what*, and the two are never merged.
 
+## What each option costs to build
+
+| | A — `process_exit` | B — IPC to a supervisor | C — init never finishes |
+|---|---|---|---|
+| Contracts changed | `SYSTEM_ABI_V1` gains operation 12 (minor version); `PROCESS_IDENTITY_V1` gains an exit record | none | none, but the Stage 2 evidence changes shape |
+| Code before the first process can finish | the dispatcher arm, and a return path into the nucleus — which Task 6 needs anyway, because a fault at CPL 3 must return to the nucleus rather than halt the machine | endpoints, capability table, capability transfer, a supervisor process: the whole of Phase 3 | none |
+| Unsupervised process | can end | cannot end, ever | cannot end, by design |
+| What the boot log can say | `init exited, status 240`, with the fact asserted by the nucleus | nothing until a supervisor exists | nothing about a result |
+| Reversible later | yes — an operation number is spent, and that is the whole cost | — | no: the deferral has to be undone by A or B eventually |
+
+The marginal cost of A is small **because of where Phase 2 already is**: the
+mechanism that takes control back from a process is required by Task 6 for
+faults, and `process_exit` is the same mechanism reached by a different door.
+
 ## Boundary
 
 Phase 2 Task 5 (the first process) cannot report its result until this is

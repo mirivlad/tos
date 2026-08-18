@@ -126,28 +126,75 @@ capsule carries derived artifacts is deferred to the stage that has a real
 second case for it (Stage 5's repository-backed `/system`), rather than being
 designed now around a single consumer.
 
-## Recommendation
+## Two facts found after the first draft, which move the recommendation
 
-**A**, with the format change written narrowly and the provenance record written
-in full.
+The first draft recommended A on the strength of "one artifact carries
+everything, so recovery is a single-file story". Checking the accepted documents
+rather than assuming shows that argument is false, and turns up a second one
+against A.
 
-The reason is not that ADR-0048 already says so — an accepted sentence that
-turns out to be unimplementable is a reason to revisit it, not to obey it. It is
-that the question C defers does not go away and does not get easier. Stage 4
-brings drivers, Stage 5 brings a repository-backed `/system`; both produce
-derived artifacts that a machine must be able to boot from, and both will ask
-this same question with more consumers and less freedom. Answering it once, now,
-with exactly one artifact to validate the answer against, is the cheapest time
-this project will ever have.
+**The recovery set is already two objects, and the accepted documents say so.**
+docs/04 lists a recovery environment consisting of *a trusted nucleus image* and
+*a minimal immutable capsule*, and states plainly: "The nucleus is the binary
+exception. Its source belongs in the system repository, but the executable image
+is derived." The ESP already carries three artifacts — the loader, `nucleus.bin`
+and `capsule.bin` — and the nucleus's bytes are in no capsule and under no
+capsule digest. So a derived boot binary delivered *outside* the capsule is not
+a new category this ADR would invent; it is the category the architecture
+already has, with a rule already written for it (deterministic build, associated
+with source commit and toolchain identity, installed into a boot slot,
+rollback preserves the previous slot).
 
-B is rejected on the recovery story: a system whose seed is two files that must
-agree has two ways to be half-recovered.
+**Putting a build output inside the capsule weakens what the capsule proves.**
+In `--git-commit` mode every capsule byte is verified to equal a committed blob,
+which is what makes the capsule digest a statement about *source*. A derived
+artifact cannot be verified that way — it can only be verified by rebuilding —
+so under A the capsule's identity acquires a dependency on toolchain
+reproducibility that it does not have today. That is a real reduction in a
+Stage-1 property, paid for a delivery convenience.
 
-If A is judged too large for this phase, **C is a coherent second choice** — but
-only with ADR-0048 amended in the same breath, and with the identity record
-saying, in the log a person reads, that the runtime image came from the nucleus
-artifact and not from the capsule. A quiet C is the failure mode this project
-was built to prevent.
+## Revised recommendation
+
+**B**, with **C** as the cheaper answer if the runtime is never expected to vary
+independently of the nucleus in Stage 3.
+
+B puts the runtime image where the architecture already puts derived boot
+binaries, uses the extension field `BOOT_ABI_V1` reserved for exactly this, and
+leaves the capsule's proof about source untouched. It also keeps the one thing
+ADR-0048 made load-bearing: the runtime engine id is a *separate* identity from
+the nucleus's. Under C those two collapse into one — "which engine executed
+this" becomes "which nucleus", a field `PROCESS_IDENTITY_V1` §3 asks for
+separately becomes a restatement of another field, and an owner who wants to
+boot a modified TOS Core runtime through the documented research path must
+rebuild the nucleus to do it.
+
+A is now rejected rather than recommended: it costs the most, changes two closed
+contracts, and pays for it by making the capsule digest depend on a build.
+
+C remains coherent and is the smallest change by a wide margin. It requires
+ADR-0048's sentence narrowed, the identity record to say in the log that the
+runtime image came from the nucleus artifact, and an accepted answer to the
+question it defers: what happens when a process needs a runtime the nucleus was
+not built with.
+
+## What each option costs to build
+
+Measured against the tree at `77369c5`, where the nucleus links the whole
+language stack and executes it at CPL 0. Symbol bytes in the nucleus image
+today: `tos-core` 527 KB, `tos-pipeline` 49 KB, `tos-engine` 40 KB,
+`tos-verifier` 32 KB, `tos-ir` 28 KB — about 675 KB of the 934 KB artifact.
+**Every option moves all of it out of ring 0**; that is ADR-0048's doing, not a
+distinguishing feature of any option here.
+
+| | A — capsule | B — beside the capsule | C — inside the nucleus |
+|---|---|---|---|
+| Contracts changed | `CAPSULE_FORMAT_V1` (file class), `CAPSULE_PROVENANCE_V1` (a second `role`), ADR-0048 confirmed | `BOOT_ABI_V1` (reserved extension field), ADR-0048 narrowed | ADR-0048 narrowed |
+| Code | capsule parser flag + validation, builder manifest kind, git-blob gate exception, provenance checker role, vector fixtures regenerated | `BootInfo` field + validation, loader read and digest, nucleus mapping | build wiring, nucleus embeds and reports a digest |
+| Old readers | refuse the new capsule (`BadFileFlags`) — fails closed, but every existing nucleus stops booting new capsules | ignore the extension field; an old nucleus boots but finds no runtime | unaffected |
+| Build steps | runtime image must exist before the capsule is built | runtime image must exist before the ESP is made | runtime image must exist before the nucleus is linked |
+| Recovery | 3 objects (loader, nucleus, capsule) | 4 objects | 3 objects |
+| Runtime identity | its own, from the capsule record | its own, from the handoff record | the nucleus's |
+| Replaceable alone | yes, by rebuilding the capsule | yes, by replacing one file | no |
 
 ## Boundary
 
