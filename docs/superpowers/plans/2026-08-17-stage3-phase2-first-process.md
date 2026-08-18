@@ -2,6 +2,22 @@
 
 # Stage 3 Phase 2: the isolation boundary and the first process
 
+> **Status: complete (2026-08-17).** All six tasks are done. Two boundaries were
+> reached and decided rather than crossed quietly — ADR-0053 (runtime image
+> delivery, option B) and ADR-0054 (process completion, option A) — and the work
+> below implements them.
+>
+> **What this phase did not do, stated where the claim is made:** the grant,
+> stack and report frames of a dead process are not yet returned to the pool
+> (only its launch record is), so ADR-0050 §3's reclamation is half done — it is
+> unobservable while exactly one process is ever launched, and it stops being so
+> the moment a second is. `time_monotonic` is unimplemented because the timer it
+> reads is ADR-0049's and is not up. The process identity record carries the
+> module, the runtime engine id and the absent system commit; the remaining
+> fields of `PROCESS_IDENTITY_V1` §3 need the capability table and the
+> supervisor that Phase 3 brings. No scheduler, no preemption, no IPC, no
+> capabilities: one process runs to its end and the boot halts.
+>
 > **Scope rule:** this phase implements accepted contracts — ADR-0048…0050 and
 > `SYSTEM_ABI_V1` — and changes none of them. It does not touch TOS Core V1,
 > `tos-ir/v1`, the verifier contract, Boot ABI v1 or the capsule format. If a
