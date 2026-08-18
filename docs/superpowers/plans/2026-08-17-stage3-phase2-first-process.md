@@ -7,11 +7,12 @@
 > delivery, option B) and ADR-0054 (process completion, option A) — and the work
 > below implements them.
 >
-> **What this phase did not do, stated where the claim is made:** the grant,
-> stack and report frames of a dead process are not yet returned to the pool
-> (only its launch record is), so ADR-0050 §3's reclamation is half done — it is
-> unobservable while exactly one process is ever launched, and it stops being so
-> the moment a second is. `time_monotonic` is unimplemented because the timer it
+> **What this phase did not do, stated where the claim is made:** the page
+> tables of a dead process's address space are not returned to the pool (~46
+> frames per process), because freeing an interior table means proving nothing
+> else under it is mapped and the nucleus's own mappings live in that same tree.
+> Everything else a process held does come back, measured: 25 107 frames on the
+> canonical path. `time_monotonic` is unimplemented because the timer it
 > reads is ADR-0049's and is not up. The process identity record carries the
 > module, the runtime engine id and the absent system commit; the remaining
 > fields of `PROCESS_IDENTITY_V1` §3 need the capability table and the

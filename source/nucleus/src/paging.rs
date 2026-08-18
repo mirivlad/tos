@@ -202,6 +202,27 @@ impl AddressSpace {
         unsafe { core::arch::asm!("invlpg [{}]", in(reg) virt, options(nostack, preserves_flags)) };
     }
 
+    /// The frame a 4 KiB page maps to, when it maps to one.
+    ///
+    /// The nucleus asks this of a *process's* space, about the process's own
+    /// pages, when the process is over and its memory has to go back. Reading
+    /// the answer out of the tables rather than remembering it means the
+    /// bookkeeping cannot drift from the mappings — there is only one record of
+    /// what a process held, and it is the one the processor used.
+    pub fn translate(&self, virt: u64) -> Option<u64> {
+        let (l4, l3, l2, l1) = indices(virt).ok()?;
+        let mut table = self.root;
+        for index in [l4, l3, l2] {
+            let entry = Self::entry(table, index);
+            if entry & PRESENT == 0 || entry & HUGE != 0 {
+                return None;
+            }
+            table = entry & ADDRESS;
+        }
+        let leaf = Self::entry(table, l1);
+        (leaf & PRESENT != 0).then_some(leaf & ADDRESS)
+    }
+
     /// Makes this space the one the processor is using.
     ///
     /// # Safety
