@@ -15,9 +15,13 @@ pub const PROTOCOL_UUID: [u8; 16] = [
     0xe2, 0xe8, 0xc1, 0x5a, 0x6c, 0x4b, 0x4d, 0x11, 0x9a, 0x2c, 0x8f, 0x3b, 0x1a, 0x2c, 0x4d, 0x5e,
 ];
 pub const MAJOR: u16 = 1;
-pub const MINOR: u16 = 0;
+/// Minor 1 adds the runtime image triple at offsets 224..272 (ADR-0053 option
+/// B). The rule that made this a safe extension was already in v1.0: a nucleus
+/// rejects an unknown minor of the same major, so a v1.0 nucleus refuses a v1.1
+/// record instead of reading past what it understands.
+pub const MINOR: u16 = 1;
 /// Size of the v1 structure.
-pub const STRUCT_SIZE: u32 = 224;
+pub const STRUCT_SIZE: u32 = 272;
 pub const ARCH_X86_64: u32 = 1;
 pub const BOOT_MODE_NORMAL: u32 = 0;
 pub const FB_FORMAT_NONE: u32 = 0;
@@ -93,7 +97,7 @@ impl MemoryRange {
     }
 }
 
-/// BootInfo v1 (224 bytes, little-endian, 8-aligned).
+/// BootInfo v1.1 (272 bytes, little-endian, 8-aligned).
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
 pub struct BootInfo {
@@ -124,6 +128,15 @@ pub struct BootInfo {
     pub smbios: u64,
     pub next: u64,
     pub reserved2: [u8; 24],
+    /// Physical address of the ring-3 runtime image, or 0 when none was
+    /// supplied. Absence is a declaration, not a defect: a boot without a
+    /// runtime image launches no process and says so (ADR-0053 §3).
+    pub runtime_phys: u64,
+    pub runtime_length: u64,
+    /// SHA-256 of the runtime image bytes, which the nucleus recomputes rather
+    /// than trusts. The identity a process reports as its runtime engine id is
+    /// this one.
+    pub runtime_digest: [u8; 32],
 }
 
 impl BootInfo {
@@ -159,6 +172,9 @@ impl BootInfo {
             smbios: 0,
             next: 0,
             reserved2: [0; 24],
+            runtime_phys: 0,
+            runtime_length: 0,
+            runtime_digest: [0; 32],
         }
     }
 }
@@ -185,6 +201,9 @@ pub enum BootInfoError {
     /// reserved trailing bytes (beyond `STRUCT_SIZE` within `total_size`)
     /// non-zero.
     NonZeroReserved,
+    /// The runtime image triple is partly filled: an address without a length,
+    /// a length without a digest, or a range that wraps.
+    IncompleteRuntimeImage,
     /// in-struct reserved blocks `reserved`/`reserved2` non-zero.
     NonZeroReservedFields,
     /// `architecture_id` not `ARCH_X86_64`.
@@ -337,6 +356,22 @@ impl BootInfo {
         if bytes[200..224].iter().any(|&b| b != 0) {
             return Err(BootInfoError::NonZeroReservedFields);
         }
+
+        // --- minor 1: the runtime image triple ---
+        // Either all three fields describe an image or all three are zero.
+        // A length with no address, or a digest with no bytes, is a record that
+        // cannot be acted on, and acting on part of it would mean guessing
+        // which part was meant.
+        let runtime_phys = u64::from_le_bytes(bytes[224..232].try_into().unwrap());
+        let runtime_length = u64::from_le_bytes(bytes[232..240].try_into().unwrap());
+        let digest_zero = bytes[240..272].iter().all(|&b| b == 0);
+        let declared = runtime_phys != 0 || runtime_length != 0 || !digest_zero;
+        if declared && (runtime_phys == 0 || runtime_length == 0 || digest_zero) {
+            return Err(BootInfoError::IncompleteRuntimeImage);
+        }
+        if runtime_phys.checked_add(runtime_length).is_none() {
+            return Err(BootInfoError::IncompleteRuntimeImage);
+        }
         Ok(())
     }
 
@@ -472,15 +507,56 @@ mod tests {
     }
 
     #[test]
-    fn struct_size_is_224() {
-        assert_eq!(core::mem::size_of::<BootInfo>(), 224);
+    fn a_declared_runtime_image_is_accepted_whole() {
+        let mut bi = BootInfo::new();
+        bi.runtime_phys = 0x30_0000;
+        bi.runtime_length = 4096;
+        bi.runtime_digest = [7; 32];
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
+        assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
+    }
+
+    #[test]
+    fn a_half_declared_runtime_image_is_refused_rather_than_guessed() {
+        // Each of these says an image is there and withholds what is needed to
+        // find it or to check it. Acting on any of them means choosing which
+        // half of the record to believe.
+        for (phys, length, digest) in [
+            (0x30_0000u64, 0u64, [7u8; 32]),
+            (0, 4096, [7; 32]),
+            (0x30_0000, 4096, [0; 32]),
+        ] {
+            let mut bi = BootInfo::new();
+            bi.runtime_phys = phys;
+            bi.runtime_length = length;
+            bi.runtime_digest = digest;
+            let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
+            assert_eq!(
+                BootInfo::validate_bytes(bytes),
+                Err(BootInfoError::IncompleteRuntimeImage)
+            );
+        }
+    }
+
+    #[test]
+    fn no_runtime_image_is_a_legal_record() {
+        // Absence is a declaration: the boot launches no process and says so.
+        let bi = BootInfo::new();
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
+        assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
+        assert_eq!(bi.runtime_phys, 0);
+    }
+
+    #[test]
+    fn struct_size_matches_the_contract() {
+        assert_eq!(core::mem::size_of::<BootInfo>(), STRUCT_SIZE as usize);
         assert_eq!(core::mem::size_of::<MemoryRange>(), 24);
     }
 
     #[test]
     fn default_validates() {
         let bi = BootInfo::new();
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
     }
 
@@ -488,7 +564,7 @@ mod tests {
     fn bad_magic_rejected() {
         let mut bi = BootInfo::new();
         bi.magic = 0;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadMagic)
@@ -498,7 +574,7 @@ mod tests {
     #[test]
     fn truncated_rejected() {
         let bi = BootInfo::new();
-        let bytes = boot_info_bytes(&bi, 223);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize - 1);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::ShortTotalSize)
@@ -509,7 +585,7 @@ mod tests {
     fn bad_boot_mode_rejected() {
         let mut bi = BootInfo::new();
         bi.boot_mode = 1;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadBootMode)
@@ -520,7 +596,7 @@ mod tests {
     fn next_must_be_zero() {
         let mut bi = BootInfo::new();
         bi.next = 0x1234;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::NonZeroNext)
@@ -530,7 +606,7 @@ mod tests {
     #[test]
     fn framebuffer_absent_consistency() {
         let bi = BootInfo::new(); // all fb fields zero
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
     }
 
@@ -539,7 +615,7 @@ mod tests {
         let mut bi = BootInfo::new();
         bi.framebuffer_phys = 0;
         bi.framebuffer_width = 800; // width without phys -> inconsistent
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadFramebuffer)
@@ -554,11 +630,11 @@ mod tests {
         bi.framebuffer_height = 600;
         bi.framebuffer_pitch = 3200;
         bi.framebuffer_format = 1; // not FB_FORMAT_NONE
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
 
         bi.framebuffer_format = FB_FORMAT_NONE; // present but format none -> reject
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadFramebuffer)
@@ -574,15 +650,15 @@ mod tests {
         bi.framebuffer_pitch = 3200;
 
         bi.framebuffer_format = FB_FORMAT_RGBX8;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
 
         bi.framebuffer_format = FB_FORMAT_BGRX8;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(BootInfo::validate_bytes(bytes), Ok(()));
 
         bi.framebuffer_format = 3;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadFramebuffer)
@@ -590,7 +666,7 @@ mod tests {
 
         bi.framebuffer_format = FB_FORMAT_RGBX8;
         bi.framebuffer_pitch = 3199;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadFramebuffer)
@@ -598,7 +674,7 @@ mod tests {
 
         bi.framebuffer_width = u32::MAX;
         bi.framebuffer_pitch = u32::MAX;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::BadFramebuffer)
@@ -609,7 +685,7 @@ mod tests {
     fn identity_kind_must_be_git_or_detached() {
         let mut bi = BootInfo::new();
         bi.capsule_identity_kind = 0; // SRC_KIND_NONE not allowed
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::UnsupportedCapsuleIdentityKind)
@@ -617,7 +693,7 @@ mod tests {
 
         let mut bi = BootInfo::new();
         bi.capsule_identity_kind = 99;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::UnsupportedCapsuleIdentityKind)
@@ -628,7 +704,7 @@ mod tests {
     fn in_struct_reserved_rejected() {
         let mut bi = BootInfo::new();
         bi.reserved[0] = 1;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::NonZeroReservedFields)
@@ -636,7 +712,7 @@ mod tests {
 
         let mut bi = BootInfo::new();
         bi.reserved2[0] = 1;
-        let bytes = boot_info_bytes(&bi, 224);
+        let bytes = boot_info_bytes(&bi, STRUCT_SIZE as usize);
         assert_eq!(
             BootInfo::validate_bytes(bytes),
             Err(BootInfoError::NonZeroReservedFields)

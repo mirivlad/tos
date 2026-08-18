@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-runtime-image"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "The TOS Core runtime as a ring-3 image: one instance per process (ADR-0048)."
+publish = false
+
+[[bin]]
+name = "tos-runtime-image"
+path = "src/main.rs"
+
+[dependencies]
+tos-launch = { path = "../crates/tos-launch" }
+tos-pipeline = { path = "../crates/tos-pipeline" }
+tos-runtime = { path = "../crates/tos-runtime" }

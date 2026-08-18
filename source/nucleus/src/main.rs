@@ -17,19 +17,15 @@
 #![no_std]
 #![no_main]
 
-extern crate alloc;
-
-mod boot_report;
 mod console;
 mod exception;
 mod framebuffer;
 mod memory;
 mod msr;
 mod paging;
+mod process;
 #[cfg(any(feature = "test-ring3-abi", feature = "test-ring3-privileged"))]
 mod ring3;
-mod runtime;
-mod stack;
 mod syscall;
 
 use core::arch::asm;
@@ -155,6 +151,25 @@ fn crypto_baseline(cap_bytes: &[u8], capsule: &Capsule<'_>) -> ! {
     tos_serial::put_u32_decimal(hashes);
     tos_serial::puts(b"\r\n");
     result_port(RESULT_HALT_OK)
+}
+
+/// The declared identity of the capsule's source tree, written into `out`.
+///
+/// A detached capsule's identity is a whole-tree digest and a git one is an
+/// object id. Both are named by their kind so that neither is read as the
+/// other.
+fn source_set_identity(kind: &[u8], value: &[u8; 32], out: &mut [u8; 96]) -> usize {
+    let mut hex = [0u8; 64];
+    tos_hash::hex(value, &mut hex);
+    let mut at = 0;
+    for byte in kind.iter().chain(b":").chain(hex.iter()) {
+        if at == out.len() {
+            break;
+        }
+        out[at] = *byte;
+        at += 1;
+    }
+    at
 }
 
 /// First logical line of boot text: the first line that is non-empty and not
@@ -463,8 +478,19 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         #[cfg(feature = "test-ring3-privileged")]
         let payload = ring3::Payload::Privileged;
         // SAFETY: `space` is the address space loaded into CR3 immediately
-        // above and no other context is running. The excursion does not return.
-        unsafe { ring3::run(&mut space, &mut frames, payload) };
+        // above and no other context is running.
+        match unsafe { ring3::run(&mut space, &mut frames, payload) } {
+            Ok(ended) => {
+                tos_serial::puts(b"TOS.TEST.RING3.ENDED vector=");
+                let process::Ended::Fault(vector) = ended;
+                tos_serial::put_u32_decimal(vector as u32);
+                tos_serial::puts(b"\r\n");
+            }
+            Err(_) => {
+                tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-user-mapping\r\n");
+                mem_fail();
+            }
+        }
     }
 
     #[cfg(feature = "test-paging-unmapped")]
@@ -472,43 +498,76 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     #[cfg(feature = "test-paging-readonly-text")]
     paging::test_readonly_text();
 
-    let outcome = runtime::execute_boot_text(
-        bi,
-        runtime::Machine {
-            frames: &mut frames,
-            stack: running_on,
-            identity: memory::identity(),
-        },
-        boot.name,
-        &modules[..module_count],
-        kind,
-        console.as_mut(),
-    );
-    match outcome {
-        Ok(Ok(())) => {}
-        Ok(Err(stage)) => {
-            // Boot ABI and capsule validation succeeded and this nucleus is
-            // healthy; what failed is the canonical boot module. ADR-0042 gives
-            // that its own result code, because collapsing it into
-            // RESULT_CAPSULE_INVALID would send an operator looking for a
-            // supply or integrity problem when the problem is in the source.
-            // Every stage already reported why, in full, over serial.
-            tos_serial::puts(b"TOS.BOOTMODULE.FAIL stage=");
-            tos_serial::puts(stage.as_bytes());
-            tos_serial::puts(b"\r\n");
+    // --- 6. Stage 3: the boot module becomes a process ---
+    // The nucleus no longer runs the reference path; it launches something that
+    // does. ADR-0048 makes that a replacement rather than an addition: keeping
+    // the in-process call beside the launch would leave a path where TOS Core
+    // executes at CPL 0, and the isolation boundary would be a thing the system
+    // chose rather than a thing it has.
+    if bi.runtime_phys == 0 {
+        tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-runtime-image\r\n");
+        console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-runtime-image");
+        mem_fail();
+    }
+    // SAFETY: the handoff record was validated at entry, so this range is the
+    // one the loader reserved and identity-mapped for the runtime image.
+    let image_bytes = unsafe {
+        core::slice::from_raw_parts(bi.runtime_phys as *const u8, bi.runtime_length as usize)
+    };
+    // The digest is recomputed here, not taken on the record's word: the record
+    // says what the loader saw, and this says what the nucleus is about to map
+    // into a process.
+    if sha256(image_bytes) != bi.runtime_digest {
+        tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=runtime-image-digest-mismatch\r\n");
+        console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"runtime-digest");
+        mem_fail();
+    }
+    let mut runtime_hex = [0u8; 64];
+    tos_hash::hex(&bi.runtime_digest, &mut runtime_hex);
+    tos_serial::puts(b"TOS.RUN.PROCESS_BEGIN module=");
+    tos_serial::puts(boot.name);
+    tos_serial::puts(b" runtime_engine=sha256:");
+    tos_serial::puts(&runtime_hex);
+    tos_serial::puts(b" system_commit=absent asserted_by=launcher\r\n");
+
+    let entry_index = modules[..module_count]
+        .iter()
+        .position(|(name, _)| *name == boot.name)
+        .unwrap_or(0);
+    let image =
+        tos_runtime::region::Span::new(bi.runtime_phys, bi.runtime_phys + bi.runtime_length);
+    let capsule_span =
+        tos_runtime::region::Span::new(bi.capsule_phys, bi.capsule_phys + bi.capsule_length);
+    let mut source_set = [0u8; 96];
+    let named = source_set_identity(kind, &bi.capsule_source_identity, &mut source_set);
+    // SAFETY: the image and capsule ranges were validated above — the image by
+    // its digest, the capsule by digest and structure — both are physically
+    // contiguous and identity-mapped for this nucleus, and nothing else is
+    // running.
+    let ended = unsafe {
+        process::launch(
+            &mut frames,
+            descs,
+            bi,
+            image,
+            capsule_span,
+            &modules[..module_count],
+            entry_index,
+            memory::identity(),
+            &source_set[..named],
+        )
+    };
+    match ended {
+        Ok(process::Ended::Exited(0)) => {}
+        Ok(process::Ended::Exited(_)) | Ok(process::Ended::Fault(_)) => {
+            // The process ended without completing its work. Which way it ended
+            // is already on the log, asserted by the nucleus.
+            tos_serial::puts(b"TOS.BOOTMODULE.FAIL stage=process\r\n");
             result_port(RESULT_BOOT_MODULE_FAILED);
         }
-        Err(reason) => {
-            let reason: &[u8] = match reason {
-                runtime::Unstartable::NoGrant(_) => b"no-grant",
-                runtime::Unstartable::HeapRejectedGrant => b"heap-rejected-grant",
-                runtime::Unstartable::BootPathNotText => b"boot-path-not-text",
-                runtime::Unstartable::NoBootModule => b"no-boot-module",
-            };
-            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=");
-            tos_serial::puts(reason);
-            tos_serial::puts(b"\r\n");
-            console_failed(&mut console, b"RUNTIME_UNSTARTABLE", reason);
+        Err(_) => {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-process\r\n");
+            console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-process");
             mem_fail();
         }
     }

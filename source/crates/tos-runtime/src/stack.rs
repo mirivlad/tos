@@ -19,7 +19,7 @@
 
 use core::arch::asm;
 
-use tos_runtime::region::Span;
+use crate::region::Span;
 
 /// Bytes below the current stack pointer left untouched by painting.
 ///

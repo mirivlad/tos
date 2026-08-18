@@ -2,12 +2,40 @@
 
 # ADR-0053: How the ring-3 runtime image reaches the machine
 
-- Status: **Proposed** (awaiting Project Architect decision)
+- Status: **Accepted (option B)** (Project Architect-approved)
 - Date: 2026-08-17
 - Decision level: 3 — it decides whether a Stage-1-closed contract admits a
   derived binary artifact, and it either confirms or narrows a sentence of the
   accepted ADR-0048
-- Project Architect approval:
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-17
+
+## Decision
+
+**Option B. The loader delivers the runtime image beside the capsule.** In full:
+
+1. **Delivery.** The image is a file on the ESP, read by the loader exactly as
+   `nucleus.bin` is. The loader copies it into reserved memory, digests it, and
+   names the range and the digest in the handoff record.
+2. **Handoff.** `BOOT_ABI_V1` moves to **minor version 1**: the record gains
+   `runtime_phys`, `runtime_length` and `runtime_digest`. A v1.0 nucleus rejects
+   a v1.1 record under the existing rule ("unknown minor with same major is
+   rejected"), so the extension fails closed in both directions.
+3. **Absence is legal and is not a guess.** A record whose three fields are zero
+   declares that no runtime image was supplied. The nucleus then launches no
+   process and says so, rather than substituting one.
+4. **Identity.** The runtime image keeps an identity of its own — the digest the
+   loader computed and the nucleus re-verified — and that is what
+   `PROCESS_IDENTITY_V1` §3's *runtime engine id* reports. It is not the
+   nucleus's identity and is never derived from it.
+5. **ADR-0048 is narrowed.** Its sentence "the capsule must carry the runtime
+   image" is replaced by: *the boot path must deliver the runtime image with a
+   verified identity, and Stage 3 does so through the handoff record.* The rest
+   of that consequence — a per-process derived artifact whose provenance rules
+   apply in full, whose identity is reported — stands unchanged.
+6. **The launch surface is versioned from its first commit.** The record a
+   nucleus passes to a runtime image is a boundary between two independently
+   delivered artifacts, so it carries a version and a nucleus refuses an image
+   that declares another (AGENTS.md §8).
 
 ## Context
 

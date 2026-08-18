@@ -18,7 +18,7 @@ use tos_boot_protocol::{BootInfo, MemoryRange, MEM_USABLE};
 use tos_frames::{Admission, Frames};
 use tos_runtime::region::Span;
 
-use crate::stack;
+use tos_runtime::stack;
 
 extern "C" {
     static __tos_image_start: u8;

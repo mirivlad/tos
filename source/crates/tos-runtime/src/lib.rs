@@ -66,6 +66,7 @@
 #![no_std]
 
 pub mod region;
+pub mod stack;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr;

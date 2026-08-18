@@ -37,6 +37,8 @@ pub const E_NOT_SUPPORTED: i64 = -7;
 /// never will be: a register nobody wrote holds zero.
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
+/// ADR-0054: self only, takes a status, does not return.
+const PROCESS_EXIT: u64 = 12;
 /// The operations that name a capability — every assigned number that is not
 /// one of the two self-only ones.
 const CAPABILITY_OPERATIONS: core::ops::RangeInclusive<u64> = 1..=9;
@@ -53,7 +55,15 @@ extern "C" {
 /// The arguments of one call, in the order §3 gives them.
 #[repr(C)]
 pub struct Arguments {
-    _values: [u64; 6],
+    values: [u64; 6],
+}
+
+impl Arguments {
+    /// The first argument, which is the only one any operation this nucleus
+    /// implements looks at.
+    fn first(&self) -> u64 {
+        self.values[0]
+    }
 }
 
 /// What one operation returned: a status and a value, `rax` and `rdx`.
@@ -91,8 +101,24 @@ pub unsafe fn install() {
 /// dereferenced, because §3 says arguments are values and handles, never
 /// pointers the nucleus follows.
 #[no_mangle]
-extern "C" fn syscall_dispatch(operation: u64, _arguments: &Arguments) -> Answer {
+extern "C" fn syscall_dispatch(operation: u64, arguments: &Arguments) -> Answer {
+    // The process is inside the nucleus at this instant, so its report region
+    // is stable and this is when what it wrote reaches the log.
+    crate::process::drain_report();
     match operation {
+        // The one operation that does not answer: the process is over, and the
+        // nucleus continues where it recorded it would (ADR-0054).
+        PROCESS_EXIT => {
+            if crate::process::exited(arguments.first()) {
+                unreachable!("a process that exited does not receive an answer")
+            }
+            // Nothing is running at CPL 3, so this call did not come from a
+            // process and there is nothing to end.
+            Answer {
+                status: E_NO_CAPABILITY,
+                value: 0,
+            }
+        }
         CONTEXT_YIELD => Answer {
             status: OK,
             value: 0,

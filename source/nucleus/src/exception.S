@@ -28,6 +28,10 @@ exception_common:
     mov rdi, qword ptr [r11]
     mov rsi, qword ptr [r11 + 8]
     mov rdx, qword ptr [r11 + 16]
+    /* The interrupted CS. Its low two bits are the privilege level the fault
+       was taken at, which is the whole of the difference between "the boot is
+       over" and "a process is over" (ADR-0049 section 3). */
+    mov rcx, qword ptr [r11 + 24]
     and rsp, -16
     call exception_fatal
 1:

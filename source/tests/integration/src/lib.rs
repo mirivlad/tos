@@ -22,10 +22,6 @@ mod framebuffer;
 #[path = "../../../nucleus/src/console.rs"]
 mod console;
 
-#[allow(dead_code)]
-#[path = "../../../nucleus/src/boot_report.rs"]
-mod boot_report;
-
 use tos_capsule::{parse, CapsError, FLAG_BOOT_CANONICAL, SRC_KIND_DETACHED};
 use tos_hash::{sha256, Sha256};
 

@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-launch"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "The versioned record a TOS nucleus hands to a ring-3 runtime image at launch."
+publish = false
+
+[lib]
+name = "tos_launch"

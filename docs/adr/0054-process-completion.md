@@ -2,11 +2,27 @@
 
 # ADR-0054: How a process says it is finished
 
-- Status: **Proposed** (awaiting Project Architect decision)
+- Status: **Accepted (option A)** (Project Architect-approved)
 - Date: 2026-08-17
 - Decision level: 2 — it adds an operation to an accepted interface contract, or
   decides that no operation is added and completion is observed some other way
-- Project Architect approval:
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-17
+
+## Decision
+
+**Option A. `process_exit` is operation 12 of `SYSTEM_ABI_V1`, self only.** In
+full:
+
+1. It takes a status value, requires no capability because it applies to
+   nothing but the caller, and does not return.
+2. The **fact** of the exit and **when** it happened are asserted by the
+   nucleus. The **status** is the process's own claim about itself, labelled as
+   such wherever it appears, and it is never the audit record
+   (`PROCESS_IDENTITY_V1` §2).
+3. A process that exits releases what it held: its address space, its grant and
+   its frames, cleared before reuse (ADR-0050 §3).
+4. The number 12 is spent. `SYSTEM_ABI_V1` §7 forbids reusing it for anything
+   else, ever.
 
 ## Context
 

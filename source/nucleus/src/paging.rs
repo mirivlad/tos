@@ -177,6 +177,31 @@ impl AddressSpace {
         Ok(())
     }
 
+    /// Removes one 4 KiB mapping, if the path to it exists.
+    ///
+    /// The tables on the path are kept. They are four frames at most, they will
+    /// be needed again by the next process at the same address, and freeing an
+    /// interior table means proving nothing else under it is mapped — a proof
+    /// this does not attempt and therefore does not claim.
+    pub fn unmap_page(&mut self, virt: u64) {
+        let Ok((l4, l3, l2, l1)) = indices(virt) else {
+            return;
+        };
+        let mut table = self.root;
+        for index in [l4, l3, l2] {
+            let entry = Self::entry(table, index);
+            if entry & PRESENT == 0 || entry & HUGE != 0 {
+                return;
+            }
+            table = entry & ADDRESS;
+        }
+        Self::write(table, l1, 0);
+        // SAFETY: the entry is gone from the live tree, so the processor's
+        // cached translation of it must go too; `invlpg` names one address and
+        // touches no memory of its own.
+        unsafe { core::arch::asm!("invlpg [{}]", in(reg) virt, options(nostack, preserves_flags)) };
+    }
+
     /// Makes this space the one the processor is using.
     ///
     /// # Safety
