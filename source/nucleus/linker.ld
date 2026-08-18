@@ -20,7 +20,15 @@ SECTIONS
         KEEP(*(.text.boot_entry))
         *(.text .text.*)
     }
+    /* Section boundaries the nucleus's own page tables are built from
+       (paging.rs). They are page-aligned because a permission is a property of
+       a page: text that shared a page with writable data would have to be one
+       or the other, and either answer would be wrong. */
+    . = ALIGN(4096);
+    __tos_text_end = .;
     .rodata : { *(.rodata .rodata.*) }
+    . = ALIGN(4096);
+    __tos_rodata_end = .;
     .data : { *(.data .data.*) }
     .got : { *(.got .got.*) }
     .got.plt : { *(.got.plt .got.plt.*) }
@@ -33,7 +41,7 @@ SECTIONS
        the image by FILE length, so .bss lies past the pages it reserved and the
        memory map still reports that memory usable. Nothing but the nucleus can
        know this extent, so the nucleus subtracts it before granting memory to
-       the runtime (crates/tos-runtime/src/region.rs). */
+       the runtime (nucleus/src/memory.rs). */
     . = ALIGN(4096);
     __tos_image_end = .;
 }

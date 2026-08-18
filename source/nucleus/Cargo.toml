@@ -13,6 +13,8 @@ path = "src/main.rs"
 [features]
 test-exception-ud2 = []
 test-exception-gp = []
+test-paging-unmapped = []
+test-paging-readonly-text = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 
