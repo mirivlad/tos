@@ -134,7 +134,12 @@ not an operation invented at the edge because the boot needed one.
 - [x] The register-preservation rule is tested the way §8.6 asks: a ring-3
   caller fills every preserved register, makes the call, and compares.
 
-### Task 4: The runtime is a per-process artifact
+### Task 4: The runtime is a per-process artifact — **stopped at a boundary (2026-08-17)**
+
+> Carrying the image needs a decision no implementation may take quietly:
+> ADR-0053 (Proposed). The predicted completion boundary is confirmed and filed
+> as ADR-0054 (Proposed). Neither is implemented while its approval line is
+> empty.
 
 **Files:**
 - Create: `source/runtime-image/` (a `no_std` ring-3 binary over `tos-pipeline`)

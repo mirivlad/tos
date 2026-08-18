@@ -40,7 +40,7 @@ Composition (derived, not hand-maintained)
 ------------------------------------------
 - files in the release package: 362
 - active system invariants: 21
-- architecture decision records: 52 (40 accepted)
+- architecture decision records: 54 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -96,6 +96,8 @@ Architecture decision records
 - docs/adr/0050-per-process-memory-grants.md — ADR-0050: Per-process memory grants [**Accepted** (Project Architect-approved)]
 - docs/adr/0051-service-manifest-surface.md — ADR-0051: What a service manifest is, and where it lives [**Accepted** (Project Architect-approved)]
 - docs/adr/0052-module-level-constants.md — ADR-0052: What a module-level `const` is [**Accepted** (Project Architect-approved)]
+- docs/adr/0053-runtime-image-delivery-and-identity.md — ADR-0053: How the ring-3 runtime image reaches the machine [**Proposed** (awaiting Project Architect decision)]
+- docs/adr/0054-process-completion.md — ADR-0054: How a process says it is finished [**Proposed** (awaiting Project Architect decision)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
