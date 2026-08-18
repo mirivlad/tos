@@ -15,7 +15,7 @@ cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30  LICENSES/Apach
 3b2890eacd851373001c4a14623458e3adaf1b1967939aa9c38a318e28d61c00  LICENSES/CC-BY-SA-4.0.txt
 3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986  LICENSES/GPL-3.0-or-later.txt
 e7a93b009565cfce55919a381437ac4db883e9da2126fa28b91d12732bc53d96  LICENSES/Unicode-3.0.txt
-856dac558137c35414e12942286298a661a882ff70b6ebb8ec622a6918e7c162  MANIFEST.txt
+dad99d8c2d984ba0d3de1d31cb13e298dac9e7b3a2887853fa155225c784c185  MANIFEST.txt
 1c71c427f14580bbbaffb08a16b12f602de7fc29df3b24590067f4c185c87b64  PATENTS.md
 9bddcfdb73583bdb489bb12f6f7c5c9b6d14fdda815a005304920b0e9128c8ee  PROVENANCE_HISTORY_REWRITE.md
 c19c16d5c023521300a8933d53e9dc751c81e080be1d514eddd41838299346f1  README.md
@@ -322,6 +322,7 @@ df6517326e6b6daf64c8de5e4c15e8b83d675e416aad82113231d93bf1cbfe46  docs/superpowe
 6faff1dc17c96547c2b0aace2969e68ba791f7137e398fdf773d06d5cf81088f  docs/superpowers/plans/2026-08-12-stage3-phase0-contracts.md
 9d1a9de4bc7bfcd2934f45feb49c964a4c42f39c1943659bca661f441026a77d  docs/superpowers/plans/2026-08-12-stage3-phase1-module-sets.md
 6e3d915be7704de5b08bfe3ec982a5d259cfef632343858671f1351df1178062  docs/superpowers/plans/2026-08-17-stage3-phase2-first-process.md
+7b67ad52fe668a0fd7d8adf828e4749b192770a09584cd7ce38027f107d1038b  docs/superpowers/plans/2026-08-19-stage3-phase3-time-and-preemption.md
 f678aa62b8032f5a8b633b041a8854a65043f958bef06da4cacec587f66d094e  docs/superpowers/specs/2026-08-08-stage1-phase0-closure-design.md
 ee46d3e3f161ab4cc7b3d3fe5b2e53c5b41030b209712a0953862ea011548318  docs/superpowers/specs/2026-08-08-stage1-phase1-capsule-identity-design.md
 fe0bde9319ce226e9fde851886ebf22ff7f6c736def8c604b484d3255ac25eae  docs/superpowers/specs/2026-08-09-capsule-vector-provenance-proposal.md
