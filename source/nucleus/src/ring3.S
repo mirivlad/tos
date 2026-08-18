@@ -108,3 +108,15 @@ ring3_privileged_start:
     hlt
 .global ring3_privileged_end
 ring3_privileged_end:
+
+/* A process reaching for the nucleus's own memory. The address is the one the
+   nucleus is linked at, which every boot log names, and the page there is
+   present and supervisor-only — so what refuses this write is the mapping, not
+   a check anyone wrote. */
+.global ring3_nucleus_start
+ring3_nucleus_start:
+    movabs rax, 0x2000000
+    mov qword ptr [rax], 1
+    hlt
+.global ring3_nucleus_end
+ring3_nucleus_end:

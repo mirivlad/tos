@@ -33,8 +33,17 @@ case "$SCENARIO" in
         VECTOR=13
         RIP='0x0000000040000000'
         ;;
+    # A process writing to the nucleus's own memory, at the address every boot
+    # log names. The page is present and supervisor-only, so what refuses the
+    # write is the mapping — not the verifier, which never saw this payload, and
+    # not a check the nucleus performs.
+    nucleus)
+        FEATURE=test-ring3-nucleus
+        VECTOR=14
+        RIP='0x000000004000000a'
+        ;;
     *)
-        echo "usage: $0 {abi|privileged}" >&2
+        echo "usage: $0 {abi|privileged|nucleus}" >&2
         exit 2
         ;;
 esac

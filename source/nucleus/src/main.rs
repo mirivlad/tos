@@ -24,7 +24,11 @@ mod memory;
 mod msr;
 mod paging;
 mod process;
-#[cfg(any(feature = "test-ring3-abi", feature = "test-ring3-privileged"))]
+#[cfg(any(
+    feature = "test-ring3-abi",
+    feature = "test-ring3-privileged",
+    feature = "test-ring3-nucleus"
+))]
 mod ring3;
 mod syscall;
 
@@ -472,13 +476,19 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // this is the only context running.
     unsafe { space.activate() };
 
-    #[cfg(any(feature = "test-ring3-abi", feature = "test-ring3-privileged"))]
+    #[cfg(any(
+        feature = "test-ring3-abi",
+        feature = "test-ring3-privileged",
+        feature = "test-ring3-nucleus"
+    ))]
     {
         let mut space = space;
         #[cfg(feature = "test-ring3-abi")]
         let payload = ring3::Payload::Abi;
         #[cfg(feature = "test-ring3-privileged")]
         let payload = ring3::Payload::Privileged;
+        #[cfg(feature = "test-ring3-nucleus")]
+        let payload = ring3::Payload::Nucleus;
         // SAFETY: `space` is the address space loaded into CR3 immediately
         // above and no other context is running.
         match unsafe { ring3::run(&mut space, &mut frames, payload) } {

@@ -36,6 +36,10 @@ extern "C" {
     static ring3_privileged_start: u8;
     #[cfg(feature = "test-ring3-privileged")]
     static ring3_privileged_end: u8;
+    #[cfg(feature = "test-ring3-nucleus")]
+    static ring3_nucleus_start: u8;
+    #[cfg(feature = "test-ring3-nucleus")]
+    static ring3_nucleus_end: u8;
 }
 
 /// Which payload an excursion carries.
@@ -46,6 +50,9 @@ pub enum Payload {
     /// Executes a privileged instruction and nothing else.
     #[cfg(feature = "test-ring3-privileged")]
     Privileged,
+    /// Writes to the nucleus's own memory.
+    #[cfg(feature = "test-ring3-nucleus")]
+    Nucleus,
 }
 
 impl Payload {
@@ -61,6 +68,11 @@ impl Payload {
             Payload::Privileged => (
                 core::ptr::addr_of!(ring3_privileged_start),
                 core::ptr::addr_of!(ring3_privileged_end),
+            ),
+            #[cfg(feature = "test-ring3-nucleus")]
+            Payload::Nucleus => (
+                core::ptr::addr_of!(ring3_nucleus_start),
+                core::ptr::addr_of!(ring3_nucleus_end),
             ),
         };
         // SAFETY: both symbols are labels in this image's `.text`, in this
