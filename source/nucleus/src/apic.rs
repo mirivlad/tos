@@ -60,6 +60,12 @@ const QUANTUM: u32 = 100_000;
 /// Written only by the handler, which cannot be re-entered: the handler runs
 /// with interrupts masked and nested interrupts are not enabled (ADR-0049).
 static mut TICKS: u64 = 0;
+/// Of those, the ones taken while a process was running.
+///
+/// The difference between the two is where the machine's time went, and it is
+/// the nucleus's to assert: a process cannot see how long it was off the
+/// processor, and a number it reported about that would be a guess.
+static mut PROCESS_TICKS: u64 = 0;
 
 /// The monotonic tick, as `time_monotonic` reports it.
 pub fn ticks() -> u64 {
@@ -69,6 +75,12 @@ pub fn ticks() -> u64 {
     // returns from without leaving the value half-written — it is one aligned
     // `u64` store.
     unsafe { TICKS }
+}
+
+/// Timer interrupts taken while a process was on the processor.
+pub fn process_ticks() -> u64 {
+    // SAFETY: as `ticks`.
+    unsafe { PROCESS_TICKS }
 }
 
 /// Writes one local APIC register.
@@ -142,6 +154,45 @@ pub unsafe fn start() {
     unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
 }
 
+/// The state of whatever the timer interrupted.
+///
+/// Laid out to match what `timer_stub` pushes, in that order, followed by the
+/// five words the processor pushed itself. A handler that only counts ticks
+/// does not need it; a handler that returns to a *different* process does,
+/// because everything `iretq` will read is in here. It exists now, with one
+/// reader, so that the step to a scheduler is a change in what the handler
+/// writes rather than in what it can see.
+#[repr(C)]
+pub struct TrapFrame {
+    pub rax: u64,
+    pub rbx: u64,
+    pub rcx: u64,
+    pub rdx: u64,
+    pub rsi: u64,
+    pub rdi: u64,
+    pub rbp: u64,
+    pub r8: u64,
+    pub r9: u64,
+    pub r10: u64,
+    pub r11: u64,
+    pub r12: u64,
+    pub r13: u64,
+    pub r14: u64,
+    pub r15: u64,
+    pub rip: u64,
+    pub cs: u64,
+    pub rflags: u64,
+    pub rsp: u64,
+    pub ss: u64,
+}
+
+impl TrapFrame {
+    /// Whether the interrupt was taken in a process rather than in the nucleus.
+    fn interrupted_a_process(&self) -> bool {
+        self.cs & 3 == 3
+    }
+}
+
 /// Counts one timer interrupt and acknowledges it. Called only by the stub.
 ///
 /// This is the first handler in this system that returns, and everything it
@@ -149,10 +200,15 @@ pub unsafe fn start() {
 /// nothing and takes no lock, which is ADR-0023's discipline extended to the
 /// only handler that resumes.
 #[no_mangle]
-extern "C" fn timer_interrupt() {
+extern "C" fn timer_interrupt(frame: &mut TrapFrame) {
     // SAFETY: the handler cannot be re-entered — it runs with interrupts masked
     // and nested interrupts are not enabled — so this is the only writer.
-    unsafe { TICKS = TICKS.wrapping_add(1) };
+    unsafe {
+        TICKS = TICKS.wrapping_add(1);
+        if frame.interrupted_a_process() {
+            PROCESS_TICKS = PROCESS_TICKS.wrapping_add(1);
+        }
+    };
     // SAFETY: the APIC page is mapped for as long as interrupts are enabled,
     // and a zero to the EOI register is how an interrupt is acknowledged.
     unsafe { write(EOI, 0) };

@@ -78,29 +78,50 @@ NOERR 31
  * interrupted, and a process that came back with a different register than it
  * left with would be a process the system corrupted. Callee-saved registers are
  * the C function's problem; these save the rest. */
+/* The timer stub saves *everything*, not only what the C ABI clobbers.
+ *
+ * Counting a tick needs nine registers saved. Choosing a different process to
+ * return to needs all fifteen, plus the frame the processor pushed, because
+ * what `iretq` reads is then not what the interrupt wrote. The frame this
+ * builds is laid out to match `TrapFrame` exactly, and its address is what the
+ * handler receives — so the step from "count a tick" to "resume someone else"
+ * is a change of what the handler writes, not of what it can reach. */
 .global timer_stub
 timer_stub:
-    push rax
-    push rcx
-    push rdx
-    push rsi
-    push rdi
-    push r8
-    push r9
-    push r10
+    push r15
+    push r14
+    push r13
+    push r12
     push r11
+    push r10
+    push r9
+    push r8
+    push rbp
+    push rdi
+    push rsi
+    push rdx
+    push rcx
+    push rbx
+    push rax
+    mov rdi, rsp            /* the frame, as the handler's one argument */
     sub rsp, 8              /* the call wants RSP 16-aligned before it */
     call timer_interrupt
     add rsp, 8
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rdx
-    pop rcx
     pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rbp
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
     iretq
 
 .global spurious_stub

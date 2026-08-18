@@ -210,6 +210,11 @@ pub fn exited(status: u64) -> bool {
     // process's own claim, and the event says which is which.
     tos_serial::puts(b"TOS.RUN.PROCESS_EXIT asserted_by=nucleus self_reported_status=");
     tos_serial::put_u32_decimal(status as u32);
+    // How much of the machine's time this process was on the processor, counted
+    // by the nucleus. A process cannot observe how long it was *off* it, so this
+    // is not a number it could have reported.
+    tos_serial::puts(b" ticks=");
+    tos_serial::put_u32_decimal(crate::apic::process_ticks() as u32);
     tos_serial::puts(b"\r\n");
     // SAFETY: `RETURN` was recorded before this process started and `RUNNING`
     // being true is what says so.
