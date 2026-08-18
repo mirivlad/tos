@@ -76,6 +76,26 @@ At `5edab35`, by reading the shipping code:
 
 ### Task 3: Two processes make progress
 
+**How the switch works, decided while Task 1 was built and written down here so
+that implementing it is not re-deriving it.** The timer stub already saves all
+fifteen registers plus the processor's frame, in `TrapFrame` order, and hands
+the handler its address. A context switch is therefore two writes and nothing
+clever: copy the interrupted frame into the current process's slot, copy the
+next runnable slot's frame into the interrupted frame, and load that process's
+`CR3`. The `iretq` at the end of the stub then returns into the other process —
+the stub does not know it changed its mind, because everything it reads is what
+the handler left.
+
+Death is the other direction and already exists: a process that exits or faults
+resumes the nucleus's captured context (`process_capture`/`process_resume`), so
+the scheduler's loop lives at CPL 0 and can enter any live process by `iretq`
+from its saved frame. Nothing needs a second mechanism.
+
+What is missing is the table: a slot holding `root`, `frame`, whether it is
+live, and the report region the nucleus drains for it — `REPORT_PHYS` and
+`REPORT_LENGTH` become per-slot — plus a `launch` that builds two processes
+before entering either.
+
 - [ ] More than one process exists at once, which the launcher cannot express
   today: `process::launch` runs one process to its end.
 - [ ] Round-robin over runnable contexts within one priority band, fixed
