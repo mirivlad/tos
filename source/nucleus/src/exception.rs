@@ -8,9 +8,15 @@ use core::arch::{asm, global_asm};
 use core::mem::size_of;
 use core::ptr::{addr_of, addr_of_mut, write_unaligned};
 
+use crate::apic;
 use tos_boot_protocol::RESULT_EXCEPTION;
 
 const EXCEPTION_VECTOR_COUNT: usize = 32;
+/// The IDT covers every vector the architecture can deliver, and all but the
+/// 34 this system claims are **absent**: an interrupt on an unclaimed vector is
+/// then a fault, which is what ADR-0049 §2 asks for. A shorter table would give
+/// the same answer by accident; this one gives it by decision.
+const IDT_ENTRIES: usize = 256;
 const DF_IST_INDEX: u8 = 1;
 const DF_IST_STACK_BYTES: usize = 16 * 1024;
 /// The stack a fault taken at CPL 3 lands on.
@@ -132,12 +138,19 @@ static mut DF_IST_STACK: AlignedStack = AlignedStack([0xa5; DF_IST_STACK_BYTES])
 static mut RING0_STACK: AlignedRing0Stack = AlignedRing0Stack([0xa5; RING0_STACK_BYTES]);
 static mut TSS: TaskStateSegment = TaskStateSegment::EMPTY;
 static mut GDT: [u64; 7] = [0; 7];
-static mut IDT: [IdtEntry; EXCEPTION_VECTOR_COUNT] = [IdtEntry::EMPTY; EXCEPTION_VECTOR_COUNT];
+static mut IDT: [IdtEntry; IDT_ENTRIES] = [IdtEntry::EMPTY; IDT_ENTRIES];
 
 // SAFETY: exception.S defines this exact 32-entry, 8-byte-aligned table in the
 // same nucleus image, with one non-returning stub address per vector 0..31.
 unsafe extern "C" {
     static exception_stub_table: [u64; EXCEPTION_VECTOR_COUNT];
+}
+
+// SAFETY: exception.S defines both stubs in this same nucleus image; each saves
+// what the C ABI does not, calls its handler and returns through `iretq`.
+unsafe extern "C" {
+    fn timer_stub();
+    fn spurious_stub();
 }
 
 /// Establish the nucleus-owned GDT/TSS and all Stage 1 exception gates.
@@ -176,12 +189,16 @@ pub unsafe fn install() {
         entry.set(handler, if vector == 8 { DF_IST_INDEX } else { 0 });
     }
 
+    // The two vectors ADR-0049 claims above 31, and no others.
+    IDT[apic::TIMER_VECTOR as usize].set(timer_stub as *const () as u64, 0);
+    IDT[apic::SPURIOUS_VECTOR as usize].set(spurious_stub as *const () as u64, 0);
+
     let gdt = DescriptorTablePointer {
         limit: (size_of::<[u64; 7]>() - 1) as u16,
         base: addr_of!(GDT) as u64,
     };
     let idt = DescriptorTablePointer {
-        limit: (size_of::<[IdtEntry; EXCEPTION_VECTOR_COUNT]>() - 1) as u16,
+        limit: (size_of::<[IdtEntry; IDT_ENTRIES]>() - 1) as u16,
         base: addr_of!(IDT) as u64,
     };
     load_gdt_and_segments(&gdt);

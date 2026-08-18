@@ -53,7 +53,7 @@ const DIVIDE_BY_16: u32 = 0b0011;
 /// spend the machine on interrupt entry. ADR-0049 leaves the concrete source
 /// and mode to the implementation; what it fixes is that there is one timer and
 /// that its purpose is preemption and timekeeping.
-const QUANTUM: u32 = 1_000_000;
+const QUANTUM: u32 = 100_000;
 
 /// Timer interrupts taken since the timer was started.
 ///
@@ -69,19 +69,6 @@ pub fn ticks() -> u64 {
     // returns from without leaving the value half-written — it is one aligned
     // `u64` store.
     unsafe { TICKS }
-}
-
-/// Reads one local APIC register.
-///
-/// SAFETY: `offset` is an architected register offset and the APIC page is
-/// mapped uncacheable.
-// SAFETY: the caller names an architected offset of a mapped device page.
-unsafe fn read(offset: u64) -> u32 {
-    // SAFETY: per the caller's contract; the access is 32-bit aligned, which is
-    // what the architecture requires of an APIC register.
-    unsafe {
-        core::ptr::with_exposed_provenance::<u32>((LOCAL_APIC + offset) as usize).read_volatile()
-    }
 }
 
 /// Writes one local APIC register.
@@ -135,7 +122,12 @@ pub unsafe fn start() {
     unsafe { mask_legacy_controller() };
     // SAFETY: `IA32_APIC_BASE` is architected; setting the enable bit leaves
     // the base address field as the firmware left it, which is the default.
-    unsafe { msr::write(IA32_APIC_BASE, msr::read(IA32_APIC_BASE) | APIC_GLOBAL_ENABLE) };
+    unsafe {
+        msr::write(
+            IA32_APIC_BASE,
+            msr::read(IA32_APIC_BASE) | APIC_GLOBAL_ENABLE,
+        )
+    };
     // SAFETY: the caller states the APIC page is mapped; these four writes are
     // the documented order — software-enable, divide, vector and mode, then the
     // count that starts it.

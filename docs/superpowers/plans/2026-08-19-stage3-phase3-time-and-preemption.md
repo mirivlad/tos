@@ -40,37 +40,37 @@ At `5edab35`, by reading the shipping code:
 
 ---
 
-### Task 1: A monotonic tick exists
+### Task 1: A monotonic tick exists — **done (2026-08-19)**
 
 **Files:**
 - Create: `source/nucleus/src/apic.rs`
 - Modify: `source/nucleus/src/exception.rs`, `source/nucleus/src/paging.rs`,
   `source/nucleus/src/syscall.rs`, `source/nucleus/src/main.rs`
 
-- [ ] The 8259 PIC is masked entirely and the local APIC is enabled, with its
+- [x] The 8259 PIC is masked entirely and the local APIC is enabled, with its
   registers mapped uncacheable — a cached write to a device register is a write
   whose arrival is nobody's promise.
-- [ ] One timer vector and one spurious vector are claimed above 31. Every other
+- [x] One timer vector and one spurious vector are claimed above 31. Every other
   vector above 31 stays absent, so an interrupt on one is a fault, which is what
   ADR-0049 §2 asks for and what the current 32-entry IDT already does by
   accident rather than by decision.
-- [ ] The handler does no allocation, takes no lock and performs no unbounded
+- [x] The handler does no allocation, takes no lock and performs no unbounded
   work: it increments a tick and acknowledges. It is the first handler in this
   system that returns.
-- [ ] `time_monotonic` returns that tick, and stops being the one assigned
+- [x] `time_monotonic` returns that tick, and stops being the one assigned
   operation this nucleus does not implement.
-- [ ] Interrupts are enabled once, after the substrate is initialized and before
+- [x] Interrupts are enabled once, after the substrate is initialized and before
   the first process is entered.
-- [ ] Evidence: a boot with the timer running reaches the same result with the
+- [x] Evidence: a boot with the timer running reaches the same result with the
   same events, and the tick observed by a process advances between two calls —
   measured by the process, which is the only party that can observe both.
 
-### Task 2: A process that does not yield is still interrupted
+### Task 2: A process that does not yield is still interrupted — **done (2026-08-19)**
 
-- [ ] The timer interrupt taken at CPL 3 returns through `iretq` to the
+- [x] The timer interrupt taken at CPL 3 returns through `iretq` to the
   interrupted process, which is a resumption the nucleus has never performed:
   every interrupt before this one was fatal.
-- [ ] A process spinning without a system call is interrupted, proven by a tick
+- [x] A process spinning without a system call is interrupted, proven by a tick
   that advances while it spins and by the boot completing afterwards.
 
 ### Task 3: Two processes make progress

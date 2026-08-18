@@ -389,6 +389,16 @@ pub fn build(
         }
         chunk += HUGE_SIZE;
     }
+    // The local APIC, in every address space this nucleus builds: a timer
+    // interrupt taken at CPL 3 runs the nucleus's handler without changing CR3,
+    // and that handler acknowledges the interrupt by writing a device register.
+    // Uncacheable, supervisor-only, and not executable.
+    space.map_page(
+        frames,
+        crate::apic::LOCAL_APIC,
+        crate::apic::LOCAL_APIC,
+        WRITABLE | NO_EXECUTE | CACHE_DISABLE | WRITE_THROUGH,
+    )?;
     Ok(space)
 }
 

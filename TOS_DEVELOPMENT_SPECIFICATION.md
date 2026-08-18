@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `af63e2962c3dcdff7699fe383a7a7fdf54cf38bd0118084bc5e2462249544e22`  
+Source-manifest SHA-256: `7798898fb88935632a2c4a72a401b467dfe23d5488b736bf92ebce89022ba3ec`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1606,6 +1606,7 @@ Emitted after the outcome, by the component that supplied the memory.
 |---|---|---|
 | `TOS.RUN.MEMORY` | `granted=` `peak=` `committed=` `blocks=` `free=` | The arena the run needed, against the region it was granted. |
 | `TOS.RUN.STACK` | `used=` `capacity=` | Stack the run actually used, measured, against the region it ran on. |
+| `TOS.RUN.TICKS` | `begin=` `end=` `waits=` | The monotonic tick the runtime read before and after the run. It counts timer interrupts (ADR-0049) and is not a duration: this contract carries no wall-clock time and no trusted time source. `waits` is how many reads the runtime made before the tick changed, and a run where it changed at all is a run the system interrupted and resumed. Absent when the system offers no tick. |
 | `TOS.RUN.UNSTARTABLE` | `reason=` | The runtime could not be started at all. No stage ran. |
 
 These are **implementation** figures and are never a statement about the module.

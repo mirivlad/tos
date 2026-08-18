@@ -71,6 +71,63 @@ NOERR 29
 NOERR 30
 NOERR 31
 
+/* The two handlers that return.
+ *
+ * Every stub above ends the boot, so none of them preserves anything. These do
+ * the opposite: an interrupt taken at CPL 3 goes back to the process it
+ * interrupted, and a process that came back with a different register than it
+ * left with would be a process the system corrupted. Callee-saved registers are
+ * the C function's problem; these save the rest. */
+.global timer_stub
+timer_stub:
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    sub rsp, 8              /* the call wants RSP 16-aligned before it */
+    call timer_interrupt
+    add rsp, 8
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+.global spurious_stub
+spurious_stub:
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    sub rsp, 8
+    call spurious_interrupt
+    add rsp, 8
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
 /* A table of addresses, not code. */
 .section .rodata
 .p2align 3

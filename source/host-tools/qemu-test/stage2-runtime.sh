@@ -104,6 +104,18 @@ if [ $((USED * MIN_STACK_HEADROOM_FRACTION)) -ge "$CAPACITY" ]; then
     fail "stack use $USED of $CAPACITY leaves less than the required headroom"
 fi
 
+# --- time moved while it ran ------------------------------------------------
+# ADR-0049: the timer interrupts a process and the process is resumed. A tick
+# that advanced between the runtime's two reads is that, measured from inside
+# the process — the only place both ends can be observed — and a tick that did
+# not advance would mean the process ran uninterruptible, which is the state
+# this system left when the timer was enabled.
+BEGAN=$(field TOS.RUN.TICKS begin)
+ENDED=$(field TOS.RUN.TICKS end)
+[ -n "$BEGAN" ] || fail "the runtime reported no monotonic tick"
+[ "$BEGAN" -gt 0 ] || fail "the tick was still zero when the process started"
+[ "$ENDED" -gt "$BEGAN" ] || fail "the tick did not advance while the process ran"
+
 # --- and it gave the memory back when it ended ------------------------------
 # ADR-0050 section 3: a dead process's frames return to the pool, cleared. The
 # grant alone is `granted` bytes, so a reclamation that returned fewer frames
@@ -119,3 +131,4 @@ echo "STAGE2-RUNTIME PASS: $EXPECTED_MODULE verified and executed on the boot pa
 echo "  value=$VALUE  accounting=${ACCOUNTING#TOS.RUN.ACCOUNTING }"
 echo "  arena peak=$PEAK of $GRANTED granted; stack used=$USED of $CAPACITY"
 echo "  reclaimed $RECLAIMED frames on exit; $AVAILABLE available to the pool"
+echo "  tick $BEGAN -> $ENDED while the process ran"

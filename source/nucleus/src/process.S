@@ -23,9 +23,13 @@ process_enter:
     mov qword ptr [rip + syscall_kernel_rsp], rsp
     push rcx                /* SS */
     push rsi                /* RSP */
-    push 0x2                /* RFLAGS: interrupts stay masked — nothing routes
-                               an interrupt yet, and IF=1 here would send the
-                               first stray one to a vector with no gate */
+    push 0x202              /* RFLAGS with IF set: a process runs interruptible,
+                               which is what makes it preemptible. Until the
+                               timer existed this was 0x2 — correct then, because
+                               nothing routed an interrupt and IF=1 would have
+                               sent the first stray one to a vector with no gate,
+                               and wrong the moment ADR-0049's timer was
+                               enabled. */
     push rdx                /* CS */
     push rdi                /* RIP */
     mov rdi, r8             /* the process's one argument */
