@@ -53,6 +53,7 @@ jobs:
           cargo build --release -p tos-capsule-tool
           cargo build --release -p tos-uefi-loader --target x86_64-unknown-uefi
           cargo build --release -p tos-nucleus --target x86_64-unknown-none
+          cargo build --release -p tos-runtime-image --target x86_64-unknown-none
 
       # Success path: exit 33 (HALT_OK) plus the required boot events in order.
       # The harness decides; this step just reports its verdict.

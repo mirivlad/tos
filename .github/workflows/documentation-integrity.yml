@@ -28,7 +28,16 @@ jobs:
               line.strip() for line in (root/'docs/SPECIFICATION_SOURCES.txt').read_text().splitlines()
               if line.strip() and not line.lstrip().startswith('#')
           }
-          adrs = {str(p) for p in (root/'docs/adr').glob('*.md')}
+          # Only *accepted* decisions belong in the consolidated view: a
+          # Proposed ADR carries no authority, and listing one would publish it
+          # as though it did. The check said "accepted" all along and compared
+          # every file, which made a correct repository fail.
+          def accepted(path):
+              return any(
+                  line.startswith('- Status:') and 'Accepted' in line
+                  for line in path.read_text().splitlines()
+              )
+          adrs = {str(p) for p in (root/'docs/adr').glob('*.md') if accepted(p)}
           missing = sorted(adrs - listed)
           if missing:
               raise SystemExit('accepted ADRs missing from specification manifest: ' + ', '.join(missing))
