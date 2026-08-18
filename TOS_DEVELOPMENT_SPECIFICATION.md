@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `f91f685801e3fc89e5cd561cffce43f0e66f7e1ca0ab4b501aae0dec3a965b82`  
+Source-manifest SHA-256: `af63e2962c3dcdff7699fe383a7a7fdf54cf38bd0118084bc5e2462249544e22`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -15751,6 +15751,766 @@ but this decision does not stand on it.
   current one does not, which is how this contradiction became visible.
 
 <!-- END docs/adr/0051-service-manifest-surface.md -->
+
+---
+
+<!-- BEGIN docs/adr/0052-module-level-constants.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0052: What a module-level `const` is
+
+- Status: **Accepted** (Project Architect-approved)
+- Date: 2026-08-12
+- Decision level: 2 — fixes the observable meaning of an accepted V1 item form,
+  and decides whether `tos-ir/v1` gains a representation for it
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-12
+
+## Decision
+
+**Option A. A module-level constant is a compile-time value.** In full:
+
+1. **Initializer.** A `const` initializer is a *constant expression*: a literal
+   of any scalar type; a `const_expression` as V1 already defines it, whose
+   `identifier` names another constant of the same module or an imported one;
+   or a record, enum tuple, named-field variant or array constructor whose
+   arguments are themselves constant expressions. Nothing else — no call, no
+   effect, no borrow, no capability. A capability was already forbidden by
+   docs/42 §2 and stays forbidden.
+2. **Meaning.** The constant *is* its value. Lowering substitutes that value at
+   each use. There is no module-initialization phase, no evaluation moment to
+   order, no trap to place and no resource to charge.
+3. **Across modules.** `pub const` is importable exactly as docs/42 §1 says.
+   The importing module substitutes the value during lowering, and the
+   exporting module's content id is already inside the importer's
+   `dependency_digest`, so changing an exported constant changes the importing
+   module's digest and invalidates its cache.
+4. **`tos-ir/v1` is unchanged.** A compile-time constant is consumed during
+   lowering, like a type. No named constant table and no constant import are
+   added, and this decision does not reopen the IR contract.
+5. **Diagnostic.** An initializer that is not a constant expression is
+   `E1224_NONCONSTANT_INITIALIZER`, reported at the check stage against the
+   initializer's span, with field `reason`. It is the residual for this
+   condition: an unknown name is still `E1202`, a wrong type is still the type
+   codes, and a capability in a `const` remains `E1502`.
+6. **Never widened into execution.** What is fixed is not the list of forms
+   but the property behind it: **an initializer may not cause anything to run.**
+   A later version may admit further *pure* forms — projection of a constant
+   aggregate, a constant conversion — because those do not create an evaluation
+   moment; each still needs its own compile-time rules, so each is its own small
+   decision. What is closed is the other direction. If a runtime-initialized
+   object is ever wanted, it arrives as its own item form with its own keyword,
+   its own initialization contract and its own accounting story — never by
+   relaxing what may initialize a `const`. Admitting a call later would silently
+   change *when* existing source evaluates, and source that changes meaning
+   without changing text is what a versioned language contract exists to
+   prevent.
+
+   V1 therefore excludes projection, indexing and conversion in an initializer
+   as well, and reports them under the same code. They are excluded for want of
+   rules, not because they execute.
+
+The normative statement of 1–4 goes in `docs/40` section 2 and the code in
+`docs/44`'s table; this ADR is the decision, those are the contract.
+
+Implementation order: within one module now, across modules with the Stage 3
+Phase 1 source-set step, which is the same step that binds an imported
+function's signature. Until that step exists, an imported constant is not
+resolvable and its use refuses at lowering with a named gap rather than being
+guessed.
+
+## The gap
+
+`const` is one of the six item forms the accepted V1 grammar admits:
+
+```text
+item       = visibility? resource_decl | visibility? record_decl
+           | visibility? enum_decl     | visibility? const_decl
+           | visibility? function_decl | visibility? extern_decl ;
+const_decl = "const" identifier ":" type "=" expression ";" ;
+```
+
+docs/42 section 1 puts constants in the cross-module surface twice: "`import
+a.b as c;` imports exported types, functions, and constants under `c`", and
+"items declare types, constants, resources, and functions only".
+
+Nothing else in the accepted set says what one *means*. docs/40 defines
+evaluation order, bindings, arithmetic and traps, and never mentions module-level
+constants. So the accepted contract does not answer:
+
+1. **What may initialize one.** The grammar says `expression`, not
+   `const_expression` — the restricted arithmetic form V1 uses for array sizes.
+   Read literally, a constant may be initialized by a call, an arithmetic
+   expression that can trap on overflow or division, or an aggregate
+   constructor.
+2. **When it is evaluated.** Once per module, or substituted at each use? The
+   two differ observably as soon as the initializer can trap: substitution traps
+   at the use site, evaluate-once traps before any function runs — at a point
+   V1 does not define, because V1 has no module-initialization phase.
+3. **What `pub const` exports.** docs/42 says constants are importable, and
+   `tos-ir/v1` has no way to carry one across a module boundary: `Import` names
+   a module and a binding, `Constant` is a scalar pool entry, and there is no
+   named module-constant table.
+
+## What is measured, not assumed
+
+Probed against the production frontend at `7b0847d`:
+
+- `pub const MANIFEST: Manifest = Manifest(provides: "…", restartable: true);`
+  parses, type-checks, lowers, verifies and executes — as long as nothing reads
+  it. The declaration is accepted and then dropped.
+- Reading it refuses at lowering. Before this ADR the refusal said
+  `construct=unbound place`, which describes a lowering data structure rather
+  than the source; it now says `construct=module-level const`.
+- `tos_ir::Constant` is `Unit | Bool | Int | Size | Duration | Text | Bytes`.
+  `Module.constants` is an unnamed pool of literal values used by instructions,
+  not a table of declared constants.
+
+So today an accepted declaration form is silently ignored, and any use of it is
+refused with a gap. That is honest but incomplete, and it is not a state the
+language should stay in.
+
+## Why this is a decision and not a fix
+
+Two of the three questions above are language semantics — what may initialize a
+constant and when it evaluates — and their answers are observable in traps and
+in evaluation order, which docs/40 fixes precisely for everything else.
+
+The third looked worse than it is, and the first draft of this ADR said so:
+making `pub const` importable, as docs/42 promises, appeared to require
+`tos-ir/v1` to carry a named constant and an import of one — an extension of a
+closed contract. That is true only if a constant is a runtime object. Section
+"What V1 already decided" below shows it is not, and the conclusion changes.
+
+## What V1 already decided
+
+The accepted contract is not silent about what kind of thing a constant is. It
+says so in the one place a constant is unavoidably used:
+
+- `array_type = "array" "<" type "," const_expression ">"`, and
+  `const_primary = integer | size | identifier | "(" const_expression ")"`;
+- docs/40: "`array<T, N>` takes one type argument and one **compile-time** `size`
+  constant".
+
+The `identifier` admitted in a `const_expression` can only be a named constant:
+V1 grants no user generics, so there is nothing else a name in that position
+could denote. So V1 already requires **some** module-level constant to be
+evaluable at compile time — otherwise `array<T, CAPACITY>` cannot be written,
+and the grammar admits it.
+
+**"Some" is the exact strength of this argument, and it is worth not
+overstating.** It does not follow that *every* `const` must be compile-time. A
+language may hold one form that is compile-time and another that is a runtime
+object — C++ separates `const` from `constexpr`, Rust separates `const` from
+`static` — and it may equally hold a single runtime form with a narrower
+syntactic rule for the array-size position alone. Both are coherent designs, and
+option B below is stated in that stronger form rather than the strawman the first
+draft attacked.
+
+What the argument does settle is that a design in which `CAPACITY` is a runtime
+object *everywhere* is not available: the array-size position needs a
+compile-time value, and something has to supply it.
+
+Given a compile-time form, question 2 answers itself: a value computed at
+compile time has no evaluation moment to place, no trap to order and no
+accounting to charge.
+
+It also dissolves question 3. A compile-time constant does not need to exist in
+the IR at all — like a type, it is consumed during lowering. A `pub const`
+imported by another module is resolved by the same source-set step that binds an
+imported function's signature: the importer substitutes the value, and the
+exporter's content id is already inside the importer's `dependency_digest`, so
+changing the constant changes the importing module's digest and invalidates its
+cache. docs/42's promise is kept, and `tos-ir/v1` is untouched.
+
+## What neither option is
+
+A reader comparing the two naturally asks whether the runtime option lets a
+constant be initialized from something supplied at launch. It does not, and the
+question is worth answering in the ADR because the answer is a property of the
+language rather than of either option.
+
+A module has no parameters. Nothing is passed to it. Under B an initializer runs
+before any function runs, so the only things it can read are literals, other
+constants and its own imports — the same inputs A has, with the addition that it
+may *compute* over them by calling functions. B buys computation, not
+configuration.
+
+Values that genuinely come from outside arrive by a different route, and V1
+already fixes it: a launcher grants authority as a capability, and docs/42 §2
+states in terms that a capability "cannot be a `const`, record field, serialized
+value, numeric conversion, equality key, or deserialized replacement". A module
+that must behave differently per deployment reads that difference through a
+capability operation or, from Stage 5, through `/config` — never through a
+constant, under either option here.
+
+The distinction matters for a second reason. Under A a launcher can read a
+module's constants **before** starting it, from source or from the lowered
+module, which is the same property ADR-0051 relies on when it has the launcher
+decide a capability grant from the verified module image. Under B a constant's
+value does not exist until the module has run, so it cannot participate in any
+decision made before launch.
+
+## Options
+
+**A — a constant is a compile-time value.** The initializer is a
+`const_expression` — the arithmetic form V1 already defines — extended to
+literals of every scalar type, and to record, enum and array constructors whose
+arguments are themselves constant. No calls, no effects, nothing that can trap
+or observe anything. Lowering substitutes the value at each use, including
+across a module boundary, so `pub const` is importable as docs/42 says.
+
+Written out, that admits everything a systems module actually wants:
+
+```tos
+pub const PAGE:     size   = 4096;
+pub const WINDOW:   size   = PAGE * 4;
+pub const ENDPOINT: string = "net.adapter.v1";
+pub const LIMITS:   Limits = Limits(depth: 8i32, width: 4i32);
+
+pub fn buffer() -> array<u8, WINDOW> { … }
+```
+
+A carries one further clause, which exists because of what it forecloses: **the
+initializer form is not widened later.** If a runtime-initialized object is ever
+wanted, it arrives as its own item form with its own keyword, its own
+initialization contract and its own accounting story — never by relaxing what
+may initialize a `const`. Widening it later would silently change *when* existing
+source evaluates, and source that changes meaning without changing text is the
+one outcome a versioned language contract exists to prevent.
+
+*Cost:* a constant cannot be the result of a call, and an aggregate constant is
+constructed at each use rather than once. Neither is free, and both are stated
+below rather than buried.
+
+**B — a constant is a runtime object, with a compile-time rule for array sizes.**
+`const` denotes a value initialized once before any function runs, admitting an
+arbitrary expression; the array-size position separately requires its identifier
+to name a constant whose initializer is a literal constant expression. This is
+coherent, and it is roughly where C++ stood before `constexpr`.
+
+*Cost, in two parts.* The first is that `const` means two different things
+depending on where it is read, and the reader must know the position to know
+which. `array<u8, CAPACITY>` compiles or does not depending on how `CAPACITY`
+was written, and the diagnostic for the bad case has to explain a distinction the
+declaration itself does not show.
+
+The second is architectural: a module-initialization phase V1 does not have,
+executing source **outside any function's declared resource envelope and outside
+any verifier receipt bound to a call** — the two properties Stage 2 closed on.
+It would also need a defined initialization order across a dependency closure,
+and initialization order between compilation units is a famous defect source in
+every language that has it.
+
+B is a live option; it is not the cheap one and it is not obviously the nicer
+language, but it is the one that eventually gives a service a real shared,
+once-computed table. A chooses to make that a separate, explicit, later decision
+instead of the default meaning of the word `const`.
+
+**C — remove `const` from the V1 surface.** Not a live option, and it is listed
+only so its absence is not mistaken for an oversight: it would change the
+accepted grammar, contradict docs/42 twice, and delete the only form that can
+supply the `identifier` the array-size grammar already admits. An option list
+padded with a non-option to look balanced is its own kind of dishonesty.
+
+## Recommendation
+
+**A** — as one of two live options, not as the only survivor.
+
+The choice between A and B is not about what is cheap to build; both are
+implementable. It is about which of two things the word `const` should mean, and
+about when TOS is willing to execute source outside its own accounting.
+
+A says a constant is a value the compiler knows, and takes as its cost that a
+constant cannot be computed by running something. B says a constant is an object
+the system creates, and takes as its cost a phase in which source runs with no
+declared resource envelope and no verifier receipt — plus a `const` whose
+meaning depends on where it is read, since the array-size position still needs a
+compile-time value.
+
+The recommendation is A because those two costs are not comparable in this
+system. "You cannot call a function to build a constant" is a restriction a
+programmer meets at the declaration, reads in one diagnostic, and works around
+in one line. "Some source executes before anything is accounted for or verified"
+is an exception to the two properties Stage 2 was closed on, and exceptions to
+those do not stay small.
+
+If the Project Architect wants the runtime object, B is the honest way to get
+it, and it should be taken deliberately with its initialization contract written
+first — not arrived at by letting `const` quietly widen.
+
+## What each option costs a working system
+
+Stated concretely, because "compile-time versus runtime" understates how
+differently the two behave in this system.
+
+| | A | B |
+|---|---|---|
+| When the value exists | at lowering | after the module's initializer runs |
+| Readable before launch | yes — from source and from the module image | no |
+| In the module digest | yes: changing it changes the digest and invalidates the cache | no: only the code that computes it is |
+| Startup | unchanged | gains an initialization phase that can fail |
+| Failure modes at start | `CapabilityDenied` | `CapabilityDenied`, plus a trapping initializer, plus an unsatisfiable initialization order |
+| Resource accounting | none to charge | initializer work is charged to nothing V1 defines |
+| Process memory | none; values are substituted | constants occupy the process's grant for its lifetime |
+| Ordering across a closure | none | a defined order, and a diagnostic for cycles |
+| What a programmer gives up | a constant computed by a call | nothing, at the cost of everything in this column |
+
+The rows about the module digest and about readability before launch are the
+ones specific to TOS rather than to language design in general, and they point
+the same way. A constant that is part of the module digest makes cache
+invalidation exact — change the number, get a different module identity. A
+constant a launcher can read before starting a process is a constant that can
+take part in a launch decision, which is how ADR-0051 has manifests work.
+
+Under A, a table that genuinely needs computing is computed by a function and
+passed, or — from Stage 3 — computed once by a service and served over IPC. The
+expressiveness gap is real and it is bounded.
+
+The honest cost of A is stated plainly: no `const` computed by a function, and
+an aggregate constant paid for at each use. The first is a real restriction that
+a later language version may lift with a proper compile-time-evaluation model —
+which is a much larger and better-founded decision than smuggling one in through
+an initializer. The second is a code-size question, not a semantics question,
+and an optimizer may share identical constructions later without changing what
+the source means.
+
+Under A the implementation work is Level 1: restrict the checker to constant
+initializers with a diagnostic for anything else, and substitute at use in
+lowering, including across a module boundary through the Phase 1 source-set
+step. The diagnostic code is part of this decision, not an implementation
+choice, and is assigned when the option is chosen.
+
+## Boundary
+
+Nothing is implemented under this ADR until it is accepted. The current state —
+declaration accepted, use refused with a named gap — is the honest interim, and
+Stage 3 Phase 1 scopes itself to function imports so that it does not depend on
+the answer.
+
+## Revision note
+
+The first draft of this ADR recommended A partly on cost: it kept `tos-ir/v1`
+closed and avoided work. That was a weak reason for a language decision, and the
+Project Architect asked whether the recommendation came from ease of
+implementation or from what makes a better language.
+
+Re-examined on the language question, the recommendation stands and two of its
+terms change. The initializer is V1's own `const_expression` rather than
+literals only, because `const BUFFER: size = PAGE * 4;` is a legitimate and
+common pattern that the array-size grammar already admits — forbidding it would
+have made a worse language to save an implementation from constant folding. And
+cross-module constant import is kept rather than narrowed out of docs/42,
+because a compile-time constant needs no IR representation to cross a module
+boundary. The cost argument turned out to be an artifact of assuming a constant
+is a runtime object.
+
+A second question followed — whether one option was now left. It was not, and
+the revision that produced the answer had overstated its own argument. The
+array-size grammar proves that *some* constant must be compile-time, not that
+every one must be; a language may carry two forms, or one runtime form with a
+narrower rule for array sizes. B is therefore restated in its strongest form
+rather than as the strawman the previous draft attacked, C is marked as the
+non-option it is instead of padding the list, and A gains the clause that its
+initializer is never widened later — which is the property the question
+surfaced, and the one that keeps existing source from changing meaning without
+changing text.
+
+<!-- END docs/adr/0052-module-level-constants.md -->
+
+---
+
+<!-- BEGIN docs/adr/0053-runtime-image-delivery-and-identity.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0053: How the ring-3 runtime image reaches the machine
+
+- Status: **Accepted (option B)** (Project Architect-approved)
+- Date: 2026-08-17
+- Decision level: 3 — it decides whether a Stage-1-closed contract admits a
+  derived binary artifact, and it either confirms or narrows a sentence of the
+  accepted ADR-0048
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-17
+
+## Decision
+
+**Option B. The loader delivers the runtime image beside the capsule.** In full:
+
+1. **Delivery.** The image is a file on the ESP, read by the loader exactly as
+   `nucleus.bin` is. The loader copies it into reserved memory, digests it, and
+   names the range and the digest in the handoff record.
+2. **Handoff.** `BOOT_ABI_V1` moves to **minor version 1**: the record gains
+   `runtime_phys`, `runtime_length` and `runtime_digest`. A v1.0 nucleus rejects
+   a v1.1 record under the existing rule ("unknown minor with same major is
+   rejected"), so the extension fails closed in both directions.
+3. **Absence is legal and is not a guess.** A record whose three fields are zero
+   declares that no runtime image was supplied. The nucleus then launches no
+   process and says so, rather than substituting one.
+4. **Identity.** The runtime image keeps an identity of its own — the digest the
+   loader computed and the nucleus re-verified — and that is what
+   `PROCESS_IDENTITY_V1` §3's *runtime engine id* reports. It is not the
+   nucleus's identity and is never derived from it.
+5. **ADR-0048 is narrowed.** Its sentence "the capsule must carry the runtime
+   image" is replaced by: *the boot path must deliver the runtime image with a
+   verified identity, and Stage 3 does so through the handoff record.* The rest
+   of that consequence — a per-process derived artifact whose provenance rules
+   apply in full, whose identity is reported — stands unchanged.
+6. **The launch surface is versioned from its first commit.** The record a
+   nucleus passes to a runtime image is a boundary between two independently
+   delivered artifacts, so it carries a version and a nucleus refuses an image
+   that declares another (AGENTS.md §8).
+
+## Context
+
+ADR-0048 moved TOS Core execution to CPL 3, one runtime instance per process,
+and stated the consequence in a sentence that is now load-bearing:
+
+> **The engine becomes a per-process derived artifact with an identity.** A
+> ring-3 runtime is a binary loaded into each process. […] the capsule must
+> carry the runtime image, its identity must be reported, and it is a derived
+> artifact whose provenance rules (AGENTS.md §9) apply in full.
+
+Stage 3 Phase 2 has reached the task that implements it. Tasks 1–3 built the
+substrate underneath: the nucleus owns physical frames, builds its own address
+space, and a payload has executed at CPL 3 and called back through
+`SYSTEM_ABI_V1`. What is missing is the thing that should be running there.
+
+## The gap, measured rather than assumed
+
+The capsule *format* does not forbid binary content: `CAPSULE_FORMAT_V1` §9
+requires UTF-8 of path names and of the licence-notice block, and says nothing
+about file content. What forbids it is everything built on top of the format:
+
+| Fact | Where |
+|---|---|
+| Every manifest entry is verified to be the exact bytes of a **committed git blob** (`git cat-file blob <commit>:<path>`) | `host-tools/capsule/src/main.rs`, `verify_committed` |
+| Every manifest entry must carry an **inline `SPDX-License-Identifier`** in its own text, or the build fails | same file, `spdx_expression` |
+| The provenance sidecar records each entry as a **source material**: repository path, content digest, SPDX expression | `CAPSULE_PROVENANCE_V1`, `Material` |
+| A capsule file carries one flag bit, boot-canonical; there is **no way to say "this is derived, not source"** | `CAPSULE_FORMAT_V1` §5 |
+
+A build output is none of those things. It is not a git blob — and committing
+one would contradict the project's own identity, which rests on *canonical
+human-readable installed source* and *disposable derived executable artifacts*.
+It cannot carry an inline SPDX line without ceasing to be the bytes the linker
+produced. And offered through today's file table it would be indistinguishable,
+to any reader of the capsule, from canonical source.
+
+So the sentence in ADR-0048 cannot be implemented as written without changing a
+Stage-1-closed contract. That is the decision this ADR asks for, and it is not
+one an implementation may take by choosing the convenient path quietly.
+
+## What is not in question
+
+- The runtime image exists and is per-process. ADR-0048 settled that.
+- Its identity is reported in the process identity record, as
+  `PROCESS_IDENTITY_V1` §3 requires, asserted by the nucleus or the launcher —
+  never self-reported.
+- It is a derived artifact under AGENTS.md §9: traceable to source inputs,
+  commit, builder version, target ABI and output digest, and reproducible.
+- Whatever carries it, the boot capsule stays a transport and recovery seed and
+  does not become a second installed system.
+
+## Options
+
+### A — the capsule carries it, and the format learns to say what it is
+
+`CAPSULE_FORMAT_V1` gains a file-class distinction: a file is *canonical source*
+or *derived artifact*, and a reader can tell which. `CAPSULE_PROVENANCE_V1`
+gains a second record kind whose fields are AGENTS.md §9's: source inputs,
+commit, builder version, target ABI, output digest, and an R0 reproducibility
+statement. The builder's identity gate stops asking a derived artifact to be a
+git blob and starts asking it to be *reproducible from named inputs*, which is
+the honest analogue and which the project already claims for the loader and the
+nucleus.
+
+This is what ADR-0048 says, made implementable.
+
+**Costs.** Two Stage-1 contracts change (format: a flag; provenance: a record
+kind), the builder CLI grows a manifest entry kind, and the provenance gates
+grow a second path. The capsule format version question has to be answered
+honestly: adding a file class is a compatible extension only if every existing
+reader refuses an unknown class rather than reading it as source — which the
+current parser does not do, because there is nothing to refuse yet.
+
+**What it buys.** One artifact still carries everything a machine needs to boot,
+which is the whole point of the capsule. Recovery stays a single-file story. The
+runtime image's identity comes out of the same record as the boot module's, so
+"which engine ran this" is answered from the artifact rather than from the
+system that happened to load it.
+
+### B — the loader hands it over beside the capsule
+
+`BOOT_ABI_V1` gains a physical range and a digest for the runtime image, in the
+handoff record's reserved extension field. The image sits on the ESP next to the
+capsule, and the loader validates its digest the way it validates the capsule's.
+
+**Costs.** A second file becomes necessary to boot. The recovery seed is no
+longer one object, and every statement of the form "this capsule is the system"
+acquires a footnote. It also contradicts ADR-0048's sentence, so that sentence
+must be narrowed either way.
+
+**What it buys.** The capsule format and its provenance model are untouched, and
+the boot ABI's extension field is exactly where an extension belongs.
+
+### C — the nucleus artifact carries it as an opaque section
+
+The runtime image is built as its own ring-3 binary and embedded in the nucleus
+artifact, which already is a derived artifact with reproducible provenance. The
+nucleus maps it into each process and reports its digest as the runtime engine
+id. Nothing in the capsule format, the provenance sidecar or the boot ABI
+changes.
+
+Note what this also does, which is not incidental: today the nucleus *links*
+`tos-pipeline` and executes a parser, a checker, a lowering pass, a verifier and
+an interpreter at CPL 0. Under C the nucleus stops linking any of it and carries
+it as bytes it never executes. The trusted base gets smaller in the sense that
+matters — what runs in ring 0 — while the artifact gets larger.
+
+**Costs.** It contradicts ADR-0048's sentence and needs it narrowed: the capsule
+would not carry the runtime image in Stage 3. A capsule alone would then no
+longer be sufficient to describe what will execute — the nucleus artifact is a
+second input to that answer, and the identity record has to say so plainly
+rather than implying the capsule accounted for everything.
+
+**What it buys.** No closed contract changes, and the decision about how a
+capsule carries derived artifacts is deferred to the stage that has a real
+second case for it (Stage 5's repository-backed `/system`), rather than being
+designed now around a single consumer.
+
+## Two facts found after the first draft, which move the recommendation
+
+The first draft recommended A on the strength of "one artifact carries
+everything, so recovery is a single-file story". Checking the accepted documents
+rather than assuming shows that argument is false, and turns up a second one
+against A.
+
+**The recovery set is already two objects, and the accepted documents say so.**
+docs/04 lists a recovery environment consisting of *a trusted nucleus image* and
+*a minimal immutable capsule*, and states plainly: "The nucleus is the binary
+exception. Its source belongs in the system repository, but the executable image
+is derived." The ESP already carries three artifacts — the loader, `nucleus.bin`
+and `capsule.bin` — and the nucleus's bytes are in no capsule and under no
+capsule digest. So a derived boot binary delivered *outside* the capsule is not
+a new category this ADR would invent; it is the category the architecture
+already has, with a rule already written for it (deterministic build, associated
+with source commit and toolchain identity, installed into a boot slot,
+rollback preserves the previous slot).
+
+**Putting a build output inside the capsule weakens what the capsule proves.**
+In `--git-commit` mode every capsule byte is verified to equal a committed blob,
+which is what makes the capsule digest a statement about *source*. A derived
+artifact cannot be verified that way — it can only be verified by rebuilding —
+so under A the capsule's identity acquires a dependency on toolchain
+reproducibility that it does not have today. That is a real reduction in a
+Stage-1 property, paid for a delivery convenience.
+
+## Revised recommendation
+
+**B**, with **C** as the cheaper answer if the runtime is never expected to vary
+independently of the nucleus in Stage 3.
+
+B puts the runtime image where the architecture already puts derived boot
+binaries, uses the extension field `BOOT_ABI_V1` reserved for exactly this, and
+leaves the capsule's proof about source untouched. It also keeps the one thing
+ADR-0048 made load-bearing: the runtime engine id is a *separate* identity from
+the nucleus's. Under C those two collapse into one — "which engine executed
+this" becomes "which nucleus", a field `PROCESS_IDENTITY_V1` §3 asks for
+separately becomes a restatement of another field, and an owner who wants to
+boot a modified TOS Core runtime through the documented research path must
+rebuild the nucleus to do it.
+
+A is now rejected rather than recommended: it costs the most, changes two closed
+contracts, and pays for it by making the capsule digest depend on a build.
+
+C remains coherent and is the smallest change by a wide margin. It requires
+ADR-0048's sentence narrowed, the identity record to say in the log that the
+runtime image came from the nucleus artifact, and an accepted answer to the
+question it defers: what happens when a process needs a runtime the nucleus was
+not built with.
+
+## What each option costs to build
+
+Measured against the tree at `77369c5`, where the nucleus links the whole
+language stack and executes it at CPL 0. Symbol bytes in the nucleus image
+today: `tos-core` 527 KB, `tos-pipeline` 49 KB, `tos-engine` 40 KB,
+`tos-verifier` 32 KB, `tos-ir` 28 KB — about 675 KB of the 934 KB artifact.
+**Every option moves all of it out of ring 0**; that is ADR-0048's doing, not a
+distinguishing feature of any option here.
+
+| | A — capsule | B — beside the capsule | C — inside the nucleus |
+|---|---|---|---|
+| Contracts changed | `CAPSULE_FORMAT_V1` (file class), `CAPSULE_PROVENANCE_V1` (a second `role`), ADR-0048 confirmed | `BOOT_ABI_V1` (reserved extension field), ADR-0048 narrowed | ADR-0048 narrowed |
+| Code | capsule parser flag + validation, builder manifest kind, git-blob gate exception, provenance checker role, vector fixtures regenerated | `BootInfo` field + validation, loader read and digest, nucleus mapping | build wiring, nucleus embeds and reports a digest |
+| Old readers | refuse the new capsule (`BadFileFlags`) — fails closed, but every existing nucleus stops booting new capsules | ignore the extension field; an old nucleus boots but finds no runtime | unaffected |
+| Build steps | runtime image must exist before the capsule is built | runtime image must exist before the ESP is made | runtime image must exist before the nucleus is linked |
+| Recovery | 3 objects (loader, nucleus, capsule) | 4 objects | 3 objects |
+| Runtime identity | its own, from the capsule record | its own, from the handoff record | the nucleus's |
+| Replaceable alone | yes, by rebuilding the capsule | yes, by replacing one file | no |
+
+## Boundary
+
+Phase 2 Task 4 does not proceed until this is decided. Tasks 1–3 are complete
+and independent of it; Task 5 (the first process) needs an image to launch and
+therefore needs this answer, though the nucleus-side launch mechanism — address
+space, grant, entry — does not depend on which option is chosen.
+
+<!-- END docs/adr/0053-runtime-image-delivery-and-identity.md -->
+
+---
+
+<!-- BEGIN docs/adr/0054-process-completion.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0054: How a process says it is finished
+
+- Status: **Accepted (option A)** (Project Architect-approved)
+- Date: 2026-08-17
+- Decision level: 2 — it adds an operation to an accepted interface contract, or
+  decides that no operation is added and completion is observed some other way
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-17
+
+## Decision
+
+**Option A. `process_exit` is operation 12 of `SYSTEM_ABI_V1`, self only.** In
+full:
+
+1. It takes a status value, requires no capability because it applies to
+   nothing but the caller, and does not return.
+2. The **fact** of the exit and **when** it happened are asserted by the
+   nucleus. The **status** is the process's own claim about itself, labelled as
+   such wherever it appears, and it is never the audit record
+   (`PROCESS_IDENTITY_V1` §2).
+3. A process that exits releases what it held: its address space, its grant and
+   its frames, cleared before reuse (ADR-0050 §3).
+4. The number 12 is spent. `SYSTEM_ABI_V1` §7 forbids reusing it for anything
+   else, ever.
+
+## Context
+
+`SYSTEM_ABI_V1` §5 lists eleven operations. A process ends in exactly two ways
+under the accepted contracts:
+
+- `process_terminate`, which requires *a process-authority capability for that
+  process* — authority a process does not hold over itself, and which in Stage 3
+  is held by a supervisor;
+- a fault, which ADR-0049 §3 says terminates the process and leaves the system
+  running.
+
+There is no third way. A process that runs to the end of its work and has
+nothing more to do cannot say so, and cannot report what it produced.
+
+This was predicted before the code reached it — the Phase 2 plan records it as
+"a boundary this phase is expected to reach" — and checking the four accepted
+contracts confirms it: `SYSTEM_ABI_V1`, `CAPABILITY_V1`, `IPC_V1` and
+`PROCESS_IDENTITY_V1` contain no self-exit, no exit status and no completion
+event.
+
+It becomes blocking at the first process. `/system/boot/init.tos` returns
+`i32:240` today, at CPL 0, and the boot log reports it. Once init is a process,
+that value is computed on the far side of the isolation boundary, and there is
+no contractual way for it to come back — nor for the boot to know that init
+finished rather than hung.
+
+## What must not be done about it
+
+An operation invented at the edge because the boot needed one. The whole of
+Stage 3's authority story is that an operation reachable without a capability is
+a design defect (`SYSTEM_ABI_V1` §5), and "except this one, which we needed"
+is how that story ends.
+
+Equally: reporting completion by making the process fault deliberately. A fault
+is evidence of something going wrong, and a system that manufactures one to mean
+"finished" has destroyed the only signal it had.
+
+## Options
+
+### A — a self-only `process_exit` operation
+
+A twelfth operation, in the same class as `context_yield` and `time_monotonic`:
+*self only*, requiring no capability because it can be applied to nothing but
+the caller. It takes a status value, does not return, and the nucleus emits the
+completion in the audit record and makes it available to whoever holds process
+authority over the process.
+
+Consistent with §5's structure — the self-only class already exists and is
+already justified there — and with the rule that authority is a handle: exiting
+requires no authority over anyone, and confers none.
+
+Costs: an accepted contract gains an operation. `SYSTEM_ABI_V1` §7 permits that
+under a minor version, with the number assigned once and never reused. The
+status value's domain has to be fixed (a value a process chooses is a claim by
+the process, and `PROCESS_IDENTITY_V1` §2 requires that self-reports are
+labelled as such and are never the audit record — so the *fact* of exit is the
+nucleus's assertion, the *status* is the process's claim).
+
+### B — completion is an IPC event to a supervisor
+
+No new operation. A process ends by making a call on an endpoint its supervisor
+gave it, and the supervisor — holding process authority — terminates it.
+Completion becomes an ordinary message, and the audit record is the
+supervisor's.
+
+Consistent with "if an operation could be a service, it is a service"
+(`SYSTEM_ABI_V1` §2), and it keeps the ABI at eleven operations.
+
+Costs: it requires IPC, endpoints and capability transfer to exist — none of
+which Phase 2 has — and it requires a supervisor to exist before the first
+process can finish. The first process in the system has no supervisor by
+construction, so B answers every case except the one that is blocking now.
+It also makes an unsupervised process unable to exit at all, which turns "no
+supervisor" into "runs forever".
+
+### C — the first process does not finish
+
+Init does not return. It becomes the supervisor, and the boot's terminal result
+is decided by what it launches rather than by init returning a value. The
+question is deferred to the stage that has services to supervise.
+
+Costs: it changes what the Stage 2 evidence means. `value=i32:240` is the result
+of a module that returns; a module that never returns cannot report it, so
+either the boot evidence changes shape at exactly the moment the execution
+boundary moves — which is the one thing Phase 2's constraints forbid, because
+then no one can say which change did what — or init keeps returning and the
+question comes back unanswered.
+
+## Recommendation
+
+**A**, with the status value labelled as a self-report.
+
+It is the smallest addition that makes the ordinary case expressible, it fits
+the class §5 already has, and it does not require a supervisor to exist before a
+process can end. B is right about services and wrong about bootstrap: the first
+process cannot ask a supervisor that does not exist. C is not a decision but a
+postponement, and it pays for the postponement in the one currency this phase
+cannot spend — the comparability of the Stage 2 result across the boundary move.
+
+If A is accepted, the operation is number 12, `process_exit`, self-only, taking
+a status value, not returning; the nucleus asserts *that* the process exited and
+*when*, the process claims *with what*, and the two are never merged.
+
+## What each option costs to build
+
+| | A — `process_exit` | B — IPC to a supervisor | C — init never finishes |
+|---|---|---|---|
+| Contracts changed | `SYSTEM_ABI_V1` gains operation 12 (minor version); `PROCESS_IDENTITY_V1` gains an exit record | none | none, but the Stage 2 evidence changes shape |
+| Code before the first process can finish | the dispatcher arm, and a return path into the nucleus — which Task 6 needs anyway, because a fault at CPL 3 must return to the nucleus rather than halt the machine | endpoints, capability table, capability transfer, a supervisor process: the whole of Phase 3 | none |
+| Unsupervised process | can end | cannot end, ever | cannot end, by design |
+| What the boot log can say | `init exited, status 240`, with the fact asserted by the nucleus | nothing until a supervisor exists | nothing about a result |
+| Reversible later | yes — an operation number is spent, and that is the whole cost | — | no: the deferral has to be undone by A or B eventually |
+
+The marginal cost of A is small **because of where Phase 2 already is**: the
+mechanism that takes control back from a process is required by Task 6 for
+faults, and `process_exit` is the same mechanism reached by a different door.
+
+## Boundary
+
+Phase 2 Task 5 (the first process) cannot report its result until this is
+decided. The launch itself — address space, grant, entry at CPL 3 — does not
+depend on it, and neither does ADR-0053.
+
+<!-- END docs/adr/0054-process-completion.md -->
 
 ---
 
