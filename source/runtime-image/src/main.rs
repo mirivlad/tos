@@ -311,14 +311,23 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
     // process was resumed afterwards. It is bounded, because a process that
     // cannot be interrupted must say so rather than hang.
     if let Some(began) = began {
-        let mut ended = began;
-        let mut attempts = 0u64;
-        while ended == began && attempts < 200_000 {
-            ended = monotonic().unwrap_or(began);
-            attempts += 1;
+        let ended = monotonic().unwrap_or(began);
+        // Then the same question asked without asking the nucleus anything. The
+        // loop below makes no system call at all, so a tick that is larger after
+        // it than before it can only have been advanced by an interrupt taken
+        // while this process was running its own instructions — which is the
+        // claim, and which "the tick moved between two of my calls" does not
+        // make. `black_box` is what keeps the loop from being optimised into the
+        // nothing it computes.
+        let spin_began = monotonic().unwrap_or(0);
+        let mut sum = 0u64;
+        for step in 0..20_000_000u64 {
+            sum = core::hint::black_box(sum.wrapping_add(step));
         }
+        let spin_ended = monotonic().unwrap_or(0);
         report.line(&alloc::format!(
-            "TOS.RUN.TICKS begin={began} end={ended} waits={attempts}"
+            "TOS.RUN.TICKS begin={began} end={ended} spin_begin={spin_began} \
+             spin_end={spin_ended}"
         ));
     }
 

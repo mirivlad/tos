@@ -112,9 +112,16 @@ fi
 # this system left when the timer was enabled.
 BEGAN=$(field TOS.RUN.TICKS begin)
 ENDED=$(field TOS.RUN.TICKS end)
+SPIN_BEGAN=$(field TOS.RUN.TICKS spin_begin)
+SPIN_ENDED=$(field TOS.RUN.TICKS spin_end)
 [ -n "$BEGAN" ] || fail "the runtime reported no monotonic tick"
 [ "$BEGAN" -gt 0 ] || fail "the tick was still zero when the process started"
 [ "$ENDED" -gt "$BEGAN" ] || fail "the tick did not advance while the process ran"
+# The stronger half: the loop those two bracket makes no system call, so a tick
+# that grew across it was advanced by an interrupt taken while the process ran
+# its own instructions.
+[ "$SPIN_ENDED" -gt "$SPIN_BEGAN" ] ||
+    fail "the tick did not advance while the process spun without calling anything"
 
 # --- and it gave the memory back when it ended ------------------------------
 # ADR-0050 section 3: a dead process's frames return to the pool, cleared. The
@@ -131,4 +138,4 @@ echo "STAGE2-RUNTIME PASS: $EXPECTED_MODULE verified and executed on the boot pa
 echo "  value=$VALUE  accounting=${ACCOUNTING#TOS.RUN.ACCOUNTING }"
 echo "  arena peak=$PEAK of $GRANTED granted; stack used=$USED of $CAPACITY"
 echo "  reclaimed $RECLAIMED frames on exit; $AVAILABLE available to the pool"
-echo "  tick $BEGAN -> $ENDED while the process ran"
+echo "  tick $BEGAN -> $ENDED while the process ran; $SPIN_BEGAN -> $SPIN_ENDED while it spun without calling anything"

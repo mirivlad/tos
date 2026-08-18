@@ -124,7 +124,7 @@ Emitted after the outcome, by the component that supplied the memory.
 |---|---|---|
 | `TOS.RUN.MEMORY` | `granted=` `peak=` `committed=` `blocks=` `free=` | The arena the run needed, against the region it was granted. |
 | `TOS.RUN.STACK` | `used=` `capacity=` | Stack the run actually used, measured, against the region it ran on. |
-| `TOS.RUN.TICKS` | `begin=` `end=` `waits=` | The monotonic tick the runtime read before and after the run. It counts timer interrupts (ADR-0049) and is not a duration: this contract carries no wall-clock time and no trusted time source. `waits` is how many reads the runtime made before the tick changed, and a run where it changed at all is a run the system interrupted and resumed. Absent when the system offers no tick. |
+| `TOS.RUN.TICKS` | `begin=` `end=` `spin_begin=` `spin_end=` | The monotonic tick the runtime read before and after the run. It counts timer interrupts (ADR-0049) and is not a duration: this contract carries no wall-clock time and no trusted time source. `spin_begin` and `spin_end` bracket a loop the runtime runs **without making any system call**, so a tick larger at its end was advanced by an interrupt taken while the process was executing its own instructions — which is a different claim from a tick that moved between two calls, and the stronger one. Absent when the system offers no tick. |
 | `TOS.RUN.UNSTARTABLE` | `reason=` | The runtime could not be started at all. No stage ran. |
 
 These are **implementation** figures and are never a statement about the module.

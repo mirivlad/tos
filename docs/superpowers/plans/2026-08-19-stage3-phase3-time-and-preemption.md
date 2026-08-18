@@ -71,7 +71,8 @@ At `5edab35`, by reading the shipping code:
   interrupted process, which is a resumption the nucleus has never performed:
   every interrupt before this one was fatal.
 - [x] A process spinning without a system call is interrupted, proven by a tick
-  that advances while it spins and by the boot completing afterwards.
+  that advances across a loop making no call at all — 355 to 395 on the
+  canonical path — and by the boot completing afterwards.
 
 ### Task 3: Two processes make progress
 
