@@ -55,14 +55,19 @@ fn panic(_info: &PanicInfo) -> ! {
     result_port(RESULT_PANIC)
 }
 
-/// How many source modules one boot may carry.
+/// How many source units one boot may offer the frontend.
 ///
-/// A fixed bound, sized for a boot set and not derived from capsule input: the
-/// nucleus must not size an array from a number an attacker chose. docs/44
-/// admits a closure of up to 256 modules; a capsule offering more than this is
+/// A fixed bound, chosen by the nucleus and not derived from capsule input: the
+/// nucleus must not size an array from a number an attacker chose. It bounds
+/// the **set offered**, which is every `.tos` file the capsule carries — not
+/// the closure the entry actually reaches, which resolution computes and which
+/// docs/44 caps at 256. Those are different numbers, and an earlier version of
+/// this comment confused them: a capsule may legitimately carry more source
+/// than any one module imports, and the Stage 1 performance fixture carries a
+/// thousand files for exactly that reason. A capsule offering more than this is
 /// refused rather than truncated, because a silently shortened set would run a
 /// program whose dependencies are missing.
-const MAX_BOOT_MODULES: usize = 64;
+const MAX_BOOT_MODULES: usize = 1024;
 
 /// Write an exit code to the QEMU isa-debug-exit port and stop.
 fn result_port(code: u8) -> ! {

@@ -79,6 +79,11 @@ pub const GRANT: u64 = 0x3000_0000;
 pub const STACK: u64 = 0x5000_0000;
 pub const REPORT: u64 = 0x6000_0000;
 
+/// The most a launch record may occupy. A fixed nucleus bound, not a number
+/// from the capsule: what it limits is how much of the nucleus's memory one
+/// process's description may cost.
+const MAX_RECORD_BYTES: u64 = 256 * 1024;
+
 /// Frames of stack a process is given, and frames its report region holds.
 const STACK_FRAMES: u64 = 512;
 const REPORT_FRAMES: u64 = 16;
@@ -371,8 +376,43 @@ pub unsafe fn launch(
 
     map_fresh(&mut space, frames, STACK, STACK_FRAMES)?;
     let report = map_fresh(&mut space, frames, REPORT, REPORT_FRAMES)?;
-    let record = frames.allocate_frame().ok_or(Unlaunchable::OutOfFrames)?;
-    space.map_page(frames, RECORD, record, PRESENT_USER | NO_EXECUTE)?;
+    let table_bytes = units.len() * size_of::<LaunchUnit>();
+    let paths_bytes: usize = units.iter().map(|(path, _)| relative(path).len()).sum();
+    let record_bytes = (size_of::<Launch>() + table_bytes + paths_bytes) as u64;
+    if record_bytes > MAX_RECORD_BYTES {
+        return Err(Unlaunchable::TooManyUnits);
+    }
+    // Sized by the set it carries, not by a frame: a capsule may hold a
+    // thousand source files, and a record that fitted only what one frame holds
+    // would refuse to launch a machine whose capsule is merely large. Carved
+    // contiguously because the nucleus writes it through its own identity map,
+    // where one frame at a time and one struct across two frames are different
+    // things.
+    let record_span = frames
+        .carve(record_bytes, FRAME_SIZE)
+        .ok_or(Unlaunchable::OutOfFrames)?;
+    let record = record_span.start;
+    // A carve is not cleared (ADR-0050 section 3 clears on release), and this
+    // one becomes a process's memory, so it is cleared here.
+    // SAFETY: the run was just carved from the pool, is identity-mapped for the
+    // nucleus, and nothing else references it.
+    unsafe {
+        core::ptr::write_bytes(
+            core::ptr::with_exposed_provenance_mut::<u8>(record as usize),
+            0,
+            record_span.length() as usize,
+        )
+    };
+    let mut mapped = 0;
+    while mapped < record_span.length() {
+        space.map_page(
+            frames,
+            RECORD + mapped,
+            record + mapped,
+            PRESENT_USER | NO_EXECUTE,
+        )?;
+        mapped += FRAME_SIZE;
+    }
 
     // The record itself, written through the nucleus's identity map and read by
     // the process through its own. Everything it carries lives in one frame:
@@ -384,11 +424,6 @@ pub unsafe fn launch(
     // bytes from the end of the frame and the first path walks straight out of
     // it — which it did, into a page table, and the fault it produced named a
     // missing mapping rather than the write that removed it.
-    let table_bytes = units.len() * size_of::<LaunchUnit>();
-    let paths_bytes: usize = units.iter().map(|(path, _)| relative(path).len()).sum();
-    if size_of::<Launch>() + table_bytes + paths_bytes > FRAME_SIZE as usize {
-        return Err(Unlaunchable::TooManyUnits);
-    }
     let unit_table = RECORD + size_of::<Launch>() as u64;
     let tail = size_of::<Launch>() as u64 + table_bytes as u64;
     let mut launch = Launch {
@@ -508,7 +543,7 @@ pub unsafe fn launch(
             IMAGE + header.text,
             header.memory - header.text,
         );
-        release_mapped(&mut space, frames, RECORD, FRAME_SIZE);
+        release_mapped(&mut space, frames, RECORD, record_span.length());
         release_mapped(&mut space, frames, STACK, STACK_FRAMES * FRAME_SIZE);
         release_mapped(&mut space, frames, REPORT, REPORT_FRAMES * FRAME_SIZE);
         frames.release(grant_span);

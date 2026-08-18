@@ -15,8 +15,18 @@ from pathlib import Path
 
 FILE_COUNT = 1_000
 PAYLOAD_BYTES = 16 * 1024 * 1024
-SPDX = b"# SPDX-License-Identifier: GPL-3.0-or-later\n"
-STAGE1_CRYPTO_BYTES = 101_203_198
+# A TOS Core line comment is `//`; `#` cannot begin one, so a fixture whose
+# licence header used `#` produced a boot module the lexer refused at its first
+# byte. The marker text is what the capsule builder looks for, and it is
+# unchanged.
+SPDX = b"// SPDX-License-Identifier: GPL-3.0-or-later\n"
+# The bytes one boot hashes, as the nucleus's crypto baseline reports them:
+# the parser's two passes over the payload, the capsule digest taken twice, and
+# the boot module once. It moved by exactly 198 — the number of bytes the boot
+# module grew by when it stopped being a comment and became a program the boot
+# can actually run — and by nothing else: the fixture's payload is still
+# `PAYLOAD_BYTES`, because the filler absorbs whatever the boot text takes.
+STAGE1_CRYPTO_BYTES = 101_203_397
 STAGE1_CRYPTO_HASHES = 2_007
 
 
@@ -36,7 +46,23 @@ def fixture(output: Path) -> None:
     inputs = output / "inputs"
     boot = inputs / "boot" / "init.tos"
     boot.parent.mkdir(parents=True, exist_ok=True)
-    boot_content = SPDX + b"# Stage 1 performance fixture canonical boot text\n"
+    # A real module, not a placeholder. Stage 1 only had to carry and validate
+    # this capsule, so its boot text was a comment; Stage 2 made the nucleus run
+    # the boot module and Stage 3 launches it as a process, and neither can run
+    # a file that is not source. What this fixture measures is unchanged — the
+    # cost of validating a capsule of this many files and this many bytes — and
+    # the boot module is now the smallest thing that lets the measurement end
+    # the way the gate says it ends.
+    boot_content = SPDX + b"""
+module system.boot.init version 1.0 profile bootstrap;
+
+resource [fuel: 65536, stack: 2MiB, allocation: 4KiB, tasks: 1, workers: 1,
+          sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 4]
+
+pub fn main() -> i32 {
+    return 240i32;
+}
+"""
     boot.write_bytes(boot_content)
 
     remaining = PAYLOAD_BYTES - len(boot_content)
@@ -46,11 +72,17 @@ def fixture(output: Path) -> None:
 
     rows = [("/system/boot/init.tos", boot.relative_to(output).as_posix())]
     for index in range(FILE_COUNT - 1):
-        source = inputs / "lib" / f"file{index:04}.tos"
+        # Payload, not source. These files exist to give the capsule its size
+        # and its file count; naming them `.tos` made every one of them a module
+        # of the boot set once the nucleus started offering the frontend every
+        # `.tos` file the capsule carries, which turned a Stage 1 validation
+        # measurement into a Stage 3 parse of a thousand files that are not
+        # programs.
+        source = inputs / "lib" / f"file{index:04}.dat"
         source.parent.mkdir(parents=True, exist_ok=True)
         length = per_file + (1 if index < extra else 0)
         source.write_bytes(SPDX + b"x" * (length - len(SPDX)))
-        rows.append((f"/system/lib/file{index:04}.tos", source.relative_to(output).as_posix()))
+        rows.append((f"/system/lib/file{index:04}.dat", source.relative_to(output).as_posix()))
 
     if rows != sorted(rows):
         raise RuntimeError("fixture paths are not canonical")
