@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `c56df8f823b83954deff9226a59464e4899d038769c86e5d0ffb45c10cc38f19`  
+Source-manifest SHA-256: `f91f685801e3fc89e5cd561cffce43f0e66f7e1ca0ab4b501aae0dec3a965b82`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1621,7 +1621,36 @@ upward. `committed` is the live figure in whole blocks.
 `TOS.RUN.STACK used` is measured, not estimated: the unused stack is painted
 with an address-derived pattern before the run and read back after it.
 
-## 7. Relationship to the boot log
+## 7. Processes
+
+A second producer emits under this namespace: the nucleus's process substrate.
+`PROCESS_IDENTITY_V1` §6 delegates it here rather than to a namespace of its
+own, because two vocabularies describing one system eventually disagree.
+
+| Identifier | Required fields | Meaning |
+|---|---|---|
+| `TOS.RUN.PROCESS_BEGIN` | `module=` `runtime_engine=sha256:<64 hex>` `system_commit=` `asserted_by=launcher` | A process is being launched over the named module by the named runtime image. |
+| `TOS.RUN.PROCESS_EXIT` | `asserted_by=nucleus` `self_reported_status=` | The process ended by saying so (`process_exit`, ADR-0054). |
+| `TOS.RUN.PROCESS_FAULT` | `vector=` `error=0x<hex>` `rip=0x<hex>` `cr2=` `cpl=` | The process took a fault and ended. The system did not. |
+| `TOS.RUN.PROCESS_RECLAIMED` | `frames=` `available=` | What the pool took back when the process ended, and what it holds now. |
+
+Two fields carry their asserter in their name, and that is not decoration.
+`asserted_by=nucleus` on an exit says the *fact* of the exit is the nucleus's;
+`self_reported_status` says the number beside it is the process's claim about
+its own work. A reader must never have to guess which kind of claim it is
+holding (`PROCESS_IDENTITY_V1` §2), and merging the two would make the guess
+necessary.
+
+`system_commit=absent` is the true value for a capsule-launched Stage 3 process:
+Stage 3 reads no repository, and writing a commit the system never read is the
+failure Stage 1 was built to prevent.
+
+The `TOS.RUN.*` events of §3–§6 are the *runtime's* — a process cannot reach a
+serial port, so it writes them into the region its launch record names and the
+nucleus relays them unchanged. Relaying is not authorship: the events say what
+the runtime did, and the nucleus adds nothing to them.
+
+## 8. Relationship to the boot log
 
 When a runtime is driven from the nucleus, these events appear on the same
 serial transport as the Boot ABI v1 events, between `TOS.IDENTITY` and

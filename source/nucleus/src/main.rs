@@ -461,7 +461,10 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // this instruction the machine ran on the firmware's identity map — a map
     // the nucleus never wrote and cannot describe, which after ADR-0048 is the
     // very thing that has to keep one process out of another's memory.
-    let space = match paging::build(bi, descs, &mut frames) {
+    // Mutable only in a test configuration: the ring-3 excursion maps its own
+    // pages into this space, and the production path only ever reads it.
+    #[allow(unused_mut)]
+    let mut space = match paging::build(bi, descs, &mut frames) {
         Ok(space) => space,
         Err(_) => {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-address-space\r\n");
@@ -482,7 +485,6 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-ring3-nucleus"
     ))]
     {
-        let mut space = space;
         #[cfg(feature = "test-ring3-abi")]
         let payload = ring3::Payload::Abi;
         #[cfg(feature = "test-ring3-privileged")]
@@ -566,6 +568,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // running.
     let ended = unsafe {
         process::launch(
+            &space,
             &mut frames,
             descs,
             bi,

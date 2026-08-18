@@ -264,6 +264,7 @@ pub fn fault(vector: u64, error: u64, rip: u64, cr2: Option<u64>) -> bool {
 // say makes the mappings below name the bytes the identity record claims.
 #[allow(clippy::too_many_arguments)]
 pub unsafe fn launch(
+    nucleus: &AddressSpace,
     frames: &mut Frames,
     descs: &[tos_boot_protocol::MemoryRange],
     bi: &tos_boot_protocol::BootInfo,
@@ -470,18 +471,80 @@ pub unsafe fn launch(
         )
     };
 
+    // The process is over. Everything below is the nucleus taking back what it
+    // gave, and it happens in the nucleus's own address space: the pool writes
+    // to a frame when it clears it, and doing that through the dead process's
+    // mappings would mean trusting tables the process could have been running
+    // in when it died.
+    // SAFETY: the nucleus's space maps this nucleus at the addresses it is
+    // running at — it is the space this call arrived in — and nothing else runs.
+    unsafe { nucleus.activate() };
     // SAFETY: the process is over, so its report region stops being one.
     unsafe {
         REPORT_PHYS = 0;
         REPORT_LENGTH = 0;
     }
-    // The launch record describes the memory this process was given, so it
-    // stops being readable when the process stops existing, and its frame goes
-    // back to the pool — cleared on the way, as ADR-0050 section 3 requires.
-    space.unmap_page(RECORD);
-    // SAFETY: the mapping is gone and the process that could reach it is over.
-    unsafe { frames.release_frame(record) };
+
+    // What the process held goes back, cleared on the way (ADR-0050 section 3),
+    // and what it holds is read out of its own page tables rather than
+    // remembered here: one record of what a process had, and it is the one the
+    // processor used.
+    //
+    // Three ranges are deliberately **not** returned. The image's text and the
+    // capsule's source are not the pool's — the loader reserved them — and
+    // releasing memory that was never allocated would hand the same frames out
+    // twice. The page tables of the dead space are the pool's and are not
+    // returned yet: freeing an interior table means proving nothing else under
+    // it is mapped, and the nucleus's own mappings live in that same tree.
+    // About fifty frames per process, named here rather than left to be found.
+    let held = frames.in_use();
+    // SAFETY: every frame below was handed out by this pool for this process,
+    // its address space is no longer the live one, and the process that could
+    // reach it does not exist.
+    unsafe {
+        release_mapped(
+            &mut space,
+            frames,
+            IMAGE + header.text,
+            header.memory - header.text,
+        );
+        release_mapped(&mut space, frames, RECORD, FRAME_SIZE);
+        release_mapped(&mut space, frames, STACK, STACK_FRAMES * FRAME_SIZE);
+        release_mapped(&mut space, frames, REPORT, REPORT_FRAMES * FRAME_SIZE);
+        frames.release(grant_span);
+    }
+    // Measured, not asserted: the pool says how many frames came back and how
+    // many it holds now. A reclamation nobody counts is a claim, and this is
+    // the number a second process would be built out of.
+    tos_serial::puts(b"TOS.RUN.PROCESS_RECLAIMED frames=");
+    tos_serial::put_u32_decimal((held - frames.in_use()) as u32);
+    tos_serial::puts(b" available=");
+    tos_serial::put_u32_decimal(frames.available() as u32);
+    tos_serial::puts(b"\r\n");
     Ok(ended)
+}
+
+/// Returns every frame a range of a process's space is mapped to.
+///
+/// # Safety
+///
+/// The range is one this pool allocated for that process, the space is no
+/// longer live, and nothing else references any of it.
+// SAFETY: the caller's promise that these frames are the pool's and unreferenced
+// is the whole contract; the translation says which frames those are.
+unsafe fn release_mapped(space: &mut AddressSpace, frames: &mut Frames, at: u64, length: u64) {
+    let mut offset = 0;
+    while offset < length {
+        if let Some(frame) = space.translate(at + offset) {
+            // Unmapped before it is released, and not only for tidiness: a
+            // frame back in the pool with a mapping to it still standing is a
+            // frame two owners can reach, and the next owner is a process.
+            space.unmap_page(at + offset);
+            // SAFETY: per the caller's contract, and the mapping is now gone.
+            unsafe { frames.release_frame(frame) };
+        }
+        offset += FRAME_SIZE;
+    }
 }
 
 /// A capsule path as a module-root-relative one: what docs/42 section 1

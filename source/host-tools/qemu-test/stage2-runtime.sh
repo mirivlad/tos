@@ -104,6 +104,18 @@ if [ $((USED * MIN_STACK_HEADROOM_FRACTION)) -ge "$CAPACITY" ]; then
     fail "stack use $USED of $CAPACITY leaves less than the required headroom"
 fi
 
+# --- and it gave the memory back when it ended ------------------------------
+# ADR-0050 section 3: a dead process's frames return to the pool, cleared. The
+# grant alone is `granted` bytes, so a reclamation that returned fewer frames
+# than the grant occupies did not return the grant.
+RECLAIMED=$(field TOS.RUN.PROCESS_RECLAIMED frames)
+AVAILABLE=$(field TOS.RUN.PROCESS_RECLAIMED available)
+[ -n "$RECLAIMED" ] || fail "the nucleus did not report reclaiming the process's memory"
+[ "$RECLAIMED" -ge $((GRANTED / 4096)) ] ||
+    fail "only $RECLAIMED frames came back, less than the $((GRANTED / 4096)) the grant holds"
+[ "$AVAILABLE" -gt "$RECLAIMED" ] || fail "the pool holds less than it just took back"
+
 echo "STAGE2-RUNTIME PASS: $EXPECTED_MODULE verified and executed on the boot path"
 echo "  value=$VALUE  accounting=${ACCOUNTING#TOS.RUN.ACCOUNTING }"
 echo "  arena peak=$PEAK of $GRANTED granted; stack used=$USED of $CAPACITY"
+echo "  reclaimed $RECLAIMED frames on exit; $AVAILABLE available to the pool"
