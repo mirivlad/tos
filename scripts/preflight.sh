@@ -165,6 +165,12 @@ qemu_exception_ud2() {
 qemu_exception_gp() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh gp)
 }
+qemu_paging_unmapped() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh paging)
+}
+qemu_paging_readonly_text() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh readonly-text)
+}
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
@@ -205,6 +211,8 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU capsule size limit" qemu_capsule_size_limit
     run_gate "QEMU exception #UD" qemu_exception_ud2
     run_gate "QEMU exception #GP" qemu_exception_gp
+    run_gate "QEMU unmapped page faults" qemu_paging_unmapped
+    run_gate "QEMU nucleus text is read-only" qemu_paging_readonly_text
 fi
 
 printf '\n'

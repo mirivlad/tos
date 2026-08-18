@@ -24,6 +24,7 @@ mod console;
 mod exception;
 mod framebuffer;
 mod memory;
+mod paging;
 mod runtime;
 mod stack;
 
@@ -422,6 +423,31 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-frames");
         mem_fail();
     }
+
+    // The nucleus takes over its own address space here, and not earlier: the
+    // tables are frames from the pool, so the pool has to exist first. Until
+    // this instruction the machine ran on the firmware's identity map — a map
+    // the nucleus never wrote and cannot describe, which after ADR-0048 is the
+    // very thing that has to keep one process out of another's memory.
+    let space = match paging::build(bi, descs, &mut frames) {
+        Ok(space) => space,
+        Err(_) => {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-address-space\r\n");
+            console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-address-space");
+            mem_fail();
+        }
+    };
+    // SAFETY: `space` was built from the same validated map every mapping
+    // decision above came from: every described region of memory, the loader's
+    // stack and handoff record among them, plus the declared framebuffer, plus
+    // this image with its own text executable. Maskable interrupts are off and
+    // this is the only context running.
+    unsafe { space.activate() };
+
+    #[cfg(feature = "test-paging-unmapped")]
+    paging::test_injection();
+    #[cfg(feature = "test-paging-readonly-text")]
+    paging::test_readonly_text();
 
     let outcome = runtime::execute_boot_text(
         bi,

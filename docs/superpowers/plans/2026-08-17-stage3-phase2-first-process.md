@@ -95,23 +95,23 @@ not an operation invented at the edge because the boot needed one.
 - [x] The boot path is unchanged in what it computes and in what it reports:
   `value=i32:240`, peak below the grant.
 
-### Task 2: The nucleus owns its address space
+### Task 2: The nucleus owns its address space — **done (2026-08-17)**
 
 **Files:**
 - Create: `source/nucleus/src/paging.rs`
 - Modify: `source/nucleus/src/main.rs`
 
-- [ ] Page tables built from the frame allocator and `CR3` loaded with them,
+- [x] Page tables built from the frame allocator and `CR3` loaded with them,
   replacing the firmware's map. Every mapping the nucleus needs is derived from
   the *validated* memory map, never from a firmware table read at that moment.
-- [ ] Supervisor-only (`U/S` clear) everywhere, `NX` on everything that is not
+- [x] Supervisor-only (`U/S` clear) everywhere, `NX` on everything that is not
   nucleus text, and nucleus text mapped read-only. A mapping that is both
   writable and executable is a defect, not a convenience.
-- [ ] Negative evidence: a read of an address deliberately left unmapped faults
+- [x] Negative evidence: a read of an address deliberately left unmapped faults
   as a page fault with the expected `CR2`, and the existing fatal path reports
   it. The gate is the existing exception-injection harness extended, not a new
   vocabulary.
-- [ ] The boot is otherwise identical, framebuffer included — a console that
+- [x] The boot is otherwise identical, framebuffer included — a console that
   goes dark when the nucleus takes over paging means the framebuffer was mapped
   by luck.
 
