@@ -13,11 +13,43 @@ use tos_boot_protocol::RESULT_EXCEPTION;
 const EXCEPTION_VECTOR_COUNT: usize = 32;
 const DF_IST_INDEX: u8 = 1;
 const DF_IST_STACK_BYTES: usize = 16 * 1024;
+/// The stack a fault taken at CPL 3 lands on.
+///
+/// It must be nucleus memory and it must be idle when the fault arrives, so it
+/// is neither the stack the nucleus is running on nor the one the system-call
+/// edge re-enters on. A process cannot influence it: the processor loads it
+/// from the TSS, not from anything the process holds.
+const RING0_STACK_BYTES: usize = 16 * 1024;
 const CODE_SELECTOR: u16 = 0x08;
 const DATA_SELECTOR: u16 = 0x10;
 const TSS_SELECTOR: u16 = 0x18;
 const KERNEL_CODE_DESCRIPTOR: u64 = 0x00af_9a00_0000_ffff;
 const KERNEL_DATA_DESCRIPTOR: u64 = 0x00cf_9200_0000_ffff;
+/// The same two descriptors at DPL 3.
+///
+/// Their **order and position** are not free. `sysret` loads `SS` from
+/// `IA32_STAR[63:48] + 8` and `CS` from `+ 16`, so the data descriptor must sit
+/// immediately before the code one, and the base recorded in `IA32_STAR` must be
+/// the slot before both. That base is the TSS's high half, which is never loaded
+/// as a selector — the architecture reads it only as an arithmetic origin.
+/// Kernel selectors keep the values Stage 1 evidence describes.
+const USER_DATA_DESCRIPTOR: u64 = 0x00cf_f200_0000_ffff;
+const USER_CODE_DESCRIPTOR: u64 = 0x00af_fa00_0000_ffff;
+/// `IA32_STAR[63:48]`: user descriptors are at 0x28 and 0x30, and `sysret`
+/// forces RPL 3 on what it loads.
+pub const USER_SELECTOR_BASE: u16 = 0x20 | 3;
+/// What `iretq` needs to reach CPL 3, which is the same pair by another route.
+pub const USER_CODE_SELECTOR: u16 = 0x30 | 3;
+pub const USER_DATA_SELECTOR: u16 = 0x28 | 3;
+/// `IA32_STAR[47:32]`: `syscall` loads `CS` from it and `SS` from it plus 8.
+pub const KERNEL_SELECTOR_BASE: u16 = CODE_SELECTOR;
+
+// The relationship `sysret` computes from is arithmetic, not convention: it
+// loads SS from the base plus 8 and CS from the base plus 16. Asserting it here
+// means that moving a descriptor stops the build, rather than producing a boot
+// that returns to CPL 3 through a descriptor which is not the one intended.
+const _: () = assert!(USER_DATA_SELECTOR == USER_SELECTOR_BASE + 8);
+const _: () = assert!(USER_CODE_SELECTOR == USER_SELECTOR_BASE + 16);
 
 global_asm!(include_str!("exception.S"));
 
@@ -88,13 +120,18 @@ impl IdtEntry {
 #[allow(dead_code)]
 struct AlignedStack([u8; DF_IST_STACK_BYTES]);
 
+#[repr(align(16))]
+#[allow(dead_code)]
+struct AlignedRing0Stack([u8; RING0_STACK_BYTES]);
+
 // The stack is deliberately initialized so it occupies bytes in the flat
 // nucleus image: the loader sizes its allocation from that image. It is a
 // fixed 16 KiB, nucleus-owned emergency stack; no untrusted field controls its
 // address or size. The normal exception stack remains the loader-provided one.
 static mut DF_IST_STACK: AlignedStack = AlignedStack([0xa5; DF_IST_STACK_BYTES]);
+static mut RING0_STACK: AlignedRing0Stack = AlignedRing0Stack([0xa5; RING0_STACK_BYTES]);
 static mut TSS: TaskStateSegment = TaskStateSegment::EMPTY;
-static mut GDT: [u64; 5] = [0; 5];
+static mut GDT: [u64; 7] = [0; 7];
 static mut IDT: [IdtEntry; EXCEPTION_VECTOR_COUNT] = [IdtEntry::EMPTY; EXCEPTION_VECTOR_COUNT];
 
 // SAFETY: exception.S defines this exact 32-entry, 8-byte-aligned table in the
@@ -112,6 +149,12 @@ pub unsafe fn install() {
     // is 16 KiB, so this addition cannot overflow the x86_64 address space.
     let stack_top = addr_of_mut!(DF_IST_STACK) as *mut u8 as u64 + DF_IST_STACK_BYTES as u64;
     write_unaligned(addr_of_mut!(TSS.ist[0]), stack_top);
+    // Where a fault taken at CPL 3 continues. Set here rather than when the
+    // first process starts: the processor reads it on every privilege change,
+    // and a TSS with `rsp0` still zero would turn the first such fault into a
+    // triple fault, which reports nothing to anyone.
+    let ring0_top = addr_of_mut!(RING0_STACK) as *mut u8 as u64 + RING0_STACK_BYTES as u64;
+    write_unaligned(addr_of_mut!(TSS.rsp[0]), ring0_top);
 
     let tss_base = addr_of!(TSS) as u64;
     let tss_limit = (size_of::<TaskStateSegment>() - 1) as u64;
@@ -124,6 +167,8 @@ pub unsafe fn install() {
         | (((tss_limit >> 16) & 0x0f) << 48)
         | (((tss_base >> 24) & 0xff) << 56);
     GDT[4] = tss_base >> 32;
+    GDT[5] = USER_DATA_DESCRIPTOR;
+    GDT[6] = USER_CODE_DESCRIPTOR;
 
     for vector in 0..EXCEPTION_VECTOR_COUNT {
         let handler = exception_stub_table[vector];
@@ -132,7 +177,7 @@ pub unsafe fn install() {
     }
 
     let gdt = DescriptorTablePointer {
-        limit: (size_of::<[u64; 5]>() - 1) as u16,
+        limit: (size_of::<[u64; 7]>() - 1) as u16,
         base: addr_of!(GDT) as u64,
     };
     let idt = DescriptorTablePointer {

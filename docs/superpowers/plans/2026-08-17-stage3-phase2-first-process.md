@@ -115,23 +115,23 @@ not an operation invented at the edge because the boot needed one.
   goes dark when the nucleus takes over paging means the framebuffer was mapped
   by luck.
 
-### Task 3: Ring 3 exists
+### Task 3: Ring 3 exists — **done (2026-08-17)**
 
 **Files:**
 - Modify: `source/nucleus/src/exception.rs` (GDT/TSS), `source/nucleus/src/paging.rs`
 - Create: `source/nucleus/src/syscall.rs`, `source/nucleus/src/syscall.S`
 
-- [ ] The GDT gains user code and data descriptors in the layout `sysret`
+- [x] The GDT gains user code and data descriptors in the layout `sysret`
   requires, and `TSS.rsp0` names a nucleus stack. The existing kernel selectors
   keep their values so the Stage 1 exception evidence still describes this GDT.
-- [ ] `EFER.SCE`, `IA32_STAR`, `IA32_LSTAR`, `IA32_FMASK` are programmed to the
+- [x] `EFER.SCE`, `IA32_STAR`, `IA32_LSTAR`, `IA32_FMASK` are programmed to the
   `SYSTEM_ABI_V1` §3 entry: `syscall`/`sysret`, selector in `rax`, six
   arguments, status in `rax` and value in `rdx`, `rcx`/`r11` clobbered and
   every other register preserved. `int 0x80` remains not an entry.
-- [ ] An unknown operation number returns `E_NOT_SUPPORTED` and leaves the
+- [x] An unknown operation number returns `E_NOT_SUPPORTED` and leaves the
   caller runnable (§7). Silence is indistinguishable from success and is
   therefore a defect.
-- [ ] The register-preservation rule is tested the way §8.6 asks: a ring-3
+- [x] The register-preservation rule is tested the way §8.6 asks: a ring-3
   caller fills every preserved register, makes the call, and compares.
 
 ### Task 4: The runtime is a per-process artifact

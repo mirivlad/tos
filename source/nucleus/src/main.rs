@@ -24,9 +24,13 @@ mod console;
 mod exception;
 mod framebuffer;
 mod memory;
+mod msr;
 mod paging;
+#[cfg(any(feature = "test-ring3-abi", feature = "test-ring3-privileged"))]
+mod ring3;
 mod runtime;
 mod stack;
+mod syscall;
 
 use core::arch::asm;
 use core::panic::PanicInfo;
@@ -201,6 +205,13 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // SAFETY: boot_entry runs exactly once before any BootInfo-controlled
     // memory is read, and the loader left maskable interrupts disabled.
     unsafe { exception::install() };
+    // The edge across the isolation boundary is part of the substrate, so it is
+    // installed on every boot — before there is anything to call it, and
+    // whether or not this boot ever reaches CPL 3.
+    // SAFETY: the nucleus-owned GDT was loaded by the call immediately above,
+    // which is what makes the selectors written into `IA32_STAR` name real
+    // descriptors.
+    unsafe { syscall::install() };
 
     #[cfg(any(feature = "test-exception-ud2", feature = "test-exception-gp"))]
     exception::test_injection();
@@ -443,6 +454,18 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // this image with its own text executable. Maskable interrupts are off and
     // this is the only context running.
     unsafe { space.activate() };
+
+    #[cfg(any(feature = "test-ring3-abi", feature = "test-ring3-privileged"))]
+    {
+        let mut space = space;
+        #[cfg(feature = "test-ring3-abi")]
+        let payload = ring3::Payload::Abi;
+        #[cfg(feature = "test-ring3-privileged")]
+        let payload = ring3::Payload::Privileged;
+        // SAFETY: `space` is the address space loaded into CR3 immediately
+        // above and no other context is running. The excursion does not return.
+        unsafe { ring3::run(&mut space, &mut frames, payload) };
+    }
 
     #[cfg(feature = "test-paging-unmapped")]
     paging::test_injection();

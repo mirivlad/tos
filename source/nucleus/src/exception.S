@@ -2,6 +2,11 @@
 /* x86_64 Stage 1 exception stubs.  Every stub normalizes the CPU frame to
  * vector, error, RIP before calling the Rust fatal handler. */
 
+/* Stated, not inherited: these are instructions, and instructions belong in the
+ * section the nucleus maps executable. Without this line the stubs land in
+ * whatever section the previously concatenated assembly file left current. */
+.section .text
+
 .macro NOERR vector
 .global exception_stub_\vector
 exception_stub_\vector:
@@ -62,6 +67,8 @@ NOERR 29
 NOERR 30
 NOERR 31
 
+/* A table of addresses, not code. */
+.section .rodata
 .p2align 3
 .global exception_stub_table
 exception_stub_table:
@@ -73,3 +80,5 @@ exception_stub_table:
 .quad exception_stub_20, exception_stub_21, exception_stub_22, exception_stub_23
 .quad exception_stub_24, exception_stub_25, exception_stub_26, exception_stub_27
 .quad exception_stub_28, exception_stub_29, exception_stub_30, exception_stub_31
+
+.section .text
