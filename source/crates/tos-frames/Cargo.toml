@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-frames"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "The nucleus-owned physical frame allocator of the TOS Stage 3 process substrate (ADR-0050)."
+publish = false
+
+[lib]
+name = "tos_frames"
+
+[dependencies]
+tos-runtime = { path = "../tos-runtime" }

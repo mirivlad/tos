@@ -71,6 +71,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "tos-frames"
+version = "0.1.0"
+dependencies = [
+ "tos-runtime",
+]
+
+[[package]]
 name = "tos-hash"
 version = "0.1.0"
 
@@ -87,6 +94,7 @@ version = "0.1.0"
 dependencies = [
  "tos-boot-protocol",
  "tos-capsule",
+ "tos-frames",
  "tos-hash",
  "tos-pipeline",
  "tos-runtime",
