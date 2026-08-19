@@ -116,8 +116,27 @@ exactly 1 "^TOS\\.RUN\\.IPC\\.CALLED status=0 bytes=$ANSWER_BYTES answer=$ANSWER
 exactly 2 '^TOS\.RUN\.COMPLETED value=i32:240$' \
     "the processes did not both complete their own work"
 
+# --- what the exchange cost, counted --------------------------------------
+# `IPC_V1` §8 bounds an inline message at **two payload copies**, and §9.7 asks
+# for the number to be counted rather than estimated. The nucleus counts one
+# increment beside each copy it makes, so this is the count and not a reading of
+# the code.
+#
+# A reply costs one copy, not two: it goes from the replier's region straight
+# into the region of the caller already waiting for it, because there is nobody
+# to queue it for. So the ratio comes out below the bound rather than at it, and
+# a boot that hit exactly two per message would mean the reply had been queued.
+cost=$(grep '^TOS\.RUN\.IPC\.COST ' "$LOG" | head -1)
+[ -n "$cost" ] || fail "the nucleus did not report what its IPC cost"
+messages=$(printf '%s' "$cost" | sed -n 's/.* messages=\([0-9]*\) .*/\1/p')
+copies=$(printf '%s' "$cost" | sed -n 's/.* payload_copies=\([0-9]*\) .*/\1/p')
+[ "$messages" -gt 0 ] || fail "the boot carried no message, so its cost measures nothing"
+[ "$copies" -le $(( 2 * messages )) ] ||
+    fail "$copies payload copies for $messages message(s): IPC_V1 section 8 allows two each"
+
 echo "REQUEST-REPLY PASS: a question was asked, answered, and the right to answer spent"
 echo "  the client held only \`call\`, the server only \`receive\`; neither held the right to reply"
 echo "  the answer reached the caller inside the call it had blocked in"
 echo "  the same reply capability, used twice, was refused the second time"
+echo "  $copies payload copies for $messages message(s), counted by the nucleus, not estimated"
 echo "  no wait was cancelled: on a run that progresses the liveness rule costs nothing"

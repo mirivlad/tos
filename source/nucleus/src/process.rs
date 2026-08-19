@@ -462,6 +462,21 @@ pub unsafe fn preempt(frame: &mut TrapFrame, tick: u64) {
     unsafe { load_root(root) };
 }
 
+/// User/kernel boundary crossings **out of** the nucleus, through the one door
+/// a context is entered by.
+///
+/// The other direction of `syscall::entries`. Preemption is not here and not
+/// there: a tick returns through the timer stub's own `iretq`, which is what
+/// `IPC_V1` §8 means by "excluding scheduler preemption" — so the two counters
+/// together are exactly the crossings that contract bounds.
+static mut ENTRIES: u64 = 0;
+
+/// That count.
+pub fn entries() -> u64 {
+    // SAFETY: single-context nucleus; the only writer is the scheduler.
+    unsafe { ENTRIES }
+}
+
 /// The lowest runnable slot, or nothing when the table holds no process that
 /// can be given the processor.
 fn first_runnable() -> Option<usize> {
@@ -835,6 +850,9 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
             // running at, by the contract of whoever built the slot.
             load_root((*slot).root);
             RUNNING = true;
+            // SAFETY: as above; counted before the crossing rather than after,
+            // because nothing after it runs until the context comes back.
+            ENTRIES += 1;
             if process_capture(addr_of_mut!(RETURN)) == 0 {
                 // SAFETY: the frame is this slot's, and the launcher mapped its
                 // entry executable and its stack writable in the space just

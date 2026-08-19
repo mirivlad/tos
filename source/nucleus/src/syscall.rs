@@ -179,8 +179,49 @@ pub unsafe fn install() {
 /// bigger than a register — a message's payload — is not named by the call at
 /// all; it sits in the slot the launcher mapped, at an address the nucleus
 /// knows and the caller did not choose.
+/// User/kernel boundary crossings **into** the nucleus through the one edge.
+///
+/// `IPC_V1` §8 bounds a request/reply at four crossings "excluding scheduler
+/// preemption", and §9.7 asks for the number to be counted rather than
+/// estimated. This counts one direction; `process::entries` counts the other,
+/// and preemption goes through the timer stub, which is neither.
+/// Split by whether the operation is one `IPC_V1` §8 bounds, because the bound
+/// is "per request/reply" and a boot's total says nothing about that: a
+/// `time_monotonic` in a spin loop crosses the same edge and belongs to no
+/// exchange.
+static mut IPC_ENTRIES: u64 = 0;
+static mut OTHER_ENTRIES: u64 = 0;
+/// Calls that came back through the edge. A call that blocked or ended its
+/// process never reaches this, which is why it is counted separately from the
+/// entry rather than assumed to follow it.
+static mut RETURNS: u64 = 0;
+
+/// Those three: IPC calls in, other calls in, calls returned.
+pub fn crossings() -> (u64, u64, u64) {
+    // SAFETY: single-context nucleus; the only writer is the dispatcher, which
+    // runs with interrupts masked.
+    unsafe { (IPC_ENTRIES, OTHER_ENTRIES, RETURNS) }
+}
+
+/// Whether an operation is one of the four an exchange is made of.
+fn is_ipc(operation: u64) -> bool {
+    matches!(
+        operation,
+        ENDPOINT_SEND | ENDPOINT_RECEIVE | ENDPOINT_CALL | ENDPOINT_REPLY
+    )
+}
+
 #[no_mangle]
 extern "C" fn syscall_dispatch(operation: u64, frame: &mut TrapFrame) {
+    // SAFETY: as above. Counted first, so that a call which blocks and never
+    // reaches the bottom of this function is still counted as having crossed.
+    unsafe {
+        if is_ipc(operation) {
+            IPC_ENTRIES += 1;
+        } else {
+            OTHER_ENTRIES += 1;
+        }
+    };
     // The two selectors the stub could not know: they are declared in the GDT
     // this module's neighbour builds, and a copy of them in assembly would be a
     // copy that drifts.
@@ -188,6 +229,10 @@ extern "C" fn syscall_dispatch(operation: u64, frame: &mut TrapFrame) {
     frame.ss = u64::from(crate::exception::USER_DATA_SELECTOR);
     let answer = answer(operation, frame);
     answer.into_frame(frame);
+    // Reached only by a call that is about to return through the edge: one that
+    // blocked or ended its process left `answer` by another door.
+    // SAFETY: single-context nucleus with interrupts masked.
+    unsafe { RETURNS += 1 };
 }
 
 /// Answers one call, or does not return because the call blocked or ended the
