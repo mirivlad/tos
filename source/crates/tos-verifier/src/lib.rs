@@ -815,6 +815,27 @@ fn check_instruction(
                 "a capability operation names an import outside the table",
             ));
         }
+        // The instruction says two things about which interface it reaches: the
+        // import it is performed under, and the accepted interface ID docs/43
+        // §3 asks it to carry. They are checked against each other because an
+        // artifact that named one interface while acting under a capability of
+        // another would pass every other check here — the import is in range,
+        // the interface was imported, the function declared it — and still be
+        // performing an operation on authority of the wrong type.
+        Op::Capability { import, .. } => {
+            if let Some(interface) = &instruction.unsafe_interface {
+                if &module.capability_imports[*import].interface != interface {
+                    return Err(Finding::new(
+                        "V2013_CAPABILITY",
+                        at(),
+                        alloc::format!(
+                            "an operation declares {interface} and is performed under {}",
+                            module.capability_imports[*import].interface
+                        ),
+                    ));
+                }
+            }
+        }
         _ => {}
     }
     if instruction.source >= module.source_map.len() {

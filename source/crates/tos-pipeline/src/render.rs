@@ -249,5 +249,12 @@ fn refusal_text(refusal: &tos_engine::Refusal) -> String {
         tos_engine::Refusal::EntryArity { expected, actual } => {
             format!("entry-arity expected={expected} actual={actual}")
         }
+        // Named by binding *and* interface: the binding is what the source
+        // calls it and what a reader searches for, the interface is what was
+        // wanted. `PROCESS_IDENTITY_V1` §7.3 asks a denial to name itself, and
+        // one without the binding would name only a type.
+        tos_engine::Refusal::CapabilityDenied { binding, interface } => {
+            format!("capability-denied binding={binding} interface={interface}")
+        }
     }
 }

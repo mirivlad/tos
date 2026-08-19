@@ -134,6 +134,8 @@ pub fn lower_module_in_set(
         variant_owner: BTreeMap::new(),
         functions_by_name: BTreeMap::new(),
         capability_interfaces: BTreeMap::new(),
+        capability_import_index: BTreeMap::new(),
+        capability_imports: Vec::new(),
         externs: BTreeMap::new(),
         resolved: imports,
         functions: Vec::new(),
@@ -180,10 +182,16 @@ pub fn lower_module_in_set(
             }
         }
     }
-    for capability in &capability_imports {
+    for (index, capability) in capability_imports.iter().enumerate() {
         lowerer
             .capability_interfaces
             .insert(capability.binding.clone(), capability.interface.clone());
+        lowerer
+            .capability_import_index
+            .insert(capability.binding.clone(), index);
+        lowerer
+            .capability_imports
+            .push(capability.interface.clone());
     }
     // The checker has already refused every `extern` item that names no accepted
     // operation, so what reaches here is exactly the set a module may call.
@@ -394,6 +402,11 @@ struct Lowerer<'source> {
     /// identifier a module wrote into the **interface path** the IR records —
     /// which is what `Signature.effects` has always said it carries.
     capability_interfaces: BTreeMap<String, String>,
+    /// Which capability import each binding is, by position in
+    /// `Module::capability_imports` — the index `Op::Capability` carries.
+    capability_import_index: BTreeMap<String, usize>,
+    /// The interface each of those imports names, in the same order.
+    capability_imports: Vec<String>,
     /// Each `extern` operation this module declared, and the interface it
     /// reaches (ADR-0060, `SYSTEM_INTERFACE_V1`).
     externs: BTreeMap<String, String>,
@@ -2853,6 +2866,20 @@ impl<'source> Lowerer<'source> {
             }
         }
 
+        // An operation of an accepted interface schema, whose first argument is
+        // the capability it is performed on (ADR-0056).
+        //
+        // Lowered **before** the arguments, because the first one is not a value
+        // this module computes: it is the name a capability import was bound to,
+        // and there is nothing in a function's scope to look it up in. Which
+        // import it is becomes a field of the instruction, which is exactly what
+        // `tos-ir/v1` reserved `Op::Capability` for — "an operation on a declared
+        // imported capability" — so a reader of the artifact sees the operation
+        // and the request it is performed under, and never a handle.
+        if self.externs.contains_key(&name) {
+            return self.lower_interface_operation(&name, expression, builder, at);
+        }
+
         let mut operands = Vec::new();
         for argument in expression.arguments() {
             operands.push(self.lower_expression(argument.value(), builder)?);
@@ -2876,27 +2903,6 @@ impl<'source> Lowerer<'source> {
                 runtime_contract: None,
                 unsafe_block: builder.in_unsafe,
                 unsafe_interface: None,
-            });
-            return Ok(Operand::Value(value));
-        }
-        // An operation of an accepted interface schema. It is not a function of
-        // this module and not a predeclared conversion: it leaves, and the
-        // instruction says which interface it leaves through, which is the
-        // "accepted interface ID" docs/43 §3 asks an extern operation to carry.
-        if let Some(interface) = self.externs.get(&name).cloned() {
-            let ty = self.extern_result_type(&name)?;
-            let value = builder.define(ty);
-            builder.push(Instruction {
-                result: Some(value),
-                ty,
-                op: Op::Call {
-                    target: CallTarget::Predeclared(name),
-                    operands,
-                },
-                source: at,
-                runtime_contract: None,
-                unsafe_block: builder.in_unsafe,
-                unsafe_interface: Some(interface),
             });
             return Ok(Operand::Value(value));
         }
@@ -2929,6 +2935,71 @@ impl<'source> Lowerer<'source> {
     /// Read from the declaration rather than assumed to be `unit`: a call
     /// lowered as `unit` because its signature was out of reach would tell the
     /// verifier the program returns something it does not.
+    /// Lowers one operation of an accepted interface schema.
+    ///
+    /// The shape `SYSTEM_INTERFACE_V1` §3 fixes: the capability first, values
+    /// after. What makes this different from every other call is that the first
+    /// argument is not lowered at all — it is a *name*, of a capability import,
+    /// and it becomes the instruction's `import` index. There is no operand
+    /// holding a capability anywhere in the artifact, which is the strongest
+    /// form of `docs/42` §2's rule that a handle's representation appears
+    /// nowhere: it cannot leak from a place it never occupies.
+    ///
+    /// A first argument that is anything else is refused rather than lowered.
+    /// ADR-0061 decided that authority arrives through a capability import;
+    /// a capability travelling as an ordinary value would be a second way for it
+    /// to arrive, invented here rather than decided.
+    fn lower_interface_operation(
+        &mut self,
+        name: &str,
+        expression: &'source Expression,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<Operand, Gap> {
+        let Some((capability, values)) = expression.arguments().split_first() else {
+            return Err(self.gap(
+                "interface operation without a capability",
+                expression.span(),
+            ));
+        };
+        let named = capability.value();
+        if named.form() != ExpressionForm::Name {
+            return Err(self.gap(
+                "interface operation on something other than a capability import",
+                named.span(),
+            ));
+        }
+        let binding = named.span().text(self.source);
+        let Some(import) = self.capability_import_index.get(binding).copied() else {
+            return Err(self.gap("interface operation on an unimported name", named.span()));
+        };
+        let interface = self.capability_imports[import].clone();
+        let mut operands = Vec::new();
+        for argument in values {
+            operands.push(self.lower_expression(argument.value(), builder)?);
+        }
+        let ty = self.extern_result_type(name)?;
+        let value = builder.define(ty);
+        builder.push(Instruction {
+            result: Some(value),
+            ty,
+            op: Op::Capability {
+                import,
+                right: name.to_string(),
+                operands,
+            },
+            source: at,
+            runtime_contract: None,
+            unsafe_block: builder.in_unsafe,
+            // Still stated on the instruction, even though the import index
+            // implies it: docs/43 §3 asks an extern operation to carry the
+            // accepted interface ID, and a reader that had to resolve an index
+            // against a table to learn it would be reading a different artifact.
+            unsafe_interface: Some(interface),
+        });
+        Ok(Operand::Value(value))
+    }
+
     fn extern_result_type(&mut self, name: &str) -> Result<TypeId, Gap> {
         let signature = self
             .schema
