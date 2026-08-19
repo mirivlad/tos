@@ -210,25 +210,80 @@ pub fn rights_of(process: usize, handle: u64) -> u32 {
     entry.rights
 }
 
+/// Why a capability was not given.
+///
+/// Two reasons, kept apart because they are two different facts about the
+/// system and a caller that reported one as the other would send whoever reads
+/// the log looking in the wrong place. A full table is a bound this nucleus
+/// chose; a second receiver is a rule `IPC_V1` §2 chose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NotGranted {
+    /// The process's table has no free slot.
+    NoRoom,
+    /// `IPC_V1` §2: another process already holds receive rights on that
+    /// endpoint.
+    ReceiverExists,
+}
+
+/// Which process holds receive rights on an endpoint, if one does.
+///
+/// `IPC_V1` §2: "An endpoint has exactly one receive-rights holder at a time. A
+/// second one would make delivery non-deterministic in a way no schema could
+/// describe." A *holder* is read here as a process rather than a capability:
+/// what a second one would make non-deterministic is which context a message is
+/// delivered to, and two handles inside one context do not create that question.
+/// So a process may attenuate its own receive right and hold both results; a
+/// second process may not hold one at all.
+fn receiver_of(endpoint: u32) -> Option<usize> {
+    // SAFETY: single-context nucleus; this reads and does not write, and no
+    // `&mut` to the tables is alive — the one caller takes its own after this
+    // returns, which is what keeps the two borrows from overlapping.
+    let table = unsafe { tables() };
+    (0..MAX_PROCESSES).find(|process| {
+        table[*process].iter().any(|entry| {
+            entry.object == Object::Endpoint(endpoint)
+                && entry.rights & tos_launch::RIGHT_RECEIVE != 0
+        })
+    })
+}
+
 /// Gives a process a capability, and returns the handle it will name it by.
 ///
 /// The only way an entry is ever written. It is reachable from the launcher and
 /// from attenuation, and from nothing a process can call directly — which is
 /// the whole of "no operation produces a capability".
-pub fn grant(process: usize, object: Object, rights: u32, scope: u64) -> Option<u64> {
+///
+/// **This is where `IPC_V1` §2's one-receiver rule is kept**, because this is
+/// the only door authority comes through. Checking it at `endpoint_receive`
+/// instead would be checking it after it was already broken: two processes would
+/// hold the right, and which of them got the message would depend on which
+/// called first — the non-determinism the rule exists to prevent, refused one
+/// step too late to matter.
+pub fn grant(process: usize, object: Object, rights: u32, scope: u64) -> Result<u64, NotGranted> {
+    if process >= MAX_PROCESSES {
+        return Err(NotGranted::NoRoom);
+    }
+    // Before the table is borrowed, not during: `receiver_of` reads every
+    // process's table, and holding a `&mut` across it would be a second borrow
+    // of the same static.
+    if rights & tos_launch::RIGHT_RECEIVE != 0 {
+        if let Object::Endpoint(endpoint) = object {
+            if receiver_of(endpoint).is_some_and(|holder| holder != process) {
+                return Err(NotGranted::ReceiverExists);
+            }
+        }
+    }
     // SAFETY: single-context nucleus; this is the only writer.
     let table = unsafe { tables() };
-    if process >= MAX_PROCESSES {
-        return None;
-    }
     let index = table[process]
         .iter()
-        .position(|entry| entry.object == Object::None)?;
+        .position(|entry| entry.object == Object::None)
+        .ok_or(NotGranted::NoRoom)?;
     let entry = &mut table[process][index];
     entry.object = object;
     entry.rights = rights;
     entry.scope = scope;
-    Some(handle(index, entry.generation))
+    Ok(handle(index, entry.generation))
 }
 
 /// Releases a handle, and makes every copy of it stale.
@@ -284,7 +339,9 @@ pub fn attenuate(process: usize, handle: u64, rights: u32, scope: u64) -> Result
     if scope != entry.scope {
         return Err(Refused::NoCapability);
     }
-    grant(process, entry.object, narrowed, scope).ok_or(Refused::NoCapability)
+    // Attenuation grants to the process that already held it, so the
+    // one-receiver rule cannot fire here: the holder is the same holder.
+    grant(process, entry.object, narrowed, scope).map_err(|_| Refused::NoCapability)
 }
 
 /// Empties a process's table.
@@ -362,8 +419,22 @@ pub fn endow(process: usize, endowment: &[Endowment], out: &mut [LaunchCapabilit
                 )
             }
         };
-        let Some(handle) = grant(process, object, rights, scope) else {
-            break;
+        let handle = match grant(process, object, rights, scope) {
+            Ok(handle) => handle,
+            Err(refused) => {
+                // The launcher's own constant asked for something the system
+                // refuses. Silence here would leave a process holding less
+                // authority than whoever launched it decided, with nothing on
+                // the record saying so — and `CAPABILITY_V1` §2 requires the
+                // endowment to be named rather than implied.
+                tos_serial::puts(b"TOS.RUN.ENDOWMENT_REFUSED process=");
+                tos_serial::put_u32_decimal(process as u32);
+                tos_serial::puts(match refused {
+                    NotGranted::NoRoom => b" reason=table-full\r\n",
+                    NotGranted::ReceiverExists => b" reason=endpoint-already-received\r\n",
+                });
+                break;
+            }
         };
         out[written] = LaunchCapability {
             handle,

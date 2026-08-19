@@ -39,6 +39,10 @@ test-call-reply = []
 # question `CAPABILITY_V1` §7.6 asks — does the strong one's strength leak into
 # work it does for the weak one — is asked of a real pair.
 test-deputy = []
+# A launcher constant that asks for what `IPC_V1` §2 forbids: two processes
+# receiving on one endpoint. The rule is enforced where authority is granted, so
+# the only way to see it work is to ask for the thing it refuses.
+test-second-receiver = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

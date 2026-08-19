@@ -298,6 +298,7 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
                                     capability::rights_of(caller, arguments.first()),
                                     0,
                                 )
+                                .ok()
                             }) {
                                 Some(handle) => Answer::value(handle),
                                 // The child exists and the caller cannot name it.
