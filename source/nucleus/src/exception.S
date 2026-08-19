@@ -7,6 +7,37 @@
  * whatever section the previously concatenated assembly file left current. */
 .section .text
 
+/* The flags the nucleus begins with, at every door an interrupt opens.
+ *
+ * A gate clears IF and TF and nothing else, so RFLAGS on entry to a handler is
+ * still the RFLAGS of whatever was interrupted — a process's, when a process
+ * was on the processor. Two of its bits are not decoration:
+ *
+ *   DF reverses `rep movs` and `rep stos`. The System V AMD64 ABI requires DF=0
+ *   at every function entry, so every Rust function called from this file — and
+ *   the `memcpy` the compiler emits for a struct assignment — is compiled on
+ *   that promise. A tick taken inside a process's own `std … cld` window, which
+ *   is `memmove` copying overlapping bytes backwards, carried DF=1 into the
+ *   scheduler; `*frame = table[next].frame` then wrote the frame's 160 bytes
+ *   *downwards* from its start, over the return address the stub had pushed one
+ *   instruction earlier, and the `ret` left for wherever those bytes said.
+ *   Observed as a page fault at CPL 0 on a page-aligned address in the frame
+ *   pool, roughly once in thirty boots of a two-process gate.
+ *
+ *   NT can be set by `popfq` at CPL 3, is inert there, and makes `iretq` raise
+ *   #GP in long mode — so a handler that inherits it cannot return at all.
+ *
+ * The other door into the nucleus has had this right from the start: IA32_FMASK
+ * clears TF, IF, DF, NT and AC on `syscall` (syscall.rs). This is that same
+ * rule at this door. It states a known state rather than masking bits out of an
+ * inherited one because nothing a handler needs is in RFLAGS: the interrupted
+ * flags are in the frame the processor pushed, which is where the handler reads
+ * them and where `iretq` puts them back. */
+.macro NUCLEUS_FLAGS
+    push 0
+    popfq
+.endm
+
 .macro NOERR vector
 .global exception_stub_\vector
 exception_stub_\vector:
@@ -24,6 +55,7 @@ exception_stub_\vector:
 
 .global exception_common
 exception_common:
+    NUCLEUS_FLAGS
     mov r11, rsp
     mov rdi, qword ptr [r11]
     mov rsi, qword ptr [r11 + 8]
@@ -93,6 +125,7 @@ NOERR 31
  * is a change of what the handler writes, not of what it can reach. */
 .global timer_stub
 timer_stub:
+    NUCLEUS_FLAGS
     push r15
     push r14
     push r13
@@ -131,6 +164,7 @@ timer_stub:
 
 .global spurious_stub
 spurious_stub:
+    NUCLEUS_FLAGS
     push rax
     push rcx
     push rdx
