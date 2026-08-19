@@ -123,3 +123,5 @@ docs/adr/0054-process-completion.md
 docs/adr/0055-initial-capability-endowment.md
 docs/adr/0056-handle-argument-position.md
 docs/adr/0057-ipc-message-bounds.md
+docs/adr/0058-bulk-call-arguments.md
+docs/adr/0059-blocking-and-the-liveness-rule.md

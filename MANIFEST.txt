@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 369
+- files in the release package: 371
 - active system invariants: 21
-- architecture decision records: 57 (40 accepted)
+- architecture decision records: 59 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -101,6 +101,8 @@ Architecture decision records
 - docs/adr/0055-initial-capability-endowment.md — ADR-0055: Where a process's first capability comes from [**Accepted (option A)** (Project Architect-approved)]
 - docs/adr/0056-handle-argument-position.md — ADR-0056: Where the capability an operation requires is named, and what an empty table returns [**Accepted (option A)** (Project Architect-approved)]
 - docs/adr/0057-ipc-message-bounds.md — ADR-0057: The three numbers `IPC_V1` says it declares [**Accepted (option A)** (Project Architect-approved)]
+- docs/adr/0058-bulk-call-arguments.md — ADR-0058: How a call names more than its registers hold [**Proposed**]
+- docs/adr/0059-blocking-and-the-liveness-rule.md — ADR-0059: What it means to wait, and what ends a wait nobody can end [**Proposed**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

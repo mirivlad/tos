@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `8c24dc188f813efe6a97ff223ab4301a9790be58f3269117326364a162337da1`  
+Source-manifest SHA-256: `ef70d6f9d17ec4ed82cd0819f0bf3ded14c0f3ee0e438d096f1bad4aa1f6b4b0`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -17032,6 +17032,370 @@ against. It is independent of ADR-0055 and ADR-0056 — the numbers are the same
 whatever fills the table and whichever register names a handle.
 
 <!-- END docs/adr/0057-ipc-message-bounds.md -->
+
+---
+
+<!-- BEGIN docs/adr/0058-bulk-call-arguments.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0058: How a call names more than its registers hold
+
+- Status: **Proposed**
+- Date: 2026-08-19
+- Decision level: 2 — it fixes where an operation's arguments live when they do
+  not fit in registers, inside the edge ADR-0048 established and the convention
+  ADR-0056 fixed; it adds no operation, no status and no right
+- Project Architect approval: *(unsigned)*
+
+## The gap, stated once
+
+`SYSTEM_ABI_V1` §3 gives a call six argument registers. ADR-0056 spends the
+first on the capability the operation requires. Three accepted obligations need
+more than the five that remain, and none of them can be met today.
+
+**A message that transfers capabilities.** `IPC_V1` §3 defines a message as
+inline bytes *plus transferred capabilities plus transferred regions*, and
+ADR-0057 fixed the counts at four and two. `endpoint_send` already spends `rdi`
+on the endpoint and `rsi` on the payload length. Four handles, two regions and
+their two counts do not fit in the four registers left, and a message that
+cannot **name** a capability is not a message that refuses to transfer one — it
+is a contract clause with no way to be exercised.
+
+**A child's endowment.** ADR-0055 §A states that `process_create` "takes the
+child's endowment as an argument, attenuated from what the caller itself holds".
+An endowment is a list. The implementation creates children endowed with nothing
+because nothing else is expressible, which is the launcher's own rule one level
+down and therefore honest — but it is not what the ADR says the operation does.
+
+**Which module a process is created over.** `process_create` names it by an
+index into this boot's source set, because an index fits in a register. A
+supervisor reasoning about `/system/policy/` (ADR-0051 §3) has a module *name*,
+and a name is a string. Naming by ordinal is a position in a list nobody
+published.
+
+One question, three places: **where does an argument live when it does not fit
+in a register?**
+
+## What the accepted documents already constrain
+
+- **No pointer the nucleus walks.** §3: "Arguments are values and handles, never
+  pointers the nucleus dereferences without bounds." Any answer that hands the
+  nucleus an address a process chose is excluded before the options begin.
+- **§3 already answers it for buffers**, and the answer is circular here: "Where
+  an operation needs a buffer, the buffer is named by a handle to a region the
+  process already holds (`IPC_V1` §5)." Region transfer is one of the three
+  things that needs this decision, so a region capability cannot be its
+  precondition.
+- **The mechanism already exists.** Every process has a message slot: a fixed
+  address the launcher maps, one frame, whose physical address the nucleus knows
+  and reads through its own identity map rather than through the process's. It
+  was built for `IPC_V1`'s inline payload for exactly this reason — 256 bytes do
+  not fit in registers either — and the report region has worked the same way
+  since the first process.
+- **Bounded work.** ADR-0049 §5 keeps unbounded work out of interrupt context,
+  and docs/35 bounds boundary crossings per request/reply at four. An answer
+  that multiplies calls spends that budget.
+
+## What must not be done about it
+
+**A pointer with a length, checked.** "The nucleus validates the range" is how
+every system with this bug describes it. §3's rule is not about validation
+quality; it is that the nucleus never walks an address a process chose, so that
+there is no range to get wrong.
+
+**Widening the register set by shrinking the contract.** Capping messages at two
+capabilities because two fit would reopen ADR-0057, which fixed four, in order
+to make an implementation easier. That is the trade this project does not make.
+
+## Options
+
+### A — the slot becomes the call's argument region
+
+Generalize what exists. Each execution context has one fixed-address region the
+launcher maps and the nucleus knows the physical address of. An operation whose
+arguments do not fit in registers reads them from there, at a layout fixed by
+the contract that owns the operation; counts stay in registers, so the nucleus
+knows how much to read before it reads anything.
+
+`IPC_V1` fixes the message layout — payload, then the transferred-handle table.
+`SYSTEM_ABI_V1` fixes `process_create`'s — the endowment list, and the module
+name. Neither is invented at a call site.
+
+Costs: the region stops being "the message slot" and becomes what it is, which
+is a rename and a restatement of its purpose. Its contents are argument bytes,
+never a channel: nothing may be left in it between calls and no operation may
+report through it. And the region belongs to an **execution context**, not to a
+process — Stage 3 gives a process one, and the day a process has two, two calls
+in flight would otherwise share one buffer. Saying so now costs a sentence;
+discovering it later costs a memory-corruption bug that looks like a scheduler
+defect.
+
+### B — arguments in a region named by a region capability
+
+§3's literal answer for buffers, applied to arguments: the caller holds a region
+capability and passes its handle; the nucleus maps what it was given.
+
+Costs: circular at the bootstrap, which is where this decision is needed. The
+first region capability has to come from somewhere, region transfer is one of
+the things that needs bulk arguments, and every process needing to make such a
+call would need a region in its endowment — putting a memory object into every
+endowment for the sake of argument passing. It is the right answer for a *large*
+payload, which is what §5 already says it is, and the wrong shape for a list of
+four handles.
+
+### C — several calls that accumulate, then commit
+
+`endpoint_send` becomes "add a capability to the message being built", repeated,
+then "send". `process_create` likewise.
+
+Costs: it puts a partially built message in the nucleus, per context, between
+calls — call-spanning state that a fault, a termination or a cancellation must
+then clean up, and that `IPC_V1` §3's "delivered whole or not at all" now has to
+be defended against rather than being true by construction. It also spends the
+docs/35 crossing budget several times over for one message.
+
+## Recommendation
+
+**A**, with three things stated in the decision rather than left to be inferred.
+
+1. The region is **the call's argument region**, named as such, one per
+   execution context, mapped by whoever built the context, and known to the
+   nucleus by its physical address. A process never passes its address to
+   anything.
+2. Its contents are arguments and nothing else. It is not a channel, nothing
+   persists in it across calls, and no operation reports through it. The report
+   region remains the only thing a process writes to be read.
+3. Every layout in it is fixed by the contract that owns the operation, with the
+   count in a register, so that the nucleus knows the extent of what it will read
+   before it reads a byte of it.
+
+A is not the smallest change; it is the one that makes the other two questions
+stop being separate. The mechanism is already built, already justified, and
+already carries the one property that matters — the nucleus reads memory whose
+address it chose, through its own map, at a size a register declared.
+
+If A is accepted:
+
+- `Launch`'s `message_base`/`message_length` become `arguments_base`/
+  `arguments_length`, and `LAUNCH_VERSION` becomes 3.
+- `IPC_V1` §3 gains the message layout inside that region, and §6 gains the
+  transferred-handle table it has so far described only in prose.
+- `SYSTEM_ABI_V1` §3 gains a paragraph naming the region and the rule that
+  arguments never persist in it, and §5 gains `process_create`'s layout.
+- `process_create` names its module by path rather than by index, and the index
+  form is retired rather than kept beside it: two ways to name a module is one
+  more than a supervisor should have to choose between.
+
+## What each option costs to build
+
+| | A — argument region | B — region capability | C — accumulate and commit |
+|---|---|---|---|
+| Mechanism to build | none; a rename and per-operation layouts | region objects, region capabilities, mapping and unmapping | per-context partial-message state and its teardown on every abnormal exit |
+| Contracts changed | `Launch` v3; layouts in `IPC_V1` and `SYSTEM_ABI_V1` | as A, plus a region endowment in every launcher constant | as A, plus `IPC_V1` §3's atomicity restated as an obligation |
+| Bootstrap | works with what a process already has | circular: needs a capability to obtain capabilities | works |
+| Crossings per message | one | one | one per capability, plus one |
+| When a process has two contexts | the region is per context; already said | per context, same | partial state is per context, and cancellation between calls is a new case |
+
+## Boundary
+
+Phase 4 Task 4 — linear capability transfer, region transfer, and the
+confused-deputy test that needs both — cannot be built without this. `process_create`
+works today with an empty child endowment and an index-named module, which is
+correct and narrower than ADR-0055 describes; this is what widens it to what the
+ADR says. It is independent of ADR-0059: blocking needs no bulk argument.
+
+<!-- END docs/adr/0058-bulk-call-arguments.md -->
+
+---
+
+<!-- BEGIN docs/adr/0059-blocking-and-the-liveness-rule.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0059: What it means to wait, and what ends a wait nobody can end
+
+- Status: **Proposed**
+- Date: 2026-08-19
+- Decision level: 2 — it fixes the scheduler's termination condition, adds a
+  process state, and settles which party owns the bound on waiting; it adds no
+  operation, no status and no right
+- Project Architect approval: *(unsigned)*
+
+## The gap, stated once
+
+`IPC_V1` §4 says `endpoint_call` "sends and **blocks** for the reply". Operation
+3 is therefore not implementable without blocking, and the implementation
+answers `E_WOULD_BLOCK` to a receive with nothing to take, which is conformant
+for `endpoint_receive` and no answer at all for `endpoint_call`.
+
+`SYSTEM_ABI_V1` §6 states the obligation that comes with blocking: an operation
+that can block declares a cancellation path, cancellation is observable as
+`E_CANCELLED`, and "no operation blocks indefinitely without one: an unkillable
+process is an authority the system cannot revoke". Blocking is always on a
+handle the process holds; there is no wait-for-anything primitive.
+
+**And there is a fact about this stage that decides the shape of the answer.**
+ADR-0049 routes exactly one interrupt, the timer, and the timer wakes nobody. So
+a state in which no context is runnable and something is blocked is a state
+nothing in Stage 3 can leave. The scheduler's loop today ends when it finds
+nothing runnable, and treats that as "everything finished" — which, once
+blocking exists, would report a system that is permanently stuck as a boot that
+succeeded. That is the failure this project exists to prevent, and it is a
+consequence of adding blocking rather than a pre-existing defect.
+
+A measured cost, so the question is not abstract: in a boot where an expected
+message never arrived, the waiting process was charged **2077 ticks** of retrying
+against **81** for the peer that did all of the work. A tick is exactly one
+quantum (measured: `ticks=81 quanta=82`), so the waiter took eighty-one turns
+of the machine and spent every one of them asking again.
+
+## What the accepted documents already constrain
+
+- `IPC_V1` §4: `endpoint_call` blocks; the caller's cancellation path is the
+  release valve; the reply capability's lifetime is bounded by the caller's.
+- `IPC_V1` §7: a sender meeting a full queue is told — `E_LIMIT` for a
+  non-blocking send, "blocking with a cancellation path otherwise". Senders
+  block too.
+- ADR-0049 §6: the tick is exposed "only as far as a scheduler **and a bounded
+  IPC timeout** need".
+- docs/34 X3.5 names "holds a receiver blocked forever" as a threat, with "every
+  blocking operation cancellable" as its control — and states an explicit Stage 3
+  non-goal: fair-share scheduling and priority-inversion control.
+- `SYSTEM_ABI_V1` §4's status space is **closed**. There is no `E_TIMEOUT`, and
+  adding a status is a heavier change than adding a field.
+
+## The two questions that wear one word
+
+"How long may a process wait" is two decisions, and merging them is what makes
+the answer look impossible.
+
+**Liveness** — may the system be in a state it cannot leave? That is a property
+of the machine, and the nucleus is the only party that can see it. It needs no
+number.
+
+**Patience** — how long may *this* process wait before somebody decides it is
+stuck? That is a decision *about a component*, of the same class as restart
+policy and shutdown timeout, which ADR-0051 §3 already placed in
+`/system/policy/` under whoever has the authority to launch the component.
+
+## Options
+
+### A — non-blocking only, as today
+
+`E_WOULD_BLOCK`, and the caller asks again.
+
+Costs: operation 3 stays unimplementable, because `IPC_V1` §4 says it blocks.
+A waiter spends its whole quantum retrying — measured above. docs/35's IPC
+round-trip budget cannot be measured at all, because what would be measured is
+scheduling noise. Every service written against it is a polling service, and
+they all change shape when blocking arrives.
+
+### B — blocking, released only by a peer or by cancellation
+
+Costs: the only valve is cancellation, and cancellation requires
+`process_terminate` — an authority that exists now but that no launcher constant
+grants to a peer of an ordinary process. A mutual wait is therefore unbreakable
+by anything but the nucleus, and B gives the nucleus no rule for breaking it.
+Total deadlock becomes a state the scheduler exits into a successful halt.
+
+### C — blocking with a deadline the caller supplies, in ticks
+
+Costs: expiry has nowhere to land. `E_WOULD_BLOCK` reads "a **non-blocking**
+operation had nothing to do" and the operation was blocking; `E_CANCELLED` reads
+"was cancelled" and nobody cancelled it. A new status is a heavier change than
+this question warrants. Worse, it puts time into protocol semantics on a system
+whose tick is deliberately uncalibrated (ADR-0049 §6), so a service that works
+on a fast machine and fails on a slow one is a correctness bug wearing the
+costume of a flaky test.
+
+### D — blocking, with the nucleus's liveness rule as the valve
+
+A blocked context is not runnable and is woken by the peer operation that makes
+its wait satisfiable. The nucleus's rule is not a duration:
+
+> When no context is runnable and some context is blocked, and **nothing routed
+> can change that**, every block is cancelled at that instant with
+> `E_CANCELLED`, and the nucleus records who was blocked on what.
+
+The clause matters. Today "nothing routed can change that" is true by
+construction, because the timer is the only interrupt and it wakes nobody.
+Stage 4 routes a device interrupt, and a process waiting on a disk *will* be
+woken — so a rule written as "nothing runnable" would become quietly wrong at
+exactly the moment a driver exists. Written this way, Stage 4 has to revisit it
+on purpose.
+
+`E_CANCELLED` is accurate rather than approximate here: the operation was
+cancelled, and the canceller is the nucleus.
+
+A livelock terminator, because cancelled contexts may block again: the nucleus
+counts **consecutive firings of the rule with no message delivered between
+them**. Two is a deadlock — one repetition is a process that handled
+`E_CANCELLED` and tried once more. The blocked processes are then ended the way
+a fault ends one, attributed, on the record, and the boot reaches its ordinary
+verdict through machinery that already exists. That number is a count of a rare
+event, not a duration.
+
+Costs: partial starvation — one context blocked while others run and never send
+— is bounded by nothing the nucleus owns. That is not an oversight; it is the
+patience question, and the nucleus taking it would be taking service policy that
+ADR-0048 §2 does not give it. Until a supervisor carries it, it is a **named
+limitation** of Stage 3.
+
+## Recommendation
+
+**D**, with `E_WOULD_BLOCK` kept as the answer to a deliberately non-blocking
+form, so a caller that wants to poll still can.
+
+The mechanism of B — a blocked state and an exact wake — because `IPC_V1` §4
+requires it and operation 3 does not exist without it. The nucleus's liveness
+rule as the valve, because it is the only bound that depends on nothing nobody
+holds, and because it fires exactly when the alternative is a permanent stop and
+never otherwise: on a system that is making progress it costs nothing at all. Not
+C, because a number in ticks is a guess about time on a system that has no time,
+and the right moment to discover the number is when a measured service needs it.
+
+Patience stays with whoever launched a process. Recording the limitation is
+better than a nucleus constant that looks like an answer: a service for which
+such a constant were the working value would have discovered not a timeout but
+an absent supervisor.
+
+If D is accepted:
+
+1. A process slot gains a blocked state recording **what it is blocked on** — a
+   handle it holds, per §6 — and the operation it is blocked in.
+2. `endpoint_send` on a full queue and `endpoint_receive` on an empty one block;
+   the peer operation makes the waiter runnable. Enqueue-then-wake, which is two
+   payload copies and inside docs/35's bound; a direct handoff is an
+   optimization with its own measurement, later.
+3. The scheduler's termination condition changes from "no runnable context" to
+   "no runnable context **and none blocked**". The blocked case is the liveness
+   rule, not the end of the boot.
+4. Cancelling a blocked `endpoint_call` invalidates its reply capability rather
+   than leaking it (`IPC_V1` §9.5). The generation mechanism already does this.
+5. Patience is recorded as a Stage 3 limitation in docs/34 X3.5 beside the
+   control it qualifies, and belongs to `/system/policy/` when supervisors read
+   it.
+
+## What each option costs to build
+
+| | A — non-blocking | B — peer or cancel only | C — caller deadline | D — liveness rule |
+|---|---|---|---|---|
+| `endpoint_call` (op 3) | impossible | works | works | works |
+| New status needed | no | no | **yes** | no |
+| Total deadlock | impossible | halts as success | resolves after the deadline | diagnosed at the instant it forms |
+| Partial starvation | impossible | unbounded | bounded by a guess | unbounded, and named |
+| Cost on a healthy run | a waiter's whole quantum | none | none | none |
+| Stage 4 | unchanged | unchanged | timeouts fight device latency | the rule's second clause is what must be revisited |
+
+## Boundary
+
+Phase 4 Task 4's blocking half depends on this; its transfer half depends on
+ADR-0058 instead, and the two are independent. Nothing in the scheduler, the
+capability table or the process-authority chain built before this changes under
+any of the four options.
+
+<!-- END docs/adr/0059-blocking-and-the-liveness-rule.md -->
 
 ---
 
