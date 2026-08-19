@@ -394,9 +394,15 @@ is never an expression and cannot follow `=` or occur as a call argument.
 `defer`, `unsafe`, closures, `async`, and `spawn async` are Full-profile
 constructs. `parallel`, `spawn parallel`, `join`, and `cancel` have defined
 serialized Bootstrap semantics in `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`.
-An `extern` declaration is reserved by the grammar but rejected as
-`E1801_FFI_NOT_AVAILABLE` until a later accepted FFI contract supplies an
-interface identifier and capability rule.
+An `extern` declaration is reserved by the grammar and rejected as
+`E1801_FFI_NOT_AVAILABLE` unless an accepted interface schema declares the
+operation it names. ADR-0060 admitted the first such schema,
+`source/interfaces/system/SYSTEM_INTERFACE_V1.md`, which supplies the interface
+identifier and capability rule this sentence was waiting for: the item's `uses`
+effect names a capability import of the module, the interface is that import's
+type, and the operation's name, parameters and result must be the ones that
+interface declares. Nothing the schema does not declare became available, and no
+build flag, host library or `unsafe` block enables anything (docs/42 §5).
 
 ## 6. Deliberate exclusions
 

@@ -38,7 +38,7 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 372
+- files in the release package: 373
 - active system invariants: 21
 - architecture decision records: 60 (40 accepted)
 
@@ -103,7 +103,7 @@ Architecture decision records
 - docs/adr/0057-ipc-message-bounds.md — ADR-0057: The three numbers `IPC_V1` says it declares [**Accepted (option A)** (Project Architect-approved)]
 - docs/adr/0058-bulk-call-arguments.md — ADR-0058: How a call names more than its registers hold [**Accepted (option A)** (Project Architect-approved)]
 - docs/adr/0059-blocking-and-the-liveness-rule.md — ADR-0059: What it means to wait, and what ends a wait nobody can end [**Accepted (option D)** (Project Architect-approved)]
-- docs/adr/0060-how-a-module-reaches-a-capability.md — ADR-0060: How a TOS Core module invokes an operation on a capability [**Proposed**]
+- docs/adr/0060-how-a-module-reaches-a-capability.md — ADR-0060: How a TOS Core module invokes an operation on a capability [**Accepted (option A)** (Project Architect-approved)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

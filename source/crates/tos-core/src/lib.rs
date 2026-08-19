@@ -23,6 +23,7 @@ mod diagnostic;
 mod exhaustiveness;
 mod flow;
 mod guards;
+mod interfaces;
 mod lower;
 mod metering;
 mod modules;
@@ -1635,6 +1636,20 @@ mod tests {
         }
     }
 
+    /// A module whose imports sit where the grammar puts them — before the
+    /// resource block — rather than after, which is where `check` appends.
+    fn check_module(imports: &str, body: &str) -> (SourceUnit, Vec<Diagnostic>) {
+        let text = alloc::format!(
+            "module system.boot version 1.0 profile bootstrap; {imports}              resource [fuel: 1000] {body}"
+        );
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("checker input must parse");
+        let diagnostics = Checker::check(&source, &schema);
+        (source, diagnostics)
+    }
+
     fn check(body: &str) -> (SourceUnit, Vec<Diagnostic>) {
         let text = alloc::format!("{PREFIX}{body}");
         let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
@@ -2046,15 +2061,78 @@ mod tests {
     }
 
     #[test]
-    fn an_extern_item_has_no_accepted_ffi_interface() {
+    fn an_extern_item_naming_no_interface_is_still_unavailable() {
         let (source, diagnostics) = check("extern fn outside(value: i32) -> i32;");
         let ffi = diagnostics
             .iter()
             .find(|d| d.code() == "E1801_FFI_NOT_AVAILABLE")
-            .expect("extern is reserved but unavailable in V1");
+            .expect("an extern item naming no accepted schema is rejected");
         assert_eq!(ffi.stage(), Stage::Effect);
         assert_eq!(ffi.field("item"), Some("outside"));
+        assert_eq!(
+            ffi.field("reason"),
+            Some("expected exactly one capability effect")
+        );
         assert!(ffi.span().text(&source).starts_with("extern fn outside"));
+    }
+
+    /// ADR-0060 and `SYSTEM_INTERFACE_V1`: an operation is reached through a
+    /// capability of the interface that declares it, and every part of that
+    /// sentence is checked. The reasons below are the *only* way an extern item
+    /// becomes available, which is why each is tested by breaking exactly one.
+    #[test]
+    fn an_extern_item_matching_a_declared_operation_is_accepted() {
+        let (_, diagnostics) = check_module(
+            "import capability system.ipc.Endpoint as endpoint;",
+            "extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 \
+             uses [endpoint];",
+        );
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.code() == "E1801_FFI_NOT_AVAILABLE"),
+            "a conforming operation of an accepted schema is available: {diagnostics:?}"
+        );
+    }
+
+    #[test]
+    fn an_extern_item_is_unavailable_for_the_reason_it_is_wrong() {
+        // Each of these differs from `endpoint_send` in exactly one way, so the
+        // reason reported is a fact about that difference rather than a guess.
+        const IMPORT: &str = "import capability system.ipc.Endpoint as endpoint;";
+        let cases: [(&str, &str, &str); 4] = [
+            (
+                IMPORT,
+                "extern fn endpoint_shout(cap: system.ipc.Endpoint, length: u64) -> i64 \
+                 uses [endpoint];",
+                "the interface declares no operation of this name",
+            ),
+            (
+                IMPORT,
+                "extern fn endpoint_send(cap: system.ipc.Endpoint) -> i64 uses [endpoint];",
+                "the operation takes a different number of values",
+            ),
+            (
+                IMPORT,
+                "extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i32 \
+                 uses [endpoint];",
+                "the result is not the type the operation returns",
+            ),
+            (
+                "",
+                "extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 \
+                 uses [endpoint];",
+                "uses names no capability import of this module",
+            ),
+        ];
+        for (imports, body, expected) in cases {
+            let (_, diagnostics) = check_module(imports, body);
+            let ffi = diagnostics
+                .iter()
+                .find(|d| d.code() == "E1801_FFI_NOT_AVAILABLE")
+                .unwrap_or_else(|| panic!("expected E1801 for: {body}"));
+            assert_eq!(ffi.field("reason"), Some(expected), "for: {body}");
+        }
     }
 
     #[test]
