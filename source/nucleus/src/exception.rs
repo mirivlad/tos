@@ -242,7 +242,7 @@ unsafe fn load_task_register(selector: u16) {
 /// `process::fault` reaches the nucleus's recorded context rather than this
 /// frame. Every other path from here is terminal.
 #[no_mangle]
-extern "C" fn exception_fatal(vector: u64, error: u64, rip: u64, cs: u64) -> ! {
+extern "C" fn exception_fatal(vector: u64, error: u64, rip: u64, cs: u64, rsp: u64) -> ! {
     let cr2 = if vector == 14 {
         let cr2: u64;
         // SAFETY: reading CR2 is a privileged x86_64 register read performed
@@ -272,6 +272,16 @@ extern "C" fn exception_fatal(vector: u64, error: u64, rip: u64, cs: u64) -> ! {
         }
         None => tos_serial::puts(b"none"),
     }
+    // Appended after Boot ABI v1's fixed four, under the extension rule. They
+    // are here because a fatal report whose reader must guess is a report that
+    // costs a second occurrence: `cs` says which privilege level was running,
+    // so a fault the process paths should have handled is distinguishable from
+    // one the nucleus took; and `rsp` says whether the stack was where it
+    // belongs, which is what tells a wild jump from a stack that ran out.
+    tos_serial::puts(b" cs=0x");
+    tos_serial::put_hex64(cs);
+    tos_serial::puts(b" rsp=0x");
+    tos_serial::put_hex64(rsp);
     tos_serial::puts(b"\r\n");
     crate::result_port(RESULT_EXCEPTION)
 }

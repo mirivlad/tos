@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `bf6c885dff686a16597f89ed273f385f04b94f7a59df2bbaea5bc1c5cc018a7a`  
+Source-manifest SHA-256: `d74b9e9c85314e04cdbf253276c0c0125328ac9f0f910c01ebe4321a6d8bb86e`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1437,6 +1437,13 @@ consume the v1 prefix remain compatible.
 vector; `error` is the hardware-provided error code or normalized zero when the
 architecture supplies none; `rip` is the exception-frame instruction pointer;
 and `cr2` is the exact CR2 only for vector 14 (#PF), otherwise literal `none`.
+`cs` and `rsp` are appended after those four under the extension rule above, and
+carry the interrupted code selector and stack pointer: the first says which
+privilege level was running, so a fault the process paths should have contained
+is distinguishable from one the nucleus took, and the second says whether the
+stack was where it belongs, which is what tells a wild jump from a stack that
+ran out. A report whose reader has to guess between those costs a second
+occurrence to read.
 The terminal result is `RESULT_EXCEPTION`. A consumer MUST treat an unknown
 non-success `TOS.*` failure or result as failure, not as a successful boot.
 

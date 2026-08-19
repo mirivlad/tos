@@ -32,6 +32,11 @@ exception_common:
        was taken at, which is the whole of the difference between "the boot is
        over" and "a process is over" (ADR-0049 section 3). */
     mov rcx, qword ptr [r11 + 24]
+    /* The interrupted RSP. In long mode the processor pushes SS:RSP on every
+       interrupt, same privilege or not, so this is always there — and it is
+       what tells a wild jump apart from a stack that ran out, which is a
+       distinction a fatal report should not make its reader guess at. */
+    mov r8, qword ptr [r11 + 40]
     and rsp, -16
     call exception_fatal
 1:
