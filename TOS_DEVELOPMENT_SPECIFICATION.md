@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `63caebc470ed6c979ce4a4d4168997ca693be95ea1b3822c1261c56253cc082e`  
+Source-manifest SHA-256: `2d26d7b8a7850cd185aece233dcb45376b516bb89f3af935e96f279c84262c10`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1609,6 +1609,28 @@ Emitted after the outcome, by the component that supplied the memory.
 | `TOS.RUN.TICKS` | `begin=` `end=` `spin_begin=` `spin_end=` | The monotonic tick the runtime read before and after the run. It counts timer interrupts (ADR-0049) and is not a duration: this contract carries no wall-clock time and no trusted time source. `spin_begin` and `spin_end` bracket a loop the runtime runs **without making any system call**, so a tick larger at its end was advanced by an interrupt taken while the process was executing its own instructions — which is a different claim from a tick that moved between two calls, and the stronger one. Absent when the system offers no tick. |
 | `TOS.RUN.UNSTARTABLE` | `reason=` | The runtime could not be started at all. No stage ran. |
 
+### Authority, from the holder's side
+
+Emitted by the runtime, into its report region, and therefore subject to the
+attribution limit stated at the end of §7: with more than one process these
+interleave and carry no `process=`. That is not a gap, because none of them is
+a claim *about* a process — each is the answer the nucleus gave to a call, and
+the process is only reporting what it was told.
+
+| Identifier | Required fields | Meaning |
+|---|---|---|
+| `TOS.RUN.CAPABILITY` | `held=` and, when non-zero, `handle=0x<hex>` `object=` `rights=` | What the process found in its launch record: how many capabilities it holds and what the first names. |
+| `TOS.RUN.CAPABILITY.PROBE` | `out_of_range=` `in_range_refused=` `guessed=` | What guessing a handle is worth (`CAPABILITY_V1` §7.2). An index past the table refuses with `E_BAD_HANDLE`, one inside it with `E_NO_CAPABILITY`, and `guessed=` is how many guesses produced a usable capability — zero, or the table is forgeable. |
+| `TOS.RUN.CAPABILITY.ATTENUATED` | `status=` `asked=` `widened_half=` | An attenuation and the check that it narrowed. `asked=all` means every right was requested; `widened_half=` is the status of an operation the original capability could not perform, which must still refuse. |
+| `TOS.RUN.CAPABILITY.RELEASED` | `status=` `reuse=` | A release, and the status of naming the same handle afterwards (`CAPABILITY_V1` §7.3). |
+| `TOS.RUN.IPC.SENT` | `bytes=` `status=` `oversize=` `other_half=` | A message sent. `oversize=` is the status of a payload one byte past the inline bound, which `IPC_V1` §9.1 requires be refused rather than truncated; `other_half=` is the status of the operation this handle's rights do not permit. |
+| `TOS.RUN.IPC.RECEIVED` | `bytes=` `text=` | A message taken from an endpoint, and its payload. `text=` carries no spaces: a value with one would be two fields to a reader that splits on them. |
+| `TOS.RUN.IPC.RIGHTS` | `other_half=` | The status of the half of an endpoint this holder's rights do not include (`IPC_V1` §2). |
+
+A status in any of these is one of `SYSTEM_ABI_V1` §4's, by its number. They are
+reported as numbers rather than names because the number is what crossed the
+boundary, and a name would be this image's reading of it.
+
 These are **implementation** figures and are never a statement about the module.
 A module's `resource [allocation: ...]` is its own declared budget, enforced by
 the engine and reported in `TOS.RUN.ACCOUNTING`; `TOS.RUN.MEMORY` is what the
@@ -1634,6 +1656,14 @@ own, because two vocabularies describing one system eventually disagree.
 | `TOS.RUN.PROCESS_EXIT` | `process=` `asserted_by=nucleus` `self_reported_status=` `ticks=` `quanta=` `first_tick=` `last_tick=` | The process ended by saying so (`process_exit`, ADR-0054). The four counts are the nucleus's, because a process cannot observe how long it was off the processor: `ticks` is the timer interrupts charged to **this** process, `quanta` how many times it was given the processor, and `first_tick`/`last_tick` the first and last tick it ran at. |
 | `TOS.RUN.PROCESS_FAULT` | `process=` `vector=` `error=0x<hex>` `rip=0x<hex>` `cr2=` `cpl=` | The process took a fault and ended. The system did not, and neither did its peers. |
 | `TOS.RUN.PROCESS_RECLAIMED` | `process=` `frames=` `available=` | What the pool took back when the named process ended, and what it holds now. |
+| `TOS.RUN.PROCESS_ENDOWED` | `process=` `capabilities=` `policy=` `asserted_by=launcher` | What authority the process was given, before it ran its first instruction (ADR-0055). `policy=` names where the decision came from — `launcher-constant` until `/system/policy/` exists (ADR-0051 §3). |
+
+`TOS.RUN.PROCESS_ENDOWED` is emitted for every process, including one endowed
+with nothing, and `capabilities=0` is the commonest value. It is not omitted in
+that case and must not be: a grant nobody can attribute is ambient authority
+with a handle in front of it (`CAPABILITY_V1` §3), and an endowment nobody
+announced is indistinguishable from one nobody decided. The event says the
+launcher decided, and `policy=` says what it decided from.
 
 Two fields carry their asserter in their name, and that is not decoration.
 `asserted_by=nucleus` on an exit says the *fact* of the exit is the nucleus's;
@@ -2249,6 +2279,18 @@ without bounds. Where an operation needs a buffer, the buffer is named by a
 handle to a region the process already holds (`IPC_V1` §5), so the nucleus never
 walks an address a process chose.
 
+**The capability an operation requires is its first argument, `rdi`** (ADR-0055,
+ADR-0056). Every operation in §5 that requires one requires exactly one, and it
+is always in the same place: a convention is a property of this edge, not of
+each operation, and an operation that put its handle elsewhere would make the
+dispatcher's first action depend on which operation it was dispatching. Should
+an operation ever require two capabilities, this contract assigns their
+positions in §5 order when that operation is added.
+
+The three self-only operations — `context_yield`, `time_monotonic`,
+`process_exit` — require no capability, and `rdi` carries whatever their own
+entry in §5 says it does, or nothing.
+
 ## 4. Status space
 
 `rax` returns zero for success or a negative status. The space is small and
@@ -2269,6 +2311,19 @@ closed: an operation returns a status from this table or it is a defect.
 merged for tidiness: the first says the process holds the wrong authority, the
 second says it named nothing at all, and an audit log that cannot tell them
 apart cannot describe an attack.
+
+**Refusal order** (ADR-0056): index bounds, then generation, then type, then
+rights. The first of those that fails decides the status, so an index outside
+the caller's table is `E_BAD_HANDLE` and everything after it is
+`E_NO_CAPABILITY`. The order is not arbitrary — it is the order
+`CAPABILITY_V1` §2 states validity in, and it is the order that makes the status
+a fact about the *call* rather than about the caller: "you named nothing" is
+answerable from the argument alone, while "you lack the authority" requires
+there to be something at that index to lack authority over.
+
+A process whose table is empty therefore receives `E_BAD_HANDLE` from every
+capability-bearing operation, at every index. That is not a placeholder for a
+better answer later: a process that holds nothing names nothing.
 
 There is no `E_PERMISSION` in the ambient sense. Authority is a handle or it
 does not exist.
@@ -2401,6 +2456,26 @@ implementation nothing to honour: a process cannot construct a handle, because
 constructing one would mean writing into a table it cannot address. A guessed
 index either misses, or hits an entry the process was already given.
 
+**Where the entries come from** (ADR-0055). No operation of `SYSTEM_ABI_V1`
+produces a capability, and that is deliberate: an operation reachable without a
+capability that *creates* authority is ambient authority with a handle in front
+of it. A process's table is written by the nucleus **before the process is
+entered**, from the endowment the party that launched it decided. The endowment
+travels in the launch record (`LAUNCH_VERSION` 2), and `process_create` carries
+the same shape from a parent to a child, where every entry must be an
+attenuation of something the parent itself holds.
+
+The recursion terminates at the boot process, whose endowment is the launcher's
+own stated constant until `/system/policy/` exists (ADR-0051 §3). That constant
+is named in the audit record rather than implied, because a default is what
+nobody decided, and authority whose root cannot be named is authority nobody
+granted.
+
+Two consequences worth stating: a process cannot widen its table, only shrink it
+(`capability_release`) or refine it (`capability_attenuate`); and a parent
+cannot grant what it does not hold, which is what makes escalation by spawning
+impossible rather than merely policed.
+
 ## 3. What a capability names
 
 ```text
@@ -2523,9 +2598,22 @@ message = inline bytes + transferred capabilities + transferred regions
 
 | Property | Bound |
 |---|---|
-| Inline payload | fixed maximum, declared by this contract version, small enough to copy without allocation |
-| Transferred capabilities | fixed maximum per message |
-| Transferred regions | fixed maximum per message |
+| Inline payload | **256 bytes** — small enough to copy without allocation |
+| Transferred capabilities | **4** per message |
+| Transferred regions | **2** per message |
+
+The three numbers are fixed by ADR-0057 and are constants of this contract
+version. They are stated here rather than left to an implementation for the
+reason §7 gives: a refusal test against an unstated bound tests the
+implementation's opinion of it.
+
+256 bytes is the boundary between the path that copies and the path that maps,
+not a limit on what can be communicated — anything larger travels as a region
+(§5). It is deliberately far below a page: the copy happens twice per round trip
+on a path that runs with interrupts masked, and ADR-0049 §5 forbids unbounded
+work there. Four capabilities is enough for a request that hands over an
+endpoint, a reply endpoint and a region handle with one spare, and it bounds how
+many of a *receiver's* table slots one call can consume.
 
 Anything larger travels as a region (§5). The inline maximum is a constant of
 the contract, not a per-endpoint parameter, because a per-endpoint size makes
@@ -2606,7 +2694,11 @@ reported, because either alone can be satisfied while the other is missed.
 
 ## 9. Conformance evidence
 
-1. A message larger than the inline maximum is refused, not truncated.
+1. Each of the three §3 bounds refuses rather than truncates: a message over
+   256 inline bytes, one naming more than 4 capabilities, and one naming more
+   than 2 regions are each refused whole, and none is silently reduced to the
+   bound. A truncation that returned success would make the receiver's copy a
+   different message from the sender's.
 2. A full queue produces `E_LIMIT` or a cancellable block, never a silent drop
    and never an allocation.
 3. A failed send transfers no capability and no region: checked by attempting a
@@ -16545,12 +16637,12 @@ depend on it, and neither does ADR-0053.
 
 # ADR-0055: Where a process's first capability comes from
 
-- Status: **Proposed**
+- Status: **Accepted (option A)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 2 — it fixes the launch boundary's authority half and the
   initial state of every process's capability table, inside the interface
   ADR-0048 fixed; it changes no Tier 0 invariant and no TOS Core V1 semantics
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 
@@ -16716,12 +16808,12 @@ options.
 
 # ADR-0056: Where the capability an operation requires is named, and what an empty table returns
 
-- Status: **Proposed**
+- Status: **Accepted (option A)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 2 — it states two things `SYSTEM_ABI_V1` requires conformance
   to and does not currently state; no operation, status, right or guarantee
   changes, so it is the same kind of addition §7 already records having made
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 
@@ -16831,11 +16923,11 @@ table is filled by a launch record or by anything else.
 
 # ADR-0057: The three numbers `IPC_V1` says it declares
 
-- Status: **Proposed**
+- Status: **Accepted (option A)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 2 — it states the values of bounds an accepted contract
   declares itself to fix; no message shape, right or guarantee changes
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 

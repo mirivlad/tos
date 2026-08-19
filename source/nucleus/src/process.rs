@@ -40,7 +40,9 @@
 use core::ptr::addr_of_mut;
 
 use tos_frames::{Frames, FRAME_SIZE};
-use tos_launch::{ImageHeader, Launch, LaunchUnit, ReportHeader, IMAGE_MAGIC, LAUNCH_VERSION};
+use tos_launch::{
+    ImageHeader, Launch, LaunchCapability, LaunchUnit, ReportHeader, IMAGE_MAGIC, LAUNCH_VERSION,
+};
 use tos_runtime::region::Span;
 
 use crate::apic::TrapFrame;
@@ -97,6 +99,10 @@ struct Slot {
     /// Its report region, in *physical* addresses — see [`drain_report`].
     report_phys: u64,
     report_length: u64,
+    /// Its message slot, in *physical* addresses, for the same reason: the
+    /// nucleus reads and writes it through its own identity map, never through
+    /// a mapping the process could change.
+    message_phys: u64,
     /// What the launcher gave it that has to come back when it ends.
     reclaim: Option<Reclaim>,
     /// Timer interrupts taken while **this** process was on the processor.
@@ -122,6 +128,7 @@ impl Slot {
         frame: TrapFrame::ZERO,
         report_phys: 0,
         report_length: 0,
+        message_phys: 0,
         reclaim: None,
         ticks: 0,
         quanta: 0,
@@ -210,6 +217,7 @@ pub const SOURCE: u64 = 0x2100_0000;
 pub const GRANT: u64 = 0x3000_0000;
 pub const STACK: u64 = 0x5000_0000;
 pub const REPORT: u64 = 0x6000_0000;
+pub const MESSAGE: u64 = 0x7000_0000;
 
 /// The most a launch record may occupy. A fixed nucleus bound, not a number
 /// from the capsule: what it limits is how much of the nucleus's memory one
@@ -219,6 +227,9 @@ const MAX_RECORD_BYTES: u64 = 256 * 1024;
 /// Frames of stack a process is given, and frames its report region holds.
 const STACK_FRAMES: u64 = 512;
 const REPORT_FRAMES: u64 = 16;
+/// The message slot is one frame, of which `IPC_V1` uses 256 bytes. A frame
+/// because a mapping is made of frames, not because the payload needs one.
+const MESSAGE_FRAMES: u64 = 1;
 
 /// Where the top of a process's stack is.
 const STACK_TOP: u64 = STACK + STACK_FRAMES * FRAME_SIZE;
@@ -506,6 +517,10 @@ unsafe fn retire(index: usize, frames: &mut Frames) {
     slot.state = State::Over;
     slot.report_phys = 0;
     slot.report_length = 0;
+    slot.message_phys = 0;
+    // Its authority ends with it, and the generations advance so that nothing
+    // written down about the old occupant addresses the next one.
+    crate::capability::clear(index);
 
     match slot.ended {
         // What the nucleus asserts is that the process exited; the status is
@@ -559,6 +574,7 @@ unsafe fn retire(index: usize, frames: &mut Frames) {
         release_mapped(space, frames, RECORD, reclaim.record_length);
         release_mapped(space, frames, STACK, STACK_FRAMES * FRAME_SIZE);
         release_mapped(space, frames, REPORT, REPORT_FRAMES * FRAME_SIZE);
+        release_mapped(space, frames, MESSAGE, MESSAGE_FRAMES * FRAME_SIZE);
         frames.release(reclaim.grant);
     }
     // Measured, not asserted: the pool says how many frames came back and how
@@ -571,6 +587,24 @@ unsafe fn retire(index: usize, frames: &mut Frames) {
     tos_serial::puts(b" available=");
     tos_serial::put_u32_decimal(frames.available() as u32);
     tos_serial::puts(b"\r\n");
+}
+
+/// Which process is on the processor.
+///
+/// The system-call edge asks this, because a call arrives with no statement of
+/// who made it: the caller is whoever the scheduler last gave the processor to,
+/// and that is a fact the nucleus keeps rather than one the call carries. A
+/// caller that could name itself could name someone else.
+pub fn current() -> usize {
+    // SAFETY: single-context nucleus with interrupts masked.
+    unsafe { CURRENT }
+}
+
+/// The physical address of the running process's message slot, or zero when it
+/// has none.
+pub fn message_slot() -> u64 {
+    // SAFETY: single-context nucleus with interrupts masked.
+    unsafe { table()[CURRENT].message_phys }
 }
 
 /// How the process in `index` ended.
@@ -599,6 +633,7 @@ pub unsafe fn ended(index: usize) -> Ended {
 /// can read through its own identity map.
 // SAFETY: the caller's promise about the tree is what makes the frame below
 // describe a process that can actually be entered.
+#[allow(clippy::too_many_arguments)]
 unsafe fn admit(
     root: u64,
     space: Option<AddressSpace>,
@@ -606,6 +641,7 @@ unsafe fn admit(
     stack: u64,
     argument: u64,
     report: (u64, u64),
+    message: u64,
     reclaim: Option<Reclaim>,
 ) -> Result<usize, Unlaunchable> {
     // SAFETY: single-context nucleus; nothing else touches the table.
@@ -620,6 +656,7 @@ unsafe fn admit(
     slot.space = space;
     slot.report_phys = report.0;
     slot.report_length = report.1;
+    slot.message_phys = message;
     slot.reclaim = reclaim;
     slot.frame = TrapFrame {
         rip: entry,
@@ -665,7 +702,7 @@ pub unsafe fn admit_borrowed(
 ) -> Result<usize, Unlaunchable> {
     // SAFETY: per this function's contract; the slot carries no space and no
     // reclamation because the process owns neither.
-    unsafe { admit(root, None, entry, stack, argument, (0, 0), None) }
+    unsafe { admit(root, None, entry, stack, argument, (0, 0), 0, None) }
 }
 
 /// Builds a process and puts it in the table, without entering it.
@@ -700,6 +737,7 @@ pub unsafe fn create(
     entry_index: usize,
     identity: u64,
     source_set: &[u8],
+    endowment: &[(crate::capability::Object, u32, u64)],
 ) -> Result<usize, Unlaunchable> {
     if image.length() == 0 {
         return Err(Unlaunchable::NoRuntimeImage);
@@ -797,9 +835,15 @@ pub unsafe fn create(
 
     map_fresh(&mut space, frames, STACK, STACK_FRAMES)?;
     let report = map_fresh(&mut space, frames, REPORT, REPORT_FRAMES)?;
+    let message = map_fresh(&mut space, frames, MESSAGE, MESSAGE_FRAMES)?;
     let table_bytes = units.len() * size_of::<LaunchUnit>();
     let paths_bytes: usize = units.iter().map(|(path, _)| relative(path).len()).sum();
-    let record_bytes = (size_of::<Launch>() + table_bytes + paths_bytes) as u64;
+    // Room for the endowment's description, sized by what the launcher decided
+    // to give rather than by what a process may hold: a record that reserved
+    // sixteen entries for an endowment of one would be describing capabilities
+    // nobody granted.
+    let endowment_bytes = endowment.len() * size_of::<LaunchCapability>();
+    let record_bytes = (size_of::<Launch>() + table_bytes + paths_bytes + endowment_bytes) as u64;
     if record_bytes > MAX_RECORD_BYTES {
         return Err(Unlaunchable::TooManyUnits);
     }
@@ -847,6 +891,9 @@ pub unsafe fn create(
     // missing mapping rather than the write that removed it.
     let unit_table = RECORD + size_of::<Launch>() as u64;
     let tail = size_of::<Launch>() as u64 + table_bytes as u64;
+    // The endowment's description goes after the paths, so that the two
+    // variable-length parts are laid out in the order they were sized in.
+    let endowment_at = tail + paths_bytes as u64;
     let mut launch = Launch {
         version: LAUNCH_VERSION,
         unit_count: units.len() as u32,
@@ -860,6 +907,14 @@ pub unsafe fn create(
         report_length: REPORT_FRAMES * FRAME_SIZE,
         stack_base: STACK,
         stack_length: STACK_FRAMES * FRAME_SIZE,
+        message_base: MESSAGE,
+        message_length: MESSAGE_FRAMES * FRAME_SIZE,
+        capabilities: RECORD + endowment_at,
+        // Patched once the process has a slot to hold the capabilities in: a
+        // count written before the grants exist would describe authority the
+        // nucleus had not issued.
+        capability_count: 0,
+        reserved: 0,
         source_set: [0; 96],
     };
     let named = source_set.len().min(launch.source_set.len());
@@ -911,7 +966,7 @@ pub unsafe fn create(
     // SAFETY: `space` maps this nucleus at the addresses it is running at, the
     // image executable at `IMAGE`, the stack writable below its top and the
     // record readable at `RECORD`; the edge was installed at nucleus entry.
-    unsafe {
+    let index = unsafe {
         admit(
             space.root(),
             Some(space),
@@ -919,6 +974,7 @@ pub unsafe fn create(
             STACK_TOP,
             RECORD,
             (report, REPORT_FRAMES * FRAME_SIZE),
+            message,
             Some(Reclaim {
                 data_at: IMAGE + header.text,
                 data_length: header.memory - header.text,
@@ -926,7 +982,41 @@ pub unsafe fn create(
                 grant: grant_span,
             }),
         )
-    }
+    }?;
+
+    // The endowment, written after the process has a table to hold it in and
+    // before the process is entered — which is the whole of ADR-0055: a process
+    // holds what whoever launched it decided, and it holds it before it runs its
+    // first instruction. Nothing a process does can add to this.
+    // SAFETY: the record was carved with room for exactly this many entries,
+    // cleared, and is identity-mapped for the nucleus; nothing else references
+    // it, and the process it belongs to has not been entered.
+    let described = unsafe {
+        let out = core::slice::from_raw_parts_mut(
+            core::ptr::with_exposed_provenance_mut::<LaunchCapability>(
+                (record + endowment_at) as usize,
+            ),
+            endowment.len(),
+        );
+        crate::capability::endow(index, endowment, out)
+    };
+    // SAFETY: `record` addresses the `Launch` written above, in the nucleus's
+    // own identity map, and this field is the only one changed.
+    unsafe {
+        (&raw mut (*core::ptr::with_exposed_provenance_mut::<Launch>(record as usize))
+            .capability_count)
+            .write(described)
+    };
+    // The launcher's decision, on the record, named as a decision. A grant
+    // nobody can attribute is ambient authority with a handle in front of it
+    // (`CAPABILITY_V1` §3), and a count nobody asserted is a default — which is
+    // what nobody decided.
+    tos_serial::puts(b"TOS.RUN.PROCESS_ENDOWED process=");
+    tos_serial::put_u32_decimal(index as u32);
+    tos_serial::puts(b" capabilities=");
+    tos_serial::put_u32_decimal(described);
+    tos_serial::puts(b" policy=launcher-constant asserted_by=launcher\r\n");
+    Ok(index)
 }
 
 /// Returns every frame a range of a process's space is mapped to.

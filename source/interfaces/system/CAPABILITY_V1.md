@@ -47,6 +47,26 @@ implementation nothing to honour: a process cannot construct a handle, because
 constructing one would mean writing into a table it cannot address. A guessed
 index either misses, or hits an entry the process was already given.
 
+**Where the entries come from** (ADR-0055). No operation of `SYSTEM_ABI_V1`
+produces a capability, and that is deliberate: an operation reachable without a
+capability that *creates* authority is ambient authority with a handle in front
+of it. A process's table is written by the nucleus **before the process is
+entered**, from the endowment the party that launched it decided. The endowment
+travels in the launch record (`LAUNCH_VERSION` 2), and `process_create` carries
+the same shape from a parent to a child, where every entry must be an
+attenuation of something the parent itself holds.
+
+The recursion terminates at the boot process, whose endowment is the launcher's
+own stated constant until `/system/policy/` exists (ADR-0051 §3). That constant
+is named in the audit record rather than implied, because a default is what
+nobody decided, and authority whose root cannot be named is authority nobody
+granted.
+
+Two consequences worth stating: a process cannot widen its table, only shrink it
+(`capability_release`) or refine it (`capability_attenuate`); and a parent
+cannot grant what it does not hold, which is what makes escalation by spawning
+impossible rather than merely policed.
+
 ## 3. What a capability names
 
 ```text

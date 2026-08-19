@@ -53,6 +53,18 @@ without bounds. Where an operation needs a buffer, the buffer is named by a
 handle to a region the process already holds (`IPC_V1` §5), so the nucleus never
 walks an address a process chose.
 
+**The capability an operation requires is its first argument, `rdi`** (ADR-0055,
+ADR-0056). Every operation in §5 that requires one requires exactly one, and it
+is always in the same place: a convention is a property of this edge, not of
+each operation, and an operation that put its handle elsewhere would make the
+dispatcher's first action depend on which operation it was dispatching. Should
+an operation ever require two capabilities, this contract assigns their
+positions in §5 order when that operation is added.
+
+The three self-only operations — `context_yield`, `time_monotonic`,
+`process_exit` — require no capability, and `rdi` carries whatever their own
+entry in §5 says it does, or nothing.
+
 ## 4. Status space
 
 `rax` returns zero for success or a negative status. The space is small and
@@ -73,6 +85,19 @@ closed: an operation returns a status from this table or it is a defect.
 merged for tidiness: the first says the process holds the wrong authority, the
 second says it named nothing at all, and an audit log that cannot tell them
 apart cannot describe an attack.
+
+**Refusal order** (ADR-0056): index bounds, then generation, then type, then
+rights. The first of those that fails decides the status, so an index outside
+the caller's table is `E_BAD_HANDLE` and everything after it is
+`E_NO_CAPABILITY`. The order is not arbitrary — it is the order
+`CAPABILITY_V1` §2 states validity in, and it is the order that makes the status
+a fact about the *call* rather than about the caller: "you named nothing" is
+answerable from the argument alone, while "you lack the authority" requires
+there to be something at that index to lack authority over.
+
+A process whose table is empty therefore receives `E_BAD_HANDLE` from every
+capability-bearing operation, at every index. That is not a placeholder for a
+better answer later: a process that holds nothing names nothing.
 
 There is no `E_PERMISSION` in the ambient sense. Authority is a handle or it
 does not exist.

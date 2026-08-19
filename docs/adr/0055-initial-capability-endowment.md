@@ -2,12 +2,12 @@
 
 # ADR-0055: Where a process's first capability comes from
 
-- Status: **Proposed**
+- Status: **Accepted (option A)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 2 — it fixes the launch boundary's authority half and the
   initial state of every process's capability table, inside the interface
   ADR-0048 fixed; it changes no Tier 0 invariant and no TOS Core V1 semantics
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 

@@ -24,7 +24,7 @@ extern crate alloc;
 
 use core::panic::PanicInfo;
 
-use tos_launch::{Launch, LaunchUnit, ReportHeader, LAUNCH_VERSION};
+use tos_launch::{Launch, LaunchCapability, LaunchUnit, ReportHeader, LAUNCH_VERSION};
 use tos_pipeline::{execute_set, render, PipelineStage, SetError, SetRequest, Trace, Unit};
 use tos_runtime::{stack, GlobalHeap};
 
@@ -47,9 +47,27 @@ const EXIT_REFUSED: u64 = 1;
 const EXIT_UNSTARTABLE: u64 = 2;
 
 /// Operations, as `SYSTEM_ABI_V1` §5 assigns them.
+const ENDPOINT_SEND: u64 = 1;
+const ENDPOINT_RECEIVE: u64 = 2;
+const CAPABILITY_ATTENUATE: u64 = 5;
+const CAPABILITY_RELEASE: u64 = 6;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
 const PROCESS_EXIT: u64 = 12;
+
+/// Statuses, as `SYSTEM_ABI_V1` §4 assigns them. Named here because this image
+/// checks them: a refusal it could not name it could not report.
+const OK: i64 = 0;
+const E_NO_CAPABILITY: i64 = -1;
+const E_WOULD_BLOCK: i64 = -4;
+
+/// The inline payload bound `IPC_V1` §3 declares (ADR-0057).
+const MAX_INLINE_BYTES: u64 = 256;
+
+/// How many ticks this image waits for a message before saying it did not
+/// arrive. Bounded, because a process that cannot say "nothing came" hangs, and
+/// a hang reports nothing to anybody.
+const RECEIVE_DEADLINE_TICKS: u64 = 2000;
 
 /// Reads the monotonic tick, or nothing when the nucleus does not offer one.
 ///
@@ -77,33 +95,46 @@ fn monotonic() -> Option<u64> {
 
 /// Makes one system call.
 ///
-/// SAFETY: `operation` is an assigned operation number and `argument` is legal
-/// for it. No pointer crosses this edge: §3 admits values and handles only.
+/// The first argument is the capability the operation requires, where it
+/// requires one (ADR-0056); the second is a value. No pointer crosses this edge:
+/// §3 admits values and handles only, which is why a message's payload does not
+/// travel here at all — it sits in the slot the launch record names.
+///
+/// SAFETY: `operation` is an assigned operation number and both arguments are
+/// legal for it.
 // SAFETY: the caller names an assigned operation; the instruction itself
 // touches no memory of this image.
-unsafe fn call(operation: u64, argument: u64) -> i64 {
+unsafe fn call(operation: u64, first: u64, second: u64) -> (i64, u64) {
     let status: i64;
-    // SAFETY: `syscall` clobbers `rcx` and `r11` and returns a status in `rax`;
-    // both are declared, and every other register is preserved by the contract
-    // this call is made against.
+    let value: u64;
+    // The six argument registers are `rdi, rsi, rdx, r10, r8, r9` in that order
+    // (§3), so the second argument is `rsi`. `rdx` is the third argument's
+    // register on the way in and the *value*'s on the way out, which is why it
+    // is an output here and not where `second` goes — a mistake this image made
+    // once, and the nucleus read whatever `rsi` happened to hold as a length.
+    // SAFETY: `syscall` clobbers `rcx` and `r11` and returns a status in `rax`
+    // and a value in `rdx`; all four are declared, and every other register is
+    // preserved by the contract this call is made against.
     unsafe {
         core::arch::asm!(
             "syscall",
             inlateout("rax") operation => status,
-            in("rdi") argument,
+            in("rdi") first,
+            in("rsi") second,
+            out("rdx") value,
             out("rcx") _,
             out("r11") _,
             options(nostack),
         )
     };
-    status
+    (status, value)
 }
 
 /// Ends this process, and does not return.
 fn exit(status: u64) -> ! {
     loop {
         // SAFETY: `process_exit` is self-only and takes a status value.
-        unsafe { call(PROCESS_EXIT, status) };
+        unsafe { call(PROCESS_EXIT, status, 0) };
         // A nucleus that answered `process_exit` and returned is one this image
         // cannot reason about, so it stops asking for anything else.
         core::hint::spin_loop();
@@ -156,7 +187,7 @@ impl Report {
         // returns immediately, and it is the moment the nucleus is running and
         // the region is stable, so it is also when the line reaches the log.
         // SAFETY: `context_yield` is self-only and takes no argument.
-        unsafe { call(CONTEXT_YIELD, 0) };
+        unsafe { call(CONTEXT_YIELD, 0, 0) };
     }
 }
 
@@ -331,9 +362,190 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
         ));
     }
 
+    // What this process was given, and what it does with it. Empty on a
+    // canonical boot, because the launcher's constant grants nothing a module
+    // did not request (ADR-0055) — and a process with no authority reports that
+    // it has none rather than staying silent about it.
+    authority(launch, &mut report);
+
     match run.failed_at() {
         None => exit(EXIT_COMPLETED),
         Some(_) => exit(EXIT_REFUSED),
+    }
+}
+
+/// Exercises the authority this process was endowed with, and reports what the
+/// system answered.
+///
+/// Everything here is a *question asked of the nucleus*, never an assertion by
+/// this image: the process cannot see the capability table, so all it can say is
+/// which handle it named and what came back. The interesting answers are the
+/// refusals — a process that guesses learns nothing, a process that names a
+/// released handle is told so, and a process holding one half of an endpoint
+/// cannot perform the other half.
+fn authority(launch: &Launch, report: &mut Report) {
+    if launch.capability_count == 0 {
+        report.line("TOS.RUN.CAPABILITY held=0 endowment=empty");
+        return;
+    }
+    // SAFETY: the launcher states the record holds `capability_count` entries at
+    // `capabilities`, mapped readable in this address space.
+    let held = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<LaunchCapability>(launch.capabilities as usize),
+            launch.capability_count as usize,
+        )
+    };
+    let first = &held[0];
+    report.line(&alloc::format!(
+        "TOS.RUN.CAPABILITY held={} handle=0x{:x} object={} rights={}",
+        held.len(),
+        first.handle,
+        first.object,
+        first.rights
+    ));
+
+    // What guessing is worth. An index beyond the table is `E_BAD_HANDLE`; an
+    // index inside it that the process was not granted refuses too, because a
+    // handle is an index *and* a generation and the generation is not guessable
+    // from the index (`CAPABILITY_V1` §7.2).
+    // SAFETY: `capability_attenuate` names the capability it attenuates and
+    // does nothing when it refuses.
+    let (out_of_range, _) = unsafe { call(CAPABILITY_ATTENUATE, 0xffff, first.rights as u64) };
+    let mut in_range_refused = 0;
+    let mut guessed = 0;
+    for index in 0..16u64 {
+        // SAFETY: as above.
+        let (status, _) = unsafe { call(CAPABILITY_ATTENUATE, index, first.rights as u64) };
+        if status == OK {
+            guessed += 1;
+        } else if status == E_NO_CAPABILITY {
+            in_range_refused += 1;
+        }
+    }
+    report.line(&alloc::format!(
+        "TOS.RUN.CAPABILITY.PROBE out_of_range={out_of_range} in_range_refused={in_range_refused} guessed={guessed}"
+    ));
+
+    if first.rights & tos_launch::RIGHT_SEND != 0 {
+        send_half(launch, report, first.handle);
+    }
+    if first.rights & tos_launch::RIGHT_RECEIVE != 0 {
+        receive_half(launch, report, first.handle);
+    }
+
+    // Asking for more than was held yields less, not more (`CAPABILITY_V1`
+    // §7.4). This asks for *every* right there is; what comes back can only be
+    // what this process already had, and the proof is that the resulting handle
+    // still cannot perform the half this process was never given.
+    // SAFETY: `capability_attenuate` names the capability it attenuates and a
+    // rights mask.
+    let (widening, widened) =
+        unsafe { call(CAPABILITY_ATTENUATE, first.handle, u64::from(u32::MAX)) };
+    let half = if first.rights & tos_launch::RIGHT_SEND != 0 {
+        ENDPOINT_RECEIVE
+    } else {
+        ENDPOINT_SEND
+    };
+    // SAFETY: an assigned endpoint operation, named by the handle attenuation
+    // just returned.
+    let (widened_half, _) = unsafe { call(half, widened, 0) };
+    report.line(&alloc::format!(
+        "TOS.RUN.CAPABILITY.ATTENUATED status={widening} asked=all widened_half={widened_half}"
+    ));
+
+    // A released handle is stale, and the nucleus says so rather than addressing
+    // whatever occupies the slot next (`CAPABILITY_V1` §7.3).
+    // SAFETY: `capability_release` names the capability it consumes.
+    let (released, _) = unsafe { call(CAPABILITY_RELEASE, first.handle, 0) };
+    // SAFETY: the same handle, now naming nothing.
+    let (after, _) = unsafe { call(CAPABILITY_RELEASE, first.handle, 0) };
+    report.line(&alloc::format!(
+        "TOS.RUN.CAPABILITY.RELEASED status={released} reuse={after}"
+    ));
+}
+
+/// Puts a message in the slot the launch record names and sends it.
+///
+/// Two sends, and the first is meant to fail: `IPC_V1` §9.1 requires that a
+/// message past the inline bound be refused rather than truncated, and the only
+/// way to know which happened is to ask for one byte too many and see the
+/// refusal instead of a shortened success.
+fn send_half(launch: &Launch, report: &mut Report, handle: u64) {
+    // SAFETY: `endpoint_send` names its endpoint and a length; the payload is in
+    // the slot the record names, and this call carries no pointer.
+    let (oversize, _) = unsafe { call(ENDPOINT_SEND, handle, MAX_INLINE_BYTES + 1) };
+
+    // No space in the payload: it is reported back as the value of a `text=`
+    // field, and a value with a space in it would be two fields to a reader
+    // that splits on them.
+    let payload = b"authority-crossed-a-boundary";
+    for (offset, byte) in payload.iter().enumerate() {
+        // SAFETY: `message_base` names a writable mapping of `message_length`
+        // bytes made by the launcher, and this payload is far inside it.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u8>(launch.message_base as usize)
+                .add(offset)
+                .write(*byte)
+        };
+    }
+    // SAFETY: as above; the length is the payload's and is inside the bound.
+    let (sent, _) = unsafe { call(ENDPOINT_SEND, handle, payload.len() as u64) };
+    // Holding `send` is not holding `receive` (`IPC_V1` §2): the same handle,
+    // the other half, refused by the rights mask rather than by anything this
+    // process agreed to.
+    // SAFETY: `endpoint_receive` names its endpoint and takes no value.
+    let (other_half, _) = unsafe { call(ENDPOINT_RECEIVE, handle, 0) };
+    report.line(&alloc::format!(
+        "TOS.RUN.IPC.SENT bytes={} status={sent} oversize={oversize} other_half={other_half}",
+        payload.len()
+    ));
+}
+
+/// Waits for a message and reports what arrived.
+///
+/// The wait is bounded in ticks rather than in attempts, because ticks are the
+/// only unit this system has that means the same thing on two machines. A
+/// receive with nothing to take is `E_WOULD_BLOCK` — this contract version has
+/// no blocking form, so waiting is asking again, and giving up the rest of the
+/// quantum between attempts is what lets the sender make progress.
+fn receive_half(launch: &Launch, report: &mut Report, handle: u64) {
+    let deadline = monotonic().unwrap_or(0) + RECEIVE_DEADLINE_TICKS;
+    loop {
+        // SAFETY: `endpoint_receive` names its endpoint; what it delivers goes
+        // to the slot the record names, and no pointer crosses.
+        let (status, length) = unsafe { call(ENDPOINT_RECEIVE, handle, 0) };
+        if status == OK {
+            // SAFETY: the nucleus states it wrote `length` bytes into the slot
+            // the record names, which is a mapping of `message_length` bytes and
+            // `length` is bounded by the contract's inline maximum.
+            let bytes = unsafe {
+                core::slice::from_raw_parts(
+                    core::ptr::with_exposed_provenance::<u8>(launch.message_base as usize),
+                    length as usize,
+                )
+            };
+            let text = core::str::from_utf8(bytes).unwrap_or("<not text>");
+            report.line(&alloc::format!(
+                "TOS.RUN.IPC.RECEIVED bytes={length} text={text}"
+            ));
+            // The other half, refused for the same reason and from the other
+            // side: holding `receive` is not holding `send`.
+            // SAFETY: `endpoint_send` names its endpoint and a length.
+            let (other_half, _) = unsafe { call(ENDPOINT_SEND, handle, 0) };
+            report.line(&alloc::format!(
+                "TOS.RUN.IPC.RIGHTS other_half={other_half}"
+            ));
+            return;
+        }
+        if status != E_WOULD_BLOCK || monotonic().unwrap_or(u64::MAX) > deadline {
+            report.line(&alloc::format!(
+                "TOS.RUN.IPC.RECEIVED bytes=0 status={status} text=<none>"
+            ));
+            return;
+        }
+        // SAFETY: `context_yield` is self-only and takes no argument.
+        unsafe { call(CONTEXT_YIELD, 0, 0) };
     }
 }
 

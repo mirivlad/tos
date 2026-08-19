@@ -123,6 +123,17 @@ SPIN_ENDED=$(field TOS.RUN.TICKS spin_end)
 [ "$SPIN_ENDED" -gt "$SPIN_BEGAN" ] ||
     fail "the tick did not advance while the process spun without calling anything"
 
+# --- and it was given no authority it did not ask for -----------------------
+# ADR-0055: the launcher's stated constant for the canonical boot is empty,
+# because `system.boot.init` requests no capability and the rule is to grant
+# nothing a module did not ask for. Checked here rather than assumed, because
+# "the boot process holds nothing" is the claim that makes every later grant
+# attributable to a decision.
+grep -q '^TOS\.RUN\.PROCESS_ENDOWED process=0 capabilities=0 policy=launcher-constant asserted_by=launcher$' "$LOG" ||
+    fail "the launcher did not announce an empty endowment for the boot process"
+grep -q '^TOS\.RUN\.CAPABILITY held=0 endowment=empty$' "$LOG" ||
+    fail "the boot process did not report holding nothing"
+
 # --- and it gave the memory back when it ended ------------------------------
 # ADR-0050 section 3: a dead process's frames return to the pool, cleared. The
 # grant alone is `granted` bytes, so a reclamation that returned fewer frames
