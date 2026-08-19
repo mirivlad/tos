@@ -93,7 +93,7 @@ exactly 0 '^TOS\.RUN\.ENDOWMENT_REFUSED .*reason=table-full$' \
 
 # --- and the first process did get it ------------------------------------------
 # Without this the gate passes on a nucleus whose `grant` refuses everything.
-exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$BOTH_HALVES\$" \
+exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$BOTH_HALVES binding=endpoint\$" \
     "the one process allowed to receive did not get the right"
 
 # --- and the second started, holding nothing -----------------------------------

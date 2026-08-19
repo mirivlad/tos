@@ -23,7 +23,13 @@ mod diagnostic;
 mod exhaustiveness;
 mod flow;
 mod guards;
-mod interfaces;
+/// The accepted interface schemas.
+///
+/// Public because the frontend is not the only party that needs them: whoever
+/// binds a process's grants to a module's capability requests has to know which
+/// kind of object each interface names (ADR-0061), and that is a host, in
+/// another crate, holding the same document this table mirrors.
+pub mod interfaces;
 mod lower;
 mod metering;
 mod modules;

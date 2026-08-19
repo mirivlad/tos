@@ -257,7 +257,10 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
                     let Some(entry) = module_of(frame) else {
                         return Answer::status(E_BAD_ARGUMENT);
                     };
-                    let mut endowment = [capability::Endowment::Own { rights: 0 };
+                    let mut endowment = [capability::Endowment::Own {
+                        binding: capability::Binding::NONE,
+                        rights: 0,
+                    };
                         tos_launch::MAX_ENDOWMENT as usize + 1];
                     let held = capability::rights_of(caller, frame.rdi);
                     // What the child may do to *itself*, decided by its parent
@@ -268,7 +271,15 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
                     // only a launcher could issue the first one.
                     let mut count = 0;
                     if frame.r10 != 0 {
+                        // The name the child bound its own process authority
+                        // to, which the parent wrote beside the rights: the
+                        // rights are a value and travel in a register, the name
+                        // is not and does not (ADR-0058, ADR-0061).
+                        let Some(binding) = self_binding() else {
+                            return Answer::status(E_BAD_ARGUMENT);
+                        };
                         endowment[0] = capability::Endowment::Own {
+                            binding,
                             rights: frame.r10 as u32 & held,
                         };
                         count = 1;
@@ -518,6 +529,36 @@ fn module_of(frame: &TrapFrame) -> Option<usize> {
     crate::launch::template()?.index_of(path)
 }
 
+/// The name a parent wrote for the authority its child holds over itself.
+///
+/// A fixed slot of the argument region (`CREATE_SELF_BINDING`), read at an
+/// address the nucleus knew before it read anything, and refused rather than
+/// truncated when it does not fit.
+fn self_binding() -> Option<capability::Binding> {
+    let region = crate::process::arguments_region();
+    if region == 0 {
+        return None;
+    }
+    // SAFETY: the slot is at a fixed offset in this process's own argument
+    // region, whose address the nucleus chose, and its length is a constant of
+    // the contract rather than anything the caller said.
+    let named = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<u8>(
+                (region + tos_launch::CREATE_SELF_BINDING) as usize,
+            ),
+            tos_launch::MAX_BINDING as usize,
+        )
+    };
+    // The slot is fixed-width and the name inside it ends at the first zero: a
+    // name is text, and text does not contain one.
+    let length = named
+        .iter()
+        .position(|byte| *byte == 0)
+        .unwrap_or(named.len());
+    capability::Binding::new(&named[..length])
+}
+
 /// The endowment a parent gives a child, attenuated from what the parent holds.
 ///
 /// Every entry names a capability the parent holds and the rights it wants the
@@ -545,7 +586,14 @@ fn child_endowment(
             .read()
         };
         let object = capability::resolve(parent, asked.handle, 0).map_err(Answer::from)?;
+        // The length is the parent's, so it is bounded before it is used: a
+        // number a caller chose must not size a read (`SYSTEM_ABI_V1` §3).
+        let length = (asked.binding_length as u64).min(tos_launch::MAX_BINDING) as usize;
+        let Some(binding) = capability::Binding::new(&asked.binding[..length]) else {
+            return Err(Answer::status(E_BAD_ARGUMENT));
+        };
         *slot = capability::Endowment::Existing {
+            binding,
             object,
             rights: asked.rights & capability::rights_of(parent, asked.handle),
             scope: 0,

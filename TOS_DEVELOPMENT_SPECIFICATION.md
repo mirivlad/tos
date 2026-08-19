@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `d74b9e9c85314e04cdbf253276c0c0125328ac9f0f910c01ebe4321a6d8bb86e`  
+Source-manifest SHA-256: `49873ee3a62c5b3be4feff680c8d883e6323dbd05c1f4450093eb8d08621d122`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2518,7 +2518,17 @@ Three source forms, all of them already in TOS Core V1, and no new syntax:
 import capability system.ipc.Endpoint as endpoint;
 
 extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 uses [endpoint];
+
+pub fn main() -> i64 uses [endpoint] {
+    return endpoint_send(endpoint, 8u64);
+}
 ```
+
+**The imported name is the capability** (ADR-0061). It is what the launcher's
+grant was bound to, and it is what a call passes as the operation's first
+argument — so the request a module declares and the authority it uses are one
+declaration, not two. An entry function's parameters are values; they are not
+where authority arrives.
 
 - **`import capability`** requests the authority and binds a name to it. It is a
   request, not a grant (`docs/42` §2): the launcher maps it to a concrete grant
@@ -2544,6 +2554,23 @@ Only operations that already exist, are already reachable through
 `SYSTEM_ABI_V1`, and are already evidenced. Nothing speculative: an interface
 that declared an operation the system does not perform would be a contract
 describing a system that does not exist.
+
+Each interface declares **which kind of object a capability of it names**
+(ADR-0061). `CAPABILITY_V1` §3 says a capability names "the endpoint, region,
+process or interface publication it refers to"; this is where an interface path
+is joined to one of those kinds, so that a launcher answering a module's request
+can refuse a grant of the wrong kind at startup instead of letting the module
+discover it at its first call.
+
+**The kind is a check, not the mechanism that chooses a grant.** Which grant
+answers which request is decided by the binding the module declared (ADR-0061),
+because two imports of one interface are legal and a kind cannot tell them apart.
+
+| Interface | Object kind |
+|---|---|
+| `system.ipc.Endpoint` | endpoint |
+| `system.ipc.Reply` | reply |
+| `system.process.Control` | process |
 
 ### `system.ipc.Endpoint`
 

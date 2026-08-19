@@ -174,6 +174,27 @@ fn crypto_baseline(cap_bytes: &[u8], capsule: &Capsule<'_>) -> ! {
     result_port(RESULT_HALT_OK)
 }
 
+/// The name a launcher constant binds a grant to (ADR-0061).
+///
+/// Unused in a production build, and that is the policy holding rather than
+/// code going spare: `system.boot.init` requests no capability, so the
+/// launcher's constant grants none and there is no name to bind (ADR-0055). The
+/// allow says so rather than letting the warning imply the function is surplus.
+#[allow(dead_code)]
+///
+/// A name this image cannot carry is this image's own defect, not a policy
+/// outcome: it would start a process holding authority under a name nothing can
+/// read, so it stops instead.
+fn binding(name: &[u8]) -> capability::Binding {
+    match capability::Binding::new(name) {
+        Some(binding) => binding,
+        None => {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=binding-too-long\r\n");
+            mem_fail();
+        }
+    }
+}
+
 /// The declared identity of the capsule's source tree, written into `out`.
 ///
 /// A detached capsule's identity is a whole-tree digest and a git one is an
@@ -641,11 +662,13 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         };
         (
             [capability::Endowment::Existing {
+                binding: binding(b"endpoint"),
                 object: capability::Object::Endpoint(endpoint),
                 rights: tos_launch::RIGHT_RECEIVE,
                 scope: 0,
             }],
             [capability::Endowment::Existing {
+                binding: binding(b"endpoint"),
                 object: capability::Object::Endpoint(endpoint),
                 rights: tos_launch::RIGHT_SEND,
                 scope: 0,
@@ -659,6 +682,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // cannot obtain one and cannot spawn without having been given one.
     #[cfg(feature = "test-supervisor")]
     let first_endowment = [capability::Endowment::Own {
+        binding: binding(b"self"),
         rights: tos_launch::RIGHT_CREATE | tos_launch::RIGHT_TERMINATE,
     }];
     // Under the deadlock constant one process is given the right to receive on
@@ -674,6 +698,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             mem_fail();
         };
         [capability::Endowment::Existing {
+            binding: binding(b"endpoint"),
             object: capability::Object::Endpoint(endpoint),
             rights: tos_launch::RIGHT_RECEIVE,
             scope: 0,
@@ -692,11 +717,13 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         };
         (
             [capability::Endowment::Existing {
+                binding: binding(b"endpoint"),
                 object: capability::Object::Endpoint(endpoint),
                 rights: tos_launch::RIGHT_RECEIVE,
                 scope: 0,
             }],
             [capability::Endowment::Existing {
+                binding: binding(b"endpoint"),
                 object: capability::Object::Endpoint(endpoint),
                 rights: tos_launch::RIGHT_CALL,
                 scope: 0,
@@ -716,11 +743,13 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         };
         (
             [capability::Endowment::Existing {
+                binding: binding(b"endpoint"),
                 object: capability::Object::Endpoint(endpoint),
                 rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
                 scope: 0,
             }],
             [capability::Endowment::Existing {
+                binding: binding(b"endpoint"),
                 object: capability::Object::Endpoint(endpoint),
                 rights: tos_launch::RIGHT_CALL,
                 scope: 0,
@@ -742,11 +771,13 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         };
         (
             [capability::Endowment::Existing {
+                binding: binding(b"endpoint"),
                 object: capability::Object::Endpoint(endpoint),
                 rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
                 scope: 0,
             }],
             [capability::Endowment::Existing {
+                binding: binding(b"endpoint"),
                 object: capability::Object::Endpoint(endpoint),
                 rights: tos_launch::RIGHT_RECEIVE,
                 scope: 0,

@@ -79,9 +79,9 @@ exactly() {
 # --- the pair is genuinely unequal -------------------------------------------
 # Without this the rest proves nothing: a deputy that could not send anyway
 # would refuse for the wrong reason.
-exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$BOTH_HALVES\$" \
+exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$BOTH_HALVES binding=endpoint\$" \
     "no process holds both halves of the endpoint, so there is no strong deputy"
-exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$RIGHT_CALL\$" \
+exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$RIGHT_CALL binding=endpoint\$" \
     "no process holds only the right to call, so there is no weak client"
 
 # --- naming an object by value gets nothing ----------------------------------

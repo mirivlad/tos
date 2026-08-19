@@ -81,9 +81,9 @@ exactly() {
 }
 
 # --- one may call, the other may receive, and that is all either was given ---
-exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$RIGHT_CALL\$" \
+exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$RIGHT_CALL binding=endpoint\$" \
     "no process holds exactly the right to call"
-exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$RIGHT_RECEIVE\$" \
+exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$RIGHT_RECEIVE binding=endpoint\$" \
     "no process holds exactly the right to receive"
 
 # --- the question arrived whole -----------------------------------------------

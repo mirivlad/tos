@@ -94,9 +94,9 @@ exactly 2 '^TOS\.RUN\.PROCESS_ENDOWED process=[01] capabilities=1 policy=launche
 # --- each process holds one half of one endpoint ----------------------------
 # object=1 is OBJECT_ENDPOINT; rights 1 and 2 are `send` and `receive`, which
 # are separate rights of the same object (`IPC_V1` §2).
-exactly 1 '^TOS\.RUN\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=1$' \
+exactly 1 '^TOS\.RUN\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=1 binding=endpoint$' \
     "no process holds exactly the send half"
-exactly 1 '^TOS\.RUN\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=2$' \
+exactly 1 '^TOS\.RUN\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=2 binding=endpoint$' \
     "no process holds exactly the receive half"
 
 # --- guessing is worth nothing ----------------------------------------------

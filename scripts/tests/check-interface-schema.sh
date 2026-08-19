@@ -42,5 +42,30 @@ while IFS= read -r path; do
         fail "the frontend's table names an interface the document does not: $path"
 done < <(sed -n 's/^ *path: "\([a-z.A-Z]*\)",$/\1/p' "$TABLE")
 
+# And the object kind each interface names (ADR-0061). A path is joined to a
+# kind in exactly one place that decides — §4's table — and mirrored in exactly
+# one place that checks. This pairs them line for line, because a mirror that
+# agreed on which interfaces exist while disagreeing on what kind of object each
+# one names would let a grant of the wrong kind through the startup check that
+# exists to refuse it.
+kinds_in_doc=$(sed -n 's/^| `\(system\.[a-zA-Z.]*\)` | \([a-z ]*\) |$/\1 \2/p' "$DOC" | sort)
+kinds_in_table=$(sed -n \
+    -e 's/^ *path: "\([a-z.A-Z]*\)",$/\1/p' \
+    -e 's/^ *object: ObjectKind::\([A-Za-z]*\),$/\1/p' "$TABLE" |
+    paste - - |
+    sed -e 's/Endpoint$/endpoint/' -e 's/Reply$/reply/' -e 's/Process$/process/' \
+        -e 's/Region$/region/' -e 's/InterfacePublication$/interface publication/' |
+    tr '\t' ' ' | sort)
+
+[ -n "$kinds_in_doc" ] || fail "section 4 declares no interface-to-object-kind pairing"
+[ "$kinds_in_doc" = "$kinds_in_table" ] || {
+    echo "the document pairs:" >&2
+    echo "$kinds_in_doc" >&2
+    echo "the frontend table pairs:" >&2
+    echo "$kinds_in_table" >&2
+    fail "the accepted schema and the frontend's table disagree about object kinds"
+}
+
 count=$(printf '%s\n' "$declared" | grep -c .)
-echo "check-interface-schema: PASS ($count operation(s) declared and checked)"
+paired=$(printf '%s\n' "$kinds_in_doc" | grep -c .)
+echo "check-interface-schema: PASS ($count operation(s) and $paired object kind(s) checked)"
