@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `6a68021afeffff34e9b09982cef763c808634f55429c037e053862c31d0d6a2d`  
+Source-manifest SHA-256: `4690eab6052379174879614ae718dd4de08ef3dbb4d10b8c2dcd046a233ff433`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1627,6 +1627,8 @@ the process is only reporting what it was told.
 | `TOS.RUN.IPC.RECEIVED` | `bytes=` `text=` | A message taken from an endpoint, and its payload. `text=` carries no spaces: a value with one would be two fields to a reader that splits on them. |
 | `TOS.RUN.IPC.POLLED` | `status=` | The answer to a receive that asked not to wait. |
 | `TOS.RUN.IPC.WAIT` | `status=` `attempt=` | A blocking receive that did not return a message, and which attempt it was. A process reporting this has been resumed, which is the only way it could report anything. |
+| `TOS.RUN.IPC.CALLED` | `status=` `bytes=` and, on success, `answer=` | A request whose answer arrived inside the call that asked it (`IPC_V1` §4). |
+| `TOS.RUN.IPC.REPLIED` | `status=` `handle=0x<hex>` `again=` | A call answered with the capability that came with it. `again=` is the status of using that capability a second time, which single use makes a refusal. |
 | `TOS.RUN.IPC.DELEGATED` | `handle=0x<hex>` `send=` | A capability that arrived with a message, as the receiver's own handle, and the status of using it for something the receiver's own capability was refused. |
 | `TOS.RUN.IPC.RIGHTS` | `other_half=` | The status of the half of an endpoint this holder's rights do not include (`IPC_V1` §2). |
 | `TOS.RUN.CAPABILITY.TYPE` | `operation=` `status=` | The status of an operation whose object this handle is not — the index and generation are right and the answer is still a refusal (`SYSTEM_ABI_V1` §8.1). |
@@ -2670,6 +2672,23 @@ lifetime is bounded by the caller's.
 
 Single-use is the property that keeps a reply from becoming an unbounded channel
 back into the caller.
+
+**Where the reply capability arrives** (ADR-0058). It occupies the **last** slot
+of the message's transfer table, always, so a receiver knows where to look
+without being told how many capabilities the caller chose to send. A call
+therefore carries one fewer capability of its own than a send does: one place is
+spoken for by the answer.
+
+**A call does not wait for room.** A full queue means the request could not be
+made and `E_LIMIT` says so; what a call waits for is the answer. Blocking for
+room and then calling would be a call assembled in two steps, with a half-made
+call held in the nucleus in between.
+
+Single use is a property of a counter, not of a flag anyone must remember to
+clear: the reply capability names the call, and anything that ends that call —
+the reply itself, a cancellation, or the caller ending — moves the counter, after
+which the capability resolves to nothing. That is also how `E_CANCELLED` on a
+blocked caller invalidates the reply rather than leaking it (§9.5).
 
 ## 5. Regions
 

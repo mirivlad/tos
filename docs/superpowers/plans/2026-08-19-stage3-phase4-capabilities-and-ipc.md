@@ -225,10 +225,24 @@ it. Named here so that it is found on purpose.
     and the context is ended. **The boot fails with
     `RESULT_BOOT_MODULE_FAILED`**, which is the whole point: a system that
     stopped says so instead of halting ok.
-- [ ] `endpoint_call`/`endpoint_reply`. Blocking exists now, so what these still
-  need is the single-use reply capability `IPC_V1` §4 describes — a new object
-  kind whose lifetime is bounded by the caller's — and the §9.5 evidence that
-  cancelling a blocked caller invalidates it rather than leaking it.
+- [x] **`endpoint_call`/`endpoint_reply` — done (2026-08-19).** The right to
+  answer a call is an object, not a status bit: it is made by the nucleus for
+  one call, arrives with the request in the **last** slot of the transfer table
+  so a receiver never has to be told where it is, and is spent by being used.
+  - **Single use is a property of a counter, not a flag.** The reply capability
+    names the call; anything that ends that call — the reply, a cancellation,
+    the caller ending — moves the counter, after which it resolves to nothing.
+    So §9.5's "a cancelled caller's reply capability is invalidated rather than
+    leaked" is not a separate path that could be forgotten: it is the same one.
+  - A call does not wait for room. A full queue means the request could not be
+    made; what a call waits for is the answer. Blocking for room and then
+    calling would be a call assembled in two steps, which is the shape ADR-0058
+    refused.
+  - Evidence (`request-reply.sh`): the client holds only `call`, the server only
+    `receive`, and neither holds the right to reply. The answer reaches the
+    caller inside the call it blocked in; the same reply capability used twice
+    is refused the second time; and **no wait is cancelled**, because a run that
+    progresses must never see the liveness rule.
 - [ ] `CAPABILITY_V1` §7.6 — the confused deputy. It needs a broker holding a
   strong capability and a client holding a weak one, which needs transfer, which
   needs ADR-0058.

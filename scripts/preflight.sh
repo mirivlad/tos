@@ -203,6 +203,10 @@ qemu_blocking() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/blocking.sh \
         target/preflight-qemu/blocking)
 }
+qemu_request_reply() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/request-reply.sh \
+        target/preflight-qemu/request-reply)
+}
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
@@ -253,6 +257,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU capabilities and IPC" qemu_capabilities
     run_gate "QEMU process authority" qemu_supervisor
     run_gate "QEMU blocking and the liveness rule" qemu_blocking
+    run_gate "QEMU request and reply" qemu_request_reply
 fi
 
 printf '\n'

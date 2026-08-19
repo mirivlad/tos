@@ -145,6 +145,8 @@ the process is only reporting what it was told.
 | `TOS.RUN.IPC.RECEIVED` | `bytes=` `text=` | A message taken from an endpoint, and its payload. `text=` carries no spaces: a value with one would be two fields to a reader that splits on them. |
 | `TOS.RUN.IPC.POLLED` | `status=` | The answer to a receive that asked not to wait. |
 | `TOS.RUN.IPC.WAIT` | `status=` `attempt=` | A blocking receive that did not return a message, and which attempt it was. A process reporting this has been resumed, which is the only way it could report anything. |
+| `TOS.RUN.IPC.CALLED` | `status=` `bytes=` and, on success, `answer=` | A request whose answer arrived inside the call that asked it (`IPC_V1` §4). |
+| `TOS.RUN.IPC.REPLIED` | `status=` `handle=0x<hex>` `again=` | A call answered with the capability that came with it. `again=` is the status of using that capability a second time, which single use makes a refusal. |
 | `TOS.RUN.IPC.DELEGATED` | `handle=0x<hex>` `send=` | A capability that arrived with a message, as the receiver's own handle, and the status of using it for something the receiver's own capability was refused. |
 | `TOS.RUN.IPC.RIGHTS` | `other_half=` | The status of the half of an endpoint this holder's rights do not include (`IPC_V1` §2). |
 | `TOS.RUN.CAPABILITY.TYPE` | `operation=` `status=` | The status of an operation whose object this handle is not — the index and generation are right and the answer is still a refusal (`SYSTEM_ABI_V1` §8.1). |

@@ -42,6 +42,14 @@ pub const OBJECT_ENDPOINT: u32 = 1;
 pub const OBJECT_REGION: u32 = 2;
 pub const OBJECT_PROCESS: u32 = 3;
 pub const OBJECT_INTERFACE: u32 = 4;
+/// The right to answer one call (`IPC_V1` §4). An object rather than a status
+/// bit, because answering a call is an authority somebody was given and can
+/// therefore be refused, delegated once, or lost with the caller.
+pub const OBJECT_REPLY: u32 = 5;
+
+/// The one right a reply capability has: `endpoint_reply` (4) is the only
+/// operation that names one.
+pub const RIGHT_REPLY: u32 = 1 << 5;
 
 /// Endpoint rights (`IPC_V1` §2). They are separate: holding the right to be
 /// called is not the right to call.

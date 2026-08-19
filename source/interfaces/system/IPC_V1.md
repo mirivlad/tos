@@ -74,6 +74,23 @@ lifetime is bounded by the caller's.
 Single-use is the property that keeps a reply from becoming an unbounded channel
 back into the caller.
 
+**Where the reply capability arrives** (ADR-0058). It occupies the **last** slot
+of the message's transfer table, always, so a receiver knows where to look
+without being told how many capabilities the caller chose to send. A call
+therefore carries one fewer capability of its own than a send does: one place is
+spoken for by the answer.
+
+**A call does not wait for room.** A full queue means the request could not be
+made and `E_LIMIT` says so; what a call waits for is the answer. Blocking for
+room and then calling would be a call assembled in two steps, with a half-made
+call held in the nucleus in between.
+
+Single use is a property of a counter, not of a flag anyone must remember to
+clear: the reply capability names the call, and anything that ends that call —
+the reply itself, a cancellation, or the caller ending — moves the counter, after
+which the capability resolves to nothing. That is also how `E_CANCELLED` on a
+blocked caller invalidates the reply rather than leaking it (§9.5).
+
 ## 5. Regions
 
 A large payload is a memory region transferred as a capability, exactly as

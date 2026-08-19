@@ -55,6 +55,17 @@ pub enum Object {
     /// created under — its own — and that is what makes the chain terminate at
     /// whoever the launcher endowed.
     Process { slot: u32, generation: u32 },
+    /// The right to answer one call, naming the context waiting for that answer
+    /// (`IPC_V1` §4).
+    ///
+    /// **Single-use, and that is what the generation is for.** Replying
+    /// consumes it, and so does anything else that ends the call — a
+    /// cancellation, or the caller ending — because its lifetime is bounded by
+    /// the caller's. What makes it single-use is not a flag anyone has to
+    /// remember to clear: the counter it names moves, and the capability stops
+    /// resolving. A reply that could be sent twice would be an unbounded channel
+    /// back into a process that asked one question.
+    Reply { caller: u32, generation: u32 },
 }
 
 impl Object {
@@ -64,6 +75,7 @@ impl Object {
             Object::None => 0,
             Object::Endpoint(_) => tos_launch::OBJECT_ENDPOINT,
             Object::Process { .. } => tos_launch::OBJECT_PROCESS,
+            Object::Reply { .. } => tos_launch::OBJECT_REPLY,
         }
     }
 }
@@ -166,10 +178,17 @@ pub fn resolve(process: usize, handle: u64, rights: u32) -> Result<Object, Refus
     // an entry whose object has ended is not a capability. Checked here, once,
     // rather than in each operation: an operation that had to remember to ask
     // is an operation that will one day forget.
-    if let Object::Process { slot, generation } = entry.object {
-        if crate::process::generation(slot as usize) != Some(generation) {
-            return Err(Refused::NoCapability);
+    let alive = match entry.object {
+        Object::Process { slot, generation } => {
+            crate::process::generation(slot as usize) == Some(generation)
         }
+        Object::Reply { caller, generation } => {
+            crate::process::reply_token(caller as usize) == Some(generation)
+        }
+        _ => true,
+    };
+    if !alive {
+        return Err(Refused::NoCapability);
     }
     Ok(entry.object)
 }

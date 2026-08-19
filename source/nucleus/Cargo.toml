@@ -31,6 +31,10 @@ test-supervisor = []
 # that the state ADR-0059's liveness rule is about is a real state of a real
 # system rather than a description of one.
 test-deadlock = []
+# One process may receive on an endpoint and another may call on it, so that
+# request/reply — and the single-use reply capability `IPC_V1` §4 describes — is
+# exercised rather than described.
+test-call-reply = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 
