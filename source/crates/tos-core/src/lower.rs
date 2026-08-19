@@ -133,6 +133,8 @@ pub fn lower_module_in_set(
         nominals: BTreeMap::new(),
         variant_owner: BTreeMap::new(),
         functions_by_name: BTreeMap::new(),
+        capability_interfaces: BTreeMap::new(),
+        externs: BTreeMap::new(),
         resolved: imports,
         functions: Vec::new(),
         const_stack: Vec::new(),
@@ -177,6 +179,24 @@ pub fn lower_module_in_set(
                 })
             }
         }
+    }
+    for capability in &capability_imports {
+        lowerer
+            .capability_interfaces
+            .insert(capability.binding.clone(), capability.interface.clone());
+    }
+    // The checker has already refused every `extern` item that names no accepted
+    // operation, so what reaches here is exactly the set a module may call.
+    for signature in schema.extern_functions() {
+        let Some(effect) = signature.effects().first() else {
+            continue;
+        };
+        let Some(interface) = lowerer.capability_interfaces.get(effect.text(source)) else {
+            continue;
+        };
+        lowerer
+            .externs
+            .insert(signature.name().text(source).to_string(), interface.clone());
     }
     for (index, function) in schema.functions().iter().enumerate() {
         lowerer
@@ -368,6 +388,15 @@ struct Lowerer<'source> {
     /// Enum variant name to its owning type and index.
     variant_owner: BTreeMap<String, (TypeId, usize)>,
     functions_by_name: BTreeMap<String, usize>,
+    /// The interface each capability import binds a name to (`docs/42` §2).
+    ///
+    /// A `uses` effect names one of these, so this is what turns the effect
+    /// identifier a module wrote into the **interface path** the IR records —
+    /// which is what `Signature.effects` has always said it carries.
+    capability_interfaces: BTreeMap<String, String>,
+    /// Each `extern` operation this module declared, and the interface it
+    /// reaches (ADR-0060, `SYSTEM_INTERFACE_V1`).
+    externs: BTreeMap<String, String>,
     /// Functions in the order they were lowered: declarations first, with each
     /// nested body appended where the walk reached it.
     functions: Vec<Function>,
@@ -886,10 +915,22 @@ impl<'source> Lowerer<'source> {
         } else {
             declared
         };
+        // By **interface path**, which is what `Signature.effects` documents
+        // itself as carrying: a binding name means something only inside the
+        // module that wrote it, and a verifier reading the artifact has no way
+        // to learn what one referred to. An effect naming no capability import
+        // keeps its written text, so a module that declared an effect it never
+        // requested still says so in the artifact rather than losing it.
         let effects = signature
             .effects()
             .iter()
-            .map(|effect| effect.text(self.source).to_string())
+            .map(|effect| {
+                let written = effect.text(self.source);
+                self.capability_interfaces
+                    .get(written)
+                    .cloned()
+                    .unwrap_or_else(|| written.to_string())
+            })
             .collect();
         let lowered_signature = Signature {
             name: signature.name().text(self.source).to_string(),
@@ -2838,6 +2879,27 @@ impl<'source> Lowerer<'source> {
             });
             return Ok(Operand::Value(value));
         }
+        // An operation of an accepted interface schema. It is not a function of
+        // this module and not a predeclared conversion: it leaves, and the
+        // instruction says which interface it leaves through, which is the
+        // "accepted interface ID" docs/43 §3 asks an extern operation to carry.
+        if let Some(interface) = self.externs.get(&name).cloned() {
+            let ty = self.extern_result_type(&name)?;
+            let value = builder.define(ty);
+            builder.push(Instruction {
+                result: Some(value),
+                ty,
+                op: Op::Call {
+                    target: CallTarget::Predeclared(name),
+                    operands,
+                },
+                source: at,
+                runtime_contract: None,
+                unsafe_block: builder.in_unsafe,
+                unsafe_interface: Some(interface),
+            });
+            return Ok(Operand::Value(value));
+        }
         let (target, ty) = match self.functions_by_name.get(&name) {
             Some(&index) => {
                 let result = self.schema.functions()[index].signature().result();
@@ -2860,6 +2922,26 @@ impl<'source> Lowerer<'source> {
             unsafe_interface: None,
         });
         Ok(Operand::Value(value))
+    }
+
+    /// The declared result of an `extern` operation, in this module's types.
+    ///
+    /// Read from the declaration rather than assumed to be `unit`: a call
+    /// lowered as `unit` because its signature was out of reach would tell the
+    /// verifier the program returns something it does not.
+    fn extern_result_type(&mut self, name: &str) -> Result<TypeId, Gap> {
+        let signature = self
+            .schema
+            .extern_functions()
+            .iter()
+            .find(|signature| signature.name().text(self.source) == name);
+        match signature {
+            Some(signature) => {
+                let result = signature.result();
+                self.resolve_type(result)
+            }
+            None => Ok(self.unit_type()),
+        }
     }
 
     fn literal_constant(&mut self, expression: &'source Expression) -> Result<usize, Gap> {
