@@ -35,7 +35,13 @@
     all(feature = "test-second-receiver", feature = "test-supervisor"),
     all(feature = "test-second-receiver", feature = "test-deadlock"),
     all(feature = "test-second-receiver", feature = "test-call-reply"),
-    all(feature = "test-second-receiver", feature = "test-deputy")
+    all(feature = "test-second-receiver", feature = "test-deputy"),
+    all(feature = "test-module-operation", feature = "test-two-processes"),
+    all(feature = "test-module-operation", feature = "test-supervisor"),
+    all(feature = "test-module-operation", feature = "test-deadlock"),
+    all(feature = "test-module-operation", feature = "test-call-reply"),
+    all(feature = "test-module-operation", feature = "test-deputy"),
+    all(feature = "test-module-operation", feature = "test-second-receiver")
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
 
@@ -176,15 +182,15 @@ fn crypto_baseline(cap_bytes: &[u8], capsule: &Capsule<'_>) -> ! {
 
 /// The name a launcher constant binds a grant to (ADR-0061).
 ///
-/// Unused in a production build, and that is the policy holding rather than
-/// code going spare: `system.boot.init` requests no capability, so the
-/// launcher's constant grants none and there is no name to bind (ADR-0055). The
-/// allow says so rather than letting the warning imply the function is surplus.
-#[allow(dead_code)]
-///
 /// A name this image cannot carry is this image's own defect, not a policy
 /// outcome: it would start a process holding authority under a name nothing can
 /// read, so it stops instead.
+///
+/// Unused in a production build, and that is the policy holding rather than code
+/// going spare: `system.boot.init` requests no capability, so the launcher's
+/// constant grants none and there is no name to bind (ADR-0055). The allow says
+/// so rather than letting the warning imply the function is surplus.
+#[allow(dead_code)]
 fn binding(name: &[u8]) -> capability::Binding {
     match capability::Binding::new(name) {
         Some(binding) => binding,
@@ -784,8 +790,27 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             }],
         )
     };
+    // Under the module-operation constant one process holds `send` — and only
+    // `send` — on an endpoint, under the name a TOS Core module asks for. The
+    // module then performs one operation and is refused the other, and the
+    // difference is the whole evidence: it could not have produced two
+    // different statuses without the nucleus having judged both.
+    #[cfg(feature = "test-module-operation")]
+    let first_endowment = {
+        let Some(endpoint) = ipc::create() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        [capability::Endowment::Existing {
+            binding: binding(b"endpoint"),
+            object: capability::Object::Endpoint(endpoint),
+            rights: tos_launch::RIGHT_SEND,
+            scope: 0,
+        }]
+    };
     #[cfg(not(any(
         feature = "test-two-processes",
+        feature = "test-module-operation",
         feature = "test-supervisor",
         feature = "test-deadlock",
         feature = "test-call-reply",

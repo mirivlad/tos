@@ -153,7 +153,9 @@ pub struct Trap {
 }
 
 impl Trap {
-    fn new(code: &'static str, detail: impl ToString, source: SourceRef) -> Trap {
+    /// A trap, from anywhere. Public because a [`System`] is a host in another
+    /// crate and ending a run is one of the two things it may do.
+    pub fn new(code: &'static str, detail: impl ToString, source: SourceRef) -> Trap {
         Trap {
             code,
             detail: detail.to_string(),

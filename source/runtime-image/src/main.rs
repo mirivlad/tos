@@ -26,7 +26,8 @@ use core::panic::PanicInfo;
 
 use tos_launch::{Launch, LaunchCapability, LaunchUnit, ReportHeader, LAUNCH_VERSION};
 use tos_pipeline::{
-    execute_set, render, PipelineStage, SetError, SetRequest, Trace, Unit, Unreachable,
+    execute_set, interfaces, render, CapabilityRequest, Handle, IntKind, PipelineStage, Reach,
+    SetError, SetRequest, System, Trace, Trap, Unit, Value,
 };
 use tos_runtime::{stack, GlobalHeap};
 
@@ -229,13 +230,19 @@ fn exit(status: u64) -> ! {
 /// the log before the call that follows it returns. That is what keeps the
 /// Stage 2 property true across the boundary: a stage that never returns is
 /// still named by the last event.
+/// Two fields and no state: the region is the state, and this only says where
+/// it is. That is what lets the trace and the endowment each hold one — a
+/// process has one report and more than one thing with something to say, and
+/// threading a single `&mut` through both would be a borrow the region's own
+/// header already arbitrates.
+#[derive(Clone, Copy)]
 struct Report {
     base: u64,
     capacity: u64,
 }
 
 impl Report {
-    fn line(&mut self, text: &str) {
+    fn line(&self, text: &str) {
         // SAFETY: `report_base` names a writable mapping of `report_length`
         // bytes in this address space, made by the launcher, and this image is
         // its only writer.
@@ -274,11 +281,13 @@ impl Report {
 }
 
 /// Announces each stage as it is entered, before it runs.
-struct ReportTrace<'a> {
-    report: &'a mut Report,
+struct ReportTrace {
+    /// By value, for the reason [`Report`] gives: the region is the state, and
+    /// two writers of one region do not need one borrow between them.
+    report: Report,
 }
 
-impl Trace for ReportTrace<'_> {
+impl Trace for ReportTrace {
     fn entering(&mut self, stage: PipelineStage) {
         self.report
             .line(&alloc::format!("TOS.RUN.STAGE name={}", stage.symbol()));
@@ -387,27 +396,24 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
         entry_path,
         entry: ENTRY,
     };
-    let mut trace = ReportTrace {
-        report: &mut report,
-    };
-    // What the run may reach, and today that is nothing.
+    let mut trace = ReportTrace { report };
+    // What the run reaches: this process's own endowment, answering the
+    // module's requests by the name each was bound to (ADR-0061) and
+    // performing the operations `SYSTEM_INTERFACE_V1` §8 assigns to
+    // `SYSTEM_ABI_V1`. Nothing here decides anything — the launcher decided,
+    // before this process ran.
     //
-    // The mapping from an operation of `SYSTEM_INTERFACE_V1` to the
-    // `SYSTEM_ABI_V1` call that performs it is written and exercised
-    // (`System` in this image, and the engine's own evidence). What is
-    // *not* decided by any accepted document is how the authority the
-    // launcher endowed this process with binds to the entry function's
-    // declared parameters — `SYSTEM_INTERFACE_V1` §10.3 names a
-    // `CapabilityDenied` at startup without fixing what matches what. Until
-    // that is decided, a module on this path holds no capability, so it can
-    // name no operation, so the honest system to hand it is the one that
-    // says so rather than one that would answer a call nobody could make.
-    let run = match execute_set(
-        &request,
-        alloc::vec::Vec::new(),
-        &mut trace,
-        &mut Unreachable,
-    ) {
+    // SAFETY: the launcher states the record holds `capability_count` entries
+    // at `capabilities`, mapped readable in this address space. The slice is
+    // empty when there are none, which is a process that was endowed nothing.
+    let held = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<LaunchCapability>(launch.capabilities as usize),
+            launch.capability_count as usize,
+        )
+    };
+    let mut endowment = Endowment { held, report };
+    let run = match execute_set(&request, alloc::vec::Vec::new(), &mut trace, &mut endowment) {
         Ok(run) => run,
         Err(SetError::EntryModuleAbsent { .. } | SetError::NoUnits) => {
             report.line("TOS.RUN.UNSTARTABLE reason=no-boot-module");
@@ -523,6 +529,133 @@ fn hold_direction_flag(report: &mut Report) {
 
 #[cfg(not(feature = "test-direction-flag"))]
 fn hold_direction_flag(_report: &mut Report) {}
+
+/// Every operation of `SYSTEM_INTERFACE_V1` §4, and the `SYSTEM_ABI_V1` call
+/// that performs it.
+///
+/// The schema's last column, in the one party that has to act on it. The
+/// frontend deliberately does not carry these numbers — a frontend that knew the
+/// system ABI would be a second place it is declared, and `docs/42` §5 keeps the
+/// two separately versioned. A gate holds this table against §4.
+///
+/// `length` says whether the operation's declared parameter after the capability
+/// is a payload length. It is not a guess about arity: §4 declares which
+/// operations take one, and an operation whose declaration says otherwise is a
+/// disagreement the gate catches rather than a call this table improvises.
+const PERFORMED: &[(&str, &str, u64, bool)] = &[
+    ("system.ipc.Endpoint", "endpoint_send", ENDPOINT_SEND, true),
+    (
+        "system.ipc.Endpoint",
+        "endpoint_receive",
+        ENDPOINT_RECEIVE,
+        false,
+    ),
+    ("system.ipc.Endpoint", "endpoint_call", ENDPOINT_CALL, true),
+    ("system.ipc.Reply", "endpoint_reply", ENDPOINT_REPLY, true),
+    (
+        "system.process.Control",
+        "process_terminate",
+        PROCESS_TERMINATE,
+        false,
+    ),
+];
+
+/// What this process holds, as the thing a run reaches through.
+///
+/// It is the whole of ADR-0061's host side: it answers the module's capability
+/// requests from the launch record by the name each was bound to, and it
+/// performs the operations of `SYSTEM_INTERFACE_V1` by making the
+/// `SYSTEM_ABI_V1` call §8 assigns. It decides nothing — the launcher decided,
+/// before this process ran, and this reports what that decision was.
+struct Endowment<'a> {
+    held: &'a [LaunchCapability],
+    /// Its own copy, not a borrow: see [`Report`]. The trace holds one too, and
+    /// both write to the one region the launcher named.
+    report: Report,
+}
+
+impl System for Endowment<'_> {
+    fn granted(&mut self, request: CapabilityRequest<'_>) -> Option<Handle> {
+        // By the binding, which is the identity of the request (ADR-0061). Not
+        // by position: this process's record and its module's import list are
+        // two different orders, and matching them by index would be matching on
+        // something a source edit changes.
+        let answer = self
+            .held
+            .iter()
+            .find(|capability| named(capability) == request.binding);
+        // And the kind has to be the kind the interface declares
+        // (`SYSTEM_INTERFACE_V1` §4). A grant of the wrong kind would be refused
+        // by the nucleus at the first call anyway; refusing it here is what
+        // makes that a *startup* failure with a name, which is what
+        // `PROCESS_IDENTITY_V1` §7.3 asks for.
+        let wanted =
+            interfaces::interface(request.interface).map(|interface| match interface.object {
+                interfaces::ObjectKind::Endpoint => tos_launch::OBJECT_ENDPOINT,
+                interfaces::ObjectKind::Region => tos_launch::OBJECT_REGION,
+                interfaces::ObjectKind::Process => tos_launch::OBJECT_PROCESS,
+                interfaces::ObjectKind::InterfacePublication => tos_launch::OBJECT_INTERFACE,
+                interfaces::ObjectKind::Reply => tos_launch::OBJECT_REPLY,
+            })?;
+        let capability = answer?;
+        self.report.line(&alloc::format!(
+            "TOS.RUN.REQUEST binding={} interface={} object={} wanted={}",
+            request.binding,
+            request.interface,
+            capability.object,
+            wanted
+        ));
+        (capability.object == wanted).then(|| Handle::new(capability.handle))
+    }
+
+    fn reach(&mut self, call: Reach<'_>) -> Result<Value, Trap> {
+        let Some((_, _, operation, takes_length)) =
+            PERFORMED.iter().find(|(interface, name, _, _)| {
+                *interface == call.interface && *name == call.operation
+            })
+        else {
+            // An accepted schema declared it and this host cannot perform it.
+            // That is a disagreement between two documents, not a program error,
+            // and it ends the run rather than returning a status the module
+            // would read as an answer.
+            return Err(Trap::new(
+                "RUNTIME_OPERATION_NOT_IMPLEMENTED",
+                "this system performs no such operation of that interface",
+                call.source,
+            ));
+        };
+        let Some(Value::Capability(held)) = call.arguments.first() else {
+            return Err(Trap::new(
+                "RUNTIME_TYPE_CONFUSION",
+                "an operation reached without a capability first",
+                call.source,
+            ));
+        };
+        let length = match (takes_length, call.arguments.get(1)) {
+            (true, Some(Value::Int(_, bytes))) if *bytes >= 0 => *bytes as u64,
+            (true, _) => {
+                return Err(Trap::new(
+                    "RUNTIME_TYPE_CONFUSION",
+                    "an operation that takes a length was reached without one",
+                    call.source,
+                ))
+            }
+            (false, _) => 0,
+        };
+        // SAFETY: `operation` is one of the assigned numbers in the table above,
+        // the first argument is the handle the launcher granted this process, and
+        // the second is a length this call's own declaration says it takes.
+        let (status, _) = unsafe { self::call(*operation, held.get(), length) };
+        // What a module asked the system for and what the system answered, on
+        // the audit record. The module sees only the status; a reader of the
+        // boot log sees which operation, under which request, produced it.
+        self.report.line(&alloc::format!(
+            "TOS.RUN.INTERFACE operation={} status={status}",
+            call.operation
+        ));
+        Ok(Value::Int(IntKind::I64, status.into()))
+    }
+}
 
 /// Exercises the authority this process was endowed with, and reports what the
 /// system answered.

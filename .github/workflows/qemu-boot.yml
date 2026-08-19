@@ -138,6 +138,12 @@ jobs:
       - name: One endpoint has one receiver gate
         run: bash host-tools/qemu-test/second-receiver.sh target/qemu-ci/second-receiver
 
+      # docs/37's Stage 3 identity question: a TOS Core module, not the Rust
+      # runtime image, asks for a capability by name, is answered, and performs
+      # a real operation on it — and is refused the one its endowment withholds.
+      - name: A module performs an operation gate
+        run: bash host-tools/qemu-test/module-operation.sh target/qemu-ci/module-operation
+
       # An interrupt gate leaves DF as the interrupted context had it, and the
       # nucleus's handlers are Rust, compiled on the promise that DF is clear.
       # A process holds it across many ticks so the question is asked on every

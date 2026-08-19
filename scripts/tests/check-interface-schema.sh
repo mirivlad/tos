@@ -66,6 +66,44 @@ kinds_in_table=$(sed -n \
     fail "the accepted schema and the frontend's table disagree about object kinds"
 }
 
+# And the `SYSTEM_ABI_V1` call each operation is performed by (ADR-0060 §8).
+#
+# That column lives in the runtime image rather than in the frontend's table on
+# purpose: a frontend that knew the system ABI would be a second place it is
+# declared, and `docs/42` §5 keeps the language and the ABI separately
+# versioned. So the host that performs them carries the numbers, and this holds
+# them against the document that assigns them.
+HOST="$ROOT/source/runtime-image/src/main.rs"
+abi_in_doc=$(sed -n '/^### /,/^## 5/p' "$DOC" |
+    sed -n 's/^| `\([a-z_]*\)` |.*| \([0-9]*\) |$/\1 \2/p' | sort)
+abi_in_host=$(sed -n '/^const PERFORMED/,/^];$/p' "$HOST" |
+    tr -d ' \n' | tr '(' '\n' |
+    sed -n 's/^"[a-zA-Z.]*","\([a-z_]*\)",\([A-Z_]*\),\(true\|false\),\?).*$/\1 \2/p' | sort)
+# The host names each call by its `SYSTEM_ABI_V1` constant, so resolve those to
+# the numbers the document assigns before comparing.
+while IFS= read -r pair; do
+    [ -n "$pair" ] || continue
+    name=${pair%% *}
+    symbol=${pair#* }
+    number=$(sed -n "s/^const $symbol: u64 = \([0-9]*\);$/\1/p" "$HOST")
+    [ -n "$number" ] || fail "the host names $symbol for $name and defines no such operation"
+    printf '%s %s\n' "$name" "$number"
+done <<EOF > "${TMPDIR:-/tmp}/tos-abi-host.$$"
+$abi_in_host
+EOF
+abi_resolved=$(sort "${TMPDIR:-/tmp}/tos-abi-host.$$")
+rm -f "${TMPDIR:-/tmp}/tos-abi-host.$$"
+
+[ -n "$abi_in_doc" ] || fail "section 4 assigns no SYSTEM_ABI_V1 operation numbers"
+[ "$abi_in_doc" = "$abi_resolved" ] || {
+    echo "the document assigns:" >&2
+    echo "$abi_in_doc" >&2
+    echo "the runtime image performs:" >&2
+    echo "$abi_resolved" >&2
+    fail "the accepted schema and the host that performs it disagree about operations"
+}
+
 count=$(printf '%s\n' "$declared" | grep -c .)
 paired=$(printf '%s\n' "$kinds_in_doc" | grep -c .)
-echo "check-interface-schema: PASS ($count operation(s) and $paired object kind(s) checked)"
+echo "check-interface-schema: PASS ($count operation(s), $paired object kind(s)" \
+     "and $count ABI assignment(s) checked)"
