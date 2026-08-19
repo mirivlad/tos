@@ -198,6 +198,27 @@ static mut RETURNS: u64 = 0;
 /// Exchanges begun. One `endpoint_call` is one request/reply, which is the unit
 /// `IPC_V1` §8 states its crossing bound in.
 static mut EXCHANGES: u64 = 0;
+/// The *outward* crossings of the operations an exchange is made of: one per
+/// operation that came back, by whichever of the three doors it used — the edge,
+/// the scheduler, or a tick switching to the context it was set down in.
+static mut IPC_RETURNS: u64 = 0;
+
+/// One operation's way out, from a door that is not the edge.
+///
+/// Called by the scheduler and by the preemption path, which are the two ways a
+/// call that blocked comes back. It lives here rather than there because the
+/// count belongs beside the one for the edge: three doors, one number.
+pub fn count_operation_return() {
+    // SAFETY: single-context nucleus; the dispatcher, the scheduler and the
+    // timer handler never run at once.
+    unsafe { IPC_RETURNS += 1 };
+}
+
+/// That count.
+pub fn ipc_returns() -> u64 {
+    // SAFETY: as above.
+    unsafe { IPC_RETURNS }
+}
 
 /// That count.
 pub fn exchanges() -> u64 {
@@ -246,6 +267,9 @@ extern "C" fn syscall_dispatch(operation: u64, frame: &mut TrapFrame) {
     // SAFETY: single-context nucleus with interrupts masked.
     unsafe {
         RETURNS += 1;
+        if is_ipc(operation) {
+            IPC_RETURNS += 1;
+        }
     };
 }
 

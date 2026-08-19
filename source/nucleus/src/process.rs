@@ -132,6 +132,20 @@ struct Slot {
     waiting: Waiting,
     /// How it ended, once it has.
     ended: Ended,
+    /// Whether the next time this context runs, that crossing is an operation's
+    /// way back.
+    ///
+    /// A call that blocked does not return through the edge: it is set down and
+    /// picked up later. **And there are two doors it can be picked up by** — the
+    /// scheduler entering it, or a timer tick switching to it — which is what
+    /// makes this a flag rather than a count taken at one place. Which door is
+    /// used depends only on whether whoever woke it went on to block or ran into
+    /// a tick, so an instrument that watched one door measured a number that
+    /// moved with the interleaving.
+    ///
+    /// The tick itself is scheduler preemption and `IPC_V1` §8 excludes it. The
+    /// operation coming back is not preemption; it merely used that door.
+    resumes_an_operation: bool,
     /// Which occupant of this slot this is.
     ///
     /// A slot is reused, and a capability naming a process must not survive the
@@ -160,6 +174,7 @@ impl Slot {
         last_tick: 0,
         reply_generation: 1,
         waiting: Waiting::Nothing,
+        resumes_an_operation: false,
         ended: Ended::Fault(0),
         // One, not zero: an object named with a generation nobody wrote is an
         // object nobody was given.
@@ -448,6 +463,14 @@ pub unsafe fn preempt(frame: &mut TrapFrame, tick: u64) {
     if next == current {
         return;
     }
+    // The second door. A context woken while somebody else was still running is
+    // reached by a tick rather than by the scheduler, and the operation it was
+    // waiting inside comes back here — so the count is taken here too, or it
+    // would move with the interleaving instead of with the work.
+    if table[next].resumes_an_operation {
+        table[next].resumes_an_operation = false;
+        crate::syscall::count_operation_return();
+    }
     table[current].frame = *frame;
     *frame = table[next].frame;
     table[next].quanta += 1;
@@ -653,6 +676,9 @@ pub unsafe fn wake(index: usize, answer: crate::syscall::Answer) {
         // that ends a call can forget.
         table[index].reply_generation = table[index].reply_generation.wrapping_add(1);
     }
+    // Whatever it was waiting for, it was waiting *inside* an operation, and
+    // whichever door it next runs through is that operation's way out.
+    table[index].resumes_an_operation = true;
     table[index].waiting = Waiting::Nothing;
     table[index].state = State::Runnable;
 }
@@ -853,6 +879,10 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
             // SAFETY: as above; counted before the crossing rather than after,
             // because nothing after it runs until the context comes back.
             ENTRIES += 1;
+            if (*slot).resumes_an_operation {
+                (*slot).resumes_an_operation = false;
+                crate::syscall::count_operation_return();
+            }
             if process_capture(addr_of_mut!(RETURN)) == 0 {
                 // SAFETY: the frame is this slot's, and the launcher mapped its
                 // entry executable and its stack writable in the space just

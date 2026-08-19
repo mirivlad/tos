@@ -134,9 +134,32 @@ copies=$(printf '%s' "$cost" | sed -n 's/.* payload_copies=\([0-9]*\) .*/\1/p')
 [ "$copies" -le $(( 2 * messages )) ] ||
     fail "$copies payload copies for $messages message(s): IPC_V1 section 8 allows two each"
 
+# --- and every operation that entered came back exactly once -------------------
+# The invariant that makes the crossing counter an instrument rather than a
+# guess, and it is here because it was once false. A call that blocks does not
+# return through the edge: it is set down and picked up later, by the scheduler
+# **or** by a timer tick switching to it — and which door depends only on whether
+# whoever woke it went on to block or ran into a tick. An earlier counter watched
+# one door, so two boots with identical crossing profiles reported different
+# totals, and the number moved with the interleaving instead of with the work.
+#
+# Balanced, it says something worth having: an IPC operation costs exactly two
+# crossings, one each way. A request/reply is three operations — `endpoint_call`,
+# `endpoint_receive`, `endpoint_reply` — so it costs six, where IPC_V1 section 8
+# allows four. Meeting that bound needs an operation that answers and waits again
+# in one crossing pair, which SYSTEM_ABI_V1 does not have; that is an addition to
+# the ABI rather than anything tunable here, and it is recorded rather than
+# quietly missed.
+ipc_in=$(printf '%s' "$cost" | sed -n 's/.* ipc_in=\([0-9]*\) .*/\1/p')
+ipc_out=$(printf '%s' "$cost" | sed -n 's/.* ipc_out=\([0-9]*\)$/\1/p')
+[ -n "$ipc_in" ] && [ -n "$ipc_out" ] || fail "the nucleus did not report its IPC crossings"
+[ "$ipc_in" = "$ipc_out" ] ||
+    fail "$ipc_in IPC operations entered the nucleus and $ipc_out came back: the count is losing one"
+
 echo "REQUEST-REPLY PASS: a question was asked, answered, and the right to answer spent"
 echo "  the client held only \`call\`, the server only \`receive\`; neither held the right to reply"
 echo "  the answer reached the caller inside the call it had blocked in"
 echo "  the same reply capability, used twice, was refused the second time"
 echo "  $copies payload copies for $messages message(s), counted by the nucleus, not estimated"
+echo "  $ipc_in IPC operations in and $ipc_out out: every one that entered came back once"
 echo "  no wait was cancelled: on a run that progresses the liveness rule costs nothing"
