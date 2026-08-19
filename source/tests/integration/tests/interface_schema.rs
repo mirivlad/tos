@@ -3,7 +3,8 @@
 //!
 //! ADR-0060 and `SYSTEM_INTERFACE_V1`. What is checked here is the seam the
 //! decision turns on: a module declares an operation of an interface it
-//! requested, calls it, and the lowered IR carries **the interface path** —
+//! requested, calls it **on the name it bound that request to** (ADR-0061), and
+//! the lowered IR carries **the interface path** —
 //! both on the instruction that leaves and on the effects of the function that
 //! made the call. A verifier reading that artifact learns which interfaces the
 //! module reaches without executing any of it.
@@ -42,8 +43,8 @@ resource [
 
 extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 uses [endpoint];
 
-pub fn main(cap: system.ipc.Endpoint) -> i64 uses [endpoint] {
-    return endpoint_send(cap, 8u64);
+pub fn main() -> i64 uses [endpoint] {
+    return endpoint_send(endpoint, 8u64);
 }
 ";
 
@@ -97,29 +98,57 @@ fn the_artifact_names_the_interface_it_reaches() {
         .collect();
     assert_eq!(reaching, vec!["system.ipc.Endpoint"]);
 
-    // It is a call, and it is not a call to anything of this module: an
-    // operation of an interface is reached, not defined here.
+    // And it is an operation on a declared capability import, not a call to
+    // anything of this module: `tos-ir/v1` reserved `Op::Capability` for exactly
+    // "an operation on a declared imported capability", and ADR-0061 makes the
+    // import the thing the operation is performed under.
     assert!(entry
         .blocks
         .iter()
         .flat_map(|block| &block.instructions)
         .any(|instruction| instruction.unsafe_interface.is_some()
-            && matches!(&instruction.op, Op::Call { .. })));
+            && matches!(&instruction.op, Op::Capability { .. })));
 
     verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect("a module reaching an interface it imported and declared verifies");
 }
 
 #[test]
-fn reaching_an_interface_the_module_never_imported_is_refused() {
+fn an_operation_performed_under_a_request_nobody_made_is_refused() {
     let mut module = lower(MODULE);
-    // The artifact now claims to reach something nobody asked for. A frontend
-    // that emitted this would be granting authority by writing a string.
+    // The artifact now performs an operation under an import that is not there.
+    // A frontend that emitted this would be granting authority by writing an
+    // index, which is why the index is bounds-checked against the module's own
+    // table rather than trusted.
     module.capability_imports.clear();
     let finding = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
-        .expect_err("an interface reached but never imported is refused");
-    assert_eq!(finding.code, "V2033_UNSAFE");
-    assert!(finding.detail.contains("never imported"), "{finding:?}");
+        .expect_err("an operation under an import nobody declared is refused");
+    assert_eq!(finding.code, "V2013_CAPABILITY");
+    assert!(finding.detail.contains("outside the table"), "{finding:?}");
+}
+
+#[test]
+fn an_operation_that_names_one_interface_and_acts_under_another_is_refused() {
+    let mut module = lower(MODULE);
+    // The instruction says two things about which interface it reaches: the
+    // import it acts under, and the accepted interface ID docs/43 section 3 asks
+    // it to carry. This makes them disagree, which every other check would let
+    // through — the import is in range, the interface was imported, the function
+    // declared it — while the operation is performed on authority of the wrong
+    // type.
+    for function in &mut module.functions {
+        for block in &mut function.blocks {
+            for instruction in &mut block.instructions {
+                if instruction.unsafe_interface.is_some() {
+                    instruction.unsafe_interface = Some(String::from("system.ipc.Reply"));
+                }
+            }
+        }
+    }
+    let finding = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect_err("an operation naming one interface and acting under another is refused");
+    assert_eq!(finding.code, "V2013_CAPABILITY");
+    assert!(finding.detail.contains("is performed under"), "{finding:?}");
 }
 
 #[test]

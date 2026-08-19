@@ -189,6 +189,29 @@ pub enum Refusal {
     NoSuchEntry(String),
     /// The entry function's arity does not match the arguments supplied.
     EntryArity { expected: usize, actual: usize },
+    /// A capability the module requested was not granted (`docs/42` §2).
+    ///
+    /// Carries the binding, because that is what the module called it and what
+    /// a reader has to look for in the source; and the interface, because that
+    /// is what was wanted. `PROCESS_IDENTITY_V1` §7.3 asks a denial to be
+    /// nameable, and this is the name.
+    CapabilityDenied { binding: String, interface: String },
+}
+
+/// One capability request of a module, put to the host that answers it.
+#[derive(Clone, Copy, Debug)]
+pub struct Request<'a> {
+    /// The accepted interface the module asked for.
+    pub interface: &'a str,
+    /// The name it bound the request to, which is the identity of the request
+    /// (ADR-0061). Unique inside a module, and covered by the module digest, so
+    /// a host may hold policy against it.
+    pub binding: &'a str,
+    /// Where in the module's own import list it is. Offered because it is free
+    /// and occasionally useful for reporting; it is **not** the identity, and a
+    /// host that matched on it would be matching on something a source reorder
+    /// changes.
+    pub position: usize,
 }
 
 /// One call leaving the engine for an accepted interface schema.
@@ -231,6 +254,20 @@ pub struct Reach<'a> {
 /// evaluation order and is unchanged by this trait existing. Everything a `reach`
 /// returns is outside it.
 pub trait System {
+    /// Which capability answers one of the module's requests.
+    ///
+    /// Asked once per `import capability`, **before the first instruction
+    /// runs** — which is what makes an unanswered request a startup failure
+    /// rather than a surprise at a call site (`docs/42` §2,
+    /// `SYSTEM_INTERFACE_V1` §10.3). The engine supplies what the artifact
+    /// declares and nothing else: the interface path and the name the module
+    /// bound it to (ADR-0061). Which grant that is, and whether there is one,
+    /// is entirely the host's.
+    ///
+    /// `None` denies the request. It is not an empty authority and not a zero
+    /// handle: `docs/42` §2 forbids a denial being fabricated as either.
+    fn granted(&mut self, request: Request<'_>) -> Option<Handle>;
+
     /// Performs one operation, or ends the run.
     ///
     /// A refused operation is an ordinary value — every operation of
@@ -251,6 +288,10 @@ pub trait System {
 pub struct Unreachable;
 
 impl System for Unreachable {
+    fn granted(&mut self, _request: Request<'_>) -> Option<Handle> {
+        None
+    }
+
     fn reach(&mut self, call: Reach<'_>) -> Result<Value, Trap> {
         Err(Trap::new(
             "RUNTIME_INTERFACE_UNREACHABLE",
@@ -345,11 +386,33 @@ pub fn run_set(
         });
     }
 
+    // Every request answered before the first instruction, or none of them run.
+    // A module that got as far as a call before discovering it holds nothing
+    // would have already done work under an assumption that was false.
+    let mut imports = Vec::with_capacity(module.capability_imports.len());
+    for (position, request) in module.capability_imports.iter().enumerate() {
+        let held = system.granted(Request {
+            interface: &request.interface,
+            binding: &request.binding,
+            position,
+        });
+        match held {
+            Some(handle) => imports.push(Value::Capability(handle)),
+            None => {
+                return Err(Refusal::CapabilityDenied {
+                    binding: request.binding.clone(),
+                    interface: request.interface.clone(),
+                })
+            }
+        }
+    }
+
     let envelope = &module.header.resource_envelope;
     let mut engine = Engine {
         module,
         set,
         system,
+        imports,
         fuel_limit: envelope.fuel,
         recursion_limit: envelope.recursion.max(1),
         fuel_used: 0,
@@ -403,6 +466,11 @@ struct Engine<'module, 'system> {
     /// What this run reaches when it leaves. Its own lifetime, because a host
     /// has no reason to outlive the modules it is running.
     system: &'system mut dyn System,
+    /// What each of the entry module's capability requests was answered with,
+    /// in the order the module declares them. Fixed before the run starts and
+    /// never written again: a run's authority is what it was given, and there is
+    /// no instruction that adds to this.
+    imports: Vec<Value>,
     fuel_limit: u128,
     recursion_limit: u128,
     fuel_used: u128,
@@ -1112,7 +1180,53 @@ impl Engine<'_, '_> {
                 }
                 None
             }
-            Op::Atomic { .. } | Op::Capability { .. } | Op::Resource { .. } => {
+            // An operation of an accepted interface schema, performed on the
+            // capability an import was bound to (ADR-0060, ADR-0061).
+            //
+            // The capability is not an operand and never was: the instruction
+            // names *which import*, and what that import was bound to is a
+            // property of this run rather than of the module. So the same
+            // artifact, run twice under different grants, reaches different
+            // objects without a byte of it changing — which is what makes a
+            // module a description of what it needs rather than of what it was
+            // given.
+            Op::Capability {
+                import,
+                right,
+                operands,
+            } => {
+                let Some(interface) = self
+                    .module
+                    .capability_imports
+                    .get(*import)
+                    .map(|import| import.interface.as_str())
+                else {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        "an operation names a capability import this module does not declare",
+                        source,
+                    ));
+                };
+                // Every request was answered before the run started, so this
+                // cannot be absent for a module of the entry's own set; it can
+                // for a *cross-module* call, whose imports are that module's
+                // and are not this run's. Refusing says so rather than reaching
+                // for the wrong module's authority.
+                let Some(held) = self.imports.get(*import).cloned() else {
+                    return Err(Trap::new(
+                        "RUNTIME_CAPABILITY_DENIED",
+                        alloc::format!("{interface} was requested and not granted"),
+                        source,
+                    ));
+                };
+                // ADR-0056: the capability first, then the operation's values.
+                let mut arguments = alloc::vec![held];
+                for operand in operands {
+                    arguments.push(self.operand(operand, values, source)?);
+                }
+                Some(self.reach(interface, right, arguments, source)?)
+            }
+            Op::Atomic { .. } | Op::Resource { .. } => {
                 return Err(Trap::new(
                     "RUNTIME_OPERATION_NOT_IMPLEMENTED",
                     "this reference engine does not yet execute that operation family",
