@@ -157,6 +157,13 @@ jobs:
       - name: A module launches a process gate
         run: bash host-tools/qemu-test/process-launch.sh target/qemu-ci/process-launch
 
+      # docs/37 for the system's own structure: the thing that starts the
+      # services is text, and so is the policy that says which services those
+      # are. Two TOS Core modules, one capsule, one privileged party — the
+      # nucleus that answers `process_create`.
+      - name: A textual supervisor starts services gate
+        run: bash host-tools/qemu-test/supervisor-text.sh target/qemu-ci/supervisor-text
+
       # An interrupt gate leaves DF as the interrupted context had it, and the
       # nucleus's handlers are Rust, compiled on the promise that DF is clear.
       # A process holds it across many ticks so the question is asked on every

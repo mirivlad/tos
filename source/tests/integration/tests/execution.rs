@@ -844,3 +844,31 @@ fn a_dependency_of_another_revision_under_the_same_name_traps() {
         "the trap must say what disagreed: {trap:?}"
     );
 }
+
+#[test]
+fn an_array_is_indexed_by_a_value_the_run_computes() {
+    // A constant index was lowered to the position itself and anything else to
+    // `Index(None)` — a step with no position at all, which the engine can only
+    // refuse: "an index step reached execution without a value". `tos-ir/v1` has
+    // had `DynamicIndex` since the `for` lowering was written, so what was
+    // missing was not the mechanism but its use for an ordinary subscript.
+    //
+    // Found by writing a supervisor: a policy module holding an array of module
+    // names is unreadable without it, and every real policy is that.
+    const BODY: &str = "pub fn pick(at: size) -> i32 { \
+        let values: array<i32, 3> = [10i32, 20i32, 30i32]; \
+        return values[at]; }";
+    for (at, expected) in [(0u128, 10i128), (1, 20), (2, 30)] {
+        assert_eq!(
+            evaluate(BODY, "pick", vec![Value::Size(at)]),
+            Value::Int(IntKind::I32, expected)
+        );
+    }
+
+    // And past the end is a defined runtime failure rather than a read of
+    // whatever follows it.
+    assert_eq!(
+        trap(BODY, "pick", vec![Value::Size(3)]).code,
+        "RUNTIME_INDEX_OUT_OF_RANGE"
+    );
+}

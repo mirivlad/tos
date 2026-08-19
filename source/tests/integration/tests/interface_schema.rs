@@ -168,3 +168,49 @@ fn reaching_an_interface_the_function_never_declared_is_refused() {
         "{finding:?}"
     );
 }
+
+#[test]
+fn no_accepted_interface_admits_a_region() {
+    // `IPC_V1` §9.6 asks for evidence that a region transferred linearly is
+    // unmapped from the sender. This is the evidence that the question does not
+    // arise in this contract version, which the accepted documents decide
+    // between them rather than leave to an implementation:
+    //
+    //   - `IPC_V1` §5 makes the mode a property of a declaration: a region
+    //     "leaves the sender's address space at transfer, **if the interface
+    //     declares the transfer linear**";
+    //   - `SYSTEM_INTERFACE_V1` §8 declares no region operation at all, and says
+    //     why: `docs/42` §2 requires a region grant to originate through an
+    //     operation whose interface declares element type, alignment, access,
+    //     size, DMA domain, lifetime and transfer rules.
+    //
+    // So no interface declares a region operation, so no region originates, so
+    // nothing travels linearly or otherwise. That is stricter than refusing a
+    // message with too many regions, and it is checked here rather than asserted
+    // in prose — a schema that quietly grew a region parameter would make §9.6
+    // reachable and unevidenced in the same commit.
+    for interface in tos_core::interfaces::ACCEPTED {
+        assert_ne!(
+            interface.object,
+            tos_core::interfaces::ObjectKind::Region,
+            "{} names a region, so a capability of it would be a region grant",
+            interface.path
+        );
+        for operation in interface.operations {
+            for parameter in operation.parameters {
+                assert!(
+                    !parameter.ty.contains("Region") && !parameter.ty.contains("region"),
+                    "{}::{} takes {}, so a region crosses an interface that declares no rules for one",
+                    interface.path,
+                    operation.name,
+                    parameter.ty
+                );
+            }
+            assert_eq!(
+                operation.result, "i64",
+                "{}::{} returns something other than the status §5 fixes",
+                interface.path, operation.name
+            );
+        }
+    }
+}

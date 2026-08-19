@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A supervisor, in TOS Core.
+//
+// It reads a policy module and starts what that policy names. Both halves are
+// canonical text: the policy is a module of this capsule, and this is a module
+// of this capsule, and the only privileged thing in the picture is the nucleus
+// that answers `process_create`.
+//
+// That is docs/37's Stage 3 identity question answered for the system's own
+// structure, and not just for one operation: "do textual processes exercise real
+// capability/IPC contracts rather than running as decorative scripts around
+// privileged binary services?" The thing that starts the services is text.
+//
+// It holds exactly one capability, and it is the one it asks for by name. What
+// it may do with it is `create` and nothing else — it cannot terminate what it
+// started, because nobody gave it that, and a supervisor that could is a
+// different decision than this launcher constant made.
+
+module system.boot.init version 1.0 profile full;
+
+import system.policy.services as policy;
+import capability system.process.Control as control;
+
+resource [
+    fuel: 65536,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn process_create(cap: system.process.Control, path: string) -> i64 uses [control];
+
+// How many of the policy's components started.
+//
+// The loop is over the policy's own count, and each name is the policy's own —
+// this module contains neither. So the number it returns is a fact about two
+// modules together, and a supervisor that had ignored the policy could not
+// produce it.
+pub fn main() -> i64 uses [control] {
+    let mut started: i64 = 0i64;
+    let mut at: size = 0B;
+    while (at < policy.count()) {
+        let status: i64 = process_create(control, policy.name(at));
+        if (status == 0i64) {
+            started = started + 1i64;
+        }
+        at = at + 1B;
+    }
+    return started;
+}
