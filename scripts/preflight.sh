@@ -214,6 +214,10 @@ qemu_deputy() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/deputy.sh \
         target/preflight-qemu/deputy)
 }
+qemu_direction_flag() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/direction-flag.sh \
+        target/preflight-qemu/direction-flag)
+}
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
@@ -267,6 +271,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU blocking and the liveness rule" qemu_blocking
     run_gate "QEMU request and reply" qemu_request_reply
     run_gate "QEMU confused deputy" qemu_deputy
+    run_gate "QEMU flags a process was holding" qemu_direction_flag
 fi
 
 printf '\n'

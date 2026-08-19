@@ -442,6 +442,8 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
         ));
     }
 
+    hold_direction_flag(&mut report);
+
     // What this process was given, and what it does with it. Empty on a
     // canonical boot, because the launcher's constant grants nothing a module
     // did not request (ADR-0055) — and a process with no authority reports that
@@ -453,6 +455,55 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
         Some(_) => exit(EXIT_REFUSED),
     }
 }
+
+/// Holds the direction flag set across many timer ticks, and says which ticks.
+///
+/// A process is entitled to set `DF`, and every Rust program on this system
+/// already does: `memmove` sets it to copy overlapping bytes backwards and
+/// clears it a dozen instructions later. An interrupt gate clears `IF` and `TF`
+/// and leaves `DF` alone, so a tick landing inside that window enters the
+/// nucleus with `DF` set — and the nucleus's handlers are Rust, compiled on the
+/// System V AMD64 promise that `DF` is clear. It failed exactly there: a frame
+/// copy in the scheduler ran `rep movsq` backwards over its own return address,
+/// once in about thirty boots.
+///
+/// This is that window, widened from a dozen instructions to hundreds of
+/// millions so that the question is asked on every boot instead of on one in
+/// thirty. The loop is written as one assembly block rather than around Rust,
+/// because the point is to hold a flag that Rust is entitled to assume is
+/// clear: a compiler putting anything of its own between the `std` and the `cld`
+/// would be corrupting this process rather than testing the nucleus.
+///
+/// The two ticks bracket the window and no system call is made inside it, so a
+/// tick that moved is a tick taken by the nucleus while this process held `DF`.
+/// That is the same argument the scheduler gate makes about interleaving, and it
+/// needs nothing from the nucleus but the count it already keeps.
+#[cfg(feature = "test-direction-flag")]
+fn hold_direction_flag(report: &mut Report) {
+    let began = monotonic().unwrap_or(0);
+    // SAFETY: the block touches one scratch register and the direction flag, and
+    // leaves the flag clear. It makes no memory reference, so nothing it does
+    // depends on the flag it is holding; between `std` and `cld` there is no
+    // instruction whose meaning the flag changes.
+    unsafe {
+        core::arch::asm!(
+            "std",
+            "2:",
+            "dec {counter}",
+            "jnz 2b",
+            "cld",
+            counter = inout(reg) 400_000_000u64 => _,
+            options(nostack),
+        );
+    }
+    let ended = monotonic().unwrap_or(0);
+    report.line(&alloc::format!(
+        "TOS.RUN.DIRECTION_FLAG held_begin={began} held_end={ended}"
+    ));
+}
+
+#[cfg(not(feature = "test-direction-flag"))]
+fn hold_direction_flag(_report: &mut Report) {}
 
 /// Exercises the authority this process was endowed with, and reports what the
 /// system answered.

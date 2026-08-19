@@ -11,6 +11,13 @@ publish = false
 name = "tos-runtime-image"
 path = "src/main.rs"
 
+[features]
+# Holds the direction flag set across many timer ticks, so that the nucleus is
+# entered from a process holding a flag its own handlers are compiled to assume
+# is clear. Never selected by the normal runtime-image build: this is a process
+# doing something legal and unusual, and only a gate has a reason to ask for it.
+test-direction-flag = []
+
 [dependencies]
 tos-launch = { path = "../crates/tos-launch" }
 tos-pipeline = { path = "../crates/tos-pipeline" }
