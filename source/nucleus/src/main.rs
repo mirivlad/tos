@@ -254,13 +254,14 @@ fn ipc_cost() {
     tos_serial::put_u32_decimal(returns as u32);
     tos_serial::puts(b" resumptions=");
     tos_serial::put_u32_decimal(process::entries() as u32);
-    // How many request/reply exchanges there were, which is the unit §8 states
-    // its crossing bound in. The crossings *of one exchange* are not here: see
-    // the note in PROGRESS — attributing an operation's outward crossing to the
-    // operation is not yet done correctly, and a number that is sometimes five
-    // and sometimes six is an estimate wearing a counter's clothes.
+    // How many request/reply exchanges there were — the unit §8 states its
+    // crossing bound in — and how many outward crossings the operations of those
+    // exchanges made, by whichever of the three doors each used. With `ipc_in`
+    // they are the whole of §8's ratio, and the division is still the reader's.
     tos_serial::puts(b" exchanges=");
     tos_serial::put_u32_decimal(syscall::exchanges() as u32);
+    tos_serial::puts(b" ipc_out=");
+    tos_serial::put_u32_decimal(syscall::ipc_returns() as u32);
     tos_serial::puts(b"\r\n");
 }
 
