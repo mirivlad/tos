@@ -35,6 +35,10 @@ test-deadlock = []
 # request/reply — and the single-use reply capability `IPC_V1` §4 describes — is
 # exercised rather than described.
 test-call-reply = []
+# A strong process and a weak one that can only ask it for things, so that the
+# question `CAPABILITY_V1` §7.6 asks — does the strong one's strength leak into
+# work it does for the weak one — is asked of a real pair.
+test-deputy = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

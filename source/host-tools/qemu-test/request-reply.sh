@@ -19,7 +19,9 @@
 #     always, so a receiver knows where to look without being told how many
 #     capabilities the caller chose to send;
 #   - answering spends it. The second attempt with the same handle is refused,
-#     which is what single-use means rather than a claim about it;
+#     which is what single-use means rather than a claim about it — and it is
+#     per *call*, so a client that asks twice is answered twice, by two
+#     capabilities neither of which outlives its own question;
 #   - and the liveness rule never fires. A run that makes progress must cost
 #     nothing at all, or the rule would be a tax on working systems.
 #
@@ -89,8 +91,12 @@ exactly 1 "^TOS\\.RUN\\.IPC\\.RECEIVED bytes=$QUESTION_BYTES text=$QUESTION\$" \
     "the server did not read the client's question back whole"
 
 # --- and was answered with a capability nobody was endowed with --------------
-exactly 1 "^TOS\\.RUN\\.IPC\\.REPLIED status=0 handle=0x[0-9a-f]* again=$E_NO_CAPABILITY\$" \
-    "the reply failed, or the reply capability survived being used"
+# The client asks twice — once carrying nothing, once carrying a capability —
+# and both are answered. Each answer spends its own reply capability, and each
+# second attempt with the same one is refused: single use is per call, not per
+# process.
+exactly 2 "^TOS\\.RUN\\.IPC\\.REPLIED status=0 handle=0x[0-9a-f]* again=$E_NO_CAPABILITY\$" \
+    "a reply failed, or a reply capability survived being used"
 
 # --- the caller's own call returned the answer -------------------------------
 # `endpoint_call` blocks, so this line existing at all means the caller was

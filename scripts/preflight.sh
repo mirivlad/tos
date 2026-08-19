@@ -207,6 +207,10 @@ qemu_request_reply() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/request-reply.sh \
         target/preflight-qemu/request-reply)
 }
+qemu_deputy() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/deputy.sh \
+        target/preflight-qemu/deputy)
+}
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
@@ -258,6 +262,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU process authority" qemu_supervisor
     run_gate "QEMU blocking and the liveness rule" qemu_blocking
     run_gate "QEMU request and reply" qemu_request_reply
+    run_gate "QEMU confused deputy" qemu_deputy
 fi
 
 printf '\n'
