@@ -48,6 +48,13 @@ pub enum Object {
     None,
     /// An IPC endpoint, named by its index in the nucleus's endpoint table.
     Endpoint(u32),
+    /// A process, named by its slot. Authority *over a process* rather than
+    /// over "processes": `CAPABILITY_V1` §3 admits an object and rules out a
+    /// class, so there is no capability meaning "may create anything". A
+    /// process that may create holds authority over the process a child is
+    /// created under — its own — and that is what makes the chain terminate at
+    /// whoever the launcher endowed.
+    Process { slot: u32, generation: u32 },
 }
 
 impl Object {
@@ -56,6 +63,7 @@ impl Object {
         match self {
             Object::None => 0,
             Object::Endpoint(_) => tos_launch::OBJECT_ENDPOINT,
+            Object::Process { .. } => tos_launch::OBJECT_PROCESS,
         }
     }
 }
@@ -154,7 +162,33 @@ pub fn resolve(process: usize, handle: u64, rights: u32) -> Result<Object, Refus
     if entry.rights & rights != rights {
         return Err(Refused::NoCapability);
     }
+    // A capability's lifetime is bounded by its object (`CAPABILITY_V1` §3), so
+    // an entry whose object has ended is not a capability. Checked here, once,
+    // rather than in each operation: an operation that had to remember to ask
+    // is an operation that will one day forget.
+    if let Object::Process { slot, generation } = entry.object {
+        if crate::process::generation(slot as usize) != Some(generation) {
+            return Err(Refused::NoCapability);
+        }
+    }
     Ok(entry.object)
+}
+
+/// The rights a handle carries, or none when it names nothing.
+///
+/// For deriving a new capability from an old one at the point of granting:
+/// a parent hands on what it held, and this is what it held.
+pub fn rights_of(process: usize, handle: u64) -> u32 {
+    let (index, generation) = parts(handle);
+    if process >= MAX_PROCESSES || index >= MAX_CAPABILITIES {
+        return 0;
+    }
+    // SAFETY: single-context nucleus; bounds checked immediately above.
+    let entry = unsafe { tables()[process][index] };
+    if entry.generation != generation || entry.object == Object::None {
+        return 0;
+    }
+    entry.rights
 }
 
 /// Gives a process a capability, and returns the handle it will name it by.
@@ -255,27 +289,68 @@ pub fn clear(process: usize) {
     }
 }
 
+/// What a launcher decides to give a process.
+///
+/// Two shapes rather than one, because the second cannot be written as the
+/// first: authority over the process being created names an object that does
+/// not exist until the moment it is granted. Only whoever creates a process can
+/// give it that, which is exactly why a process cannot obtain it, and cannot
+/// spawn without having been given it.
+///
+/// Neither shape is constructed by a canonical boot, and the allow below says so
+/// rather than letting the warning imply they are surplus: the launcher's
+/// constant for `system.boot.init` grants nothing, because the module requests
+/// nothing (ADR-0055). An endowment nobody writes is the policy holding.
+#[allow(dead_code)]
+#[derive(Clone, Copy)]
+pub enum Endowment {
+    /// A capability naming an object that already exists.
+    Existing {
+        object: Object,
+        rights: u32,
+        scope: u64,
+    },
+    /// Authority over the process being created.
+    Own { rights: u32 },
+}
+
 /// Writes a process's whole endowment, and describes it back for the record the
 /// process reads (ADR-0055).
 ///
 /// Returns how many entries were written. The description is what the process
 /// will find in its launch record: which handle names what, so that a process
 /// does not have to discover its own authority by guessing indices.
-pub fn endow(
-    process: usize,
-    endowment: &[(Object, u32, u64)],
-    out: &mut [LaunchCapability],
-) -> u32 {
+pub fn endow(process: usize, endowment: &[Endowment], out: &mut [LaunchCapability]) -> u32 {
     let mut written = 0;
-    for (object, rights, scope) in endowment.iter().take(out.len()) {
-        let Some(handle) = grant(process, *object, *rights, *scope) else {
+    for entry in endowment.iter().take(out.len()) {
+        let (object, rights, scope) = match *entry {
+            Endowment::Existing {
+                object,
+                rights,
+                scope,
+            } => (object, rights, scope),
+            Endowment::Own { rights } => {
+                let Some(generation) = crate::process::generation(process) else {
+                    break;
+                };
+                (
+                    Object::Process {
+                        slot: process as u32,
+                        generation,
+                    },
+                    rights,
+                    0,
+                )
+            }
+        };
+        let Some(handle) = grant(process, object, rights, scope) else {
             break;
         };
         out[written] = LaunchCapability {
             handle,
             object: object.kind(),
-            rights: *rights,
-            scope: *scope,
+            rights,
+            scope,
         };
         written += 1;
     }

@@ -227,16 +227,90 @@ extern "C" fn syscall_dispatch(operation: u64, arguments: &Arguments) -> Answer 
             Err(refused) => refused.into(),
         },
 
+        // A process is created under the authority of a process, never under an
+        // authority meaning "processes" — `CAPABILITY_V1` §3 admits an object
+        // and rules out a class. The caller names the process the child is
+        // created under, which in every case this stage can express is its own,
+        // and it can only do that because its launcher gave it that authority.
+        PROCESS_CREATE => {
+            match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_CREATE) {
+                Err(refused) => refused.into(),
+                Ok(Object::Process { .. }) => {
+                    // The child is endowed with nothing. That is the launcher's
+                    // own rule one level down — grant nothing that was not asked
+                    // for — and handing the child anything else needs a way for
+                    // this call to *name* more than a register holds, which this
+                    // ABI does not have yet. An empty endowment is a decision;
+                    // inventing an argument for it would be a guess.
+                    // SAFETY: the template was established at boot from validated
+                    // inputs, and no process is running: this call is the nucleus.
+                    match unsafe { crate::process::create(arguments.second() as usize, &[]) } {
+                        Ok(child) => {
+                            // The caller gets authority over what it made, carrying
+                            // exactly the rights the authority it used carried.
+                            // More would be authority nobody granted it; less would
+                            // be the nucleus deciding how a supervisor supervises.
+                            let over_child = crate::process::generation(child).map(|generation| {
+                                Object::Process {
+                                    slot: child as u32,
+                                    generation,
+                                }
+                            });
+                            match over_child.and_then(|object| {
+                                capability::grant(
+                                    caller,
+                                    object,
+                                    capability::rights_of(caller, arguments.first()),
+                                    0,
+                                )
+                            }) {
+                                Some(handle) => Answer::value(handle),
+                                // The child exists and the caller cannot name it.
+                                // Ending it is the only honest response: a process
+                                // nobody holds authority over is a process nobody
+                                // can stop.
+                                None => {
+                                    // SAFETY: the child was just created by this
+                                    // call and has never run.
+                                    unsafe { crate::process::terminate(caller, child) };
+                                    Answer::status(E_LIMIT)
+                                }
+                            }
+                        }
+                        Err(crate::process::Unlaunchable::NoSuchModule) => {
+                            Answer::status(E_BAD_ARGUMENT)
+                        }
+                        Err(_) => Answer::status(E_LIMIT),
+                    }
+                }
+                Ok(_) => Answer::status(E_NO_CAPABILITY),
+            }
+        }
+        PROCESS_TERMINATE => {
+            match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_TERMINATE) {
+                Err(refused) => refused.into(),
+                Ok(Object::Process { slot, .. }) => {
+                    // SAFETY: the capability just resolved names this process and
+                    // carries the right to end it, which is the whole of the
+                    // authority this operation requires.
+                    if unsafe { crate::process::terminate(caller, slot as usize) } {
+                        Answer::status(OK)
+                    } else {
+                        // The authority is real and its object has already ended.
+                        Answer::status(E_BAD_ARGUMENT)
+                    }
+                }
+                Ok(_) => Answer::status(E_NO_CAPABILITY),
+            }
+        }
+
         // The operations whose objects this stage does not build. They are not
         // special-cased: the handle is resolved by the same code as any other,
-        // and a caller holding an endpoint capability does not hold a region,
-        // a reply or a process authority — so the refusal is produced rather
-        // than asserted, and it would stop being a refusal the moment a caller
-        // held the right thing.
+        // and a caller holding an endpoint capability does not hold a region or
+        // a reply — so the refusal is produced rather than asserted, and it
+        // would stop being a refusal the moment a caller held the right thing.
         ENDPOINT_CALL => refuse(caller, arguments.first(), tos_launch::RIGHT_CALL),
-        ENDPOINT_REPLY | REGION_SHARE | PROCESS_CREATE | PROCESS_TERMINATE => {
-            refuse(caller, arguments.first(), ALL_RIGHTS)
-        }
+        ENDPOINT_REPLY | REGION_SHARE => refuse(caller, arguments.first(), ALL_RIGHTS),
 
         _ => Answer::status(E_NOT_SUPPORTED),
     }

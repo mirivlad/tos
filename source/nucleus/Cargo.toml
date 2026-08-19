@@ -23,6 +23,10 @@ test-ring3-nucleus = []
 # is not test-only; how many processes a canonical boot has is not this
 # nucleus's decision to make (ADR-0048 section 2).
 test-two-processes = []
+# Endows the first process with authority over itself, so that the chain
+# ADR-0055 describes — a process creating a process, bounded by what it was
+# given — is exercised rather than described.
+test-supervisor = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

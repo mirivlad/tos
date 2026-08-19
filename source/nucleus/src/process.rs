@@ -118,6 +118,16 @@ struct Slot {
     last_tick: u64,
     /// How it ended, once it has.
     ended: Ended,
+    /// Which occupant of this slot this is.
+    ///
+    /// A slot is reused, and a capability naming a process must not survive the
+    /// process to name its successor — that is the same staleness a handle's
+    /// generation prevents, one level down, and `CAPABILITY_V1` §3 states it as
+    /// a rule: a capability's lifetime is bounded by its object. So the object
+    /// carries a generation of its own, and an authority over a process that
+    /// has ended stops resolving rather than quietly transferring to whoever
+    /// occupies the slot next.
+    generation: u32,
 }
 
 impl Slot {
@@ -135,6 +145,9 @@ impl Slot {
         first_tick: 0,
         last_tick: 0,
         ended: Ended::Fault(0),
+        // One, not zero: an object named with a generation nobody wrote is an
+        // object nobody was given.
+        generation: 1,
     };
 }
 
@@ -145,6 +158,16 @@ enum State {
     Free,
     /// A process that can be given the processor.
     Runnable,
+    /// A process that has been ended and whose memory has not gone back yet.
+    ///
+    /// Only a process that was **not** on the processor is ever left here: one
+    /// ended while running is retired by the scheduler the moment it resumes,
+    /// whereas one ended by a peer is ended inside that peer's system call,
+    /// where the nucleus is running on someone else's behalf and the dead
+    /// process's address space is not the live one. Its memory goes back at the
+    /// next turn of the scheduler's loop, which is the next moment the nucleus
+    /// is in its own address space with nothing running.
+    Ending,
     /// A process that has ended and whose memory has gone back.
     Over,
 }
@@ -204,6 +227,11 @@ pub enum Ended {
     /// process's own claim about its work, never the nucleus's assertion about
     /// it — what the nucleus asserts is that the process exited, and when.
     Exited(u64),
+    /// Somebody holding authority over it ended it (`process_terminate`). The
+    /// slot names who, because an ending with no author is an ending nobody can
+    /// be held to: the three ways a process can end are the architecture's, its
+    /// own claim, and another party's decision, and they are never merged.
+    Terminated(usize),
 }
 
 /// Where a process's parts live in its own address space.
@@ -256,6 +284,8 @@ pub enum Unlaunchable {
     NotARuntimeImage,
     /// Every slot of the process table is taken.
     TooManyProcesses,
+    /// The entry index names no unit of this boot's source set.
+    NoSuchModule,
 }
 
 impl From<PagingRefused> for Unlaunchable {
@@ -435,6 +465,44 @@ pub fn fault(vector: u64, error: u64, rip: u64, cr2: Option<u64>) -> bool {
     }
 }
 
+/// Ends the process in `target` on `by`'s authority.
+///
+/// The caller has already been checked to hold authority over `target`; this is
+/// only the ending. Two cases, and they are genuinely different: a process that
+/// is not on the processor is marked and its memory goes back at the scheduler's
+/// next turn, while a process ending *itself* cannot be marked and left — the
+/// nucleus is running on its stack and there is nothing to return to — so it
+/// takes the same door a fault takes.
+///
+/// Returns `false` when the target names no live process, which is a caller
+/// holding authority over something that has already ended.
+///
+/// # Safety
+///
+/// `by` and `target` are process slots, and `by` holds a capability naming
+/// `target` with the right to terminate it.
+// SAFETY: the caller's promise that the authority was checked is what makes this
+// an exercise of authority rather than a nucleus killing at its own discretion.
+pub unsafe fn terminate(by: usize, target: usize) -> bool {
+    // SAFETY: single-context nucleus with interrupts masked.
+    let table = unsafe { table() };
+    if target >= MAX_PROCESSES || table[target].state != State::Runnable {
+        return false;
+    }
+    table[target].ended = Ended::Terminated(by);
+    // SAFETY: as above.
+    if target == unsafe { CURRENT } {
+        // The caller is ending itself. Everything below the resume belongs to a
+        // stack that is about to stop being anybody's.
+        table[target].state = State::Runnable;
+        // SAFETY: `RETURN` was recorded by the scheduler before this process
+        // was entered, and the caller is running, which is what says so.
+        unsafe { process_resume(addr_of_mut!(RETURN), 1) }
+    }
+    table[target].state = State::Ending;
+    true
+}
+
 /// Gives the processor to every runnable process, in turn, until none is left.
 ///
 /// This is the scheduler's loop, and it lives at CPL 0: a process is entered by
@@ -452,10 +520,26 @@ pub fn fault(vector: u64, error: u64, rip: u64, cr2: Option<u64>) -> bool {
 ///
 /// `nucleus` is an address space that maps this nucleus at the addresses it is
 /// running at, and every runnable slot was built by [`create`] or [`admit`].
+///
+/// The pool is deliberately **not** a parameter. A `&mut Frames` held here
+/// would be held across `process_start`, and the first system call the entered
+/// process made would take a second borrow of the same pool while this one was
+/// still alive. It is taken in `retire`, where no process is running.
 // SAFETY: the caller's promise about the nucleus's space is what makes the
 // return path survivable; each slot's own space is the launcher's promise.
-pub unsafe fn schedule(nucleus: &AddressSpace, frames: &mut Frames) {
+pub unsafe fn schedule(nucleus: &AddressSpace) {
     loop {
+        // Anything a peer ended since the last turn goes back first, here,
+        // where the nucleus's own address space is the live one and nothing is
+        // running.
+        for index in 0..MAX_PROCESSES {
+            // SAFETY: single-context nucleus; nothing else touches the table.
+            if unsafe { table()[index].state } == State::Ending {
+                // SAFETY: the process is over, the nucleus's space is live, and
+                // nothing references what it held.
+                unsafe { retire(index) };
+            }
+        }
         let Some(next) = first_runnable() else {
             return;
         };
@@ -494,7 +578,7 @@ pub unsafe fn schedule(nucleus: &AddressSpace, frames: &mut Frames) {
         unsafe { nucleus.activate() };
         // SAFETY: single-context nucleus; the process is over and this is the
         // only writer of its slot.
-        unsafe { retire(over, frames) };
+        unsafe { retire(over) };
     }
 }
 
@@ -506,7 +590,7 @@ pub unsafe fn schedule(nucleus: &AddressSpace, frames: &mut Frames) {
 /// nothing else references anything the process held.
 // SAFETY: the caller's promise that the process is over and its space is not
 // live is what makes releasing its frames a release of unreferenced memory.
-unsafe fn retire(index: usize, frames: &mut Frames) {
+unsafe fn retire(index: usize) {
     // What it wrote and had not yet said, before its region stops being one.
     // First, and through the table rather than beside it: `drain_report` names
     // the table itself, and holding a borrow of a slot across that call would
@@ -515,6 +599,8 @@ unsafe fn retire(index: usize, frames: &mut Frames) {
     // SAFETY: single-context nucleus; the process is over.
     let slot = unsafe { &mut table()[index] };
     slot.state = State::Over;
+    // The process is over, so every capability naming it stops naming anything.
+    slot.generation = slot.generation.wrapping_add(1);
     slot.report_phys = 0;
     slot.report_length = 0;
     slot.message_phys = 0;
@@ -546,6 +632,19 @@ unsafe fn retire(index: usize, frames: &mut Frames) {
         // The fault was reported where it happened, with everything only the
         // handler knew. Saying it again here would be two events for one death.
         Ended::Fault(_) => {}
+        // A decision by another party, and the record says whose. The nucleus
+        // asserts the whole of this one: nothing here is a process's claim.
+        Ended::Terminated(by) => {
+            tos_serial::puts(b"TOS.RUN.PROCESS_TERMINATED process=");
+            tos_serial::put_u32_decimal(index as u32);
+            tos_serial::puts(b" by=");
+            tos_serial::put_u32_decimal(by as u32);
+            tos_serial::puts(b" ticks=");
+            tos_serial::put_u32_decimal(slot.ticks as u32);
+            tos_serial::puts(b" quanta=");
+            tos_serial::put_u32_decimal(slot.quanta as u32);
+            tos_serial::puts(b" asserted_by=nucleus\r\n");
+        }
     }
 
     let (Some(space), Some(reclaim)) = (slot.space.as_mut(), slot.reclaim) else {
@@ -565,6 +664,9 @@ unsafe fn retire(index: usize, frames: &mut Frames) {
     // returned yet: freeing an interior table means proving nothing else under
     // it is mapped, and the nucleus's own mappings live in that same tree.
     // About fifty frames per process, named here rather than left to be found.
+    // SAFETY: no process is running — this is the scheduler between two of
+    // them — so nothing else holds the pool.
+    let frames = unsafe { crate::memory::frames() };
     let held = frames.in_use();
     // SAFETY: every frame below was handed out by this pool for this process,
     // its address space is no longer the live one, and the process that could
@@ -587,6 +689,21 @@ unsafe fn retire(index: usize, frames: &mut Frames) {
     tos_serial::puts(b" available=");
     tos_serial::put_u32_decimal(frames.available() as u32);
     tos_serial::puts(b"\r\n");
+}
+
+/// Which occupant of `index` is there now, or nothing when the slot holds no
+/// live process.
+///
+/// Asked by the capability table: an authority over a process is an authority
+/// over *that* process, and this is what says whether that process is still the
+/// one in the slot.
+pub fn generation(index: usize) -> Option<u32> {
+    // SAFETY: single-context nucleus with interrupts masked.
+    let table = unsafe { table() };
+    if index >= MAX_PROCESSES || table[index].state != State::Runnable {
+        return None;
+    }
+    Some(table[index].generation)
 }
 
 /// Which process is on the processor.
@@ -650,7 +767,12 @@ unsafe fn admit(
         .find(|index| table[*index].state == State::Free)
         .ok_or(Unlaunchable::TooManyProcesses)?;
     let slot = &mut table[index];
+    // The generation survives the reset: it belongs to the slot, not to the
+    // process, and it is what keeps an authority over the last occupant from
+    // naming this one.
+    let generation = slot.generation;
     *slot = Slot::FREE;
+    slot.generation = generation;
     slot.state = State::Runnable;
     slot.root = root;
     slot.space = space;
@@ -726,22 +848,30 @@ pub unsafe fn admit_borrowed(
 /// the live one.
 // SAFETY: the caller's promise that the image and capsule ranges are what they
 // say makes the mappings below name the bytes the identity record claims.
-#[allow(clippy::too_many_arguments)]
 pub unsafe fn create(
-    frames: &mut Frames,
-    descs: &[tos_boot_protocol::MemoryRange],
-    bi: &tos_boot_protocol::BootInfo,
-    image: Span,
-    capsule: Span,
-    units: &[(&[u8], &[u8])],
     entry_index: usize,
-    identity: u64,
-    source_set: &[u8],
-    endowment: &[(crate::capability::Object, u32, u64)],
+    endowment: &[crate::capability::Endowment],
 ) -> Result<usize, Unlaunchable> {
+    let template = crate::launch::template().ok_or(Unlaunchable::NoRuntimeImage)?;
+    if !template.holds(entry_index) {
+        // A module index this boot does not have. Refused rather than clamped:
+        // a process launched over a different module than the one asked for is
+        // a process nobody asked for.
+        return Err(Unlaunchable::NoSuchModule);
+    }
+    let (bi, descs) = (template.bi, template.descs);
+    let (image, capsule) = (template.image, template.capsule);
+    let units = template.units();
+    let identity = template.identity;
+    let source_set = template.source_set();
     if image.length() == 0 {
         return Err(Unlaunchable::NoRuntimeImage);
     }
+    // Taken here and dropped when this returns: building a process is the whole
+    // of what the pool is needed for, and no process runs while it happens.
+    // SAFETY: nucleus code, and nothing else holds the pool for the duration of
+    // this call.
+    let frames = unsafe { crate::memory::frames() };
     // The nucleus's own mappings are in every address space, supervisor-only:
     // a syscall and a fault both change privilege without changing CR3, so the
     // nucleus has to be reachable from where the process runs.

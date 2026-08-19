@@ -13,7 +13,7 @@
 //! every boot, because the edge is part of the substrate whether or not anyone
 //! has called it yet.
 
-use tos_frames::{Frames, FRAME_SIZE};
+use tos_frames::FRAME_SIZE;
 
 core::arch::global_asm!(include_str!("ring3.S"));
 
@@ -101,11 +101,9 @@ impl Payload {
 /// is running.
 // SAFETY: the caller's promise that this space is the live one is what makes
 // the two mappings below reachable by the payload.
-pub unsafe fn admit(
-    space: &mut AddressSpace,
-    frames: &mut Frames,
-    payload: Payload,
-) -> Result<usize, PagingRefused> {
+pub unsafe fn admit(space: &mut AddressSpace, payload: Payload) -> Result<usize, PagingRefused> {
+    // SAFETY: nucleus code at boot, before any process runs.
+    let frames = unsafe { crate::memory::frames() };
     const PRESENT_USER: u64 = 1 | (1 << 2);
     const WRITABLE: u64 = 1 << 1;
     const NO_EXECUTE: u64 = 1 << 63;
@@ -181,7 +179,9 @@ static mut STACK_FRAME: u64 = 0;
 /// ran in, and nothing else references either of its pages.
 // SAFETY: the caller's promise that the excursion is over is what makes both
 // frames unreferenced.
-pub unsafe fn retire(space: &mut AddressSpace, frames: &mut Frames) {
+pub unsafe fn retire(space: &mut AddressSpace) {
+    // SAFETY: the excursion is over and no process is running.
+    let frames = unsafe { crate::memory::frames() };
     // The process is over, so its memory stops being its memory. Unmapped
     // first and released second: a frame back in the pool while a mapping to it
     // survives is a frame two owners can reach.

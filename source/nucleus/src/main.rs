@@ -17,12 +17,19 @@
 #![no_std]
 #![no_main]
 
+// The two launcher constants describe different systems — a pair sharing an
+// endpoint, and one process able to create others — and a build asking for both
+// would be asking which of two decisions the launcher made.
+#[cfg(all(feature = "test-two-processes", feature = "test-supervisor"))]
+compile_error!("test-two-processes and test-supervisor are different launcher constants");
+
 mod apic;
 mod capability;
 mod console;
 mod exception;
 mod framebuffer;
 mod ipc;
+mod launch;
 mod memory;
 mod msr;
 mod paging;
@@ -57,20 +64,6 @@ fn panic(_info: &PanicInfo) -> ! {
     tos_serial::puts(b"TOS.PANIC nucleus\r\n");
     result_port(RESULT_PANIC)
 }
-
-/// How many source units one boot may offer the frontend.
-///
-/// A fixed bound, chosen by the nucleus and not derived from capsule input: the
-/// nucleus must not size an array from a number an attacker chose. It bounds
-/// the **set offered**, which is every `.tos` file the capsule carries — not
-/// the closure the entry actually reaches, which resolution computes and which
-/// docs/44 caps at 256. Those are different numbers, and an earlier version of
-/// this comment confused them: a capsule may legitimately carry more source
-/// than any one module imports, and the Stage 1 performance fixture carries a
-/// thousand files for exactly that reason. A capsule offering more than this is
-/// refused rather than truncated, because a silently shortened set would run a
-/// program whose dependencies are missing.
-const MAX_BOOT_MODULES: usize = 1024;
 
 /// Write an exit code to the QEMU isa-debug-exit port and stop.
 fn result_port(code: u8) -> ! {
@@ -432,7 +425,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // the capsule — the version marker, the licence notice — is not source and
     // is not offered as such: a set that included them would ask the frontend
     // to parse a file that never claimed to be a module.
-    let mut modules: [(&[u8], &[u8]); MAX_BOOT_MODULES] = [(&[], &[]); MAX_BOOT_MODULES];
+    let mut modules: [(&[u8], &[u8]); launch::MAX_BOOT_MODULES] =
+        [(&[], &[]); launch::MAX_BOOT_MODULES];
     let mut module_count = 0usize;
     for file in cap.files() {
         if !file.name.ends_with(b".tos") {
@@ -457,7 +451,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // above — the record over its raw bytes, the map for self-consistency and
     // for containing the capsule — and `running_on` is the map entry holding
     // this frame's own stack pointer.
-    let (mut frames, admission) = unsafe { memory::pool(bi, bi_address, descs, running_on) };
+    let admission = unsafe { memory::admit_memory(bi, bi_address, descs, running_on) };
     if admission.frames == 0 {
         tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-frames\r\n");
         console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-frames");
@@ -472,7 +466,9 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // Mutable only in a test configuration: the ring-3 excursion maps its own
     // pages into this space, and the production path only ever reads it.
     #[allow(unused_mut)]
-    let mut space = match paging::build(bi, descs, &mut frames) {
+    // SAFETY: nucleus entry; nothing else holds the pool, and no process
+    // exists yet.
+    let mut space = match paging::build(bi, descs, unsafe { memory::frames() }) {
         Ok(space) => space,
         Err(_) => {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-address-space\r\n");
@@ -513,7 +509,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         let payload = ring3::Payload::Nucleus;
         // SAFETY: `space` is the address space loaded into CR3 immediately
         // above and no other context is running.
-        match unsafe { ring3::admit(&mut space, &mut frames, payload) } {
+        match unsafe { ring3::admit(&mut space, payload) } {
             Ok(index) => index,
             Err(_) => {
                 tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-user-mapping\r\n");
@@ -564,29 +560,34 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         tos_runtime::region::Span::new(bi.capsule_phys, bi.capsule_phys + bi.capsule_length);
     let mut source_set = [0u8; 96];
     let named = source_set_identity(kind, &bi.capsule_source_identity, &mut source_set);
+    // What this boot can launch, fixed once from inputs that have all been
+    // validated: the image by its digest, the capsule by digest and structure,
+    // the map by the Boot ABI check at entry. Everything built from here on —
+    // by this launcher now, and by a process holding process authority later —
+    // is built from this and from nothing a caller supplies.
+    // SAFETY: every input named above passed its validation, both ranges are
+    // physically contiguous and identity-mapped for this nucleus, and every
+    // unit's bytes lie inside the capsule.
+    unsafe {
+        launch::establish(
+            bi,
+            descs,
+            image,
+            capsule_span,
+            &modules[..module_count],
+            memory::identity(),
+            &source_set[..named],
+        )
+    };
+
     // Building a process and entering one are separate steps, and this is where
     // that separation is visible: every process this boot has is built here,
     // out of the same pool and into its own address space, before the scheduler
     // gives the processor to any of them.
-    let mut build = |endowment: &[(capability::Object, u32, u64)]| {
-        // SAFETY: the image and capsule ranges were validated above — the image
-        // by its digest, the capsule by digest and structure — both are
-        // physically contiguous and identity-mapped for this nucleus, and the
-        // nucleus's own address space is the live one.
-        let built = unsafe {
-            process::create(
-                &mut frames,
-                descs,
-                bi,
-                image,
-                capsule_span,
-                &modules[..module_count],
-                entry_index,
-                memory::identity(),
-                &source_set[..named],
-                endowment,
-            )
-        };
+    let build = |endowment: &[capability::Endowment]| {
+        // SAFETY: the template was established immediately above from validated
+        // inputs, and the nucleus's own address space is the live one.
+        let built = unsafe { process::create(entry_index, endowment) };
         // Announced once the process exists and by the slot it occupies, so
         // that every later event about it names the same process this one does.
         // A launch announced before it succeeded would be a claim about a
@@ -611,41 +612,42 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // the absence of one: `system.boot.init` requests no capability, and the
     // rule is to grant nothing a module did not ask for. A process endowed with
     // authority it never requested would be authority nobody decided to give.
-    // Under the test constant the two processes are paired by one endpoint: the
-    // first is given the right to *receive* on it and the second the right to
-    // *send*. The rights are separate (`IPC_V1` section 2), so neither can
-    // perform the other's half, and neither was given anything it could have
-    // obtained on its own — no operation creates an endpoint.
+    // Under the paired constant the two processes share one endpoint: the first
+    // is given the right to *receive* on it and the second the right to *send*.
+    // The rights are separate (`IPC_V1` section 2), so neither can perform the
+    // other's half, and neither was given anything it could have obtained on
+    // its own — no operation creates an endpoint.
     #[cfg(feature = "test-two-processes")]
-    let (receiver_endowment, sender_endowment) = {
+    let (first_endowment, sender_endowment) = {
         let Some(endpoint) = ipc::create() else {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
             mem_fail();
         };
         (
-            [(
-                capability::Object::Endpoint(endpoint),
-                tos_launch::RIGHT_RECEIVE,
-                0,
-            )],
-            [(
-                capability::Object::Endpoint(endpoint),
-                tos_launch::RIGHT_SEND,
-                0,
-            )],
+            [capability::Endowment::Existing {
+                object: capability::Object::Endpoint(endpoint),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            }],
+            [capability::Endowment::Existing {
+                object: capability::Object::Endpoint(endpoint),
+                rights: tos_launch::RIGHT_SEND,
+                scope: 0,
+            }],
         )
     };
-    #[cfg(feature = "test-two-processes")]
-    let first = match build(&receiver_endowment) {
-        Ok(index) => index,
-        Err(_) => {
-            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-process\r\n");
-            console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-process");
-            mem_fail();
-        }
-    };
-    #[cfg(not(feature = "test-two-processes"))]
-    let first = match build(&[]) {
+    // Under the supervisor constant the first process is given authority over
+    // **itself**, carrying the two rights a process object has. That is the
+    // only capability nobody but a launcher can issue: it names a process that
+    // does not exist until the instant it is granted, which is why a process
+    // cannot obtain one and cannot spawn without having been given one.
+    #[cfg(feature = "test-supervisor")]
+    let first_endowment = [capability::Endowment::Own {
+        rights: tos_launch::RIGHT_CREATE | tos_launch::RIGHT_TERMINATE,
+    }];
+    #[cfg(not(any(feature = "test-two-processes", feature = "test-supervisor")))]
+    let first_endowment: [capability::Endowment; 0] = [];
+    let first = match build(&first_endowment) {
         Ok(index) => index,
         Err(_) => {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-process\r\n");
@@ -671,7 +673,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     }
     // SAFETY: `space` is the nucleus's own address space, it is the live one,
     // and every runnable slot was built by `process::create` above.
-    unsafe { process::schedule(&space, &mut frames) };
+    unsafe { process::schedule(&space) };
     #[cfg(any(
         feature = "test-ring3-abi",
         feature = "test-ring3-privileged",
@@ -689,16 +691,20 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
                 tos_serial::puts(b"exit=");
                 tos_serial::put_u32_decimal(status as u32);
             }
+            process::Ended::Terminated(by) => {
+                tos_serial::puts(b"terminated_by=");
+                tos_serial::put_u32_decimal(by as u32);
+            }
         }
         tos_serial::puts(b"\r\n");
         // SAFETY: the excursion is over, `space` is the live address space and
         // the one it ran in, and nothing else references either of its pages.
-        unsafe { ring3::retire(&mut space, &mut frames) };
+        unsafe { ring3::retire(&mut space) };
     }
     // SAFETY: the scheduler returned, so every process it ran is over.
     match unsafe { process::ended(first) } {
         process::Ended::Exited(0) => {}
-        process::Ended::Exited(_) | process::Ended::Fault(_) => {
+        process::Ended::Exited(_) | process::Ended::Fault(_) | process::Ended::Terminated(_) => {
             // The process ended without completing its work. Which way it ended
             // is already on the log, asserted by the nucleus.
             tos_serial::puts(b"TOS.BOOTMODULE.FAIL stage=process\r\n");
