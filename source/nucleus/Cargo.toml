@@ -47,6 +47,11 @@ test-second-receiver = []
 # module requests. The module is the one that calls the system, which is the
 # Stage 3 identity question docs/37 asks.
 test-module-operation = []
+# A grant of the wrong *kind* under the right name: authority over a process,
+# bound to the name a module asks for an endpoint under. The name matches and
+# the object does not, which is the one case `SYSTEM_INTERFACE_V1` §4's object
+# column exists to refuse.
+test-wrong-kind = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

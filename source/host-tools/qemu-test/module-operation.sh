@@ -40,6 +40,12 @@ PRODUCTION="$ROOT/target/x86_64-unknown-none/release/tos-nucleus"
 TEST_TARGET="$ROOT/target/test-module-operation"
 TEST_NUCLEUS="$TEST_TARGET/x86_64-unknown-none/release/tos-nucleus"
 
+# A boot whose module could not start is not a successful boot: the nucleus
+# reports `RESULT_BOOT_MODULE_FAILED`, and `isa-debug-exit` returns it shifted
+# and set, exactly as `boot-module-failure.sh` computes it. Stated here so that
+# the two refusing boots below are *expected* to fail rather than tolerated.
+REFUSED_EXIT=$(( (0x25 << 1) | 1 ))
+
 # `SYSTEM_ABI_V1` §4, as the module sees them.
 OK=0
 E_NO_CAPABILITY=-1
@@ -124,6 +130,66 @@ exactly 1 "^TOS\\.RUN\\.COMPLETED value=$EXPECTED_VALUE\$" \
 exactly 1 '^TOS\.RUN\.VERIFIED module=system\.boot\.init digest=sha256:[0-9a-f]* verifier=.*$' \
     "the module that reached the system was not the verified one"
 
+# --- and the two ways a request is *not* answered ------------------------------
+# ADR-0061's evidence list, items 3 and 4. Both are startup refusals: a module
+# that got as far as a call before discovering it holds nothing would already
+# have done work under an assumption that was false, and
+# `SYSTEM_INTERFACE_V1` §10.3 says it "never reaches the call".
+#
+# The same capsule each time. Only the launcher's constant differs, which is
+# what makes these three boots one experiment rather than three.
+
+# The refusal is the same in both, and that is the trap: two boots whose logs
+# agree line for line are one piece of evidence, not two. So each also states
+# *how far the request got* — nobody answered it at all, or somebody answered it
+# with the wrong object — and the gate checks that they differ there. Written
+# after building the wrong-kind nucleus over the production one by hand and
+# watching both boots produce identical logs.
+denied() {
+    local what=$1 nucleus=$2 out=$3 answered=$4
+    bash "$HERE/run.sh" \
+        --out "$out" \
+        --capsule "$OUT/module-operation.bin" \
+        --nucleus "$nucleus" \
+        --expect "$REFUSED_EXIT" \
+        --require "TOS.NUCLEUS.ENTRY TOS.RUN.REFUSED" \
+        --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.INTERFACE TOS.RUN.COMPLETED" \
+        > /dev/null
+    grep -q \
+        '^TOS\.RUN\.REFUSED stage=execute reason=capability-denied binding=endpoint interface=system\.ipc\.Endpoint$' \
+        "$out/events.log" ||
+        fail "$what: the refusal did not name the denied request by its binding"
+    local seen
+    seen=$(grep -c '^TOS\.RUN\.REQUEST ' "$out/events.log" || true)
+    [ "$seen" = "$answered" ] ||
+        fail "$what: $seen grant(s) were offered for the request, expected $answered"
+}
+
+# 3. Nothing answers the request. The production nucleus's constant grants
+#    nothing, because `system.boot.init` normally asks for nothing — so this is
+#    the ordinary launcher meeting a module that asks, with no feature involved.
+# Nothing is offered at all, so there is no `TOS.RUN.REQUEST` line: the host
+# had nothing whose name matched.
+denied "a request nobody answered" "$PRODUCTION" "$OUT/denied" 0
+
+# 4. Something answers it with the wrong kind of object: authority over a
+#    process, under the name the module asks for an endpoint under. The name
+#    matches; the kind does not. Refused at startup rather than at the first
+#    call, which is the whole reason §4 has an object column.
+(cd "$ROOT" && CARGO_TARGET_DIR="$ROOT/target/test-wrong-kind" cargo build --release \
+    -p tos-nucleus --target x86_64-unknown-none --features test-wrong-kind)
+# Something *is* offered — the name matched — and the line says which object it
+# was and which was wanted, which is why this refusal is a different fact from
+# the one above rather than the same one twice.
+denied "a grant of the wrong kind" \
+    "$ROOT/target/test-wrong-kind/x86_64-unknown-none/release/tos-nucleus" \
+    "$OUT/wrong-kind" 1
+grep -q '^TOS\.RUN\.REQUEST binding=endpoint interface=system\.ipc\.Endpoint object=3 wanted=1$' \
+    "$OUT/wrong-kind/events.log" ||
+    fail "the wrong-kind boot did not offer a process where an endpoint was asked for"
+
 echo "MODULE-OPERATION PASS: a TOS Core module performed a real operation"
 echo "  its request was answered by name; endpoint_send returned $OK and"
 echo "  endpoint_receive returned $E_NO_CAPABILITY, on the same capability"
+echo "  the same module, unanswered, is refused at startup and the refusal names the binding"
+echo "  and so is one answered with a process where it asked for an endpoint"

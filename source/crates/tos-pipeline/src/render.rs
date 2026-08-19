@@ -193,8 +193,9 @@ pub fn events(run: &Run) -> alloc::vec::Vec<String> {
             ));
         }
         Run::Refused(refusal) => out.push(format!(
-            "TOS.RUN.REFUSED stage=execute reason={}",
-            field(&refusal_text(refusal))
+            "TOS.RUN.REFUSED stage=execute reason={}{}",
+            refusal_reason(refusal),
+            refusal_fields(refusal)
         )),
         Run::Trapped { code, detail, at } => {
             let where_at = at
@@ -242,19 +243,35 @@ fn field(text: &str) -> String {
         .collect()
 }
 
-fn refusal_text(refusal: &tos_engine::Refusal) -> String {
+/// Why a run was refused, as one token.
+///
+/// A token and not a sentence: `reason=` is a field, and a value with spaces in
+/// it is two fields to any reader that splits on them. What the reason is *about*
+/// goes in [`refusal_fields`], where each part is a field of its own and can be
+/// searched for by name.
+fn refusal_reason(refusal: &tos_engine::Refusal) -> &'static str {
     match refusal {
-        tos_engine::Refusal::ReceiptDoesNotMatch => String::from("receipt-does-not-match"),
-        tos_engine::Refusal::NoSuchEntry(name) => format!("no-such-entry={name}"),
+        tos_engine::Refusal::ReceiptDoesNotMatch => "receipt-does-not-match",
+        tos_engine::Refusal::NoSuchEntry(_) => "no-such-entry",
+        tos_engine::Refusal::EntryArity { .. } => "entry-arity",
+        tos_engine::Refusal::CapabilityDenied { .. } => "capability-denied",
+    }
+}
+
+/// What that reason is about, appended after it as ordinary fields.
+fn refusal_fields(refusal: &tos_engine::Refusal) -> String {
+    match refusal {
+        tos_engine::Refusal::ReceiptDoesNotMatch => String::new(),
+        tos_engine::Refusal::NoSuchEntry(name) => format!(" entry={}", field(name)),
         tos_engine::Refusal::EntryArity { expected, actual } => {
-            format!("entry-arity expected={expected} actual={actual}")
+            format!(" expected={expected} actual={actual}")
         }
-        // Named by binding *and* interface: the binding is what the source
-        // calls it and what a reader searches for, the interface is what was
-        // wanted. `PROCESS_IDENTITY_V1` §7.3 asks a denial to name itself, and
-        // one without the binding would name only a type.
+        // Named by binding *and* interface: the binding is what the source calls
+        // it and what a reader searches for, the interface is what was wanted.
+        // `PROCESS_IDENTITY_V1` §7.3 asks a denial to name itself, and one
+        // without the binding would name only a type.
         tos_engine::Refusal::CapabilityDenied { binding, interface } => {
-            format!("capability-denied binding={binding} interface={interface}")
+            format!(" binding={} interface={}", field(binding), field(interface))
         }
     }
 }

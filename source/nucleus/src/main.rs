@@ -41,7 +41,14 @@
     all(feature = "test-module-operation", feature = "test-deadlock"),
     all(feature = "test-module-operation", feature = "test-call-reply"),
     all(feature = "test-module-operation", feature = "test-deputy"),
-    all(feature = "test-module-operation", feature = "test-second-receiver")
+    all(feature = "test-module-operation", feature = "test-second-receiver"),
+    all(feature = "test-wrong-kind", feature = "test-two-processes"),
+    all(feature = "test-wrong-kind", feature = "test-supervisor"),
+    all(feature = "test-wrong-kind", feature = "test-deadlock"),
+    all(feature = "test-wrong-kind", feature = "test-call-reply"),
+    all(feature = "test-wrong-kind", feature = "test-deputy"),
+    all(feature = "test-wrong-kind", feature = "test-second-receiver"),
+    all(feature = "test-wrong-kind", feature = "test-module-operation")
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
 
@@ -808,9 +815,21 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             scope: 0,
         }]
     };
+    // Under the wrong-kind constant the process is given authority over
+    // **itself** — a process object — under the name a module asks for an
+    // *endpoint*. The name matches and the kind does not, which is the one
+    // thing `SYSTEM_INTERFACE_V1` §4's object column is for. The nucleus does
+    // not refuse it: it does not read modules and has nothing to compare the
+    // name against. The process does, at startup, before its first instruction.
+    #[cfg(feature = "test-wrong-kind")]
+    let first_endowment = [capability::Endowment::Own {
+        binding: binding(b"endpoint"),
+        rights: tos_launch::RIGHT_TERMINATE,
+    }];
     #[cfg(not(any(
         feature = "test-two-processes",
         feature = "test-module-operation",
+        feature = "test-wrong-kind",
         feature = "test-supervisor",
         feature = "test-deadlock",
         feature = "test-call-reply",
