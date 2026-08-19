@@ -112,7 +112,7 @@ fn unavailable(
         return Some("the operation takes a different number of values");
     }
     for (declared, written) in operation.parameters.iter().zip(values) {
-        if type_text(source, written.ty()).as_deref() != Some(*declared) {
+        if type_text(source, written.ty()).as_deref() != Some(declared.ty) {
             return Some("a value parameter is not the type the operation takes");
         }
     }

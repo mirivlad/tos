@@ -25,6 +25,20 @@ declared=$(sed -n '/^### /,/^## 5/p' "$DOC" |
     sed -n 's/^| `\([a-z_]*\)` |.*| [0-9]* |$/\1/p' | sort -u)
 # Every operation the table names.
 tabled=$(sed -n 's/^ *name: "\([a-z_]*\)",$/\1/p' "$TABLE" | sort -u)
+# And the declared maximum of every variable-length parameter (§4.1). The bound
+# is part of the contract, not the host's choice, so a document and a table that
+# agreed on the parameter while disagreeing on how long it may be would let a
+# module be refused against a number nobody accepted.
+bounds_in_doc=$(sed -n 's/^| `\([a-z_]*\)` | `[a-z]*: [a-z0-9]*` (\xe2\x89\xa4 \([0-9]*\)) |.*$/\1 \2/p' "$DOC" | sort)
+bounds_in_table=$(sed -n -e 's/^ *name: "\([a-z_]*\)",$/\1/p' -e 's/^ *maximum: Some(\([0-9]*\)),$/\1/p' "$TABLE" |
+    awk '/^[a-z_]+$/ { name = $0; next } { print name, $0 }' | sort)
+[ "$bounds_in_doc" = "$bounds_in_table" ] || {
+    echo "the document bounds:" >&2
+    echo "$bounds_in_doc" >&2
+    echo "the frontend table bounds:" >&2
+    echo "$bounds_in_table" >&2
+    fail "the accepted schema and the frontend's table disagree about a parameter's maximum"
+}
 
 [ -n "$declared" ] || fail "the schema document declares no operations"
 [ "$declared" = "$tabled" ] || {
@@ -78,7 +92,7 @@ abi_in_doc=$(sed -n '/^### /,/^## 5/p' "$DOC" |
     sed -n 's/^| `\([a-z_]*\)` |.*| \([0-9]*\) |$/\1 \2/p' | sort)
 abi_in_host=$(sed -n '/^const PERFORMED/,/^];$/p' "$HOST" |
     tr -d ' \n' | tr '(' '\n' |
-    sed -n 's/^"[a-zA-Z.]*","\([a-z_]*\)",\([A-Z_]*\),\(true\|false\),\?).*$/\1 \2/p' | sort)
+    sed -n 's/^"[a-zA-Z.]*","\([a-z_]*\)",\([A-Z_]*\),Shape::[A-Za-z]*,\?).*$/\1 \2/p' | sort)
 # The host names each call by its `SYSTEM_ABI_V1` constant, so resolve those to
 # the numbers the document assigns before comparing.
 while IFS= read -r pair; do

@@ -226,6 +226,10 @@ qemu_process_control() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/process-control.sh \
         target/preflight-qemu/process-control)
 }
+qemu_process_launch() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/process-launch.sh \
+        target/preflight-qemu/process-launch)
+}
 qemu_direction_flag() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/direction-flag.sh \
         target/preflight-qemu/direction-flag)
@@ -286,6 +290,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU one endpoint has one receiver" qemu_second_receiver
     run_gate "QEMU a module performs an operation" qemu_module_operation
     run_gate "QEMU a module ends its own process" qemu_process_control
+    run_gate "QEMU a module launches a process" qemu_process_launch
     run_gate "QEMU flags a process was holding" qemu_direction_flag
 fi
 

@@ -66,6 +66,7 @@ const PROCESS_EXIT: u64 = 12;
 /// checks them: a refusal it could not name it could not report.
 const OK: i64 = 0;
 const E_NO_CAPABILITY: i64 = -1;
+const E_BAD_ARGUMENT: i64 = -3;
 const E_CANCELLED: i64 = -5;
 
 /// The one call flag this ABI version has: ask, do not wait (ADR-0059).
@@ -412,7 +413,11 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
             launch.capability_count as usize,
         )
     };
-    let mut endowment = Endowment { held, report };
+    let mut endowment = Endowment {
+        held,
+        arguments: launch.arguments_base,
+        report,
+    };
     let run = match execute_set(&request, alloc::vec::Vec::new(), &mut trace, &mut endowment) {
         Ok(run) => run,
         Err(SetError::EntryModuleAbsent { .. } | SetError::NoUnits) => {
@@ -542,21 +547,54 @@ fn hold_direction_flag(_report: &mut Report) {}
 /// is a payload length. It is not a guess about arity: §4 declares which
 /// operations take one, and an operation whose declaration says otherwise is a
 /// disagreement the gate catches rather than a call this table improvises.
-const PERFORMED: &[(&str, &str, u64, bool)] = &[
-    ("system.ipc.Endpoint", "endpoint_send", ENDPOINT_SEND, true),
+/// How an operation's value crosses (`SYSTEM_INTERFACE_V1` §4.1).
+enum Shape {
+    /// No value after the capability.
+    Nothing,
+    /// One `u64`, in the register `SYSTEM_ABI_V1` §5 assigns the operation.
+    Length,
+    /// One `text`, at the argument region's fixed offset for a module name, with
+    /// its length in the register. The bytes go where the ABI already reads
+    /// them; the module named a value and never an address.
+    ModuleName,
+}
+
+const PERFORMED: &[(&str, &str, u64, Shape)] = &[
+    (
+        "system.ipc.Endpoint",
+        "endpoint_send",
+        ENDPOINT_SEND,
+        Shape::Length,
+    ),
     (
         "system.ipc.Endpoint",
         "endpoint_receive",
         ENDPOINT_RECEIVE,
-        false,
+        Shape::Nothing,
     ),
-    ("system.ipc.Endpoint", "endpoint_call", ENDPOINT_CALL, true),
-    ("system.ipc.Reply", "endpoint_reply", ENDPOINT_REPLY, true),
+    (
+        "system.ipc.Endpoint",
+        "endpoint_call",
+        ENDPOINT_CALL,
+        Shape::Length,
+    ),
+    (
+        "system.ipc.Reply",
+        "endpoint_reply",
+        ENDPOINT_REPLY,
+        Shape::Length,
+    ),
     (
         "system.process.Control",
         "process_terminate",
         PROCESS_TERMINATE,
-        false,
+        Shape::Nothing,
+    ),
+    (
+        "system.process.Control",
+        "process_create",
+        PROCESS_CREATE,
+        Shape::ModuleName,
     ),
 ];
 
@@ -569,6 +607,9 @@ const PERFORMED: &[(&str, &str, u64, bool)] = &[
 /// before this process ran, and this reports what that decision was.
 struct Endowment<'a> {
     held: &'a [LaunchCapability],
+    /// Where a value too big for a register goes: the region the launcher
+    /// mapped and the nucleus reads, at the offsets the ABI fixes (ADR-0058).
+    arguments: u64,
     /// Its own copy, not a borrow: see [`Report`]. The trace holds one too, and
     /// both write to the one region the launcher named.
     report: Report,
@@ -609,11 +650,9 @@ impl System for Endowment<'_> {
     }
 
     fn reach(&mut self, call: Reach<'_>) -> Result<Value, Trap> {
-        let Some((_, _, operation, takes_length)) =
-            PERFORMED.iter().find(|(interface, name, _, _)| {
-                *interface == call.interface && *name == call.operation
-            })
-        else {
+        let Some((_, _, operation, shape)) = PERFORMED.iter().find(|(interface, name, _, _)| {
+            *interface == call.interface && *name == call.operation
+        }) else {
             // An accepted schema declared it and this host cannot perform it.
             // That is a disagreement between two documents, not a program error,
             // and it ends the run rather than returning a status the module
@@ -631,21 +670,74 @@ impl System for Endowment<'_> {
                 call.source,
             ));
         };
-        let length = match (takes_length, call.arguments.get(1)) {
-            (true, Some(Value::Int(_, bytes))) if *bytes >= 0 => *bytes as u64,
-            (true, _) => {
-                return Err(Trap::new(
-                    "RUNTIME_TYPE_CONFUSION",
-                    "an operation that takes a length was reached without one",
-                    call.source,
-                ))
+        let status = match shape {
+            Shape::Nothing => {
+                // SAFETY: `operation` is one of the assigned numbers in the
+                // table above and takes only the capability.
+                unsafe { self::call(*operation, held.get(), 0) }.0
             }
-            (false, _) => 0,
+            Shape::Length => {
+                let Some(Value::Int(_, bytes)) = call.arguments.get(1) else {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        "an operation that takes a length was reached without one",
+                        call.source,
+                    ));
+                };
+                if *bytes < 0 {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        "an operation was reached with a negative length",
+                        call.source,
+                    ));
+                }
+                // SAFETY: as above, with the length this call's own declaration
+                // says it takes.
+                unsafe { self::call(*operation, held.get(), *bytes as u64) }.0
+            }
+            Shape::ModuleName => {
+                let Some(Value::Text(name)) = call.arguments.get(1) else {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        "an operation that takes a module name was reached without one",
+                        call.source,
+                    ));
+                };
+                // The declared maximum, refused **before the call is made**
+                // (`SYSTEM_INTERFACE_V1` §4.1). The bound is the schema's, read
+                // from the schema, so a module is refused against the contract
+                // it was written to rather than against a number in this image.
+                let declared = tos_pipeline::interfaces::interface(call.interface)
+                    .and_then(|interface| interface.operation(call.operation))
+                    .and_then(|operation| operation.parameters.first())
+                    .and_then(|parameter| parameter.maximum);
+                if declared.is_some_and(|maximum| name.len() as u64 > maximum) {
+                    self.report.line(&alloc::format!(
+                        "TOS.RUN.INTERFACE operation={} status={E_BAD_ARGUMENT} refused=too-long",
+                        call.operation
+                    ));
+                    return Ok(Value::Int(IntKind::I64, E_BAD_ARGUMENT.into()));
+                }
+                for (offset, byte) in name.as_bytes().iter().enumerate() {
+                    // SAFETY: `arguments_base` names a writable mapping the
+                    // launcher made; the offset is the one ADR-0058 fixed for a
+                    // module name and the length is inside the bound just
+                    // checked.
+                    unsafe {
+                        core::ptr::with_exposed_provenance_mut::<u8>(
+                            (self.arguments + tos_launch::CREATE_MODULE) as usize,
+                        )
+                        .add(offset)
+                        .write(*byte)
+                    };
+                }
+                // SAFETY: `process_create` names the process a child is created
+                // under, the module name's length, how many capabilities the
+                // child is endowed with — none, which is all §4 declares — and
+                // the rights it holds over itself, also none.
+                unsafe { call4(*operation, held.get(), name.len() as u64, 0, 0) }.0
+            }
         };
-        // SAFETY: `operation` is one of the assigned numbers in the table above,
-        // the first argument is the handle the launcher granted this process, and
-        // the second is a length this call's own declaration says it takes.
-        let (status, _) = unsafe { self::call(*operation, held.get(), length) };
         // What a module asked the system for and what the system answered, on
         // the audit record. The module sees only the status; a reader of the
         // boot log sees which operation, under which request, produced it.

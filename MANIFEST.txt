@@ -105,7 +105,7 @@ Architecture decision records
 - docs/adr/0059-blocking-and-the-liveness-rule.md — ADR-0059: What it means to wait, and what ends a wait nobody can end [**Accepted (option D)** (Project Architect-approved)]
 - docs/adr/0060-how-a-module-reaches-a-capability.md — ADR-0060: How a TOS Core module invokes an operation on a capability [**Accepted (option A)** (Project Architect-approved)]
 - docs/adr/0061-how-an-endowment-binds-to-a-module.md — ADR-0061: How a process's endowment binds to the module it runs [**Accepted (surface B, key i)** (Project Architect-approved)]
-- docs/adr/0062-arguments-an-operation-cannot-take-in-a-register.md — ADR-0062: Arguments an operation cannot take in a register [**Proposed**]
+- docs/adr/0062-arguments-an-operation-cannot-take-in-a-register.md — ADR-0062: Arguments an operation cannot take in a register [**Accepted (option A)** — chosen from the accepted documents, under the]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

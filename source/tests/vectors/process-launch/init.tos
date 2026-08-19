@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A TOS Core module that launches a process.
+//
+// This is the act a supervisor is made of. `SYSTEM_INTERFACE_V1` §4 used to
+// leave `process_create` out with a reason: it takes a module name, "and TOS
+// Core V1 has no way to write into that region, because it has no pointers and
+// this schema admits none". §4.1 answers that without contradicting it — the
+// name is a *value*, which §3 already said parameters are, and the host places
+// its bytes where the ABI reads them. This module names a value and never an
+// address, exactly as before.
+//
+// Two calls, and the difference between their answers is the evidence. The
+// first names a module the capsule carries; the second names one it does not.
+// Both go through the same operation, on the same capability, with the same
+// authority — so a module that had faked either could not produce two answers.
+
+module system.boot.init version 1.0 profile full;
+
+import capability system.process.Control as control;
+
+resource [
+    fuel: 65536,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 1
+]
+
+// The module name is `text` with a declared maximum (§4.1). A longer value is
+// refused before the call is made, so the bound is the contract's rather than
+// whichever host happens to run this.
+extern fn process_create(cap: system.process.Control, path: string) -> i64 uses [control];
+
+// `OK` for the module that exists, minus `E_BAD_ARGUMENT` for the one that does
+// not: `0 - (-3)`.
+//
+// Composed so that neither answer alone produces it. A system that refused both
+// returns 0; one that accepted both returns 0; only the declared pair — created,
+// then refused — gives 3.
+pub fn main() -> i64 uses [control] {
+    let made: i64 = process_create(control, "system/boot/init.tos");
+    let absent: i64 = process_create(control, "system/boot/nowhere.tos");
+    return made - absent;
+}
