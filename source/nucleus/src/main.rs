@@ -30,7 +30,12 @@
     all(feature = "test-two-processes", feature = "test-call-reply"),
     all(feature = "test-supervisor", feature = "test-deadlock"),
     all(feature = "test-supervisor", feature = "test-call-reply"),
-    all(feature = "test-deadlock", feature = "test-call-reply")
+    all(feature = "test-deadlock", feature = "test-call-reply"),
+    all(feature = "test-second-receiver", feature = "test-two-processes"),
+    all(feature = "test-second-receiver", feature = "test-supervisor"),
+    all(feature = "test-second-receiver", feature = "test-deadlock"),
+    all(feature = "test-second-receiver", feature = "test-call-reply"),
+    all(feature = "test-second-receiver", feature = "test-deputy")
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
 
@@ -722,11 +727,38 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             }],
         )
     };
+    // Under the second-receiver constant the launcher asks for something
+    // `IPC_V1` §2 forbids: **both** processes are to receive on one endpoint.
+    // The constant is wrong on purpose, and it is the only way to ask the
+    // question §9.4 asks — a rule that is only ever obeyed is a rule nobody has
+    // tested. The first process is also given `send`, so that the endpoint is
+    // usable by the one holder it is allowed to have and the boot is a working
+    // system with one refusal in it rather than a broken one.
+    #[cfg(feature = "test-second-receiver")]
+    let (first_endowment, second_endowment) = {
+        let Some(endpoint) = ipc::create() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        (
+            [capability::Endowment::Existing {
+                object: capability::Object::Endpoint(endpoint),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            }],
+            [capability::Endowment::Existing {
+                object: capability::Object::Endpoint(endpoint),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            }],
+        )
+    };
     #[cfg(not(any(
         feature = "test-two-processes",
         feature = "test-supervisor",
         feature = "test-deadlock",
         feature = "test-call-reply",
+        feature = "test-second-receiver",
         feature = "test-deputy"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];
@@ -766,6 +798,18 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     {
         tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
         if build(&caller_endowment).is_err() {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
+            mem_fail();
+        }
+    }
+    // The second process starts, and starts with **nothing**: the one thing its
+    // endowment asked for is the one thing it may not have. A launcher asking
+    // for the impossible does not stop the boot — it is told, on the record,
+    // that it did not get it.
+    #[cfg(feature = "test-second-receiver")]
+    {
+        tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
+        if build(&second_endowment).is_err() {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
             mem_fail();
         }

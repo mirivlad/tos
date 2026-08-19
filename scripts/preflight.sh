@@ -214,6 +214,10 @@ qemu_deputy() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/deputy.sh \
         target/preflight-qemu/deputy)
 }
+qemu_second_receiver() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/second-receiver.sh \
+        target/preflight-qemu/second-receiver)
+}
 qemu_direction_flag() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/direction-flag.sh \
         target/preflight-qemu/direction-flag)
@@ -271,6 +275,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU blocking and the liveness rule" qemu_blocking
     run_gate "QEMU request and reply" qemu_request_reply
     run_gate "QEMU confused deputy" qemu_deputy
+    run_gate "QEMU one endpoint has one receiver" qemu_second_receiver
     run_gate "QEMU flags a process was holding" qemu_direction_flag
 fi
 
