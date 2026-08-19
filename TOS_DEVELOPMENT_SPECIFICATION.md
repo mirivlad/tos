@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `49873ee3a62c5b3be4feff680c8d883e6323dbd05c1f4450093eb8d08621d122`  
+Source-manifest SHA-256: `3622e544965dc83aa6ad33c7ceaa71bc53495a04eb0186d829cddd28cce42b45`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2591,13 +2591,37 @@ because two imports of one interface are legal and a kind cannot tell them apart
 | Operation | Parameters after the capability | Result | `SYSTEM_ABI_V1` |
 |---|---|---|---|
 | `process_terminate` | *(none)* | `i64` | 9 |
+| `process_create` | `path: string` (≤ 256) | `i64` | 8 |
 
-`process_create` is deliberately absent. It takes a module name and an
-endowment, which live in the argument region (ADR-0058) — and TOS Core V1 has no
-way to write into that region, because it has no pointers and this schema admits
-none. An interface declaring it would be declaring an operation no module could
-supply the arguments for. It arrives when there is a typed way to say what it
-takes, and not before.
+`process_create` creates a child running the named module **with no endowment**.
+An endowment is a list, and §4.1 admits no list; a child endowed nothing is a
+child that can do nothing, which is a real and useful thing for a supervisor to
+make and is the whole of what this version declares. Endowing one is the next
+version's, and arrives with a typed way to say what a list is rather than before.
+
+## 4.1 What a parameter may be
+
+An operation's parameters after the capability are **values** (§3), and a value
+of TOS Core V1 is what `docs/40` says it is. This version admits two:
+
+| Declared type | How it crosses |
+|---|---|
+| `u64` | in the register `SYSTEM_ABI_V1` §5 assigns the operation |
+| `string` | in the argument region, at the offset that ABI fixes, with its length in the register |
+
+**A variable-length parameter declares its maximum, and the maximum is part of
+this contract.** `SYSTEM_ABI_V1` §3 bounds every read by a constant of the
+contract rather than by a number a caller chose, and a parameter without a
+declared maximum would leave "how much of a module's value the system looks at"
+to whichever host ran it. A value longer than the declared maximum is refused
+**before the call is made**, with `E_BAD_ARGUMENT` — the same status an inline
+payload past its own bound receives, because both are constants the caller knew
+before it called.
+
+Nothing here is a pointer and nothing here is a region. The module names a value;
+the host places its bytes where the ABI already reads them, at an address the
+nucleus chose and mapped. That is the same act the host already performs on a
+capability handle, over a longer argument.
 
 ## 5. Results, and what a module may conclude from one
 

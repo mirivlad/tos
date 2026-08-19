@@ -16,11 +16,33 @@
 pub struct Operation {
     /// The name an `extern fn` must have to be this operation.
     pub name: &'static str,
-    /// The parameter types after the capability, in order. The capability is
-    /// the first parameter of every operation and is not repeated here.
-    pub parameters: &'static [&'static str],
+    /// The parameters after the capability, in order. The capability is the
+    /// first parameter of every operation and is not repeated here.
+    pub parameters: &'static [Parameter],
     /// The result type.
     pub result: &'static str,
+}
+
+/// One value an operation takes (`SYSTEM_INTERFACE_V1` §4.1).
+pub struct Parameter {
+    /// The type an `extern fn` must declare for it.
+    pub ty: &'static str,
+    /// How long a value of it may be, where its length is not fixed by its type.
+    ///
+    /// `None` for a type whose size the type decides. `Some` for one whose does
+    /// not, and then it is **part of the contract** rather than the host's
+    /// choice: `SYSTEM_ABI_V1` §3 bounds every read by a constant of the
+    /// contract and not by a number a caller chose, so an unbounded parameter
+    /// would leave how much of a module's value the system looks at to whichever
+    /// host ran it.
+    pub maximum: Option<u64>,
+}
+
+impl Parameter {
+    /// A value whose type fixes its size.
+    const fn fixed(ty: &'static str) -> Parameter {
+        Parameter { ty, maximum: None }
+    }
 }
 
 /// One interface: a capability type, and the finite set of operations reachable
@@ -66,7 +88,7 @@ pub const ACCEPTED: &[Interface] = &[
         operations: &[
             Operation {
                 name: "endpoint_send",
-                parameters: &["u64"],
+                parameters: &[Parameter::fixed("u64")],
                 result: "i64",
             },
             Operation {
@@ -76,7 +98,7 @@ pub const ACCEPTED: &[Interface] = &[
             },
             Operation {
                 name: "endpoint_call",
-                parameters: &["u64"],
+                parameters: &[Parameter::fixed("u64")],
                 result: "i64",
             },
         ],
@@ -86,18 +108,34 @@ pub const ACCEPTED: &[Interface] = &[
         object: ObjectKind::Reply,
         operations: &[Operation {
             name: "endpoint_reply",
-            parameters: &["u64"],
+            parameters: &[Parameter::fixed("u64")],
             result: "i64",
         }],
     },
     Interface {
         path: "system.process.Control",
         object: ObjectKind::Process,
-        operations: &[Operation {
-            name: "process_terminate",
-            parameters: &[],
-            result: "i64",
-        }],
+        operations: &[
+            Operation {
+                name: "process_terminate",
+                parameters: &[],
+                result: "i64",
+            },
+            // The module name is a value of variable length, so it declares its
+            // maximum here (§4.1). The number is `MAX_MODULE_PATH`'s, which is
+            // the bound the nucleus already reads that argument under — stated
+            // in the schema rather than borrowed from the ABI's constants,
+            // because a module is refused against the contract it was written
+            // to and not against a number in another crate.
+            Operation {
+                name: "process_create",
+                parameters: &[Parameter {
+                    ty: "string",
+                    maximum: Some(256),
+                }],
+                result: "i64",
+            },
+        ],
     },
 ];
 

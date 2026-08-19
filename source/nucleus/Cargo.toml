@@ -60,6 +60,10 @@ test-process-control = []
 # process that made it, so the module never returns — which is the difference
 # the evidence is made of.
 test-process-terminate = []
+# Authority over this process carrying `create`, under the name a module asks
+# for it: the module is then the thing that launches a process, which is the act
+# a supervisor is made of.
+test-process-launch = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

@@ -65,7 +65,17 @@
     all(feature = "test-process-terminate", feature = "test-second-receiver"),
     all(feature = "test-process-terminate", feature = "test-module-operation"),
     all(feature = "test-process-terminate", feature = "test-wrong-kind"),
-    all(feature = "test-process-control", feature = "test-process-terminate")
+    all(feature = "test-process-control", feature = "test-process-terminate"),
+    all(feature = "test-process-launch", feature = "test-two-processes"),
+    all(feature = "test-process-launch", feature = "test-supervisor"),
+    all(feature = "test-process-launch", feature = "test-deadlock"),
+    all(feature = "test-process-launch", feature = "test-call-reply"),
+    all(feature = "test-process-launch", feature = "test-deputy"),
+    all(feature = "test-process-launch", feature = "test-second-receiver"),
+    all(feature = "test-process-launch", feature = "test-module-operation"),
+    all(feature = "test-process-launch", feature = "test-wrong-kind"),
+    all(feature = "test-process-launch", feature = "test-process-control"),
+    all(feature = "test-process-launch", feature = "test-process-terminate")
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
 
@@ -898,7 +908,16 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         binding: binding(b"control"),
         rights: tos_launch::RIGHT_TERMINATE,
     }];
+    // Under the launch constant the process holds `create` over itself, under
+    // the name a module asks for process authority by. What it does with it is
+    // the module's business, and here the module launches something.
+    #[cfg(feature = "test-process-launch")]
+    let first_endowment = [capability::Endowment::Own {
+        binding: binding(b"control"),
+        rights: tos_launch::RIGHT_CREATE,
+    }];
     #[cfg(not(any(
+        feature = "test-process-launch",
         feature = "test-two-processes",
         feature = "test-module-operation",
         feature = "test-wrong-kind",

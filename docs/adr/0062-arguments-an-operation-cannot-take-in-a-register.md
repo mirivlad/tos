@@ -2,12 +2,41 @@
 
 # ADR-0062: Arguments an operation cannot take in a register
 
-- Status: **Proposed**
+- Status: **Accepted (option A)** — chosen from the accepted documents, under the
+  owner's standing instruction to decide by documentation where the documents
+  decide, and to stop only where they do not
 - Date: 2026-08-20
 - Decision level: 2 — it fixes what an accepted interface schema may declare a
   parameter to be, and therefore who is allowed to place bytes where the system
   reads them; it adds no operation, no status, no right and no syntax
-- Project Architect approval: **not given**
+- Project Architect approval: not sought separately; see "Why this is a reading
+  rather than an invention" below
+
+## Why this is a reading rather than an invention
+
+`SYSTEM_INTERFACE_V1` §3 already fixes what an operation's parameters after the
+capability are:
+
+> **The first parameter is the capability**, of the interface's declared type.
+> The remaining parameters are **values**. No parameter is a pointer, because TOS
+> Core V1 has none.
+
+A `string` is a value of TOS Core V1 (`docs/40`; the frontend's own primitive
+list names it beside `u64`). So a schema declaring one declares a value, which is
+what §3 permits, and declares no pointer, which is what §3 forbids. That the
+first five operations happened to use only `u64` is a fact about those five
+operations, not a rule — §3 states the rule and it admits both.
+
+What was genuinely undecided is the **bound**, and `SYSTEM_ABI_V1` §3 decides
+that too: "Arguments are values and handles, never pointers the nucleus
+dereferences without bounds", and `MAX_MODULE_PATH` is that document's own
+example of a length fixed by the contract rather than by a caller. Putting the
+maximum in the schema is applying an existing rule to a new parameter, not
+inventing a rule.
+
+Option B's general form, option C and option D remain undecided and unbuilt: each
+would add something the accepted documents do not already contain — a layout, a
+region contract, or a supervisor that answers `docs/37` with *no*.
 
 ## The gap, stated once
 
@@ -73,32 +102,40 @@ rules" — which is the checklist this would extend, not a prohibition.
 
 ## Options
 
-### A — the schema declares `text`, and the host marshals it
+### A — the schema declares `string`, and the host marshals it
 
-An operation may declare a parameter of type `text`. The module passes a TOS Core
-`text` value; the engine hands it to the host as `Value::Text`; the host copies
-its bytes into the argument region at the offset the ABI fixes and passes the
-length in the register the ABI assigns.
+An operation may declare a parameter of type `string`. The module passes a TOS
+Core `string` value; the engine hands it to the host as `Value::Text`; the host
+copies its bytes into the argument region at the offset the ABI fixes and passes
+the length in the register the ABI assigns.
 
 ```tos
-extern fn process_create(cap: system.process.Control, module: text) -> i64 uses [control];
+extern fn process_create(cap: system.process.Control, path: string) -> i64 uses [control];
 ```
+
+(`path`, not `module`: `module` is a keyword of the grammar, so the obvious name
+does not parse. Found by writing the module rather than by reading the grammar.)
 
 The module never names an address. The nucleus reads the region it mapped, at an
 offset it chose, for a length it bounds against a constant of the contract — all
 three unchanged from today. What is new is only that the bytes got there from a
 value rather than from a `set_transferred`-style write by the Rust image.
 
-Costs: the boundary checker's parameter comparison currently admits only what a
-`TypeSyntax::Name` resolves to, which `text` already is, so the surface change is
-one entry in a table. The real cost is the rule that has to come with it —
+Costs: the boundary checker's parameter comparison admits whatever a
+`TypeSyntax::Name` resolves to, which `string` already is, so the surface change
+is one entry in a table. The real cost is the rule that has to come with it —
 **a schema declaring a variable-length parameter must declare its bound**, and
 the refusal when a value exceeds it must be the schema's, not the host's
 improvisation. Without that, "how long may a module's argument be" is answered by
 whichever host runs it.
 
-It does not by itself reach `process_create`, which takes a module name **and an
-endowment**. It reaches half of it.
+**It reaches `process_create` after all**, which this ADR first said it would
+only half do. The endowment is a list and A admits none — but a `process_create`
+that endows *nothing* is a complete operation, not half of one: a child that can
+do nothing is a real thing for a supervisor to make, and `SYSTEM_ABI_V1` §5
+already takes the endowment count in a register, where zero is a legal value.
+So the schema declares the operation with the parameter it can describe, and
+endowing a child arrives with the list that describes it.
 
 ### B — the schema declares a record type, and the host marshals that
 
