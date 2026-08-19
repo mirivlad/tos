@@ -40,8 +40,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_ir::{
-    BinaryOp, CallTarget, Constant, IntKind, Module, Op, Operand, Place, PlaceStep, SourceRef,
-    Terminator, UnaryOp,
+    BinaryOp, CallTarget, Constant, Instruction, IntKind, Module, Op, Operand, Place, PlaceStep,
+    SourceRef, Terminator, UnaryOp,
 };
 use tos_verifier::VerifiedModule;
 
@@ -83,6 +83,48 @@ pub enum Value {
         captures: Vec<Value>,
         cancelled: bool,
     },
+    /// Authority this run was given, as an opaque handle.
+    ///
+    /// The engine never reads the number. It cannot be compared, printed,
+    /// converted or computed with, and no operation of the language produces
+    /// one: a capability arrives as an argument of the run and leaves as an
+    /// argument of an interface operation, and the only thing the engine does
+    /// with it in between is carry it. `docs/42` §2 requires exactly that —
+    /// authority appears in identity, imports and audit, while "the concrete
+    /// secret/handle representation does not" — so this variant is deliberately
+    /// a dead end everywhere except at the boundary it crosses.
+    Capability(Handle),
+}
+
+/// Authority, as the engine holds it.
+///
+/// A newtype rather than a bare `u64` so that the rule has somewhere to live.
+/// `Debug` is written out rather than derived because derived `Debug` on a
+/// handle is how a handle reaches a log: `docs/42` §2 admits authority into
+/// provenance by *interface path* and keeps the representation out, and a
+/// diagnostic is not an exception to that.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub struct Handle(u64);
+
+impl Handle {
+    /// The handle a host is giving this run.
+    pub fn new(value: u64) -> Handle {
+        Handle(value)
+    }
+
+    /// The handle, for the host that has to name it to the system.
+    ///
+    /// The only reader, and it is the boundary: inside the engine the number
+    /// does not exist.
+    pub fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl core::fmt::Debug for Handle {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("capability")
+    }
 }
 
 /// A defined failure of a dynamic language precondition (docs/41 section 7).
@@ -149,6 +191,79 @@ pub enum Refusal {
     EntryArity { expected: usize, actual: usize },
 }
 
+/// One call leaving the engine for an accepted interface schema.
+///
+/// Everything about it is a string and a slice of values the engine already
+/// held: it names *which* interface and *which* operation, and it does not
+/// describe how either is performed. That is the whole of the separation — the
+/// engine knows the call happened and in what order, and knows nothing about
+/// what answering it involves.
+#[derive(Clone, Copy, Debug)]
+pub struct Reach<'a> {
+    /// The accepted interface path the instruction carries, which the verifier
+    /// has already proved the module imported and the enclosing function
+    /// declared (`docs/42` §2, ADR-0060).
+    pub interface: &'a str,
+    /// The operation of that interface.
+    pub operation: &'a str,
+    /// The capability first (ADR-0056), then the operation's values.
+    pub arguments: &'a [Value],
+    /// Where in the source the call is, so that a refusal names the text that
+    /// made it rather than the host that answered it.
+    pub source: SourceRef,
+}
+
+/// What an engine reaches when a module calls an operation of an interface.
+///
+/// **The engine leaves here and is re-entered here**, which is the property
+/// ADR-0060 §3 requires of it: an operation may block, a blocked operation makes
+/// its *process* not runnable, and the engine's own frame is simply not running
+/// for as long as that lasts. Nothing in the engine is unwound, retried or
+/// resumed from a saved position — the call boundary is the boundary, and what
+/// carries the suspended run across it is whatever the host suspends. In the
+/// TOS runtime image that is the process's own trap frame, which the nucleus
+/// sets down and picks up (ADR-0059); in a host test it is an ordinary return.
+///
+/// **Determinism is split here, deliberately.** ADR-0060 fixes it: the order of
+/// effects is deterministic and the verifier proves it, and the values effects
+/// return are not. The engine's side of that is that it makes the same calls in
+/// the same order over the same inputs, which is a property of `docs/40`'s
+/// evaluation order and is unchanged by this trait existing. Everything a `reach`
+/// returns is outside it.
+pub trait System {
+    /// Performs one operation, or ends the run.
+    ///
+    /// A refused operation is an ordinary value — every operation of
+    /// `SYSTEM_INTERFACE_V1` returns the status `SYSTEM_ABI_V1` assigns, and a
+    /// module reads a number. A [`Trap`] is for the other thing: a call this
+    /// host cannot perform at all, which is not an answer the program could
+    /// have handled.
+    fn reach(&mut self, call: Reach<'_>) -> Result<Value, Trap>;
+}
+
+/// A system with nothing on the other side of it.
+///
+/// For a run of a module that reaches no interface — every Bootstrap module, by
+/// `docs/42` §3 — and for a caller that has no business answering one. It is not
+/// a stub that returns zero: a module that reaches an interface through this has
+/// reached a system that does not exist, and saying so is the only honest
+/// answer available.
+pub struct Unreachable;
+
+impl System for Unreachable {
+    fn reach(&mut self, call: Reach<'_>) -> Result<Value, Trap> {
+        Err(Trap::new(
+            "RUNTIME_INTERFACE_UNREACHABLE",
+            alloc::format!(
+                "`{}` of `{}` was called on a run with no system to reach",
+                call.operation,
+                call.interface
+            ),
+            call.source,
+        ))
+    }
+}
+
 /// Runs an entry function of a verified module.
 ///
 /// The receipt is checked against the module's own digest first: an engine
@@ -171,8 +286,9 @@ pub fn run(
     receipt: &VerifiedModule,
     entry: &str,
     arguments: Vec<Value>,
+    system: &mut dyn System,
 ) -> Result<Result<Outcome, Trap>, Refusal> {
-    run_set(&[Verified { module, receipt }], 0, entry, arguments)
+    run_set(&[Verified { module, receipt }], 0, entry, arguments, system)
 }
 
 /// Runs an entry function of one module of a verified set.
@@ -187,11 +303,18 @@ pub fn run(
 /// worst-case contract fits the caller's envelope, so one run has one budget,
 /// and a callee's own declaration is a statement about the callee rather than a
 /// second budget that resets when the boundary is crossed.
+///
+/// **The system is an argument, not a default.** A run reaches whatever the
+/// caller hands it and nothing else, so "which interfaces could this run have
+/// used" is answered by the call site rather than by an ambient environment the
+/// engine went looking for. A caller with nothing to offer says so by handing
+/// over [`Unreachable`].
 pub fn run_set(
     set: &[Verified<'_>],
     entry_module: usize,
     entry: &str,
     arguments: Vec<Value>,
+    system: &mut dyn System,
 ) -> Result<Result<Outcome, Trap>, Refusal> {
     // Every module of the set, before any of them runs: a receipt checked only
     // when a call reaches it would let a program choose which modules get
@@ -226,6 +349,7 @@ pub fn run_set(
     let mut engine = Engine {
         module,
         set,
+        system,
         fuel_limit: envelope.fuel,
         recursion_limit: envelope.recursion.max(1),
         fuel_used: 0,
@@ -270,12 +394,15 @@ pub fn run_set(
     }))
 }
 
-struct Engine<'module> {
+struct Engine<'module, 'system> {
     /// The module whose function is executing. It changes for the duration of a
     /// cross-module call and is restored when that call returns.
     module: &'module Module,
     /// Every module this run may reach, each with its own receipt.
     set: &'module [Verified<'module>],
+    /// What this run reaches when it leaves. Its own lifetime, because a host
+    /// has no reason to outlive the modules it is running.
+    system: &'system mut dyn System,
     fuel_limit: u128,
     recursion_limit: u128,
     fuel_used: u128,
@@ -325,7 +452,7 @@ enum Exit {
     Goto(usize),
 }
 
-impl Engine<'_> {
+impl Engine<'_, '_> {
     /// Charges one unit of fuel, trapping when the declared budget is gone.
     ///
     /// docs/41 section 6 makes fuel the accounting that bounds work. The budget
@@ -667,7 +794,7 @@ impl Engine<'_> {
         let block = &module.functions[function_index].blocks[block_index];
         for instruction in &block.instructions {
             self.spend(instruction.source)?;
-            let produced = self.evaluate(&instruction.op, values, instruction.source)?;
+            let produced = self.evaluate(instruction, values)?;
             if let (Some(slot), Some(value)) = (instruction.result, produced) {
                 if slot < values.len() {
                     values[slot] = Some(value);
@@ -766,10 +893,11 @@ impl Engine<'_> {
 
     fn evaluate(
         &mut self,
-        op: &Op,
+        instruction: &Instruction,
         values: &mut [Option<Value>],
-        source: SourceRef,
     ) -> Result<Option<Value>, Trap> {
+        let op = &instruction.op;
+        let source = instruction.source;
         let produced = match op {
             Op::Const(constant) => Some(self.constant(*constant, source)?),
             Op::Aggregate { operands, .. } => {
@@ -842,9 +970,16 @@ impl Engine<'_> {
                     CallTarget::Imported { import, name } => {
                         Some(self.call_imported(*import, name, arguments, source)?)
                     }
-                    CallTarget::Predeclared(name) => {
-                        Some(self.predeclared(name, arguments, source)?)
-                    }
+                    // Two different things share this target, and the
+                    // instruction says which. A predeclared name is a
+                    // conversion the language performs itself; the same shape
+                    // carrying an accepted interface path is an operation the
+                    // language does not perform at all, and the difference is
+                    // exactly the field the verifier checked.
+                    CallTarget::Predeclared(name) => match &instruction.unsafe_interface {
+                        None => Some(self.predeclared(name, arguments, source)?),
+                        Some(interface) => Some(self.reach(interface, name, arguments, source)?),
+                    },
                 }
             }
             Op::Closure { body, captures } => {
@@ -1120,6 +1255,34 @@ impl Engine<'_> {
     }
 
     /// The predeclared V1 operations (docs/39 section 2).
+    /// Leaves for an operation of an accepted interface schema, and comes back.
+    ///
+    /// The fuel for it was charged before this ran, like every other
+    /// instruction, which is `SYSTEM_INTERFACE_V1` §6's rule that a module
+    /// cannot exceed its declared budget by leaving the process. Nothing else
+    /// about the engine's accounting moves: no allocation is reserved, because
+    /// no value of this run's is constructed here, and no call depth is taken,
+    /// because nothing of this module is entered.
+    ///
+    /// **This is the whole of the boundary.** What comes back is a value the
+    /// engine did not compute and does not check, and that is the half of
+    /// ADR-0060's determinism rule that gives: the call happened here, in this
+    /// order, provably; what it answered is the world's business.
+    fn reach(
+        &mut self,
+        interface: &str,
+        operation: &str,
+        arguments: Vec<Value>,
+        source: SourceRef,
+    ) -> Result<Value, Trap> {
+        self.system.reach(Reach {
+            interface,
+            operation,
+            arguments: &arguments,
+            source,
+        })
+    }
+
     fn predeclared(
         &self,
         name: &str,

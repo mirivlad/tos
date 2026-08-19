@@ -8,6 +8,7 @@
 
 use tos_pipeline::{
     execute, execute_set, PipelineStage, Request, Run, SetError, SetRequest, Silent, Unit,
+    Unreachable,
 };
 
 /// `source = module_header import_decl* item*`: imports come before items, and
@@ -41,6 +42,7 @@ fn attempt(units: &[(&str, &str)], entry_path: &str) -> Result<Run, SetError> {
         },
         Vec::new(),
         &mut Silent,
+        &mut Unreachable,
     )
 }
 
@@ -66,6 +68,7 @@ fn one_module_through_the_set_path_is_the_single_module_path() {
         },
         Vec::new(),
         &mut Silent,
+        &mut Unreachable,
     );
     let as_set = set(&[("system/boot/init.tos", &text)], "system/boot/init.tos");
 
@@ -314,6 +317,7 @@ fn a_set_without_the_declared_entry_is_not_a_run() {
         },
         Vec::new(),
         &mut watcher,
+        &mut Unreachable,
     );
     let Err(error) = outcome else {
         panic!("expected a request error, not a run");

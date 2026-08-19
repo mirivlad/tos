@@ -6,7 +6,7 @@
 //! that the decision holds through check, lowering, verification and execution
 //! — rather than tests of any one stage.
 
-use tos_pipeline::{execute, render, PipelineStage, Request, Run, Severity, Silent};
+use tos_pipeline::{execute, render, PipelineStage, Request, Run, Severity, Silent, Unreachable};
 
 const PRELUDE: &str = "module system.boot.init version 1.0 profile bootstrap; \
      resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
@@ -23,7 +23,7 @@ fn request<'a>(text: &'a str) -> Request<'a> {
 
 fn run(body: &str) -> Run {
     let text = format!("{PRELUDE} {body}");
-    execute(&request(&text), Vec::new(), &mut Silent)
+    execute(&request(&text), Vec::new(), &mut Silent, &mut Unreachable)
 }
 
 fn errors(run: &Run) -> Vec<(&'static str, String)> {

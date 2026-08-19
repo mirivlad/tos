@@ -12,7 +12,7 @@
 //! bound. Nothing here relies on a host panic or a Rust integer's width.
 
 use tos_core::{lower_module, Checker, ModuleContext, Parser, SourceReader};
-use tos_engine::{run, trap_source, Accounting, Refusal, Value};
+use tos_engine::{run, trap_source, Accounting, Refusal, Unreachable, Value};
 use tos_ir::{IntKind, Module};
 use tos_verifier::{verify, Limits, ResolutionSnapshot, VerifiedModule};
 
@@ -54,7 +54,7 @@ fn pipeline(body: &str) -> (Module, VerifiedModule) {
 
 fn evaluate(body: &str, entry: &str, arguments: Vec<Value>) -> Value {
     let (module, receipt) = pipeline(body);
-    run(&module, &receipt, entry, arguments)
+    run(&module, &receipt, entry, arguments, &mut Unreachable)
         .expect("the entry exists with this arity")
         .expect("the program does not trap")
         .value
@@ -62,7 +62,8 @@ fn evaluate(body: &str, entry: &str, arguments: Vec<Value>) -> Value {
 
 fn trap(body: &str, entry: &str, arguments: Vec<Value>) -> tos_engine::Trap {
     let (module, receipt) = pipeline(body);
-    let outcome = run(&module, &receipt, entry, arguments).expect("the entry exists");
+    let outcome =
+        run(&module, &receipt, entry, arguments, &mut Unreachable).expect("the entry exists");
     let trap = outcome.expect_err("the program must trap");
     assert!(
         trap_source(&module, &trap).is_some(),
@@ -237,7 +238,7 @@ fn an_unbounded_loop_exhausts_its_declared_fuel() {
     let module = lower_module(&source, &schema, &context).expect("lowers");
     let receipt =
         verify(&module, &ResolutionSnapshot::default(), &Limits::default()).expect("verifies");
-    let trap = run(&module, &receipt, "spin", vec![])
+    let trap = run(&module, &receipt, "spin", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect_err("an unbounded loop must exhaust its budget");
     assert_eq!(trap.code, "RUNTIME_FUEL_EXHAUSTED");
@@ -253,7 +254,7 @@ fn unbounded_recursion_stops_at_the_declared_depth() {
 #[test]
 fn a_run_records_what_it_consumed() {
     let (module, receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
-    let outcome = run(&module, &receipt, "answer", vec![])
+    let outcome = run(&module, &receipt, "answer", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     let accounting = Accounting::of(&module, &outcome);
@@ -267,7 +268,7 @@ fn an_engine_refuses_a_receipt_for_another_module() {
     let (module, _) = pipeline("pub fn answer() -> i32 { return 42i32; }");
     let (_, other_receipt) = pipeline("pub fn answer() -> i32 { return 7i32; }");
     assert_eq!(
-        run(&module, &other_receipt, "answer", vec![]),
+        run(&module, &other_receipt, "answer", vec![], &mut Unreachable),
         Err(Refusal::ReceiptDoesNotMatch),
         "an engine accepts IR only with a receipt for that exact module"
     );
@@ -277,11 +278,17 @@ fn an_engine_refuses_a_receipt_for_another_module() {
 fn an_engine_refuses_an_entry_the_module_does_not_have() {
     let (module, receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
     assert_eq!(
-        run(&module, &receipt, "elsewhere", vec![]),
+        run(&module, &receipt, "elsewhere", vec![], &mut Unreachable),
         Err(Refusal::NoSuchEntry(String::from("elsewhere")))
     );
     assert_eq!(
-        run(&module, &receipt, "answer", vec![Value::Unit]),
+        run(
+            &module,
+            &receipt,
+            "answer",
+            vec![Value::Unit],
+            &mut Unreachable
+        ),
         Err(Refusal::EntryArity {
             expected: 0,
             actual: 1
@@ -296,12 +303,24 @@ fn the_same_program_produces_the_same_result_every_run() {
          while (current < limit) { total = total + current; current = current + 1i32; } \
          return total; }",
     );
-    let first = run(&module, &receipt, "sum", vec![Value::Int(IntKind::I32, 10)])
-        .unwrap()
-        .unwrap();
-    let second = run(&module, &receipt, "sum", vec![Value::Int(IntKind::I32, 10)])
-        .unwrap()
-        .unwrap();
+    let first = run(
+        &module,
+        &receipt,
+        "sum",
+        vec![Value::Int(IntKind::I32, 10)],
+        &mut Unreachable,
+    )
+    .unwrap()
+    .unwrap();
+    let second = run(
+        &module,
+        &receipt,
+        "sum",
+        vec![Value::Int(IntKind::I32, 10)],
+        &mut Unreachable,
+    )
+    .unwrap()
+    .unwrap();
     assert_eq!(first, second, "execution must be deterministic");
     assert_eq!(first.value, Value::Int(IntKind::I32, 45));
 }
@@ -339,7 +358,7 @@ fn full_pipeline(body: &str) -> (Module, VerifiedModule) {
 
 fn evaluate_full(body: &str, entry: &str, arguments: Vec<Value>) -> Value {
     let (module, receipt) = full_pipeline(body);
-    run(&module, &receipt, entry, arguments)
+    run(&module, &receipt, entry, arguments, &mut Unreachable)
         .expect("the entry exists with this arity")
         .expect("the program does not trap")
         .value
@@ -485,7 +504,7 @@ fn the_task_budget_bounds_how_many_children_may_start() {
     let module = lower_module(&source, &schema, &context).expect("lowers");
     let receipt =
         verify(&module, &ResolutionSnapshot::default(), &Limits::default()).expect("verifies");
-    let trap = run(&module, &receipt, "main", vec![])
+    let trap = run(&module, &receipt, "main", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect_err("a second child exceeds a budget of one");
     assert_eq!(trap.code, "RUNTIME_TASK_LIMIT");
@@ -501,7 +520,7 @@ fn allocation_is_charged_where_a_value_is_built() {
         "pub record Point [x: i32, y: i32] \
          pub fn build() -> Point { return Point(x: 1i32, y: 2i32); }",
     );
-    let outcome = run(&module, &receipt, "build", vec![])
+    let outcome = run(&module, &receipt, "build", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     let accounting = Accounting::of(&module, &outcome);
@@ -533,7 +552,7 @@ fn a_frame_releases_what_it_allocated_when_it_returns() {
          fn one() -> Point { return Point(x: 1i32, y: 2i32); } \
          pub fn many() -> i32 { let a = one(); let b = one(); let c = one(); return 0i32; }",
     );
-    let outcome = run(&module, &receipt, "many", vec![])
+    let outcome = run(&module, &receipt, "many", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("repeated calls must stay inside the budget");
     let accounting = Accounting::of(&module, &outcome);
@@ -548,7 +567,7 @@ fn a_registered_cleanup_is_charged_and_released_where_it_runs() {
          pub fn main() -> i32 { let mut cell = Cell(value: 0i32); \
          if (true) { defer { cell = bump(cell); } } return cell.value; }",
     );
-    let outcome = run(&module, &receipt, "main", vec![])
+    let outcome = run(&module, &receipt, "main", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     let accounting = Accounting::of(&module, &outcome);
@@ -597,7 +616,7 @@ fn the_run_reserves_one_execution_context_against_the_declared_budget() {
     // valid source — the frontend rejects it — so the reservation is observed
     // through the accounting rather than through a trap.
     let (module, receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
-    let outcome = run(&module, &receipt, "answer", vec![])
+    let outcome = run(&module, &receipt, "answer", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     let accounting = Accounting::of(&module, &outcome);
@@ -625,7 +644,7 @@ fn trap_in(text: &str, entry: &str, arguments: Vec<Value>) -> tos_engine::Trap {
     let module = lower_module(&source, &schema, &context).expect("lowers");
     let receipt =
         verify(&module, &ResolutionSnapshot::default(), &Limits::default()).expect("verifies");
-    run(&module, &receipt, entry, arguments)
+    run(&module, &receipt, entry, arguments, &mut Unreachable)
         .expect("the entry exists")
         .expect_err("the fixture must trap")
 }
@@ -722,7 +741,7 @@ fn a_call_across_the_set_returns_the_callee_result() {
             receipt: &entry.1,
         },
     ];
-    let outcome = tos_engine::run_set(&set, 1, "main", Vec::new())
+    let outcome = tos_engine::run_set(&set, 1, "main", Vec::new(), &mut Unreachable)
         .expect("the entry is runnable")
         .expect("the run completes");
     assert_eq!(outcome.value, Value::Int(IntKind::I32, 42));
@@ -746,7 +765,7 @@ fn a_dependency_whose_receipt_does_not_match_it_refuses_the_whole_run() {
             receipt: &entry.1,
         },
     ];
-    match tos_engine::run_set(&set, 1, "main", Vec::new()) {
+    match tos_engine::run_set(&set, 1, "main", Vec::new(), &mut Unreachable) {
         Err(Refusal::ReceiptDoesNotMatch) => {}
         other => panic!("a mismatched dependency receipt was accepted: {other:?}"),
     }
@@ -775,7 +794,7 @@ fn a_receipt_is_checked_even_for_a_dependency_the_run_never_calls() {
             receipt: &alone.1,
         },
     ];
-    match tos_engine::run_set(&set, 1, "main", Vec::new()) {
+    match tos_engine::run_set(&set, 1, "main", Vec::new(), &mut Unreachable) {
         Err(Refusal::ReceiptDoesNotMatch) => {}
         other => panic!("an unused module's receipt went unchecked: {other:?}"),
     }
@@ -788,7 +807,7 @@ fn a_call_to_a_module_the_set_does_not_contain_traps() {
         module: &entry.0,
         receipt: &entry.1,
     }];
-    let trap = tos_engine::run_set(&set, 0, "main", Vec::new())
+    let trap = tos_engine::run_set(&set, 0, "main", Vec::new(), &mut Unreachable)
         .expect("the entry is runnable")
         .expect_err("a call with nothing to call must trap");
     assert_eq!(trap.code, "RUNTIME_UNRESOLVED_IMPORT");
@@ -816,7 +835,7 @@ fn a_dependency_of_another_revision_under_the_same_name_traps() {
             receipt: &entry.1,
         },
     ];
-    let trap = tos_engine::run_set(&set, 1, "main", Vec::new())
+    let trap = tos_engine::run_set(&set, 1, "main", Vec::new(), &mut Unreachable)
         .expect("the entry is runnable")
         .expect_err("a substituted dependency must trap");
     assert_eq!(trap.code, "RUNTIME_UNRESOLVED_IMPORT");

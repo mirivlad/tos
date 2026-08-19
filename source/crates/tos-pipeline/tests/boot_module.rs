@@ -6,7 +6,7 @@
 //! boot path uses, on the host, before anything reaches QEMU — and so that the
 //! number the boot log reports has one place it is derived from.
 
-use tos_pipeline::{execute, render, Request, Run, Silent};
+use tos_pipeline::{execute, render, Request, Run, Silent, Unreachable};
 
 const BOOT_TEXT: &str = include_str!("../../../system/boot/init.tos");
 const BOOT_PATH: &str = "system/boot/init.tos";
@@ -25,7 +25,7 @@ fn boot_request() -> Request<'static> {
 
 #[test]
 fn the_canonical_boot_module_runs_through_every_stage() {
-    let run = execute(&boot_request(), Vec::new(), &mut Silent);
+    let run = execute(&boot_request(), Vec::new(), &mut Silent, &mut Unreachable);
     let Run::Completed(completion) = &run else {
         panic!("the boot module must complete: {:?}", render::events(&run));
     };
@@ -41,7 +41,7 @@ fn the_boot_module_stays_inside_every_resource_it_declares() {
     // The engine enforces these before the effect; asserting them here means a
     // change to the module that quietly needs more is caught on the host rather
     // than by a boot that traps.
-    let run = execute(&boot_request(), Vec::new(), &mut Silent);
+    let run = execute(&boot_request(), Vec::new(), &mut Silent, &mut Unreachable);
     let Run::Completed(completion) = run else {
         panic!("the boot module must complete");
     };
@@ -57,7 +57,7 @@ fn the_boot_module_stays_inside_every_resource_it_declares() {
 
 #[test]
 fn the_boot_log_reports_the_answer_the_module_computes() {
-    let run = execute(&boot_request(), Vec::new(), &mut Silent);
+    let run = execute(&boot_request(), Vec::new(), &mut Silent, &mut Unreachable);
     let events = render::events(&run);
     assert!(
         events

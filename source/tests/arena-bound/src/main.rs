@@ -43,7 +43,7 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use tos_core::{ModuleEntry, ModuleSummary, Parser, Schema, SourceReader, SourceUnit};
-use tos_pipeline::{execute, execute_set, Request, Run, SetRequest, Silent, Unit};
+use tos_pipeline::{execute, execute_set, Request, Run, SetRequest, Silent, Unit, Unreachable};
 use tos_runtime::{GlobalHeap, RuntimeMemoryGrant, GRANT_VERSION};
 
 /// The region the measurement runs in. A nucleus grant is the same shape.
@@ -402,6 +402,7 @@ fn an_executed_closure(sizes: &[usize]) -> Vec<(usize, usize)> {
             },
             Vec::new(),
             &mut Silent,
+            &mut Unreachable,
         )
         .expect("the set names an entry it contains");
         let after = arena();
@@ -475,7 +476,7 @@ fn a_source_set_one_module_at_a_time(count: usize) -> usize {
             bytes: text.as_bytes(),
             entry: &format!("total{index}"),
         };
-        let run = execute(&request, arguments(), &mut Silent);
+        let run = execute(&request, arguments(), &mut Silent, &mut Unreachable);
         let Run::Completed(completion) = run else {
             panic!("module {index} must complete");
         };
@@ -594,7 +595,7 @@ fn whole_pipeline(text: &str, index: usize) -> i128 {
         bytes: text.as_bytes(),
         entry: &format!("total{index}"),
     };
-    let run = execute(&request, arguments(), &mut Silent);
+    let run = execute(&request, arguments(), &mut Silent, &mut Unreachable);
     let Run::Completed(completion) = run else {
         panic!("the fixture must complete: {:?}", run.failed_at());
     };

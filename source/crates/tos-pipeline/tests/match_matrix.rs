@@ -5,7 +5,7 @@
 //! source the checker accepts reaches an executed result — checker, lowerer,
 //! independent verifier and engine agreeing on one meaning.
 
-use tos_pipeline::{execute, render, Request, Run, Silent};
+use tos_pipeline::{execute, render, Request, Run, Silent, Unreachable};
 
 const PRELUDE: &str = "module system.boot.init version 1.0 profile bootstrap; \
      resource [fuel: 10000, stack: 16KiB, allocation: 4KiB, tasks: 1, workers: 1, \
@@ -18,7 +18,7 @@ fn run(text: &str) -> Run {
         bytes: text.as_bytes(),
         entry: "main",
     };
-    execute(&request, Vec::new(), &mut Silent)
+    execute(&request, Vec::new(), &mut Silent, &mut Unreachable)
 }
 
 /// Runs a body and requires an executed answer, naming the stage if it stops.

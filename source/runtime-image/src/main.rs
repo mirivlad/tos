@@ -25,7 +25,9 @@ extern crate alloc;
 use core::panic::PanicInfo;
 
 use tos_launch::{Launch, LaunchCapability, LaunchUnit, ReportHeader, LAUNCH_VERSION};
-use tos_pipeline::{execute_set, render, PipelineStage, SetError, SetRequest, Trace, Unit};
+use tos_pipeline::{
+    execute_set, render, PipelineStage, SetError, SetRequest, Trace, Unit, Unreachable,
+};
 use tos_runtime::{stack, GlobalHeap};
 
 /// The heap of this runtime instance: the grant, and nothing else.
@@ -388,7 +390,24 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
     let mut trace = ReportTrace {
         report: &mut report,
     };
-    let run = match execute_set(&request, alloc::vec::Vec::new(), &mut trace) {
+    // What the run may reach, and today that is nothing.
+    //
+    // The mapping from an operation of `SYSTEM_INTERFACE_V1` to the
+    // `SYSTEM_ABI_V1` call that performs it is written and exercised
+    // (`System` in this image, and the engine's own evidence). What is
+    // *not* decided by any accepted document is how the authority the
+    // launcher endowed this process with binds to the entry function's
+    // declared parameters — `SYSTEM_INTERFACE_V1` §10.3 names a
+    // `CapabilityDenied` at startup without fixing what matches what. Until
+    // that is decided, a module on this path holds no capability, so it can
+    // name no operation, so the honest system to hand it is the one that
+    // says so rather than one that would answer a call nobody could make.
+    let run = match execute_set(
+        &request,
+        alloc::vec::Vec::new(),
+        &mut trace,
+        &mut Unreachable,
+    ) {
         Ok(run) => run,
         Err(SetError::EntryModuleAbsent { .. } | SetError::NoUnits) => {
             report.line("TOS.RUN.UNSTARTABLE reason=no-boot-module");
