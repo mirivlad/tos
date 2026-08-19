@@ -180,24 +180,55 @@ it. Named here so that it is found on purpose.
   still refuses the half its holder was never given.
 - [x] A released handle is stale by generation, and naming it again is refused
   rather than silently addressing whatever occupies the slot next.
-- [ ] Transfer of a linear capability, consumed in the sender atomically with
-  the receiver's acquisition (`CAPABILITY_V1` §4, `IPC_V1` §6). **Not
-  implemented**, and neither is region transfer (`IPC_V1` §5), so §9.1's refusal
-  evidence holds for the inline bound and not yet for the capability and region
-  counts — a message cannot name either, which is stronger than refusing them
-  and is not the same claim. **Blocked on ADR-0058**: a call has no way to name
-  four handles, and the same gap keeps `process_create`'s child endowment empty
-  and its module named by an ordinal rather than by a path.
-- [ ] `endpoint_call`/`endpoint_reply` and a blocking receive with the
-  cancellation path `SYSTEM_ABI_V1` §6 requires of anything that blocks. A
-  receive with nothing to take answers `E_WOULD_BLOCK` today, which §4 assigns
-  to exactly that. **Blocked on ADR-0059**, whose shape is settled: a `Blocked` state
-  with exact wake, the nucleus's **liveness rule** as the release valve — when
-  nothing is runnable and something is blocked, nothing routed in Stage 3 can
-  ever change that, so the nucleus cancels every block with `E_CANCELLED` and
-  says so — a small count of consecutive firings without a delivery between
-  them as the livelock terminator, and *patience* left to whoever launched a
-  process rather than owned by the nucleus.
+- [x] **Capability delegation in a message (ADR-0058) — done (2026-08-19).**
+  The argument region is what the message slot became: handles at the offset
+  `IPC_V1` fixes, the count in a register, so the nucleus knows the extent of
+  what it will read before it reads a byte. What is queued is the **object**,
+  not the sender's handle — a handle means nothing in another table and the
+  sender may release it, or end, before delivery — and the receiver's own names
+  are made when the message arrives. A send whose handles do not all resolve
+  queues nothing, so there is no instant at which a partial transfer exists.
+  - Evidence: the receiver's own handle is refused `endpoint_send` (`-1`), and
+    the handle that arrived with the message performs the same call on the same
+    endpoint (`0`), one line apart in the same process.
+  - Sending is **delegation**: the sender keeps what it had. The linear case of
+    `CAPABILITY_V1` §4 applies to capabilities an interface declares linear, and
+    no Stage 3 object type is so declared — a statement about what exists, not a
+    relaxation.
+- [ ] Region transfer (`IPC_V1` §5) and the linear unmapping evidence of §9.6.
+  Regions are still not an object this stage builds, so a message naming one is
+  refused by the ordinary resolve — which is the true answer and not yet the
+  §9.1 refusal for the region count.
+- [ ] `process_create`'s endowment list and naming its module by path rather
+  than by an ordinal. ADR-0058 settles where both live; the layout at offset 0
+  of the argument region is what remains to be written.
+- [x] **Blocking (ADR-0059) — done (2026-08-19).** A blocked context is not
+  runnable and is woken *answered*: the operation that satisfies a wait performs
+  it, so nobody wakes up to ask again. Blocking is the default, and bit 0 of the
+  flag register asks not to wait.
+  - The system-call edge now builds the same `TrapFrame` the timer stub builds,
+    because a suspended call has to be resumable by the scheduler, which knows
+    how to enter a context and nothing about how that context became one.
+  - The scheduler's termination condition became "nothing runnable **and none
+    blocked**". The liveness rule is written with both halves — "nothing routed
+    can change that" — so Stage 4's first device interrupt has to revisit it on
+    purpose rather than silently invalidate it.
+  - The livelock terminator counts **deliveries, not turns**. Written as turns
+    first, and the gate caught it: a cancelled context becomes runnable and
+    takes a turn immediately, so a counter reset by "somebody ran" resets every
+    time and never reaches two.
+  - Evidence (`blocking.sh`): a process holds the right to receive on an
+    endpoint nobody can send to. The non-blocking form answers `E_WOULD_BLOCK`;
+    the blocking form waits; the rule fires once and cancels; the process
+    observes `E_CANCELLED` and asks again — which only a resumed process can do;
+    the rule fires again with nothing delivered, so the wait is named a deadlock
+    and the context is ended. **The boot fails with
+    `RESULT_BOOT_MODULE_FAILED`**, which is the whole point: a system that
+    stopped says so instead of halting ok.
+- [ ] `endpoint_call`/`endpoint_reply`. Blocking exists now, so what these still
+  need is the single-use reply capability `IPC_V1` §4 describes — a new object
+  kind whose lifetime is bounded by the caller's — and the §9.5 evidence that
+  cancelling a blocked caller invalidates it rather than leaking it.
 - [ ] `CAPABILITY_V1` §7.6 — the confused deputy. It needs a broker holding a
   strong capability and a client holding a weak one, which needs transfer, which
   needs ADR-0058.

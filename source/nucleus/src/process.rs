@@ -102,7 +102,7 @@ struct Slot {
     /// Its message slot, in *physical* addresses, for the same reason: the
     /// nucleus reads and writes it through its own identity map, never through
     /// a mapping the process could change.
-    message_phys: u64,
+    arguments_phys: u64,
     /// What the launcher gave it that has to come back when it ends.
     reclaim: Option<Reclaim>,
     /// Timer interrupts taken while **this** process was on the processor.
@@ -145,7 +145,7 @@ impl Slot {
         frame: TrapFrame::ZERO,
         report_phys: 0,
         report_length: 0,
-        message_phys: 0,
+        arguments_phys: 0,
         reclaim: None,
         ticks: 0,
         quanta: 0,
@@ -291,7 +291,7 @@ pub const SOURCE: u64 = 0x2100_0000;
 pub const GRANT: u64 = 0x3000_0000;
 pub const STACK: u64 = 0x5000_0000;
 pub const REPORT: u64 = 0x6000_0000;
-pub const MESSAGE: u64 = 0x7000_0000;
+pub const ARGUMENTS: u64 = 0x7000_0000;
 
 /// The most a launch record may occupy. A fixed nucleus bound, not a number
 /// from the capsule: what it limits is how much of the nucleus's memory one
@@ -303,7 +303,7 @@ const STACK_FRAMES: u64 = 512;
 const REPORT_FRAMES: u64 = 16;
 /// The message slot is one frame, of which `IPC_V1` uses 256 bytes. A frame
 /// because a mapping is made of frames, not because the payload needs one.
-const MESSAGE_FRAMES: u64 = 1;
+const ARGUMENT_FRAMES: u64 = 1;
 
 /// Where the top of a process's stack is.
 const STACK_TOP: u64 = STACK + STACK_FRAMES * FRAME_SIZE;
@@ -561,7 +561,7 @@ pub fn arguments_of(index: usize) -> u64 {
     if index >= MAX_PROCESSES {
         return 0;
     }
-    table[index].message_phys
+    table[index].arguments_phys
 }
 
 /// The second argument of the call a context is suspended in.
@@ -833,7 +833,7 @@ unsafe fn retire(index: usize) {
     slot.generation = slot.generation.wrapping_add(1);
     slot.report_phys = 0;
     slot.report_length = 0;
-    slot.message_phys = 0;
+    slot.arguments_phys = 0;
     // Its authority ends with it, and the generations advance so that nothing
     // written down about the old occupant addresses the next one.
     crate::capability::clear(index);
@@ -918,7 +918,7 @@ unsafe fn retire(index: usize) {
         release_mapped(space, frames, RECORD, reclaim.record_length);
         release_mapped(space, frames, STACK, STACK_FRAMES * FRAME_SIZE);
         release_mapped(space, frames, REPORT, REPORT_FRAMES * FRAME_SIZE);
-        release_mapped(space, frames, MESSAGE, MESSAGE_FRAMES * FRAME_SIZE);
+        release_mapped(space, frames, ARGUMENTS, ARGUMENT_FRAMES * FRAME_SIZE);
         frames.release(reclaim.grant);
     }
     // Measured, not asserted: the pool says how many frames came back and how
@@ -961,9 +961,9 @@ pub fn current() -> usize {
 
 /// The physical address of the running process's message slot, or zero when it
 /// has none.
-pub fn message_slot() -> u64 {
+pub fn arguments_region() -> u64 {
     // SAFETY: single-context nucleus with interrupts masked.
-    unsafe { table()[CURRENT].message_phys }
+    unsafe { table()[CURRENT].arguments_phys }
 }
 
 /// How the process in `index` ended.
@@ -1020,7 +1020,7 @@ unsafe fn admit(
     slot.space = space;
     slot.report_phys = report.0;
     slot.report_length = report.1;
-    slot.message_phys = message;
+    slot.arguments_phys = message;
     slot.reclaim = reclaim;
     slot.frame = TrapFrame {
         rip: entry,
@@ -1207,7 +1207,7 @@ pub unsafe fn create(
 
     map_fresh(&mut space, frames, STACK, STACK_FRAMES)?;
     let report = map_fresh(&mut space, frames, REPORT, REPORT_FRAMES)?;
-    let message = map_fresh(&mut space, frames, MESSAGE, MESSAGE_FRAMES)?;
+    let message = map_fresh(&mut space, frames, ARGUMENTS, ARGUMENT_FRAMES)?;
     let table_bytes = units.len() * size_of::<LaunchUnit>();
     let paths_bytes: usize = units.iter().map(|(path, _)| relative(path).len()).sum();
     // Room for the endowment's description, sized by what the launcher decided
@@ -1279,8 +1279,8 @@ pub unsafe fn create(
         report_length: REPORT_FRAMES * FRAME_SIZE,
         stack_base: STACK,
         stack_length: STACK_FRAMES * FRAME_SIZE,
-        message_base: MESSAGE,
-        message_length: MESSAGE_FRAMES * FRAME_SIZE,
+        arguments_base: ARGUMENTS,
+        arguments_length: ARGUMENT_FRAMES * FRAME_SIZE,
         capabilities: RECORD + endowment_at,
         // Patched once the process has a slot to hold the capabilities in: a
         // count written before the grants exist would describe authority the

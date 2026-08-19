@@ -218,7 +218,7 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
         ENDPOINT_SEND => {
             match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_SEND) {
                 Err(refused) => refused.into(),
-                Ok(Object::Endpoint(endpoint)) => send(endpoint, frame),
+                Ok(Object::Endpoint(endpoint)) => send(caller, endpoint, frame),
                 // The handle resolved to an object of another kind, which is the
                 // wrong authority rather than no handle at all.
                 Ok(_) => Answer::status(E_NO_CAPABILITY),
@@ -227,7 +227,7 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
         ENDPOINT_RECEIVE => {
             match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_RECEIVE) {
                 Err(refused) => refused.into(),
-                Ok(Object::Endpoint(endpoint)) => receive(endpoint, frame),
+                Ok(Object::Endpoint(endpoint)) => receive(caller, endpoint, frame),
                 Ok(_) => Answer::status(E_NO_CAPABILITY),
             }
         }
@@ -341,16 +341,44 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
 /// endpoint, it is handed to them here and their call is answered — they do not
 /// wake up to ask again. That is two copies of the payload, sender to queue and
 /// queue to receiver, which is what docs/35 budgets for an inline message.
-fn send(endpoint: u32, frame: &mut TrapFrame) -> Answer {
-    let from = crate::process::message_slot();
+fn send(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
+    let from = crate::process::arguments_region();
     if from == 0 {
         return Answer::status(E_BAD_ARGUMENT);
     }
     let length = frame.rsi;
+    // The authority travelling with the message, resolved **before** anything is
+    // queued. What goes into the queue is the object, not this caller's name for
+    // it: a handle means nothing in another table, and this one may be released
+    // or its owner may end before the message is delivered.
+    let mut granted = [(Object::None, 0u32, 0u64); ipc::MAX_TRANSFERRED as usize];
+    let count = frame.r10 as usize;
+    if count > granted.len() {
+        return Answer::status(E_LIMIT);
+    }
+    for (index, entry) in granted[..count].iter_mut().enumerate() {
+        // SAFETY: the table is at a fixed offset in this process's own argument
+        // region, whose address the nucleus chose, and `index` is inside the
+        // count checked against the contract's maximum above.
+        let handle = unsafe {
+            core::ptr::with_exposed_provenance::<u64>(
+                (from + tos_launch::MESSAGE_CAPABILITIES) as usize,
+            )
+            .add(index)
+            .read()
+        };
+        // A capability is delegated only by somebody who holds it, and holding
+        // it is the only right this needs: sending a capability is not an
+        // operation *on* the object it names.
+        match capability::resolve(caller, handle, 0) {
+            Ok(object) => *entry = (object, capability::rights_of(caller, handle), 0),
+            Err(refused) => return refused.into(),
+        }
+    }
     // SAFETY: `from` is the physical address of this process's argument region,
     // mapped by the launcher and read here through the nucleus's own identity
     // map.
-    match unsafe { ipc::send(endpoint, from, length) } {
+    match unsafe { ipc::send(endpoint, from, length, &granted[..count]) } {
         Ok(()) => {
             deliver_to_waiter(endpoint);
             Answer::status(OK)
@@ -373,14 +401,16 @@ fn send(endpoint: u32, frame: &mut TrapFrame) -> Answer {
 /// Taking a message frees a place in the queue, so a sender that was waiting
 /// for room is served here for the same reason a receiver is served by a send:
 /// the operation that satisfies a wait is the one that performs it.
-fn receive(endpoint: u32, frame: &mut TrapFrame) -> Answer {
-    let into = crate::process::message_slot();
+fn receive(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
+    let into = crate::process::arguments_region();
     if into == 0 {
         return Answer::status(E_BAD_ARGUMENT);
     }
+    let mut granted = [(Object::None, 0u32, 0u64); ipc::MAX_TRANSFERRED as usize];
     // SAFETY: `into` is this process's own argument region, as above.
-    match unsafe { ipc::receive(endpoint, into) } {
+    match unsafe { ipc::receive(endpoint, into, &mut granted) } {
         Ok(length) => {
+            hand_over(caller, into, &granted);
             accept_from_waiter(endpoint);
             Answer::value(length)
         }
@@ -396,6 +426,34 @@ fn receive(endpoint: u32, frame: &mut TrapFrame) -> Answer {
     }
 }
 
+/// Writes the receiver's own handles for what a message carried.
+///
+/// The receiver gets its own names, in its own table, with their own
+/// generations; nothing about the sender's indices is visible to it
+/// (`CAPABILITY_V1` §4). Slots the message did not fill are zeroed, and a handle
+/// of all zeros names nothing in any table — so a receiver reads the whole table
+/// and needs no count beside it.
+fn hand_over(receiver: usize, region: u64, granted: &[(Object, u32, u64)]) {
+    for index in 0..ipc::MAX_TRANSFERRED as usize {
+        let handle = match granted.get(index) {
+            Some((object, rights, scope)) if *object != Object::None => {
+                capability::grant(receiver, *object, *rights, *scope).unwrap_or(0)
+            }
+            _ => 0,
+        };
+        // SAFETY: the table is at a fixed offset in the receiver's own argument
+        // region, whose address the nucleus chose, and `index` is inside the
+        // contract's maximum.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u64>(
+                (region + tos_launch::MESSAGE_CAPABILITIES) as usize,
+            )
+            .add(index)
+            .write(handle)
+        };
+    }
+}
+
 /// Hands the message just queued to a context waiting for one, if there is one.
 fn deliver_to_waiter(endpoint: u32) {
     let Some(waiter) = crate::process::blocked_on(crate::process::Waiting::Message(endpoint))
@@ -406,10 +464,12 @@ fn deliver_to_waiter(endpoint: u32) {
     if into == 0 {
         return;
     }
+    let mut granted = [(Object::None, 0u32, 0u64); ipc::MAX_TRANSFERRED as usize];
     // SAFETY: `into` is the waiting context's own argument region, which its
     // own call would have written; the nucleus reaches it through its identity
     // map exactly as it would have then.
-    if let Ok(length) = unsafe { ipc::receive(endpoint, into) } {
+    if let Ok(length) = unsafe { ipc::receive(endpoint, into, &mut granted) } {
+        hand_over(waiter, into, &granted);
         // SAFETY: the context is blocked in the receive this answers.
         unsafe { crate::process::wake(waiter, Answer::value(length)) };
     }
@@ -425,8 +485,13 @@ fn accept_from_waiter(endpoint: u32) {
         return;
     }
     let length = crate::process::suspended_argument(waiter);
+    // A blocked sender's message carries no capability: what it named was
+    // resolved when the call was made, and re-resolving it now would be
+    // resolving it in a table that may have changed since. Carrying resolved
+    // objects across a block belongs with the reply-capability work, and is
+    // named as not done rather than guessed at.
     // SAFETY: as above, for the read side.
-    if unsafe { ipc::send(endpoint, from, length) }.is_ok() {
+    if unsafe { ipc::send(endpoint, from, length, &[]) }.is_ok() {
         // SAFETY: the context is blocked in the send this answers.
         unsafe { crate::process::wake(waiter, Answer::status(OK)) };
         deliver_to_waiter(endpoint);

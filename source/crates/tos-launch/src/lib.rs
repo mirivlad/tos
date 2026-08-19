@@ -26,10 +26,12 @@
 /// The version of this record. A nucleus and an image that disagree do not run
 /// together.
 ///
-/// Version 2 adds the endowment (ADR-0055) and the message slot the inline IPC
-/// payload crosses in. Version 1 carried memory and text and no authority at
-/// all, which is the state in which no process could ever hold a capability.
-pub const LAUNCH_VERSION: u32 = 2;
+/// Version 3 renames the message slot to what ADR-0058 makes it: the region a
+/// call's arguments live in when they do not fit in registers. Version 2 added
+/// the endowment (ADR-0055) and that slot; version 1 carried memory and text and
+/// no authority at all, which is the state in which no process could ever hold a
+/// capability.
+pub const LAUNCH_VERSION: u32 = 3;
 
 /// What kind of object a capability names (`CAPABILITY_V1` §3).
 ///
@@ -123,16 +125,22 @@ pub struct Launch {
     /// actually used rather than have someone else guess for it.
     pub stack_base: u64,
     pub stack_length: u64,
-    /// Where the inline payload of a message crosses the boundary.
+    /// Where a call's arguments live when they do not fit in registers
+    /// (ADR-0058).
     ///
     /// `SYSTEM_ABI_V1` §3 admits values and handles as arguments and no pointer
     /// the nucleus walks; six registers cannot carry `IPC_V1`'s 256 inline
-    /// bytes. So the payload does not travel in the call at all: it sits in a
-    /// region the launcher mapped and the nucleus knows the address of, exactly
-    /// as the report region does, and the call names only how much of it is a
-    /// message.
-    pub message_base: u64,
-    pub message_length: u64,
+    /// bytes, nor four transferred handles, nor a module's name. So those
+    /// arguments do not travel in the call at all: they sit in a region the
+    /// launcher mapped and the nucleus knows the address of, exactly as the
+    /// report region does, and the call names only how much of it to read.
+    ///
+    /// **It belongs to an execution context, not to a process.** Stage 3 gives a
+    /// process one context; the day it has two, two calls in flight would
+    /// otherwise share one buffer. It is also arguments and never a channel:
+    /// nothing persists in it between calls, and nothing reports through it.
+    pub arguments_base: u64,
+    pub arguments_length: u64,
     /// The endowment: `capability_count` × [`LaunchCapability`], in this
     /// process's address space, read-only. Zero of them is a legitimate
     /// endowment and the commonest one — a process is given what whoever
@@ -152,6 +160,19 @@ pub struct ReportHeader {
     pub written: u64,
     pub drained: u64,
 }
+
+/// Where a message's parts sit inside the argument region (`IPC_V1` §3,
+/// ADR-0058).
+///
+/// Fixed offsets rather than a packed layout the counts imply: the nucleus
+/// reads each part at an address it knows before it has read anything, which is
+/// the property that makes "no pointer the nucleus walks" more than a slogan.
+pub const MESSAGE_PAYLOAD: u64 = 0;
+pub const MESSAGE_CAPABILITIES: u64 = 256;
+pub const MESSAGE_REGIONS: u64 = MESSAGE_CAPABILITIES + 8 * MAX_TRANSFERRED_CAPABILITIES;
+/// The counts ADR-0057 fixed.
+pub const MAX_TRANSFERRED_CAPABILITIES: u64 = 4;
+pub const MAX_TRANSFERRED_REGIONS: u64 = 2;
 
 /// The header a runtime image carries in its first bytes.
 ///

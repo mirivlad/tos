@@ -23,6 +23,10 @@
 #     one is refused the other on the very same handle.
 #   - `IPC_V1` §9.1: a payload past the inline bound (ADR-0057: 256 bytes) is
 #     refused, not truncated.
+#   - `IPC_V1` §6 and `CAPABILITY_V1` §4: a capability sent with a message
+#     arrives as the receiver's own handle, and is authority rather than
+#     decoration — the receiver does with it the very thing its own handle was
+#     refused, one line apart.
 #
 #   bash host-tools/qemu-test/capabilities.sh [OUT_DIR]
 set -euo pipefail
@@ -107,6 +111,20 @@ exactly 1 "^TOS\\.RUN\\.IPC\\.RECEIVED bytes=$BYTES text=$PAYLOAD\$" \
 exactly 1 "^TOS\\.RUN\\.IPC\\.RIGHTS other_half=$E_NO_CAPABILITY\$" \
     "the receive half was not refused the send half"
 
+# --- and the capability that travelled with it works ------------------------
+# `IPC_V1` §6 and `CAPABILITY_V1` §4: the receiver gets its own handle, in its
+# own table, with its own generation. The proof that it is authority and not
+# decoration is the line above: with its *own* handle the same call was refused,
+# and with this one it succeeds — on the same endpoint, in the same process, one
+# line apart.
+exactly 1 '^TOS\.RUN\.IPC\.DELEGATED handle=0x[0-9a-f]* send=0$' \
+    "a capability sent with the message did not arrive, or arrived unusable"
+# The non-blocking form still answers. Which of the two true answers it gets
+# depends on whether the sender got there first, so both are accepted and the
+# deterministic case is checked by the blocking gate.
+exactly 1 '^TOS\.RUN\.IPC\.POLLED status=\(0\|-4\)$' \
+    "the non-blocking receive gave neither of the two answers it may give"
+
 # --- attenuation narrows and never widens -----------------------------------
 exactly 2 "^TOS\\.RUN\\.CAPABILITY\\.ATTENUATED status=0 asked=all widened_half=$E_NO_CAPABILITY\$" \
     "attenuating to every right produced something wider than what was held"
@@ -124,3 +142,4 @@ echo "  endowed by the launcher before either ran; each holds one half of one en
 echo "  guessing refused ${E_BAD_HANDLE} out of range and ${E_NO_CAPABILITY} in it; nothing guessed"
 echo "  $BYTES bytes delivered whole; a payload past the 256-byte bound refused, not truncated"
 echo "  attenuation to every right stayed inside what was held; released handles went stale"
+echo "  a capability arrived with the message and did what the receiver's own handle could not"
