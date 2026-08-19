@@ -44,15 +44,32 @@ jobs:
       # `timeout-minutes` makes a stall name itself; `Acquire` makes a
       # unreachable mirror fail in seconds and be tried again.
       - name: Firmware and tools
-        timeout-minutes: 6
+        timeout-minutes: 10
         run: |
+          # apt's own Acquire timeouts do not cover this: the mirror accepts the
+          # connection and then goes quiet, which is not a timeout to apt and is
+          # indistinguishable from a slow download. So the bound is external.
           apt_get() {
-            sudo apt-get -o Acquire::Retries=3 \
-                         -o Acquire::http::Timeout=20 \
-                         -o Acquire::https::Timeout=20 "$@"
+            sudo timeout 150 apt-get -o Acquire::Retries=2 \
+                                     -o Acquire::http::Timeout=15 \
+                                     -o Acquire::https::Timeout=15 "$@"
           }
-          apt_get update
-          apt_get install -y --no-install-recommends qemu-system-x86 ovmf mtools
+          # Refreshing the lists is best effort **and says so**. The runner image
+          # ships lists that already carry these three packages, so a mirror that
+          # will not answer decides how long this takes and never whether the job
+          # runs at all.
+          apt_get update ||
+            echo "apt-get update did not finish; using the image's package lists"
+          for attempt in 1 2 3; do
+            apt_get install -y --no-install-recommends \
+              qemu-system-x86 ovmf mtools && break
+            if [ "$attempt" = 3 ]; then
+              echo "the packages this gate boots on could not be installed" >&2
+              exit 1
+            fi
+            echo "install attempt $attempt did not finish; retrying"
+            sudo dpkg --configure -a || true
+          done
           qemu-system-x86_64 --version | head -1
           ls -l /usr/share/OVMF/ || true
 
