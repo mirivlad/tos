@@ -199,6 +199,10 @@ qemu_supervisor() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/supervisor.sh \
         target/preflight-qemu/supervisor)
 }
+qemu_blocking() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/blocking.sh \
+        target/preflight-qemu/blocking)
+}
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
@@ -248,6 +252,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU two processes are scheduled" qemu_scheduler
     run_gate "QEMU capabilities and IPC" qemu_capabilities
     run_gate "QEMU process authority" qemu_supervisor
+    run_gate "QEMU blocking and the liveness rule" qemu_blocking
 fi
 
 printf '\n'

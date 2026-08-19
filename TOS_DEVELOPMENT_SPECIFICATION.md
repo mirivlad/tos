@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `ef70d6f9d17ec4ed82cd0819f0bf3ded14c0f3ee0e438d096f1bad4aa1f6b4b0`  
+Source-manifest SHA-256: `0fa3e0a08979beddbbf62562ec877793101723a4a0b471015a7d9ba3e0191c63`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1625,6 +1625,8 @@ the process is only reporting what it was told.
 | `TOS.RUN.CAPABILITY.RELEASED` | `status=` `reuse=` | A release, and the status of naming the same handle afterwards (`CAPABILITY_V1` §7.3). |
 | `TOS.RUN.IPC.SENT` | `bytes=` `status=` `oversize=` `other_half=` | A message sent. `oversize=` is the status of a payload one byte past the inline bound, which `IPC_V1` §9.1 requires be refused rather than truncated; `other_half=` is the status of the operation this handle's rights do not permit. |
 | `TOS.RUN.IPC.RECEIVED` | `bytes=` `text=` | A message taken from an endpoint, and its payload. `text=` carries no spaces: a value with one would be two fields to a reader that splits on them. |
+| `TOS.RUN.IPC.POLLED` | `status=` | The answer to a receive that asked not to wait. |
+| `TOS.RUN.IPC.WAIT` | `status=` `attempt=` | A blocking receive that did not return a message, and which attempt it was. A process reporting this has been resumed, which is the only way it could report anything. |
 | `TOS.RUN.IPC.RIGHTS` | `other_half=` | The status of the half of an endpoint this holder's rights do not include (`IPC_V1` §2). |
 | `TOS.RUN.CAPABILITY.TYPE` | `operation=` `status=` | The status of an operation whose object this handle is not — the index and generation are right and the answer is still a refusal (`SYSTEM_ABI_V1` §8.1). |
 | `TOS.RUN.PROCESS.CREATED` | `status=` `child=0x<hex>` | A process created a process on authority it holds, and the handle it received over what it made. |
@@ -1661,6 +1663,9 @@ own, because two vocabularies describing one system eventually disagree.
 | `TOS.RUN.PROCESS_FAULT` | `process=` `vector=` `error=0x<hex>` `rip=0x<hex>` `cr2=` `cpl=` | The process took a fault and ended. The system did not, and neither did its peers. |
 | `TOS.RUN.PROCESS_RECLAIMED` | `process=` `frames=` `available=` | What the pool took back when the named process ended, and what it holds now. |
 | `TOS.RUN.PROCESS_TERMINATED` | `process=` `by=` `ticks=` `quanta=` `asserted_by=nucleus` | The process was ended by another process holding authority over it (`process_terminate`). `by=` is that process. The whole event is the nucleus's assertion: nothing in it is anyone's claim about themselves. |
+| `TOS.RUN.BLOCK_CANCELLED` | `process=` `operation=` `endpoint=` `reason=` `asserted_by=nucleus` | A wait was cancelled by the nucleus. `reason=no-runnable-context` is ADR-0059's liveness rule: nothing was runnable, something was waiting, and nothing routed could change that. |
+| `TOS.RUN.DEADLOCK` | `asserted_by=nucleus` | The liveness rule fired twice with no message delivered in between. The contexts are not waiting for something that has not happened yet. |
+| `TOS.RUN.PROCESS_DEADLOCKED` | `process=` `operation=` `endpoint=` `asserted_by=nucleus` | A context ended because the system could not continue. Not a fault, not its own claim and not another process's decision — a statement about the arrangement. |
 | `TOS.RUN.PROCESS_ENDOWED` | `process=` `capabilities=` `policy=` `asserted_by=launcher` | What authority the process was given, before it ran its first instruction (ADR-0055). `policy=` names where the decision came from — `launcher-constant` until `/system/policy/` exists (ADR-0051 §3). |
 
 `TOS.RUN.PROCESS_ENDOWED` is emitted for every process, including one endowed
@@ -2296,6 +2301,15 @@ The three self-only operations — `context_yield`, `time_monotonic`,
 `process_exit` — require no capability, and `rdi` carries whatever their own
 entry in §5 says it does, or nothing.
 
+**An operation that can block takes a flag register, and blocking is the
+default** (ADR-0059). Bit 0 means *do not wait*: a call that would have blocked
+is answered `E_WOULD_BLOCK` or `E_LIMIT` instead. The default is blocking
+because that is what `IPC_V1` describes — §4's `endpoint_call` "sends and
+blocks", §7's sender blocks "with a cancellation path" unless it asked not to —
+and because a process that must poll to make progress spends every turn it is
+given on asking again. Which register carries the flags is fixed per operation
+in §5, after that operation's own values.
+
 ## 4. Status space
 
 `rax` returns zero for success or a negative status. The space is small and
@@ -2341,8 +2355,8 @@ are marked and are exactly those a process can only apply to itself.
 
 | Number | Operation | Requires | Effect |
 |---|---|---|---|
-| 1 | `endpoint_send` | endpoint handle with `send` | `IPC_V1` §3 |
-| 2 | `endpoint_receive` | endpoint handle with `receive` | `IPC_V1` §3 |
+| 1 | `endpoint_send` | endpoint handle with `send` | `IPC_V1` §3; `rsi` = payload length, `rdx` = flags |
+| 2 | `endpoint_receive` | endpoint handle with `receive` | `IPC_V1` §3; `rsi` = flags, and the length taken is returned in `rdx` |
 | 3 | `endpoint_call` | endpoint handle with `call` | request/reply, `IPC_V1` §4 |
 | 4 | `endpoint_reply` | reply handle (single use) | `IPC_V1` §4 |
 | 5 | `capability_attenuate` | the capability being attenuated | `CAPABILITY_V1` §4 |
@@ -2371,6 +2385,24 @@ authority the system cannot revoke.
 
 Blocking is always on a handle the process holds. There is no wait-for-anything
 primitive, because it would let a process wait on authority it was never given.
+
+**Two parties can cancel a wait** (ADR-0059). One is a process holding
+authority over the waiting process, which is `process_terminate` and ends it.
+The other is the nucleus, and its rule is not a duration: when no context is
+runnable and some context is blocked, **and nothing routed can change that**,
+every block is cancelled at that instant and the nucleus records who was blocked
+on what. `E_CANCELLED` is exact there rather than approximate — the operation
+was cancelled, and the canceller is the nucleus.
+
+The second half of that condition is load-bearing and is stated rather than
+implied: in a stage that routes no device interrupt, "no runnable context" and
+"a state nothing can leave" are the same thing, and in a stage that routes one
+they are not. An implementation whose rule reads only "nothing runnable" becomes
+wrong at the moment a driver exists.
+
+How long *a particular process* may wait is not this contract's question and not
+the nucleus's. It is a decision about a component, of the same class as restart
+policy, and it belongs to whoever has the authority to launch that component.
 
 ## 7. Versioning
 
@@ -2661,7 +2693,18 @@ that fails to deliver transfers nothing.
 
 Every endpoint queue is bounded. When it is full a sender is told — `E_LIMIT`
 for a non-blocking send, blocking with a cancellation path otherwise. **The
-system never grows a queue to accept a message.** docs/10 states the reason:
+system never grows a queue to accept a message.**
+
+A receive with nothing to take is the same shape the other way round:
+`E_WOULD_BLOCK` for a non-blocking receive, blocking otherwise. Both forms are
+selected by the flag `SYSTEM_ABI_V1` §3 describes, and blocking is the default.
+
+**The operation that satisfies a wait performs it.** A send that queues a
+message hands it to a context waiting for one and answers that context's call;
+a receive that frees a place queues the message of a context waiting for room.
+A woken context does not wake up to ask again — it wakes up answered. That is
+two copies of an inline payload, sender to queue and queue to receiver, which is
+what docs/35 budgets. docs/10 states the reason:
 unbounded memory growth through message accumulation is a denial of service that
 looks like generosity.
 
@@ -17041,12 +17084,12 @@ whatever fills the table and whichever register names a handle.
 
 # ADR-0058: How a call names more than its registers hold
 
-- Status: **Proposed**
+- Status: **Accepted (option A)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 2 — it fixes where an operation's arguments live when they do
   not fit in registers, inside the edge ADR-0048 established and the convention
   ADR-0056 fixed; it adds no operation, no status and no right
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 
@@ -17215,12 +17258,12 @@ ADR says. It is independent of ADR-0059: blocking needs no bulk argument.
 
 # ADR-0059: What it means to wait, and what ends a wait nobody can end
 
-- Status: **Proposed**
+- Status: **Accepted (option D)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 2 — it fixes the scheduler's termination condition, adds a
   process state, and settles which party owns the bound on waiting; it adds no
   operation, no status and no right
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 

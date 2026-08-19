@@ -61,15 +61,13 @@ const PROCESS_EXIT: u64 = 12;
 /// checks them: a refusal it could not name it could not report.
 const OK: i64 = 0;
 const E_NO_CAPABILITY: i64 = -1;
-const E_WOULD_BLOCK: i64 = -4;
+const E_CANCELLED: i64 = -5;
+
+/// The one call flag this ABI version has: ask, do not wait (ADR-0059).
+const NON_BLOCKING: u64 = 1;
 
 /// The inline payload bound `IPC_V1` §3 declares (ADR-0057).
 const MAX_INLINE_BYTES: u64 = 256;
-
-/// How many ticks this image waits for a message before saying it did not
-/// arrive. Bounded, because a process that cannot say "nothing came" hangs, and
-/// a hang reports nothing to anybody.
-const RECEIVE_DEADLINE_TICKS: u64 = 2000;
 
 /// Reads the monotonic tick, or nothing when the nucleus does not offer one.
 ///
@@ -548,7 +546,7 @@ fn supervise(report: &mut Report, handle: u64, entry: u64) {
 /// refusal instead of a shortened success.
 fn send_half(launch: &Launch, report: &mut Report, handle: u64) {
     // SAFETY: `endpoint_send` names its endpoint and a length; the payload is in
-    // the slot the record names, and this call carries no pointer.
+    // the region the record names, and this call carries no pointer.
     let (oversize, _) = unsafe { call(ENDPOINT_SEND, handle, MAX_INLINE_BYTES + 1) };
 
     // No space in the payload: it is reported back as the value of a `text=`
@@ -579,49 +577,66 @@ fn send_half(launch: &Launch, report: &mut Report, handle: u64) {
 
 /// Waits for a message and reports what arrived.
 ///
-/// The wait is bounded in ticks rather than in attempts, because ticks are the
-/// only unit this system has that means the same thing on two machines. A
-/// receive with nothing to take is `E_WOULD_BLOCK` — this contract version has
-/// no blocking form, so waiting is asking again, and giving up the rest of the
-/// quantum between attempts is what lets the sender make progress.
+/// The wait is a *block*, not a loop: this process stops being runnable until
+/// somebody sends, and the nucleus answers the call it was suspended in. What
+/// it costs while it waits is nothing — the scheduler has nobody to give the
+/// processor to on its behalf, which is the whole difference from asking again.
+///
+/// A block can be cancelled (`SYSTEM_ABI_V1` §6), and `E_CANCELLED` is not a
+/// result that looks like one: it says the wait was ended by somebody else. The
+/// nucleus ends every wait at the moment nothing in the system could satisfy
+/// one, so a process that receives it has learned something true — that nobody
+/// is going to send — and asking once more is a reasonable thing to do exactly
+/// once. Asking forever would be a program refusing to be told.
 fn receive_half(launch: &Launch, report: &mut Report, handle: u64) {
-    let deadline = monotonic().unwrap_or(0) + RECEIVE_DEADLINE_TICKS;
-    loop {
-        // SAFETY: `endpoint_receive` names its endpoint; what it delivers goes
-        // to the slot the record names, and no pointer crosses.
-        let (status, length) = unsafe { call(ENDPOINT_RECEIVE, handle, 0) };
-        if status == OK {
-            // SAFETY: the nucleus states it wrote `length` bytes into the slot
-            // the record names, which is a mapping of `message_length` bytes and
-            // `length` is bounded by the contract's inline maximum.
-            let bytes = unsafe {
-                core::slice::from_raw_parts(
-                    core::ptr::with_exposed_provenance::<u8>(launch.message_base as usize),
-                    length as usize,
-                )
-            };
-            let text = core::str::from_utf8(bytes).unwrap_or("<not text>");
+    // The other form, once, before waiting for real: a call that would have
+    // blocked is told so instead. Both are true answers, and which one this
+    // gets depends on whether anybody has sent yet — so it is reported rather
+    // than assumed, and the message is taken whichever way it arrives.
+    // SAFETY: `endpoint_receive` names its endpoint and its flags.
+    let (polled, polled_length) = unsafe { call(ENDPOINT_RECEIVE, handle, NON_BLOCKING) };
+    report.line(&alloc::format!("TOS.RUN.IPC.POLLED status={polled}"));
+    let mut attempts = 0;
+    let (status, length) = if polled == OK {
+        (polled, polled_length)
+    } else {
+        loop {
+            // SAFETY: as above, with no flags: this one waits.
+            let answered = unsafe { call(ENDPOINT_RECEIVE, handle, 0) };
+            if answered.0 == OK {
+                break answered;
+            }
+            attempts += 1;
             report.line(&alloc::format!(
-                "TOS.RUN.IPC.RECEIVED bytes={length} text={text}"
+                "TOS.RUN.IPC.WAIT status={} attempt={attempts}",
+                answered.0
             ));
-            // The other half, refused for the same reason and from the other
-            // side: holding `receive` is not holding `send`.
-            // SAFETY: `endpoint_send` names its endpoint and a length.
-            let (other_half, _) = unsafe { call(ENDPOINT_SEND, handle, 0) };
-            report.line(&alloc::format!(
-                "TOS.RUN.IPC.RIGHTS other_half={other_half}"
-            ));
-            return;
+            if answered.0 != E_CANCELLED || attempts > 1 {
+                return;
+            }
         }
-        if status != E_WOULD_BLOCK || monotonic().unwrap_or(u64::MAX) > deadline {
-            report.line(&alloc::format!(
-                "TOS.RUN.IPC.RECEIVED bytes=0 status={status} text=<none>"
-            ));
-            return;
-        }
-        // SAFETY: `context_yield` is self-only and takes no argument.
-        unsafe { call(CONTEXT_YIELD, 0, 0) };
-    }
+    };
+    let _ = status;
+    // SAFETY: the nucleus states it wrote `length` bytes into the region the
+    // record names, which is a mapping of `message_length` bytes, and `length`
+    // is bounded by the contract's inline maximum.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<u8>(launch.message_base as usize),
+            length as usize,
+        )
+    };
+    let text = core::str::from_utf8(bytes).unwrap_or("<not text>");
+    report.line(&alloc::format!(
+        "TOS.RUN.IPC.RECEIVED bytes={length} text={text}"
+    ));
+    // The other half, refused for the same reason and from the other side:
+    // holding `receive` is not holding `send`.
+    // SAFETY: `endpoint_send` names its endpoint and a length.
+    let (other_half, _) = unsafe { call(ENDPOINT_SEND, handle, 0) };
+    report.line(&alloc::format!(
+        "TOS.RUN.IPC.RIGHTS other_half={other_half}"
+    ));
 }
 
 /// A process that panics ends, and says so with the only channel it has left.

@@ -143,6 +143,8 @@ the process is only reporting what it was told.
 | `TOS.RUN.CAPABILITY.RELEASED` | `status=` `reuse=` | A release, and the status of naming the same handle afterwards (`CAPABILITY_V1` §7.3). |
 | `TOS.RUN.IPC.SENT` | `bytes=` `status=` `oversize=` `other_half=` | A message sent. `oversize=` is the status of a payload one byte past the inline bound, which `IPC_V1` §9.1 requires be refused rather than truncated; `other_half=` is the status of the operation this handle's rights do not permit. |
 | `TOS.RUN.IPC.RECEIVED` | `bytes=` `text=` | A message taken from an endpoint, and its payload. `text=` carries no spaces: a value with one would be two fields to a reader that splits on them. |
+| `TOS.RUN.IPC.POLLED` | `status=` | The answer to a receive that asked not to wait. |
+| `TOS.RUN.IPC.WAIT` | `status=` `attempt=` | A blocking receive that did not return a message, and which attempt it was. A process reporting this has been resumed, which is the only way it could report anything. |
 | `TOS.RUN.IPC.RIGHTS` | `other_half=` | The status of the half of an endpoint this holder's rights do not include (`IPC_V1` §2). |
 | `TOS.RUN.CAPABILITY.TYPE` | `operation=` `status=` | The status of an operation whose object this handle is not — the index and generation are right and the answer is still a refusal (`SYSTEM_ABI_V1` §8.1). |
 | `TOS.RUN.PROCESS.CREATED` | `status=` `child=0x<hex>` | A process created a process on authority it holds, and the handle it received over what it made. |
@@ -179,6 +181,9 @@ own, because two vocabularies describing one system eventually disagree.
 | `TOS.RUN.PROCESS_FAULT` | `process=` `vector=` `error=0x<hex>` `rip=0x<hex>` `cr2=` `cpl=` | The process took a fault and ended. The system did not, and neither did its peers. |
 | `TOS.RUN.PROCESS_RECLAIMED` | `process=` `frames=` `available=` | What the pool took back when the named process ended, and what it holds now. |
 | `TOS.RUN.PROCESS_TERMINATED` | `process=` `by=` `ticks=` `quanta=` `asserted_by=nucleus` | The process was ended by another process holding authority over it (`process_terminate`). `by=` is that process. The whole event is the nucleus's assertion: nothing in it is anyone's claim about themselves. |
+| `TOS.RUN.BLOCK_CANCELLED` | `process=` `operation=` `endpoint=` `reason=` `asserted_by=nucleus` | A wait was cancelled by the nucleus. `reason=no-runnable-context` is ADR-0059's liveness rule: nothing was runnable, something was waiting, and nothing routed could change that. |
+| `TOS.RUN.DEADLOCK` | `asserted_by=nucleus` | The liveness rule fired twice with no message delivered in between. The contexts are not waiting for something that has not happened yet. |
+| `TOS.RUN.PROCESS_DEADLOCKED` | `process=` `operation=` `endpoint=` `asserted_by=nucleus` | A context ended because the system could not continue. Not a fault, not its own claim and not another process's decision — a statement about the arrangement. |
 | `TOS.RUN.PROCESS_ENDOWED` | `process=` `capabilities=` `policy=` `asserted_by=launcher` | What authority the process was given, before it ran its first instruction (ADR-0055). `policy=` names where the decision came from — `launcher-constant` until `/system/policy/` exists (ADR-0051 §3). |
 
 `TOS.RUN.PROCESS_ENDOWED` is emitted for every process, including one endowed

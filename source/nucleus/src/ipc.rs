@@ -71,6 +71,22 @@ impl Endpoint {
 
 static mut ENDPOINTS: [Endpoint; MAX_ENDPOINTS] = [Endpoint::EMPTY; MAX_ENDPOINTS];
 
+/// How many messages have been handed to a receiver since the boot began.
+///
+/// The scheduler's one question when it finds nothing to run and somebody
+/// waiting: has anything moved since the last time it asked? A count of
+/// deliveries answers it without the scheduler knowing anything about messages,
+/// and it is the difference between "waiting for something that has not happened
+/// yet" and "waiting for each other" (ADR-0059).
+static mut DELIVERIES: u64 = 0;
+
+/// That count.
+pub fn deliveries() -> u64 {
+    // SAFETY: single-context nucleus; the only writer is `receive`, which runs
+    // with interrupts masked.
+    unsafe { DELIVERIES }
+}
+
 /// The endpoint table.
 ///
 /// # Safety
@@ -181,6 +197,8 @@ pub unsafe fn receive(endpoint: u32, into: u64) -> Result<u64, Refused> {
     let message = slot.queue[slot.head];
     slot.head = (slot.head + 1) % QUEUE_DEPTH;
     slot.count -= 1;
+    // SAFETY: single-context nucleus; this is the only writer.
+    unsafe { DELIVERIES = DELIVERIES.wrapping_add(1) };
     // SAFETY: `into` is the launcher's mapping of a whole frame, per the
     // caller's contract, and the length was bounded when the message was
     // queued.

@@ -116,6 +116,13 @@ struct Slot {
     /// pair evidence rather than decoration.
     first_tick: u64,
     last_tick: u64,
+    /// What it is waiting for, while it is blocked.
+    ///
+    /// `SYSTEM_ABI_V1` §6: blocking is always on a handle the process holds, so
+    /// this names the object rather than a condition. There is no
+    /// wait-for-anything, because waiting for anything is waiting on authority
+    /// nobody granted.
+    waiting: Waiting,
     /// How it ended, once it has.
     ended: Ended,
     /// Which occupant of this slot this is.
@@ -144,6 +151,7 @@ impl Slot {
         quanta: 0,
         first_tick: 0,
         last_tick: 0,
+        waiting: Waiting::Nothing,
         ended: Ended::Fault(0),
         // One, not zero: an object named with a generation nobody wrote is an
         // object nobody was given.
@@ -158,6 +166,9 @@ enum State {
     Free,
     /// A process that can be given the processor.
     Runnable,
+    /// A process waiting for something a peer must do, and therefore not a
+    /// candidate for the processor until that peer does it (ADR-0059).
+    Blocked,
     /// A process that has been ended and whose memory has not gone back yet.
     ///
     /// Only a process that was **not** on the processor is ever left here: one
@@ -170,6 +181,36 @@ enum State {
     Ending,
     /// A process that has ended and whose memory has gone back.
     Over,
+}
+
+/// What a blocked context is waiting for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Waiting {
+    /// Nothing: the context is not blocked.
+    Nothing,
+    /// A message on this endpoint.
+    Message(u32),
+    /// Room in this endpoint's queue.
+    Room(u32),
+}
+
+impl Waiting {
+    /// The operation number the context is blocked in, for the audit record.
+    fn operation(&self) -> u32 {
+        match self {
+            Waiting::Nothing => 0,
+            Waiting::Message(_) => 2,
+            Waiting::Room(_) => 1,
+        }
+    }
+
+    /// The object it is waiting on.
+    fn endpoint(&self) -> u32 {
+        match self {
+            Waiting::Nothing => 0,
+            Waiting::Message(endpoint) | Waiting::Room(endpoint) => *endpoint,
+        }
+    }
 }
 
 /// What the launcher gave a process, and what has to come back when it ends.
@@ -227,6 +268,11 @@ pub enum Ended {
     /// process's own claim about its work, never the nucleus's assertion about
     /// it — what the nucleus asserts is that the process exited, and when.
     Exited(u64),
+    /// The system could not continue and it was one of the contexts that could
+    /// not be continued (ADR-0059). Not a fault, not its own claim, and not
+    /// another process's decision — the fourth way, and the only one that is a
+    /// statement about the system rather than about the process.
+    Deadlocked,
     /// Somebody holding authority over it ended it (`process_terminate`). The
     /// slot names who, because an ending with no author is an ending nobody can
     /// be held to: the three ways a process can end are the architecture's, its
@@ -422,7 +468,9 @@ pub fn exited(status: u64) -> bool {
     // SAFETY: as above; `RUNNING` being true is what says the current slot is a
     // process, and this is the path that ends it.
     unsafe {
-        table()[CURRENT].ended = Ended::Exited(status);
+        let table = table();
+        table[CURRENT].ended = Ended::Exited(status);
+        table[CURRENT].state = State::Ending;
         process_resume(addr_of_mut!(RETURN), 1)
     }
 }
@@ -460,8 +508,158 @@ pub fn fault(vector: u64, error: u64, rip: u64, cr2: Option<u64>) -> bool {
     // that stack since: the process ran on its own, and this handler on the
     // TSS's.
     unsafe {
-        table()[CURRENT].ended = Ended::Fault(vector);
+        let table = table();
+        table[CURRENT].ended = Ended::Fault(vector);
+        table[CURRENT].state = State::Ending;
         process_resume(addr_of_mut!(RETURN), 1)
+    }
+}
+
+/// Sets the running context down, waiting for `waiting`, and does not return.
+///
+/// The frame is the one the system-call stub built, so what is stored is a
+/// context indistinguishable from a preempted one — which is the whole point:
+/// the scheduler enters it later by the same instruction it enters any other,
+/// and the answer to the call that blocked is written into the frame by
+/// whoever satisfies the wait.
+///
+/// # Safety
+///
+/// `frame` is the frame the stub built for the running process's call, and the
+/// caller has resolved the handle the wait is on.
+// SAFETY: the caller's promise that this is the running context's own frame is
+// what makes storing it storing this process.
+pub unsafe fn block(frame: &TrapFrame, waiting: Waiting) -> ! {
+    // SAFETY: single-context nucleus with interrupts masked.
+    unsafe {
+        let table = table();
+        table[CURRENT].frame = *frame;
+        table[CURRENT].waiting = waiting;
+        table[CURRENT].state = State::Blocked;
+        // The scheduler continues where it recorded it would, exactly as it does
+        // when a process ends — the difference is in what this slot now says
+        // about itself, not in how control gets back.
+        process_resume(addr_of_mut!(RETURN), 1)
+    }
+}
+
+/// The context blocked on `waiting`, if there is one.
+pub fn blocked_on(waiting: Waiting) -> Option<usize> {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    (0..MAX_PROCESSES)
+        .find(|index| table[*index].state == State::Blocked && table[*index].waiting == waiting)
+}
+
+/// The physical address of a context's argument region.
+///
+/// Asked about a *blocked* context by whoever is satisfying its wait: the
+/// message it was waiting for goes where its own call would have put it.
+pub fn arguments_of(index: usize) -> u64 {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    if index >= MAX_PROCESSES {
+        return 0;
+    }
+    table[index].message_phys
+}
+
+/// The second argument of the call a context is suspended in.
+///
+/// A blocked sender's payload length was an argument of its `endpoint_send`,
+/// and the frame it was suspended in is where that argument still is. Reading
+/// it back is not remembering something twice: the frame *is* the record of
+/// what the call was.
+pub fn suspended_argument(index: usize) -> u64 {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    if index >= MAX_PROCESSES {
+        return 0;
+    }
+    table[index].frame.rsi
+}
+
+/// Answers a blocked context's call and makes it runnable again.
+///
+/// # Safety
+///
+/// `index` is blocked, and `answer` is the answer to the call it blocked in.
+// SAFETY: the caller's promise that this context is blocked in that call is what
+// makes writing its frame writing a suspended call's result.
+pub unsafe fn wake(index: usize, answer: crate::syscall::Answer) {
+    // SAFETY: single-context nucleus; nothing else writes this slot.
+    let table = unsafe { table() };
+    if index >= MAX_PROCESSES || table[index].state != State::Blocked {
+        return;
+    }
+    answer.into_frame(&mut table[index].frame);
+    table[index].waiting = Waiting::Nothing;
+    table[index].state = State::Runnable;
+}
+
+/// Whether any context is waiting for something.
+fn any_blocked() -> bool {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    (0..MAX_PROCESSES).any(|index| table[index].state == State::Blocked)
+}
+
+/// Cancels every block, because nothing can end them (ADR-0059).
+///
+/// Called at the instant the scheduler finds nothing runnable and something
+/// blocked. In Stage 3 that is decidable rather than a guess: one interrupt is
+/// routed, it is the timer, and it wakes nobody — so no wait in that state can
+/// ever be satisfied. `E_CANCELLED` is accurate and not an approximation: the
+/// operation *was* cancelled, and the canceller is the nucleus.
+///
+/// **Stage 4 must revisit this.** The rule is "nothing runnable *and nothing
+/// routed can change that*", and the second half stops being free the day a
+/// device interrupt can wake a driver.
+fn cancel_every_block() {
+    // What is blocked, read out before anything is done about it. `wake` names
+    // the table itself, so a borrow held across it would be two live references
+    // to one static — the same mistake this module has already made once, and
+    // the reason nothing here iterates the table while calling into it.
+    let mut waits = [Waiting::Nothing; MAX_PROCESSES];
+    {
+        // SAFETY: single-context nucleus; nothing is running.
+        let table = unsafe { table() };
+        for (index, slot) in table.iter().enumerate() {
+            if slot.state == State::Blocked {
+                waits[index] = slot.waiting;
+            }
+        }
+    }
+    for (index, waiting) in waits.iter().enumerate() {
+        if *waiting == Waiting::Nothing {
+            continue;
+        }
+        tos_serial::puts(b"TOS.RUN.BLOCK_CANCELLED process=");
+        tos_serial::put_u32_decimal(index as u32);
+        tos_serial::puts(b" operation=");
+        tos_serial::put_u32_decimal(waiting.operation());
+        tos_serial::puts(b" endpoint=");
+        tos_serial::put_u32_decimal(waiting.endpoint());
+        tos_serial::puts(b" reason=no-runnable-context asserted_by=nucleus\r\n");
+        // SAFETY: the context is blocked, and this is the answer to the call it
+        // blocked in.
+        unsafe { wake(index, crate::syscall::Answer::cancelled()) };
+    }
+}
+
+/// Ends every blocked context because cancelling them changed nothing.
+///
+/// The livelock terminator: the rule above has now fired twice with no message
+/// delivered in between, so the contexts are not waiting for something that
+/// merely has not happened yet — they are waiting for each other.
+fn end_every_block() {
+    // SAFETY: single-context nucleus; nothing is running.
+    let table = unsafe { table() };
+    for slot in table.iter_mut() {
+        if slot.state == State::Blocked {
+            slot.ended = Ended::Deadlocked;
+            slot.state = State::Ending;
+        }
     }
 }
 
@@ -486,7 +684,10 @@ pub fn fault(vector: u64, error: u64, rip: u64, cr2: Option<u64>) -> bool {
 pub unsafe fn terminate(by: usize, target: usize) -> bool {
     // SAFETY: single-context nucleus with interrupts masked.
     let table = unsafe { table() };
-    if target >= MAX_PROCESSES || table[target].state != State::Runnable {
+    // A blocked context is as much a live process as a runnable one, and ending
+    // it is the cancellation path `SYSTEM_ABI_V1` §6 requires of anything that
+    // blocks: an unkillable process is an authority the system cannot revoke.
+    if target >= MAX_PROCESSES || !matches!(table[target].state, State::Runnable | State::Blocked) {
         return false;
     }
     table[target].ended = Ended::Terminated(by);
@@ -494,7 +695,7 @@ pub unsafe fn terminate(by: usize, target: usize) -> bool {
     if target == unsafe { CURRENT } {
         // The caller is ending itself. Everything below the resume belongs to a
         // stack that is about to stop being anybody's.
-        table[target].state = State::Runnable;
+        table[target].state = State::Ending;
         // SAFETY: `RETURN` was recorded by the scheduler before this process
         // was entered, and the caller is running, which is what says so.
         unsafe { process_resume(addr_of_mut!(RETURN), 1) }
@@ -528,9 +729,13 @@ pub unsafe fn terminate(by: usize, target: usize) -> bool {
 // SAFETY: the caller's promise about the nucleus's space is what makes the
 // return path survivable; each slot's own space is the launcher's promise.
 pub unsafe fn schedule(nucleus: &AddressSpace) {
+    // How many times the liveness rule has fired without a message being
+    // delivered in between, and what the delivery count was when it last did.
+    let mut firings = 0u32;
+    let mut deliveries = 0u64;
     loop {
-        // Anything a peer ended since the last turn goes back first, here,
-        // where the nucleus's own address space is the live one and nothing is
+        // Anything that ended since the last turn goes back first, here, where
+        // the nucleus's own address space is the live one and nothing is
         // running.
         for index in 0..MAX_PROCESSES {
             // SAFETY: single-context nucleus; nothing else touches the table.
@@ -540,8 +745,35 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
                 unsafe { retire(index) };
             }
         }
-        let Some(next) = first_runnable() else {
-            return;
+        let next = match first_runnable() {
+            Some(next) => next,
+            // Nothing to run. Whether that is the end of the boot or a system
+            // that has stopped depends on whether anybody is waiting, and in
+            // Stage 3 that question has an answer rather than a guess.
+            None if !any_blocked() => return,
+            None => {
+                let delivered = crate::ipc::deliveries();
+                if firings > 0 && delivered == deliveries {
+                    // The rule fired, every block was cancelled, the contexts
+                    // ran again — and blocked again without a single message
+                    // moving. They are not waiting for something that has not
+                    // happened yet; they are waiting for each other.
+                    tos_serial::puts(b"TOS.RUN.DEADLOCK asserted_by=nucleus\r\n");
+                    end_every_block();
+                } else {
+                    // Consecutive is counted in **deliveries, not in turns**.
+                    // A cancelled context becomes runnable and takes a turn
+                    // immediately — that is what cancelling it is for — so a
+                    // counter reset by "somebody ran" would reset every time
+                    // and never reach two. What distinguishes a system that is
+                    // making progress from one that is not is whether a message
+                    // moved, and nothing else.
+                    firings = 1;
+                    deliveries = delivered;
+                    cancel_every_block();
+                }
+                continue;
+            }
         };
         // The slot is named as a raw place rather than borrowed, and that is
         // not a style choice. The frame's address is read by `process_start`
@@ -566,19 +798,17 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
                 process_start(&raw const (*slot).frame)
             }
         };
-        // Something resumed the captured context, which only the end of a
-        // process does. Which process is a question with an answer.
-        // SAFETY: as above.
-        let over = unsafe {
-            RUNNING = false;
-            CURRENT
-        };
+        // Something resumed the captured context. Until blocking existed only
+        // the end of a process did that, and the loop could retire what came
+        // back; now a context may also have been *set down*, and the difference
+        // is a state the slot already carries. So nothing is concluded here —
+        // the loop's own top retires whatever ended, and a slot that blocked is
+        // simply not runnable this turn.
+        // SAFETY: single-context nucleus; nothing else writes this.
+        unsafe { RUNNING = false };
         // SAFETY: the caller states this space maps the running nucleus, and it
         // is the space this call arrived in.
         unsafe { nucleus.activate() };
-        // SAFETY: single-context nucleus; the process is over and this is the
-        // only writer of its slot.
-        unsafe { retire(over) };
     }
 }
 
@@ -632,6 +862,18 @@ unsafe fn retire(index: usize) {
         // The fault was reported where it happened, with everything only the
         // handler knew. Saying it again here would be two events for one death.
         Ended::Fault(_) => {}
+        // The system could not continue, and this is one of the contexts it
+        // could not continue. Named separately from a fault because nothing
+        // went wrong inside this process: what failed is the arrangement.
+        Ended::Deadlocked => {
+            tos_serial::puts(b"TOS.RUN.PROCESS_DEADLOCKED process=");
+            tos_serial::put_u32_decimal(index as u32);
+            tos_serial::puts(b" operation=");
+            tos_serial::put_u32_decimal(slot.waiting.operation());
+            tos_serial::puts(b" endpoint=");
+            tos_serial::put_u32_decimal(slot.waiting.endpoint());
+            tos_serial::puts(b" asserted_by=nucleus\r\n");
+        }
         // A decision by another party, and the record says whose. The nucleus
         // asserts the whole of this one: nothing here is a process's claim.
         Ended::Terminated(by) => {

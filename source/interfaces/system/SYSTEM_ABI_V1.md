@@ -65,6 +65,15 @@ The three self-only operations — `context_yield`, `time_monotonic`,
 `process_exit` — require no capability, and `rdi` carries whatever their own
 entry in §5 says it does, or nothing.
 
+**An operation that can block takes a flag register, and blocking is the
+default** (ADR-0059). Bit 0 means *do not wait*: a call that would have blocked
+is answered `E_WOULD_BLOCK` or `E_LIMIT` instead. The default is blocking
+because that is what `IPC_V1` describes — §4's `endpoint_call` "sends and
+blocks", §7's sender blocks "with a cancellation path" unless it asked not to —
+and because a process that must poll to make progress spends every turn it is
+given on asking again. Which register carries the flags is fixed per operation
+in §5, after that operation's own values.
+
 ## 4. Status space
 
 `rax` returns zero for success or a negative status. The space is small and
@@ -110,8 +119,8 @@ are marked and are exactly those a process can only apply to itself.
 
 | Number | Operation | Requires | Effect |
 |---|---|---|---|
-| 1 | `endpoint_send` | endpoint handle with `send` | `IPC_V1` §3 |
-| 2 | `endpoint_receive` | endpoint handle with `receive` | `IPC_V1` §3 |
+| 1 | `endpoint_send` | endpoint handle with `send` | `IPC_V1` §3; `rsi` = payload length, `rdx` = flags |
+| 2 | `endpoint_receive` | endpoint handle with `receive` | `IPC_V1` §3; `rsi` = flags, and the length taken is returned in `rdx` |
 | 3 | `endpoint_call` | endpoint handle with `call` | request/reply, `IPC_V1` §4 |
 | 4 | `endpoint_reply` | reply handle (single use) | `IPC_V1` §4 |
 | 5 | `capability_attenuate` | the capability being attenuated | `CAPABILITY_V1` §4 |
@@ -140,6 +149,24 @@ authority the system cannot revoke.
 
 Blocking is always on a handle the process holds. There is no wait-for-anything
 primitive, because it would let a process wait on authority it was never given.
+
+**Two parties can cancel a wait** (ADR-0059). One is a process holding
+authority over the waiting process, which is `process_terminate` and ends it.
+The other is the nucleus, and its rule is not a duration: when no context is
+runnable and some context is blocked, **and nothing routed can change that**,
+every block is cancelled at that instant and the nucleus records who was blocked
+on what. `E_CANCELLED` is exact there rather than approximate — the operation
+was cancelled, and the canceller is the nucleus.
+
+The second half of that condition is load-bearing and is stated rather than
+implied: in a stage that routes no device interrupt, "no runnable context" and
+"a state nothing can leave" are the same thing, and in a stage that routes one
+they are not. An implementation whose rule reads only "nothing runnable" becomes
+wrong at the moment a driver exists.
+
+How long *a particular process* may wait is not this contract's question and not
+the nucleus's. It is a decision about a component, of the same class as restart
+policy, and it belongs to whoever has the authority to launch that component.
 
 ## 7. Versioning
 
