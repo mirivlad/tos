@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `928a06b27c8a71f5b20bfff0502b9504a8de88dc964b5ce9f7047129e65bb236`  
+Source-manifest SHA-256: `63caebc470ed6c979ce4a4d4168997ca693be95ea1b3822c1261c56253cc082e`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -16536,6 +16536,405 @@ decided. The launch itself — address space, grant, entry at CPL 3 — does not
 depend on it, and neither does ADR-0053.
 
 <!-- END docs/adr/0054-process-completion.md -->
+
+---
+
+<!-- BEGIN docs/adr/0055-initial-capability-endowment.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0055: Where a process's first capability comes from
+
+- Status: **Proposed**
+- Date: 2026-08-19
+- Decision level: 2 — it fixes the launch boundary's authority half and the
+  initial state of every process's capability table, inside the interface
+  ADR-0048 fixed; it changes no Tier 0 invariant and no TOS Core V1 semantics
+- Project Architect approval: *(unsigned)*
+
+## The gap, stated once
+
+`SYSTEM_ABI_V1` §5 assigns twelve operations. Nine of them require a capability;
+three are self-only. **None of the twelve produces a capability.**
+
+- `endpoint_send`, `endpoint_receive`, `endpoint_call` require an endpoint
+  handle, and nothing creates an endpoint.
+- `region_share` requires a region handle, and nothing creates a region
+  capability — the memory grant reaches a process as a base and a length in the
+  launch record, which is not a handle and carries no rights.
+- `process_create` requires a process-authority capability, and nothing creates
+  one; so the operation that would let a supervisor endow a child cannot itself
+  be reached by anyone.
+- `capability_attenuate` and `capability_release` operate on a capability the
+  caller already holds.
+
+`CAPABILITY_V1` says precisely what a handle is, who owns the table, what
+validation costs and how attenuation, delegation, transfer and revocation
+behave. It does not say where the first one comes from. `IPC_V1` describes
+endpoints as objects that exist. The launch record (`tos-launch::Launch`,
+ADR-0053) carries memory and text and no handle of any kind.
+
+Read literally, a conforming Stage 3 system holds no capability, ever, and can
+perform no operation but the three self-only ones. That is the state the
+implementation is in today — and it is currently indistinguishable from correct.
+
+This is not one document being wrong. It is a question each of three accepted
+documents assumes another answers, which AGENTS.md §2 requires be reported
+rather than settled by picking a reading.
+
+## What must not be done about it
+
+**An operation invented at the edge because the implementation needed one.**
+`SYSTEM_ABI_V1` §5 states that an operation reachable without a capability is a
+design defect rather than a convenience. A `capability_create` reachable by
+anyone is ambient authority with a handle in front of it, which docs/02 rules
+out and `CAPABILITY_V1` §3 names in those words.
+
+**A well-known handle.** "Handle 0 is always your grant" makes authority
+positional rather than granted, and makes every process's authority identical
+regardless of what anyone decided about it.
+
+**A capability the nucleus decides on.** ADR-0048 §2 gives the nucleus
+mechanism and explicitly no service policy. A nucleus that chooses what a
+process may do has taken the decision that Stage 3's whole authority story says
+belongs to whoever launched it.
+
+## Options
+
+### A — the launcher endows, and the endowment travels in the launch record
+
+The party that launches a process decides its initial capability set. The
+nucleus builds the process's table from that decision before entering it, and
+the launch record gains a table of initial handles: for each, the object, the
+rights, the scope and the index the process will find it at. `LAUNCH_VERSION`
+becomes 2; a nucleus and an image that disagree do not run together, which is
+what ADR-0053 already established that field for.
+
+For the **first** process there is no launcher but the nucleus, so the nucleus's
+launcher decides — and ADR-0051 §2 already says what it decides *from*: it reads
+`capability_imports` from the verified IR, sees exactly which capabilities the
+module intends to use, and grants or denies each under policy. Stage 3's policy
+for the boot process can be the narrowest possible one — deny everything not
+named, grant nothing a module did not request — and still be a policy the system
+applied rather than a default it fell into.
+
+`process_create` (8) then takes the child's endowment as an argument, attenuated
+from what the caller itself holds: a parent cannot grant what it does not have,
+which makes the recursion terminate at the boot process and makes escalation by
+spawning impossible in the same breath.
+
+Costs: the launch record grows a variable-length table and a version. The
+nucleus gains a path that writes a process's table before the process runs —
+which is the same path `process_create` needs, so it is written once. Something
+must decide the boot process's policy, and until `/system/policy/` exists
+(ADR-0051 §3) that decision is a constant in the launcher, which must be visible
+in the audit record rather than implied.
+
+### B — a self-only creation operation
+
+A thirteenth operation, in the class of `context_yield` and `time_monotonic`:
+a process may create an object only it can name — an endpoint, say — and receive
+a handle to it. Creating something nobody else can reach confers no authority
+over anyone, so it does not violate §5's rule in substance; authority still
+spreads only by delegation and transfer.
+
+Costs: it hands every process, including an untrusted one, the ability to make
+the nucleus allocate, which is a resource-exhaustion channel that must then be
+bounded per process and accounted — and docs/35's Stage 3 contract does not
+currently describe such a bound. It also does not answer the question that is
+actually blocking: two processes that each create their own endpoint still
+cannot reach each other, because neither can hand the other a handle without an
+endpoint they already share. **B is necessary for a system where processes make
+new objects; it is not sufficient for bootstrap, and bootstrap is what is
+blocking.**
+
+### C — the grant becomes the first capability, and nothing else changes
+
+The memory grant every process already receives becomes a region capability
+rather than a base and a length: one handle, at launch, of a type
+`CAPABILITY_V1` already names. Nothing new is invented, and `region_share` (7)
+becomes reachable, which makes shared memory the first thing two processes can
+do.
+
+Costs: it changes ADR-0041's grant and ADR-0050's per-process grant into a
+capability, which is a change to two accepted decisions and to the runtime's
+adoption path (`GlobalHeap::adopt`) — the one part of Stage 2 that survived the
+move to ring 3 unchanged. It also answers only the region question: endpoints
+and process authority still have no origin, so `endpoint_*` and `process_create`
+stay unreachable and Stage 3's IPC deliverable stays blocked.
+
+## Recommendation
+
+**A**, with B available later as a separate decision when a process needs to
+make objects it was not given.
+
+A is the only option that answers the question that blocks — how *anything*
+first holds authority — and it answers it in the place the accepted documents
+already point: ADR-0051 §2 has the launcher reading capability requests from the
+verified IR and granting or denying them under policy, which is an endowment
+mechanism described from the policy side with no transport underneath it. A
+supplies the transport.
+
+It also makes the recursion honest. `process_create` endows a child from what
+the parent holds, attenuated; the chain terminates at the boot process, whose
+endowment is the launcher's constant and is on the audit record. A system where
+authority has a root that can be named and audited is the system docs/12
+describes; one where every process can conjure authority is not.
+
+If A is accepted, then:
+
+1. `LAUNCH_VERSION` becomes 2 and the record gains an initial-capability table:
+   count, and per entry the object, the rights mask, the scope and the index.
+2. The nucleus builds the process's capability table from that record before the
+   process is entered, and the table is nucleus memory the process cannot
+   address (`CAPABILITY_V1` §2).
+3. `process_create` (8) takes the child's endowment as an argument and refuses —
+   `E_NO_CAPABILITY` — any entry that is not an attenuation of something the
+   caller holds. The nucleus checks the subset relation and does not take the
+   caller's word (`CAPABILITY_V1` §4).
+4. Every grant is on the audit record with what was granted, to which process,
+   and on whose authority. A grant nobody can attribute is the thing
+   `CAPABILITY_V1` §3 refuses to call a capability.
+5. The boot process's endowment is a stated constant of the launcher until
+   `/system/policy/` exists, and it is named in the log as such — not as a
+   default, because a default is what nobody decided.
+
+## Boundary
+
+Phase 4 Task 0 and Task 1 cannot start until this is decided; Task 2 and Task 3
+depend on Task 1. Phase 3 does not depend on it and is closed. Nothing in the
+scheduler, the process table or the timer changes under any of the three
+options.
+
+<!-- END docs/adr/0055-initial-capability-endowment.md -->
+
+---
+
+<!-- BEGIN docs/adr/0056-handle-argument-position.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0056: Where the capability an operation requires is named, and what an empty table returns
+
+- Status: **Proposed**
+- Date: 2026-08-19
+- Decision level: 2 — it states two things `SYSTEM_ABI_V1` requires conformance
+  to and does not currently state; no operation, status, right or guarantee
+  changes, so it is the same kind of addition §7 already records having made
+- Project Architect approval: *(unsigned)*
+
+## The gap, stated once
+
+Two questions, both of which the first line of a capability-checking dispatcher
+has to answer, and neither of which any accepted contract answers.
+
+**Where is the handle?** `SYSTEM_ABI_V1` §3 lists six argument registers and
+says arguments are "values and handles, never pointers the nucleus dereferences
+without bounds". §5 says each operation "names the capability it requires" — in
+prose, in a table column. Nothing says which *argument* carries it. Two
+conforming implementations could put an endpoint handle in different registers
+and both be conforming, which makes the contract unconformable in exactly the
+way §7 says a rule about numbers that never states the numbers is.
+
+**What does an empty table return?** §4 is emphatic that `E_NO_CAPABILITY` and
+`E_BAD_HANDLE` are distinct and must not be merged: the first says the process
+holds the wrong authority, the second says it named nothing at all, and "an
+audit log that cannot tell them apart cannot describe an attack". A process with
+an empty table that passes index 0 has done both at once — it holds no
+authority, and index 0 is outside a table of size zero. The two required
+refusals disagree about which one it gets.
+
+The current nucleus answers `E_NO_CAPABILITY` to operations 1–9 by operation
+number, without reading any argument. That is defensible under §8.1 and
+unconformant to §8.2, which requires that an out-of-range handle index yield
+`E_BAD_HANDLE` — a requirement the implementation cannot satisfy while it never
+looks at the index.
+
+## Options
+
+### A — the capability is the first argument; range is checked before rights
+
+`rdi` carries the capability an operation requires, for every operation that
+requires one. Where an operation requires two — none does today — the contract
+assigns them in §5 order at the time the operation is added.
+
+The refusal order is: **index bounds first, then generation, then type, then
+rights.** So an out-of-range index is `E_BAD_HANDLE`, and everything else is
+`E_NO_CAPABILITY`. An empty table therefore refuses every index with
+`E_BAD_HANDLE`, because there is no index inside it.
+
+Costs: it fixes an ABI position that later operations must respect, and it
+changes what a process sees today from `E_NO_CAPABILITY` to `E_BAD_HANDLE` for
+operations 1–9 — visible in any conformance test written against the current
+behaviour, of which there are none.
+
+### B — the capability is the first argument; absence outranks range
+
+The same position, the opposite precedence: a process that holds no capability
+of the required type receives `E_NO_CAPABILITY` whatever index it passed, and
+`E_BAD_HANDLE` is reserved for a process that holds *some* capabilities and
+named an index beyond its table.
+
+Costs: the answer depends on the caller's holdings rather than on its argument,
+so the same call from two processes gets different statuses for the same
+mistake. That is the merge §4 forbids, performed by precedence instead of by
+naming — an auditor reading `E_NO_CAPABILITY` cannot tell whether the caller
+asked for authority it lacks or named nothing at all.
+
+### C — leave it to each operation
+
+`IPC_V1` fixes the layout for the endpoint operations, `CAPABILITY_V1` for the
+capability operations, and so on, each in its own contract.
+
+Costs: three contracts each own part of one calling convention, and the fourth
+operation added in a hurry owns none of it. The convention is a property of the
+edge, and the edge has exactly one contract.
+
+## Recommendation
+
+**A.**
+
+The handle is what the operation is *about*, and the first argument is where the
+subject of a call goes in every convention this system already uses — the launch
+record's address arrives in `rdi`, and `process_exit`'s status does too.
+
+On precedence: bounds first is the order that makes the status a fact about the
+call rather than about the caller. "You named nothing" is checkable from the
+argument alone; "you lack the authority" requires there to be something at that
+index to lack authority over. Answering in that order is also the order that
+costs least — a bounds check before a table read — and it is the order
+`CAPABILITY_V1` §2 lists validity in: "index in range **and** generation
+matching".
+
+The consequence worth stating plainly: until ADR-0055 gives a process a first
+capability, **every** capability-bearing operation answers `E_BAD_HANDLE`, and
+that is the honest answer. A process that holds nothing names nothing.
+
+If A is accepted, `SYSTEM_ABI_V1` gains one sentence in §3 fixing the position,
+and §4 gains the refusal order. Neither adds an operation, a status or a right,
+so the contract stays at version 1 by the rule §7 already states.
+
+## Boundary
+
+Phase 4 Task 0 cannot be written without this, because the first line of a
+capability-checking dispatcher is which argument to read and what to say when it
+is wrong. It is independent of ADR-0055: A is the same decision whether the
+table is filled by a launch record or by anything else.
+
+<!-- END docs/adr/0056-handle-argument-position.md -->
+
+---
+
+<!-- BEGIN docs/adr/0057-ipc-message-bounds.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0057: The three numbers `IPC_V1` says it declares
+
+- Status: **Proposed**
+- Date: 2026-08-19
+- Decision level: 2 — it states the values of bounds an accepted contract
+  declares itself to fix; no message shape, right or guarantee changes
+- Project Architect approval: *(unsigned)*
+
+## The gap, stated once
+
+`IPC_V1` §3 defines a message as inline bytes plus transferred capabilities plus
+transferred regions, and bounds all three:
+
+| Property | Bound, as the contract states it |
+|---|---|
+| Inline payload | "fixed maximum, declared by this contract version, small enough to copy without allocation" |
+| Transferred capabilities | "fixed maximum per message" |
+| Transferred regions | "fixed maximum per message" |
+
+It then explains why the inline maximum is a constant of the contract rather
+than a per-endpoint parameter — "a per-endpoint size makes the nucleus's fast
+path depend on data it must first go and read" — and requires as evidence that
+"a message larger than the inline maximum is refused, not truncated" (§7.1).
+
+**The contract never states any of the three numbers.** A version that says it
+declares a constant and does not is a version nothing can conform to, and a
+refusal test against an unstated bound tests the implementation's opinion.
+
+## What the accepted documents already constrain
+
+- **Small enough to copy without allocation.** The nucleus does not allocate in
+  the transfer path, and ADR-0049 §5 forbids unbounded work with interrupts
+  masked. The copy is bounded by this number and happens on the fast path.
+- **docs/35 Stage 3** budgets the IPC round trip. Whatever is chosen has to be
+  copyable twice — sender to nucleus, nucleus to receiver — inside that budget.
+- **`CAPABILITY_V1` §4** makes transfer of a linear capability atomic with the
+  receiver's acquisition. Each transferred capability costs a table slot in the
+  receiver and a validation in the sender, so the per-message maximum bounds the
+  work one call can impose on another process's table.
+- **`IPC_V1` §5** already says anything larger than the inline maximum travels
+  as a region, so the number is not a limit on what can be communicated. It is
+  the boundary between the path that copies and the path that maps.
+
+## Options
+
+Each option is the same three-part decision at a different point on one
+trade-off: a larger inline payload serves more messages without a region, and
+costs more copying on the path that runs with interrupts masked.
+
+### A — 256 bytes inline, 4 capabilities, 2 regions
+
+Sized so that a message and its transfer table fit in a single cache-friendly
+copy, and so that the whole of a message is smaller than one page by a wide
+margin. Four capabilities is enough for a request that hands over an endpoint, a
+reply endpoint and a region handle with one spare; two regions is enough for a
+request-and-response pair of buffers.
+
+Costs: a service whose ordinary request is a path, a name or a small record will
+sometimes exceed 256 bytes and pay for a region on a call that is morally small.
+
+### B — 512 bytes inline, 8 capabilities, 4 regions
+
+Twice A on every axis. Fewer ordinary messages spill into a region, at twice the
+copy on the masked path and twice the receiver-table pressure one call can
+create.
+
+Costs: the largest message is 512 bytes copied twice per round trip inside the
+docs/35 budget, which has to be measured rather than assumed; and eight
+capabilities per message means one call can consume eight of a receiver's table
+slots, so the table has to be sized against that.
+
+### C — 4096 bytes inline, 8 capabilities, 4 regions
+
+One page. Attractive because it makes the inline path cover nearly everything
+and makes the region path rare.
+
+Costs: it stops being "small enough to copy without allocation" in any
+meaningful sense — 4 KiB copied twice with interrupts masked is precisely the
+unbounded-in-practice work ADR-0049 §5 exists to prevent — and it makes the
+region path so rare that it will be under-tested exactly when it matters.
+
+## Recommendation
+
+**A**, with the numbers stated as a contract constant and the region path
+exercised by the first service that needs it.
+
+256 bytes is small enough that the copy on the masked path is not a scheduling
+event, and the contract's own words — "small enough to copy without allocation"
+— read as a much smaller number than a page. The right way to discover that A is
+too small is a measured service that pays for a region on messages that should
+not have needed one; the wrong way is to pick B or C now because they might save
+that discovery, since a bound that is loose from the start never gets tightened.
+
+If A is accepted, `IPC_V1` §3 states the three values in its table, and §7 gains
+the refusal evidence for each of the three rather than only for the inline size:
+a message with too many capabilities and one with too many regions are refused
+the same way, and neither is silently truncated to the bound.
+
+## Boundary
+
+Phase 4 Task 2 cannot be written without this: the size of the inline buffer is
+the size of a nucleus structure, and the refusal test has nothing to compare
+against. It is independent of ADR-0055 and ADR-0056 — the numbers are the same
+whatever fills the table and whichever register names a handle.
+
+<!-- END docs/adr/0057-ipc-message-bounds.md -->
 
 ---
 

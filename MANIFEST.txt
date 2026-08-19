@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 365
+- files in the release package: 369
 - active system invariants: 21
-- architecture decision records: 54 (40 accepted)
+- architecture decision records: 57 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -98,6 +98,9 @@ Architecture decision records
 - docs/adr/0052-module-level-constants.md — ADR-0052: What a module-level `const` is [**Accepted** (Project Architect-approved)]
 - docs/adr/0053-runtime-image-delivery-and-identity.md — ADR-0053: How the ring-3 runtime image reaches the machine [**Accepted (option B)** (Project Architect-approved)]
 - docs/adr/0054-process-completion.md — ADR-0054: How a process says it is finished [**Accepted (option A)** (Project Architect-approved)]
+- docs/adr/0055-initial-capability-endowment.md — ADR-0055: Where a process's first capability comes from [**Proposed**]
+- docs/adr/0056-handle-argument-position.md — ADR-0056: Where the capability an operation requires is named, and what an empty table returns [**Proposed**]
+- docs/adr/0057-ipc-message-bounds.md — ADR-0057: The three numbers `IPC_V1` says it declares [**Proposed**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
