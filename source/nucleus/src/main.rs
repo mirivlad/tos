@@ -254,6 +254,13 @@ fn ipc_cost() {
     tos_serial::put_u32_decimal(returns as u32);
     tos_serial::puts(b" resumptions=");
     tos_serial::put_u32_decimal(process::entries() as u32);
+    // How many request/reply exchanges there were, which is the unit §8 states
+    // its crossing bound in. The crossings *of one exchange* are not here: see
+    // the note in PROGRESS — attributing an operation's outward crossing to the
+    // operation is not yet done correctly, and a number that is sometimes five
+    // and sometimes six is an estimate wearing a counter's clothes.
+    tos_serial::puts(b" exchanges=");
+    tos_serial::put_u32_decimal(syscall::exchanges() as u32);
     tos_serial::puts(b"\r\n");
 }
 
