@@ -120,3 +120,6 @@ docs/adr/0051-service-manifest-surface.md
 docs/adr/0052-module-level-constants.md
 docs/adr/0053-runtime-image-delivery-and-identity.md
 docs/adr/0054-process-completion.md
+docs/adr/0055-initial-capability-endowment.md
+docs/adr/0056-handle-argument-position.md
+docs/adr/0057-ipc-message-bounds.md
