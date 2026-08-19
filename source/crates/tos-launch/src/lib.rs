@@ -47,6 +47,23 @@ pub const RIGHT_SEND: u32 = 1;
 pub const RIGHT_RECEIVE: u32 = 1 << 1;
 pub const RIGHT_CALL: u32 = 1 << 2;
 
+/// Process rights.
+///
+/// `CAPABILITY_V1` §3 says rights are "a finite set from the object type's
+/// declared rights", and no accepted document declares a process object's. They
+/// are not invented here: the one object type whose rights *are* declared shows
+/// the rule. `IPC_V1` §2 gives an endpoint `send`, `receive` and `call` — which
+/// are exactly the three operations of `SYSTEM_ABI_V1` §5 that name an endpoint.
+/// **An object's rights are the operations that name it.** §5 names two over a
+/// process: `process_create` (8) and `process_terminate` (9).
+///
+/// The bits are distinct across object types rather than reused per type. The
+/// type is compared before the rights are, so reuse would be safe; distinct
+/// bits are simply readable in a log, where a rights mask should not need its
+/// object beside it to be understood.
+pub const RIGHT_CREATE: u32 = 1 << 3;
+pub const RIGHT_TERMINATE: u32 = 1 << 4;
+
 /// One capability the launcher endowed this process with, described to the
 /// process that holds it.
 ///

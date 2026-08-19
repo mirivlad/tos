@@ -102,7 +102,39 @@ fn all_spans(descs: &[MemoryRange]) -> impl Iterator<Item = Span> + '_ {
         .filter_map(|descriptor| Span::sized(descriptor.phys_start, descriptor.phys_length))
 }
 
-/// The pool of physical frames this machine offers the nucleus.
+/// The pool of physical frames this nucleus owns.
+///
+/// **Nucleus state, not a caller's local.** ADR-0050 makes the nucleus the
+/// owner of this machine's memory, and an owner whose property lives on
+/// somebody's stack is a bookkeeping arrangement rather than an owner. It is
+/// also what makes the pool reachable from the system-call edge, where a
+/// process holding process authority asks for a process to be built out of it.
+static mut FRAMES: Frames = Frames::new();
+
+/// The pool.
+///
+/// **No `&mut Frames` is ever held across an instruction that leaves the
+/// nucleus.** That is the rule this accessor exists to make checkable: the
+/// scheduler used to carry the pool through `iretq` as a parameter, and a
+/// system call taken by the process it entered would then have produced a
+/// second borrow of the same memory while the first was still alive. Every
+/// caller below takes the pool, finishes with it, and drops it before anything
+/// else runs.
+///
+/// # Safety
+///
+/// The nucleus is single-context: it runs with interrupts masked except while a
+/// process is on the processor, and a process is not the nucleus. Callers
+/// observe the rule above, so no second borrow can exist.
+// SAFETY: the caller is nucleus code observing the no-borrow-across-`iretq`
+// rule, which is why the single-context argument covers every access.
+pub unsafe fn frames() -> &'static mut Frames {
+    // SAFETY: the static is initialized at link time and lives for the whole
+    // boot; this is the only way it is ever named.
+    unsafe { &mut *core::ptr::addr_of_mut!(FRAMES) }
+}
+
+/// Gives this machine's free memory to the nucleus's pool, once.
 ///
 /// # Safety
 ///
@@ -112,18 +144,18 @@ fn all_spans(descs: &[MemoryRange]) -> impl Iterator<Item = Span> + '_ {
 /// stack is in. This is what makes every admitted frame real, exclusively
 /// owned, identity-mapped memory, which is what [`Frames::admit`] requires.
 // SAFETY: the caller's promise that the Boot ABI validation already accepted this record and map is what makes the admitted memory real.
-pub unsafe fn pool(
+pub unsafe fn admit_memory(
     bi: &BootInfo,
     bi_address: u64,
     descs: &[MemoryRange],
     stack: Option<Span>,
-) -> (Frames, Admission) {
+) -> Admission {
     let (spans, count) = occupied(bi, bi_address, stack);
-    let mut frames = Frames::new();
+    // SAFETY: called once at nucleus entry, before any process exists.
+    let frames = unsafe { frames() };
     // SAFETY: the caller's contract makes `free_spans(descs)` the usable memory
     // of a validated map, and `spans[..count]` names everything already spoken
     // for: the nucleus image with its `.bss`, the capsule, the handoff record,
     // the converted map, the framebuffer and the running stack.
-    let admission = unsafe { frames.admit(free_spans(descs), &spans[..count]) };
-    (frames, admission)
+    unsafe { frames.admit(free_spans(descs), &spans[..count]) }
 }

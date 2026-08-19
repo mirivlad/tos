@@ -51,6 +51,8 @@ const ENDPOINT_SEND: u64 = 1;
 const ENDPOINT_RECEIVE: u64 = 2;
 const CAPABILITY_ATTENUATE: u64 = 5;
 const CAPABILITY_RELEASE: u64 = 6;
+const PROCESS_CREATE: u64 = 8;
+const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
 const PROCESS_EXIT: u64 = 12;
@@ -427,11 +429,26 @@ fn authority(launch: &Launch, report: &mut Report) {
         "TOS.RUN.CAPABILITY.PROBE out_of_range={out_of_range} in_range_refused={in_range_refused} guessed={guessed}"
     ));
 
-    if first.rights & tos_launch::RIGHT_SEND != 0 {
-        send_half(launch, report, first.handle);
+    if first.object == tos_launch::OBJECT_ENDPOINT {
+        if first.rights & tos_launch::RIGHT_SEND != 0 {
+            send_half(launch, report, first.handle);
+        }
+        if first.rights & tos_launch::RIGHT_RECEIVE != 0 {
+            receive_half(launch, report, first.handle);
+        }
+        // An operation whose object this handle is not. The index is right, the
+        // generation is right, and the answer is still a refusal — which is
+        // `SYSTEM_ABI_V1` §8.1's harder half: a handle of a *different type*
+        // supplied at the same index.
+        // SAFETY: `process_create` names the process a child is created under
+        // and an entry index; this handle names neither.
+        let (wrong_type, _) = unsafe { call(PROCESS_CREATE, first.handle, 0) };
+        report.line(&alloc::format!(
+            "TOS.RUN.CAPABILITY.TYPE operation=8 status={wrong_type}"
+        ));
     }
-    if first.rights & tos_launch::RIGHT_RECEIVE != 0 {
-        receive_half(launch, report, first.handle);
+    if first.object == tos_launch::OBJECT_PROCESS {
+        supervise(report, first.handle, launch.entry_index as u64);
     }
 
     // Asking for more than was held yields less, not more (`CAPABILITY_V1`
@@ -462,6 +479,64 @@ fn authority(launch: &Launch, report: &mut Report) {
     let (after, _) = unsafe { call(CAPABILITY_RELEASE, first.handle, 0) };
     report.line(&alloc::format!(
         "TOS.RUN.CAPABILITY.RELEASED status={released} reuse={after}"
+    ));
+}
+
+/// Creates a process and ends it, on authority this process was given.
+///
+/// A supervisor is not a special kind of program: it is a process that was
+/// endowed with authority over itself, and everything it can do to another
+/// process follows from that one grant. What it cannot do is give itself more —
+/// the capability it holds came from its launcher, and the capability it gets
+/// over the child carries no more than the one it used.
+///
+/// The child is ended as soon as it exists, and the nucleus records who ended
+/// it. It is not ended before it can run — see the note below — which makes the
+/// evidence stronger rather than weaker: what was ended had been on the
+/// processor.
+fn supervise(report: &mut Report, handle: u64, entry: u64) {
+    // SAFETY: `process_create` names the process the child is created under and
+    // the entry module's index; no pointer crosses.
+    let (created, child) = unsafe { call(PROCESS_CREATE, handle, entry) };
+    if created == OK {
+        // Ended immediately, and nothing is reported between the two calls: a
+        // report line gives up the rest of the quantum, and every quantum given
+        // up is a turn the child could take.
+        //
+        // It takes one anyway, and the log says so. Building a child's address
+        // space is long enough that a timer interrupt is always pending by the
+        // time `process_create` returns, and it is delivered at the first
+        // instruction back at CPL 3 — when the child is runnable and this
+        // process is not the only candidate. So what this demonstrates is not a
+        // process that never existed on the processor: it is a process that
+        // did, and was ended by authority anyway.
+        // SAFETY: `process_terminate` names the process it ends.
+        let (ended, _) = unsafe { call(PROCESS_TERMINATE, child, 0) };
+        // The same handle, over something that has now ended. The handle still
+        // resolves — nothing consumed it — but a capability's lifetime is
+        // bounded by its object (`CAPABILITY_V1` §3), so what it names is gone
+        // and the answer is a refusal rather than authority over whoever
+        // occupies that slot next.
+        // SAFETY: as above.
+        let (again, _) = unsafe { call(PROCESS_TERMINATE, child, 0) };
+        report.line(&alloc::format!(
+            "TOS.RUN.PROCESS.CREATED status={created} child=0x{child:x}"
+        ));
+        report.line(&alloc::format!(
+            "TOS.RUN.PROCESS.ENDED status={ended} again={again}"
+        ));
+    } else {
+        report.line(&alloc::format!(
+            "TOS.RUN.PROCESS.CREATED status={created} child=0x{child:x}"
+        ));
+    }
+    // A module index this boot's source set does not have. Refused rather than
+    // clamped: a process launched over a different module than the one asked
+    // for is a process nobody asked for.
+    // SAFETY: as above, with an entry index outside the set.
+    let (no_module, _) = unsafe { call(PROCESS_CREATE, handle, u64::from(u32::MAX)) };
+    report.line(&alloc::format!(
+        "TOS.RUN.PROCESS.REFUSED reason=no-such-module status={no_module}"
     ));
 }
 

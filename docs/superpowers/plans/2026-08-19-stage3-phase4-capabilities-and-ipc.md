@@ -113,7 +113,65 @@ the tasks below were implemented against them:
   separate rights (`IPC_V1` §2) — and each is refused the other's half on its
   own handle.
 
-### Task 3: Attenuation, transfer and the confused deputy — **partly done**
+### Task 3: A process creates a process, on authority — **done (2026-08-19)**
+
+**Order changed deliberately.** This was to come after blocking. It was moved in
+front of it because `SYSTEM_ABI_V1` §6 requires a blocking operation to declare
+a cancellation path, and until somebody can hold authority over a process there
+is nothing able to cancel one — so blocking would have shipped around a failure
+path with no evidence, which is what AGENTS.md §4 calls an unimplemented failure
+path. The cost is that `endpoint_call` and the measured round trip wait one more
+increment. That is the whole of the cost, and it is not a reason.
+
+**Files:** `source/nucleus/src/launch.rs` (new); `memory.rs`, `capability.rs`,
+`process.rs`, `syscall.rs`.
+
+- [x] **The pool became nucleus state.** It was a local of `boot_entry` reaching
+  the scheduler by `&mut`, which is not what ADR-0050 means by the nucleus
+  owning this machine's memory, and it could not be reached from the edge at
+  all. With it, one rule: *no `&mut Frames` is ever held across an instruction
+  that leaves the nucleus* — the scheduler used to hold one across `iretq`, and
+  the first system call of the process it entered would have produced a second
+  borrow of the same pool.
+- [x] **What a boot can launch became nucleus state too** — the image, the
+  source set, the map, the grant identity. A supervisor chooses the module and
+  the authority; it does not supply what the system is made of, and a process
+  able to restate that would be a process able to launch something the boot
+  never accepted.
+- [x] **Process rights are derived, not invented.** `CAPABILITY_V1` §3 wants "a
+  finite set from the object type's declared rights" and no document declares a
+  process object's. The one type whose rights *are* declared shows the rule:
+  `IPC_V1` §2 gives an endpoint `send`, `receive`, `call` — exactly the three
+  operations that name an endpoint. So an object's rights are the operations
+  that name it, and §5 names two over a process: `create` and `terminate`.
+- [x] **Authority names a process, never a class.** §3 admits an object and
+  rules out "all of them", so there is no capability meaning "may create
+  anything": a process that may create holds authority over the process a child
+  is created under — its own — which is the capability only a launcher can
+  issue, because it names a process that does not exist until it is granted.
+- [x] Operations 8 and 9. The caller receives authority over what it made
+  carrying exactly the rights the authority it used carried; the child is
+  endowed with nothing, which is the launcher's own rule one level down.
+- [x] **A process object carries a generation.** Found while building the gate:
+  a capability naming a dead process would have named its successor in the same
+  slot. That is the staleness a handle's generation prevents, one level down,
+  and `CAPABILITY_V1` §3 already states the rule — a capability's lifetime is
+  bounded by its object. Checked in `resolve`, once, rather than in each
+  operation: an operation that had to remember to ask is one that will forget.
+- [x] Evidence (`supervisor.sh`): a process creates a child, ends it, and the
+  nucleus records **who** ended it — the third way a process can end, and the
+  only one that is another party's decision. The same handle afterwards refuses;
+  an entry index outside the boot's source set is refused rather than clamped.
+
+**Measured while building it, and not a defect yet:** `process_create` builds an
+address space inside one system call, with interrupts masked, and that is long
+enough that a timer interrupt is always pending when it returns — the child is
+always given one quantum before its creator's next call. No accepted contract is
+violated (ADR-0049 §5 is about interrupt context), but a system call whose cost
+is O(the machine's memory) is a latency defect waiting for a contract to measure
+it. Named here so that it is found on purpose.
+
+### Task 4: Attenuation, transfer and the confused deputy — **partly done**
 
 - [x] Attenuation produces no superset in any dimension. The nucleus intersects
   the requested rights with the held ones rather than checking and refusing, so
@@ -131,7 +189,13 @@ the tasks below were implemented against them:
 - [ ] `endpoint_call`/`endpoint_reply` and a blocking receive with the
   cancellation path `SYSTEM_ABI_V1` §6 requires of anything that blocks. A
   receive with nothing to take answers `E_WOULD_BLOCK` today, which §4 assigns
-  to exactly that.
+  to exactly that. The shape is settled and awaits ADR-0058: a `Blocked` state
+  with exact wake, the nucleus's **liveness rule** as the release valve — when
+  nothing is runnable and something is blocked, nothing routed in Stage 3 can
+  ever change that, so the nucleus cancels every block with `E_CANCELLED` and
+  says so — a small count of consecutive firings without a delivery between
+  them as the livelock terminator, and *patience* left to whoever launched a
+  process rather than owned by the nucleus.
 - [ ] `CAPABILITY_V1` §7.6 — the confused deputy. It needs a broker holding a
   strong capability and a client holding a weak one, which needs transfer.
   docs/37 names this test explicitly and it is the one that fails quietly in

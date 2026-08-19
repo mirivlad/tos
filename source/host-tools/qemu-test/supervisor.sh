@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# A process creates a process, and ends it, on authority it was given.
+#
+# ADR-0055 puts the root of authority in the launcher and makes every grant
+# after it an attenuation of something the grantor already held. This gate is
+# that chain, exercised end to end by a real process:
+#
+#   - the launcher endows one process with authority over **itself**, carrying
+#     the two rights a process object has. That capability is the one nobody but
+#     a launcher can issue, because it names a process that does not exist until
+#     the instant it is granted;
+#   - the process exercises it: `process_create` (8) builds a child, and the
+#     caller receives authority over what it made, carrying exactly the rights
+#     the authority it used carried — never more;
+#   - `process_terminate` (9) ends the child, and the nucleus records who ended
+#     it. That is the third way a process can end, and it is neither the child's
+#     own claim nor the architecture's: it is another party's decision, so the
+#     record names the party;
+#   - the same handle over the now-dead child refuses. A capability's lifetime
+#     is bounded by its object (`CAPABILITY_V1` §3), so it does not survive to
+#     name whoever occupies that slot next;
+#   - an entry index this boot's source set does not have is refused rather than
+#     clamped, because a process launched over a different module than the one
+#     asked for is a process nobody asked for.
+#
+# And the child is endowed with nothing, which is the launcher's own rule one
+# level down: grant nothing that was not asked for.
+#
+#   bash host-tools/qemu-test/supervisor.sh [OUT_DIR]
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && cd ../.. && pwd)"
+OUT="${1:-$ROOT/target/qemu-supervisor}"
+FEATURE=test-supervisor
+PRODUCTION="$ROOT/target/x86_64-unknown-none/release/tos-nucleus"
+TEST_TARGET="$ROOT/target/test-supervisor"
+TEST_NUCLEUS="$TEST_TARGET/x86_64-unknown-none/release/tos-nucleus"
+
+# `SYSTEM_ABI_V1` §4 statuses, by the numbers the contract assigns.
+E_NO_CAPABILITY=-1
+E_BAD_ARGUMENT=-3
+# `RIGHT_CREATE | RIGHT_TERMINATE`, and `OBJECT_PROCESS`.
+RIGHTS=24
+OBJECT=3
+
+fail() {
+    echo "supervisor: FAIL: $*" >&2
+    exit 1
+}
+
+[ -f "$PRODUCTION" ] || {
+    echo "missing production nucleus: $PRODUCTION" >&2
+    exit 2
+}
+before="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
+
+(cd "$ROOT" && CARGO_TARGET_DIR="$TEST_TARGET" cargo build --release \
+    -p tos-nucleus --target x86_64-unknown-none --features "$FEATURE")
+after="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
+[ "$before" = "$after" ] || {
+    echo "production nucleus changed while building isolated test artifact" >&2
+    exit 1
+}
+
+bash "$ROOT/host-tools/qemu-test/run.sh" \
+    --out "$OUT" \
+    --nucleus "$TEST_NUCLEUS" \
+    --expect 33 \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.PROCESS_ENDOWED TOS.HALT" \
+    --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE"
+
+LOG="$OUT/events.log"
+
+count() { grep -c "$1" "$LOG" || true; }
+exactly() {
+    local seen
+    seen=$(count "$2")
+    [ "$seen" = "$1" ] || fail "$3: saw $seen line(s) matching '$2', expected $1"
+}
+
+# --- the launcher put the root of the chain in exactly one place -------------
+exactly 1 "^TOS\\.RUN\\.PROCESS_ENDOWED process=0 capabilities=1 policy=launcher-constant asserted_by=launcher\$" \
+    "the launcher did not endow the first process with exactly one capability"
+exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=$OBJECT rights=$RIGHTS\$" \
+    "the first process does not hold authority over a process with both rights"
+
+# --- it created a child, and the child was given nothing ---------------------
+exactly 1 '^TOS\.RUN\.PROCESS\.CREATED status=0 child=0x[0-9a-f]*$' \
+    "the process did not create a child on its own authority"
+exactly 1 "^TOS\\.RUN\\.PROCESS_ENDOWED process=1 capabilities=0 policy=launcher-constant asserted_by=launcher\$" \
+    "the child was endowed with something, or its endowment was not announced"
+
+# --- and ended it, attributably ----------------------------------------------
+exactly 1 '^TOS\.RUN\.PROCESS_TERMINATED process=1 by=0 ticks=[0-9]* quanta=[0-9]* asserted_by=nucleus$' \
+    "the nucleus did not record the child being ended by the process that held authority over it"
+# A capability's lifetime is bounded by its object: the handle still resolves,
+# and what it named is gone.
+exactly 1 "^TOS\\.RUN\\.PROCESS\\.ENDED status=0 again=$E_NO_CAPABILITY\$" \
+    "ending the child failed, or its handle still named something afterwards"
+
+# --- a module this boot does not have is refused, not clamped ----------------
+exactly 1 "^TOS\\.RUN\\.PROCESS\\.REFUSED reason=no-such-module status=$E_BAD_ARGUMENT\$" \
+    "an entry index outside the source set was not refused"
+
+# --- the child never finished, and the supervisor did ------------------------
+# One completion, not two: the child was ended long before a run of its own
+# could finish, which is what "ended by authority" has to mean.
+exactly 1 '^TOS\.RUN\.COMPLETED value=i32:240$' \
+    "the wrong number of runs completed"
+# Both processes gave their memory back.
+exactly 2 '^TOS\.RUN\.PROCESS_RECLAIMED ' \
+    "not every process returned its memory"
+
+echo "SUPERVISOR PASS: a process created a process and ended it, on authority it was given"
+echo "  the launcher endowed one process with authority over itself; nothing else could have"
+echo "  the child was endowed with nothing, and ended by the holder — recorded with the holder's name"
+echo "  the handle over the dead child refused afterwards; an unknown module index was refused"

@@ -144,6 +144,10 @@ the process is only reporting what it was told.
 | `TOS.RUN.IPC.SENT` | `bytes=` `status=` `oversize=` `other_half=` | A message sent. `oversize=` is the status of a payload one byte past the inline bound, which `IPC_V1` §9.1 requires be refused rather than truncated; `other_half=` is the status of the operation this handle's rights do not permit. |
 | `TOS.RUN.IPC.RECEIVED` | `bytes=` `text=` | A message taken from an endpoint, and its payload. `text=` carries no spaces: a value with one would be two fields to a reader that splits on them. |
 | `TOS.RUN.IPC.RIGHTS` | `other_half=` | The status of the half of an endpoint this holder's rights do not include (`IPC_V1` §2). |
+| `TOS.RUN.CAPABILITY.TYPE` | `operation=` `status=` | The status of an operation whose object this handle is not — the index and generation are right and the answer is still a refusal (`SYSTEM_ABI_V1` §8.1). |
+| `TOS.RUN.PROCESS.CREATED` | `status=` `child=0x<hex>` | A process created a process on authority it holds, and the handle it received over what it made. |
+| `TOS.RUN.PROCESS.ENDED` | `status=` `again=` | It ended that child. `again=` is the status of naming the same handle afterwards: a capability's lifetime is bounded by its object (`CAPABILITY_V1` §3), so it does not survive to name the slot's next occupant. |
+| `TOS.RUN.PROCESS.REFUSED` | `reason=` `status=` | A creation the nucleus refused, and why.
 
 A status in any of these is one of `SYSTEM_ABI_V1` §4's, by its number. They are
 reported as numbers rather than names because the number is what crossed the
@@ -174,6 +178,7 @@ own, because two vocabularies describing one system eventually disagree.
 | `TOS.RUN.PROCESS_EXIT` | `process=` `asserted_by=nucleus` `self_reported_status=` `ticks=` `quanta=` `first_tick=` `last_tick=` | The process ended by saying so (`process_exit`, ADR-0054). The four counts are the nucleus's, because a process cannot observe how long it was off the processor: `ticks` is the timer interrupts charged to **this** process, `quanta` how many times it was given the processor, and `first_tick`/`last_tick` the first and last tick it ran at. |
 | `TOS.RUN.PROCESS_FAULT` | `process=` `vector=` `error=0x<hex>` `rip=0x<hex>` `cr2=` `cpl=` | The process took a fault and ended. The system did not, and neither did its peers. |
 | `TOS.RUN.PROCESS_RECLAIMED` | `process=` `frames=` `available=` | What the pool took back when the named process ended, and what it holds now. |
+| `TOS.RUN.PROCESS_TERMINATED` | `process=` `by=` `ticks=` `quanta=` `asserted_by=nucleus` | The process was ended by another process holding authority over it (`process_terminate`). `by=` is that process. The whole event is the nucleus's assertion: nothing in it is anyone's claim about themselves. |
 | `TOS.RUN.PROCESS_ENDOWED` | `process=` `capabilities=` `policy=` `asserted_by=launcher` | What authority the process was given, before it ran its first instruction (ADR-0055). `policy=` names where the decision came from — `launcher-constant` until `/system/policy/` exists (ADR-0051 §3). |
 
 `TOS.RUN.PROCESS_ENDOWED` is emitted for every process, including one endowed
