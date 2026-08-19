@@ -93,6 +93,27 @@ Capabilities travelling in a message follow `CAPABILITY_V1` §4: the receiver
 gets its own handle, linear capabilities are consumed atomically, and a message
 that fails to deliver transfers nothing.
 
+**Where they are named** (ADR-0058). The handles a message carries are a list,
+so they do not travel in registers: they sit in the sender's argument region at
+`MESSAGE_CAPABILITIES`, and the call says in a register how many of them to
+read. The receiver finds *its own* handles at the same offset in its own region,
+with unfilled slots zeroed — and a handle of all zeros names nothing in any
+table, so a receiver reads the whole table and needs no count beside it.
+
+**What is queued is the object, not the sender's handle.** A handle is a name in
+one table and means nothing in another, and the sender may release it, or end,
+between the send and the delivery. The send resolves what it was given, refuses
+the whole message if any of it does not resolve, and the queue carries the
+objects; the receiver's names are made when the message reaches it. That is also
+why a failed send transfers nothing — there is no point at which a partial
+transfer exists.
+
+Sending a capability is **delegation**: the sender keeps what it had. Transfer
+that consumes the sender's handle is `CAPABILITY_V1` §4's *linear* case, and it
+applies to capabilities an interface declares linear. No Stage 3 object type is
+so declared, so nothing in Stage 3 is consumed by being sent — which is a
+statement about what exists rather than a relaxation of the rule.
+
 ## 7. Queues and backpressure
 
 Every endpoint queue is bounded. When it is full a sender is told — `E_LIMIT`

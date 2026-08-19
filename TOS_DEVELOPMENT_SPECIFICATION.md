@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `0fa3e0a08979beddbbf62562ec877793101723a4a0b471015a7d9ba3e0191c63`  
+Source-manifest SHA-256: `6a68021afeffff34e9b09982cef763c808634f55429c037e053862c31d0d6a2d`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1627,6 +1627,7 @@ the process is only reporting what it was told.
 | `TOS.RUN.IPC.RECEIVED` | `bytes=` `text=` | A message taken from an endpoint, and its payload. `text=` carries no spaces: a value with one would be two fields to a reader that splits on them. |
 | `TOS.RUN.IPC.POLLED` | `status=` | The answer to a receive that asked not to wait. |
 | `TOS.RUN.IPC.WAIT` | `status=` `attempt=` | A blocking receive that did not return a message, and which attempt it was. A process reporting this has been resumed, which is the only way it could report anything. |
+| `TOS.RUN.IPC.DELEGATED` | `handle=0x<hex>` `send=` | A capability that arrived with a message, as the receiver's own handle, and the status of using it for something the receiver's own capability was refused. |
 | `TOS.RUN.IPC.RIGHTS` | `other_half=` | The status of the half of an endpoint this holder's rights do not include (`IPC_V1` §2). |
 | `TOS.RUN.CAPABILITY.TYPE` | `operation=` `status=` | The status of an operation whose object this handle is not — the index and generation are right and the answer is still a refusal (`SYSTEM_ABI_V1` §8.1). |
 | `TOS.RUN.PROCESS.CREATED` | `status=` `child=0x<hex>` | A process created a process on authority it holds, and the handle it received over what it made. |
@@ -2688,6 +2689,27 @@ govern what may be done with it.
 Capabilities travelling in a message follow `CAPABILITY_V1` §4: the receiver
 gets its own handle, linear capabilities are consumed atomically, and a message
 that fails to deliver transfers nothing.
+
+**Where they are named** (ADR-0058). The handles a message carries are a list,
+so they do not travel in registers: they sit in the sender's argument region at
+`MESSAGE_CAPABILITIES`, and the call says in a register how many of them to
+read. The receiver finds *its own* handles at the same offset in its own region,
+with unfilled slots zeroed — and a handle of all zeros names nothing in any
+table, so a receiver reads the whole table and needs no count beside it.
+
+**What is queued is the object, not the sender's handle.** A handle is a name in
+one table and means nothing in another, and the sender may release it, or end,
+between the send and the delivery. The send resolves what it was given, refuses
+the whole message if any of it does not resolve, and the queue carries the
+objects; the receiver's names are made when the message reaches it. That is also
+why a failed send transfers nothing — there is no point at which a partial
+transfer exists.
+
+Sending a capability is **delegation**: the sender keeps what it had. Transfer
+that consumes the sender's handle is `CAPABILITY_V1` §4's *linear* case, and it
+applies to capabilities an interface declares linear. No Stage 3 object type is
+so declared, so nothing in Stage 3 is consumed by being sent — which is a
+statement about what exists rather than a relaxation of the rule.
 
 ## 7. Queues and backpressure
 

@@ -105,6 +105,27 @@ fn monotonic() -> Option<u64> {
 // SAFETY: the caller names an assigned operation; the instruction itself
 // touches no memory of this image.
 unsafe fn call(operation: u64, first: u64, second: u64) -> (i64, u64) {
+    // SAFETY: per this function's contract; a call that transfers nothing says
+    // so with a count of zero rather than leaving the register as it found it.
+    unsafe { call_transferring(operation, first, second, 0) }
+}
+
+/// Makes one system call that carries `transferred` capabilities.
+///
+/// The handles themselves are in the argument region, at the offset `IPC_V1`
+/// fixes; the register says how many of them to read (ADR-0058). A count is a
+/// value, so it travels in a register; the handles are a list, so they do not.
+///
+/// SAFETY: as [`call`], and the argument region holds `transferred` handles the
+/// caller means to send.
+// SAFETY: the caller names an assigned operation and has written the handles it
+// is counting.
+unsafe fn call_transferring(
+    operation: u64,
+    first: u64,
+    second: u64,
+    transferred: u64,
+) -> (i64, u64) {
     let status: i64;
     let value: u64;
     // The six argument registers are `rdi, rsi, rdx, r10, r8, r9` in that order
@@ -121,6 +142,7 @@ unsafe fn call(operation: u64, first: u64, second: u64) -> (i64, u64) {
             inlateout("rax") operation => status,
             in("rdi") first,
             in("rsi") second,
+            in("r10") transferred,
             out("rdx") value,
             out("rcx") _,
             out("r11") _,
@@ -128,6 +150,37 @@ unsafe fn call(operation: u64, first: u64, second: u64) -> (i64, u64) {
         )
     };
     (status, value)
+}
+
+/// Writes a handle into the argument region's transfer table.
+///
+/// SAFETY: `region` is this process's argument region and `index` is inside the
+/// contract's maximum.
+// SAFETY: the caller names its own region and an index the contract admits.
+unsafe fn set_transferred(region: u64, index: usize, handle: u64) {
+    // SAFETY: per the caller's contract; the offset is the one `IPC_V1` fixes.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<u64>(
+            (region + tos_launch::MESSAGE_CAPABILITIES) as usize,
+        )
+        .add(index)
+        .write(handle)
+    };
+}
+
+/// Reads one back.
+///
+/// SAFETY: as [`set_transferred`].
+// SAFETY: as above.
+unsafe fn transferred(region: u64, index: usize) -> u64 {
+    // SAFETY: per the caller's contract.
+    unsafe {
+        core::ptr::with_exposed_provenance::<u64>(
+            (region + tos_launch::MESSAGE_CAPABILITIES) as usize,
+        )
+        .add(index)
+        .read()
+    }
 }
 
 /// Ends this process, and does not return.
@@ -554,16 +607,24 @@ fn send_half(launch: &Launch, report: &mut Report, handle: u64) {
     // that splits on them.
     let payload = b"authority-crossed-a-boundary";
     for (offset, byte) in payload.iter().enumerate() {
-        // SAFETY: `message_base` names a writable mapping of `message_length`
+        // SAFETY: `arguments_base` names a writable mapping of `arguments_length`
         // bytes made by the launcher, and this payload is far inside it.
         unsafe {
-            core::ptr::with_exposed_provenance_mut::<u8>(launch.message_base as usize)
+            core::ptr::with_exposed_provenance_mut::<u8>(launch.arguments_base as usize)
                 .add(offset)
                 .write(*byte)
         };
     }
-    // SAFETY: as above; the length is the payload's and is inside the bound.
-    let (sent, _) = unsafe { call(ENDPOINT_SEND, handle, payload.len() as u64) };
+    // The message carries this process's own endpoint capability. The receiver
+    // holds `receive` on that endpoint and not `send`, so what arrives with the
+    // message is an ability it demonstrably did not have — which is what makes a
+    // delegation observable rather than asserted.
+    // SAFETY: the argument region is this process's own, and index 0 is inside
+    // the contract's maximum.
+    unsafe { set_transferred(launch.arguments_base, 0, handle) };
+    // SAFETY: as above; the length is the payload's and is inside the bound, and
+    // one handle has been written for the count declared.
+    let (sent, _) = unsafe { call_transferring(ENDPOINT_SEND, handle, payload.len() as u64, 1) };
     // Holding `send` is not holding `receive` (`IPC_V1` §2): the same handle,
     // the other half, refused by the rights mask rather than by anything this
     // process agreed to.
@@ -618,11 +679,11 @@ fn receive_half(launch: &Launch, report: &mut Report, handle: u64) {
     };
     let _ = status;
     // SAFETY: the nucleus states it wrote `length` bytes into the region the
-    // record names, which is a mapping of `message_length` bytes, and `length`
+    // record names, which is a mapping of `arguments_length` bytes, and `length`
     // is bounded by the contract's inline maximum.
     let bytes = unsafe {
         core::slice::from_raw_parts(
-            core::ptr::with_exposed_provenance::<u8>(launch.message_base as usize),
+            core::ptr::with_exposed_provenance::<u8>(launch.arguments_base as usize),
             length as usize,
         )
     };
@@ -636,6 +697,19 @@ fn receive_half(launch: &Launch, report: &mut Report, handle: u64) {
     let (other_half, _) = unsafe { call(ENDPOINT_SEND, handle, 0) };
     report.line(&alloc::format!(
         "TOS.RUN.IPC.RIGHTS other_half={other_half}"
+    ));
+
+    // And what came with the message. This is a handle in *this* process's
+    // table, made when the message arrived; nothing about the sender's name for
+    // it is visible here. Using it does the very thing the line above was
+    // refused, on the same endpoint — so the difference between the two statuses
+    // is the delegation, and nothing else.
+    // SAFETY: the argument region is this process's own.
+    let delegated = unsafe { transferred(launch.arguments_base, 0) };
+    // SAFETY: `endpoint_send` names its endpoint and a length.
+    let (with_delegated, _) = unsafe { call(ENDPOINT_SEND, delegated, 0) };
+    report.line(&alloc::format!(
+        "TOS.RUN.IPC.DELEGATED handle=0x{delegated:x} send={with_delegated}"
     ));
 }
 

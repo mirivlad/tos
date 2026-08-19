@@ -26,6 +26,8 @@
 
 use tos_frames::FRAME_SIZE;
 
+use crate::capability::Object;
+
 /// The bounds ADR-0057 fixed for this contract version.
 pub const MAX_INLINE_BYTES: u64 = 256;
 
@@ -37,19 +39,34 @@ pub const MAX_INLINE_BYTES: u64 = 256;
 pub const MAX_ENDPOINTS: usize = 4;
 const QUEUE_DEPTH: usize = 4;
 
-/// One message in flight: bytes, and how many of them mean anything.
+/// One message in flight: bytes, how many of them mean anything, and the
+/// authority travelling with them.
+///
+/// **What is queued is the *object*, not the sender's handle.** A handle is a
+/// name in one process's table and means nothing in another's, and the sender
+/// may release it — or end — between the send and the delivery. So the send
+/// resolves what it was given and the queue carries that; the receiver's own
+/// handle is made when the message reaches it, in its own table, with its own
+/// generation, which is what `CAPABILITY_V1` §4 says delegation is.
 #[derive(Clone, Copy)]
 struct Message {
     bytes: [u8; MAX_INLINE_BYTES as usize],
     length: u64,
+    granted: [(Object, u32, u64); MAX_TRANSFERRED as usize],
+    granted_count: usize,
 }
 
 impl Message {
     const EMPTY: Message = Message {
         bytes: [0; MAX_INLINE_BYTES as usize],
         length: 0,
+        granted: [(Object::None, 0, 0); MAX_TRANSFERRED as usize],
+        granted_count: 0,
     };
 }
+
+/// How many capabilities one message may carry (ADR-0057).
+pub const MAX_TRANSFERRED: u64 = tos_launch::MAX_TRANSFERRED_CAPABILITIES;
 
 /// An endpoint: a bounded queue, and the count of what is in it.
 struct Endpoint {
@@ -143,8 +160,13 @@ pub enum Refused {
 // SAFETY: the caller's promise that `from` is the launcher's own mapping is what
 // makes the read below a read of nucleus-known memory rather than of an address
 // a process chose.
-pub unsafe fn send(endpoint: u32, from: u64, length: u64) -> Result<(), Refused> {
-    if length > MAX_INLINE_BYTES {
+pub unsafe fn send(
+    endpoint: u32,
+    from: u64,
+    length: u64,
+    granted: &[(Object, u32, u64)],
+) -> Result<(), Refused> {
+    if length > MAX_INLINE_BYTES || granted.len() as u64 > MAX_TRANSFERRED {
         // Refused, not truncated (`IPC_V1` §9.1). A message shortened to the
         // bound and reported as sent would make the receiver's copy a different
         // message from the sender's.
@@ -172,6 +194,8 @@ pub unsafe fn send(endpoint: u32, from: u64, length: u64) -> Result<(), Refused>
         )
     };
     message.length = length;
+    message.granted_count = granted.len();
+    message.granted[..granted.len()].copy_from_slice(granted);
     slot.count += 1;
     Ok(())
 }
@@ -184,7 +208,11 @@ pub unsafe fn send(endpoint: u32, from: u64, length: u64) -> Result<(), Refused>
 /// `into` is the physical address of the receiving process's message slot, at
 /// least one frame long, which the launcher mapped.
 // SAFETY: as `send`, for the write side.
-pub unsafe fn receive(endpoint: u32, into: u64) -> Result<u64, Refused> {
+pub unsafe fn receive(
+    endpoint: u32,
+    into: u64,
+    granted: &mut [(Object, u32, u64); MAX_TRANSFERRED as usize],
+) -> Result<u64, Refused> {
     // SAFETY: single-context nucleus; this is the only writer.
     let endpoints = unsafe { endpoints() };
     let slot = endpoints
@@ -209,6 +237,7 @@ pub unsafe fn receive(endpoint: u32, into: u64) -> Result<u64, Refused> {
             message.length as usize,
         )
     };
+    *granted = message.granted;
     Ok(message.length)
 }
 
