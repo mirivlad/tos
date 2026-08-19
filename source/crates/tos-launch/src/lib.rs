@@ -26,12 +26,17 @@
 /// The version of this record. A nucleus and an image that disagree do not run
 /// together.
 ///
+/// Version 4 gives each granted capability the **binding it answers** (ADR-0061),
+/// so that a process can tell which of its `import capability` requests each
+/// grant is for. Before it, a record carried authority with nothing saying what
+/// the module had asked for, which is why no module could use any.
+///
 /// Version 3 renames the message slot to what ADR-0058 makes it: the region a
 /// call's arguments live in when they do not fit in registers. Version 2 added
 /// the endowment (ADR-0055) and that slot; version 1 carried memory and text and
 /// no authority at all, which is the state in which no process could ever hold a
 /// capability.
-pub const LAUNCH_VERSION: u32 = 3;
+pub const LAUNCH_VERSION: u32 = 4;
 
 /// What kind of object a capability names (`CAPABILITY_V1` §3).
 ///
@@ -94,7 +99,36 @@ pub struct LaunchCapability {
     /// The scope the rights apply to, where the object has one; zero where it
     /// does not.
     pub scope: u64,
+    /// **Which capability request this grant answers** (ADR-0061): the name the
+    /// module bound its `import capability` to, in UTF-8, padded with zeros.
+    ///
+    /// Not the position of this entry in the table, and that is the whole
+    /// decision. Two imports of one interface are legal, so an interface path
+    /// cannot tell them apart; an entry's position could, but then reordering
+    /// two `import capability` lines would silently swap which authority each
+    /// name receives, and a policy could only be written against a number.
+    ///
+    /// It is also what makes a denial nameable: the requested set is the
+    /// module's bindings, the granted set is these, and
+    /// `PROCESS_IDENTITY_V1` §7.3 wants the difference and wants it named.
+    ///
+    /// An empty binding names no request. It is what a launcher writes when the
+    /// grant answers nothing a module asked for, which is a thing a launcher may
+    /// do and a module may ignore.
+    pub binding: [u8; MAX_BINDING as usize],
+    pub binding_length: u32,
+    pub reserved: u32,
 }
+
+/// The longest capability binding a launch record carries.
+///
+/// A bound of this contract, like [`MAX_MODULE_PATH`], and for the same reason:
+/// a record is a fixed shape read at addresses known in advance, so the name in
+/// it cannot be sized by whoever writes it. A module whose binding does not fit
+/// is refused at startup rather than truncated to something that names a
+/// different request — 64 bytes is far beyond any identifier anyone writes, and
+/// the refusal exists so that the bound is never discovered as a silent rename.
+pub const MAX_BINDING: u64 = 64;
 
 /// One source unit of the set the process is to execute.
 #[repr(C)]
@@ -190,7 +224,18 @@ pub const MAX_TRANSFERRED_REGIONS: u64 = 2;
 pub const CREATE_ENDOWMENT: u64 = 0;
 /// How many capabilities a parent may hand a child at creation.
 pub const MAX_ENDOWMENT: u64 = 4;
-pub const CREATE_MODULE: u64 = 16 * MAX_ENDOWMENT;
+/// One entry of that table, in bytes. Named rather than written as a literal
+/// because two things are laid out from it and a literal would let them drift.
+pub const ENDOWMENT_ENTRY_BYTES: u64 = 16 + MAX_BINDING;
+/// Which request the child's authority over **itself** answers (ADR-0061).
+///
+/// The rights travel in a register, because they are a value (ADR-0058); the
+/// name cannot, so it is here. It is a slot of its own rather than an endowment
+/// entry for the reason `Endowment::Own` is a variant of its own: an endowment
+/// entry names a capability the parent holds, and this one names a process that
+/// does not exist until the instant it is granted.
+pub const CREATE_SELF_BINDING: u64 = ENDOWMENT_ENTRY_BYTES * MAX_ENDOWMENT;
+pub const CREATE_MODULE: u64 = CREATE_SELF_BINDING + MAX_BINDING;
 /// The longest module path `process_create` will read. A bound of this contract
 /// rather than of the region: the nucleus must not size a read from a number a
 /// caller chose, even where the region would have held more.
@@ -198,15 +243,24 @@ pub const MAX_MODULE_PATH: u64 = 256;
 
 /// One entry of the endowment a parent gives a child.
 ///
-/// The parent names a capability **it holds** and the rights it wants the child
-/// to have. What the child gets is the intersection: a parent cannot give what
-/// it does not hold, so widening is not refused so much as unexpressible.
+/// The parent names a capability **it holds**, the rights it wants the child to
+/// have, and **which of the child's capability requests this answers**
+/// (ADR-0061). What the child gets is the intersection of the rights: a parent
+/// cannot give what it does not hold, so widening is not refused so much as
+/// unexpressible.
+///
+/// The binding is the parent's statement about the *child's* source, not about
+/// its own. A parent granting authority to a name the child never requested has
+/// granted something the child cannot use, which is a policy mistake the child
+/// reports rather than a refusal the nucleus makes: the nucleus does not read
+/// the child's module.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct CreateEndowment {
     pub handle: u64,
     pub rights: u32,
-    pub reserved: u32,
+    pub binding_length: u32,
+    pub binding: [u8; MAX_BINDING as usize],
 }
 
 /// The header a runtime image carries in its first bytes.

@@ -29,7 +29,29 @@ pub struct Interface {
     /// The path a capability import declares, which is also the path the IR
     /// records in `Signature.effects`.
     pub path: &'static str,
+    /// Which kind of object a capability of this interface names
+    /// (`SYSTEM_INTERFACE_V1` §4, ADR-0061).
+    ///
+    /// A **check** on a grant, never the rule that chooses one: two imports of
+    /// one interface are legal, so a kind cannot tell them apart, and what
+    /// answers a request is the binding it was declared with.
+    pub object: ObjectKind,
     pub operations: &'static [Operation],
+}
+
+/// The kinds `CAPABILITY_V1` §3 names.
+///
+/// Spelled out here rather than carried as the launch record's numbers: this
+/// crate is the frontend, it runs on hosts that have no launch record, and a
+/// number whose meaning lives in another crate's constants would be a coupling
+/// that buys nothing. Whoever launches maps these to its own encoding.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObjectKind {
+    Endpoint,
+    Region,
+    Process,
+    InterfacePublication,
+    Reply,
 }
 
 /// Every interface `SYSTEM_INTERFACE_V1` §4 declares, and no others.
@@ -40,6 +62,7 @@ pub struct Interface {
 pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "system.ipc.Endpoint",
+        object: ObjectKind::Endpoint,
         operations: &[
             Operation {
                 name: "endpoint_send",
@@ -60,6 +83,7 @@ pub const ACCEPTED: &[Interface] = &[
     },
     Interface {
         path: "system.ipc.Reply",
+        object: ObjectKind::Reply,
         operations: &[Operation {
             name: "endpoint_reply",
             parameters: &["u64"],
@@ -68,6 +92,7 @@ pub const ACCEPTED: &[Interface] = &[
     },
     Interface {
         path: "system.process.Control",
+        object: ObjectKind::Process,
         operations: &[Operation {
             name: "process_terminate",
             parameters: &[],

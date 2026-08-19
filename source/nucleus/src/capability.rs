@@ -382,12 +382,64 @@ pub fn clear(process: usize) {
 pub enum Endowment {
     /// A capability naming an object that already exists.
     Existing {
+        /// Which `import capability` of the module this answers (ADR-0061).
+        binding: Binding,
         object: Object,
         rights: u32,
         scope: u64,
     },
     /// Authority over the process being created.
-    Own { rights: u32 },
+    Own { binding: Binding, rights: u32 },
+}
+
+impl Endowment {
+    /// The request this grant answers.
+    fn binding(&self) -> &Binding {
+        match self {
+            Endowment::Existing { binding, .. } | Endowment::Own { binding, .. } => binding,
+        }
+    }
+}
+
+/// The name a grant answers, as the nucleus carries it.
+///
+/// Bytes rather than text, and the nucleus never looks at them. Whether a name
+/// is one the module actually declared is a question about a module, and the
+/// nucleus does not read modules — the process does, at startup, and reports
+/// `CapabilityDenied` for a request nothing answered. What the nucleus owes is
+/// to carry the name whole or refuse it, which is why the only judgement here is
+/// about length.
+///
+/// Carried by value rather than by reference: a launcher's constant is static
+/// text and a parent's is in a region that a child's launch record outlives, and
+/// one type that copies is simpler than two that borrow differently.
+#[derive(Clone, Copy)]
+pub struct Binding {
+    bytes: [u8; tos_launch::MAX_BINDING as usize],
+    length: u32,
+}
+
+impl Binding {
+    /// A grant that answers no request. A launcher may make one; a module that
+    /// asked for nothing simply never looks at it.
+    pub const NONE: Binding = Binding {
+        bytes: [0; tos_launch::MAX_BINDING as usize],
+        length: 0,
+    };
+
+    /// A name, or nothing when it is too long for the record to carry it.
+    ///
+    /// Refused rather than truncated: a truncated name is still a name, of a
+    /// request the module did not make.
+    pub fn new(name: &[u8]) -> Option<Binding> {
+        if name.len() as u64 > tos_launch::MAX_BINDING {
+            return None;
+        }
+        let mut binding = Binding::NONE;
+        binding.bytes[..name.len()].copy_from_slice(name);
+        binding.length = name.len() as u32;
+        Some(binding)
+    }
 }
 
 /// Writes a process's whole endowment, and describes it back for the record the
@@ -399,13 +451,20 @@ pub enum Endowment {
 pub fn endow(process: usize, endowment: &[Endowment], out: &mut [LaunchCapability]) -> u32 {
     let mut written = 0;
     for entry in endowment.iter().take(out.len()) {
+        // The name before the authority: a grant whose binding does not fit is
+        // refused rather than truncated, because a truncated name is a name —
+        // of a request the module did not make (ADR-0061).
+        // A `Binding` cannot be over-long by construction, so there is nothing
+        // to check here: whoever built one was refused at that point instead.
+        let binding = *entry.binding();
         let (object, rights, scope) = match *entry {
             Endowment::Existing {
                 object,
                 rights,
                 scope,
+                ..
             } => (object, rights, scope),
-            Endowment::Own { rights } => {
+            Endowment::Own { rights, .. } => {
                 let Some(generation) = crate::process::generation(process) else {
                     break;
                 };
@@ -441,6 +500,9 @@ pub fn endow(process: usize, endowment: &[Endowment], out: &mut [LaunchCapabilit
             object: object.kind(),
             rights,
             scope,
+            binding: binding.bytes,
+            binding_length: binding.length,
+            reserved: 0,
         };
         written += 1;
     }

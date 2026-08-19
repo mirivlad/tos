@@ -533,6 +533,21 @@ fn hold_direction_flag(_report: &mut Report) {}
 /// refusals — a process that guesses learns nothing, a process that names a
 /// released handle is told so, and a process holding one half of an endpoint
 /// cannot perform the other half.
+/// The request a grant answers, as text, or `<none>` when it answers nothing.
+///
+/// A launcher may grant something no module asked for — that is a policy the
+/// module simply never reads — and a name that is not text names no declaration
+/// this frontend could have produced, so both say so rather than being shown as
+/// an empty string that could be mistaken for a name.
+fn named(capability: &LaunchCapability) -> &str {
+    let length = (capability.binding_length as usize).min(capability.binding.len());
+    match core::str::from_utf8(&capability.binding[..length]) {
+        Ok("") => "<none>",
+        Ok(name) => name,
+        Err(_) => "<not-text>",
+    }
+}
+
 fn authority(launch: &Launch, report: &mut Report) {
     if launch.capability_count == 0 {
         report.line("TOS.RUN.CAPABILITY held=0 endowment=empty");
@@ -547,12 +562,19 @@ fn authority(launch: &Launch, report: &mut Report) {
         )
     };
     let first = &held[0];
+    // `binding` is appended after the four fixed fields, per Boot ABI v1's
+    // extension rule. It is the request this grant answers (ADR-0061), and it is
+    // the only field of the four that a *module* can act on: a process reading
+    // its own record learns which of its `import capability` declarations was
+    // satisfied, which is what makes a denial a difference between two sets
+    // rather than a smaller number (`PROCESS_IDENTITY_V1` §7.3).
     report.line(&alloc::format!(
-        "TOS.RUN.CAPABILITY held={} handle=0x{:x} object={} rights={}",
+        "TOS.RUN.CAPABILITY held={} handle=0x{:x} object={} rights={} binding={}",
         held.len(),
         first.handle,
         first.object,
-        first.rights
+        first.rights,
+        named(first)
     ));
 
     // What guessing is worth. An index beyond the table is `E_BAD_HANDLE`; an
@@ -861,7 +883,12 @@ fn supervise(launch: &Launch, report: &mut Report, handle: u64) {
         .write(tos_launch::CreateEndowment {
             handle: 0xdead_beef,
             rights: u32::MAX,
-            reserved: 0,
+            // The name this grant would have answered, had the handle named
+            // anything (ADR-0061). It does not, so the creation is refused
+            // before the name matters — which is the order that makes a
+            // half-endowed child impossible rather than merely unlikely.
+            binding_length: 0,
+            binding: [0; tos_launch::MAX_BINDING as usize],
         })
     };
     // SAFETY: `process_create` names the process a child is created under, the

@@ -87,7 +87,7 @@ exactly() {
 # --- the launcher put the root of the chain in exactly one place -------------
 exactly 1 "^TOS\\.RUN\\.PROCESS_ENDOWED process=0 capabilities=1 policy=launcher-constant asserted_by=launcher\$" \
     "the launcher did not endow the first process with exactly one capability"
-exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=$OBJECT rights=$RIGHTS\$" \
+exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=$OBJECT rights=$RIGHTS binding=self\$" \
     "the first process does not hold authority over a process with both rights"
 
 # --- it created a child, and the child was given nothing ---------------------
