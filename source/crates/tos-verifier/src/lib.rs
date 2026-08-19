@@ -1232,12 +1232,36 @@ fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
                     check_atomic(*operation, *order, *failure_order, &at)?;
                 }
                 if let Some(interface) = &instruction.unsafe_interface {
-                    // docs/44 section 7: V1 accepts no FFI interface schema.
-                    return Err(Finding::new(
-                        "V2033_UNSAFE",
-                        at(),
-                        alloc::format!("{interface} is not an accepted V1 interface"),
-                    ));
+                    // An operation reaching an accepted interface schema
+                    // (ADR-0060). The verifier does not carry the schema — a
+                    // verifier that knew which interfaces exist would be a
+                    // second place they are declared — it proves the two things
+                    // the artifact must say about itself, which is
+                    // docs/43 §3's "effect/right/interface match":
+                    //
+                    // the module **requested** this interface, and the function
+                    // making the call **declared** it as an effect. A module
+                    // that reached an interface it never asked for, or a
+                    // function that reached one its signature does not admit,
+                    // is refused here whatever any schema says.
+                    if !module
+                        .capability_imports
+                        .iter()
+                        .any(|import| &import.interface == interface)
+                    {
+                        return Err(Finding::new(
+                            "V2033_UNSAFE",
+                            at(),
+                            alloc::format!("{interface} is reached but never imported"),
+                        ));
+                    }
+                    if !function.signature.effects.iter().any(|e| e == interface) {
+                        return Err(Finding::new(
+                            "V2033_UNSAFE",
+                            at(),
+                            alloc::format!("{interface} is reached without being declared"),
+                        ));
+                    }
                 }
                 if matches!(instruction.op, Op::Cancel { .. }) {
                     continue;
