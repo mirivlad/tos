@@ -254,15 +254,32 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
             match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_CREATE) {
                 Err(refused) => refused.into(),
                 Ok(Object::Process { .. }) => {
-                    // The child is endowed with nothing. That is the launcher's
-                    // own rule one level down — grant nothing that was not asked
-                    // for — and handing the child anything else needs a way for
-                    // this call to *name* more than a register holds, which this
-                    // ABI does not have yet. An empty endowment is a decision;
-                    // inventing an argument for it would be a guess.
+                    let Some(entry) = module_of(frame) else {
+                        return Answer::status(E_BAD_ARGUMENT);
+                    };
+                    let mut endowment = [capability::Endowment::Own { rights: 0 };
+                        tos_launch::MAX_ENDOWMENT as usize + 1];
+                    let held = capability::rights_of(caller, frame.rdi);
+                    // What the child may do to *itself*, decided by its parent
+                    // and bounded by the authority the parent used. It cannot be
+                    // one of the entries below, because those name capabilities
+                    // the parent holds and this one names a process that does not
+                    // exist until the instant it is granted — the same reason
+                    // only a launcher could issue the first one.
+                    let mut count = 0;
+                    if frame.r10 != 0 {
+                        endowment[0] = capability::Endowment::Own {
+                            rights: frame.r10 as u32 & held,
+                        };
+                        count = 1;
+                    }
+                    match child_endowment(caller, frame, &mut endowment[count..]) {
+                        Ok(given) => count += given,
+                        Err(answer) => return answer,
+                    }
                     // SAFETY: the template was established at boot from validated
                     // inputs, and no process is running: this call is the nucleus.
-                    match unsafe { crate::process::create(arguments.second() as usize, &[]) } {
+                    match unsafe { crate::process::create(entry, &endowment[..count]) } {
                         Ok(child) => {
                             // The caller gets authority over what it made, carrying
                             // exactly the rights the authority it used carried.
@@ -475,6 +492,65 @@ fn reply(replier: usize, asked: usize, handle: u64, frame: &mut TrapFrame) -> An
     // nothing is a table that fills up.
     let _ = capability::release(replier, handle);
     Answer::status(OK)
+}
+
+/// Which module a `process_create` names, by path.
+///
+/// The path is in the argument region and its length in a register (ADR-0058),
+/// because a name is not a value and does not travel in one. An ordinal would
+/// have fitted a register and named a position in a list nobody published.
+fn module_of(frame: &TrapFrame) -> Option<usize> {
+    let region = crate::process::arguments_region();
+    let length = frame.rsi;
+    if region == 0 || length == 0 || length > tos_launch::MAX_MODULE_PATH {
+        return None;
+    }
+    // SAFETY: the path is at a fixed offset in this process's own argument
+    // region, whose address the nucleus chose, and its length is bounded by a
+    // constant of the contract rather than by anything the caller said.
+    let path = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<u8>((region + tos_launch::CREATE_MODULE) as usize),
+            length as usize,
+        )
+    };
+    crate::launch::template()?.index_of(path)
+}
+
+/// The endowment a parent gives a child, attenuated from what the parent holds.
+///
+/// Every entry names a capability the parent holds and the rights it wants the
+/// child to have; what the child gets is the intersection. Widening is not
+/// refused so much as unexpressible — the same shape attenuation has, because it
+/// is the same rule.
+fn child_endowment(
+    parent: usize,
+    frame: &TrapFrame,
+    into: &mut [capability::Endowment],
+) -> Result<usize, Answer> {
+    let region = crate::process::arguments_region();
+    let count = frame.rdx as usize;
+    if count > into.len() || count > tos_launch::MAX_ENDOWMENT as usize {
+        return Err(Answer::status(E_LIMIT));
+    }
+    for (index, slot) in into[..count].iter_mut().enumerate() {
+        // SAFETY: the table is at a fixed offset in the parent's own argument
+        // region, and `index` is inside the count bounded above.
+        let asked = unsafe {
+            core::ptr::with_exposed_provenance::<tos_launch::CreateEndowment>(
+                (region + tos_launch::CREATE_ENDOWMENT) as usize,
+            )
+            .add(index)
+            .read()
+        };
+        let object = capability::resolve(parent, asked.handle, 0).map_err(Answer::from)?;
+        *slot = capability::Endowment::Existing {
+            object,
+            rights: asked.rights & capability::rights_of(parent, asked.handle),
+            scope: 0,
+        };
+    }
+    Ok(count)
 }
 
 /// Resolves the handles a message carries, in the caller's table.
