@@ -97,6 +97,23 @@ static mut ENDPOINTS: [Endpoint; MAX_ENDPOINTS] = [Endpoint::EMPTY; MAX_ENDPOINT
 /// yet" and "waiting for each other" (ADR-0059).
 static mut DELIVERIES: u64 = 0;
 
+/// Payload copies made, and messages queued, since the boot began.
+///
+/// `IPC_V1` §8 bounds an inline message at two payload copies, and §9.7 asks for
+/// the count to be **counted** rather than estimated. These are the count: one
+/// increment beside each `copy_nonoverlapping` of a payload, so a copy that
+/// nobody remembered to account for would have to be written past the counter
+/// standing next to it.
+static mut PAYLOAD_COPIES: u64 = 0;
+static mut MESSAGES: u64 = 0;
+
+/// Those two.
+pub fn cost() -> (u64, u64) {
+    // SAFETY: single-context nucleus; the writers are the send and receive
+    // paths, which run with interrupts masked.
+    unsafe { (MESSAGES, PAYLOAD_COPIES) }
+}
+
 /// That count.
 pub fn deliveries() -> u64 {
     // SAFETY: single-context nucleus; the only writer is `receive`, which runs
@@ -193,6 +210,12 @@ pub unsafe fn send(
             length as usize,
         )
     };
+    // SAFETY: single-context nucleus with interrupts masked; this is one of the
+    // two writers, and it stands beside the copy it counts.
+    unsafe {
+        PAYLOAD_COPIES += 1;
+        MESSAGES += 1;
+    }
     message.length = length;
     message.granted_count = granted.len();
     message.granted[..granted.len()].copy_from_slice(granted);
@@ -237,6 +260,8 @@ pub unsafe fn receive(
             message.length as usize,
         )
     };
+    // SAFETY: as above; the second of the two copies an inline message costs.
+    unsafe { PAYLOAD_COPIES += 1 };
     *granted = message.granted;
     Ok(message.length)
 }
@@ -268,7 +293,17 @@ pub unsafe fn hand(from: u64, into: u64, length: u64) -> Result<u64, Refused> {
         )
     };
     // SAFETY: single-context nucleus; this is the only writer.
-    unsafe { DELIVERIES = DELIVERIES.wrapping_add(1) };
+    //
+    // A reply is **one** message and **one** copy, not two: it goes from the
+    // replier's region straight into the waiting caller's, because there is
+    // nobody to queue it for. Counted as a message all the same, so that a
+    // reader dividing copies by messages sees the reply pulling the average
+    // *below* two rather than a message that cost nothing.
+    unsafe {
+        DELIVERIES = DELIVERIES.wrapping_add(1);
+        PAYLOAD_COPIES += 1;
+        MESSAGES += 1;
+    };
     Ok(length)
 }
 

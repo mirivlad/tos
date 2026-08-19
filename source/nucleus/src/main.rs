@@ -225,6 +225,38 @@ fn binding(name: &[u8]) -> capability::Binding {
     }
 }
 
+/// Writes what the boot's IPC actually cost (`IPC_V1` §8, §9.7).
+///
+/// Six numbers and no arithmetic: the ratios §8 bounds are computed by whoever
+/// reads them, because a nucleus that reported "2 copies per message" would be
+/// reporting its own opinion of a division rather than what it counted.
+///
+/// The crossings are split because §8's bound is **per request/reply** and a
+/// boot's total is not that: `time_monotonic` in a spin loop crosses the same
+/// edge and belongs to no exchange. `ipc_in` counts only the four operations an
+/// exchange is made of; `returns` counts calls that came back through the edge,
+/// which a blocked one does not; `resumptions` counts contexts the scheduler
+/// entered, which is the other direction for exactly those. Preemption is in
+/// none of them, because a tick returns through the timer stub — which is the
+/// exclusion §8 states.
+fn ipc_cost() {
+    let (messages, copies) = ipc::cost();
+    let (ipc_in, other_in, returns) = syscall::crossings();
+    tos_serial::puts(b"TOS.RUN.IPC.COST messages=");
+    tos_serial::put_u32_decimal(messages as u32);
+    tos_serial::puts(b" payload_copies=");
+    tos_serial::put_u32_decimal(copies as u32);
+    tos_serial::puts(b" ipc_in=");
+    tos_serial::put_u32_decimal(ipc_in as u32);
+    tos_serial::puts(b" other_in=");
+    tos_serial::put_u32_decimal(other_in as u32);
+    tos_serial::puts(b" returns=");
+    tos_serial::put_u32_decimal(returns as u32);
+    tos_serial::puts(b" resumptions=");
+    tos_serial::put_u32_decimal(process::entries() as u32);
+    tos_serial::puts(b"\r\n");
+}
+
 /// The declared identity of the capsule's source tree, written into `out`.
 ///
 /// A detached capsule's identity is a whole-tree digest and a git one is an
@@ -977,7 +1009,20 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         console.final_screen();
     }
 
-    // --- 8. halt with success code ---
+    // --- 8. what the boot's IPC cost, counted ---------------------------------
+    //
+    // `IPC_V1` §9.7 asks that the boundary-crossing and copy counts be
+    // *counted*, not estimated, and this is the count. It is the nucleus's own,
+    // because nothing else can see either number: a process cannot observe how
+    // many times it crossed, and a copy inside the nucleus is invisible from
+    // outside it.
+    //
+    // `crossings` is both directions of the one edge — calls in, contexts
+    // entered out — and excludes preemption, which returns through the timer
+    // stub rather than through either. That is exactly the exclusion §8 states.
+    ipc_cost();
+
+    // --- 9. halt with success code ---
     tos_serial::puts(b"TOS.HALT ok=0x10\r\n");
     result_port(RESULT_HALT_OK)
 }
