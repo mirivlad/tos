@@ -507,6 +507,17 @@ fn authority(launch: &Launch, report: &mut Report) {
         "TOS.RUN.CAPABILITY.PROBE out_of_range={out_of_range} in_range_refused={in_range_refused} guessed={guessed}"
     ));
 
+    // A process holding **both** halves of an endpoint is the deputy: strong
+    // enough to send on its own account, and about to be asked by somebody
+    // weaker to act. That pairing is what `CAPABILITY_V1` §7.6 is about, so it
+    // is answered before the ordinary halves are.
+    if first.object == tos_launch::OBJECT_ENDPOINT
+        && first.rights & tos_launch::RIGHT_SEND != 0
+        && first.rights & tos_launch::RIGHT_RECEIVE != 0
+    {
+        deputy(launch, report, first.handle);
+        return;
+    }
     if first.object == tos_launch::OBJECT_ENDPOINT {
         if first.rights & tos_launch::RIGHT_CALL != 0 {
             client(launch, report, first.handle);
@@ -522,7 +533,7 @@ fn authority(launch: &Launch, report: &mut Report) {
             // Only a receiver reaches here without having done a half of its
             // own, so this is the request/reply server: what it received may
             // have carried the right to answer.
-            server(launch, report);
+            server(launch, report, first.handle);
         }
         // An operation whose object this handle is not. The index is right, the
         // generation is right, and the answer is still a refusal — which is
@@ -609,6 +620,19 @@ fn client(launch: &Launch, report: &mut Report, handle: u64) {
     report.line(&alloc::format!(
         "TOS.RUN.IPC.CALLED status={status} bytes={length} answer={text}"
     ));
+
+    // And again, this time handing over a capability this process actually
+    // holds. Whoever answers may act **with that** — and what it can then do is
+    // bounded by what this process held, not by what the answerer holds.
+    // SAFETY: the argument region is this process's own, and index 0 is inside
+    // the contract's maximum.
+    unsafe { set_transferred(launch.arguments_base, 0, handle) };
+    // SAFETY: as above, with one handle written for the count declared.
+    let (with_capability, _) =
+        unsafe { call_transferring(ENDPOINT_CALL, handle, question.len() as u64, 1) };
+    report.line(&alloc::format!(
+        "TOS.RUN.DEPUTY.ASKED named_by_value={status} with_capability={with_capability}"
+    ));
 }
 
 /// Answers a question somebody asked, with the right that came with it.
@@ -617,7 +641,21 @@ fn client(launch: &Launch, report: &mut Report, handle: u64) {
 /// so a receiver knows where to look without being told how many capabilities
 /// the caller chose to send. It is spent by answering: the second attempt below
 /// is refused, which is what single-use means and not a claim about it.
-fn server(launch: &Launch, report: &mut Report) {
+fn server(launch: &Launch, report: &mut Report, handle: u64) {
+    // The first question is already in the argument region: `receive_half` took
+    // it. The second has not been asked yet, so it is waited for — a client that
+    // asks twice must be answered twice, or its second call waits forever and
+    // the liveness rule ends the boot.
+    server_once(launch, report);
+    // SAFETY: `endpoint_receive` names its endpoint and its flags; this waits.
+    let (status, _) = unsafe { call(ENDPOINT_RECEIVE, handle, 0) };
+    if status == OK {
+        server_once(launch, report);
+    }
+}
+
+/// One answered question.
+fn server_once(launch: &Launch, report: &mut Report) {
     // SAFETY: the argument region is this process's own.
     let reply = unsafe {
         transferred(
@@ -649,6 +687,66 @@ fn server(launch: &Launch, report: &mut Report) {
     report.line(&alloc::format!(
         "TOS.RUN.IPC.REPLIED status={status} handle=0x{reply:x} again={again}"
     ));
+}
+
+/// Acts for somebody weaker, and does not lend them its own strength.
+///
+/// This is `CAPABILITY_V1` §7.6, the test docs/37 says fails quietly in systems
+/// that pass the other five. The deputy here **can** send on this endpoint —
+/// that is its own authority and it is real. The question is what happens when a
+/// client that cannot send asks it to.
+///
+/// Two requests, and the difference between them is the whole answer.
+///
+/// - The first names its object **by value**: a number in the payload, and no
+///   capability. There is nothing to act on. The number would name something in
+///   *this* process's table, and using it would be the deputy acting on its own
+///   authority at a stranger's direction — which is the confused deputy exactly.
+///   So it refuses, and the refusal names the request rather than guessing.
+/// - The second carries a capability the client actually holds. The deputy acts
+///   **with that**, and what it can then do is bounded by what the client held —
+///   `call`, not `send` — even though this process holds `send`. One line later
+///   it does the same operation on its own account and succeeds, so the refusal
+///   above cannot be read as the deputy being weak.
+fn deputy(launch: &Launch, report: &mut Report, own: u64) {
+    for request in 0..2u32 {
+        // SAFETY: `endpoint_receive` names its endpoint and its flags; this
+        // waits.
+        let (status, length) = unsafe { call(ENDPOINT_RECEIVE, own, 0) };
+        if status != OK {
+            report.line(&alloc::format!("TOS.RUN.DEPUTY.WAIT status={status}"));
+            return;
+        }
+        // SAFETY: the argument region is this process's own; the reply
+        // capability is in the last slot, and whatever the client sent is
+        // before it.
+        let (reply, offered) = unsafe {
+            (
+                transferred(
+                    launch.arguments_base,
+                    tos_launch::MAX_TRANSFERRED_CAPABILITIES as usize - 1,
+                ),
+                transferred(launch.arguments_base, 0),
+            )
+        };
+        if offered == 0 {
+            report.line(&alloc::format!(
+                "TOS.RUN.DEPUTY.REFUSED request={request} reason=named-by-value bytes={length}"
+            ));
+        } else {
+            // SAFETY: `endpoint_send` names its endpoint and a length.
+            let (for_client, _) = unsafe { call(ENDPOINT_SEND, offered, 0) };
+            // SAFETY: as above, on this process's own capability.
+            let (on_own_account, _) = unsafe { call(ENDPOINT_SEND, own, 0) };
+            report.line(&alloc::format!(
+                "TOS.RUN.DEPUTY.ACTED request={request} for_client={for_client} on_own_account={on_own_account}"
+            ));
+        }
+        if reply != 0 {
+            // SAFETY: `endpoint_reply` names the reply capability and a length.
+            unsafe { call(ENDPOINT_REPLY, reply, 0) };
+        }
+    }
 }
 
 /// Creates a process and ends it, on authority this process was given.

@@ -21,6 +21,10 @@
 // endpoint, and one process able to create others — and a build asking for both
 // would be asking which of two decisions the launcher made.
 #[cfg(any(
+    all(feature = "test-deputy", feature = "test-two-processes"),
+    all(feature = "test-deputy", feature = "test-supervisor"),
+    all(feature = "test-deputy", feature = "test-deadlock"),
+    all(feature = "test-deputy", feature = "test-call-reply"),
     all(feature = "test-two-processes", feature = "test-supervisor"),
     all(feature = "test-two-processes", feature = "test-deadlock"),
     all(feature = "test-two-processes", feature = "test-call-reply"),
@@ -694,11 +698,36 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             }],
         )
     };
+    // Under the deputy constant one process is **strong** — it may receive on an
+    // endpoint and send on it — and the other is **weak**: it may only call. The
+    // question `CAPABILITY_V1` §7.6 asks is whether the strong one's strength
+    // leaks into work it does for the weak one, and the only way to ask it is to
+    // build both and let them talk.
+    #[cfg(feature = "test-deputy")]
+    let (first_endowment, client_endowment) = {
+        let Some(endpoint) = ipc::create() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        (
+            [capability::Endowment::Existing {
+                object: capability::Object::Endpoint(endpoint),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            }],
+            [capability::Endowment::Existing {
+                object: capability::Object::Endpoint(endpoint),
+                rights: tos_launch::RIGHT_CALL,
+                scope: 0,
+            }],
+        )
+    };
     #[cfg(not(any(
         feature = "test-two-processes",
         feature = "test-supervisor",
         feature = "test-deadlock",
-        feature = "test-call-reply"
+        feature = "test-call-reply",
+        feature = "test-deputy"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];
     let first = match build(&first_endowment) {
@@ -721,6 +750,14 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     {
         tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
         if build(&sender_endowment).is_err() {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
+            mem_fail();
+        }
+    }
+    #[cfg(feature = "test-deputy")]
+    {
+        tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
+        if build(&client_endowment).is_err() {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
             mem_fail();
         }

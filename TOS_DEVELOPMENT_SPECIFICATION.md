@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `ad54c17ce22e2e60a0914957e4d2cf4067e2b496374cc4a9b265d5d504d056c5`  
+Source-manifest SHA-256: `94d1d594d123a801dd78606f196f3aed8b5778a9c943f986e42fe00e2edcd93f`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1627,6 +1627,9 @@ the process is only reporting what it was told.
 | `TOS.RUN.IPC.RECEIVED` | `bytes=` `text=` | A message taken from an endpoint, and its payload. `text=` carries no spaces: a value with one would be two fields to a reader that splits on them. |
 | `TOS.RUN.IPC.POLLED` | `status=` | The answer to a receive that asked not to wait. |
 | `TOS.RUN.IPC.WAIT` | `status=` `attempt=` | A blocking receive that did not return a message, and which attempt it was. A process reporting this has been resumed, which is the only way it could report anything. |
+| `TOS.RUN.DEPUTY.REFUSED` | `request=` `reason=` `bytes=` | A process acting for another refused a request that named its object by value rather than by capability. A number is not a handle, and using one would be acting on one's own authority at a stranger's direction. |
+| `TOS.RUN.DEPUTY.ACTED` | `request=` `for_client=` `on_own_account=` | The same operation performed with the capability a client supplied and with the actor's own. The two statuses differing is `CAPABILITY_V1` §7.6: authority attaches to what the actor was given for the work, not to the actor. |
+| `TOS.RUN.DEPUTY.ASKED` | `named_by_value=` `with_capability=` | A client's own view of the two requests it made. |
 | `TOS.RUN.IPC.CALLED` | `status=` `bytes=` and, on success, `answer=` | A request whose answer arrived inside the call that asked it (`IPC_V1` §4). |
 | `TOS.RUN.IPC.REPLIED` | `status=` `handle=0x<hex>` `again=` | A call answered with the capability that came with it. `again=` is the status of using that capability a second time, which single use makes a refusal. |
 | `TOS.RUN.IPC.DELEGATED` | `handle=0x<hex>` `send=` | A capability that arrived with a message, as the receiver's own handle, and the status of using it for something the receiver's own capability was refused. |

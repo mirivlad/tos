@@ -259,12 +259,18 @@ it. Named here so that it is found on purpose.
     caller inside the call it blocked in; the same reply capability used twice
     is refused the second time; and **no wait is cancelled**, because a run that
     progresses must never see the liveness rule.
-- [ ] `CAPABILITY_V1` §7.6 — the confused deputy. It needs a broker holding a
-  strong capability and a client holding a weak one, which needs transfer, which
-  needs ADR-0058.
-  docs/37 names this test explicitly and it is the one that fails quietly in
-  systems that pass the other five, so it is named here as outstanding rather
-  than approximated by something easier.
+- [x] **`CAPABILITY_V1` §7.6 — the confused deputy — done (2026-08-19).** The
+  pair is built so the question can be asked at all: the deputy holds `send` and
+  `receive`, so its authority is real, and the client holds only `call`.
+  - A request naming its object **by value** — a number that names something in
+    the deputy's table and nothing in the client's — is refused. Using it would
+    be the deputy acting on its own authority at a stranger's direction.
+  - A request carrying a capability the client holds is acted on **with that**,
+    and refused, because the client held `call` and not `send`. One line later
+    the deputy performs the same operation on its own account and succeeds.
+  - Those two statuses, on one operation, in one process, one line apart, are
+    the evidence: authority attaches to what the actor was given for the work,
+    not to the actor.
 
 ## Why the second process is where the evidence lives
 
