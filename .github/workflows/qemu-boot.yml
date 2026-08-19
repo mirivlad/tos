@@ -36,10 +36,23 @@ jobs:
       # provides both.
       - uses: actions/checkout@v4
 
+      # A stalled Ubuntu mirror hung this step for the job's whole thirty-minute
+      # budget twice on 2026-08-19, so nothing that followed ran and the failure
+      # said only "cancelled". The bound and the retries are not tuning: apt's
+      # default is to wait indefinitely, and a step that can wait indefinitely
+      # inside a job that cannot is a step that reports a timeout as a mystery.
+      # `timeout-minutes` makes a stall name itself; `Acquire` makes a
+      # unreachable mirror fail in seconds and be tried again.
       - name: Firmware and tools
+        timeout-minutes: 6
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends qemu-system-x86 ovmf mtools
+          apt_get() {
+            sudo apt-get -o Acquire::Retries=3 \
+                         -o Acquire::http::Timeout=20 \
+                         -o Acquire::https::Timeout=20 "$@"
+          }
+          apt_get update
+          apt_get install -y --no-install-recommends qemu-system-x86 ovmf mtools
           qemu-system-x86_64 --version | head -1
           ls -l /usr/share/OVMF/ || true
 
