@@ -48,7 +48,24 @@
     all(feature = "test-wrong-kind", feature = "test-call-reply"),
     all(feature = "test-wrong-kind", feature = "test-deputy"),
     all(feature = "test-wrong-kind", feature = "test-second-receiver"),
-    all(feature = "test-wrong-kind", feature = "test-module-operation")
+    all(feature = "test-wrong-kind", feature = "test-module-operation"),
+    all(feature = "test-process-control", feature = "test-two-processes"),
+    all(feature = "test-process-control", feature = "test-supervisor"),
+    all(feature = "test-process-control", feature = "test-deadlock"),
+    all(feature = "test-process-control", feature = "test-call-reply"),
+    all(feature = "test-process-control", feature = "test-deputy"),
+    all(feature = "test-process-control", feature = "test-second-receiver"),
+    all(feature = "test-process-control", feature = "test-module-operation"),
+    all(feature = "test-process-control", feature = "test-wrong-kind"),
+    all(feature = "test-process-terminate", feature = "test-two-processes"),
+    all(feature = "test-process-terminate", feature = "test-supervisor"),
+    all(feature = "test-process-terminate", feature = "test-deadlock"),
+    all(feature = "test-process-terminate", feature = "test-call-reply"),
+    all(feature = "test-process-terminate", feature = "test-deputy"),
+    all(feature = "test-process-terminate", feature = "test-second-receiver"),
+    all(feature = "test-process-terminate", feature = "test-module-operation"),
+    all(feature = "test-process-terminate", feature = "test-wrong-kind"),
+    all(feature = "test-process-control", feature = "test-process-terminate")
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
 
@@ -826,10 +843,27 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         binding: binding(b"endpoint"),
         rights: tos_launch::RIGHT_TERMINATE,
     }];
+    // The two process-control constants differ by one bit and nothing else, so
+    // that the two boots differ by one bit and nothing else. `create` is a real
+    // right of a process object and not a placeholder: the grant is genuine
+    // authority over this process, and what it lacks is the one operation the
+    // module calls.
+    #[cfg(feature = "test-process-control")]
+    let first_endowment = [capability::Endowment::Own {
+        binding: binding(b"control"),
+        rights: tos_launch::RIGHT_CREATE,
+    }];
+    #[cfg(feature = "test-process-terminate")]
+    let first_endowment = [capability::Endowment::Own {
+        binding: binding(b"control"),
+        rights: tos_launch::RIGHT_TERMINATE,
+    }];
     #[cfg(not(any(
         feature = "test-two-processes",
         feature = "test-module-operation",
         feature = "test-wrong-kind",
+        feature = "test-process-control",
+        feature = "test-process-terminate",
         feature = "test-supervisor",
         feature = "test-deadlock",
         feature = "test-call-reply",

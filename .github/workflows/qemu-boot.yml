@@ -144,6 +144,13 @@ jobs:
       - name: A module performs an operation gate
         run: bash host-tools/qemu-test/module-operation.sh target/qemu-ci/module-operation
 
+      # The schema's second interface, whose capability names a process rather
+      # than an endpoint. One module text, two launcher constants differing by
+      # one right: without `terminate` the operation is refused and the module
+      # returns the status, with it the module never returns.
+      - name: A module ends its own process gate
+        run: bash host-tools/qemu-test/process-control.sh target/qemu-ci/process-control
+
       # An interrupt gate leaves DF as the interrupted context had it, and the
       # nucleus's handlers are Rust, compiled on the promise that DF is clear.
       # A process holds it across many ticks so the question is asked on every
