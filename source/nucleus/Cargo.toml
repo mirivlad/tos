@@ -52,6 +52,14 @@ test-module-operation = []
 # the object does not, which is the one case `SYSTEM_INTERFACE_V1` §4's object
 # column exists to refuse.
 test-wrong-kind = []
+# Authority over this process, under the name a module asks for it, carrying
+# `create` and **not** `terminate`. The module's operation is then refused by the
+# rights mask and the module lives to say so.
+test-process-control = []
+# The same authority carrying `terminate`. The module's operation then ends the
+# process that made it, so the module never returns — which is the difference
+# the evidence is made of.
+test-process-terminate = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

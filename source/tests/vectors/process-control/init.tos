@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A TOS Core module reaching the *other* interface the schema declares.
+//
+// `tests/vectors/interface-operation` proves a module can reach
+// `system.ipc.Endpoint`. This one reaches `system.process.Control`, whose
+// capability names a **process** rather than an endpoint — so it is also the
+// only module that exercises the startup kind check against a second kind
+// (`SYSTEM_INTERFACE_V1` section 4), rather than against the one kind that
+// happens to be first in the table.
+//
+// The module is the same under both launcher constants it is booted with. What
+// differs is one bit of the rights mask on the grant it is answered with, and
+// the difference between the two outcomes is the evidence:
+//
+//   - without `terminate`, the operation is refused and this module returns the
+//     status, so the boot completes and says what it was told;
+//   - with `terminate`, this module does not return at all, because the process
+//     it named is this one.
+//
+// A module that had faked the call could produce one of those. It could not
+// produce both from one text.
+
+module system.boot.init version 1.0 profile full;
+
+import capability system.process.Control as control;
+
+resource [
+    fuel: 65536,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 1
+]
+
+// The one operation `SYSTEM_INTERFACE_V1` section 4 declares on process
+// authority. It takes the capability and nothing else: which process is ended
+// is what the capability names, never what the caller says.
+extern fn process_terminate(cap: system.process.Control) -> i64 uses [control];
+
+pub fn main() -> i64 uses [control] {
+    return process_terminate(control);
+}
