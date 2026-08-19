@@ -5,7 +5,7 @@
 //! right stage ran and whether its refusal reached the caller intact. The
 //! language rules themselves are tested where they live.
 
-use tos_pipeline::{execute, render, PipelineStage, Request, Run, Silent, Trace};
+use tos_pipeline::{execute, render, PipelineStage, Request, Run, Silent, Trace, Unreachable};
 
 const PRELUDE: &str = "module system.boot.init version 1.0 profile bootstrap; \
      resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
@@ -38,7 +38,12 @@ impl Trace for Recorder {
 fn canonical_source_reaches_an_executed_result_through_every_stage() {
     let text = format!("{PRELUDE} pub fn main() -> i32 {{ return 6i32 * 7i32; }}");
     let mut recorder = Recorder::default();
-    let run = execute(&request(&text, "main"), Vec::new(), &mut recorder);
+    let run = execute(
+        &request(&text, "main"),
+        Vec::new(),
+        &mut recorder,
+        &mut Unreachable,
+    );
 
     assert_eq!(
         recorder.stages,
@@ -74,8 +79,18 @@ fn canonical_source_reaches_an_executed_result_through_every_stage() {
 fn identity_is_computed_from_the_source_rather_than_declared() {
     let text = format!("{PRELUDE} pub fn main() -> i32 {{ return 1i32; }}");
     let other = format!("{PRELUDE} pub fn main() -> i32 {{ return 2i32; }}");
-    let first = execute(&request(&text, "main"), Vec::new(), &mut Silent);
-    let second = execute(&request(&other, "main"), Vec::new(), &mut Silent);
+    let first = execute(
+        &request(&text, "main"),
+        Vec::new(),
+        &mut Silent,
+        &mut Unreachable,
+    );
+    let second = execute(
+        &request(&other, "main"),
+        Vec::new(),
+        &mut Silent,
+        &mut Unreachable,
+    );
 
     let (Run::Completed(first), Run::Completed(second)) = (first, second) else {
         panic!("both fixtures must run");
@@ -97,8 +112,18 @@ fn identity_is_computed_from_the_source_rather_than_declared() {
 #[test]
 fn the_same_source_twice_produces_the_same_identity_and_answer() {
     let text = format!("{PRELUDE} pub fn main() -> i32 {{ return 6i32 * 7i32; }}");
-    let first = execute(&request(&text, "main"), Vec::new(), &mut Silent);
-    let second = execute(&request(&text, "main"), Vec::new(), &mut Silent);
+    let first = execute(
+        &request(&text, "main"),
+        Vec::new(),
+        &mut Silent,
+        &mut Unreachable,
+    );
+    let second = execute(
+        &request(&text, "main"),
+        Vec::new(),
+        &mut Silent,
+        &mut Unreachable,
+    );
     let (Run::Completed(first), Run::Completed(second)) = (first, second) else {
         panic!("both runs must complete");
     };
@@ -114,6 +139,7 @@ fn bytes_that_are_not_a_transport_valid_source_unit_stop_at_the_reader() {
         &request("\u{feff}module x;", "main"),
         Vec::new(),
         &mut recorder,
+        &mut Unreachable,
     );
     assert_eq!(recorder.stages, vec![PipelineStage::Read]);
     let Run::SourceRejected { code, .. } = run else {
@@ -132,6 +158,7 @@ fn a_grammar_error_stops_at_the_parser_and_carries_its_diagnostics() {
         ),
         Vec::new(),
         &mut recorder,
+        &mut Unreachable,
     );
     assert_eq!(
         recorder.stages,
@@ -152,7 +179,12 @@ fn a_grammar_error_stops_at_the_parser_and_carries_its_diagnostics() {
 fn a_checked_rule_stops_at_the_checker() {
     let text = format!("{PRELUDE} pub fn main() -> i32 {{ return true; }}");
     let mut recorder = Recorder::default();
-    let run = execute(&request(&text, "main"), Vec::new(), &mut recorder);
+    let run = execute(
+        &request(&text, "main"),
+        Vec::new(),
+        &mut recorder,
+        &mut Unreachable,
+    );
     assert_eq!(
         recorder.stages,
         vec![
@@ -180,7 +212,7 @@ fn a_module_stored_at_the_wrong_path_stops_at_resolution() {
         bytes: text.as_bytes(),
         entry: "main",
     };
-    let run = execute(&request, Vec::new(), &mut Silent);
+    let run = execute(&request, Vec::new(), &mut Silent, &mut Unreachable);
     let Run::Diagnosed { stage, diagnostics } = run else {
         panic!("expected a resolution refusal, got {run:?}");
     };
@@ -191,7 +223,12 @@ fn a_module_stored_at_the_wrong_path_stops_at_resolution() {
 #[test]
 fn a_missing_entry_is_the_engine_refusing_rather_than_a_trap() {
     let text = format!("{PRELUDE} pub fn main() -> i32 {{ return 1i32; }}");
-    let run = execute(&request(&text, "absent"), Vec::new(), &mut Silent);
+    let run = execute(
+        &request(&text, "absent"),
+        Vec::new(),
+        &mut Silent,
+        &mut Unreachable,
+    );
     let Run::Refused(refusal) = &run else {
         panic!("expected a refusal, got {run:?}");
     };
@@ -207,6 +244,7 @@ fn a_trap_names_the_source_it_came_from() {
         &request(&text, "main"),
         vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 0)],
         &mut Silent,
+        &mut Unreachable,
     );
     let Run::Trapped { code, at, .. } = &run else {
         panic!("expected a trap, got {run:?}");
@@ -232,7 +270,12 @@ fn a_trap_names_the_source_it_came_from() {
 #[test]
 fn a_completed_run_renders_verification_accounting_and_answer_in_order() {
     let text = format!("{PRELUDE} pub fn main() -> i32 {{ return 6i32 * 7i32; }}");
-    let run = execute(&request(&text, "main"), Vec::new(), &mut Silent);
+    let run = execute(
+        &request(&text, "main"),
+        Vec::new(),
+        &mut Silent,
+        &mut Unreachable,
+    );
     let lines = render::events(&run);
     assert_eq!(lines.len(), 3, "{lines:?}");
     assert!(lines[0].starts_with("TOS.RUN.VERIFIED module=system.boot.init digest=sha256:"));
@@ -257,6 +300,7 @@ fn sharing_a_region_runs_and_is_charged_against_the_declared_budget() {
         &request(text, "main"),
         vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 7)],
         &mut Silent,
+        &mut Unreachable,
     );
     let Run::Completed(completion) = &run else {
         panic!("expected a completed run: {:?}", render::events(&run));
@@ -283,6 +327,7 @@ fn a_share_beyond_the_declared_shared_budget_traps_before_the_effect() {
         &request(text, "main"),
         vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 7)],
         &mut Silent,
+        &mut Unreachable,
     );
     let Run::Trapped { code, .. } = &run else {
         panic!("expected a trap: {:?}", render::events(&run));
@@ -303,6 +348,7 @@ fn taking_a_guard_runs_and_is_metered_against_the_declared_sync_limit() {
         &request(text, "main"),
         vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 5)],
         &mut Silent,
+        &mut Unreachable,
     );
     let Run::Completed(completion) = &run else {
         panic!("expected a completed run: {:?}", render::events(&run));
@@ -322,6 +368,7 @@ fn a_guard_beyond_the_declared_sync_limit_traps_before_the_effect() {
         &request(text, "main"),
         vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 5)],
         &mut Silent,
+        &mut Unreachable,
     );
     let Run::Trapped { code, .. } = &run else {
         panic!("expected a trap: {:?}", render::events(&run));
@@ -342,6 +389,7 @@ fn a_guard_released_with_its_frame_does_not_accumulate() {
         &request(text, "main"),
         vec![tos_engine::Value::Int(tos_ir::IntKind::I32, 5)],
         &mut Silent,
+        &mut Unreachable,
     );
     let Run::Completed(completion) = &run else {
         panic!("expected a completed run: {:?}", render::events(&run));
@@ -359,7 +407,12 @@ fn a_guard_released_with_its_frame_does_not_accumulate() {
 #[test]
 fn an_unlowerable_name_is_reported_as_a_named_gap() {
     let text = format!("{PRELUDE} pub fn main() -> i32 {{ return missing; }}");
-    let run = execute(&request(&text, "main"), Vec::new(), &mut Silent);
+    let run = execute(
+        &request(&text, "main"),
+        Vec::new(),
+        &mut Silent,
+        &mut Unreachable,
+    );
     // An unknown name is a checker finding, not a lowering gap: the stage that
     // can say what is wrong is the one that reports it.
     assert_eq!(run.failed_at(), Some(PipelineStage::Check));

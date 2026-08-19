@@ -17,7 +17,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use tos_pipeline::{execute, PipelineStage, Request, Run, Silent};
+use tos_pipeline::{execute, PipelineStage, Request, Run, Silent, Unreachable};
 
 /// Accepted vectors that reach the verifier and the engine today.
 ///
@@ -76,7 +76,7 @@ fn the_accepted_corpus_lowering_boundary_is_measured_not_implied() {
             bytes: &text,
             entry: "main",
         };
-        let run = execute(&request, Vec::new(), &mut Silent);
+        let run = execute(&request, Vec::new(), &mut Silent, &mut Unreachable);
         let stage = match &run {
             Run::Completed(_) => {
                 verified += 1;

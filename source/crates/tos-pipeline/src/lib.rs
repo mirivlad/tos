@@ -57,7 +57,11 @@ use tos_core::{
 /// read a value this crate gave it, which is a dependency on the stage that
 /// produced the result rather than on the result.
 pub use tos_core::{Diagnostic, Position, Severity};
+// The host side of the boundary an accepted interface schema defines. Re-exported
+// here because this crate is the reference path's facade: a caller assembling a
+// run should not have to name the engine crate to say what that run may reach.
 use tos_engine::{run_set, Accounting, Refusal, Value, Verified};
+pub use tos_engine::{Handle, Reach, System, Unreachable};
 use tos_ir::Module;
 use tos_verifier::{verify, Finding, Limits, ResolutionSnapshot, VerifiedModule};
 
@@ -263,7 +267,12 @@ impl Run {
 /// The stages are announced through `trace` in the order they are entered, and
 /// the first one that refuses ends the run: a later stage reading a table an
 /// earlier stage rejected would be reporting a consequence, not a defect.
-pub fn execute(request: &Request<'_>, arguments: Vec<Value>, trace: &mut dyn Trace) -> Run {
+pub fn execute(
+    request: &Request<'_>,
+    arguments: Vec<Value>,
+    trace: &mut dyn Trace,
+    system: &mut dyn System,
+) -> Run {
     let unit = Unit {
         path: request.path,
         bytes: request.bytes,
@@ -279,6 +288,7 @@ pub fn execute(request: &Request<'_>, arguments: Vec<Value>, trace: &mut dyn Tra
         },
         arguments,
         trace,
+        system,
     ) {
         Ok(run) => run,
         Err(_) => unreachable!("a one-unit set contains its own entry path"),
@@ -297,6 +307,7 @@ pub fn execute_set(
     request: &SetRequest<'_>,
     arguments: Vec<Value>,
     trace: &mut dyn Trace,
+    system: &mut dyn System,
 ) -> Result<Run, SetError> {
     // Checked before the first stage is announced, so a request that cannot run
     // produces no stage events at all. A log that announced `read` and then
@@ -455,7 +466,7 @@ pub fn execute_set(
     });
     let entry_position = set.len() - 1;
     Ok(
-        match run_set(&set, entry_position, request.entry, arguments) {
+        match run_set(&set, entry_position, request.entry, arguments, system) {
             Err(refusal) => Run::Refused(refusal),
             Ok(Err(trap)) => Run::Trapped {
                 code: trap.code,

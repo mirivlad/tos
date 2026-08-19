@@ -28,7 +28,7 @@
 use std::time::Instant;
 
 use tos_core::{lower_module, Checker, ModuleContext, Parser, SourceReader};
-use tos_engine::{run, Value};
+use tos_engine::{run, Unreachable, Value};
 use tos_ir::IntKind;
 use tos_verifier::{verify, Limits, ResolutionSnapshot};
 
@@ -441,7 +441,7 @@ fn run_benchmark(text: &str) -> Value {
     let module = lower_module(&source, &schema, &context).expect("benchmark lowers");
     let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect("benchmark verifies");
-    run(&module, &receipt, "main", vec![])
+    run(&module, &receipt, "main", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("the benchmark does not trap")
         .value

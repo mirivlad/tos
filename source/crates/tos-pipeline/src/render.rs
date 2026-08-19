@@ -81,6 +81,12 @@ pub fn value(value: &Value) -> String {
             captures,
             cancelled,
         } => format!("task:{body}/{}/{cancelled}", captures.len()),
+        // The one value that does not round-trip through the eye, on purpose.
+        // `docs/42` §2 keeps the concrete handle representation out of source
+        // maps, audit logs and cache identity, and this renderer feeds all
+        // three. Two different capabilities print the same because the
+        // difference between them is not a reader's to have.
+        Value::Capability(_) => String::from("capability"),
     }
 }
 

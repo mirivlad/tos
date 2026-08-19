@@ -14,7 +14,7 @@
 //! that reads the source directly.
 
 use tos_capsule::parse;
-use tos_pipeline::{execute, render, Request, Run, Silent};
+use tos_pipeline::{execute, render, Request, Run, Silent, Unreachable};
 
 const CAPSULE: &[u8] = include_bytes!("../../vectors/capsule-v1/valid-001.bin");
 
@@ -36,7 +36,7 @@ fn the_canonical_boot_text_is_a_tos_core_module_that_runs() {
         bytes: boot.content,
         entry: "main",
     };
-    let run = execute(&request, Vec::new(), &mut Silent);
+    let run = execute(&request, Vec::new(), &mut Silent, &mut Unreachable);
     let Run::Completed(completion) = &run else {
         panic!(
             "the canonical boot text must execute: {:?}",
