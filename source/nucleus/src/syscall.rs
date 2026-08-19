@@ -397,8 +397,15 @@ fn send(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
     // or its owner may end before the message is delivered.
     let mut granted = [(Object::None, 0u32, 0u64); ipc::MAX_TRANSFERRED as usize];
     let count = frame.r10 as usize;
+    // A count past the contract's maximum is a **malformed call**, not a
+    // resource condition, and it answers `E_BAD_ARGUMENT` for the same reason
+    // an oversize payload does: the three bounds of `IPC_V1` §3 are constants
+    // the caller knew before it called. `E_LIMIT` is what a *full queue*
+    // answers (§9.2), and a caller that could not tell "retry later" from "this
+    // call can never work" would be told nothing useful by either — which is
+    // exactly the merge `SYSTEM_ABI_V1` §4 forbids for the other pair.
     if count > granted.len() {
-        return Answer::status(E_LIMIT);
+        return Answer::status(E_BAD_ARGUMENT);
     }
     match resolve_transfers(caller, from, &mut granted[..count]) {
         Ok(()) => {}
@@ -447,8 +454,8 @@ fn call(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
     let count = frame.r10 as usize;
     if count + 1 > granted.len() {
         // One place is spoken for by the answer, so a call carries one fewer of
-        // its own than a send does.
-        return Answer::status(E_LIMIT);
+        // its own than a send does. Malformed rather than limited, as in `send`.
+        return Answer::status(E_BAD_ARGUMENT);
     }
     match resolve_transfers(caller, from, &mut granted[..count]) {
         Ok(()) => {}

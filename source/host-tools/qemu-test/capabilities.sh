@@ -104,8 +104,27 @@ exactly 2 "^TOS\\.RUN\\.CAPABILITY\\.PROBE out_of_range=$E_BAD_HANDLE in_range_r
     "a process guessing handles learned something, or the refusals were not the contract's"
 
 # --- the message crossed, whole, and the bound refused rather than truncated -
-exactly 1 "^TOS\\.RUN\\.IPC\\.SENT bytes=$BYTES status=0 oversize=$E_BAD_ARGUMENT other_half=$E_NO_CAPABILITY\$" \
-    "the send half did not send, or the oversize payload was not refused"
+# `IPC_V1` §9.1's three bounds, and §9.3's failed transfer, on one line.
+#
+#   - `oversize`  — a payload one byte past the inline maximum;
+#   - `overcount` — one capability past the four ADR-0057 fixes;
+#   - `unheld`    — a transfer naming a handle this process does not hold.
+#
+# The first two answer **the same status**, and that is the point of asserting
+# them together: both are constants of the contract the caller knew before it
+# called, so both are malformed calls. `E_LIMIT` belongs to the full queue
+# (§9.2) alone, and a caller that could not tell "retry later" from "this call
+# can never work" would learn nothing from either.
+#
+# `unheld` is a refusal rather than a send that succeeded carrying nothing: §9.3
+# requires a failed send to transfer no capability, and the way to know it
+# transferred none is that the send did not happen at all. The status is
+# `E_BAD_HANDLE` and not `E_NO_CAPABILITY` because the index named is outside
+# this process's table — "you named nothing" rather than "you lack the
+# authority", which is the distinction `SYSTEM_ABI_V1` §4 forbids merging and
+# ADR-0056's refusal order decides.
+exactly 1 "^TOS\\.RUN\\.IPC\\.SENT bytes=$BYTES status=0 oversize=$E_BAD_ARGUMENT other_half=$E_NO_CAPABILITY overcount=$E_BAD_ARGUMENT unheld=$E_BAD_HANDLE\$" \
+    "one of IPC_V1 section 3's bounds did not refuse, or a handle nobody holds travelled"
 exactly 1 "^TOS\\.RUN\\.IPC\\.RECEIVED bytes=$BYTES text=$PAYLOAD\$" \
     "the receiver did not read the sender's message back whole"
 exactly 1 "^TOS\\.RUN\\.IPC\\.RIGHTS other_half=$E_NO_CAPABILITY\$" \
@@ -141,5 +160,6 @@ echo "CAPABILITIES PASS: authority is a handle, and a message crossed between tw
 echo "  endowed by the launcher before either ran; each holds one half of one endpoint"
 echo "  guessing refused ${E_BAD_HANDLE} out of range and ${E_NO_CAPABILITY} in it; nothing guessed"
 echo "  $BYTES bytes delivered whole; a payload past the 256-byte bound refused, not truncated"
+echo "  a fifth transferred capability refused the same way; a handle nobody holds did not travel"
 echo "  attenuation to every right stayed inside what was held; released handles went stale"
 echo "  a capability arrived with the message and did what the receiver's own handle could not"
