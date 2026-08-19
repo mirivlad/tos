@@ -52,6 +52,9 @@ specification() { python3 "$ROOT/tools/build-specification.py" --check; }
 interface_contract_authority() {
     bash "$ROOT/scripts/tests/check-interface-contract-authority.sh"
 }
+interface_schema() {
+    bash "$ROOT/scripts/tests/check-interface-schema.sh"
+}
 boot_event_contract() {
     bash "$ROOT/scripts/tests/check-boot-event-contract.sh"
 }
@@ -214,6 +217,7 @@ qemu_deputy() {
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
+run_gate "accepted interface schema" interface_schema
 run_gate "Boot ABI event contract" boot_event_contract
 run_gate "nucleus exception foundation" exception_foundation
 run_gate "unsafe-code safety evidence" unsafe_safety

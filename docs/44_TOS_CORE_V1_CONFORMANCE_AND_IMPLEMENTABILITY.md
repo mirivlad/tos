@@ -277,7 +277,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 
 | Code | Condition |
 |---|---|
-| `E1801_FFI_NOT_AVAILABLE` | an `extern` item names no accepted FFI interface schema; V1 accepts none, so every `extern` item is rejected |
+| `E1801_FFI_NOT_AVAILABLE` | an `extern` item names no accepted interface schema, or names one that declares no such operation. ADR-0060 admitted the first schema (`SYSTEM_INTERFACE_V1`), so the condition is now the one this row always stated rather than "every `extern` item"; the diagnostic carries a `reason` naming which part did not match |
 | `E1802_UNSAFE_RATIONALE_REQUIRED` | an `unsafe` block does not open with a line comment beginning `SAFETY:` |
 
 ### Ownership (stage `ownership`)

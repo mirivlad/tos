@@ -18,6 +18,7 @@ source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md
 source/interfaces/boot/CAPSULE_FORMAT_V1.md
 source/interfaces/boot/CAPSULE_PROVENANCE_V1.md
 source/interfaces/system/SYSTEM_ABI_V1.md
+source/interfaces/system/SYSTEM_INTERFACE_V1.md
 source/interfaces/system/CAPABILITY_V1.md
 source/interfaces/system/IPC_V1.md
 source/interfaces/system/PROCESS_IDENTITY_V1.md

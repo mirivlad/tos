@@ -2,12 +2,12 @@
 
 # ADR-0060: How a TOS Core module invokes an operation on a capability
 
-- Status: **Proposed**
+- Status: **Accepted (option A)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 3 — it fixes how the language reaches the system, admits the
   first accepted interface schema as a class of document, and touches the
   determinism TOS Core V1 was closed on (ADR-0028)
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 
