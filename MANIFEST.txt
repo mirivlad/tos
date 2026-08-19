@@ -101,8 +101,8 @@ Architecture decision records
 - docs/adr/0055-initial-capability-endowment.md — ADR-0055: Where a process's first capability comes from [**Accepted (option A)** (Project Architect-approved)]
 - docs/adr/0056-handle-argument-position.md — ADR-0056: Where the capability an operation requires is named, and what an empty table returns [**Accepted (option A)** (Project Architect-approved)]
 - docs/adr/0057-ipc-message-bounds.md — ADR-0057: The three numbers `IPC_V1` says it declares [**Accepted (option A)** (Project Architect-approved)]
-- docs/adr/0058-bulk-call-arguments.md — ADR-0058: How a call names more than its registers hold [**Proposed**]
-- docs/adr/0059-blocking-and-the-liveness-rule.md — ADR-0059: What it means to wait, and what ends a wait nobody can end [**Proposed**]
+- docs/adr/0058-bulk-call-arguments.md — ADR-0058: How a call names more than its registers hold [**Accepted (option A)** (Project Architect-approved)]
+- docs/adr/0059-blocking-and-the-liveness-rule.md — ADR-0059: What it means to wait, and what ends a wait nobody can end [**Accepted (option D)** (Project Architect-approved)]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

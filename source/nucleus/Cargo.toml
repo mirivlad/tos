@@ -27,6 +27,10 @@ test-two-processes = []
 # ADR-0055 describes — a process creating a process, bounded by what it was
 # given — is exercised rather than described.
 test-supervisor = []
+# Gives one process the right to receive on an endpoint nobody can send to, so
+# that the state ADR-0059's liveness rule is about is a real state of a real
+# system rather than a description of one.
+test-deadlock = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

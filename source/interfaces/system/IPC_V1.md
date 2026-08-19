@@ -97,7 +97,18 @@ that fails to deliver transfers nothing.
 
 Every endpoint queue is bounded. When it is full a sender is told — `E_LIMIT`
 for a non-blocking send, blocking with a cancellation path otherwise. **The
-system never grows a queue to accept a message.** docs/10 states the reason:
+system never grows a queue to accept a message.**
+
+A receive with nothing to take is the same shape the other way round:
+`E_WOULD_BLOCK` for a non-blocking receive, blocking otherwise. Both forms are
+selected by the flag `SYSTEM_ABI_V1` §3 describes, and blocking is the default.
+
+**The operation that satisfies a wait performs it.** A send that queues a
+message hands it to a context waiting for one and answers that context's call;
+a receive that frees a place queues the message of a context waiting for room.
+A woken context does not wake up to ask again — it wakes up answered. That is
+two copies of an inline payload, sender to queue and queue to receiver, which is
+what docs/35 budgets. docs/10 states the reason:
 unbounded memory growth through message accumulation is a denial of service that
 looks like generosity.
 

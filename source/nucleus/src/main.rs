@@ -20,8 +20,12 @@
 // The two launcher constants describe different systems — a pair sharing an
 // endpoint, and one process able to create others — and a build asking for both
 // would be asking which of two decisions the launcher made.
-#[cfg(all(feature = "test-two-processes", feature = "test-supervisor"))]
-compile_error!("test-two-processes and test-supervisor are different launcher constants");
+#[cfg(any(
+    all(feature = "test-two-processes", feature = "test-supervisor"),
+    all(feature = "test-two-processes", feature = "test-deadlock"),
+    all(feature = "test-supervisor", feature = "test-deadlock")
+))]
+compile_error!("these are different launcher constants, and a build must be one of them");
 
 mod apic;
 mod capability;
@@ -645,7 +649,29 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     let first_endowment = [capability::Endowment::Own {
         rights: tos_launch::RIGHT_CREATE | tos_launch::RIGHT_TERMINATE,
     }];
-    #[cfg(not(any(feature = "test-two-processes", feature = "test-supervisor")))]
+    // Under the deadlock constant one process is given the right to receive on
+    // an endpoint **nobody can send to**: no other process exists, and no
+    // operation creates an endpoint. So the wait it enters is one nothing in
+    // the system can satisfy, which is the state ADR-0059's liveness rule is
+    // about — and the only way to test that rule is to build a system that has
+    // genuinely stopped, rather than one that looks stopped.
+    #[cfg(feature = "test-deadlock")]
+    let first_endowment = {
+        let Some(endpoint) = ipc::create() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        [capability::Endowment::Existing {
+            object: capability::Object::Endpoint(endpoint),
+            rights: tos_launch::RIGHT_RECEIVE,
+            scope: 0,
+        }]
+    };
+    #[cfg(not(any(
+        feature = "test-two-processes",
+        feature = "test-supervisor",
+        feature = "test-deadlock"
+    )))]
     let first_endowment: [capability::Endowment; 0] = [];
     let first = match build(&first_endowment) {
         Ok(index) => index,
@@ -695,6 +721,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
                 tos_serial::puts(b"terminated_by=");
                 tos_serial::put_u32_decimal(by as u32);
             }
+            process::Ended::Deadlocked => tos_serial::puts(b"deadlocked"),
         }
         tos_serial::puts(b"\r\n");
         // SAFETY: the excursion is over, `space` is the live address space and
@@ -704,7 +731,10 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // SAFETY: the scheduler returned, so every process it ran is over.
     match unsafe { process::ended(first) } {
         process::Ended::Exited(0) => {}
-        process::Ended::Exited(_) | process::Ended::Fault(_) | process::Ended::Terminated(_) => {
+        process::Ended::Exited(_)
+        | process::Ended::Fault(_)
+        | process::Ended::Terminated(_)
+        | process::Ended::Deadlocked => {
             // The process ended without completing its work. Which way it ended
             // is already on the log, asserted by the nucleus.
             tos_serial::puts(b"TOS.BOOTMODULE.FAIL stage=process\r\n");

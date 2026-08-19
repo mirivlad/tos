@@ -2,12 +2,12 @@
 
 # ADR-0059: What it means to wait, and what ends a wait nobody can end
 
-- Status: **Proposed**
+- Status: **Accepted (option D)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 2 — it fixes the scheduler's termination condition, adds a
   process state, and settles which party owns the bound on waiting; it adds no
   operation, no status and no right
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 

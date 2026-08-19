@@ -2,12 +2,12 @@
 
 # ADR-0058: How a call names more than its registers hold
 
-- Status: **Proposed**
+- Status: **Accepted (option A)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 2 — it fixes where an operation's arguments live when they do
   not fit in registers, inside the edge ADR-0048 established and the convention
   ADR-0056 fixed; it adds no operation, no status and no right
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 

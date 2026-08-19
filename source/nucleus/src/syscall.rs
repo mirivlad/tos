@@ -33,6 +33,7 @@
 //!   trusted time source, and a number presented as a duration would be a claim
 //!   this nucleus cannot support.
 
+use crate::apic::TrapFrame;
 use crate::capability::{self, Object, Refused};
 use crate::exception::{KERNEL_SELECTOR_BASE, USER_SELECTOR_BASE};
 use crate::ipc;
@@ -46,6 +47,7 @@ pub const E_NO_CAPABILITY: i64 = -1;
 pub const E_BAD_HANDLE: i64 = -2;
 pub const E_BAD_ARGUMENT: i64 = -3;
 pub const E_WOULD_BLOCK: i64 = -4;
+pub const E_CANCELLED: i64 = -5;
 pub const E_LIMIT: i64 = -6;
 pub const E_NOT_SUPPORTED: i64 = -7;
 
@@ -65,6 +67,15 @@ const TIME_MONOTONIC: u64 = 11;
 /// ADR-0054: self only, takes a status, does not return.
 const PROCESS_EXIT: u64 = 12;
 
+/// The one call flag this contract version has.
+///
+/// Blocking is the default because it is what `IPC_V1` describes — §4's
+/// `endpoint_call` "sends and blocks", §7's sender "blocks with a cancellation
+/// path" unless it asked not to. A caller that would rather be told there is
+/// nothing to do sets this and receives `E_WOULD_BLOCK` or `E_LIMIT`, which is
+/// exactly what §4 of `SYSTEM_ABI_V1` assigns those two statuses to.
+const NON_BLOCKING: u64 = 1;
+
 /// The flags cleared on entry, so that the nucleus never begins executing with
 /// a flag a process chose: interrupts, single-step, direction, nested task and
 /// alignment check.
@@ -74,27 +85,35 @@ extern "C" {
     fn syscall_entry();
 }
 
-/// The arguments of one call, in the order §3 gives them.
-#[repr(C)]
-pub struct Arguments {
-    values: [u64; 6],
-}
-
-impl Arguments {
+/// The arguments of one call, read out of the frame the stub built.
+///
+/// There is no separate argument structure any more, and there should not be:
+/// the six argument registers are six of the fifteen the frame already holds,
+/// and a second view of the same words is a second thing to keep in step.
+trait Arguments {
     /// The first argument: the capability the operation requires, for every
     /// operation that requires one (ADR-0056).
+    fn first(&self) -> u64;
+    /// The second, which is a value in every operation that has one.
+    fn second(&self) -> u64;
+}
+
+impl Arguments for TrapFrame {
     fn first(&self) -> u64 {
-        self.values[0]
+        self.rdi
     }
 
-    /// The second, which is a value in every operation that has one.
     fn second(&self) -> u64 {
-        self.values[1]
+        self.rsi
     }
 }
 
 /// What one operation returned: a status and a value, `rax` and `rdx`.
-#[repr(C)]
+///
+/// Written into the caller's frame rather than returned in registers, which is
+/// what lets a blocked call be answered long after the call was made: the frame
+/// is where the answer goes either way, and the only difference between the two
+/// is who writes it and when.
 pub struct Answer {
     status: i64,
     value: u64,
@@ -107,6 +126,18 @@ impl Answer {
 
     const fn value(value: u64) -> Answer {
         Answer { status: OK, value }
+    }
+
+    /// The answer a blocking operation gets when it is cancelled — by the
+    /// nucleus's liveness rule, or by anything else that can cancel one.
+    pub const fn cancelled() -> Answer {
+        Answer::status(E_CANCELLED)
+    }
+
+    /// The answer, as the process will see it in `rax` and `rdx`.
+    pub fn into_frame(self, frame: &mut TrapFrame) {
+        frame.rax = self.status as u64;
+        frame.rdx = self.value;
     }
 }
 
@@ -149,11 +180,24 @@ pub unsafe fn install() {
 /// all; it sits in the slot the launcher mapped, at an address the nucleus
 /// knows and the caller did not choose.
 #[no_mangle]
-extern "C" fn syscall_dispatch(operation: u64, arguments: &Arguments) -> Answer {
+extern "C" fn syscall_dispatch(operation: u64, frame: &mut TrapFrame) {
+    // The two selectors the stub could not know: they are declared in the GDT
+    // this module's neighbour builds, and a copy of them in assembly would be a
+    // copy that drifts.
+    frame.cs = u64::from(crate::exception::USER_CODE_SELECTOR);
+    frame.ss = u64::from(crate::exception::USER_DATA_SELECTOR);
+    let answer = answer(operation, frame);
+    answer.into_frame(frame);
+}
+
+/// Answers one call, or does not return because the call blocked or ended the
+/// process that made it.
+fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
     // The process is inside the nucleus at this instant, so its report region
     // is stable and this is when what it wrote reaches the log.
     crate::process::drain_report();
     let caller = crate::process::current();
+    let arguments = &*frame;
     match operation {
         // The one operation that does not answer: the process is over, and the
         // nucleus continues where it recorded it would (ADR-0054).
@@ -174,21 +218,7 @@ extern "C" fn syscall_dispatch(operation: u64, arguments: &Arguments) -> Answer 
         ENDPOINT_SEND => {
             match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_SEND) {
                 Err(refused) => refused.into(),
-                Ok(Object::Endpoint(endpoint)) => {
-                    let slot = crate::process::message_slot();
-                    if slot == 0 {
-                        return Answer::status(E_BAD_ARGUMENT);
-                    }
-                    // SAFETY: `slot` is the physical address of this process's
-                    // message region, mapped by the launcher and read here through
-                    // the nucleus's own identity map.
-                    match unsafe { ipc::send(endpoint, slot, arguments.second()) } {
-                        Ok(()) => Answer::status(OK),
-                        Err(ipc::Refused::BadArgument) => Answer::status(E_BAD_ARGUMENT),
-                        Err(ipc::Refused::Limit) => Answer::status(E_LIMIT),
-                        Err(ipc::Refused::WouldBlock) => Answer::status(E_WOULD_BLOCK),
-                    }
-                }
+                Ok(Object::Endpoint(endpoint)) => send(endpoint, frame),
                 // The handle resolved to an object of another kind, which is the
                 // wrong authority rather than no handle at all.
                 Ok(_) => Answer::status(E_NO_CAPABILITY),
@@ -197,19 +227,7 @@ extern "C" fn syscall_dispatch(operation: u64, arguments: &Arguments) -> Answer 
         ENDPOINT_RECEIVE => {
             match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_RECEIVE) {
                 Err(refused) => refused.into(),
-                Ok(Object::Endpoint(endpoint)) => {
-                    let slot = crate::process::message_slot();
-                    if slot == 0 {
-                        return Answer::status(E_BAD_ARGUMENT);
-                    }
-                    // SAFETY: as above, for the write side.
-                    match unsafe { ipc::receive(endpoint, slot) } {
-                        Ok(length) => Answer::value(length),
-                        Err(ipc::Refused::WouldBlock) => Answer::status(E_WOULD_BLOCK),
-                        Err(ipc::Refused::BadArgument) => Answer::status(E_BAD_ARGUMENT),
-                        Err(ipc::Refused::Limit) => Answer::status(E_LIMIT),
-                    }
-                }
+                Ok(Object::Endpoint(endpoint)) => receive(endpoint, frame),
                 Ok(_) => Answer::status(E_NO_CAPABILITY),
             }
         }
@@ -313,6 +331,105 @@ extern "C" fn syscall_dispatch(operation: u64, arguments: &Arguments) -> Answer 
         ENDPOINT_REPLY | REGION_SHARE => refuse(caller, arguments.first(), ALL_RIGHTS),
 
         _ => Answer::status(E_NOT_SUPPORTED),
+    }
+}
+
+/// Sends the caller's message, waiting for room when there is none.
+///
+/// Two things happen after a message is queued, and the second is what makes
+/// blocking worth having: if somebody is waiting for a message on this
+/// endpoint, it is handed to them here and their call is answered — they do not
+/// wake up to ask again. That is two copies of the payload, sender to queue and
+/// queue to receiver, which is what docs/35 budgets for an inline message.
+fn send(endpoint: u32, frame: &mut TrapFrame) -> Answer {
+    let from = crate::process::message_slot();
+    if from == 0 {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    let length = frame.rsi;
+    // SAFETY: `from` is the physical address of this process's argument region,
+    // mapped by the launcher and read here through the nucleus's own identity
+    // map.
+    match unsafe { ipc::send(endpoint, from, length) } {
+        Ok(()) => {
+            deliver_to_waiter(endpoint);
+            Answer::status(OK)
+        }
+        Err(ipc::Refused::BadArgument) => Answer::status(E_BAD_ARGUMENT),
+        Err(ipc::Refused::Limit) if frame.rdx & NON_BLOCKING != 0 => Answer::status(E_LIMIT),
+        Err(ipc::Refused::Limit) => {
+            // `IPC_V1` §7: the system never grows a queue to accept a message,
+            // so the sender waits for room rather than the queue making some.
+            // SAFETY: this is the running context's own frame, and the handle
+            // the wait is on was resolved above.
+            unsafe { crate::process::block(frame, crate::process::Waiting::Room(endpoint)) }
+        }
+        Err(ipc::Refused::WouldBlock) => Answer::status(E_WOULD_BLOCK),
+    }
+}
+
+/// Takes a message, waiting for one when there is none.
+///
+/// Taking a message frees a place in the queue, so a sender that was waiting
+/// for room is served here for the same reason a receiver is served by a send:
+/// the operation that satisfies a wait is the one that performs it.
+fn receive(endpoint: u32, frame: &mut TrapFrame) -> Answer {
+    let into = crate::process::message_slot();
+    if into == 0 {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    // SAFETY: `into` is this process's own argument region, as above.
+    match unsafe { ipc::receive(endpoint, into) } {
+        Ok(length) => {
+            accept_from_waiter(endpoint);
+            Answer::value(length)
+        }
+        Err(ipc::Refused::WouldBlock) if frame.rsi & NON_BLOCKING != 0 => {
+            Answer::status(E_WOULD_BLOCK)
+        }
+        Err(ipc::Refused::WouldBlock) => {
+            // SAFETY: as in `send`.
+            unsafe { crate::process::block(frame, crate::process::Waiting::Message(endpoint)) }
+        }
+        Err(ipc::Refused::BadArgument) => Answer::status(E_BAD_ARGUMENT),
+        Err(ipc::Refused::Limit) => Answer::status(E_LIMIT),
+    }
+}
+
+/// Hands the message just queued to a context waiting for one, if there is one.
+fn deliver_to_waiter(endpoint: u32) {
+    let Some(waiter) = crate::process::blocked_on(crate::process::Waiting::Message(endpoint))
+    else {
+        return;
+    };
+    let into = crate::process::arguments_of(waiter);
+    if into == 0 {
+        return;
+    }
+    // SAFETY: `into` is the waiting context's own argument region, which its
+    // own call would have written; the nucleus reaches it through its identity
+    // map exactly as it would have then.
+    if let Ok(length) = unsafe { ipc::receive(endpoint, into) } {
+        // SAFETY: the context is blocked in the receive this answers.
+        unsafe { crate::process::wake(waiter, Answer::value(length)) };
+    }
+}
+
+/// Queues the message of a context that was waiting for room, if there is one.
+fn accept_from_waiter(endpoint: u32) {
+    let Some(waiter) = crate::process::blocked_on(crate::process::Waiting::Room(endpoint)) else {
+        return;
+    };
+    let from = crate::process::arguments_of(waiter);
+    if from == 0 {
+        return;
+    }
+    let length = crate::process::suspended_argument(waiter);
+    // SAFETY: as above, for the read side.
+    if unsafe { ipc::send(endpoint, from, length) }.is_ok() {
+        // SAFETY: the context is blocked in the send this answers.
+        unsafe { crate::process::wake(waiter, Answer::status(OK)) };
+        deliver_to_waiter(endpoint);
     }
 }
 
