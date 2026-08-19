@@ -231,6 +231,13 @@ consume the v1 prefix remain compatible.
 vector; `error` is the hardware-provided error code or normalized zero when the
 architecture supplies none; `rip` is the exception-frame instruction pointer;
 and `cr2` is the exact CR2 only for vector 14 (#PF), otherwise literal `none`.
+`cs` and `rsp` are appended after those four under the extension rule above, and
+carry the interrupted code selector and stack pointer: the first says which
+privilege level was running, so a fault the process paths should have contained
+is distinguishable from one the nucleus took, and the second says whether the
+stack was where it belongs, which is what tells a wild jump from a stack that
+ran out. A report whose reader has to guess between those costs a second
+occurrence to read.
 The terminal result is `RESULT_EXCEPTION`. A consumer MUST treat an unknown
 non-success `TOS.*` failure or result as failure, not as a successful boot.
 

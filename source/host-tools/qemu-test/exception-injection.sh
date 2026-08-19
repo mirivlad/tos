@@ -71,7 +71,11 @@ bash "$ROOT/host-tools/qemu-test/run.sh" \
     --require "TOS.BOOT.ENTRY TOS.CAPSULE.OK TOS.BOOT.HANDOFF TOS.NUCLEUS.ENTRY TOS.EXCEPTION" \
     --forbid "TOS.HALT TOS.PANIC"
 
-grep -Eq "^TOS\.EXCEPTION vector=$VECTOR error=$ERROR rip=${RIP:-0x[0-9a-f]+} cr2=$CR2$" "$OUT/events.log" || {
+# The four fixed fields in their fixed order, then the two appended after them:
+# `cs` is the kernel selector because this fault was taken in the nucleus, and
+# `rsp` is anywhere — what matters is that both are reported, so a fault whose
+# cause is not obvious arrives with the two facts that narrow it.
+grep -Eq "^TOS\.EXCEPTION vector=$VECTOR error=$ERROR rip=${RIP:-0x[0-9a-f]+} cr2=$CR2 cs=0x0*8 rsp=0x[0-9a-f]+$" "$OUT/events.log" || {
     echo "missing canonical exception event for vector $VECTOR" >&2
     exit 1
 }
