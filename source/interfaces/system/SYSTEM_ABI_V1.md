@@ -126,7 +126,7 @@ are marked and are exactly those a process can only apply to itself.
 | 5 | `capability_attenuate` | the capability being attenuated | `CAPABILITY_V1` §4 |
 | 6 | `capability_release` | the capability being released | consumes the handle |
 | 7 | `region_share` | region handle with `share` | `IPC_V1` §5 |
-| 8 | `process_create` | process-authority capability | creates a process |
+| 8 | `process_create` | process-authority capability | creates a process. `rsi` = the module name's length, `rdx` = how many capabilities the child is endowed with, `r10` = the rights the child holds over itself. The name and the endowment are in the argument region at `CREATE_MODULE` and `CREATE_ENDOWMENT` (ADR-0058) |
 | 9 | `process_terminate` | process-authority capability for that process | ends it |
 | 10 | `context_yield` | *(self only)* | gives up the rest of the quantum |
 | 11 | `time_monotonic` | *(self only)* | reads the monotonic tick |
@@ -135,6 +135,20 @@ Operation `0` is not assigned and never will be. A register that was never
 written holds zero, so a zero selector is overwhelmingly likely to be a caller
 that forgot to name an operation; giving it a meaning would turn that mistake
 into a successful call.
+
+A module is named by **path**, never by an ordinal. An ordinal fits a register,
+which is its only advantage; it is a position in a list nobody published, and two
+boots whose capsules differ would give the same one to different modules.
+
+Every entry of the endowment names a capability the **parent** holds and the
+rights it wants the child to have; what the child gets is the intersection, so a
+parent cannot give what it does not hold and widening is unexpressible rather
+than refused. An entry that does not resolve refuses the whole creation: a child
+half-endowed would hold authority nobody decided to give it. The rights a child
+holds over *itself* cannot be one of those entries — they name capabilities the
+parent holds, and this one names a process that does not exist until the instant
+it is granted — so they travel in a register of their own, bounded by the
+authority the parent used.
 
 `process_create` is the operation a supervisor holds and an ordinary service
 does not. That distinction is the whole of Stage 3's authority story: a process

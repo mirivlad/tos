@@ -33,6 +33,15 @@ use tos_runtime::region::Span;
 /// set would run a program whose dependencies are missing.
 pub const MAX_BOOT_MODULES: usize = 1024;
 
+/// A capsule path as a module-root-relative one: what docs/42 §1 derives a
+/// module name from, so the capsule's leading slash is not part of it.
+fn relative(path: &[u8]) -> &[u8] {
+    match path.split_first() {
+        Some((b'/', rest)) => rest,
+        _ => path,
+    }
+}
+
 /// One source unit: its capsule path, and its bytes.
 type Unit = (&'static [u8], &'static [u8]);
 
@@ -69,6 +78,19 @@ impl Template {
     /// Whether `index` names a unit of this boot's set.
     pub fn holds(&self, index: usize) -> bool {
         index < self.unit_count
+    }
+
+    /// Which unit a module-root-relative path names, if any.
+    ///
+    /// A supervisor reasoning about `/system/policy/` holds a module's *name*.
+    /// An ordinal is a position in a list nobody published, and two boots whose
+    /// capsules differ would give the same ordinal to different modules — so a
+    /// path is not a convenience here, it is the only stable way to say which
+    /// module is meant.
+    pub fn index_of(&self, path: &[u8]) -> Option<usize> {
+        self.units()
+            .iter()
+            .position(|(name, _)| relative(name) == path)
     }
 }
 

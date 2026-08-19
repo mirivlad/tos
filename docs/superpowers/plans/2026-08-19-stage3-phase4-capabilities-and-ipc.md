@@ -199,9 +199,25 @@ it. Named here so that it is found on purpose.
   Regions are still not an object this stage builds, so a message naming one is
   refused by the ordinary resolve — which is the true answer and not yet the
   §9.1 refusal for the region count.
-- [ ] `process_create`'s endowment list and naming its module by path rather
-  than by an ordinal. ADR-0058 settles where both live; the layout at offset 0
-  of the argument region is what remains to be written.
+- [x] **`process_create`'s endowment and module name (ADR-0058) — done
+  (2026-08-19).** The module is named by **path**: an ordinal fits a register,
+  which is its only advantage, and it names a position in a list nobody
+  published. The endowment is a list in the argument region; each entry names a
+  capability the parent holds and the rights it wants the child to have, and the
+  child gets the intersection — a parent cannot give what it does not hold, so
+  widening is unexpressible rather than refused.
+  - An entry that does not resolve refuses the **whole** creation, because a
+    child half-endowed would hold authority nobody decided to give it. Checked:
+    a refused creation leaves no process behind.
+  - The rights a child holds over *itself* travel in a register of their own,
+    bounded by the authority the parent used. They cannot be an endowment entry,
+    because those name capabilities the parent holds and this one names a
+    process that does not exist until it is granted — the same reason only a
+    launcher could issue the first one.
+  - Evidence (`supervisor.sh`): the parent holds `create`+`terminate` and gives
+    its child only `terminate`; an endowment naming an unheld capability is
+    refused; a module name the set does not hold is refused rather than matched
+    to something near it.
 - [x] **Blocking (ADR-0059) — done (2026-08-19).** A blocked context is not
   runnable and is woken *answered*: the operation that satisfies a wait performs
   it, so nobody wakes up to ask again. Blocking is the default, and bit 0 of the

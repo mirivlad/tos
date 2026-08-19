@@ -20,12 +20,16 @@
 #   - the same handle over the now-dead child refuses. A capability's lifetime
 #     is bounded by its object (`CAPABILITY_V1` §3), so it does not survive to
 #     name whoever occupies that slot next;
-#   - an entry index this boot's source set does not have is refused rather than
-#     clamped, because a process launched over a different module than the one
-#     asked for is a process nobody asked for.
+#   - the module is named by **path**, not by an ordinal: an ordinal is a
+#     position in a list nobody published, and two boots whose capsules differ
+#     would give the same one to different modules. A name the set does not hold
+#     is refused rather than matched to something near it;
+#   - an endowment naming a capability the parent does not hold refuses the whole
+#     creation, because a child half-endowed would hold authority nobody decided
+#     to give it.
 #
-# And the child is endowed with nothing, which is the launcher's own rule one
-# level down: grant nothing that was not asked for.
+# The child is endowed with what its parent decided and no more: the parent holds
+# `create` and `terminate`, and gives its child only the second.
 #
 #   bash host-tools/qemu-test/supervisor.sh [OUT_DIR]
 set -euo pipefail
@@ -40,6 +44,7 @@ TEST_NUCLEUS="$TEST_TARGET/x86_64-unknown-none/release/tos-nucleus"
 # `SYSTEM_ABI_V1` §4 statuses, by the numbers the contract assigns.
 E_NO_CAPABILITY=-1
 E_BAD_ARGUMENT=-3
+E_BAD_HANDLE=-2
 # `RIGHT_CREATE | RIGHT_TERMINATE`, and `OBJECT_PROCESS`.
 RIGHTS=24
 OBJECT=3
@@ -88,8 +93,19 @@ exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=$OBJECT righ
 # --- it created a child, and the child was given nothing ---------------------
 exactly 1 '^TOS\.RUN\.PROCESS\.CREATED status=0 child=0x[0-9a-f]*$' \
     "the process did not create a child on its own authority"
-exactly 1 "^TOS\\.RUN\\.PROCESS_ENDOWED process=1 capabilities=0 policy=launcher-constant asserted_by=launcher\$" \
-    "the child was endowed with something, or its endowment was not announced"
+exactly 1 "^TOS\\.RUN\\.PROCESS_ENDOWED process=1 capabilities=1 policy=launcher-constant asserted_by=launcher\$" \
+    "the child was not endowed with exactly what its parent decided"
+
+# --- and what it was given is less than its parent held ----------------------
+# The parent holds `create` and `terminate` (24); the child is given only the
+# second. Attenuation at the moment of creation, not after it — and a parent
+# cannot give what it does not hold, which is the same rule one level down.
+exactly 1 "^TOS\\.RUN\\.PROCESS\\.REFUSED reason=endowment-not-held status=$E_BAD_HANDLE\$" \
+    "an endowment naming a capability the parent does not hold was not refused"
+# The whole creation failed: a child half-endowed would hold authority nobody
+# decided to give it. Exactly two processes were ever announced.
+exactly 2 '^TOS\.RUN\.PROCESS_ENDOWED ' \
+    "a refused creation left a process behind"
 
 # --- and ended it, attributably ----------------------------------------------
 exactly 1 '^TOS\.RUN\.PROCESS_TERMINATED process=1 by=0 ticks=[0-9]* quanta=[0-9]* asserted_by=nucleus$' \
@@ -101,7 +117,7 @@ exactly 1 "^TOS\\.RUN\\.PROCESS\\.ENDED status=0 again=$E_NO_CAPABILITY\$" \
 
 # --- a module this boot does not have is refused, not clamped ----------------
 exactly 1 "^TOS\\.RUN\\.PROCESS\\.REFUSED reason=no-such-module status=$E_BAD_ARGUMENT\$" \
-    "an entry index outside the source set was not refused"
+    "a module name the source set does not hold was not refused"
 
 # --- the child never finished, and the supervisor did ------------------------
 # One completion, not two: the child was ended long before a run of its own
@@ -114,5 +130,6 @@ exactly 2 '^TOS\.RUN\.PROCESS_RECLAIMED ' \
 
 echo "SUPERVISOR PASS: a process created a process and ended it, on authority it was given"
 echo "  the launcher endowed one process with authority over itself; nothing else could have"
-echo "  the child was endowed with nothing, and ended by the holder — recorded with the holder's name"
-echo "  the handle over the dead child refused afterwards; an unknown module index was refused"
+echo "  the child was given only what its parent chose of what its parent held"
+echo "  an endowment naming a capability the parent lacks refused the whole creation"
+echo "  the handle over the dead child refused afterwards; an unknown module name was refused"

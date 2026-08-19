@@ -112,14 +112,39 @@ unsafe fn call(operation: u64, first: u64, second: u64) -> (i64, u64) {
     unsafe { call_transferring(operation, first, second, 0) }
 }
 
+/// Makes one system call with four arguments.
+///
+/// SAFETY: `operation` is assigned and every argument is legal for it.
+// SAFETY: the caller names an assigned operation.
+unsafe fn call4(operation: u64, first: u64, second: u64, third: u64, fourth: u64) -> (i64, u64) {
+    let status: i64;
+    let value: u64;
+    // SAFETY: the six argument registers are `rdi, rsi, rdx, r10, r8, r9`, and
+    // `rdx` is the third on the way in and the value's on the way out.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") operation => status,
+            in("rdi") first,
+            in("rsi") second,
+            inlateout("rdx") third => value,
+            in("r10") fourth,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        )
+    };
+    (status, value)
+}
+
 /// Makes one system call that carries `transferred` capabilities.
 ///
 /// The handles themselves are in the argument region, at the offset `IPC_V1`
 /// fixes; the register says how many of them to read (ADR-0058). A count is a
 /// value, so it travels in a register; the handles are a list, so they do not.
 ///
-/// SAFETY: as [`call`], and the argument region holds `transferred` handles the
-/// caller means to send.
+/// SAFETY: `operation` is an assigned operation number, and the argument region
+/// holds `transferred` handles the caller means to send.
 // SAFETY: the caller names an assigned operation and has written the handles it
 // is counting.
 unsafe fn call_transferring(
@@ -511,7 +536,7 @@ fn authority(launch: &Launch, report: &mut Report) {
         ));
     }
     if first.object == tos_launch::OBJECT_PROCESS {
-        supervise(report, first.handle, launch.entry_index as u64);
+        supervise(launch, report, first.handle);
     }
 
     // Asking for more than was held yields less, not more (`CAPABILITY_V1`
@@ -638,10 +663,60 @@ fn server(launch: &Launch, report: &mut Report) {
 /// it. It is not ended before it can run — see the note below — which makes the
 /// evidence stronger rather than weaker: what was ended had been on the
 /// processor.
-fn supervise(report: &mut Report, handle: u64, entry: u64) {
-    // SAFETY: `process_create` names the process the child is created under and
-    // the entry module's index; no pointer crosses.
-    let (created, child) = unsafe { call(PROCESS_CREATE, handle, entry) };
+fn supervise(launch: &Launch, report: &mut Report, handle: u64) {
+    // The module by **name**, written where `SYSTEM_ABI_V1` §5 says a name goes.
+    // An ordinal would have fitted a register and named a position in a list
+    // nobody published; two boots whose capsules differ would give the same
+    // ordinal to different modules.
+    let module = b"system/boot/init.tos";
+    for (offset, byte) in module.iter().enumerate() {
+        // SAFETY: `arguments_base` names a writable mapping the launcher made,
+        // and the module offset plus a short name is far inside it.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u8>(
+                (launch.arguments_base + tos_launch::CREATE_MODULE) as usize,
+            )
+            .add(offset)
+            .write(*byte)
+        };
+    }
+
+    // First, an endowment naming a capability this process does not hold. The
+    // whole creation must fail: a child half-endowed would be a child holding
+    // authority nobody decided to give it.
+    // SAFETY: the endowment table is at a fixed offset in this process's own
+    // argument region.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<tos_launch::CreateEndowment>(
+            (launch.arguments_base + tos_launch::CREATE_ENDOWMENT) as usize,
+        )
+        .write(tos_launch::CreateEndowment {
+            handle: 0xdead_beef,
+            rights: u32::MAX,
+            reserved: 0,
+        })
+    };
+    // SAFETY: `process_create` names the process a child is created under, the
+    // module name's length, the endowment count and the rights the child is to
+    // hold over itself.
+    let (forged, _) = unsafe { call4(PROCESS_CREATE, handle, module.len() as u64, 1, 0) };
+    report.line(&alloc::format!(
+        "TOS.RUN.PROCESS.REFUSED reason=endowment-not-held status={forged}"
+    ));
+
+    // Then a child that may end itself and nothing more. This process holds
+    // `create` and `terminate`; the child is given only the second, which is
+    // attenuation at the moment of creation rather than after it.
+    // SAFETY: as above, with no endowment entries.
+    let (created, child) = unsafe {
+        call4(
+            PROCESS_CREATE,
+            handle,
+            module.len() as u64,
+            0,
+            u64::from(tos_launch::RIGHT_TERMINATE),
+        )
+    };
     if created == OK {
         // Ended immediately, and nothing is reported between the two calls: a
         // report line gives up the rest of the quantum, and every quantum given
@@ -652,15 +727,14 @@ fn supervise(report: &mut Report, handle: u64, entry: u64) {
         // time `process_create` returns, and it is delivered at the first
         // instruction back at CPL 3 — when the child is runnable and this
         // process is not the only candidate. So what this demonstrates is not a
-        // process that never existed on the processor: it is a process that
-        // did, and was ended by authority anyway.
+        // process that never existed on the processor: it is one that did, and
+        // was ended by authority anyway.
         // SAFETY: `process_terminate` names the process it ends.
         let (ended, _) = unsafe { call(PROCESS_TERMINATE, child, 0) };
-        // The same handle, over something that has now ended. The handle still
-        // resolves — nothing consumed it — but a capability's lifetime is
-        // bounded by its object (`CAPABILITY_V1` §3), so what it names is gone
-        // and the answer is a refusal rather than authority over whoever
-        // occupies that slot next.
+        // The same handle, over something that has now ended. A capability's
+        // lifetime is bounded by its object (`CAPABILITY_V1` §3), so what it
+        // named is gone and the answer is a refusal rather than authority over
+        // whoever occupies that slot next.
         // SAFETY: as above.
         let (again, _) = unsafe { call(PROCESS_TERMINATE, child, 0) };
         report.line(&alloc::format!(
@@ -674,11 +748,23 @@ fn supervise(report: &mut Report, handle: u64, entry: u64) {
             "TOS.RUN.PROCESS.CREATED status={created} child=0x{child:x}"
         ));
     }
-    // A module index this boot's source set does not have. Refused rather than
-    // clamped: a process launched over a different module than the one asked
-    // for is a process nobody asked for.
-    // SAFETY: as above, with an entry index outside the set.
-    let (no_module, _) = unsafe { call(PROCESS_CREATE, handle, u64::from(u32::MAX)) };
+
+    // A module this boot's source set does not have. Refused rather than
+    // matched to something near it: a process launched over a different module
+    // than the one asked for is a process nobody asked for.
+    let absent = b"system/boot/nowhere.tos";
+    for (offset, byte) in absent.iter().enumerate() {
+        // SAFETY: as above.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u8>(
+                (launch.arguments_base + tos_launch::CREATE_MODULE) as usize,
+            )
+            .add(offset)
+            .write(*byte)
+        };
+    }
+    // SAFETY: as above, with a name the set does not hold.
+    let (no_module, _) = unsafe { call4(PROCESS_CREATE, handle, absent.len() as u64, 0, 0) };
     report.line(&alloc::format!(
         "TOS.RUN.PROCESS.REFUSED reason=no-such-module status={no_module}"
     ));

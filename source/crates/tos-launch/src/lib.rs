@@ -182,6 +182,33 @@ pub const MESSAGE_REGIONS: u64 = MESSAGE_CAPABILITIES + 8 * MAX_TRANSFERRED_CAPA
 pub const MAX_TRANSFERRED_CAPABILITIES: u64 = 4;
 pub const MAX_TRANSFERRED_REGIONS: u64 = 2;
 
+/// Where `process_create`'s arguments sit inside the argument region
+/// (`SYSTEM_ABI_V1` §5, ADR-0058).
+///
+/// Fixed offsets, for the reason the message's are fixed: the nucleus reads each
+/// part at an address it knew before it read anything.
+pub const CREATE_ENDOWMENT: u64 = 0;
+/// How many capabilities a parent may hand a child at creation.
+pub const MAX_ENDOWMENT: u64 = 4;
+pub const CREATE_MODULE: u64 = 16 * MAX_ENDOWMENT;
+/// The longest module path `process_create` will read. A bound of this contract
+/// rather than of the region: the nucleus must not size a read from a number a
+/// caller chose, even where the region would have held more.
+pub const MAX_MODULE_PATH: u64 = 256;
+
+/// One entry of the endowment a parent gives a child.
+///
+/// The parent names a capability **it holds** and the rights it wants the child
+/// to have. What the child gets is the intersection: a parent cannot give what
+/// it does not hold, so widening is not refused so much as unexpressible.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct CreateEndowment {
+    pub handle: u64,
+    pub rights: u32,
+    pub reserved: u32,
+}
+
 /// The header a runtime image carries in its first bytes.
 ///
 /// A raw image has no symbol table, so this is how it tells a nucleus which of
