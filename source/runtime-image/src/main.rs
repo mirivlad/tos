@@ -1108,6 +1108,30 @@ fn send_half(launch: &Launch, report: &mut Report, handle: u64) {
     // SAFETY: `endpoint_send` names its endpoint and a length; the payload is in
     // the region the record names, and this call carries no pointer.
     let (oversize, _) = unsafe { call(ENDPOINT_SEND, handle, MAX_INLINE_BYTES + 1) };
+    // The second of the three §3 bounds, asked the same way. It answers the same
+    // status as the first because both are constants of the contract that the
+    // caller knew before it called — a full queue is the runtime condition, and
+    // `E_LIMIT` is its answer alone.
+    // SAFETY: as above, with a transfer count past the contract's maximum and no
+    // handle written: the count is refused before anything is read.
+    let (overcount, _) = unsafe {
+        call_transferring(
+            ENDPOINT_SEND,
+            handle,
+            0,
+            tos_launch::MAX_TRANSFERRED_CAPABILITIES + 1,
+        )
+    };
+    // And a transfer of something this process does not hold. `IPC_V1` §9.3
+    // wants a send that fails **after** the capability check to transfer
+    // nothing; this fails *in* it, which is the earlier of the two and the one
+    // that decides whether a handle a caller does not hold can travel.
+    // SAFETY: the argument region is this process's own and index 0 is inside
+    // the contract's maximum; the handle written is deliberately not one this
+    // process holds.
+    unsafe { set_transferred(launch.arguments_base, 0, 0xdead_beef) };
+    // SAFETY: as above, declaring the one handle just written.
+    let (unheld, _) = unsafe { call_transferring(ENDPOINT_SEND, handle, 0, 1) };
 
     // No space in the payload: it is reported back as the value of a `text=`
     // field, and a value with a space in it would be two fields to a reader
@@ -1138,7 +1162,8 @@ fn send_half(launch: &Launch, report: &mut Report, handle: u64) {
     // SAFETY: `endpoint_receive` names its endpoint and takes no value.
     let (other_half, _) = unsafe { call(ENDPOINT_RECEIVE, handle, 0) };
     report.line(&alloc::format!(
-        "TOS.RUN.IPC.SENT bytes={} status={sent} oversize={oversize} other_half={other_half}",
+        "TOS.RUN.IPC.SENT bytes={} status={sent} oversize={oversize} other_half={other_half} \
+         overcount={overcount} unheld={unheld}",
         payload.len()
     ));
 }
