@@ -2,11 +2,11 @@
 
 # ADR-0057: The three numbers `IPC_V1` says it declares
 
-- Status: **Proposed**
+- Status: **Accepted (option A)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 2 — it states the values of bounds an accepted contract
   declares itself to fix; no message shape, right or guarantee changes
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 

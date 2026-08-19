@@ -127,6 +127,28 @@ Emitted after the outcome, by the component that supplied the memory.
 | `TOS.RUN.TICKS` | `begin=` `end=` `spin_begin=` `spin_end=` | The monotonic tick the runtime read before and after the run. It counts timer interrupts (ADR-0049) and is not a duration: this contract carries no wall-clock time and no trusted time source. `spin_begin` and `spin_end` bracket a loop the runtime runs **without making any system call**, so a tick larger at its end was advanced by an interrupt taken while the process was executing its own instructions — which is a different claim from a tick that moved between two calls, and the stronger one. Absent when the system offers no tick. |
 | `TOS.RUN.UNSTARTABLE` | `reason=` | The runtime could not be started at all. No stage ran. |
 
+### Authority, from the holder's side
+
+Emitted by the runtime, into its report region, and therefore subject to the
+attribution limit stated at the end of §7: with more than one process these
+interleave and carry no `process=`. That is not a gap, because none of them is
+a claim *about* a process — each is the answer the nucleus gave to a call, and
+the process is only reporting what it was told.
+
+| Identifier | Required fields | Meaning |
+|---|---|---|
+| `TOS.RUN.CAPABILITY` | `held=` and, when non-zero, `handle=0x<hex>` `object=` `rights=` | What the process found in its launch record: how many capabilities it holds and what the first names. |
+| `TOS.RUN.CAPABILITY.PROBE` | `out_of_range=` `in_range_refused=` `guessed=` | What guessing a handle is worth (`CAPABILITY_V1` §7.2). An index past the table refuses with `E_BAD_HANDLE`, one inside it with `E_NO_CAPABILITY`, and `guessed=` is how many guesses produced a usable capability — zero, or the table is forgeable. |
+| `TOS.RUN.CAPABILITY.ATTENUATED` | `status=` `asked=` `widened_half=` | An attenuation and the check that it narrowed. `asked=all` means every right was requested; `widened_half=` is the status of an operation the original capability could not perform, which must still refuse. |
+| `TOS.RUN.CAPABILITY.RELEASED` | `status=` `reuse=` | A release, and the status of naming the same handle afterwards (`CAPABILITY_V1` §7.3). |
+| `TOS.RUN.IPC.SENT` | `bytes=` `status=` `oversize=` `other_half=` | A message sent. `oversize=` is the status of a payload one byte past the inline bound, which `IPC_V1` §9.1 requires be refused rather than truncated; `other_half=` is the status of the operation this handle's rights do not permit. |
+| `TOS.RUN.IPC.RECEIVED` | `bytes=` `text=` | A message taken from an endpoint, and its payload. `text=` carries no spaces: a value with one would be two fields to a reader that splits on them. |
+| `TOS.RUN.IPC.RIGHTS` | `other_half=` | The status of the half of an endpoint this holder's rights do not include (`IPC_V1` §2). |
+
+A status in any of these is one of `SYSTEM_ABI_V1` §4's, by its number. They are
+reported as numbers rather than names because the number is what crossed the
+boundary, and a name would be this image's reading of it.
+
 These are **implementation** figures and are never a statement about the module.
 A module's `resource [allocation: ...]` is its own declared budget, enforced by
 the engine and reported in `TOS.RUN.ACCOUNTING`; `TOS.RUN.MEMORY` is what the
@@ -152,6 +174,14 @@ own, because two vocabularies describing one system eventually disagree.
 | `TOS.RUN.PROCESS_EXIT` | `process=` `asserted_by=nucleus` `self_reported_status=` `ticks=` `quanta=` `first_tick=` `last_tick=` | The process ended by saying so (`process_exit`, ADR-0054). The four counts are the nucleus's, because a process cannot observe how long it was off the processor: `ticks` is the timer interrupts charged to **this** process, `quanta` how many times it was given the processor, and `first_tick`/`last_tick` the first and last tick it ran at. |
 | `TOS.RUN.PROCESS_FAULT` | `process=` `vector=` `error=0x<hex>` `rip=0x<hex>` `cr2=` `cpl=` | The process took a fault and ended. The system did not, and neither did its peers. |
 | `TOS.RUN.PROCESS_RECLAIMED` | `process=` `frames=` `available=` | What the pool took back when the named process ended, and what it holds now. |
+| `TOS.RUN.PROCESS_ENDOWED` | `process=` `capabilities=` `policy=` `asserted_by=launcher` | What authority the process was given, before it ran its first instruction (ADR-0055). `policy=` names where the decision came from — `launcher-constant` until `/system/policy/` exists (ADR-0051 §3). |
+
+`TOS.RUN.PROCESS_ENDOWED` is emitted for every process, including one endowed
+with nothing, and `capabilities=0` is the commonest value. It is not omitted in
+that case and must not be: a grant nobody can attribute is ambient authority
+with a handle in front of it (`CAPABILITY_V1` §3), and an endowment nobody
+announced is indistinguishable from one nobody decided. The event says the
+launcher decided, and `policy=` says what it decided from.
 
 Two fields carry their asserter in their name, and that is not decoration.
 `asserted_by=nucleus` on an exit says the *fact* of the exit is the nucleus's;

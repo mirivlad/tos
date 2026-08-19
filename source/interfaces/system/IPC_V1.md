@@ -39,9 +39,22 @@ message = inline bytes + transferred capabilities + transferred regions
 
 | Property | Bound |
 |---|---|
-| Inline payload | fixed maximum, declared by this contract version, small enough to copy without allocation |
-| Transferred capabilities | fixed maximum per message |
-| Transferred regions | fixed maximum per message |
+| Inline payload | **256 bytes** — small enough to copy without allocation |
+| Transferred capabilities | **4** per message |
+| Transferred regions | **2** per message |
+
+The three numbers are fixed by ADR-0057 and are constants of this contract
+version. They are stated here rather than left to an implementation for the
+reason §7 gives: a refusal test against an unstated bound tests the
+implementation's opinion of it.
+
+256 bytes is the boundary between the path that copies and the path that maps,
+not a limit on what can be communicated — anything larger travels as a region
+(§5). It is deliberately far below a page: the copy happens twice per round trip
+on a path that runs with interrupts masked, and ADR-0049 §5 forbids unbounded
+work there. Four capabilities is enough for a request that hands over an
+endpoint, a reply endpoint and a region handle with one spare, and it bounds how
+many of a *receiver's* table slots one call can consume.
 
 Anything larger travels as a region (§5). The inline maximum is a constant of
 the contract, not a per-endpoint parameter, because a per-endpoint size makes
@@ -122,7 +135,11 @@ reported, because either alone can be satisfied while the other is missed.
 
 ## 9. Conformance evidence
 
-1. A message larger than the inline maximum is refused, not truncated.
+1. Each of the three §3 bounds refuses rather than truncates: a message over
+   256 inline bytes, one naming more than 4 capabilities, and one naming more
+   than 2 regions are each refused whole, and none is silently reduced to the
+   bound. A truncation that returned success would make the receiver's copy a
+   different message from the sender's.
 2. A full queue produces `E_LIMIT` or a cancellable block, never a silent drop
    and never an allocation.
 3. A failed send transfers no capability and no region: checked by attempting a

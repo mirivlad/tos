@@ -191,6 +191,10 @@ qemu_scheduler() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/scheduler.sh \
         target/preflight-qemu/scheduler)
 }
+qemu_capabilities() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/capabilities.sh \
+        target/preflight-qemu/capabilities)
+}
 
 run_gate "generated specification" specification
 run_gate "interface-contract authority" interface_contract_authority
@@ -238,6 +242,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU privileged instruction at CPL 3" qemu_process_privileged
     run_gate "QEMU process cannot write nucleus memory" qemu_process_nucleus_memory
     run_gate "QEMU two processes are scheduled" qemu_scheduler
+    run_gate "QEMU capabilities and IPC" qemu_capabilities
 fi
 
 printf '\n'

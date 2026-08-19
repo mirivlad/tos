@@ -2,12 +2,12 @@
 
 # ADR-0056: Where the capability an operation requires is named, and what an empty table returns
 
-- Status: **Proposed**
+- Status: **Accepted (option A)** (Project Architect-approved)
 - Date: 2026-08-19
 - Decision level: 2 — it states two things `SYSTEM_ABI_V1` requires conformance
   to and does not currently state; no operation, status, right or guarantee
   changes, so it is the same kind of addition §7 already records having made
-- Project Architect approval: *(unsigned)*
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-19
 
 ## The gap, stated once
 

@@ -48,77 +48,110 @@ shape of the launch boundary, of `process_create`, and of who decides what a
 process may do — which is the whole of Stage 3's authority story, and ADR-0048
 §2 says the nucleus owns mechanism and **no service policy**.
 
-Three decisions are therefore proposed rather than made, in ADR-0055, ADR-0056
-and ADR-0057. None is implemented before the Project Architect signs it.
+Three decisions were therefore proposed rather than made, in ADR-0055, ADR-0056
+and ADR-0057. **All three were accepted on 2026-08-19, each at option A**, and
+the tasks below were implemented against them:
+
+- the launcher endows, and the endowment travels in the launch record;
+- the capability is the first argument, and bounds are checked before rights, so
+  an empty table answers `E_BAD_HANDLE` at every index;
+- 256 inline bytes, 4 transferred capabilities, 2 transferred regions.
 
 ---
 
-### Task 0: The capability table exists — **blocked on ADR-0055, ADR-0056**
+### Task 0: The capability table exists — **done (2026-08-19)**
 
-**Files:** create `source/nucleus/src/capability.rs`; modify
-`source/nucleus/src/syscall.rs`, `source/nucleus/src/process.rs`.
+**Files:** `source/nucleus/src/capability.rs` (new),
+`source/nucleus/src/syscall.rs`.
 
-- [ ] A per-process table in nucleus memory, not mapped into the process:
-  fixed slots, each holding object, rights, scope, lifetime and generation
-  (`CAPABILITY_V1` §2). Fixed-size and statically reserved, for the reason the
-  process table is: the nucleus does not allocate on behalf of a caller.
-- [ ] Validation is index bounds, generation compare, type compare and a rights
-  mask — constant time in the number of capabilities held (`CAPABILITY_V1` §5,
-  docs/35 Stage 3).
-- [ ] `E_BAD_HANDLE` and `E_NO_CAPABILITY` stop being the same answer. Which one
-  an empty table returns is ADR-0056's question, and the dispatcher does not
-  guess it.
-- [ ] Evidence: a process iterating every index in range receives only what it
-  was granted, and an out-of-range index receives `E_BAD_HANDLE` and never a
-  fault (`CAPABILITY_V1` §7.2, `SYSTEM_ABI_V1` §8.2).
+- [x] A per-process table in nucleus memory, not mapped into the process:
+  sixteen statically reserved slots each holding object, rights, scope and
+  generation (`CAPABILITY_V1` §2). Lifetime is not a field and is not pretended
+  to be one — every capability this stage issues is bounded by the life of its
+  holder, which is the ceiling §3 requires, and a column nothing writes would be
+  worse than its absence.
+- [x] Validation is index bounds, generation compare, type compare and a rights
+  mask — four comparisons, constant in the number of capabilities held.
+- [x] `E_BAD_HANDLE` and `E_NO_CAPABILITY` stop being the same answer. The
+  dispatcher resolves the first argument before it knows what the operation
+  does, in ADR-0056's order, and the first failure decides the status.
+- [x] Evidence (`capabilities.sh`): a process iterating every index in range is
+  refused sixteen times and gains nothing, and an index past the table is
+  `E_BAD_HANDLE`. A handle is an index **and** a generation, so an index alone
+  is not a guess that can succeed.
 
-*Why blocked:* a table nothing can fill answers every question the same way the
-current code does, so the evidence for it would be evidence about nothing. What
-fills it is ADR-0055.
+### Task 1: A process holds its first capability — **done (2026-08-19)**
 
-### Task 1: A process holds its first capability — **blocked on ADR-0055**
+- [x] The endowment is written into the process's table by the nucleus **before
+  the process is entered**, from what the launcher decided, and described back
+  to the process in the launch record (`LAUNCH_VERSION` 2). A process cannot
+  widen its table; it can only shrink or refine it.
+- [x] The launcher's decision is on the audit record as a decision:
+  `TOS.RUN.PROCESS_ENDOWED process= capabilities= policy=launcher-constant
+  asserted_by=launcher`, emitted for every process including one endowed with
+  nothing.
+- [x] **The canonical boot's endowment is empty, and that is the policy.**
+  `system.boot.init` requests no capability, and the launcher's stated constant
+  grants nothing a module did not ask for. `stage2-runtime.sh` checks it: a
+  boot process holding nothing is what makes every later grant attributable.
 
-- [ ] The endowment reaches the process by the mechanism ADR-0055 fixes, and the
-  nucleus is not the party that decides its content.
-- [ ] Evidence: the audit record names what was granted, to which process, and
-  on whose authority — a grant nobody can attribute is ambient authority with a
-  handle in front of it (`CAPABILITY_V1` §3).
+### Task 2: Two processes exchange a message — **done (2026-08-19)**
 
-### Task 2: Two processes exchange a message — **blocked on ADR-0055, ADR-0057**
+**Files:** `source/nucleus/src/ipc.rs` (new).
 
-- [ ] An endpoint with one receive-rights holder (`IPC_V1` §2), messages
-  delivered whole or not at all, inline payload within the bound ADR-0057 fixes.
-- [ ] Evidence: a message larger than the inline maximum is refused, not
-  truncated (`IPC_V1` §7.1); and a message crosses between the two processes
-  Phase 3 already schedules.
+- [x] An endpoint with a bounded queue that is never grown to accept a message
+  (`IPC_V1` §7), messages delivered whole or not at all, inline payload bounded
+  at ADR-0057's 256 bytes.
+- [x] The payload crosses in a per-process message slot the launcher maps, not
+  in the call: `SYSTEM_ABI_V1` §3 admits no pointer the nucleus walks, and six
+  registers do not hold 256 bytes. The nucleus reads and writes that slot
+  through its own identity map — the arrangement the report region has used
+  since the first process, and for the same reason.
+- [x] Evidence: 28 bytes cross between the two processes Phase 3 schedules, and
+  a payload one byte past the bound is refused rather than truncated. The two
+  processes hold **separate halves** of one endpoint — `send` and `receive` are
+  separate rights (`IPC_V1` §2) — and each is refused the other's half on its
+  own handle.
 
-### Task 3: Attenuation, transfer and the confused deputy — **blocked as above**
+### Task 3: Attenuation, transfer and the confused deputy — **partly done**
 
-- [ ] Attenuation produces no superset in any dimension; the nucleus checks the
-  subset relation rather than taking the caller's word (`CAPABILITY_V1` §4).
-- [ ] Transfer of a linear capability consumes the sender's handle atomically
-  with the receiver's acquisition — no window in which both hold it, none in
-  which neither does.
-- [ ] Evidence: `CAPABILITY_V1` §7.6 — a broker holding a strong capability,
-  asked by a weak client to act on an object the client cannot name, refuses,
-  and the refusal is attributable to the client. docs/37 names this test
-  explicitly and it is the one that fails quietly in systems that pass the
-  other five.
+- [x] Attenuation produces no superset in any dimension. The nucleus intersects
+  the requested rights with the held ones rather than checking and refusing, so
+  **widening is not an error code, it is unexpressible**: a caller asking for
+  every right receives what it already had. Evidence: the attenuated handle
+  still refuses the half its holder was never given.
+- [x] A released handle is stale by generation, and naming it again is refused
+  rather than silently addressing whatever occupies the slot next.
+- [ ] Transfer of a linear capability, consumed in the sender atomically with
+  the receiver's acquisition (`CAPABILITY_V1` §4, `IPC_V1` §6). **Not
+  implemented**, and neither is region transfer (`IPC_V1` §5), so §9.1's refusal
+  evidence holds for the inline bound and not yet for the capability and region
+  counts — a message cannot name either, which is stronger than refusing them
+  and is not the same claim.
+- [ ] `endpoint_call`/`endpoint_reply` and a blocking receive with the
+  cancellation path `SYSTEM_ABI_V1` §6 requires of anything that blocks. A
+  receive with nothing to take answers `E_WOULD_BLOCK` today, which §4 assigns
+  to exactly that.
+- [ ] `CAPABILITY_V1` §7.6 — the confused deputy. It needs a broker holding a
+  strong capability and a client holding a weak one, which needs transfer.
+  docs/37 names this test explicitly and it is the one that fails quietly in
+  systems that pass the other five, so it is named here as outstanding rather
+  than approximated by something easier.
 
----
+## Why the second process is where the evidence lives
 
-## What is *not* blocked, and why it is still not started
+The scheduler, the table, the endpoint and the edge are production code on every
+boot. What is behind `test-two-processes` is the launcher's *constant* — the
+decision that there are two processes and that they are paired by one endpoint.
+That is policy, and ADR-0048 §2 says the nucleus owns none of it; ADR-0055 says
+the constant stands until `/system/policy/` exists and must be visible on the
+log, which it is.
 
-The table could be written today against an endowment that does not exist, and
-the two operations that only consume a handle (`capability_release`,
-`capability_attenuate`) could be written to refuse everything. Both would
-compile, both would pass a gate written to their behaviour, and neither would be
-evidence of anything: with no way to obtain a handle, "refuses every handle" is
-the behaviour the nucleus already has, reached by more code.
-
-This phase does not build a mechanism whose only demonstration is that it is
-unreachable. That is the shape AGENTS.md §4 calls a disguised throwaway, and the
-distance between it and the real thing is exactly one signature.
+So the canonical boot exercises the same table and the same dispatcher, with an
+endowment of nothing, and reports that it holds nothing. The paired build
+exercises what an endowment makes possible. Neither is a mock: the second
+process runs the same image out of the same pool, and the message that crosses
+is copied by the same code either way.
 
 ## Global constraints
 

@@ -11,15 +11,63 @@
 //! nucleus builds that space, so it knows both sides; the image knows only its
 //! own. No field is a physical address, and the image never learns one.
 //!
-//! **Nothing here is a capability.** The record carries memory the process was
-//! given and text it was told to run. Authority is a handle in a table the
-//! nucleus owns (`CAPABILITY_V1`), and none of it travels in a struct.
+//! **Nothing here is a capability, and that is still true of the endowment.**
+//! The record carries memory the process was given, text it was told to run,
+//! and — since version 2 (ADR-0055) — a *description* of the authority it was
+//! endowed with: which handles it holds and what they name. The authority
+//! itself is an entry in a nucleus table the process cannot address
+//! (`CAPABILITY_V1` §2); what travels here is the process's copy of its own
+//! index, so that it does not have to guess at what it was given. Deleting a
+//! line from this table takes nothing away, and adding one grants nothing: the
+//! table the nucleus checks is elsewhere.
 
 #![no_std]
 
 /// The version of this record. A nucleus and an image that disagree do not run
 /// together.
-pub const LAUNCH_VERSION: u32 = 1;
+///
+/// Version 2 adds the endowment (ADR-0055) and the message slot the inline IPC
+/// payload crosses in. Version 1 carried memory and text and no authority at
+/// all, which is the state in which no process could ever hold a capability.
+pub const LAUNCH_VERSION: u32 = 2;
+
+/// What kind of object a capability names (`CAPABILITY_V1` §3).
+///
+/// Zero is not an object kind and never will be, for the reason operation zero
+/// is not an operation: a field nobody wrote holds zero, and giving that a
+/// meaning turns an omission into a grant.
+pub const OBJECT_ENDPOINT: u32 = 1;
+pub const OBJECT_REGION: u32 = 2;
+pub const OBJECT_PROCESS: u32 = 3;
+pub const OBJECT_INTERFACE: u32 = 4;
+
+/// Endpoint rights (`IPC_V1` §2). They are separate: holding the right to be
+/// called is not the right to call.
+pub const RIGHT_SEND: u32 = 1;
+pub const RIGHT_RECEIVE: u32 = 1 << 1;
+pub const RIGHT_CALL: u32 = 1 << 2;
+
+/// One capability the launcher endowed this process with, described to the
+/// process that holds it.
+///
+/// The capability itself lives in a nucleus table the process cannot address
+/// (`CAPABILITY_V1` §2). This is the process's copy of *what it was given* and
+/// *what to call it* — without which a process would hold authority it could
+/// not name, and would have to guess indices to discover its own endowment.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct LaunchCapability {
+    /// The handle: index and generation, as `CAPABILITY_V1` §2's validity rule
+    /// requires both.
+    pub handle: u64,
+    /// One of the `OBJECT_*` kinds.
+    pub object: u32,
+    /// The rights, as a mask of that object type's declared rights.
+    pub rights: u32,
+    /// The scope the rights apply to, where the object has one; zero where it
+    /// does not.
+    pub scope: u64,
+}
 
 /// One source unit of the set the process is to execute.
 #[repr(C)]
@@ -58,6 +106,23 @@ pub struct Launch {
     /// actually used rather than have someone else guess for it.
     pub stack_base: u64,
     pub stack_length: u64,
+    /// Where the inline payload of a message crosses the boundary.
+    ///
+    /// `SYSTEM_ABI_V1` §3 admits values and handles as arguments and no pointer
+    /// the nucleus walks; six registers cannot carry `IPC_V1`'s 256 inline
+    /// bytes. So the payload does not travel in the call at all: it sits in a
+    /// region the launcher mapped and the nucleus knows the address of, exactly
+    /// as the report region does, and the call names only how much of it is a
+    /// message.
+    pub message_base: u64,
+    pub message_length: u64,
+    /// The endowment: `capability_count` × [`LaunchCapability`], in this
+    /// process's address space, read-only. Zero of them is a legitimate
+    /// endowment and the commonest one — a process is given what whoever
+    /// launched it decided, and "nothing" is a decision (ADR-0055).
+    pub capabilities: u64,
+    pub capability_count: u32,
+    pub reserved: u32,
     /// The declared identity of the source set, NUL-padded UTF-8.
     pub source_set: [u8; 96],
 }

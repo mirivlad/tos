@@ -1,0 +1,201 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//! Endpoints, and the one way a message crosses between two processes.
+//!
+//! `IPC_V1` fixes the shape and ADR-0057 fixes the three numbers it said it
+//! declared: **256 inline bytes, 4 transferred capabilities, 2 transferred
+//! regions**. This module implements the inline half — a message of bytes,
+//! delivered whole or not at all, through a bounded queue that is never grown
+//! to accept anything.
+//!
+//! **Where the payload actually crosses.** `SYSTEM_ABI_V1` §3 admits values and
+//! handles as arguments and no pointer the nucleus walks; six registers cannot
+//! carry 256 bytes. So the payload does not travel in the call: each process has
+//! a message slot the launcher mapped at a fixed address, and the call names
+//! only how many of its bytes are a message. The nucleus reads and writes that
+//! slot through its own identity map, never through the process's — the same
+//! arrangement the report region has used since the first process, and for the
+//! same reason: the process's mapping is a thing the process could in principle
+//! change, and this is the boundary.
+//!
+//! **What this does not implement, said plainly.** Capability and region
+//! transfer (`IPC_V1` §5, §6) are not here, and neither is a blocking receive.
+//! A receive with nothing to take answers `E_WOULD_BLOCK`, which `SYSTEM_ABI_V1`
+//! §4 assigns to exactly that, and a blocking form will arrive with the
+//! cancellation path §6 requires of anything that blocks. Nothing here pretends
+//! either exists.
+
+use tos_frames::FRAME_SIZE;
+
+/// The bounds ADR-0057 fixed for this contract version.
+pub const MAX_INLINE_BYTES: u64 = 256;
+
+/// How many endpoints this nucleus has, and how deep each queue is.
+///
+/// Both are fixed nucleus bounds over statically reserved storage: `IPC_V1` §7
+/// requires that a queue never be grown to accept a message, and the way to
+/// never grow one is to never have allocated it.
+pub const MAX_ENDPOINTS: usize = 4;
+const QUEUE_DEPTH: usize = 4;
+
+/// One message in flight: bytes, and how many of them mean anything.
+#[derive(Clone, Copy)]
+struct Message {
+    bytes: [u8; MAX_INLINE_BYTES as usize],
+    length: u64,
+}
+
+impl Message {
+    const EMPTY: Message = Message {
+        bytes: [0; MAX_INLINE_BYTES as usize],
+        length: 0,
+    };
+}
+
+/// An endpoint: a bounded queue, and the count of what is in it.
+struct Endpoint {
+    live: bool,
+    queue: [Message; QUEUE_DEPTH],
+    /// How many messages are queued, and where the oldest is.
+    count: usize,
+    head: usize,
+}
+
+impl Endpoint {
+    const EMPTY: Endpoint = Endpoint {
+        live: false,
+        queue: [Message::EMPTY; QUEUE_DEPTH],
+        count: 0,
+        head: 0,
+    };
+}
+
+static mut ENDPOINTS: [Endpoint; MAX_ENDPOINTS] = [Endpoint::EMPTY; MAX_ENDPOINTS];
+
+/// The endpoint table.
+///
+/// # Safety
+///
+/// The nucleus is single-context, and everything that reaches this is either
+/// the launcher or the system-call edge, which runs with interrupts masked.
+// SAFETY: the caller is nucleus code, which is the only writer, and the
+// single-context argument above is why no second borrow can exist.
+unsafe fn endpoints() -> &'static mut [Endpoint; MAX_ENDPOINTS] {
+    // SAFETY: the static is initialized at link time and lives for the whole
+    // boot; this is the only way it is ever named.
+    unsafe { &mut *core::ptr::addr_of_mut!(ENDPOINTS) }
+}
+
+/// Creates an endpoint and returns its index, or nothing when there is no room.
+///
+/// Reachable from the launcher and from nothing a process can call:
+/// `SYSTEM_ABI_V1` §5 assigns no operation that creates an object, and an
+/// object a process could conjure would be authority it granted itself.
+///
+/// On a canonical boot nothing calls it, because the launcher's constant endows
+/// the boot process with nothing (ADR-0055). That is the policy holding, not a
+/// function waiting to be deleted.
+#[allow(dead_code)]
+pub fn create() -> Option<u32> {
+    // SAFETY: single-context nucleus; this is the only writer.
+    let endpoints = unsafe { endpoints() };
+    let index = endpoints.iter().position(|endpoint| !endpoint.live)?;
+    endpoints[index] = Endpoint::EMPTY;
+    endpoints[index].live = true;
+    Some(index as u32)
+}
+
+/// Why a message did not move.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Refused {
+    /// The declared length is beyond what this contract version carries inline,
+    /// or the endpoint index names nothing.
+    BadArgument,
+    /// The queue is full. `IPC_V1` §7: the system never grows a queue to accept
+    /// a message, and backpressure is visible to the sender.
+    Limit,
+    /// A non-blocking receive with nothing to take.
+    WouldBlock,
+}
+
+/// Queues `length` bytes of `from` on an endpoint. Delivered whole or not at
+/// all: there is no partial send, so no receiver ever has half a message.
+///
+/// # Safety
+///
+/// `from` is the physical address of the sending process's message slot, which
+/// the launcher mapped and the nucleus can read through its own identity map.
+// SAFETY: the caller's promise that `from` is the launcher's own mapping is what
+// makes the read below a read of nucleus-known memory rather than of an address
+// a process chose.
+pub unsafe fn send(endpoint: u32, from: u64, length: u64) -> Result<(), Refused> {
+    if length > MAX_INLINE_BYTES {
+        // Refused, not truncated (`IPC_V1` §9.1). A message shortened to the
+        // bound and reported as sent would make the receiver's copy a different
+        // message from the sender's.
+        return Err(Refused::BadArgument);
+    }
+    // SAFETY: single-context nucleus; this is the only writer.
+    let endpoints = unsafe { endpoints() };
+    let slot = endpoints
+        .get_mut(endpoint as usize)
+        .filter(|endpoint| endpoint.live)
+        .ok_or(Refused::BadArgument)?;
+    if slot.count == QUEUE_DEPTH {
+        return Err(Refused::Limit);
+    }
+    let at = (slot.head + slot.count) % QUEUE_DEPTH;
+    let message = &mut slot.queue[at];
+    // SAFETY: `from` is the launcher's mapping of a whole frame, per the
+    // caller's contract, and `length` is bounded by `MAX_INLINE_BYTES` above,
+    // which is far inside it.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            core::ptr::with_exposed_provenance::<u8>(from as usize),
+            message.bytes.as_mut_ptr(),
+            length as usize,
+        )
+    };
+    message.length = length;
+    slot.count += 1;
+    Ok(())
+}
+
+/// Takes the oldest message from an endpoint into a process's message slot, and
+/// returns how many bytes it was.
+///
+/// # Safety
+///
+/// `into` is the physical address of the receiving process's message slot, at
+/// least one frame long, which the launcher mapped.
+// SAFETY: as `send`, for the write side.
+pub unsafe fn receive(endpoint: u32, into: u64) -> Result<u64, Refused> {
+    // SAFETY: single-context nucleus; this is the only writer.
+    let endpoints = unsafe { endpoints() };
+    let slot = endpoints
+        .get_mut(endpoint as usize)
+        .filter(|endpoint| endpoint.live)
+        .ok_or(Refused::BadArgument)?;
+    if slot.count == 0 {
+        return Err(Refused::WouldBlock);
+    }
+    let message = slot.queue[slot.head];
+    slot.head = (slot.head + 1) % QUEUE_DEPTH;
+    slot.count -= 1;
+    // SAFETY: `into` is the launcher's mapping of a whole frame, per the
+    // caller's contract, and the length was bounded when the message was
+    // queued.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            message.bytes.as_ptr(),
+            core::ptr::with_exposed_provenance_mut::<u8>(into as usize),
+            message.length as usize,
+        )
+    };
+    Ok(message.length)
+}
+
+/// The message slot is one frame, of which this contract version uses 256
+/// bytes. Asserting it here means a change to either number that made the
+/// payload not fit stops the build rather than producing a copy past the
+/// mapping.
+const _: () = assert!(MAX_INLINE_BYTES <= FRAME_SIZE);

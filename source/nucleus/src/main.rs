@@ -18,9 +18,11 @@
 #![no_main]
 
 mod apic;
+mod capability;
 mod console;
 mod exception;
 mod framebuffer;
+mod ipc;
 mod memory;
 mod msr;
 mod paging;
@@ -566,7 +568,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // that separation is visible: every process this boot has is built here,
     // out of the same pool and into its own address space, before the scheduler
     // gives the processor to any of them.
-    let mut build = || {
+    let mut build = |endowment: &[(capability::Object, u32, u64)]| {
         // SAFETY: the image and capsule ranges were validated above — the image
         // by its digest, the capsule by digest and structure — both are
         // physically contiguous and identity-mapped for this nucleus, and the
@@ -582,6 +584,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
                 entry_index,
                 memory::identity(),
                 &source_set[..named],
+                endowment,
             )
         };
         // Announced once the process exists and by the slot it occupies, so
@@ -599,7 +602,50 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         }
         built
     };
-    let first = match build() {
+    // **The launcher's stated constant** (ADR-0055). Until `/system/policy/`
+    // exists (ADR-0051 section 3) the endowment of a process this nucleus
+    // launches is a decision written here, in one place, and put on the log as a
+    // decision.
+    //
+    // For the canonical boot it is **empty**, and that is the policy rather than
+    // the absence of one: `system.boot.init` requests no capability, and the
+    // rule is to grant nothing a module did not ask for. A process endowed with
+    // authority it never requested would be authority nobody decided to give.
+    // Under the test constant the two processes are paired by one endpoint: the
+    // first is given the right to *receive* on it and the second the right to
+    // *send*. The rights are separate (`IPC_V1` section 2), so neither can
+    // perform the other's half, and neither was given anything it could have
+    // obtained on its own — no operation creates an endpoint.
+    #[cfg(feature = "test-two-processes")]
+    let (receiver_endowment, sender_endowment) = {
+        let Some(endpoint) = ipc::create() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        (
+            [(
+                capability::Object::Endpoint(endpoint),
+                tos_launch::RIGHT_RECEIVE,
+                0,
+            )],
+            [(
+                capability::Object::Endpoint(endpoint),
+                tos_launch::RIGHT_SEND,
+                0,
+            )],
+        )
+    };
+    #[cfg(feature = "test-two-processes")]
+    let first = match build(&receiver_endowment) {
+        Ok(index) => index,
+        Err(_) => {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-process\r\n");
+            console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-process");
+            mem_fail();
+        }
+    };
+    #[cfg(not(feature = "test-two-processes"))]
+    let first = match build(&[]) {
         Ok(index) => index,
         Err(_) => {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-process\r\n");
@@ -618,7 +664,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     #[cfg(feature = "test-two-processes")]
     {
         tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
-        if build().is_err() {
+        if build(&sender_endowment).is_err() {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
             mem_fail();
         }
