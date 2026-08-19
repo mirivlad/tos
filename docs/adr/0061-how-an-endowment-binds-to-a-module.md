@@ -2,13 +2,27 @@
 
 # ADR-0061: How a process's endowment binds to the module it runs
 
-- Status: **Proposed**
+- Status: **Accepted (surface B, key i)** (Project Architect-approved)
 - Date: 2026-08-20
 - Decision level: 2 — it fixes which declaration of a module is matched against
   a grant, what the launch record must carry for the match to be checkable, and
   which of two forms `docs/42` §2 already permits is the one TOS uses; it adds
   no operation, no status and no right
-- Project Architect approval: **not given**
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-20
+
+## The decision, in four lines
+
+- **Surface:** B. A grant binds to `import capability` directly, and the
+  imported binding is the capability value.
+- **Key:** the binding. The identity of a request is `(module identity,
+  binding)` — not a global `input`.
+- **Compatibility check:** the interface must match the object kind
+  (`system.ipc.Endpoint` → `OBJECT_ENDPOINT`). This is a check on a grant, not
+  the mechanism that selects one.
+- **Decider:** the launcher's stated constant now, `/system/policy/` later. The
+  decider does not change the key.
+- **Transport:** the launch record carries the binding explicitly, beside handle,
+  object, rights and scope — never the position of an entry in an array.
 
 ## The gap, stated once
 
@@ -255,13 +269,16 @@ parameter through functions that do not use it is authority spread by the
 calling convention rather than by delegation, which is the opposite of what
 `CAPABILITY_V1` §4 makes delegation cost.
 
-i, because it is the only key that satisfies `PROCESS_IDENTITY_V1` §7.3 without
-adding anything: the requested and granted sets become comparable and a denial
-becomes namable, using an identifier the artifact already carries and the digest
-already covers. Position needs denial holes added to the launch record to
-recover an identity the binding already has, and cannot distinguish two imports
-of one interface without making source order load-bearing. An explicit
-identifier needs a closed contract reopened to add what is already there.
+i, and the argument is not that §7.3 forces it. **§7.3 forces a stable element
+identity, not a particular one** — an explicit identifier would satisfy it, and
+so would position with enough additional machinery. What decides is that the
+binding *already is* such an identity: it exists, it is unique inside a module,
+and it is covered by the module digest, so choosing anything else means building
+a second identity beside one that is already there and already load-bearing.
+Position needs denial holes added to the launch record to recover what the
+binding has for free, and cannot distinguish two imports of one interface without
+making source order silently decide authority. An explicit identifier needs a
+closed contract reopened to add what is already present.
 
 The correspondence travels in the launch record **explicitly**, because a record
 that says which import an entry answers can be read by a policy layer later
