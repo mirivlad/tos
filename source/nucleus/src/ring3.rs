@@ -18,7 +18,7 @@ use tos_frames::{Frames, FRAME_SIZE};
 core::arch::global_asm!(include_str!("ring3.S"));
 
 use crate::paging::{AddressSpace, PagingRefused};
-use crate::process::{self, Ended};
+use crate::process;
 
 /// Where the excursion's two pages live in the address space.
 ///
@@ -82,12 +82,18 @@ impl Payload {
     }
 }
 
-/// Runs `payload` at CPL 3 and reports how it ended.
+/// Builds `payload` into a process of the ordinary table, without entering it.
 ///
 /// Every payload here ends in a fault, which is the only way an excursion can
-/// end until a process can say it finished. That it comes back **at all**, and
-/// that the boot continues afterwards, is the property ADR-0049 section 3 asks
-/// for: a fault in a process is not the end of the system.
+/// end. What ADR-0049 section 3 asks for is that such a fault end **that
+/// process** and not the system — so the excursion is admitted beside the real
+/// first process rather than run before it, and the evidence is that the peer
+/// sharing the table with it goes on to complete its own work.
+///
+/// It runs in the nucleus's own address space, which is the one thing that
+/// makes it an excursion rather than a process: its two pages are the only
+/// user-accessible leaves that space has ever had, and they are unmapped again
+/// when it is over.
 ///
 /// # Safety
 ///
@@ -95,11 +101,11 @@ impl Payload {
 /// is running.
 // SAFETY: the caller's promise that this space is the live one is what makes
 // the two mappings below reachable by the payload.
-pub unsafe fn run(
+pub unsafe fn admit(
     space: &mut AddressSpace,
     frames: &mut Frames,
     payload: Payload,
-) -> Result<Ended, PagingRefused> {
+) -> Result<usize, PagingRefused> {
     const PRESENT_USER: u64 = 1 | (1 << 2);
     const WRITABLE: u64 = 1 << 1;
     const NO_EXECUTE: u64 = 1 << 63;
@@ -144,23 +150,49 @@ pub unsafe fn run(
     unsafe { flush(USER_STACK) };
 
     tos_serial::puts(b"TOS.TEST.RING3.ENTER\r\n");
-    // SAFETY: both pages are mapped user-accessible in the live space, the
-    // stack top is inside its own page and 16-byte aligned, and the GDT, TSS
-    // and `syscall` MSRs were installed at nucleus entry.
-    let ended = unsafe { process::run(USER_CODE, USER_STACK + FRAME_SIZE, 0) };
+    // SAFETY: both pages are mapped user-accessible in `space`, which the
+    // caller states is the live one, the stack top is inside its own page and
+    // 16-byte aligned, and the GDT, TSS and `syscall` MSRs were installed at
+    // nucleus entry. The excursion owns no address space of its own — it
+    // borrows this one — so its slot carries none and there is nothing of the
+    // pool's to reclaim through it.
+    let index = unsafe {
+        process::admit_borrowed(space.root(), USER_CODE, USER_STACK + FRAME_SIZE, 0)
+            .map_err(|_| PagingRefused::NoFrame)?
+    };
+    // SAFETY: single-context nucleus; nothing else writes these.
+    unsafe {
+        CODE_FRAME = code;
+        STACK_FRAME = stack;
+    }
+    Ok(index)
+}
 
+/// The two frames the excursion is made of, so that the boot can give them back
+/// once the scheduler has run every process to its end.
+static mut CODE_FRAME: u64 = 0;
+static mut STACK_FRAME: u64 = 0;
+
+/// Takes back what [`admit`] lent.
+///
+/// # Safety
+///
+/// The excursion has ended, `space` is the live address space and the one it
+/// ran in, and nothing else references either of its pages.
+// SAFETY: the caller's promise that the excursion is over is what makes both
+// frames unreferenced.
+pub unsafe fn retire(space: &mut AddressSpace, frames: &mut Frames) {
     // The process is over, so its memory stops being its memory. Unmapped
     // first and released second: a frame back in the pool while a mapping to it
     // survives is a frame two owners can reach.
     space.unmap_page(USER_CODE);
     space.unmap_page(USER_STACK);
     // SAFETY: both frames came from this pool, both mappings are gone, and
-    // nothing else references them; the process that did no longer exists.
+    // nothing else references them; the process that could no longer exists.
     unsafe {
-        frames.release_frame(code);
-        frames.release_frame(stack);
+        frames.release_frame(CODE_FRAME);
+        frames.release_frame(STACK_FRAME);
     }
-    Ok(ended)
 }
 
 /// Drops one address's translation.

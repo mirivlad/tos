@@ -72,6 +72,12 @@ pub struct AddressSpace {
 }
 
 impl AddressSpace {
+    /// The physical address of this tree's root — what `CR3` holds while this
+    /// space is the live one.
+    pub fn root(&self) -> u64 {
+        self.root
+    }
+
     /// An empty space: a cleared root table and nothing mapped.
     pub fn new(frames: &mut Frames) -> Result<AddressSpace, PagingRefused> {
         let root = frames.allocate_frame().ok_or(PagingRefused::NoFrame)?;
@@ -246,12 +252,54 @@ impl AddressSpace {
             let mut cr0: u64;
             core::arch::asm!("mov {}, cr0", out(reg) cr0, options(nomem, nostack, preserves_flags));
             core::arch::asm!("mov cr0, {}", in(reg) cr0 | CR0_WP, options(nostack, preserves_flags));
-            // SAFETY: `root` is a cleared, page-aligned frame at the top of a
-            // complete four-level tree built above; loading it replaces the
-            // firmware's map with this one.
-            core::arch::asm!("mov cr3, {}", in(reg) self.root, options(nostack, preserves_flags));
         }
+        // SAFETY: per this function's contract; `load` is the instruction that
+        // performs the change, and the two register writes above are the mode
+        // bits the tables were built assuming.
+        unsafe { self.load() };
     }
+
+    /// Loads this space's tables, and does nothing else.
+    ///
+    /// [`activate`](Self::activate) sets the two mode bits first, and does so
+    /// every time because it is called at points where the mode is not yet
+    /// known to be right. **A context switch is not such a point**: `EFER.NXE`
+    /// and `CR0.WP` were set before the first process existed and nothing
+    /// clears them, so a switch writes `CR3` and nothing more. The distinction
+    /// is not micro-optimization — it is that a preemption handler should
+    /// change exactly one thing about the machine.
+    ///
+    /// # Safety
+    ///
+    /// As [`activate`](Self::activate): this space maps, at the same addresses,
+    /// every byte the nucleus will touch from the next instruction on.
+    // SAFETY: the caller's promise that this space covers the running nucleus is
+    // the whole contract; the write itself is one architected register.
+    pub unsafe fn load(&self) {
+        // SAFETY: `root` is a cleared, page-aligned frame at the top of a
+        // complete four-level tree; loading it makes that tree the live one.
+        unsafe { load_root(self.root) };
+    }
+}
+
+/// Loads a page-table root, and does nothing else.
+///
+/// The one instruction in this nucleus that changes which address space the
+/// processor is in. The scheduler names a root rather than a space — a process
+/// slot records where its tree is, and one process runs in a tree the nucleus
+/// does not own — so the operation is published here at that shape, rather than
+/// written out a second time somewhere it would be easier to get wrong.
+///
+/// # Safety
+///
+/// The tree at `root` maps this nucleus at the addresses it is running at, from
+/// the next instruction on: its text, the stack in use, and any device register
+/// the current path is about to touch.
+// SAFETY: the caller's promise about the tree is the whole contract; a missing
+// mapping shows up as the fault it is.
+pub unsafe fn load_root(root: u64) {
+    // SAFETY: per the caller's contract.
+    unsafe { core::arch::asm!("mov cr3, {}", in(reg) root, options(nostack, preserves_flags)) };
 }
 
 /// The four table indices of a virtual address.

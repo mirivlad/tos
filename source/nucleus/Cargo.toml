@@ -18,6 +18,11 @@ test-paging-readonly-text = []
 test-ring3-abi = []
 test-ring3-privileged = []
 test-ring3-nucleus = []
+# Builds a second process over the same boot module, so that the round-robin
+# ADR-0049 section 4 asks for has somewhere to rotate to. The scheduler itself
+# is not test-only; how many processes a canonical boot has is not this
+# nucleus's decision to make (ADR-0048 section 2).
+test-two-processes = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

@@ -74,7 +74,7 @@ At `5edab35`, by reading the shipping code:
   that advances across a loop making no call at all — 355 to 395 on the
   canonical path — and by the boot completing afterwards.
 
-### Task 3: Two processes make progress
+### Task 3: Two processes make progress — **done (2026-08-19)**
 
 **How the switch works, decided while Task 1 was built and written down here so
 that implementing it is not re-deriving it.** The timer stub already saves all
@@ -96,9 +96,38 @@ live, and the report region the nucleus drains for it — `REPORT_PHYS` and
 `REPORT_LENGTH` become per-slot — plus a `launch` that builds two processes
 before entering either.
 
-- [ ] More than one process exists at once, which the launcher cannot express
-  today: `process::launch` runs one process to its end.
-- [ ] Round-robin over runnable contexts within one priority band, fixed
-  quantum, no priorities and no SMP (ADR-0049 §4).
-- [ ] Evidence: both processes advance an observable neither yields to give the
-  other, and the tick each observes is the same tick.
+- [x] More than one process exists at once. `launch` became `create` — building
+  a process and entering one are now separate operations — plus a `schedule`
+  that runs every runnable slot to its end. The table holds four slots; the
+  report region became per-slot, and so did the tick accounting.
+- [x] Round-robin over runnable contexts within one priority band, fixed
+  quantum, no priorities and no SMP (ADR-0049 §4). The search starts after the
+  running slot and wraps; with one runnable process the switch is skipped rather
+  than performed onto itself, which is why the canonical path is unchanged.
+- [x] Evidence: both processes advance an observable neither yields to give the
+  other, and the tick each observes is the same tick — `scheduler.sh`, measured
+  from both sides. The nucleus reports each process's `ticks`, `quanta` and
+  `[first_tick, last_tick]`; the two intervals overlap, which two processes run
+  one after the other cannot produce. The processes report the tick before and
+  after a loop that makes **no system call at all**; those two brackets overlap
+  too, which needs no knowledge of which process wrote which line. Both return
+  `i32:240`.
+
+**What was decided while implementing, and why the second process is
+test-gated.** The scheduler, the table and the switch are production code, on
+every boot. *How many processes a boot has* is not this nucleus's decision: no
+accepted contract says the canonical boot has two, and a nucleus that decided so
+on its own would own service policy, which ADR-0048 §2 says it does not. So the
+second process lives behind `test-two-processes`, exactly as the ring-3
+excursions live behind theirs — the mechanism is real, the policy is not
+invented. When a contract does say what the boot's process set is (ADR-0051's
+`provides`/`restart` residue, Stage 3's service story), the launcher reads it
+instead of a feature flag, and nothing below the launcher changes.
+
+**A fault now happens with a peer.** The ring-3 excursion used to run to its
+fault before the first process was built. It is now admitted into the same table
+and entered by the same scheduler, so the fault it takes is taken while a peer
+exists — and the gates check that the process that faulted is not the process
+that finished the work. That is the remaining half of ADR-0049 §3's evidence:
+*terminates exactly one process, attributed to it, and leaves its peers
+running.*
