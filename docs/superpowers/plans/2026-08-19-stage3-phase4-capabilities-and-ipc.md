@@ -185,11 +185,13 @@ it. Named here so that it is found on purpose.
   implemented**, and neither is region transfer (`IPC_V1` §5), so §9.1's refusal
   evidence holds for the inline bound and not yet for the capability and region
   counts — a message cannot name either, which is stronger than refusing them
-  and is not the same claim.
+  and is not the same claim. **Blocked on ADR-0058**: a call has no way to name
+  four handles, and the same gap keeps `process_create`'s child endowment empty
+  and its module named by an ordinal rather than by a path.
 - [ ] `endpoint_call`/`endpoint_reply` and a blocking receive with the
   cancellation path `SYSTEM_ABI_V1` §6 requires of anything that blocks. A
   receive with nothing to take answers `E_WOULD_BLOCK` today, which §4 assigns
-  to exactly that. The shape is settled and awaits ADR-0058: a `Blocked` state
+  to exactly that. **Blocked on ADR-0059**, whose shape is settled: a `Blocked` state
   with exact wake, the nucleus's **liveness rule** as the release valve — when
   nothing is runnable and something is blocked, nothing routed in Stage 3 can
   ever change that, so the nucleus cancels every block with `E_CANCELLED` and
@@ -197,7 +199,8 @@ it. Named here so that it is found on purpose.
   them as the livelock terminator, and *patience* left to whoever launched a
   process rather than owned by the nucleus.
 - [ ] `CAPABILITY_V1` §7.6 — the confused deputy. It needs a broker holding a
-  strong capability and a client holding a weak one, which needs transfer.
+  strong capability and a client holding a weak one, which needs transfer, which
+  needs ADR-0058.
   docs/37 names this test explicitly and it is the one that fails quietly in
   systems that pass the other five, so it is named here as outstanding rather
   than approximated by something easier.
