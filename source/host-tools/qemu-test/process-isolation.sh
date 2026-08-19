@@ -75,9 +75,42 @@ bash "$ROOT/host-tools/qemu-test/run.sh" \
     --require "TOS.NUCLEUS.ENTRY TOS.RUN.PROCESS_FAULT TOS.RUN.COMPLETED TOS.HALT" \
     --forbid "TOS.EXCEPTION TOS.PANIC"
 
-grep -Eq "^TOS\.RUN\.PROCESS_FAULT vector=$VECTOR error=0x[0-9a-f]+ rip=$RIP cr2=[^ ]+ cpl=3$" \
+grep -Eq "^TOS\.RUN\.PROCESS_FAULT process=[0-9]+ vector=$VECTOR error=0x[0-9a-f]+ rip=$RIP cr2=[^ ]+ cpl=3$" \
     "$OUT/events.log" || {
     echo "missing the process-fault event for vector $VECTOR at CPL 3" >&2
+    exit 1
+}
+# Exactly one process died. The fault is attributed to a process, and the count
+# of deaths is the difference between "a process ended" and "the system did".
+DEATHS=$(grep -c '^TOS\.RUN\.PROCESS_FAULT ' "$OUT/events.log")
+[ "$DEATHS" = 1 ] || {
+    echo "$DEATHS processes faulted, expected exactly one" >&2
+    exit 1
+}
+# The peer existed while the fault happened. `TOS.RUN.PROCESS_BEGIN` for the
+# real first process is on the log *before* the fault, so the process that died
+# was not the only one there was — which is what "leaves its peers running"
+# (ADR-0049 section 3) requires, and what a fault taken before anything else was
+# launched would not show.
+awk '
+    /^TOS\.RUN\.PROCESS_BEGIN /  { begun = 1 }
+    /^TOS\.RUN\.PROCESS_FAULT /  { if (!begun) exit 1 }
+    END { exit begun ? 0 : 1 }
+' "$OUT/events.log" || {
+    echo "no peer process existed when the fault was taken" >&2
+    exit 1
+}
+# And the process that faulted is not the process that finished the work.
+FAULTED=$(grep -m1 '^TOS\.RUN\.PROCESS_FAULT ' "$OUT/events.log" |
+    tr ' ' '\n' | sed -n 's/^process=//p')
+EXITED=$(grep -m1 '^TOS\.RUN\.PROCESS_EXIT ' "$OUT/events.log" |
+    tr ' ' '\n' | sed -n 's/^process=//p')
+[ -n "$EXITED" ] || {
+    echo "no process reported an exit: the peer did not end on its own terms" >&2
+    exit 1
+}
+[ "$FAULTED" != "$EXITED" ] || {
+    echo "process $FAULTED both faulted and exited" >&2
     exit 1
 }
 # The system did not merely survive the fault: it went on to run the real first

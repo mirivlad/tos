@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `0030752235cbc33248fd7a1b0d74d2a993eb53524fe007e1bf5be9034e7efb6f`  
+Source-manifest SHA-256: `928a06b27c8a71f5b20bfff0502b9504a8de88dc964b5ce9f7047129e65bb236`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -1630,10 +1630,10 @@ own, because two vocabularies describing one system eventually disagree.
 
 | Identifier | Required fields | Meaning |
 |---|---|---|
-| `TOS.RUN.PROCESS_BEGIN` | `module=` `runtime_engine=sha256:<64 hex>` `system_commit=` `asserted_by=launcher` | A process is being launched over the named module by the named runtime image. |
-| `TOS.RUN.PROCESS_EXIT` | `asserted_by=nucleus` `self_reported_status=` `ticks=` | The process ended by saying so (`process_exit`, ADR-0054). `ticks` is how many timer interrupts were taken while a process was on the processor — the nucleus's number, because a process cannot observe how long it was off it. |
-| `TOS.RUN.PROCESS_FAULT` | `vector=` `error=0x<hex>` `rip=0x<hex>` `cr2=` `cpl=` | The process took a fault and ended. The system did not. |
-| `TOS.RUN.PROCESS_RECLAIMED` | `frames=` `available=` | What the pool took back when the process ended, and what it holds now. |
+| `TOS.RUN.PROCESS_BEGIN` | `process=` `module=` `runtime_engine=sha256:<64 hex>` `system_commit=` `asserted_by=launcher` | A process was built over the named module by the named runtime image, and occupies the named slot. |
+| `TOS.RUN.PROCESS_EXIT` | `process=` `asserted_by=nucleus` `self_reported_status=` `ticks=` `quanta=` `first_tick=` `last_tick=` | The process ended by saying so (`process_exit`, ADR-0054). The four counts are the nucleus's, because a process cannot observe how long it was off the processor: `ticks` is the timer interrupts charged to **this** process, `quanta` how many times it was given the processor, and `first_tick`/`last_tick` the first and last tick it ran at. |
+| `TOS.RUN.PROCESS_FAULT` | `process=` `vector=` `error=0x<hex>` `rip=0x<hex>` `cr2=` `cpl=` | The process took a fault and ended. The system did not, and neither did its peers. |
+| `TOS.RUN.PROCESS_RECLAIMED` | `process=` `frames=` `available=` | What the pool took back when the named process ended, and what it holds now. |
 
 Two fields carry their asserter in their name, and that is not decoration.
 `asserted_by=nucleus` on an exit says the *fact* of the exit is the nucleus's;
@@ -1646,10 +1646,34 @@ necessary.
 Stage 3 reads no repository, and writing a commit the system never read is the
 failure Stage 1 was built to prevent.
 
+`process=` is the slot the nucleus's process table holds that process in. It is
+a name for **this boot's** process, not an identity that survives one, and a
+slot is reused once the process that had it has ended and its memory has gone
+back. It appears on every nucleus-asserted process event so that a reader with
+more than one process on the log can tell which one each statement is about.
+
+The four counts on an exit are what makes preemption checkable rather than
+claimed. `quanta` greater than one means the processor was taken from that
+process and handed back, which is not something a process can arrange for
+itself; and two processes whose `[first_tick, last_tick]` intervals overlap ran
+interleaved, because two that ran one after the other cannot produce overlapping
+intervals. Both are ADR-0049 §4 evidence, and both are the nucleus's to assert.
+
 The `TOS.RUN.*` events of §3–§6 are the *runtime's* — a process cannot reach a
 serial port, so it writes them into the region its launch record names and the
 nucleus relays them unchanged. Relaying is not authorship: the events say what
 the runtime did, and the nucleus adds nothing to them.
+
+**With more than one process, those events interleave, and they carry no
+`process=`.** Each process writes into its own report region and the nucleus
+drains whichever process just entered the edge, so the relative order of two
+processes' lines on the transport is the order the scheduler produced. A line is
+never split: a runtime publishes a line by advancing the region's `written`
+count after the bytes are in it, so a process interrupted mid-write has written
+nothing yet. Attributing a §3–§6 event to a process is therefore not something a
+reader can do from the transport alone — and nothing in this contract asks them
+to, because every claim that needs an owner is a nucleus event above, which
+carries one.
 
 ## 8. Relationship to the boot log
 

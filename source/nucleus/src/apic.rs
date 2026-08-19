@@ -60,12 +60,6 @@ const QUANTUM: u32 = 100_000;
 /// Written only by the handler, which cannot be re-entered: the handler runs
 /// with interrupts masked and nested interrupts are not enabled (ADR-0049).
 static mut TICKS: u64 = 0;
-/// Of those, the ones taken while a process was running.
-///
-/// The difference between the two is where the machine's time went, and it is
-/// the nucleus's to assert: a process cannot see how long it was off the
-/// processor, and a number it reported about that would be a guess.
-static mut PROCESS_TICKS: u64 = 0;
 
 /// The monotonic tick, as `time_monotonic` reports it.
 pub fn ticks() -> u64 {
@@ -75,12 +69,6 @@ pub fn ticks() -> u64 {
     // returns from without leaving the value half-written — it is one aligned
     // `u64` store.
     unsafe { TICKS }
-}
-
-/// Timer interrupts taken while a process was on the processor.
-pub fn process_ticks() -> u64 {
-    // SAFETY: as `ticks`.
-    unsafe { PROCESS_TICKS }
 }
 
 /// Writes one local APIC register.
@@ -163,6 +151,7 @@ pub unsafe fn start() {
 /// reader, so that the step to a scheduler is a change in what the handler
 /// writes rather than in what it can see.
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub struct TrapFrame {
     pub rax: u64,
     pub rbx: u64,
@@ -187,31 +176,73 @@ pub struct TrapFrame {
 }
 
 impl TrapFrame {
+    /// A frame of zeros: what an unused process slot holds.
+    pub const ZERO: TrapFrame = TrapFrame {
+        rax: 0,
+        rbx: 0,
+        rcx: 0,
+        rdx: 0,
+        rsi: 0,
+        rdi: 0,
+        rbp: 0,
+        r8: 0,
+        r9: 0,
+        r10: 0,
+        r11: 0,
+        r12: 0,
+        r13: 0,
+        r14: 0,
+        r15: 0,
+        rip: 0,
+        cs: 0,
+        rflags: 0,
+        rsp: 0,
+        ss: 0,
+    };
+
     /// Whether the interrupt was taken in a process rather than in the nucleus.
     fn interrupted_a_process(&self) -> bool {
         self.cs & 3 == 3
     }
 }
 
-/// Counts one timer interrupt and acknowledges it. Called only by the stub.
+/// Counts one timer interrupt, acknowledges it, and hands the frame to the
+/// scheduler when it interrupted a process. Called only by the stub.
 ///
-/// This is the first handler in this system that returns, and everything it
-/// does is bounded: one add, one store to a device register. It allocates
-/// nothing and takes no lock, which is ADR-0023's discipline extended to the
-/// only handler that resumes.
+/// Everything it does is bounded: one add, one store to a device register, and
+/// — at most — two frame copies and a `CR3` load. It allocates nothing and
+/// takes no lock, which is ADR-0023's discipline extended to the only handler
+/// that resumes (ADR-0049 §5).
+///
+/// **A tick taken in the nucleus preempts nobody.** The frame the stub built
+/// then describes the nucleus's own interrupted work, and returning from it
+/// into a process would abandon that work on a stack nothing would ever pop.
+/// The privilege level in the interrupted `CS` is the whole of the test.
 #[no_mangle]
 extern "C" fn timer_interrupt(frame: &mut TrapFrame) {
     // SAFETY: the handler cannot be re-entered — it runs with interrupts masked
     // and nested interrupts are not enabled — so this is the only writer.
-    unsafe {
+    let tick = unsafe {
         TICKS = TICKS.wrapping_add(1);
-        if frame.interrupted_a_process() {
-            PROCESS_TICKS = PROCESS_TICKS.wrapping_add(1);
-        }
+        TICKS
     };
+    // Where the machine's time went is the nucleus's to say, and it says it per
+    // process: the interrupted `CS` decides whether this tick belongs to a
+    // process at all, and the scheduler charges it to the one that was running.
+    let in_process = frame.interrupted_a_process();
     // SAFETY: the APIC page is mapped for as long as interrupts are enabled,
-    // and a zero to the EOI register is how an interrupt is acknowledged.
+    // and a zero to the EOI register is how an interrupt is acknowledged. It is
+    // written before the switch below so that the acknowledgement belongs to
+    // this interrupt rather than to whatever the next context does first.
     unsafe { write(EOI, 0) };
+    if in_process {
+        // SAFETY: the frame is the one the stub built on the nucleus's own
+        // stack, `iretq` will read exactly what this leaves in it, and the
+        // interrupted `CS` says a process was on the processor — which is what
+        // makes there be a current process to charge the tick to and to
+        // preempt.
+        unsafe { crate::process::preempt(frame, tick) };
+    }
 }
 
 /// Acknowledges a spurious interrupt and counts nothing.

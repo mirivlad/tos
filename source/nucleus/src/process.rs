@@ -1,20 +1,41 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! What happens to the system when a process ends.
+//! Processes: how they are built, how they take turns, and how they end.
 //!
-//! ADR-0049 section 3 draws the line this module implements: **a fault in the
-//! nucleus is still the end of the boot; a fault in a process is not.** Before
-//! it, every exception was fatal, because there was exactly one thing running
-//! and it was the nucleus. Now there can be something else running, and the
-//! difference between the two is a single bit of the interrupted frame — the
-//! privilege level the fault was taken at.
+//! ADR-0049 section 3 draws the first line this module implements: **a fault in
+//! the nucleus is still the end of the boot; a fault in a process is not.**
+//! Before it, every exception was fatal, because there was exactly one thing
+//! running and it was the nucleus. Now there can be something else running, and
+//! the difference between the two is a single bit of the interrupted frame —
+//! the privilege level the fault was taken at.
 //!
-//! **The nucleus records where to continue before it stops being what runs.**
-//! A process is left by `iretq` and re-entered by a fault or by the system-call
-//! edge; nothing returns from it in the ordinary sense. So the launch captures
-//! a context first, and the death of a process is a jump back into it. That one
-//! mechanism is what a fault-kill needs today and what a process reporting its
-//! own completion would need (ADR-0054, undecided): the same door, opened from
-//! two sides.
+//! ADR-0049 section 4 draws the second: **round-robin over runnable contexts in
+//! one priority band, with a fixed quantum.** There are no priorities, no
+//! deadlines, no fair-share accounting and no second processor. A process that
+//! never calls anything still loses the processor, because losing it is not
+//! something the process participates in.
+//!
+//! **Two directions, one mechanism each, and they are not the same mechanism.**
+//!
+//! - *A process takes its turn.* The timer stub saves all fifteen registers and
+//!   the five words the processor pushed, in [`TrapFrame`] order, and hands the
+//!   handler the frame's address. A switch is then two copies and a `CR3` load:
+//!   the interrupted frame goes into the running slot, the next runnable slot's
+//!   frame comes into it, and the stub's `iretq` returns into someone else
+//!   without knowing it changed its mind. Entering a process for the first time
+//!   is the same operation over a frame the launcher wrote rather than one the
+//!   processor pushed ([`process_start`]).
+//! - *A process ends.* Nothing returns from a process in the ordinary sense, so
+//!   the scheduler records where to continue **before** it stops being what
+//!   runs, and the death of a process is a jump back into that context. That
+//!   one mechanism serves a fault-kill and a process reporting its own
+//!   completion (ADR-0054): the same door, opened from two sides.
+//!
+//! **The table is the only record of who exists.** A slot holds where the
+//! process continues, which address space it continues in, what the launcher
+//! gave it that must come back, and what the machine's time was spent on it.
+//! Nothing about a process is remembered anywhere else, and the frames it holds
+//! are read back out of its own page tables when it dies rather than tallied
+//! here twice.
 
 use core::ptr::addr_of_mut;
 
@@ -22,7 +43,9 @@ use tos_frames::{Frames, FRAME_SIZE};
 use tos_launch::{ImageHeader, Launch, LaunchUnit, ReportHeader, IMAGE_MAGIC, LAUNCH_VERSION};
 use tos_runtime::region::Span;
 
-use crate::paging::{self, AddressSpace, PagingRefused};
+use crate::apic::TrapFrame;
+use crate::exception::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
+use crate::paging::{self, load_root, AddressSpace, PagingRefused};
 
 core::arch::global_asm!(include_str!("process.S"));
 
@@ -38,12 +61,105 @@ impl Context {
 }
 
 extern "C" {
-    fn process_enter(entry: u64, stack: u64, code: u64, data: u64, record: u64) -> !;
+    fn process_start(frame: *const TrapFrame) -> !;
     fn process_capture(context: *mut Context) -> u64;
     fn process_resume(context: *mut Context, value: u64) -> !;
 }
 
-/// Where the nucleus continues when the process running now ends.
+/// How many processes may exist at once.
+///
+/// A fixed nucleus bound over statically reserved slots, not a number from any
+/// input: the table costs what it costs whether or not it is full, and a
+/// nucleus that grew one per request would allocate in the one place ADR-0049
+/// section 5 says it must not. Stage 3 needs two to be true; four is the
+/// smallest bound that makes "two" an ordinary case rather than the maximum.
+pub const MAX_PROCESSES: usize = 4;
+
+/// `RFLAGS` a process is entered with: reserved bit 1, and `IF`.
+///
+/// A process runs interruptible, which is what makes it preemptible. Until the
+/// timer existed this was `0x2` — correct then, and wrong the moment ADR-0049's
+/// timer was enabled.
+const USER_RFLAGS: u64 = 0x202;
+
+/// What one process is, as the nucleus holds it.
+struct Slot {
+    /// Whether this slot names a process, and whether that process is runnable.
+    state: State,
+    /// The address space it runs in, which is what `CR3` gets.
+    root: u64,
+    /// That space, when the nucleus built it and therefore has to take it
+    /// apart. The test-only excursion runs in the nucleus's own space and owns
+    /// no space of its own, which is exactly the difference this records.
+    space: Option<AddressSpace>,
+    /// Where it continues: everything `iretq` reads, and every register it had.
+    frame: TrapFrame,
+    /// Its report region, in *physical* addresses — see [`drain_report`].
+    report_phys: u64,
+    report_length: u64,
+    /// What the launcher gave it that has to come back when it ends.
+    reclaim: Option<Reclaim>,
+    /// Timer interrupts taken while **this** process was on the processor.
+    ticks: u64,
+    /// How many times it was given the processor. Round-robin over two
+    /// processes makes this the number of turns each took.
+    quanta: u64,
+    /// The tick it first ran at and the tick it last ran at. Two processes
+    /// whose intervals overlap ran interleaved; two that ran one after the
+    /// other could not produce overlapping intervals, which is what makes this
+    /// pair evidence rather than decoration.
+    first_tick: u64,
+    last_tick: u64,
+    /// How it ended, once it has.
+    ended: Ended,
+}
+
+impl Slot {
+    const FREE: Slot = Slot {
+        state: State::Free,
+        root: 0,
+        space: None,
+        frame: TrapFrame::ZERO,
+        report_phys: 0,
+        report_length: 0,
+        reclaim: None,
+        ticks: 0,
+        quanta: 0,
+        first_tick: 0,
+        last_tick: 0,
+        ended: Ended::Fault(0),
+    };
+}
+
+/// What a slot is.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum State {
+    /// Nothing has been built here.
+    Free,
+    /// A process that can be given the processor.
+    Runnable,
+    /// A process that has ended and whose memory has gone back.
+    Over,
+}
+
+/// What the launcher gave a process, and what has to come back when it ends.
+///
+/// Lengths rather than addresses, because every address is a fixed one of this
+/// module: what varies between processes is how much of each region there is.
+#[derive(Clone, Copy)]
+struct Reclaim {
+    /// Writable image bytes — data and `.bss` — from [`IMAGE`] plus this.
+    data_at: u64,
+    data_length: u64,
+    record_length: u64,
+    grant: Span,
+}
+
+/// Every process this nucleus has.
+static mut TABLE: [Slot; MAX_PROCESSES] = [Slot::FREE; MAX_PROCESSES];
+/// Which slot is on the processor, meaningful while [`RUNNING`] is true.
+static mut CURRENT: usize = 0;
+/// Where the scheduler continues when the process running now ends.
 static mut RETURN: Context = Context::EMPTY;
 /// Whether anything is running at CPL 3 at this instant.
 ///
@@ -53,8 +169,24 @@ static mut RETURN: Context = Context::EMPTY;
 /// reported a privilege level no one in this system had, and that is not a
 /// process to kill — it is a nucleus that has lost track of itself.
 static mut RUNNING: bool = false;
-/// How the process running now ended, written once by whichever path ended it.
-static mut ENDED: Ended = Ended::Fault(0);
+
+/// The process table.
+///
+/// # Safety
+///
+/// The nucleus is single-context: it runs with interrupts masked except while a
+/// process is on the processor, and a process is not the nucleus. So there is
+/// never a second borrow of this table in existence, and the one exception is
+/// deliberate — the timer handler interrupts nucleus code that is not inside
+/// this function, because the only nucleus code that runs with interrupts
+/// enabled is the scheduler's own loop between `capture` and `process_start`.
+// SAFETY: the caller is nucleus code, which is the only writer, and the
+// single-context argument above is why no second borrow can exist.
+unsafe fn table() -> &'static mut [Slot; MAX_PROCESSES] {
+    // SAFETY: the static is initialized at link time and lives for the whole
+    // boot; this is the only way it is ever named.
+    unsafe { &mut *addr_of_mut!(TABLE) }
+}
 
 /// Why a process ended.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -88,18 +220,13 @@ const MAX_RECORD_BYTES: u64 = 256 * 1024;
 const STACK_FRAMES: u64 = 512;
 const REPORT_FRAMES: u64 = 16;
 
+/// Where the top of a process's stack is.
+const STACK_TOP: u64 = STACK + STACK_FRAMES * FRAME_SIZE;
+
 /// Page-table flags, from the process's side of the boundary.
 const PRESENT_USER: u64 = 1 | (1 << 2);
 const WRITABLE: u64 = 1 << 1;
 const NO_EXECUTE: u64 = 1 << 63;
-
-/// The report region of the process running now, in *physical* addresses.
-///
-/// The nucleus reads it from its own identity map rather than through the
-/// process's, because the process's mapping is a thing the process could in
-/// principle change and this is the log.
-static mut REPORT_PHYS: u64 = 0;
-static mut REPORT_LENGTH: u64 = 0;
 
 /// Why a process could not be started. Never a statement about the program.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -116,6 +243,8 @@ pub enum Unlaunchable {
     /// nucleus knows, or the sections it declares do not fit the bytes it came
     /// with.
     NotARuntimeImage,
+    /// Every slot of the process table is taken.
+    TooManyProcesses,
 }
 
 impl From<PagingRefused> for Unlaunchable {
@@ -132,8 +261,12 @@ impl From<PagingRefused> for Unlaunchable {
 /// log before the call returns, so a stage that never returns is still named by
 /// the last event.
 pub fn drain_report() {
-    // SAFETY: single-context nucleus with interrupts masked.
-    let (base, length) = unsafe { (REPORT_PHYS, REPORT_LENGTH) };
+    // SAFETY: single-context nucleus with interrupts masked, and the current
+    // slot is the process whose report this is.
+    let (base, length) = unsafe {
+        let slot = &table()[CURRENT];
+        (slot.report_phys, slot.report_length)
+    };
     if base == 0 {
         return;
     }
@@ -161,40 +294,79 @@ pub fn drain_report() {
     header.drained = at;
 }
 
-/// Runs `entry` at CPL 3 on `stack`, and returns when the process has ended.
+/// Charges one timer tick to the running process and gives the processor to the
+/// next runnable one.
+///
+/// Called only from the timer handler, and only when the interrupt was taken at
+/// CPL 3. The switch itself is the whole of ADR-0049 section 4 as this stage
+/// needs it: the frame the stub built goes into the running slot, the next
+/// slot's frame comes into it, and `CR3` follows. The stub then pops registers
+/// and executes `iretq` exactly as it would have — it does not know that what it
+/// is reading is now somebody else.
+///
+/// **Round-robin means the *next* one, not the best one.** The search starts
+/// after the running slot and wraps, so with `n` runnable processes each gets
+/// one turn in `n`, and with one runnable process the switch is skipped rather
+/// than performed onto itself.
 ///
 /// # Safety
 ///
-/// Both addresses are mapped user-accessible in the live address space — code
-/// executable, stack writable — the GDT, TSS and `syscall` MSRs are installed,
-/// and no other process is running.
-// SAFETY: the caller's promise that the two mappings and the edge exist is what
-// makes the process reachable; the capture below makes its end recoverable.
-pub unsafe fn run(entry: u64, stack: u64, record: u64) -> Ended {
-    use crate::exception::{USER_CODE_SELECTOR, USER_DATA_SELECTOR};
-
-    // SAFETY: single-context nucleus with interrupts masked; this is the only
-    // writer, and the values are read only by the paths that end a process.
-    unsafe {
-        if process_capture(addr_of_mut!(RETURN)) == 0 {
-            RUNNING = true;
-            process_enter(
-                entry,
-                stack,
-                u64::from(USER_CODE_SELECTOR),
-                u64::from(USER_DATA_SELECTOR),
-                record,
-            )
-        }
-    };
-    // Reaching here means something resumed the captured context, which only
-    // the end of a process does.
+/// `frame` is the frame the timer stub built on the nucleus's stack, which
+/// `iretq` will read after this returns, and the interrupted `CS` names CPL 3 —
+/// so there is a current process, and it is the one this frame describes.
+// SAFETY: the caller's promise that this is the stub's own frame taken at CPL 3
+// is what makes the current slot the frame's owner.
+pub unsafe fn preempt(frame: &mut TrapFrame, tick: u64) {
+    // SAFETY: single-context nucleus; the handler cannot be re-entered.
+    let table = unsafe { table() };
     // SAFETY: as above.
-    unsafe {
-        RUNNING = false;
-        drain_report();
-        ENDED
+    let current = unsafe { CURRENT };
+    let running = &mut table[current];
+    if running.state != State::Runnable {
+        // A process was interrupted at CPL 3 that the table says is not
+        // runnable. Nothing here can be repaired by guessing, and returning
+        // without a switch at least resumes what was actually interrupted.
+        return;
     }
+    running.ticks += 1;
+    if running.first_tick == 0 {
+        running.first_tick = tick;
+    }
+    running.last_tick = tick;
+
+    // The next runnable slot, wrapping — searched here rather than in a helper
+    // because a helper would have to name the table a second time, and a second
+    // `&mut` to it while this one is alive is exactly the thing the
+    // single-context argument does not excuse.
+    let Some(next) = (1..=MAX_PROCESSES)
+        .map(|step| (current + step) % MAX_PROCESSES)
+        .find(|index| table[*index].state == State::Runnable)
+    else {
+        return;
+    };
+    if next == current {
+        return;
+    }
+    table[current].frame = *frame;
+    *frame = table[next].frame;
+    table[next].quanta += 1;
+    let root = table[next].root;
+    // SAFETY: written here and read by the paths that end a process, all of
+    // which run with interrupts masked and none of which is re-entrant.
+    unsafe { CURRENT = next };
+    // SAFETY: every space in this table maps this nucleus at the addresses it
+    // is running at — the stack this handler is on, its text, and the local
+    // APIC it has already acknowledged — because each was built by
+    // `paging::build` over the same validated map.
+    unsafe { load_root(root) };
+}
+
+/// The lowest runnable slot, or nothing when the table holds no process that
+/// can be given the processor.
+fn first_runnable() -> Option<usize> {
+    // SAFETY: single-context nucleus; nothing else touches the table.
+    let table = unsafe { table() };
+    (0..MAX_PROCESSES).find(|index| table[*index].state == State::Runnable)
 }
 
 /// Ends the running process because it said so (`process_exit`, ADR-0054).
@@ -206,20 +378,10 @@ pub fn exited(status: u64) -> bool {
     if !unsafe { RUNNING } {
         return false;
     }
-    // What the nucleus asserts is that the process exited; `status` is the
-    // process's own claim, and the event says which is which.
-    tos_serial::puts(b"TOS.RUN.PROCESS_EXIT asserted_by=nucleus self_reported_status=");
-    tos_serial::put_u32_decimal(status as u32);
-    // How much of the machine's time this process was on the processor, counted
-    // by the nucleus. A process cannot observe how long it was *off* it, so this
-    // is not a number it could have reported.
-    tos_serial::puts(b" ticks=");
-    tos_serial::put_u32_decimal(crate::apic::process_ticks() as u32);
-    tos_serial::puts(b"\r\n");
-    // SAFETY: `RETURN` was recorded before this process started and `RUNNING`
-    // being true is what says so.
+    // SAFETY: as above; `RUNNING` being true is what says the current slot is a
+    // process, and this is the path that ends it.
     unsafe {
-        ENDED = Ended::Exited(status);
+        table()[CURRENT].ended = Ended::Exited(status);
         process_resume(addr_of_mut!(RETURN), 1)
     }
 }
@@ -234,7 +396,10 @@ pub fn fault(vector: u64, error: u64, rip: u64, cr2: Option<u64>) -> bool {
     if !unsafe { RUNNING } {
         return false;
     }
-    tos_serial::puts(b"TOS.RUN.PROCESS_FAULT vector=");
+    tos_serial::puts(b"TOS.RUN.PROCESS_FAULT process=");
+    // SAFETY: as above.
+    tos_serial::put_u32_decimal(unsafe { CURRENT } as u32);
+    tos_serial::puts(b" vector=");
     tos_serial::put_u32_decimal(vector as u32);
     tos_serial::puts(b" error=0x");
     tos_serial::put_hex64(error);
@@ -249,32 +414,283 @@ pub fn fault(vector: u64, error: u64, rip: u64, cr2: Option<u64>) -> bool {
         None => tos_serial::puts(b"none"),
     }
     tos_serial::puts(b" cpl=3\r\n");
-    // SAFETY: `RETURN` was recorded by `run` before the process started, and
-    // `RUNNING` being true is what says so. Nothing has run on that stack
-    // since: the process ran on its own, and this handler on the TSS's.
+    // SAFETY: `RETURN` was recorded by the scheduler before this process was
+    // entered, and `RUNNING` being true is what says so. Nothing has run on
+    // that stack since: the process ran on its own, and this handler on the
+    // TSS's.
     unsafe {
-        ENDED = Ended::Fault(vector);
+        table()[CURRENT].ended = Ended::Fault(vector);
         process_resume(addr_of_mut!(RETURN), 1)
     }
 }
 
-/// Builds the first process and runs it.
+/// Gives the processor to every runnable process, in turn, until none is left.
+///
+/// This is the scheduler's loop, and it lives at CPL 0: a process is entered by
+/// `iretq` from its saved frame, and the only way back here is the end of that
+/// process. Between the two, the timer may have moved the processor to a
+/// different process any number of times — so the slot that comes back is read
+/// from [`CURRENT`] rather than assumed to be the one that was entered.
+///
+/// A process that ends has its memory taken back **in the nucleus's own address
+/// space**: the pool writes to a frame when it clears it, and doing that through
+/// a dead process's mappings would mean trusting tables the process could have
+/// been running in when it died.
+///
+/// # Safety
+///
+/// `nucleus` is an address space that maps this nucleus at the addresses it is
+/// running at, and every runnable slot was built by [`create`] or [`admit`].
+// SAFETY: the caller's promise about the nucleus's space is what makes the
+// return path survivable; each slot's own space is the launcher's promise.
+pub unsafe fn schedule(nucleus: &AddressSpace, frames: &mut Frames) {
+    loop {
+        let Some(next) = first_runnable() else {
+            return;
+        };
+        // The slot is named as a raw place rather than borrowed, and that is
+        // not a style choice. The frame's address is read by `process_start`
+        // after any borrow would have ended, and the timer handler names this
+        // same table while the process runs — so a reference held across that
+        // window would be a reference the handler invalidates. A raw pointer
+        // has no such claim to make.
+        // SAFETY: as above; these are the only writers.
+        unsafe {
+            CURRENT = next;
+            let slot = addr_of_mut!(TABLE).cast::<Slot>().add(next);
+            (*slot).quanta += 1;
+            // SAFETY: the slot's space maps this nucleus at the addresses it is
+            // running at, by the contract of whoever built the slot.
+            load_root((*slot).root);
+            RUNNING = true;
+            if process_capture(addr_of_mut!(RETURN)) == 0 {
+                // SAFETY: the frame is this slot's, and the launcher mapped its
+                // entry executable and its stack writable in the space just
+                // loaded. `process_start` masks interrupts before it points RSP
+                // at the frame, so nothing is pushed over the table.
+                process_start(&raw const (*slot).frame)
+            }
+        };
+        // Something resumed the captured context, which only the end of a
+        // process does. Which process is a question with an answer.
+        // SAFETY: as above.
+        let over = unsafe {
+            RUNNING = false;
+            CURRENT
+        };
+        // SAFETY: the caller states this space maps the running nucleus, and it
+        // is the space this call arrived in.
+        unsafe { nucleus.activate() };
+        // SAFETY: single-context nucleus; the process is over and this is the
+        // only writer of its slot.
+        unsafe { retire(over, frames) };
+    }
+}
+
+/// Reports how one process ended, gives its memory back, and frees its slot.
+///
+/// # Safety
+///
+/// The process is over, the nucleus's own address space is the live one, and
+/// nothing else references anything the process held.
+// SAFETY: the caller's promise that the process is over and its space is not
+// live is what makes releasing its frames a release of unreferenced memory.
+unsafe fn retire(index: usize, frames: &mut Frames) {
+    // What it wrote and had not yet said, before its region stops being one.
+    // First, and through the table rather than beside it: `drain_report` names
+    // the table itself, and holding a borrow of a slot across that call would
+    // be two live references to one static.
+    drain_report();
+    // SAFETY: single-context nucleus; the process is over.
+    let slot = unsafe { &mut table()[index] };
+    slot.state = State::Over;
+    slot.report_phys = 0;
+    slot.report_length = 0;
+
+    match slot.ended {
+        // What the nucleus asserts is that the process exited; the status is
+        // the process's own claim, and the event says which is which.
+        Ended::Exited(status) => {
+            tos_serial::puts(b"TOS.RUN.PROCESS_EXIT process=");
+            tos_serial::put_u32_decimal(index as u32);
+            tos_serial::puts(b" asserted_by=nucleus self_reported_status=");
+            tos_serial::put_u32_decimal(status as u32);
+            // How much of the machine's time went to this process, counted by
+            // the nucleus. A process cannot observe how long it was *off* the
+            // processor, so none of this is a number it could have reported.
+            tos_serial::puts(b" ticks=");
+            tos_serial::put_u32_decimal(slot.ticks as u32);
+            tos_serial::puts(b" quanta=");
+            tos_serial::put_u32_decimal(slot.quanta as u32);
+            tos_serial::puts(b" first_tick=");
+            tos_serial::put_u32_decimal(slot.first_tick as u32);
+            tos_serial::puts(b" last_tick=");
+            tos_serial::put_u32_decimal(slot.last_tick as u32);
+            tos_serial::puts(b"\r\n");
+        }
+        // The fault was reported where it happened, with everything only the
+        // handler knew. Saying it again here would be two events for one death.
+        Ended::Fault(_) => {}
+    }
+
+    let (Some(space), Some(reclaim)) = (slot.space.as_mut(), slot.reclaim) else {
+        // A process the nucleus did not build a space for holds nothing of the
+        // pool's through that space, and its builder takes back what it lent.
+        return;
+    };
+    // What the process held goes back, cleared on the way (ADR-0050 section 3),
+    // and what it holds is read out of its own page tables rather than
+    // remembered here: one record of what a process had, and it is the one the
+    // processor used.
+    //
+    // Three ranges are deliberately **not** returned. The image's text and the
+    // capsule's source are not the pool's — the loader reserved them — and
+    // releasing memory that was never allocated would hand the same frames out
+    // twice. The page tables of the dead space are the pool's and are not
+    // returned yet: freeing an interior table means proving nothing else under
+    // it is mapped, and the nucleus's own mappings live in that same tree.
+    // About fifty frames per process, named here rather than left to be found.
+    let held = frames.in_use();
+    // SAFETY: every frame below was handed out by this pool for this process,
+    // its address space is no longer the live one, and the process that could
+    // reach it does not exist.
+    unsafe {
+        release_mapped(space, frames, reclaim.data_at, reclaim.data_length);
+        release_mapped(space, frames, RECORD, reclaim.record_length);
+        release_mapped(space, frames, STACK, STACK_FRAMES * FRAME_SIZE);
+        release_mapped(space, frames, REPORT, REPORT_FRAMES * FRAME_SIZE);
+        frames.release(reclaim.grant);
+    }
+    // Measured, not asserted: the pool says how many frames came back and how
+    // many it holds now. A reclamation nobody counts is a claim, and this is
+    // the number a second process would be built out of.
+    tos_serial::puts(b"TOS.RUN.PROCESS_RECLAIMED process=");
+    tos_serial::put_u32_decimal(index as u32);
+    tos_serial::puts(b" frames=");
+    tos_serial::put_u32_decimal((held - frames.in_use()) as u32);
+    tos_serial::puts(b" available=");
+    tos_serial::put_u32_decimal(frames.available() as u32);
+    tos_serial::puts(b"\r\n");
+}
+
+/// How the process in `index` ended.
+///
+/// # Safety
+///
+/// That slot holds a process that has ended.
+// SAFETY: the caller's promise that the process is over is what makes this a
+// fact rather than a slot's initial value.
+pub unsafe fn ended(index: usize) -> Ended {
+    // SAFETY: single-context nucleus.
+    unsafe { table()[index].ended }
+}
+
+/// Puts a process into the table, ready to be given the processor.
+///
+/// The frame written here is the first one, and it is the same shape as every
+/// frame after it: `iretq` cannot tell a process that has never run from one the
+/// timer interrupted, which is what makes entering and resuming one mechanism.
+///
+/// # Safety
+///
+/// `root` names a page-table tree that maps this nucleus at the addresses it is
+/// running at, maps `entry` user-executable and the page below `stack` writable,
+/// and `report` is either `(0, 0)` or a physically contiguous region the nucleus
+/// can read through its own identity map.
+// SAFETY: the caller's promise about the tree is what makes the frame below
+// describe a process that can actually be entered.
+unsafe fn admit(
+    root: u64,
+    space: Option<AddressSpace>,
+    entry: u64,
+    stack: u64,
+    argument: u64,
+    report: (u64, u64),
+    reclaim: Option<Reclaim>,
+) -> Result<usize, Unlaunchable> {
+    // SAFETY: single-context nucleus; nothing else touches the table.
+    let table = unsafe { table() };
+    let index = (0..MAX_PROCESSES)
+        .find(|index| table[*index].state == State::Free)
+        .ok_or(Unlaunchable::TooManyProcesses)?;
+    let slot = &mut table[index];
+    *slot = Slot::FREE;
+    slot.state = State::Runnable;
+    slot.root = root;
+    slot.space = space;
+    slot.report_phys = report.0;
+    slot.report_length = report.1;
+    slot.reclaim = reclaim;
+    slot.frame = TrapFrame {
+        rip: entry,
+        cs: u64::from(USER_CODE_SELECTOR),
+        rflags: USER_RFLAGS,
+        rsp: stack,
+        ss: u64::from(USER_DATA_SELECTOR),
+        // The process's one argument, in the register the C ABI puts a first
+        // argument in — because the entry point is a C-ABI function and this is
+        // the only thing it is told.
+        rdi: argument,
+        ..TrapFrame::ZERO
+    };
+    Ok(index)
+}
+
+/// Puts a process into the table that runs in an address space it does not own.
+///
+/// Test-only, and the difference from [`create`] is exactly one thing: this
+/// process borrows the nucleus's address space instead of having one built for
+/// it, so nothing of the pool's comes back through its page tables when it ends
+/// and its builder takes back what it lent. Everything else is shared — the
+/// table, the round-robin, the frame, and the two ways a process can end — which
+/// is what makes the evidence it produces evidence about the real mechanism.
+///
+/// # Safety
+///
+/// Both addresses are mapped user-accessible in the tree at `root`, which also
+/// maps this nucleus at the addresses it is running at, and the GDT, TSS and
+/// `syscall` MSRs are installed.
+#[cfg(any(
+    feature = "test-ring3-abi",
+    feature = "test-ring3-privileged",
+    feature = "test-ring3-nucleus"
+))]
+// SAFETY: the caller's promise that the two mappings and the edge exist is what
+// makes the process reachable; the scheduler's capture makes its end recoverable.
+pub unsafe fn admit_borrowed(
+    root: u64,
+    entry: u64,
+    stack: u64,
+    argument: u64,
+) -> Result<usize, Unlaunchable> {
+    // SAFETY: per this function's contract; the slot carries no space and no
+    // reclamation because the process owns neither.
+    unsafe { admit(root, None, entry, stack, argument, (0, 0), None) }
+}
+
+/// Builds a process and puts it in the table, without entering it.
 ///
 /// Everything the process is made of comes from the pool the nucleus owns and
 /// is mapped into an address space the nucleus builds. The process discovers
 /// nothing: it is entered at a fixed address with one pointer, and every other
 /// address it will ever use is in the record that pointer names.
 ///
+/// **Building is separate from entering, and that is the whole of what makes
+/// more than one process possible.** Everything below happens in the *nucleus's*
+/// address space, into a space that is not yet live; the process becomes real
+/// when the scheduler loads its root, which may be after another process has
+/// been built the same way.
+///
 /// # Safety
 ///
 /// `image` names the verified runtime image bytes and `capsule` the capsule
 /// bytes, both physically contiguous and identity-mapped for the nucleus;
-/// `descs` is the validated memory map; and no other process is running.
+/// `descs` is the validated memory map; and the nucleus's own address space is
+/// the live one.
 // SAFETY: the caller's promise that the image and capsule ranges are what they
 // say makes the mappings below name the bytes the identity record claims.
 #[allow(clippy::too_many_arguments)]
-pub unsafe fn launch(
-    nucleus: &AddressSpace,
+pub unsafe fn create(
     frames: &mut Frames,
     descs: &[tos_boot_protocol::MemoryRange],
     bi: &tos_boot_protocol::BootInfo,
@@ -284,7 +700,7 @@ pub unsafe fn launch(
     entry_index: usize,
     identity: u64,
     source_set: &[u8],
-) -> Result<Ended, Unlaunchable> {
+) -> Result<usize, Unlaunchable> {
     if image.length() == 0 {
         return Err(Unlaunchable::NoRuntimeImage);
     }
@@ -489,79 +905,28 @@ pub unsafe fn launch(
         }
     }
 
-    // SAFETY: single-context nucleus; this is the only writer.
+    // The process is complete and nothing has entered it. The scheduler will,
+    // when it is this one's turn — which may be after another process has been
+    // built exactly the same way out of the same pool.
+    // SAFETY: `space` maps this nucleus at the addresses it is running at, the
+    // image executable at `IMAGE`, the stack writable below its top and the
+    // record readable at `RECORD`; the edge was installed at nucleus entry.
     unsafe {
-        REPORT_PHYS = report;
-        REPORT_LENGTH = REPORT_FRAMES * FRAME_SIZE;
-    }
-
-    // From here the process's address space is the live one. The nucleus is
-    // mapped into it supervisor-only, which is what makes the switch survivable.
-    // SAFETY: `space` maps this nucleus at the same addresses it is running at,
-    // plus the process's own pages; interrupts are masked and nothing else runs.
-    unsafe { space.activate() };
-    // SAFETY: the image is mapped executable at `IMAGE`, the stack writable
-    // below its top, and the record readable at `RECORD`; the edge was
-    // installed at nucleus entry.
-    let ended = unsafe {
-        run(
+        admit(
+            space.root(),
+            Some(space),
             IMAGE + header.entry,
-            STACK + STACK_FRAMES * FRAME_SIZE,
+            STACK_TOP,
             RECORD,
+            (report, REPORT_FRAMES * FRAME_SIZE),
+            Some(Reclaim {
+                data_at: IMAGE + header.text,
+                data_length: header.memory - header.text,
+                record_length: record_span.length(),
+                grant: grant_span,
+            }),
         )
-    };
-
-    // The process is over. Everything below is the nucleus taking back what it
-    // gave, and it happens in the nucleus's own address space: the pool writes
-    // to a frame when it clears it, and doing that through the dead process's
-    // mappings would mean trusting tables the process could have been running
-    // in when it died.
-    // SAFETY: the nucleus's space maps this nucleus at the addresses it is
-    // running at — it is the space this call arrived in — and nothing else runs.
-    unsafe { nucleus.activate() };
-    // SAFETY: the process is over, so its report region stops being one.
-    unsafe {
-        REPORT_PHYS = 0;
-        REPORT_LENGTH = 0;
     }
-
-    // What the process held goes back, cleared on the way (ADR-0050 section 3),
-    // and what it holds is read out of its own page tables rather than
-    // remembered here: one record of what a process had, and it is the one the
-    // processor used.
-    //
-    // Three ranges are deliberately **not** returned. The image's text and the
-    // capsule's source are not the pool's — the loader reserved them — and
-    // releasing memory that was never allocated would hand the same frames out
-    // twice. The page tables of the dead space are the pool's and are not
-    // returned yet: freeing an interior table means proving nothing else under
-    // it is mapped, and the nucleus's own mappings live in that same tree.
-    // About fifty frames per process, named here rather than left to be found.
-    let held = frames.in_use();
-    // SAFETY: every frame below was handed out by this pool for this process,
-    // its address space is no longer the live one, and the process that could
-    // reach it does not exist.
-    unsafe {
-        release_mapped(
-            &mut space,
-            frames,
-            IMAGE + header.text,
-            header.memory - header.text,
-        );
-        release_mapped(&mut space, frames, RECORD, record_span.length());
-        release_mapped(&mut space, frames, STACK, STACK_FRAMES * FRAME_SIZE);
-        release_mapped(&mut space, frames, REPORT, REPORT_FRAMES * FRAME_SIZE);
-        frames.release(grant_span);
-    }
-    // Measured, not asserted: the pool says how many frames came back and how
-    // many it holds now. A reclamation nobody counts is a claim, and this is
-    // the number a second process would be built out of.
-    tos_serial::puts(b"TOS.RUN.PROCESS_RECLAIMED frames=");
-    tos_serial::put_u32_decimal((held - frames.in_use()) as u32);
-    tos_serial::puts(b" available=");
-    tos_serial::put_u32_decimal(frames.available() as u32);
-    tos_serial::puts(b"\r\n");
-    Ok(ended)
 }
 
 /// Returns every frame a range of a process's space is mapped to.

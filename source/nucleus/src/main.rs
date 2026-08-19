@@ -493,12 +493,16 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // mapped uncacheable in the space just activated, and nothing else runs.
     unsafe { apic::start() };
 
+    // The excursion joins the table here and is entered by the scheduler with
+    // everything else, so the fault it is built to take happens while a peer
+    // exists. That peer completing its own work afterwards is what ADR-0049
+    // section 3 asks to see: the fault ended one process, not the system.
     #[cfg(any(
         feature = "test-ring3-abi",
         feature = "test-ring3-privileged",
         feature = "test-ring3-nucleus"
     ))]
-    {
+    let excursion = {
         #[cfg(feature = "test-ring3-abi")]
         let payload = ring3::Payload::Abi;
         #[cfg(feature = "test-ring3-privileged")]
@@ -507,27 +511,14 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         let payload = ring3::Payload::Nucleus;
         // SAFETY: `space` is the address space loaded into CR3 immediately
         // above and no other context is running.
-        match unsafe { ring3::run(&mut space, &mut frames, payload) } {
-            Ok(ended) => {
-                tos_serial::puts(b"TOS.TEST.RING3.ENDED ");
-                match ended {
-                    process::Ended::Fault(vector) => {
-                        tos_serial::puts(b"vector=");
-                        tos_serial::put_u32_decimal(vector as u32);
-                    }
-                    process::Ended::Exited(status) => {
-                        tos_serial::puts(b"exit=");
-                        tos_serial::put_u32_decimal(status as u32);
-                    }
-                }
-                tos_serial::puts(b"\r\n");
-            }
+        match unsafe { ring3::admit(&mut space, &mut frames, payload) } {
+            Ok(index) => index,
             Err(_) => {
                 tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-user-mapping\r\n");
                 mem_fail();
             }
         }
-    }
+    };
 
     #[cfg(feature = "test-paging-unmapped")]
     paging::test_injection();
@@ -560,11 +551,6 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     }
     let mut runtime_hex = [0u8; 64];
     tos_hash::hex(&bi.runtime_digest, &mut runtime_hex);
-    tos_serial::puts(b"TOS.RUN.PROCESS_BEGIN module=");
-    tos_serial::puts(boot.name);
-    tos_serial::puts(b" runtime_engine=sha256:");
-    tos_serial::puts(&runtime_hex);
-    tos_serial::puts(b" system_commit=absent asserted_by=launcher\r\n");
 
     let entry_index = modules[..module_count]
         .iter()
@@ -576,36 +562,101 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         tos_runtime::region::Span::new(bi.capsule_phys, bi.capsule_phys + bi.capsule_length);
     let mut source_set = [0u8; 96];
     let named = source_set_identity(kind, &bi.capsule_source_identity, &mut source_set);
-    // SAFETY: the image and capsule ranges were validated above — the image by
-    // its digest, the capsule by digest and structure — both are physically
-    // contiguous and identity-mapped for this nucleus, and nothing else is
-    // running.
-    let ended = unsafe {
-        process::launch(
-            &space,
-            &mut frames,
-            descs,
-            bi,
-            image,
-            capsule_span,
-            &modules[..module_count],
-            entry_index,
-            memory::identity(),
-            &source_set[..named],
-        )
-    };
-    match ended {
-        Ok(process::Ended::Exited(0)) => {}
-        Ok(process::Ended::Exited(_)) | Ok(process::Ended::Fault(_)) => {
-            // The process ended without completing its work. Which way it ended
-            // is already on the log, asserted by the nucleus.
-            tos_serial::puts(b"TOS.BOOTMODULE.FAIL stage=process\r\n");
-            result_port(RESULT_BOOT_MODULE_FAILED);
+    // Building a process and entering one are separate steps, and this is where
+    // that separation is visible: every process this boot has is built here,
+    // out of the same pool and into its own address space, before the scheduler
+    // gives the processor to any of them.
+    let mut build = || {
+        // SAFETY: the image and capsule ranges were validated above — the image
+        // by its digest, the capsule by digest and structure — both are
+        // physically contiguous and identity-mapped for this nucleus, and the
+        // nucleus's own address space is the live one.
+        let built = unsafe {
+            process::create(
+                &mut frames,
+                descs,
+                bi,
+                image,
+                capsule_span,
+                &modules[..module_count],
+                entry_index,
+                memory::identity(),
+                &source_set[..named],
+            )
+        };
+        // Announced once the process exists and by the slot it occupies, so
+        // that every later event about it names the same process this one does.
+        // A launch announced before it succeeded would be a claim about a
+        // process the system might not have.
+        if let Ok(index) = built {
+            tos_serial::puts(b"TOS.RUN.PROCESS_BEGIN process=");
+            tos_serial::put_u32_decimal(index as u32);
+            tos_serial::puts(b" module=");
+            tos_serial::puts(boot.name);
+            tos_serial::puts(b" runtime_engine=sha256:");
+            tos_serial::puts(&runtime_hex);
+            tos_serial::puts(b" system_commit=absent asserted_by=launcher\r\n");
         }
+        built
+    };
+    let first = match build() {
+        Ok(index) => index,
         Err(_) => {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-process\r\n");
             console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-process");
             mem_fail();
+        }
+    };
+    // A second process over the same module, so that the scheduler has someone
+    // to round-robin *to*. Test-only, and for a reason that is about honesty
+    // rather than caution: nothing in an accepted contract says the canonical
+    // boot has two processes, and a nucleus that decided so on its own would be
+    // owning service policy, which ADR-0048 section 2 says it does not. What is
+    // not test-only is everything the second process exercises — the table, the
+    // round-robin, the switch — which the canonical boot runs with one process
+    // in the table.
+    #[cfg(feature = "test-two-processes")]
+    {
+        tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
+        if build().is_err() {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
+            mem_fail();
+        }
+    }
+    // SAFETY: `space` is the nucleus's own address space, it is the live one,
+    // and every runnable slot was built by `process::create` above.
+    unsafe { process::schedule(&space, &mut frames) };
+    #[cfg(any(
+        feature = "test-ring3-abi",
+        feature = "test-ring3-privileged",
+        feature = "test-ring3-nucleus"
+    ))]
+    {
+        tos_serial::puts(b"TOS.TEST.RING3.ENDED ");
+        // SAFETY: the scheduler returned, so every process it ran is over.
+        match unsafe { process::ended(excursion) } {
+            process::Ended::Fault(vector) => {
+                tos_serial::puts(b"vector=");
+                tos_serial::put_u32_decimal(vector as u32);
+            }
+            process::Ended::Exited(status) => {
+                tos_serial::puts(b"exit=");
+                tos_serial::put_u32_decimal(status as u32);
+            }
+        }
+        tos_serial::puts(b"\r\n");
+        // SAFETY: the excursion is over, `space` is the live address space and
+        // the one it ran in, and nothing else references either of its pages.
+        unsafe { ring3::retire(&mut space, &mut frames) };
+    }
+    // SAFETY: the scheduler returned, so every process it ran is over.
+    match unsafe { process::ended(first) } {
+        process::Ended::Exited(0) => {}
+        process::Ended::Exited(_) | process::Ended::Fault(_) => {
+            // The process ended without completing its work. Which way it ended
+            // is already on the log, asserted by the nucleus.
+            tos_serial::puts(b"TOS.BOOTMODULE.FAIL stage=process\r\n");
+            result_port(RESULT_BOOT_MODULE_FAILED);
         }
     }
 

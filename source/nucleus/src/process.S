@@ -1,38 +1,56 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 /* Leaving ring 0 for a process, and getting back when the process ends.
 
-   The pair below is the whole of "the nucleus resumes": a context captured
-   before a process starts, and a jump back into it when the process is over.
-   It exists because a process does not return — it is left by `iretq` and
-   re-entered by a fault or by the system-call edge — so the nucleus has to
-   record where to continue *before* it stops being the thing running. */
+   Two directions, and they are not symmetric. Downward, into a process, is
+   `process_start`: a frame is a frame, so the first entry into a process and
+   the resumption of one the timer stopped are the same instructions over the
+   same layout. Upward, out of one, is the capture/resume pair — the whole of
+   "the scheduler resumes", a context recorded before a process starts and
+   jumped back into when it is over. That pair exists because a process does not
+   return: it is left by `iretq` and re-entered by a fault or by the system-call
+   edge, so the nucleus has to record where to continue *before* it stops being
+   the thing running. */
 
 .section .text
 
-/* rdi = entry point, rsi = top of the user stack, rdx = code selector,
-   rcx = data selector, r8 = the launch record's address in the process's own
-   space. The selectors are passed in rather than written here so that the GDT
-   stays the single place that decides them, and the record is put into RDI at
-   the last instruction before the jump — a Rust call between here and there
-   would use RDI for its own first argument and the process would be entered
-   with a pointer to whatever that was. Does not return. */
-.global process_enter
-process_enter:
-    /* The stack the edge re-enters the nucleus on. Everything pushed below
-       this point belongs to a frame that `iretq` abandons. */
+/* rdi = a TrapFrame to continue. Does not return.
+
+   The frame carries all fifteen registers and the five words `iretq` consumes,
+   so entering a process for the first time and resuming one the timer
+   interrupted are the same instruction sequence over the same layout. The first
+   entry is just a frame the launcher wrote rather than one the processor
+   pushed — which is why there is no separate "enter a new process" path here
+   any more, and why a process cannot tell which of the two happened to it.
+
+   RSP is pointed *at the frame* and the registers are popped out of it, which
+   is what the timer stub does at its own end — the frame is read, never
+   written, and nothing is pushed onto it. That is only true with interrupts
+   masked: an interrupt taken between the two instructions below would push the
+   processor's frame over the table this RSP is pointing into. `cli` here rather
+   than at the caller because the window belongs to these instructions, and IF
+   comes back from the frame's own RFLAGS at `iretq`. */
+.global process_start
+process_start:
+    cli
+    /* The stack the system-call edge re-enters the nucleus on: the scheduler's
+       own stack, recorded at the last moment it is the live one. */
     mov qword ptr [rip + syscall_kernel_rsp], rsp
-    push rcx                /* SS */
-    push rsi                /* RSP */
-    push 0x202              /* RFLAGS with IF set: a process runs interruptible,
-                               which is what makes it preemptible. Until the
-                               timer existed this was 0x2 — correct then, because
-                               nothing routed an interrupt and IF=1 would have
-                               sent the first stray one to a vector with no gate,
-                               and wrong the moment ADR-0049's timer was
-                               enabled. */
-    push rdx                /* CS */
-    push rdi                /* RIP */
-    mov rdi, r8             /* the process's one argument */
+    mov rsp, rdi
+    pop rax
+    pop rbx
+    pop rcx
+    pop rdx
+    pop rsi
+    pop rdi
+    pop rbp
+    pop r8
+    pop r9
+    pop r10
+    pop r11
+    pop r12
+    pop r13
+    pop r14
+    pop r15
     iretq
 
 /* rdi = where to record the caller's context. Returns 0 to the caller that
