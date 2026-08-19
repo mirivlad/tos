@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// What the system is to start, as canonical text.
+//
+// ADR-0051 §3 puts supervision policy in `/system/policy/` as "canonical source
+// keyed by module name … canonical text like any other component; not a binary
+// configuration database". This is that, in the most literal form available: a
+// TOS Core module, read by the supervisor the way any module reads any other.
+//
+// It is separate from the supervisor on purpose. The supervisor decides *how* to
+// start things; this decides *what*. A supervisor that carried both would be a
+// component that grants itself its own workload, which is the shape docs/37
+// names as a Stage 3 failure.
+
+module system.policy.services version 1.0 profile bootstrap;
+
+resource [
+    fuel: 1024,
+    stack: 4KiB,
+    allocation: 1KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 4,
+    imports: 0
+]
+
+// How many components this policy names.
+pub fn count() -> size {
+    return 2B;
+}
+
+// The module each one runs, by capsule-relative path.
+//
+// The second names nothing this capsule carries, and that is deliberate: a
+// policy naming a component that is not there is an ordinary mistake, and what
+// the system does about it should be visible rather than assumed. ADR-0051's
+// own evidence list asks for it — "a supervision policy naming an unknown module
+// is refused at activation rather than …".
+pub fn name(at: size) -> string {
+    let paths: array<string, 2> = ["system/boot/init.tos", "system/policy/absent.tos"];
+    return paths[at];
+}

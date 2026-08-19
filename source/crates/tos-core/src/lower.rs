@@ -2146,10 +2146,39 @@ impl<'source> Lowerer<'source> {
                     return Err(self.gap("index without a base", expression.span()));
                 };
                 let mut place = self.lower_place(inner, builder)?;
-                let constant = expression
-                    .right()
-                    .and_then(|index| constant_index(index, self.source));
-                place.path.push(PlaceStep::Index(constant));
+                let Some(index) = expression.right() else {
+                    return Err(self.gap("index without a position", expression.span()));
+                };
+                // A literal index is the position itself; anything else is a
+                // value this run computes, and `tos-ir/v1` has a step for that.
+                // Emitting `Index(None)` for it — as this did — produced a step
+                // with no position at all, which the engine can only refuse:
+                // "an index step reached execution without a value". The `for`
+                // lowering had used `DynamicIndex` since it was written, so what
+                // was missing was not the mechanism but its use here.
+                match constant_index(index, self.source) {
+                    Some(position) => place.path.push(PlaceStep::Index(Some(position))),
+                    None => match self.lower_expression(index, builder)? {
+                        Operand::Value(value) => place.path.push(PlaceStep::DynamicIndex(value)),
+                        // A constant operand that is not a literal position —
+                        // a module constant, say. Materialized into a value so
+                        // that the step names one thing rather than two.
+                        Operand::Constant(id) => {
+                            let ty = builder.type_of(&Operand::Constant(id));
+                            let value = builder.define(ty);
+                            builder.push(Instruction {
+                                result: Some(value),
+                                ty,
+                                op: Op::Const(id),
+                                source: self.map(index.span()),
+                                runtime_contract: None,
+                                unsafe_block: builder.in_unsafe,
+                                unsafe_interface: None,
+                            });
+                            place.path.push(PlaceStep::DynamicIndex(value));
+                        }
+                    },
+                }
                 Ok(place)
             }
             _ => Err(self.gap("expression is not a place", expression.span())),

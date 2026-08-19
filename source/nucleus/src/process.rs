@@ -1519,10 +1519,20 @@ fn relative(path: &[u8]) -> &[u8] {
 }
 
 /// Where unit `index`'s path goes in the record's tail.
+///
+/// **`relative`, not the capsule's own name.** What is written is the
+/// module-root-relative path and what is reserved is the sum of those lengths,
+/// so a stride taken from the capsule's name — one byte longer for every path
+/// that starts with `/` — walks each unit one byte further than the last and
+/// puts the final one past the end of what was reserved. What follows the paths
+/// is the endowment's description, so the overrun is invisible until a boot has
+/// **both** more than one unit and something in its endowment: with an empty
+/// endowment there is nothing after the paths to overwrite, which is why the
+/// two-module gate never saw it and the first supervisor did.
 fn path_offset(units: &[(&[u8], &[u8])], index: usize) -> u64 {
     units[..index]
         .iter()
-        .map(|(path, _)| path.len() as u64)
+        .map(|(path, _)| relative(path).len() as u64)
         .sum()
 }
 
