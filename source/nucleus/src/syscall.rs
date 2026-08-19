@@ -195,6 +195,15 @@ static mut OTHER_ENTRIES: u64 = 0;
 /// process never reaches this, which is why it is counted separately from the
 /// entry rather than assumed to follow it.
 static mut RETURNS: u64 = 0;
+/// Exchanges begun. One `endpoint_call` is one request/reply, which is the unit
+/// `IPC_V1` §8 states its crossing bound in.
+static mut EXCHANGES: u64 = 0;
+
+/// That count.
+pub fn exchanges() -> u64 {
+    // SAFETY: single-context nucleus; the only writer is the dispatcher.
+    unsafe { EXCHANGES }
+}
 
 /// Those three: IPC calls in, other calls in, calls returned.
 pub fn crossings() -> (u64, u64, u64) {
@@ -218,6 +227,9 @@ extern "C" fn syscall_dispatch(operation: u64, frame: &mut TrapFrame) {
     unsafe {
         if is_ipc(operation) {
             IPC_ENTRIES += 1;
+            if operation == ENDPOINT_CALL {
+                EXCHANGES += 1;
+            }
         } else {
             OTHER_ENTRIES += 1;
         }
@@ -232,7 +244,9 @@ extern "C" fn syscall_dispatch(operation: u64, frame: &mut TrapFrame) {
     // Reached only by a call that is about to return through the edge: one that
     // blocked or ended its process left `answer` by another door.
     // SAFETY: single-context nucleus with interrupts masked.
-    unsafe { RETURNS += 1 };
+    unsafe {
+        RETURNS += 1;
+    };
 }
 
 /// Answers one call, or does not return because the call blocked or ended the
