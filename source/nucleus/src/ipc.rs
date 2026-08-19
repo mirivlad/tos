@@ -241,6 +241,37 @@ pub unsafe fn receive(
     Ok(message.length)
 }
 
+/// Copies a reply's payload straight from one context's argument region into
+/// another's.
+///
+/// A reply does not go through a queue: it is not waiting for a receiver, it is
+/// the answer to a context that is already waiting for it. One copy, bounded by
+/// the same inline maximum as everything else.
+///
+/// # Safety
+///
+/// Both addresses are argument regions the launcher mapped, at least one frame
+/// long, which the nucleus reaches through its own identity map.
+// SAFETY: the caller's promise that both are launcher mappings is what makes
+// this a copy between two regions the nucleus chose the addresses of.
+pub unsafe fn hand(from: u64, into: u64, length: u64) -> Result<u64, Refused> {
+    if length > MAX_INLINE_BYTES {
+        return Err(Refused::BadArgument);
+    }
+    // SAFETY: both regions are whole frames per the caller's contract, and
+    // `length` is bounded well inside one.
+    unsafe {
+        core::ptr::copy_nonoverlapping(
+            core::ptr::with_exposed_provenance::<u8>(from as usize),
+            core::ptr::with_exposed_provenance_mut::<u8>(into as usize),
+            length as usize,
+        )
+    };
+    // SAFETY: single-context nucleus; this is the only writer.
+    unsafe { DELIVERIES = DELIVERIES.wrapping_add(1) };
+    Ok(length)
+}
+
 /// The message slot is one frame, of which this contract version uses 256
 /// bytes. Asserting it here means a change to either number that made the
 /// payload not fit stops the build rather than producing a copy past the

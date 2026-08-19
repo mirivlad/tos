@@ -51,6 +51,8 @@ const ENDPOINT_SEND: u64 = 1;
 const ENDPOINT_RECEIVE: u64 = 2;
 const CAPABILITY_ATTENUATE: u64 = 5;
 const CAPABILITY_RELEASE: u64 = 6;
+const ENDPOINT_CALL: u64 = 3;
+const ENDPOINT_REPLY: u64 = 4;
 const PROCESS_CREATE: u64 = 8;
 const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
@@ -481,11 +483,21 @@ fn authority(launch: &Launch, report: &mut Report) {
     ));
 
     if first.object == tos_launch::OBJECT_ENDPOINT {
+        if first.rights & tos_launch::RIGHT_CALL != 0 {
+            client(launch, report, first.handle);
+        }
         if first.rights & tos_launch::RIGHT_SEND != 0 {
             send_half(launch, report, first.handle);
         }
         if first.rights & tos_launch::RIGHT_RECEIVE != 0 {
             receive_half(launch, report, first.handle);
+        }
+        if first.rights & tos_launch::RIGHT_SEND == 0 && first.rights & tos_launch::RIGHT_CALL == 0
+        {
+            // Only a receiver reaches here without having done a half of its
+            // own, so this is the request/reply server: what it received may
+            // have carried the right to answer.
+            server(launch, report);
         }
         // An operation whose object this handle is not. The index is right, the
         // generation is right, and the answer is still a refusal — which is
@@ -530,6 +542,87 @@ fn authority(launch: &Launch, report: &mut Report) {
     let (after, _) = unsafe { call(CAPABILITY_RELEASE, first.handle, 0) };
     report.line(&alloc::format!(
         "TOS.RUN.CAPABILITY.RELEASED status={released} reuse={after}"
+    ));
+}
+
+/// Asks a question and waits for the answer (`IPC_V1` §4).
+///
+/// The wait is the call's own: `endpoint_call` does not return until somebody
+/// answers it or the wait is cancelled. Nothing here polls, and nothing here
+/// holds a capability to answer with — the right to reply is made by the
+/// nucleus for this one call and given to whoever receives the request.
+fn client(launch: &Launch, report: &mut Report, handle: u64) {
+    let question = b"what-is-the-answer";
+    for (offset, byte) in question.iter().enumerate() {
+        // SAFETY: `arguments_base` names a writable mapping of
+        // `arguments_length` bytes made by the launcher, and this is far inside
+        // it.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u8>(launch.arguments_base as usize)
+                .add(offset)
+                .write(*byte)
+        };
+    }
+    // SAFETY: `endpoint_call` names its endpoint and the request's length; the
+    // request is in the region the record names, and no pointer crosses.
+    let (status, length) = unsafe { call(ENDPOINT_CALL, handle, question.len() as u64) };
+    if status != OK {
+        report.line(&alloc::format!(
+            "TOS.RUN.IPC.CALLED status={status} bytes=0"
+        ));
+        return;
+    }
+    // SAFETY: the nucleus states it wrote `length` bytes of the answer into the
+    // region the record names, bounded by the contract's inline maximum.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<u8>(launch.arguments_base as usize),
+            length as usize,
+        )
+    };
+    let text = core::str::from_utf8(bytes).unwrap_or("<not text>");
+    report.line(&alloc::format!(
+        "TOS.RUN.IPC.CALLED status={status} bytes={length} answer={text}"
+    ));
+}
+
+/// Answers a question somebody asked, with the right that came with it.
+///
+/// The reply capability arrives in the last slot of the transfer table, always,
+/// so a receiver knows where to look without being told how many capabilities
+/// the caller chose to send. It is spent by answering: the second attempt below
+/// is refused, which is what single-use means and not a claim about it.
+fn server(launch: &Launch, report: &mut Report) {
+    // SAFETY: the argument region is this process's own.
+    let reply = unsafe {
+        transferred(
+            launch.arguments_base,
+            tos_launch::MAX_TRANSFERRED_CAPABILITIES as usize - 1,
+        )
+    };
+    if reply == 0 {
+        report.line("TOS.RUN.IPC.REPLIED status=0 handle=0x0 again=0 answer=<none>");
+        return;
+    }
+    let answer = b"i32:240";
+    for (offset, byte) in answer.iter().enumerate() {
+        // SAFETY: as in `client`.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u8>(launch.arguments_base as usize)
+                .add(offset)
+                .write(*byte)
+        };
+    }
+    // SAFETY: `endpoint_reply` names the reply capability and the answer's
+    // length.
+    let (status, _) = unsafe { call(ENDPOINT_REPLY, reply, answer.len() as u64) };
+    // The same capability, a second time. Replying spent it, so what this gets
+    // is a refusal — and a reply that could be sent twice would be an unbounded
+    // channel back into a process that asked one question.
+    // SAFETY: as above.
+    let (again, _) = unsafe { call(ENDPOINT_REPLY, reply, answer.len() as u64) };
+    report.line(&alloc::format!(
+        "TOS.RUN.IPC.REPLIED status={status} handle=0x{reply:x} again={again}"
     ));
 }
 

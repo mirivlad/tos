@@ -23,7 +23,10 @@
 #[cfg(any(
     all(feature = "test-two-processes", feature = "test-supervisor"),
     all(feature = "test-two-processes", feature = "test-deadlock"),
-    all(feature = "test-supervisor", feature = "test-deadlock")
+    all(feature = "test-two-processes", feature = "test-call-reply"),
+    all(feature = "test-supervisor", feature = "test-deadlock"),
+    all(feature = "test-supervisor", feature = "test-call-reply"),
+    all(feature = "test-deadlock", feature = "test-call-reply")
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
 
@@ -667,10 +670,35 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             scope: 0,
         }]
     };
+    // Under the request/reply constant the first process may **receive** on an
+    // endpoint and the second may **call** on it. Neither can do the other's
+    // half, and the right to answer a call is not in either endowment: it is
+    // made by the nucleus when the call is made, handed to whoever receives the
+    // request, and spent by answering it.
+    #[cfg(feature = "test-call-reply")]
+    let (first_endowment, caller_endowment) = {
+        let Some(endpoint) = ipc::create() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        (
+            [capability::Endowment::Existing {
+                object: capability::Object::Endpoint(endpoint),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            }],
+            [capability::Endowment::Existing {
+                object: capability::Object::Endpoint(endpoint),
+                rights: tos_launch::RIGHT_CALL,
+                scope: 0,
+            }],
+        )
+    };
     #[cfg(not(any(
         feature = "test-two-processes",
         feature = "test-supervisor",
-        feature = "test-deadlock"
+        feature = "test-deadlock",
+        feature = "test-call-reply"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];
     let first = match build(&first_endowment) {
@@ -693,6 +721,14 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     {
         tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
         if build(&sender_endowment).is_err() {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
+            mem_fail();
+        }
+    }
+    #[cfg(feature = "test-call-reply")]
+    {
+        tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
+        if build(&caller_endowment).is_err() {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
             mem_fail();
         }

@@ -327,8 +327,23 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
         // and a caller holding an endpoint capability does not hold a region or
         // a reply — so the refusal is produced rather than asserted, and it
         // would stop being a refusal the moment a caller held the right thing.
-        ENDPOINT_CALL => refuse(caller, arguments.first(), tos_launch::RIGHT_CALL),
-        ENDPOINT_REPLY | REGION_SHARE => refuse(caller, arguments.first(), ALL_RIGHTS),
+        ENDPOINT_CALL => {
+            match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_CALL) {
+                Err(refused) => refused.into(),
+                Ok(Object::Endpoint(endpoint)) => call(caller, endpoint, frame),
+                Ok(_) => Answer::status(E_NO_CAPABILITY),
+            }
+        }
+        ENDPOINT_REPLY => {
+            match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_REPLY) {
+                Err(refused) => refused.into(),
+                Ok(Object::Reply { caller: asked, .. }) => {
+                    reply(caller, asked as usize, arguments.first(), frame)
+                }
+                Ok(_) => Answer::status(E_NO_CAPABILITY),
+            }
+        }
+        REGION_SHARE => refuse(caller, arguments.first(), ALL_RIGHTS),
 
         _ => Answer::status(E_NOT_SUPPORTED),
     }
@@ -356,24 +371,9 @@ fn send(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
     if count > granted.len() {
         return Answer::status(E_LIMIT);
     }
-    for (index, entry) in granted[..count].iter_mut().enumerate() {
-        // SAFETY: the table is at a fixed offset in this process's own argument
-        // region, whose address the nucleus chose, and `index` is inside the
-        // count checked against the contract's maximum above.
-        let handle = unsafe {
-            core::ptr::with_exposed_provenance::<u64>(
-                (from + tos_launch::MESSAGE_CAPABILITIES) as usize,
-            )
-            .add(index)
-            .read()
-        };
-        // A capability is delegated only by somebody who holds it, and holding
-        // it is the only right this needs: sending a capability is not an
-        // operation *on* the object it names.
-        match capability::resolve(caller, handle, 0) {
-            Ok(object) => *entry = (object, capability::rights_of(caller, handle), 0),
-            Err(refused) => return refused.into(),
-        }
+    match resolve_transfers(caller, from, &mut granted[..count]) {
+        Ok(()) => {}
+        Err(answer) => return answer,
     }
     // SAFETY: `from` is the physical address of this process's argument region,
     // mapped by the launcher and read here through the nucleus's own identity
@@ -394,6 +394,113 @@ fn send(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
         }
         Err(ipc::Refused::WouldBlock) => Answer::status(E_WOULD_BLOCK),
     }
+}
+
+/// Sends a request and waits for its answer (`IPC_V1` §4).
+///
+/// The receiver is handed a **reply capability** with the message: the right to
+/// answer this one call, naming this caller, and nothing else. It travels in
+/// the last slot of the transfer table, so a call may carry one fewer
+/// capability of its own than a send — a reply is a capability like any other
+/// and takes a place like any other.
+///
+/// **A call does not wait for room.** A full queue means the request could not
+/// be made, and answering `E_LIMIT` says exactly that; blocking for room and
+/// then calling would be a call assembled in two steps, with a half-made call
+/// in the nucleus in between — the shape ADR-0058 refused. What a call waits
+/// for is the answer.
+fn call(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
+    let from = crate::process::arguments_region();
+    if from == 0 {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    let mut granted = [(Object::None, 0u32, 0u64); ipc::MAX_TRANSFERRED as usize];
+    let count = frame.r10 as usize;
+    if count + 1 > granted.len() {
+        // One place is spoken for by the answer, so a call carries one fewer of
+        // its own than a send does.
+        return Answer::status(E_LIMIT);
+    }
+    match resolve_transfers(caller, from, &mut granted[..count]) {
+        Ok(()) => {}
+        Err(answer) => return answer,
+    }
+    // The right to answer this call, made now and belonging to nobody yet. It
+    // goes in the **last** slot, always, so that a receiver knows where to look
+    // without being told how many capabilities the caller chose to send.
+    granted[ipc::MAX_TRANSFERRED as usize - 1] = (
+        Object::Reply {
+            caller: caller as u32,
+            generation: crate::process::next_reply_token(caller),
+        },
+        tos_launch::RIGHT_REPLY,
+        0,
+    );
+    // SAFETY: `from` is this process's own argument region.
+    match unsafe { ipc::send(endpoint, from, frame.rsi, &granted) } {
+        Ok(()) => {
+            deliver_to_waiter(endpoint);
+            // SAFETY: this is the running context's own frame, and the handle
+            // the wait is on was resolved above.
+            unsafe { crate::process::block(frame, crate::process::Waiting::Reply) }
+        }
+        Err(ipc::Refused::BadArgument) => Answer::status(E_BAD_ARGUMENT),
+        Err(_) => Answer::status(E_LIMIT),
+    }
+}
+
+/// Answers one call, and spends the capability that permitted it.
+///
+/// The answer does not go through a queue: the caller is already waiting for
+/// it, so this is one copy from the replier's argument region into the caller's
+/// and the caller's suspended call is answered where it stands.
+fn reply(replier: usize, asked: usize, handle: u64, frame: &mut TrapFrame) -> Answer {
+    let from = crate::process::arguments_region();
+    let into = crate::process::arguments_of(asked);
+    if from == 0 || into == 0 {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    // SAFETY: both are argument regions the launcher mapped, reached through
+    // the nucleus's own identity map.
+    let length = match unsafe { ipc::hand(from, into, frame.rsi) } {
+        Ok(length) => length,
+        Err(_) => return Answer::status(E_BAD_ARGUMENT),
+    };
+    // SAFETY: the reply capability resolved, which is what says this context is
+    // blocked waiting for exactly this answer.
+    unsafe { crate::process::wake(asked, Answer::value(length)) };
+    // Waking the caller moved the counter the reply capability names, so it has
+    // already stopped resolving. Releasing the handle as well is not belt and
+    // braces: it gives the slot back, and a table full of capabilities that name
+    // nothing is a table that fills up.
+    let _ = capability::release(replier, handle);
+    Answer::status(OK)
+}
+
+/// Resolves the handles a message carries, in the caller's table.
+fn resolve_transfers(
+    caller: usize,
+    region: u64,
+    into: &mut [(Object, u32, u64)],
+) -> Result<(), Answer> {
+    for (index, entry) in into.iter_mut().enumerate() {
+        // SAFETY: the table is at a fixed offset in this process's own argument
+        // region, whose address the nucleus chose, and `index` is inside the
+        // count the caller checked against the contract's maximum.
+        let handle = unsafe {
+            core::ptr::with_exposed_provenance::<u64>(
+                (region + tos_launch::MESSAGE_CAPABILITIES) as usize,
+            )
+            .add(index)
+            .read()
+        };
+        // A capability is delegated only by somebody who holds it, and holding
+        // it is the only right this needs: sending a capability is not an
+        // operation *on* the object it names.
+        let object = capability::resolve(caller, handle, 0).map_err(Answer::from)?;
+        *entry = (object, capability::rights_of(caller, handle), 0);
+    }
+    Ok(())
 }
 
 /// Takes a message, waiting for one when there is none.

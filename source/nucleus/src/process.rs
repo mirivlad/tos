@@ -116,6 +116,13 @@ struct Slot {
     /// pair evidence rather than decoration.
     first_tick: u64,
     last_tick: u64,
+    /// Which of this context's calls is still waiting for an answer.
+    ///
+    /// Moved by anything that ends a call — the reply, a cancellation, the
+    /// context ending — so that the reply capability handed out for it stops
+    /// resolving. Single use is then a property of the counter rather than a
+    /// flag somebody has to remember to clear.
+    reply_generation: u32,
     /// What it is waiting for, while it is blocked.
     ///
     /// `SYSTEM_ABI_V1` §6: blocking is always on a handle the process holds, so
@@ -151,6 +158,7 @@ impl Slot {
         quanta: 0,
         first_tick: 0,
         last_tick: 0,
+        reply_generation: 1,
         waiting: Waiting::Nothing,
         ended: Ended::Fault(0),
         // One, not zero: an object named with a generation nobody wrote is an
@@ -192,6 +200,11 @@ pub enum Waiting {
     Message(u32),
     /// Room in this endpoint's queue.
     Room(u32),
+    /// The answer to a call this context made (`IPC_V1` §4). It names no
+    /// endpoint because it is not waiting on the endpoint any more — it is
+    /// waiting on the one capability it handed out, and whoever holds that
+    /// knows exactly which context to answer.
+    Reply,
 }
 
 impl Waiting {
@@ -201,13 +214,14 @@ impl Waiting {
             Waiting::Nothing => 0,
             Waiting::Message(_) => 2,
             Waiting::Room(_) => 1,
+            Waiting::Reply => 3,
         }
     }
 
     /// The object it is waiting on.
     fn endpoint(&self) -> u32 {
         match self {
-            Waiting::Nothing => 0,
+            Waiting::Nothing | Waiting::Reply => 0,
             Waiting::Message(endpoint) | Waiting::Room(endpoint) => *endpoint,
         }
     }
@@ -564,6 +578,30 @@ pub fn arguments_of(index: usize) -> u64 {
     table[index].arguments_phys
 }
 
+/// Which answer this context is still waiting for, or nothing when it is not
+/// waiting for one.
+///
+/// Asked by the capability table: a reply capability names a call, and this is
+/// what says whether that call is still the one outstanding.
+pub fn reply_token(index: usize) -> Option<u32> {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    if index >= MAX_PROCESSES || table[index].state != State::Blocked {
+        return None;
+    }
+    (table[index].waiting == Waiting::Reply).then_some(table[index].reply_generation)
+}
+
+/// The token a call about to block will be answered by.
+pub fn next_reply_token(index: usize) -> u32 {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    if index >= MAX_PROCESSES {
+        return 0;
+    }
+    table[index].reply_generation
+}
+
 /// The second argument of the call a context is suspended in.
 ///
 /// A blocked sender's payload length was an argument of its `endpoint_send`,
@@ -593,6 +631,13 @@ pub unsafe fn wake(index: usize, answer: crate::syscall::Answer) {
         return;
     }
     answer.into_frame(&mut table[index].frame);
+    if table[index].waiting == Waiting::Reply {
+        // However this wait ended — answered, cancelled, or the caller taken
+        // away — the call it was waiting for is over, so the capability handed
+        // out to answer it stops naming anything. One place, so that no path
+        // that ends a call can forget.
+        table[index].reply_generation = table[index].reply_generation.wrapping_add(1);
+    }
     table[index].waiting = Waiting::Nothing;
     table[index].state = State::Runnable;
 }
@@ -829,8 +874,10 @@ unsafe fn retire(index: usize) {
     // SAFETY: single-context nucleus; the process is over.
     let slot = unsafe { &mut table()[index] };
     slot.state = State::Over;
-    // The process is over, so every capability naming it stops naming anything.
+    // The process is over, so every capability naming it stops naming anything —
+    // authority over it, and the right to answer whatever it was still asking.
     slot.generation = slot.generation.wrapping_add(1);
+    slot.reply_generation = slot.reply_generation.wrapping_add(1);
     slot.report_phys = 0;
     slot.report_length = 0;
     slot.arguments_phys = 0;
