@@ -1,0 +1,57 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A TOS Core module that performs a real operation on a real capability.
+//
+// Everything before this file was written was a system exercised by its own
+// Rust runtime image — a privileged binary — while the textual module computed
+// a number. docs/37 asks the Stage 3 identity question directly: "do textual
+// processes exercise real capability/IPC contracts rather than running as
+// decorative scripts around privileged binary services?" This module is the
+// smallest honest answer that is not *no*.
+//
+// It asks for one capability and never receives one from a parameter: `main`
+// takes nothing. The name below is the request (docs/42 section 2) and the
+// launcher answers it before the first instruction runs (ADR-0061).
+//
+// Two operations on that one capability, and the difference between their
+// answers is the evidence. The endowment carries `send` and not `receive`, so
+// the first is performed and the second is refused — by the nucleus, against a
+// table this module cannot address, on authority this module was given rather
+// than authority it named. A module that had faked either could not have
+// produced two different statuses.
+
+module system.boot.init version 1.0 profile full;
+
+import capability system.ipc.Endpoint as endpoint;
+
+resource [
+    fuel: 65536,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 1
+]
+
+// The two operations `SYSTEM_INTERFACE_V1` section 4 declares on an endpoint
+// that this module has any use for. Each names the capability first (ADR-0056)
+// and the binding its authority arrives under.
+extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 uses [endpoint];
+extern fn endpoint_receive(cap: system.ipc.Endpoint) -> i64 uses [endpoint];
+
+// `OK` minus `E_NO_CAPABILITY`, which is `0 - (-1)`.
+//
+// One number, because a TOS Core entry returns one. It is composed rather than
+// picked so that neither status alone can produce it: a system that refused
+// both would return 0, one that allowed both would return 0, and only the
+// declared pair — performed, then refused — gives 1. The two statuses
+// themselves are on the audit record separately.
+pub fn main() -> i64 uses [endpoint] {
+    let sent: i64 = endpoint_send(endpoint, 8u64);
+    let taken: i64 = endpoint_receive(endpoint);
+    return sent - taken;
+}

@@ -60,8 +60,15 @@ pub use tos_core::{Diagnostic, Position, Severity};
 // The host side of the boundary an accepted interface schema defines. Re-exported
 // here because this crate is the reference path's facade: a caller assembling a
 // run should not have to name the engine crate to say what that run may reach.
-use tos_engine::{run_set, Accounting, Refusal, Value, Verified};
-pub use tos_engine::{Handle, Reach, System, Unreachable};
+/// The accepted interface schemas, for the host that answers a module's
+/// capability requests and performs its operations (ADR-0060, ADR-0061).
+pub use tos_core::interfaces;
+use tos_engine::{run_set, Accounting, Refusal, Verified};
+pub use tos_engine::{
+    Handle, Reach, Request as CapabilityRequest, System, Trap, Unreachable, Value,
+};
+/// The integer widths a value carries, for a host building one.
+pub use tos_ir::IntKind;
 use tos_ir::Module;
 use tos_verifier::{verify, Finding, Limits, ResolutionSnapshot, VerifiedModule};
 

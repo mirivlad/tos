@@ -43,6 +43,10 @@ test-deputy = []
 # receiving on one endpoint. The rule is enforced where authority is granted, so
 # the only way to see it work is to ask for the thing it refuses.
 test-second-receiver = []
+# One process, endowed with `send` on an endpoint under the binding a TOS Core
+# module requests. The module is the one that calls the system, which is the
+# Stage 3 identity question docs/37 asks.
+test-module-operation = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 
