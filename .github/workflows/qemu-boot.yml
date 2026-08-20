@@ -126,6 +126,13 @@ jobs:
       - name: Request and reply gate
         run: bash host-tools/qemu-test/request-reply.sh target/qemu-ci/request-reply
 
+      # docs/35, restated by IPC_V1 section 8: at most four user/kernel
+      # crossings per request/reply. Measured as a slope over boots whose only
+      # IPC is the exchange, so that the fixed cost of entering and leaving the
+      # server's loop cancels instead of being guessed at (ADR-0063).
+      - name: What one request/reply costs gate
+        run: bash host-tools/qemu-test/exchange-cost.sh target/qemu-ci/exchange-cost
+
       # CAPABILITY_V1 section 7.6, which docs/37 names as the test that fails
       # quietly in systems passing the other five: a strong process acting for a
       # weak one is bounded by what the weak one gave it, not by what it holds.

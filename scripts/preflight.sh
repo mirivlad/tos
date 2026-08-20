@@ -213,6 +213,10 @@ qemu_request_reply() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/request-reply.sh \
         target/preflight-qemu/request-reply)
 }
+qemu_exchange_cost() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/exchange-cost.sh \
+        target/preflight-qemu/exchange-cost)
+}
 qemu_deputy() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/deputy.sh \
         target/preflight-qemu/deputy)
@@ -294,6 +298,7 @@ if [ "$MODE" = full ]; then
     run_gate "QEMU process authority" qemu_supervisor
     run_gate "QEMU blocking and the liveness rule" qemu_blocking
     run_gate "QEMU request and reply" qemu_request_reply
+    run_gate "QEMU what one request/reply costs" qemu_exchange_cost
     run_gate "QEMU confused deputy" qemu_deputy
     run_gate "QEMU one endpoint has one receiver" qemu_second_receiver
     run_gate "QEMU a module performs an operation" qemu_module_operation

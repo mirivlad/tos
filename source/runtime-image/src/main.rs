@@ -844,6 +844,14 @@ fn authority(launch: &Launch, report: &mut Report) {
         named(first)
     ));
 
+    // Under the cost constants this process does its half of the exchange and
+    // **nothing else**, so that what the nucleus counts is the exchange rather
+    // than the exchange plus everything below. Returning here is what makes the
+    // boot an instrument: every probe below crosses the same edge.
+    if exchange_only(launch, report, first) {
+        return;
+    }
+
     // What guessing is worth. An index beyond the table is `E_BAD_HANDLE`; an
     // index inside it that the process was not granted refuses too, because a
     // handle is an index *and* a generation and the generation is not guessable
@@ -939,6 +947,332 @@ fn authority(launch: &Launch, report: &mut Report) {
         "TOS.RUN.CAPABILITY.RELEASED status={released} reuse={after}"
     ));
 }
+
+/// On a boot that is not measuring an exchange, nothing (and it says so).
+#[cfg(not(any(
+    feature = "test-exchange-cost",
+    feature = "test-reply-receive-refusals"
+)))]
+fn exchange_only(_launch: &Launch, _report: &mut Report, _first: &LaunchCapability) -> bool {
+    false
+}
+
+/// The half of one exchange this process was given the authority for.
+///
+/// Under the cost constants this is the **whole** of what the process does with
+/// the system, which is what `IPC_V1` §9.7 needs and what the boot below the
+/// counters could not otherwise be: an exchange measured inside a boot that also
+/// polls, probes and delegates is a subtraction, and a subtraction is an
+/// estimate wearing a counter's clothes.
+#[cfg(any(
+    feature = "test-exchange-cost",
+    feature = "test-reply-receive-refusals"
+))]
+fn exchange_only(launch: &Launch, report: &mut Report, first: &LaunchCapability) -> bool {
+    if first.object != tos_launch::OBJECT_ENDPOINT {
+        report.line("TOS.RUN.EXCHANGE.UNSTARTABLE reason=not-an-endpoint");
+        return true;
+    }
+    if first.rights & tos_launch::RIGHT_CALL != 0 {
+        asking(launch, report, first.handle);
+    } else if first.rights & tos_launch::RIGHT_RECEIVE != 0 {
+        answering(launch, report, first.handle);
+    } else {
+        report.line("TOS.RUN.EXCHANGE.UNSTARTABLE reason=neither-half");
+    }
+    true
+}
+
+/// What one exchange carries, in both directions.
+#[cfg(any(
+    feature = "test-exchange-cost",
+    feature = "test-reply-receive-refusals"
+))]
+const QUESTION: &[u8] = b"what-does-an-exchange-cost";
+#[cfg(any(
+    feature = "test-exchange-cost",
+    feature = "test-reply-receive-refusals"
+))]
+const ANSWER: &[u8] = b"four-crossings";
+
+/// How many questions the client asks.
+///
+/// Two boots differ in nothing but this number, and that is what makes the
+/// measurement a **slope**. Entering the server's loop and leaving it cost one
+/// crossing each and belong to no exchange; a difference between two boots
+/// cancels them without anybody having to decide which two they were.
+#[cfg(all(feature = "test-exchange-cost", not(feature = "test-more-exchanges")))]
+const EXCHANGES: usize = 1;
+#[cfg(all(feature = "test-exchange-cost", feature = "test-more-exchanges"))]
+const EXCHANGES: usize = 3;
+/// The refusal boot asks twice: the first question is what the refusals are
+/// tried against, and the second is what the server is waiting for while it
+/// tries them.
+#[cfg(feature = "test-reply-receive-refusals")]
+const EXCHANGES: usize = 2;
+
+/// Puts the question in the argument region.
+#[cfg(any(
+    feature = "test-exchange-cost",
+    feature = "test-reply-receive-refusals"
+))]
+fn put(region: u64, bytes: &[u8]) {
+    for (offset, byte) in bytes.iter().enumerate() {
+        // SAFETY: `arguments_base` names a writable mapping of
+        // `arguments_length` bytes made by the launcher, and both constants
+        // above are far inside it.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u8>(region as usize)
+                .add(offset)
+                .write(*byte)
+        };
+    }
+}
+
+/// Whether the region holds the answer the server sends.
+#[cfg(any(
+    feature = "test-exchange-cost",
+    feature = "test-reply-receive-refusals"
+))]
+fn is_answer(region: u64, length: u64) -> bool {
+    if length as usize != ANSWER.len() {
+        return false;
+    }
+    // SAFETY: the nucleus states it wrote `length` bytes into the region the
+    // launch record names, and `length` is inside the contract's inline bound.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<u8>(region as usize),
+            length as usize,
+        )
+    };
+    bytes == ANSWER
+}
+
+/// The client: [`EXCHANGES`] questions, one operation each, and nothing else.
+///
+/// It counts its own operations, so the nucleus's count of what crossed the edge
+/// can be held against the two processes' count of what they asked for. A
+/// counter nobody can check from the other side is a number the nucleus tells
+/// about itself.
+#[cfg(any(
+    feature = "test-exchange-cost",
+    feature = "test-reply-receive-refusals"
+))]
+fn asking(launch: &Launch, report: &mut Report, handle: u64) {
+    let mut answered = 0;
+    let mut operations = 0;
+    for exchange in 0..EXCHANGES {
+        put(launch.arguments_base, QUESTION);
+        // The second question carries this process's own endpoint capability —
+        // authority with `call` and not `receive` — so that the server can be
+        // asked to wait on something it demonstrably holds and that
+        // demonstrably lacks the right the operation declares (ADR-0063).
+        let delegating = cfg!(feature = "test-reply-receive-refusals") && exchange == 1;
+        if delegating {
+            // SAFETY: the argument region is this process's own, and index 0 is
+            // inside the contract's maximum.
+            unsafe { set_transferred(launch.arguments_base, 0, handle) };
+        }
+        let carried = u64::from(delegating);
+        // SAFETY: `endpoint_call` names its endpoint and the request's length;
+        // the request is in the region the launch record names, and no pointer
+        // crosses.
+        let (status, length) =
+            unsafe { call_transferring(ENDPOINT_CALL, handle, QUESTION.len() as u64, carried) };
+        operations += 1;
+        if status == OK && is_answer(launch.arguments_base, length) {
+            answered += 1;
+        }
+    }
+    report.line(&alloc::format!(
+        "TOS.RUN.EXCHANGE.ASKED asked={EXCHANGES} answered={answered} operations={operations}"
+    ));
+}
+
+/// The server: one wait to begin with, and then one operation per exchange.
+///
+/// The loop ends the only way it can end — the wait nobody will satisfy is
+/// cancelled by ADR-0059's liveness rule once the client has gone — and what it
+/// returns is reported, because `E_CANCELLED` arriving *after* an answer was
+/// delivered is ADR-0063's rule that a cancellation cannot un-answer.
+#[cfg(any(
+    feature = "test-exchange-cost",
+    feature = "test-reply-receive-refusals"
+))]
+fn answering(launch: &Launch, report: &mut Report, endpoint: u64) {
+    // SAFETY: `endpoint_receive` names its endpoint and its flags; this waits.
+    let (mut status, _) = unsafe { call(ENDPOINT_RECEIVE, endpoint, 0) };
+    let mut operations = 1;
+    let mut answered = 0;
+    let mut spent = 0;
+    while status == OK {
+        // The right to answer arrives in the last slot of the transfer table,
+        // always (`IPC_V1` §4).
+        // SAFETY: the argument region is this process's own.
+        let reply = unsafe {
+            transferred(
+                launch.arguments_base,
+                tos_launch::MAX_TRANSFERRED_CAPABILITIES as usize - 1,
+            )
+        };
+        refusals(launch, report, reply, endpoint, answered, spent);
+        put(launch.arguments_base, ANSWER);
+        let (next, _) = answer_and_wait(reply, endpoint);
+        operations += operations_per_answer();
+        answered += 1;
+        // What this iteration spent, for the next one to try again with.
+        spent = reply;
+        status = next;
+    }
+    report.line(&alloc::format!(
+        "TOS.RUN.EXCHANGE.SERVED answered={answered} last={status} operations={operations}"
+    ));
+}
+
+/// Answers the call and waits for the next message, as **one** operation.
+#[cfg(all(
+    feature = "test-reply-receive",
+    any(
+        feature = "test-exchange-cost",
+        feature = "test-reply-receive-refusals"
+    )
+))]
+fn answer_and_wait(reply: u64, endpoint: u64) -> (i64, u64) {
+    // SAFETY: `SYSTEM_ABI_V1` §5 row 13 — the reply in `rdi`, the endpoint in
+    // `rsi`, the answer's length in `rdx`, flags in `r10`. Both handles were
+    // granted to this process: the endpoint by its launcher, the reply by the
+    // call it is about to answer.
+    unsafe {
+        call4(
+            ENDPOINT_REPLY_RECEIVE,
+            reply,
+            endpoint,
+            ANSWER.len() as u64,
+            0,
+        )
+    }
+}
+
+/// The same thing as **two**: the shape this ABI had before operation 13.
+#[cfg(all(
+    not(feature = "test-reply-receive"),
+    any(
+        feature = "test-exchange-cost",
+        feature = "test-reply-receive-refusals"
+    )
+))]
+fn answer_and_wait(reply: u64, endpoint: u64) -> (i64, u64) {
+    // SAFETY: `endpoint_reply` names the reply capability and the answer's
+    // length.
+    let (status, value) = unsafe { call(ENDPOINT_REPLY, reply, ANSWER.len() as u64) };
+    if status != OK {
+        return (status, value);
+    }
+    // SAFETY: `endpoint_receive` names its endpoint and its flags; this waits.
+    unsafe { call(ENDPOINT_RECEIVE, endpoint, 0) }
+}
+
+/// How many operations one answer costs the server: the whole difference.
+#[cfg(all(
+    feature = "test-reply-receive",
+    any(
+        feature = "test-exchange-cost",
+        feature = "test-reply-receive-refusals"
+    )
+))]
+fn operations_per_answer() -> u64 {
+    1
+}
+#[cfg(all(
+    not(feature = "test-reply-receive"),
+    any(
+        feature = "test-exchange-cost",
+        feature = "test-reply-receive-refusals"
+    )
+))]
+fn operations_per_answer() -> u64 {
+    2
+}
+
+/// Nothing, on the boots that are counting rather than probing.
+#[cfg(feature = "test-exchange-cost")]
+fn refusals(
+    _launch: &Launch,
+    _report: &mut Report,
+    _reply: u64,
+    _endpoint: u64,
+    _answered: u64,
+    _spent: u64,
+) {
+}
+
+/// Every way `endpoint_reply_receive` must refuse, asked of a live reply.
+///
+/// The point each one turns on is that **nothing is delivered**: a refusal that
+/// spent the reply, or answered the caller, or entered a wait, would be a
+/// half-performed operation, which is the state ADR-0063 says this operation
+/// exists to make impossible. That is not asserted here — it is proved by what
+/// happens next, because the answer that follows uses the same reply capability
+/// and succeeds.
+#[cfg(feature = "test-reply-receive-refusals")]
+fn refusals(
+    launch: &Launch,
+    report: &mut Report,
+    reply: u64,
+    endpoint: u64,
+    answered: u64,
+    spent: u64,
+) {
+    let length = ANSWER.len() as u64;
+    if answered == 0 {
+        // The two capabilities, the other way round. Neither position accepts
+        // the other's object, and the caller holds both — which is the case a
+        // check on "did you pass two handles" would miss.
+        // SAFETY: an assigned operation, named with handles this process holds.
+        let (swapped, _) = unsafe { call4(ENDPOINT_REPLY_RECEIVE, endpoint, reply, length, 0) };
+        // A reply handle that names nothing, with a good endpoint.
+        // SAFETY: as above, with an index outside this process's table.
+        let (no_reply, _) = unsafe { call4(ENDPOINT_REPLY_RECEIVE, ABSENT, endpoint, length, 0) };
+        // A good reply with an endpoint handle that names nothing. This is the
+        // one that decides whether the operation is atomic: the reply is
+        // resolvable and the operation must still deliver nothing.
+        // SAFETY: as above.
+        let (no_endpoint, _) = unsafe { call4(ENDPOINT_REPLY_RECEIVE, reply, ABSENT, length, 0) };
+        // Holding `receive` on an endpoint and a reply for a call on it is not
+        // holding `send` (`CAPABILITY_V1` §7.4): the pair grants nothing the two
+        // did not grant separately.
+        // SAFETY: `endpoint_send` names its endpoint and a payload length.
+        let (sending, _) = unsafe { call(ENDPOINT_SEND, endpoint, length) };
+        report.line(&alloc::format!(
+            "TOS.RUN.EXCHANGE.REFUSED swapped={swapped} no_reply={no_reply} \
+             no_endpoint={no_endpoint} sending={sending}"
+        ));
+        return;
+    }
+    // The second question carried the client's own endpoint capability: an
+    // endpoint this process now holds, with `call` and without `receive`. So
+    // this names a real object of the right kind under a right the operation
+    // declares and this handle does not carry.
+    // SAFETY: the argument region is this process's own; slot 0 is where the
+    // client wrote what it transferred.
+    let carried = unsafe { transferred(launch.arguments_base, 0) };
+    // SAFETY: an assigned operation, named with handles this process holds.
+    let (no_right, _) = unsafe { call4(ENDPOINT_REPLY_RECEIVE, reply, carried, length, 0) };
+    // And the reply the *first* exchange already spent. Single use is a property
+    // of the capability, so this is refused — and refused **before** any wait is
+    // entered, which the line after it appearing at all is what proves.
+    // SAFETY: as above, with a handle whose object is gone.
+    let (again, _) = unsafe { call4(ENDPOINT_REPLY_RECEIVE, spent, endpoint, length, 0) };
+    report.line(&alloc::format!(
+        "TOS.RUN.EXCHANGE.REFUSED carried=0x{carried:x} no_right={no_right} spent=0x{spent:x} \
+         again={again}"
+    ));
+}
+
+/// A handle index outside any process's table (`CAPABILITY_V1` §7.2).
+#[cfg(feature = "test-reply-receive-refusals")]
+const ABSENT: u64 = 0xdead_beef;
 
 /// Asks a question and waits for the answer (`IPC_V1` §4).
 ///
