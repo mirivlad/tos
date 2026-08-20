@@ -59,8 +59,15 @@ jobs:
       - name: Clippy (nucleus)
         run: cargo clippy -p tos-nucleus --target x86_64-unknown-none -- -D warnings
 
+      # `cargo test` covers the workspace default members, and the UEFI loader is
+      # not one — it is a target-only crate — so its host unit tests were not
+      # being run here at all. The local preflight has named it explicitly since
+      # it found that out; this step said "Workspace tests" and proved less than
+      # the same gate proves locally.
       - name: Workspace tests
-        run: cargo test
+        run: |
+          cargo test
+          cargo test -p tos-uefi-loader
 
       - name: Capsule provenance sidecar
         run: bash ../scripts/tests/check-capsule-provenance.sh

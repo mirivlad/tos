@@ -23,10 +23,17 @@ and never from a list kept here. A gate that knew which ADRs exist would need
 editing for ADR-0065, and an edit that has to be remembered is the same failure
 one level up.
 
-Only *accepted* decisions are required. A `Proposed` ADR carries no authority and
-publishing it inside the normative bundle would give it some; `docs/38` requires
-nothing of it, so neither does this. That is a boundary rather than an oversight:
-this gate does not forbid listing one either, because no accepted document does.
+Only *accepted* decisions are required, and that is the whole of the normative
+fact. `docs/38` says an accepted ADR must be in the manifest; it says nothing
+about any other status, so neither does this gate — it does not require a
+`Proposed` ADR to be listed and does not forbid it either.
+
+Being listed would not make a Proposed ADR authoritative in any case. `docs/38`
+excludes that in two places: listing a path "does not by itself grant Tier 2
+authority", and the generated bundle is Tier 5, "never independent authority".
+Authority comes from a document's own status, which is also where this gate reads
+it from. So the reason `Proposed` is not required here is simply that no accepted
+document requires it — not that listing one would promote it.
 """
 
 from __future__ import annotations
