@@ -127,3 +127,7 @@ docs/adr/0057-ipc-message-bounds.md
 docs/adr/0058-bulk-call-arguments.md
 docs/adr/0059-blocking-and-the-liveness-rule.md
 docs/adr/0060-how-a-module-reaches-a-capability.md
+docs/adr/0061-how-an-endowment-binds-to-a-module.md
+docs/adr/0062-arguments-an-operation-cannot-take-in-a-register.md
+docs/adr/0063-an-operation-that-requires-two-capabilities.md
+docs/adr/0064-a-nonconstructible-type-in-value-position.md
