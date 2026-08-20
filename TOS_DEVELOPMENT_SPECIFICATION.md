@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `bdf89bf231010de78f7aeb07160c8116ef6192cd363c9f892c76a688053a9ac4`  
+Source-manifest SHA-256: `ac1470fd52ddd5320c438123561b7b164cea35b13e35bada0cff0ff1dcaf115d`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2308,7 +2308,8 @@ is always in the same place: a convention is a property of this edge, not of
 each operation, and an operation that put its handle elsewhere would make the
 dispatcher's first action depend on which operation it was dispatching. Should
 an operation ever require two capabilities, this contract assigns their
-positions in §5 order when that operation is added.
+positions in §5 order when that operation is added. Operation 13 is the first,
+and its row assigns `rdi` and `rsi`; its values then start at `rdx`.
 
 The three self-only operations — `context_yield`, `time_monotonic`,
 `process_exit` — require no capability, and `rdi` carries whatever their own
@@ -2380,6 +2381,7 @@ are marked and are exactly those a process can only apply to itself.
 | 10 | `context_yield` | *(self only)* | gives up the rest of the quantum |
 | 11 | `time_monotonic` | *(self only)* | reads the monotonic tick |
 | 12 | `process_exit` | *(self only)* | ends the calling process. `rdi` = the status it claims for itself; does not return (ADR-0054) |
+| 13 | `endpoint_reply_receive` | **two**: `rdi` = reply handle (single use), `rsi` = endpoint handle with `receive` | answers the call the reply names, then waits for the next message on the endpoint, without returning to CPL 3 in between. `rdx` = the answer's length, `r10` = flags. The length taken is returned in `rdx`, as for `endpoint_receive` (ADR-0063) |
 
 Operation `0` is not assigned and never will be. A register that was never
 written holds zero, so a zero selector is overwhelmingly likely to be a caller
@@ -2444,9 +2446,10 @@ about numbers that never states the numbers cannot be conformed to. Neither was 
 new decision: no operation, status, right or guarantee changed by writing them
 down.
 
-Operation 12, `process_exit`, **is** an addition, and it was decided by ADR-0054
-rather than here — this table carries that decision rather than making it. It is
-a minor version of this contract by the rule above: a process built against the
+Operations 12 (`process_exit`, ADR-0054) and 13 (`endpoint_reply_receive`,
+ADR-0063) **are** additions, and both were decided by an ADR rather than here —
+this table carries those decisions rather than making them. Each is a minor
+version of this contract by the rule above: a process built against the
 earlier set calls nothing that has changed meaning, and one built against this
 set that runs on an older nucleus receives `E_NOT_SUPPORTED` for 12 and is not
 terminated for asking.
@@ -2548,7 +2551,8 @@ where authority arrives.
   resource range, and the enclosing `uses` effect all match a declared interface
   contract."
 - **The first parameter is the capability**, of the interface's declared type.
-  The remaining parameters are values. No parameter is a pointer, because TOS
+  An operation may require more than one, and §4.1 says how it declares them;
+  the remaining parameters are values. No parameter is a pointer, because TOS
   Core V1 has none.
 
 A conforming `extern fn` is accepted by checker and verifier. One whose name,
@@ -2580,26 +2584,66 @@ because two imports of one interface are legal and a kind cannot tell them apart
 | `system.ipc.Reply` | reply |
 | `system.process.Control` | process |
 
+**Every operation declares the right each capability it takes must carry**
+(ADR-0063). `docs/42` §2 requires that "the capability type, requested
+operation/right, resource range, and the enclosing `uses` effect all match a
+declared interface contract", and the right is the half this schema did not
+state until an operation needed two capabilities and "which one may I receive
+on" stopped having an obvious answer. Stating it for one operation and not the
+others would leave the rule true of the newest thing only, so it is stated for
+all of them.
+
 ### `system.ipc.Endpoint`
 
-| Operation | Parameters after the capability | Result | `SYSTEM_ABI_V1` |
-|---|---|---|---|
-| `endpoint_send` | `length: u64` | `i64` | 1 |
-| `endpoint_receive` | *(none)* | `i64` | 2 |
-| `endpoint_call` | `length: u64` | `i64` | 3 |
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `endpoint_send` | `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
+| `endpoint_receive` | `system.ipc.Endpoint` with `receive` | *(none)* | `i64` | 2 |
+| `endpoint_call` | `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
 
 ### `system.ipc.Reply`
 
-| Operation | Parameters after the capability | Result | `SYSTEM_ABI_V1` |
-|---|---|---|---|
-| `endpoint_reply` | `length: u64` | `i64` | 4 |
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `endpoint_reply` | `system.ipc.Reply` with `reply` | `length: u64` | `i64` | 4 |
+| `endpoint_reply_receive` | `system.ipc.Reply` with `reply`, then `system.ipc.Endpoint` with `receive` | `length: u64` | `i64` | 13 |
+
+`endpoint_reply_receive` answers the call its reply capability names and then
+waits for the next message on the endpoint its second capability names, without
+running at CPL 3 in between. It is the only operation of this version taking two
+capabilities, and the two are **separate authorities throughout**: each is
+declared with its own interface and right, each is supplied from its own
+`import capability` binding, and neither is derivable from the other. A reply
+names one call (`IPC_V1` §4); an endpoint is a different object with different
+rights and a different lifetime, and `CAPABILITY_V1` §2 has no operation that
+makes one from the other.
+
+It carries no protocol. It does not correlate the answer with the message it
+then waits for, does not name a session, and does not know that the two have
+anything to do with each other — `IPC_V1` §1 keeps request/reply in textual
+libraries above the primitives, and this is a transport primitive that happens to
+be what a server loop costs one crossing pair instead of two.
+
+**What it does when something is wrong**, which is the part that had to be
+decided rather than described:
+
+- either capability failing to resolve, or lacking its declared right, refuses
+  the whole operation: **nothing is delivered and no wait is entered**. A
+  half-performed one would leave a caller answered and a server not waiting,
+  which is the state this operation exists to make impossible.
+- the reply is consumed by a successful delivery, exactly as `endpoint_reply`
+  consumes it (`IPC_V1` §4). A second use of the same reply is refused **before**
+  any wait is entered.
+- a wait cancelled after the answer was delivered returns `E_CANCELLED`, **and
+  the answer stands**. Cancellation ends a wait (ADR-0059); it cannot un-answer a
+  caller that has already been answered.
 
 ### `system.process.Control`
 
-| Operation | Parameters after the capability | Result | `SYSTEM_ABI_V1` |
-|---|---|---|---|
-| `process_terminate` | *(none)* | `i64` | 9 |
-| `process_create` | `path: string` (≤ 256) | `i64` | 8 |
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `process_terminate` | `system.process.Control` with `terminate` | *(none)* | `i64` | 9 |
+| `process_create` | `system.process.Control` with `create` | `path: string` (≤ 256) | `i64` | 8 |
 
 `process_create` creates a child running the named module **with no endowment**.
 An endowment is a list, and §4.1 admits no list; a child endowed nothing is a
@@ -2609,7 +2653,44 @@ version's, and arrives with a typed way to say what a list is rather than before
 
 ## 4.1 What a parameter may be
 
-An operation's parameters after the capability are **values** (§3), and a value
+### Capability parameters
+
+An operation takes **one or more** capabilities, and they come first, in the
+order §4 lists them. Each declares the interface it must be of and the right it
+must carry; the first is the operation's own interface, which is the one the
+instruction records and `Signature.effects` names (ADR-0060).
+
+```tos
+import capability system.ipc.Reply    as answer;
+import capability system.ipc.Endpoint as inbox;
+
+extern fn endpoint_reply_receive(
+    reply: system.ipc.Reply,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [answer, inbox];
+```
+
+Each capability parameter is supplied from its own `import capability` binding
+(ADR-0061), and the enclosing function's `uses` names every binding supplied.
+A verifier proves, per capability parameter, that the binding named is an import
+of the declared interface and that the enclosing function declares it — the check
+it already made for one capability, made for each.
+
+**They stay separate.** No capability is derived from another, no operation
+merges two rights into one object, and an operation requiring two is refused
+unless *both* were granted with the rights it declares. `CAPABILITY_V1` §3 admits
+an object and rules out a class; two authorities that could not be granted apart
+would be a class with two names.
+
+`SYSTEM_ABI_V1` §3 fixes where they go: "Should an operation ever require two
+capabilities, this contract assigns their positions in §5 order when that
+operation is added" — so the ABI's register assignment follows this table's
+order, and this schema does not repeat it.
+
+### Value parameters
+
+An operation's parameters after the capabilities are **values** (§3), and a value
 of TOS Core V1 is what `docs/40` says it is. This version admits two:
 
 | Declared type | How it crosses |

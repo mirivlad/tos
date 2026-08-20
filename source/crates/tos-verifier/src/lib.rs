@@ -808,7 +808,15 @@ fn check_instruction(
                 ));
             }
         }
-        Op::Capability { import, .. } if *import >= module.capability_imports.len() => {
+        Op::Capability {
+            import,
+            further_imports,
+            ..
+        } if *import >= module.capability_imports.len()
+            || further_imports
+                .iter()
+                .any(|further| *further >= module.capability_imports.len()) =>
+        {
             return Err(Finding::new(
                 "V2013_CAPABILITY",
                 at(),
@@ -822,7 +830,11 @@ fn check_instruction(
         // another would pass every other check here — the import is in range,
         // the interface was imported, the function declared it — and still be
         // performing an operation on authority of the wrong type.
-        Op::Capability { import, .. } => {
+        Op::Capability {
+            import,
+            further_imports,
+            ..
+        } => {
             if let Some(interface) = &instruction.unsafe_interface {
                 if &module.capability_imports[*import].interface != interface {
                     return Err(Finding::new(
@@ -832,6 +844,20 @@ fn check_instruction(
                             "an operation declares {interface} and is performed under {}",
                             module.capability_imports[*import].interface
                         ),
+                    ));
+                }
+            }
+            // Every capability an operation requires is a separate authority
+            // (ADR-0063), so each is named separately and none may be the same
+            // one twice. A repeat would be one grant standing in for two, which
+            // is how "reply here and wait there" becomes "reply here and wait
+            // here" without anything in the artifact saying so.
+            for (position, further) in further_imports.iter().enumerate() {
+                if further == import || further_imports[..position].contains(further) {
+                    return Err(Finding::new(
+                        "V2013_CAPABILITY",
+                        at(),
+                        "an operation names one capability import more than once",
                     ));
                 }
             }

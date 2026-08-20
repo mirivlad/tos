@@ -21,7 +21,7 @@ fail() {
 
 # Every operation the document declares, from the tables of section 4: the first
 # cell of a row whose last cell is a `SYSTEM_ABI_V1` operation number.
-declared=$(sed -n '/^### /,/^## 5/p' "$DOC" |
+declared=$(sed -n '/^### /,/^## 4.1/p' "$DOC" |
     sed -n 's/^| `\([a-z_]*\)` |.*| [0-9]* |$/\1/p' | sort -u)
 # Every operation the table names.
 tabled=$(sed -n 's/^ *name: "\([a-z_]*\)",$/\1/p' "$TABLE" | sort -u)
@@ -29,7 +29,7 @@ tabled=$(sed -n 's/^ *name: "\([a-z_]*\)",$/\1/p' "$TABLE" | sort -u)
 # is part of the contract, not the host's choice, so a document and a table that
 # agreed on the parameter while disagreeing on how long it may be would let a
 # module be refused against a number nobody accepted.
-bounds_in_doc=$(sed -n 's/^| `\([a-z_]*\)` | `[a-z]*: [a-z0-9]*` (\xe2\x89\xa4 \([0-9]*\)) |.*$/\1 \2/p' "$DOC" | sort)
+bounds_in_doc=$(sed -n 's/^| `\([a-z_]*\)` | [^|]* | `[a-z]*: [a-z0-9]*` (\xe2\x89\xa4 \([0-9]*\)) |.*$/\1 \2/p' "$DOC" | sort)
 bounds_in_table=$(sed -n -e 's/^ *name: "\([a-z_]*\)",$/\1/p' -e 's/^ *maximum: Some(\([0-9]*\)),$/\1/p' "$TABLE" |
     awk '/^[a-z_]+$/ { name = $0; next } { print name, $0 }' | sort)
 [ "$bounds_in_doc" = "$bounds_in_table" ] || {
@@ -88,7 +88,7 @@ kinds_in_table=$(sed -n \
 # versioned. So the host that performs them carries the numbers, and this holds
 # them against the document that assigns them.
 HOST="$ROOT/source/runtime-image/src/main.rs"
-abi_in_doc=$(sed -n '/^### /,/^## 5/p' "$DOC" |
+abi_in_doc=$(sed -n '/^### /,/^## 4.1/p' "$DOC" |
     sed -n 's/^| `\([a-z_]*\)` |.*| \([0-9]*\) |$/\1 \2/p' | sort)
 abi_in_host=$(sed -n '/^const PERFORMED/,/^];$/p' "$HOST" |
     tr -d ' \n' | tr '(' '\n' |
@@ -117,7 +117,32 @@ rm -f "${TMPDIR:-/tmp}/tos-abi-host.$$"
     fail "the accepted schema and the host that performs it disagree about operations"
 }
 
+# Every capability requirement, as interface-and-right pairs per operation
+# (ADR-0063). The right is half of a requirement: a document and a table that
+# agreed on the interface while disagreeing on the right would let an operation
+# be declared reachable with authority the system will refuse it for.
+requirements_in_doc=$(sed -n 's/^| `\([a-z_]*\)` | \(`system[^|]*\) | .* | [0-9]* |$/\1 \2/p' "$DOC" |
+    sed -e 's/`//g' -e 's/ with / /g' -e 's/, then / + /' | sort)
+requirements_in_table=$(sed -n \
+    -e 's/^ *name: "\([a-z_]*\)",$/OP \1/p' \
+    -e 's/^ *capabilities: &\[Requirement::of("\([a-zA-Z.]*\)", "\([a-z]*\)")\],$/REQ \1 \2/p' \
+    -e 's/^ *Requirement::of("\([a-zA-Z.]*\)", "\([a-z]*\)"),$/REQ \1 \2/p' "$TABLE" |
+    awk '$1 == "OP" { if (name != "") print line; name = $2; line = $2; next }
+         $1 == "REQ" { line = line " " $2 " " $3 }
+         END { if (name != "") print line }' |
+    sed 's/\(system[a-zA-Z.]* [a-z]*\) \(system\)/\1 + \2/' | sort)
+
+[ -n "$requirements_in_doc" ] || fail "section 4 declares no capability requirements"
+[ "$requirements_in_doc" = "$requirements_in_table" ] || {
+    echo "the document requires:" >&2
+    echo "$requirements_in_doc" >&2
+    echo "the frontend table requires:" >&2
+    echo "$requirements_in_table" >&2
+    fail "the accepted schema and the frontend's table disagree about capability requirements"
+}
+
 count=$(printf '%s\n' "$declared" | grep -c .)
 paired=$(printf '%s\n' "$kinds_in_doc" | grep -c .)
-echo "check-interface-schema: PASS ($count operation(s), $paired object kind(s)" \
-     "and $count ABI assignment(s) checked)"
+required=$(printf '%s\n' "$requirements_in_doc" | grep -c .)
+echo "check-interface-schema: PASS ($count operation(s), $paired object kind(s)," \
+     "$count ABI assignment(s) and $required capability requirement(s) checked)"

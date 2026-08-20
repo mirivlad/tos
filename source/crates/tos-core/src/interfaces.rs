@@ -16,11 +16,38 @@
 pub struct Operation {
     /// The name an `extern fn` must have to be this operation.
     pub name: &'static str,
-    /// The parameters after the capability, in order. The capability is the
-    /// first parameter of every operation and is not repeated here.
+    /// The capabilities it requires, in order, before any value
+    /// (`SYSTEM_INTERFACE_V1` §4.1). The first is the operation's own
+    /// interface — the one the instruction records and `Signature.effects`
+    /// names — and every one after it is a separate authority with its own
+    /// interface and right.
+    pub capabilities: &'static [Requirement],
+    /// The parameters after the capabilities, in order.
     pub parameters: &'static [Parameter],
     /// The result type.
     pub result: &'static str,
+}
+
+/// One capability an operation requires.
+///
+/// **The right is half of it**, and the half this schema did not state until an
+/// operation needed two capabilities. `docs/42` §2 requires "the capability type,
+/// requested operation/right, resource range, and the enclosing `uses` effect"
+/// all to match a declared interface contract; a requirement naming only the
+/// type would leave "which of this endpoint's three rights does this operation
+/// need" to the nucleus alone, where a reader and a verifier cannot see it.
+pub struct Requirement {
+    /// The interface a capability supplied here must be of.
+    pub interface: &'static str,
+    /// The right it must carry, by the name its object type declares
+    /// (`IPC_V1` §2 for an endpoint, `CAPABILITY_V1` §3 in general).
+    pub right: &'static str,
+}
+
+impl Requirement {
+    const fn of(interface: &'static str, right: &'static str) -> Requirement {
+        Requirement { interface, right }
+    }
 }
 
 /// One value an operation takes (`SYSTEM_INTERFACE_V1` §4.1).
@@ -88,16 +115,19 @@ pub const ACCEPTED: &[Interface] = &[
         operations: &[
             Operation {
                 name: "endpoint_send",
+                capabilities: &[Requirement::of("system.ipc.Endpoint", "send")],
                 parameters: &[Parameter::fixed("u64")],
                 result: "i64",
             },
             Operation {
                 name: "endpoint_receive",
+                capabilities: &[Requirement::of("system.ipc.Endpoint", "receive")],
                 parameters: &[],
                 result: "i64",
             },
             Operation {
                 name: "endpoint_call",
+                capabilities: &[Requirement::of("system.ipc.Endpoint", "call")],
                 parameters: &[Parameter::fixed("u64")],
                 result: "i64",
             },
@@ -106,11 +136,26 @@ pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "system.ipc.Reply",
         object: ObjectKind::Reply,
-        operations: &[Operation {
-            name: "endpoint_reply",
-            parameters: &[Parameter::fixed("u64")],
-            result: "i64",
-        }],
+        operations: &[
+            Operation {
+                name: "endpoint_reply",
+                capabilities: &[Requirement::of("system.ipc.Reply", "reply")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "i64",
+            },
+            // Two capabilities, and they stay two: the reply it consumes and the
+            // endpoint it then waits on, each with its own interface and right,
+            // neither derivable from the other (ADR-0063).
+            Operation {
+                name: "endpoint_reply_receive",
+                capabilities: &[
+                    Requirement::of("system.ipc.Reply", "reply"),
+                    Requirement::of("system.ipc.Endpoint", "receive"),
+                ],
+                parameters: &[Parameter::fixed("u64")],
+                result: "i64",
+            },
+        ],
     },
     Interface {
         path: "system.process.Control",
@@ -118,6 +163,7 @@ pub const ACCEPTED: &[Interface] = &[
         operations: &[
             Operation {
                 name: "process_terminate",
+                capabilities: &[Requirement::of("system.process.Control", "terminate")],
                 parameters: &[],
                 result: "i64",
             },
@@ -129,6 +175,7 @@ pub const ACCEPTED: &[Interface] = &[
             // to and not against a number in another crate.
             Operation {
                 name: "process_create",
+                capabilities: &[Requirement::of("system.process.Control", "create")],
                 parameters: &[Parameter {
                     ty: "string",
                     maximum: Some(256),

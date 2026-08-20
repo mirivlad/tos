@@ -1194,6 +1194,7 @@ impl Engine<'_, '_> {
             // given.
             Op::Capability {
                 import,
+                further_imports,
                 right,
                 operands,
             } => {
@@ -1221,8 +1222,22 @@ impl Engine<'_, '_> {
                         source,
                     ));
                 };
-                // ADR-0056: the capability first, then the operation's values.
+                // ADR-0056 and ADR-0063: the capabilities first, in the order
+                // the schema declares them, then the operation's values. Each
+                // further one is looked up the same way as the first — by the
+                // import it answers — so the host receives separate authorities
+                // and never one standing in for two.
                 let mut arguments = alloc::vec![held];
+                for further in further_imports {
+                    let Some(also) = self.imports.get(*further).cloned() else {
+                        return Err(Trap::new(
+                            "RUNTIME_CAPABILITY_DENIED",
+                            "an operation names a capability import this run does not hold",
+                            source,
+                        ));
+                    };
+                    arguments.push(also);
+                }
                 for operand in operands {
                     arguments.push(self.operand(operand, values, source)?);
                 }

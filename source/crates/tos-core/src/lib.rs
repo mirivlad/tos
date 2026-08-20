@@ -2075,10 +2075,11 @@ mod tests {
             .expect("an extern item naming no accepted schema is rejected");
         assert_eq!(ffi.stage(), Stage::Effect);
         assert_eq!(ffi.field("item"), Some("outside"));
-        assert_eq!(
-            ffi.field("reason"),
-            Some("expected exactly one capability effect")
-        );
+        // An item with no `uses` at all names no interface, so there is nothing
+        // to look an operation up in. Since ADR-0063 the count is the
+        // operation's rather than always one, so "none" is the reason rather
+        // than "not exactly one".
+        assert_eq!(ffi.field("reason"), Some("expected a capability effect"));
         assert!(ffi.span().text(&source).starts_with("extern fn outside"));
     }
 

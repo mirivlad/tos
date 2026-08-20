@@ -2,12 +2,12 @@
 
 # ADR-0063: An operation that requires two capabilities, and the exchange that needs one
 
-- Status: **Proposed**
+- Status: **Accepted (S-A and B)** (Project Architect-approved)
 - Date: 2026-08-20
 - Decision level: 2 — it extends what an accepted interface schema may require of
   a caller, adds an operation to a closed ABI, and is the first place the schema
   states a *right* rather than only a type
-- Project Architect approval: **not given**
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-20
 
 ## What was checked before anything was proposed
 
