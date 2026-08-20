@@ -19,25 +19,13 @@ jobs:
       - name: Check generated release manifest and digests
         run: python3 tools/build-release-manifest.py --check
 
+      # The same script the local preflight runs. This check used to live here
+      # as its own inline copy, and the copy was the problem twice over: it was
+      # the only place the docs/38 release check was enforced, so
+      # `preflight --full` could be green while this job had been failing on
+      # every push since ADR-0061 was accepted; and it classified an ADR by
+      # whether the word "Accepted" appeared anywhere in its status line, which
+      # is not the same question as what its status is. One implementation, two
+      # callers.
       - name: Validate source manifest and accepted ADR coverage
-        shell: python
-        run: |
-          from pathlib import Path
-          root = Path('.')
-          listed = {
-              line.strip() for line in (root/'docs/SPECIFICATION_SOURCES.txt').read_text().splitlines()
-              if line.strip() and not line.lstrip().startswith('#')
-          }
-          # Only *accepted* decisions belong in the consolidated view: a
-          # Proposed ADR carries no authority, and listing one would publish it
-          # as though it did. The check said "accepted" all along and compared
-          # every file, which made a correct repository fail.
-          def accepted(path):
-              return any(
-                  line.startswith('- Status:') and 'Accepted' in line
-                  for line in path.read_text().splitlines()
-              )
-          adrs = {str(p) for p in (root/'docs/adr').glob('*.md') if accepted(p)}
-          missing = sorted(adrs - listed)
-          if missing:
-              raise SystemExit('accepted ADRs missing from specification manifest: ' + ', '.join(missing))
+        run: python3 scripts/check-specification-manifest.py --root .

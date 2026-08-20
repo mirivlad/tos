@@ -49,6 +49,12 @@ run_gate() {
 }
 
 specification() { python3 "$ROOT/tools/build-specification.py" --check; }
+# Reproducibility proves the generated view matches the inputs that are listed.
+# Completeness — that everything required is listed — is a different statement
+# and needs its own gate (docs/38 release check).
+specification_manifest() {
+    python3 "$ROOT/scripts/check-specification-manifest.py" --root "$ROOT"
+}
 interface_contract_authority() {
     bash "$ROOT/scripts/tests/check-interface-contract-authority.sh"
 }
@@ -247,6 +253,7 @@ qemu_direction_flag() {
 }
 
 run_gate "generated specification" specification
+run_gate "specification source manifest" specification_manifest
 run_gate "interface-contract authority" interface_contract_authority
 run_gate "accepted interface schema" interface_schema
 run_gate "system ABI operation numbers" abi_operations

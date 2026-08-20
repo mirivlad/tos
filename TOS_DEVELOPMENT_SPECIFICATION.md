@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `b78e41acdcd4f595bba7b139b97cb22da6378a20b841578c3d3f2ed470c092d0`  
+Source-manifest SHA-256: `32ff56d385faf7203105f5e3ac59d70988494f2be994dba8f3a28e479991a355`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -18135,6 +18135,1365 @@ of Phase 4 stand as they are, and what is decided here is who else may reach
 them.
 
 <!-- END docs/adr/0060-how-a-module-reaches-a-capability.md -->
+
+---
+
+<!-- BEGIN docs/adr/0061-how-an-endowment-binds-to-a-module.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0061: How a process's endowment binds to the module it runs
+
+- Status: **Accepted (surface B, key i)** (Project Architect-approved)
+- Date: 2026-08-20
+- Decision level: 2 — it fixes which declaration of a module is matched against
+  a grant, what the launch record must carry for the match to be checkable, and
+  which of two forms `docs/42` §2 already permits is the one TOS uses; it adds
+  no operation, no status and no right
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-20
+
+## The decision, in four lines
+
+- **Surface:** B. A grant binds to `import capability` directly, and the
+  imported binding is the capability value.
+- **Key:** the binding. The identity of a request is `(module identity,
+  binding)` — not a global `input`.
+- **Compatibility check:** the interface must match the object kind
+  (`system.ipc.Endpoint` → `OBJECT_ENDPOINT`). This is a check on a grant, not
+  the mechanism that selects one.
+- **Decider:** the launcher's stated constant now, `/system/policy/` later. The
+  decider does not change the key.
+- **Transport:** the launch record carries the binding explicitly, beside handle,
+  object, rights and scope — never the position of an entry in an array.
+
+## The gap, stated once
+
+ADR-0060 is implemented except for the part that makes it reachable. A module
+can declare an operation of an accepted interface, call it, and have the
+verifier prove both; the engine leaves at the call boundary and comes back
+(`tests/integration/tests/interface_reach.rs`). Every operation
+`SYSTEM_INTERFACE_V1` §4 declares takes **the capability as its first argument**
+(ADR-0056), and there is no way for a module on the boot path to hold one.
+
+So the runtime image hands its run `Unreachable`, and a module that reaches an
+interface is refused by the only party that could have answered it. That is the
+honest state, not a cautious one: nothing decides where a capability would have
+come from.
+
+## What the accepted documents already decide
+
+More than half of it, and the half they decide is not the half that blocks.
+
+**The unit of the request is the capability import.** `docs/42` §2:
+`import capability system.time.Clock as clock` "declares that the module may
+receive one opaque value named `clock` whose nominal capability type is
+`system.time.Clock`. It is a request, not a grant. The process
+launcher/supervisor, not source text, maps the request to a concrete grant after
+policy/trust evaluation."
+
+**The decider is the launcher, and it decides before the process runs.**
+ADR-0051 §2 has the launcher reading `capability_imports` from the verified IR,
+"sees exactly which capabilities the module intends to use, and grants or denies
+**each** under policy"; its Consequence section requires that this be readable
+"without executing it". ADR-0055 makes the same statement for the boot process,
+whose endowment is the launcher's stated constant until `/system/policy/` exists
+and which `CAPABILITY_V1` §2 requires to be *named in the audit record rather
+than implied*.
+
+**What a grant is.** `CAPABILITY_V1` §3: `object + rights + scope + lifetime +
+generation`, never a class of objects. `docs/42` §2: "an explicit finite set of
+object-specific rights and resource constraints".
+
+**What a denial is.** `CapabilityDenied` at startup — "not fabricated as an
+absence sentinel, a global singleton, an integer, or a successful empty
+authority" (`docs/42` §2), and `SYSTEM_INTERFACE_V1` §10.3 makes it conformance
+evidence: a module whose request is denied "never reaches the call".
+
+**The transport exists.** The launch record carries a table of initial handles
+with object, rights and scope (ADR-0055, `LAUNCH_VERSION` 3), and
+`process_create` carries the same shape from a parent to a child, attenuated.
+
+## What they do not decide, and it is three separate things
+
+**1. The correspondence is not carried.** A launch-record entry says *handle,
+object, rights, scope*. It does not say **which import it answers**. The
+documents say the launcher maps a request to a grant; nothing says how that
+mapping reaches the process. So the runtime image cannot know which of the
+grants it holds is the one `import capability system.ipc.Endpoint as endpoint`
+asked for — and with two endpoint grants it cannot even guess.
+
+**2. An interface path is not connected to an object kind.**
+`SYSTEM_INTERFACE_V1` §4 declares `system.ipc.Endpoint`. `CAPABILITY_V1` §3
+names object types in prose — "the endpoint, region, process or interface
+publication it refers to". `tos-launch` assigns `OBJECT_ENDPOINT = 1`. No
+accepted document joins the three, so even "match a request to a grant of the
+matching kind" is not derivable; it is a decision.
+
+**3. `docs/42` §2 permits both candidate surfaces and chooses neither.** The
+imported name may appear "as a value of its declared opaque type, **a function
+parameter/effect name**, or an argument to an operation that requires that same
+contract". A module reaching an operation through the imported name directly,
+and a module receiving the capability as a parameter of its entry, are both
+inside that sentence.
+
+## Options
+
+### A — the entry function's parameters are the delivery
+
+```tos
+import capability system.ipc.Endpoint as endpoint;
+extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 uses [endpoint];
+
+pub fn main(cap: system.ipc.Endpoint) -> i64 uses [endpoint] {
+    return endpoint_send(cap, 8u64);
+}
+```
+
+The launcher grants per import, as `docs/42` §2 requires. The runtime binds the
+entry's declared parameters, in order, to the grants, and a parameter with no
+grant of the declared type is `CapabilityDenied` at startup.
+
+Costs, and the first is structural. **It needs two correspondences where the gap
+is one.** The missing one is imports↔grants; A adds imports↔parameters on top of
+it, and nothing in any accepted document says a module's import list and its
+entry's parameter list correspond at all. A module could import two capabilities
+and declare one parameter, or declare them in a different order, and no rule
+would be broken — so the runtime would be reading a correspondence the language
+does not assert.
+
+It also puts the authority in the signature. `import capability` then does
+nothing but supply a name for `uses`, and the declaration that actually decides
+what the module holds is `main`'s parameter list — two places declaring one
+fact, which is the drift `docs/45` warns about and ADR-0051 §1 refused to
+introduce for manifests.
+
+And it does not scale down the call chain: a capability used four functions deep
+travels as a parameter through all four, so every intermediate signature carries
+authority it does not use. A supervisor holding four capabilities has an entry of
+arity four and four parameters threaded through its body.
+
+### B — the capability import is the binding, and the imported name is the value
+
+```tos
+import capability system.ipc.Endpoint as endpoint;
+extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 uses [endpoint];
+
+pub fn main() -> i64 uses [endpoint] {
+    return endpoint_send(endpoint, 8u64);
+}
+```
+
+One list, and it is the list `docs/42` §2 already calls the request. The launcher
+grants per import; the runtime binds each import to its grant before the entry
+runs; the imported name is in scope as a value of its opaque type wherever the
+enclosing function declares the matching `uses` effect. `main()` keeps the
+signature it has, so the canonical boot text is unchanged and a module's entry
+does not become part of the launch contract.
+
+Costs: the engine gains a per-run binding of capability imports, and the lowerer
+gains an operand form for an imported name. `tos-ir/v1` already carries
+`CapabilityImport`, so nothing about the closed Stage 2 IR schema changes — but
+the engine's `run_set` grows an argument beside the entry arguments, and the
+verifier gains a check that a module using an imported name declares the
+matching effect (which is `docs/42` §2's rule it already enforces for `extern`
+items, applied to one more site).
+
+### C — an operation that fetches the endowment by index
+
+A thirteenth-class operation returning the *n*th capability the process holds.
+
+Costs: it is naming authority by a number, which is exactly what the
+confused-deputy gate refuses and what `CAPABILITY_V1` §7.6 exists to prevent. It
+also puts the correspondence inside the module — the module would have to know
+which index the launcher used, so the mapping the launcher owns would become a
+constant compiled into the thing it is supposed to constrain. Rejected on the
+same ground as ADR-0056's rejected alternatives, not on cost.
+
+### D — decide nothing yet; write the supervisor first and let it show the shape
+
+Costs: the supervisor is itself a `.tos` module and it must call
+`process_create`, which takes a process capability first (ADR-0056). So D asks
+the blocked thing to demonstrate the shape of its own unblocking. It is not an
+option, it is the gap restated.
+
+## The second half of the decision: how a grant answers a request
+
+Independent of A/B, and both parts are needed before anything can be built.
+
+Three facts decide most of it, and two of them were established by reading the
+implementation rather than by argument.
+
+**Two imports of one interface are legal.** A module declaring
+`import capability system.ipc.Endpoint as input` and
+`... as output` checks clean and verifies. So **the interface path is not a
+unique key**, and any rule that matches on it alone cannot tell a process's two
+endpoints apart — which is not an exotic case, it is the first realistic one.
+
+**The binding is already part of the module's identity.** `tos-ir/v1` carries
+`CapabilityImport { interface, binding, ty }`, and the module digest covers
+*both* the interface and the binding. The name a module bound its request to is
+therefore already verifier-visible, already in the receipt, and already in cache
+identity — it is not a frontend-local convenience, and renaming it is already an
+identity change the system notices.
+
+**`PROCESS_IDENTITY_V1` §7.3 requires a key.** It is an accepted Tier 2
+contract: "A denied capability appears as a **difference between the requested
+and granted sets**, and the process's `CapabilityDenied` startup failure **names
+it**." A set difference needs element identity, and a refusal that names the
+denied request needs something to name it by.
+
+### i — by the name the module bound the request to
+
+The requested set is `{binding → interface}`, read from the verified IR without
+executing it (ADR-0051). The granted set is a subset of it, and each launch-record
+entry says which binding it answers. The difference is what was denied, computed
+rather than inferred, and `CapabilityDenied` names it — which is
+`PROCESS_IDENTITY_V1` §7.3 satisfied by construction rather than approximated.
+
+Bindings are unique inside a module because they are names in scope, so
+`(module, binding)` is a key. `docs/42` §2's restrictions on the imported name —
+not a `const`, not a record field, not a serialized value, not an equality key —
+are restrictions on what the **module** may do with it; the launcher naming a
+request by the module's own declaration of that request is the sentence
+immediately above them: "The process launcher/supervisor, not source text, maps
+the request to a concrete grant."
+
+Costs: a source-level identifier becomes part of the launch contract, so renaming
+`endpoint` to `ep` is a change policy must follow. That cost is smaller than it
+looks, because the rename already changes the module digest and is therefore
+already a different module to every other part of the system.
+
+### ii — by object kind, in the order the imports are declared
+
+The *n*th import is answered by the *n*th grant, refused unless the grant's
+object kind is the kind the import's interface declares.
+
+Costs: the kind check is necessary under **every** option and is not a matching
+rule — the first fact above is that it does not discriminate between two imports
+of one interface. Order as the key makes source order semantically load-bearing,
+which no accepted document says it is, and makes reordering two import lines a
+silent change of which authority each name receives. And to satisfy
+`PROCESS_IDENTITY_V1` §7.3 the launch record must additionally carry the *denied*
+positions as holes, so that the two sets stay alignable — an addition that exists
+only to recover an identity the binding already has.
+
+### iii — an explicit request identifier declared in source
+
+Costs: it needs either new grammar (`docs/39`) or a new IR field (`tos-ir/v1`,
+closed by ADR-0028) — a Level 3 change — and it is redundant with the binding,
+which is already a declared, unique, digest-covered identifier for exactly this
+request.
+
+### iv — `/system/policy/`
+
+Not a rival: policy is **who decides**, not what the arrow is drawn with. A
+policy still has to name the import it grants, by binding, by position or by an
+identifier. ADR-0051 §3 already places it in `/system/policy/` as canonical text,
+and it arrives when there is a supervisor to write it — which needs this decision
+first.
+
+**The kind check, the key and the decider are three axes, not three options.**
+The kind check is required under all of them and needs the path→kind mapping that
+gap 2 names. The key is i, ii or iii. The decider is the launcher's stated
+constant now (`CAPABILITY_V1` §2) and policy later, over whichever key is chosen.
+
+## Recommendation
+
+**B for the surface, i for the key**, with the kind check under both, the
+launcher's stated constant as the decider now and `/system/policy/` as the
+decider later.
+
+B, because the gap is imports↔grants and B closes exactly that gap, while A
+closes it and invents a second one. Because `docs/42` §2 calls the import the
+request, and a design in which the request is not what receives the grant leaves
+`import capability` as decoration. And because authority that travels as a
+parameter through functions that do not use it is authority spread by the
+calling convention rather than by delegation, which is the opposite of what
+`CAPABILITY_V1` §4 makes delegation cost.
+
+i, and the argument is not that §7.3 forces it. **§7.3 forces a stable element
+identity, not a particular one** — an explicit identifier would satisfy it, and
+so would position with enough additional machinery. What decides is that the
+binding *already is* such an identity: it exists, it is unique inside a module,
+and it is covered by the module digest, so choosing anything else means building
+a second identity beside one that is already there and already load-bearing.
+Position needs denial holes added to the launch record to recover what the
+binding has for free, and cannot distinguish two imports of one interface without
+making source order silently decide authority. An explicit identifier needs a
+closed contract reopened to add what is already present.
+
+The correspondence travels in the launch record **explicitly**, because a record
+that says which import an entry answers can be read by a policy layer later
+without a version change, and one that says only where in the list cannot.
+
+**One thing this costs nothing.** `tos-ir/v1` already declares
+`Op::Capability { import: usize, right, operands }`, and the verifier already
+bounds-checks `import` against `capability_imports.len()`. The operand form B
+needs is inside the closed Stage 2 IR schema, so ADR-0028's contract is not
+touched.
+
+If B and i are accepted:
+
+1. `SYSTEM_INTERFACE_V1` §4 gains the object kind each interface's capability
+   type is, which closes gap 2 in the document that owns it and supplies the
+   check every key needs.
+2. The launch record's capability entry gains **the binding it answers**.
+   `LAUNCH_VERSION` becomes 4; a nucleus and an image that disagree do not run
+   together, which is what ADR-0053 established that field for.
+3. The launcher's endowment becomes a set of `(binding, object, rights, scope)`
+   decided from the verified IR's `capability_imports` before the process starts,
+   and named in the audit record as `CAPABILITY_V1` §2 requires.
+4. The engine binds capability imports per run, beside the entry arguments, and
+   the lowerer lowers an imported name to `Op::Capability`. The verifier checks
+   that a function naming an import declares the matching effect — the rule it
+   already enforces for `extern` items, at one more site.
+5. The runtime image implements `System` over `SYSTEM_ABI_V1`, which is the
+   mapping `SYSTEM_INTERFACE_V1` §8 already fixes and which nothing can exercise
+   until this decision lands.
+6. A boot module reaching a real operation on a real endpoint becomes the
+   Stage 3 identity evidence `docs/37` asks for, and the answer to its question —
+   "do textual processes exercise real capability/IPC contracts rather than
+   running as decorative scripts around privileged binary services?" — stops
+   being *no*.
+
+## Evidence required
+
+1. A launcher decides the full capability grant of a process from its verified
+   module image alone, before that process's first instruction runs, and the
+   decision names each request by the binding the module declared.
+2. A module holding two imports of one interface receives two different grants,
+   and each name reaches the object the launcher chose for it — the case that
+   makes the key a key rather than a label.
+3. A module whose request is denied fails at startup with `CapabilityDenied`
+   that **names the denied binding**, and never reaches the call
+   (`SYSTEM_INTERFACE_V1` §10.3, `PROCESS_IDENTITY_V1` §7.3).
+4. A grant whose object kind is not the kind the import's interface declares is
+   refused at startup rather than at the first call.
+5. Reordering two `import capability` lines in a module changes nothing about
+   which grant each name receives.
+6. A `.tos` module performs a real operation on a real endpoint, and the other
+   side of that endpoint observes it — the whole point, and the thing that is
+   impossible today.
+
+## What each option costs to build
+
+| | A — entry parameters | B — capability imports | C — fetch by index | D — defer |
+|---|---|---|---|---|
+| Correspondences that must be invented | **two** | one | one, and it lives in the module | — |
+| `main()`'s signature is part of the launch contract | yes | no | no | — |
+| Canonical boot text changes | yes | no | no | — |
+| Authority travels through uninvolved signatures | yes | no | no | — |
+| `import capability` still means something | as a label for `uses` | as the request | as a label | — |
+| Refused by an accepted document | no | no | `CAPABILITY_V1` §7.6 in substance | it is the gap restated |
+| Stage 4 drivers | one parameter per device authority | one import per device authority | index constants in driver source | — |
+
+And for the key, over the three axes it is easy to conflate:
+
+| | i — binding | ii — order | iii — explicit id | iv — policy |
+|---|---|---|---|---|
+| Is a key at all | yes | only with denial holes | yes | no — it is the decider |
+| Distinguishes two imports of one interface | yes | by source order | yes | over whichever key |
+| `PROCESS_IDENTITY_V1` §7.3 set difference | by construction | needs holes added | by construction | — |
+| Names the denied request | the binding | the position, resolved by the module | the id | — |
+| Already in the artifact and the digest | **yes** | order is, identity is not | no | — |
+| Closed contract touched | none | none | `tos-ir/v1` or `docs/39` | none |
+| Survives a source reorder | yes | **no, silently** | yes | — |
+| A policy can be written against it | yes | fragile | yes | — |
+
+## Boundary
+
+Everything downstream of ADR-0060 waits on this: the supervisor that reads
+`/system/policy/` is a textual module that must call `process_create`, and
+`docs/37`'s Stage 3 identity question cannot be answered *yes* while the only
+thing exercising capability and IPC contracts is the Rust runtime image.
+
+Nothing already built changes under any option. The nucleus, `SYSTEM_ABI_V1`,
+the capability table, the endowment chain and the engine's interface port stand
+as they are; what is decided here is which declaration of a module a grant is
+matched against, and what the launch record must say for that match to be
+checkable rather than assumed.
+
+<!-- END docs/adr/0061-how-an-endowment-binds-to-a-module.md -->
+
+---
+
+<!-- BEGIN docs/adr/0062-arguments-an-operation-cannot-take-in-a-register.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0062: Arguments an operation cannot take in a register
+
+- Status: **Accepted (option A)** — chosen from the accepted documents, under the
+  owner's standing instruction to decide by documentation where the documents
+  decide, and to stop only where they do not
+- Date: 2026-08-20
+- Decision level: 2 — it fixes what an accepted interface schema may declare a
+  parameter to be, and therefore who is allowed to place bytes where the system
+  reads them; it adds no operation, no status, no right and no syntax
+- Project Architect approval: not sought separately; see "Why this is a reading
+  rather than an invention" below
+
+## Why this is a reading rather than an invention
+
+`SYSTEM_INTERFACE_V1` §3 already fixes what an operation's parameters after the
+capability are:
+
+> **The first parameter is the capability**, of the interface's declared type.
+> The remaining parameters are **values**. No parameter is a pointer, because TOS
+> Core V1 has none.
+
+A `string` is a value of TOS Core V1 (`docs/40`; the frontend's own primitive
+list names it beside `u64`). So a schema declaring one declares a value, which is
+what §3 permits, and declares no pointer, which is what §3 forbids. That the
+first five operations happened to use only `u64` is a fact about those five
+operations, not a rule — §3 states the rule and it admits both.
+
+What was genuinely undecided is the **bound**, and `SYSTEM_ABI_V1` §3 decides
+that too: "Arguments are values and handles, never pointers the nucleus
+dereferences without bounds", and `MAX_MODULE_PATH` is that document's own
+example of a length fixed by the contract rather than by a caller. Putting the
+maximum in the schema is applying an existing rule to a new parameter, not
+inventing a rule.
+
+Option B's general form, option C and option D remain undecided and unbuilt: each
+would add something the accepted documents do not already contain — a layout, a
+region contract, or a supervisor that answers `docs/37` with *no*.
+
+## The gap, stated once
+
+`SYSTEM_INTERFACE_V1` §4 says why `process_create` is absent, and the sentence is
+the whole of this decision:
+
+> `process_create` is deliberately absent. It takes a module name and an
+> endowment, which live in the argument region (ADR-0058) — and TOS Core V1 has
+> no way to write into that region, because it has no pointers and this schema
+> admits none.
+
+Every operation the schema declares today takes a capability and, at most, one
+`u64`. That is not a coincidence of what was needed first: it is the largest
+thing the schema knows how to describe. A module that could name a *string* or a
+*list* could reach `process_create`; nothing else about the system is in its way.
+
+**What this blocks is the rest of Stage 3.** ADR-0051 §3 puts supervision policy
+in `/system/policy/` as canonical text, and the thing that reads it is a
+supervisor — a `.tos` module that launches what the policy names, which is
+`process_create` with a module path and an endowment. docs/37's identity question
+is answered for operations that fit a register (`module-operation.sh`,
+`process-control.sh`); the supervisor is where it is answered for the system's
+own structure.
+
+## What the accepted documents already decide
+
+**A module never holds a pointer.** `docs/39` gives TOS Core V1 no pointer type,
+and `SYSTEM_INTERFACE_V1` §3 states it as a property of the schema: "No parameter
+is a pointer, because TOS Core V1 has none." Whatever is decided here cannot
+change that.
+
+**The nucleus never walks an address a process chose.** `SYSTEM_ABI_V1` §3:
+"Arguments are values and handles, never pointers the nucleus dereferences
+without bounds. Where an operation needs a buffer, the buffer is named by a
+handle to a region the process already holds." The argument region is at an
+address the *nucleus* chose and mapped, which is what makes reading it safe.
+
+**The bytes already have a place.** ADR-0058 fixed the argument region and the
+fixed offsets inside it: `CREATE_MODULE`, `CREATE_ENDOWMENT`, `CREATE_SELF_BINDING`.
+Nothing new has to be invented to hold a module path — the question is only who
+is permitted to put one there.
+
+**The host already stands between the module and the ABI.** ADR-0060's engine
+port hands `(interface, operation, arguments)` to a host, and ADR-0061's host is
+the runtime image, which already turns each operation into its `SYSTEM_ABI_V1`
+call. It is already the party that reads a capability handle out of a value and
+puts it in `rdi`. Marshalling is the same act on a longer argument.
+
+**Determinism is already split.** ADR-0060: the order of effects is
+deterministic and the verifier proves it; the values effects return are not. A
+larger argument travelling *out* changes neither half.
+
+## What they do not decide
+
+Whether an accepted schema may declare a parameter that is **not a scalar**, and
+if so, what happens to it between the module's value and the system's read.
+
+`SYSTEM_INTERFACE_V1` §8 says "No parameter transfers ownership" and "No
+operation of this version takes or returns a region", both of which are
+statements about *this* version rather than rules for the next. `docs/42` §5
+requires an accepted schema to define "exact calling/ownership/region/capability
+rules" — which is the checklist this would extend, not a prohibition.
+
+## Options
+
+### A — the schema declares `string`, and the host marshals it
+
+An operation may declare a parameter of type `string`. The module passes a TOS
+Core `string` value; the engine hands it to the host as `Value::Text`; the host
+copies its bytes into the argument region at the offset the ABI fixes and passes
+the length in the register the ABI assigns.
+
+```tos
+extern fn process_create(cap: system.process.Control, path: string) -> i64 uses [control];
+```
+
+(`path`, not `module`: `module` is a keyword of the grammar, so the obvious name
+does not parse. Found by writing the module rather than by reading the grammar.)
+
+The module never names an address. The nucleus reads the region it mapped, at an
+offset it chose, for a length it bounds against a constant of the contract — all
+three unchanged from today. What is new is only that the bytes got there from a
+value rather than from a `set_transferred`-style write by the Rust image.
+
+Costs: the boundary checker's parameter comparison admits whatever a
+`TypeSyntax::Name` resolves to, which `string` already is, so the surface change
+is one entry in a table. The real cost is the rule that has to come with it —
+**a schema declaring a variable-length parameter must declare its bound**, and
+the refusal when a value exceeds it must be the schema's, not the host's
+improvisation. Without that, "how long may a module's argument be" is answered by
+whichever host runs it.
+
+**It reaches `process_create` after all**, which this ADR first said it would
+only half do. The endowment is a list and A admits none — but a `process_create`
+that endows *nothing* is a complete operation, not half of one: a child that can
+do nothing is a real thing for a supervisor to make, and `SYSTEM_ABI_V1` §5
+already takes the endowment count in a register, where zero is a legal value.
+So the schema declares the operation with the parameter it can describe, and
+endowing a child arrives with the list that describes it.
+
+### B — the schema declares a record type, and the host marshals that
+
+The endowment is a list of `(handle, rights, binding)`. A schema could declare a
+record type for one entry and a list parameter of it, and the host would lay them
+out at `CREATE_ENDOWMENT` exactly as the Rust image does today.
+
+Costs: this is the option that actually unblocks `process_create`, and it is much
+larger than A. A schema that declares a record type is declaring a **layout**,
+and `docs/42` §5's list then has to be answered for it: alignment, size,
+ownership, and what happens when a future version adds a field. It also puts a
+type declaration in a schema, so the language's type surface and the schema's
+begin to overlap — which is exactly the coupling ADR-0060 refused when it kept
+`SYSTEM_ABI_V1` out of TOS Core V1.
+
+The narrower form is worth naming separately: a record whose fields are all
+scalars and whose layout is the ABI's, declared by the schema and *never* named
+as a type by the module — the module writes a call with several arguments and the
+host groups them. That form declares no type and admits no layout into the
+language, and it reaches an endowment of a fixed arity.
+
+### C — a region capability, and the module writes through it
+
+`docs/42` §2's real answer: `Region<T>` originating from an operation whose
+interface declares element type, alignment, access, size, DMA domain, lifetime
+and transfer rules. The module holds a region capability and writes into it.
+
+Costs: it is the largest option and the one the accepted documents point at for
+the *general* case, but it is not the smallest thing that unblocks the
+supervisor, and it drags in the region questions `IPC_V1` §9.6 is already blocked
+on — the transfer mode of a region in a message is declared by no accepted
+document. Doing C first means answering the region contract before there is a
+service that needs one, which is the order this project has refused elsewhere.
+
+### D — the supervisor stays a Rust component
+
+Write the supervisor in the runtime image, reading `/system/policy/` and calling
+`process_create` directly, and leave TOS Core unable to launch anything.
+
+Costs: it is docs/37's failure condition restated as a plan. "Textual processes
+exercise real capability contracts rather than running as decorative scripts
+around privileged binary services" is the Stage 3 identity question, and a system
+whose *launcher of everything* is the privileged binary answers it *no* for the
+part that matters most. It is also not cheaper for long: Stage 4's driver
+manifests want the same mechanism.
+
+## Recommendation
+
+**A now, with the bound as part of the decision; then B's narrow form when a
+supervisor exists to need it.** Not C first, and not D.
+
+A, because it is the smallest change that is on the path rather than beside it: a
+variable-length argument travelling out, marshalled by the host that already
+marshals every other argument, with the module still naming no address and the
+nucleus still reading only memory it mapped. Every property the accepted
+documents state about the boundary survives it verbatim.
+
+The bound belongs in this decision rather than in the schema that follows,
+because it is the one part a schema cannot choose freely: `SYSTEM_ABI_V1` §3
+bounds a read by a constant of the contract, and a schema that declared a
+parameter without one would be asking a host to decide how much of a module's
+value the system will look at. The rule proposed: **a schema declaring a
+variable-length parameter declares its maximum, and a value exceeding it is
+refused before the call is made, with the same status an over-long inline payload
+receives.** That makes the refusal the schema's, deterministic, and identical
+across hosts.
+
+B's narrow form — several scalar arguments the host groups into the layout the
+ABI fixes — rather than B's general form, because it reaches `process_create`
+without putting a layout or a type declaration into a schema. A schema that
+declared a record type would be declaring something the language also declares,
+and two declarations of one shape drift.
+
+If A is accepted:
+
+1. `SYSTEM_INTERFACE_V1` gains a section fixing which parameter types a schema
+   may declare, and the bound rule above.
+2. The frontend's mirror of the schema gains the type; the boundary checker
+   compares it as it compares `u64` today.
+3. The host marshals `Value::Text` into the argument region at the offset the ABI
+   fixes, refusing an over-long value before the call.
+4. Nothing about the engine changes: it already carries `Value::Text` and already
+   hands arguments to a host it does not interpret.
+
+## What each option costs to build
+
+| | A — `text` | B — record/list | B narrow — grouped scalars | C — region | D — Rust supervisor |
+|---|---|---|---|---|---|
+| Module names an address | no | no | no | no | — |
+| Schema declares a layout | no | **yes** | no | yes | — |
+| Language and schema type surfaces overlap | no | **yes** | no | partly | — |
+| Reaches `process_create` | half | yes | yes | yes | n/a |
+| Region contract must be settled first | no | no | no | **yes** | no |
+| docs/37's identity question | advanced | advanced | advanced | advanced | **answered no** |
+
+## Boundary
+
+This decides what an operation may *take*, and nothing about what one returns:
+`SYSTEM_INTERFACE_V1` §5 keeps every result an `i64` status, and a second result
+remains a type-surface change no schema makes. It decides nothing about regions —
+`IPC_V1` §9.6 stays blocked on the separate question of what mode a region
+travels in, which no accepted document fixes.
+
+Nothing already built changes under any option. The nucleus, `SYSTEM_ABI_V1`, the
+argument region and its offsets, the engine's port and the binding rule of
+ADR-0061 stand as they are; what is decided here is whether a module may be the
+one whose value ends up in a place the ABI already reads.
+
+<!-- END docs/adr/0062-arguments-an-operation-cannot-take-in-a-register.md -->
+
+---
+
+<!-- BEGIN docs/adr/0063-an-operation-that-requires-two-capabilities.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0063: An operation that requires two capabilities, and the exchange that needs one
+
+- Status: **Accepted (S-A and B)** (Project Architect-approved)
+- Date: 2026-08-20
+- Decision level: 2 — it extends what an accepted interface schema may require of
+  a caller, adds an operation to a closed ABI, and is the first place the schema
+  states a *right* rather than only a type
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-20
+
+## What was checked before anything was proposed
+
+The instruction was to prove the bound unreachable before proposing a way to
+reach it, and not to fit the architecture to a preferred answer. So the bound is
+derived first, and the proposal follows from the derivation rather than the other
+way round.
+
+### The bound, and that it is tight
+
+`docs/35` line 103, restated by `IPC_V1` §8: "one request/reply exchange requires
+no more than four user/kernel boundary crossings excluding scheduler
+preemption".
+
+A crossing is a transition between CPL 3 and CPL 0 through the one edge
+`SYSTEM_ABI_V1` §3 admits. Preemption is excluded and is separately excluded by
+construction: a tick returns through the timer stub, which is neither door.
+
+Four crossings are **forced**, one for each of four facts:
+
+1. the request exists in the client at CPL 3 and must reach the nucleus — the
+   client crosses inward;
+2. the request must reach the server at CPL 3 — the server crosses outward;
+3. the answer is computed by the server at CPL 3 and must reach the nucleus —
+   the server crosses inward;
+4. the answer must reach the client at CPL 3 — the client crosses outward.
+
+These are four distinct events: two per process, one in each direction, and none
+can be merged with another because each pair is separated by work done at the
+other privilege level. So an exchange costs **at least** four, and `docs/35`
+allows exactly four. **The bound is tight**: a conforming implementation must
+hit the minimum with no slack anywhere.
+
+### What this system costs, counted
+
+Measured, not estimated (`IPC_V1` §9.7, and the balanced counter whose invariant
+the request/reply gate asserts): one exchange costs **six**. In steady state the
+server performs two operations and each costs a crossing pair:
+
+| | crossing |
+|---|---|
+| `endpoint_receive` returns with the request | out |
+| `endpoint_reply` is entered with the answer | in |
+| `endpoint_reply` returns | **out — surplus** |
+| `endpoint_receive` is entered to wait again | **in — surplus** |
+
+plus the client's `endpoint_call`, one in and one out. Six.
+
+The two surplus crossings are identified exactly: the *return* of
+`endpoint_reply` and the *entry* of the next `endpoint_receive`. Nothing happens
+between them. The server leaves CPL 0 having answered and re-enters immediately
+to wait, in the same iteration of the same loop.
+
+### Five ways to remove them without a new operation, and why each fails
+
+**(a) A flag on `endpoint_reply` meaning "and then wait".** `SYSTEM_ABI_V1` §6
+already gives blocking operations a flag register, so the mechanism exists. It
+fails on authority, not on mechanism: the operation would have to wait on an
+*endpoint*, and `endpoint_reply`'s only capability is the reply capability. A
+reply capability names the call and the caller waiting for it (`IPC_V1` §4);
+`CAPABILITY_V1` §3 says a capability names *an* object and never a class. To wait
+on an endpoint the operation must be given that endpoint. So (a) still needs a
+second capability passed explicitly — it saves an operation *number*, not the
+extension. It is therefore not an alternative to this decision but a variant of
+it, and it is carried below as option B.
+
+**(b) A non-blocking receive, so the server never waits.** Polling adds
+crossings: every poll is an in and an out, and a poll that finds nothing has
+bought none of the four.
+
+**(c) The client using `endpoint_send` then `endpoint_receive` instead of
+`endpoint_call`.** Four crossings for the client alone, six or more in total.
+`endpoint_call` is already the minimal client.
+
+**(d) Batching — one receive delivering several requests.** `IPC_V1` §3 makes one
+message the unit and §7's queue delivers one per receive, so this is itself a new
+operation. It also meets the letter while missing the point: §8 bounds *an*
+exchange, and a system with one request outstanding still costs six.
+
+**(e) The nucleus answering the server's blocked receive directly.** It already
+does exactly this — a send hands the message to a waiting receiver and answers
+its suspended call rather than making it ask again. That is what removes the
+crossings a polling design would have; it cannot remove these two, because the
+server must run at CPL 3 to compute the answer, so it must leave and come back.
+The only open question is whether coming back is one operation or two.
+
+### Conclusion of the check
+
+Four crossings is reachable **only** if the server's outward and inward crossings
+are the two ends of one operation, and such an operation **must** take two
+capabilities explicitly: the reply it consumes and the endpoint it then waits on.
+Both halves are forced by the accepted documents; neither is a preference.
+
+One half is already decided. `SYSTEM_ABI_V1` §3: "Should an operation ever
+require two capabilities, this contract assigns their positions in §5 order when
+that operation is added." The ABI anticipated this and pre-fixed the rule. What
+is genuinely undecided is the **schema** half.
+
+## The gap, stated once
+
+`SYSTEM_INTERFACE_V1` §2 gives an interface "a path, a capability type, and a
+finite set of operations", and §3 says "The first parameter is the capability, of
+the interface's declared type. The remaining parameters are values."
+
+An operation requiring a `system.ipc.Reply` **and** a `system.ipc.Endpoint` has
+no home in that model: it belongs to one interface, and its second requirement is
+not a value.
+
+A second thing is missing with it. `docs/42` §2, quoted by §3 of the schema
+itself, requires that "the capability type, **requested operation/right**,
+resource range, and the enclosing `uses` effect all match a declared interface
+contract". The schema declares the type and the operation; it has never declared
+the **right**. Today the right is checked only by the nucleus at `resolve`, so a
+module's declaration and the authority it actually needs are related by nothing a
+reader or a verifier can see. With one capability per operation that was a
+latent gap; with two it becomes the difference between "reply here and wait
+there" and "reply here and wait wherever the second handle happens to point".
+
+## What must not be done about it
+
+**Deriving the endpoint from the reply capability.** A reply names one call. An
+endpoint is a different object with different rights and a different lifetime.
+Manufacturing one from the other is the operation `CAPABILITY_V1` §2 says does
+not exist: "No operation of `SYSTEM_ABI_V1` produces a capability."
+
+**Merging the two into one object or one grant.** A capability that meant "may
+answer this call *and* may receive on that endpoint" is a class, not an object,
+and `CAPABILITY_V1` §3 rules that out in one line: "never a class of objects,
+never 'all of them'". It would also make the two rights inseparable, so a
+supervisor could not hand out one without the other — the attenuation
+`CAPABILITY_V1` §4 exists to make possible.
+
+**Moving request/reply into the nucleus.** `IPC_V1` §1 puts "request/reply,
+streams, pub/sub and discovery in textual libraries and services above" the
+primitives. The operation proposed here is a transport primitive — deliver this
+answer, then wait for the next message — and carries no protocol: it does not
+correlate requests, does not name a session, and does not know that the message
+it waits for has anything to do with the answer it just delivered.
+
+## Options for the schema half
+
+### S-A — an operation may declare further capability parameters, each with its own interface and right
+
+```tos
+import capability system.ipc.Reply    as answer;
+import capability system.ipc.Endpoint as inbox;
+
+extern fn endpoint_reply_receive(
+    reply: system.ipc.Reply,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [answer, inbox];
+```
+
+The operation still *belongs* to one interface — the one its first capability
+names, which is what `uses` and the instruction's interface path record. Each
+further capability parameter declares its own interface and the right it must
+carry, and the module supplies each from its own `import capability` binding
+(ADR-0061). The verifier proves, for every capability parameter, that the binding
+named is an import of the declared interface, and that the function's effects
+admit it.
+
+Costs: the schema gains a per-parameter interface and right; `Op::Capability`
+carries one import index and would need the others; and the verifier's check
+becomes a check per capability rather than per instruction. It is the largest
+change, and it is the only one that leaves both capabilities separate,
+separately attenuable, and separately checkable — which is the property the
+instruction asked for by name.
+
+### S-B — a compound interface whose capability type carries both rights
+
+One `system.ipc.Server` capability meaning "answer and receive".
+
+Costs: refused above and refused by `CAPABILITY_V1` §3. Recorded so that the
+refusal is on the record rather than assumed.
+
+### S-C — the operation belongs to no interface
+
+A schema-level operation, outside any interface.
+
+Costs: `docs/42` §2 requires the enclosing `uses` effect to match "a declared
+interface contract", and an operation belonging to none has no effect to match.
+It would also make `Signature.effects` — which ADR-0060 made the artifact's
+statement of which interfaces a module reaches — silent about this one.
+
+## Options for the ABI half
+
+### B — operation 13, `endpoint_reply_receive`
+
+A new number, taking two capabilities, and doing both things atomically.
+
+```
+| 13 | endpoint_reply_receive | reply handle (single use) in rdi;
+                                endpoint handle with `receive` in rsi
+                              | rdx = the answer's length, r10 = flags |
+```
+
+`SYSTEM_ABI_V1` §3's rule for two capabilities is applied as it stands: the
+positions follow §5's order, so the reply — which the operation consumes — is
+first and the endpoint it then waits on is second. The values move after them.
+
+**Atomic means one thing precisely**: the process does not run at CPL 3 between
+the answer being delivered and the wait being entered. There is no instant in
+which it holds a spent reply capability and is not waiting.
+
+Failure modes, and they are the part that needs deciding rather than describing:
+
+- the reply capability does not resolve → refused, **nothing is delivered and no
+  wait is entered**; the operation is a no-op with a status, exactly as a failed
+  send transfers nothing (`IPC_V1` §9.3);
+- the endpoint capability does not resolve or lacks `receive` → refused the same
+  way, **and the reply is not delivered either**, because a half-performed
+  operation would leave the caller answered and the server not waiting, which is
+  the state this operation exists to make impossible;
+- both resolve, the answer is delivered, and the wait is then cancelled
+  (ADR-0059) → `E_CANCELLED`, and **the reply stands**. Cancellation ends a wait;
+  it cannot un-answer a caller that has already been answered, and pretending
+  otherwise would make a delivered message conditional on something that happened
+  afterwards.
+- `IPC_V1` §2's one-receiver rule applies unchanged, and is already enforced
+  where authority is granted rather than where a receive is called.
+
+### C — a flag on `endpoint_reply` meaning "and then wait"
+
+The same semantics under operation 4, with the endpoint in a second capability
+argument that is read only when the flag is set.
+
+Costs: it makes one operation number mean two operations, and makes *which
+capabilities an operation requires* depend on a runtime flag. Every check that
+exists to be static — the schema's declaration, the verifier's proof, the
+conformance test that "every operation in §5 refuses with `E_NO_CAPABILITY` when
+the required capability is absent" — becomes conditional on a bit. It saves one
+number and `SYSTEM_ABI_V1` §7 says numbers are the cheap thing: "assigned once
+and never reused" is a rule about not *recycling* them, not about hoarding them.
+
+### D — leave the bound unmet and record the divergence
+
+Costs: `docs/35`'s number is not decoration; it is the one quantitative Stage 3
+IPC obligation that can be checked without a clock, and it is checkable **now**.
+Leaving it unmet while the counters exist to measure it is choosing to have a
+measured, recorded failure rather than a fixed one.
+
+## Recommendation
+
+**S-A and B.** The schema gains per-parameter capability requirements including
+the right; the ABI gains operation 13.
+
+S-A because it is the only option that keeps the property the instruction named:
+each capability separate, explicitly passed, with its own interface, binding and
+right, and checkable by the verifier. S-B merges authority the system is built to
+keep separable; S-C removes the very thing that makes an artifact say which
+interfaces it reaches.
+
+B over C because a flag that changes which capabilities an operation requires
+turns a static check into a dynamic one, and every existing conformance test of
+this ABI is written against the static form. B over D because the bound is
+checkable today with counters that already exist.
+
+**Declaring the right in the schema is not incidental to this decision.** It is
+`docs/42` §2's "requested operation/right" arriving where the contract already
+said it belonged, and it is what makes "an endpoint with `receive`" a thing the
+verifier can check rather than a thing the nucleus discovers.
+
+If S-A and B are accepted:
+
+1. `SYSTEM_INTERFACE_V1` §4.1 gains capability parameters: each declares an
+   interface path and a required right, and the first remains the operation's
+   own interface.
+2. Every operation's existing capability requirement is restated as a declared
+   right — `endpoint_send` requires `send`, `endpoint_receive` requires
+   `receive`, and so on — so the new column is filled for all of them rather
+   than only for the new one.
+3. `SYSTEM_ABI_V1` §5 gains operation 13 with the register assignment above, and
+   §7 records it as a minor version by the same rule operation 12 was.
+4. `tos-ir/v1`'s `Op::Capability` carries the further imports. Its `import` field
+   is one index; the others are operands of the instruction, which is a use of
+   the existing operand list rather than a schema change.
+5. The verifier proves, per capability parameter: the named import exists, its
+   interface is the declared one, and the enclosing function declares it.
+6. The nucleus implements 13, and the runtime image performs it.
+
+## Evidence required
+
+Everything below is an automated gate, and the last three are the ones that
+would fail quietly if the others were written carelessly.
+
+1. **Operation numbers.** The contract's assignment and every implementation's
+   constants agree, and the assignment is `1..n` exactly once each. *(Already
+   built: `check-abi-operations.sh`, written for the ADR-0054 drift this ADR's
+   preparation found.)*
+2. **Multi-capability validation.** The operation refuses when *either*
+   capability is absent, of the wrong type, or lacks its declared right — four
+   refusals, distinguishable by status, not one.
+3. **No substitution.** Passing the endpoint where the reply belongs, and the
+   reply where the endpoint belongs, is refused. Neither position accepts the
+   other's object even when the caller holds both.
+4. **No extra authority.** A process holding `receive` on an endpoint and a
+   reply capability gains nothing it did not hold: it cannot send on the
+   endpoint, and it cannot answer a call it was not given the reply for.
+5. **Single use.** The reply capability is spent by the operation. A second
+   `endpoint_reply_receive` with the same reply handle is refused, and the
+   refusal happens **before** any wait is entered.
+6. **Cancellation.** A process cancelled while waiting in the receive half
+   returns `E_CANCELLED`, and the answer it delivered before waiting is still
+   delivered — checked from the caller's side, which received it.
+7. **Four crossings.** One steady-state exchange costs ≤ 4, counted by the
+   nucleus's own counters over a boot whose only IPC is that exchange, with the
+   balance invariant (`ipc_in == ipc_out`) asserted alongside so the count is an
+   instrument rather than a number.
+8. **No surplus copies and no allocation.** The exchange costs no more payload
+   copies than `IPC_V1` §8 allows, and the nucleus allocates nothing on the path
+   — the second of which is structural (the nucleus has no allocator) and is
+   asserted as such.
+
+## What each option costs to build
+
+| | S-A + B | S-A + C | S-B | D |
+|---|---|---|---|---|
+| Capabilities stay separate and separately attenuable | yes | yes | **no** | — |
+| Schema declares the required right | yes | yes | partly | no |
+| Which capabilities an operation needs is static | yes | **no** | yes | — |
+| Existing conformance tests keep their shape | yes | **no** | yes | yes |
+| ABI numbers spent | one | none | one | none |
+| `docs/35`'s bound met | yes | yes | yes | **no** |
+
+## Boundary
+
+This decides how an operation states that it requires more than one capability,
+and adds one operation that does. It decides nothing about *results*:
+`SYSTEM_INTERFACE_V1` §5 keeps every result an `i64` status, and the received
+message's length continues to arrive where `SYSTEM_ABI_V1` §5 already puts it.
+
+It decides nothing about regions, which remain undeclared by any interface and
+therefore unoriginated (`IPC_V1` §9.6, resolved by reading).
+
+Nothing already built changes: the capability model, the one-receiver rule, the
+liveness rule, the endowment binding of ADR-0061 and the argument marshalling of
+ADR-0062 all stand as they are. What is added is an operation that costs one
+crossing pair where the present pair of operations costs two.
+
+<!-- END docs/adr/0063-an-operation-that-requires-two-capabilities.md -->
+
+---
+
+<!-- BEGIN docs/adr/0064-a-nonconstructible-type-in-value-position.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0064: Which diagnostic a nonconstructible type in value position gets
+
+- Status: **Accepted (option B, with the boundary of §"The decision" below)**
+- Date: 2026-08-21
+- Decision level: 2 — it settles which accepted diagnostic a source form
+  produces; the docs/44 registry, conformance vector R070 and the frontend all
+  depend on the answer, and before this decision the registry said one thing
+  while the frontend and the vector said another
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-21
+- Carried out by: ADR-0039 revision 4 (the operations and the boundary),
+  `docs/44`'s `E1213` row, and conformance vectors R070 and R081. **ADR-0036 is
+  not amended and needs no amendment:** under option B its §1 sentence and its §7
+  evidence item are true as written, which is the dangling reference closing from
+  the other end
+- Relates to: ADR-0036 §1 and §7, ADR-0039 revision 3 §1 and §4
+
+## The decision
+
+Option **B**, and the boundary is part of it rather than a note on it. Not every
+nonconstructible type name in value position is `E1213`:
+
+| form | code | `operation` |
+|---|---|---|
+| a nonconstructible predeclared type applied to arguments — `Event()`, `Task(…)`, `Mutex(…)`, `MutexGuard(…)` | `E1213_NONCONSTRUCTIBLE_TYPE` | `construct` |
+| the same name written alone in value position — `Event` | `E1202_UNKNOWN_VALUE_NAME` | *(none)* |
+| `as` with a nonconstructible type, either side | `E1213_NONCONSTRUCTIBLE_TYPE` | `as` |
+| a capability, in any of those forms | `E1502_FORGED_CAPABILITY` | — |
+
+**Why B.** Revision 3's factual premise — that reaching the diagnostic would
+require widening the grammar — is disproved by the working frontend: the call
+form already exists, and it tells a fabrication attempt from an ordinary
+unresolved value name without any grammar change. And it keeps `docs/40` §3's
+rule symmetric: an opaque runtime handle may not be made out of data, whether the
+handle is authority or a lock.
+
+**What the decision requires of an implementation.** The finding must follow from
+the *position* the name is written in — a callee of a call or construction —
+never from the name alone. A special case keyed on the spelling is what produced
+`operation=construct` for a bare `Event`, and it is excluded by this decision
+rather than merely discouraged.
+
+Everything below is the analysis this decision was taken on, kept as written.
+
+## Why this exists
+
+Two accepted Tier 1 decisions say different things about one source form, and
+the implementation follows neither of them exactly. `docs/38` says a silent
+contradiction between accepted ADRs is invalid and that an agent must not
+resolve one by choosing an implementation, so this decision is written before
+anything is changed.
+
+Nothing here proposes new functionality. It proposes to make three texts and one
+implementation say the same thing, and it records which of them would have to
+move under each option.
+
+## The passages, quoted
+
+**ADR-0036 §1** (Accepted, Project Architect-approved 2026-08-11), on the three
+guard types:
+
+> They are **not constructible from source**. There is no constructor syntax for
+> a guard; a guard value exists only as the result of a lock operation. Writing
+> one as a constructor is the nonconstructible-type error of ADR-0039.
+
+**ADR-0036 §7**, in its conformance-evidence list:
+
+> … and a negative applying a constructor to a guard type.
+
+**ADR-0039 revision 3 §1** (Accepted, Project Architect-approved 2026-08-11),
+listing the operations `E1213_NONCONSTRUCTIBLE_TYPE` covers:
+
+> - an `as` conversion whose target type is one of the nonconstructible types;
+> - an `as` conversion whose operand type is one of them.
+>
+> That is the whole list, and it is short for a reason. A predeclared type is not
+> an expression primary or callee in V1, so `Event()`, `Task(1i32)` and
+> `Mutex(1i32)` are not fabrication attempts this code has to catch — they are
+> names that resolve to nothing in value position, and the frontend already
+> reports each as `E1202_UNKNOWN_VALUE_NAME`. Verified against the reference
+> frontend, not assumed.
+
+**ADR-0039 revision 3 §4**:
+
+> A vector for `Event()` is deliberately absent: R-vectors record the code a form
+> actually produces, and that form produces `E1202_UNKNOWN_VALUE_NAME`.
+
+**`docs/44` diagnostic registry** (Tier 2), the `E1213` row:
+
+> … `TaskResult<T>` is not among them: `Completed` and `Cancelled` build one. A
+> predeclared type in value position is `E1202`, not this (ADR-0039)
+
+**`docs/44` diagnostic registry**, the `E1502` row — the same rule's other half:
+
+> a capability interface is constructed or cast into existence rather than
+> received through its declared import; the `interface` field names it and
+> `operation` says which
+
+**Conformance expectation R070**:
+
+> | R070 | `reject/forged-guard.tos` | Bootstrap | `E1213_NONCONSTRUCTIBLE_TYPE` |
+> ADR-0036/0037 negative |
+
+## What the frontend actually does
+
+Measured against the reference frontend at `00664f8`, whose frontend crates are
+byte-identical to `850f1b3`. Checker output for a `bootstrap` module body:
+
+| source | code | fields |
+|---|---|---|
+| `let e = Event();` | `E1213_NONCONSTRUCTIBLE_TYPE` | `type=Event`, `operation=construct` |
+| `let t = Task(1i32);` | `E1213_NONCONSTRUCTIBLE_TYPE` | `type=Task`, `operation=construct` |
+| `let m = Mutex(1i32);` | `E1213_NONCONSTRUCTIBLE_TYPE` | `type=Mutex`, `operation=construct` |
+| `let g = MutexGuard(0i32);` | `E1213_NONCONSTRUCTIBLE_TYPE` | `type=MutexGuard`, `operation=construct` |
+| `let e = Event;` | `E1213_NONCONSTRUCTIBLE_TYPE` | `type=Event`, `operation=construct` |
+| `let n = Nowhere(0i32);` | `E1202_UNKNOWN_VALUE_NAME` | `name=Nowhere` |
+| `let x = 1i32 as Task<i32>;` | `E1213_NONCONSTRUCTIBLE_TYPE` | `operation=as`, `from=i32`, `to=Task<i32>` |
+
+Three facts follow, and the third is not in either ADR.
+
+1. The three forms ADR-0039 revision 3 states produce `E1202` produce `E1213`.
+2. `MutexGuard(0i32)` produces `E1213`, which is what ADR-0036 §1 asks for and
+   what R070 records.
+3. **A bare `Event` in value position, where nothing is constructed at all, also
+   produces `operation=construct`.** No accepted text asks for that, and the
+   field is inaccurate on its face: nothing was applied to anything.
+
+The finding is produced by `Resolver::resolve` in the name-resolution slice, not
+by the type slice.
+
+## How the texts came apart
+
+- `19d784a` proposed ADR-0036 through ADR-0039. ADR-0039 revision 2 covered
+  constructor and aggregate forms, so ADR-0036 §1's cross-reference was accurate
+  when it was written.
+- `b3832fe` accepted ADR-0036 **as written** and, in the same commit, revised
+  ADR-0039 to revision 3, removing exactly the forms ADR-0036 §1 points at. The
+  cross-reference became dangling at that instant, and nothing said so.
+- `98533e9` added the conformance vectors both ADRs require, including R070
+  recording `E1213` for `forged-guard.tos` — ADR-0036 §7's evidence item, written
+  against ADR-0036 §1's reading.
+- `b16cc6c` changed `Resolver::resolve`. Its own message records the change and
+  its reasoning: *"Implementing this exposed a gap in ADR-0039's landing: a
+  nonconstructible type applied as a constructor was reported as
+  `E1202_UNKNOWN_VALUE_NAME` … It is `E1213` with `operation=construct`."* That
+  is not a gap in a landing. It is the sentence revision 3 decided, reversed in
+  code without a decision — and the premise revision 3 was accepted on
+  ("verified against the reference frontend") stopped being true afterwards.
+
+## Why the hierarchy does not settle this by itself
+
+`docs/38` Tier 1 holds accepted ADRs. ADR-0036 and ADR-0039 revision 3 are both
+accepted, carry the same date and the same approval, were accepted in the same
+commit, and neither supersedes the other. The tier rule therefore names no
+winner; what it says instead is that **"silent contradiction is invalid"**, and
+the conflict protocol requires stopping at the boundary and either correcting the
+lower-authority document or explicitly superseding the higher decision.
+
+`docs/44` is Tier 2. Its `E1213` row agrees with ADR-0039 revision 3, and a Tier
+2 document must conform to Tier 1 — but a Tier 2 document cannot settle which of
+two Tier 1 texts it should be conforming to.
+
+One asymmetry does narrow the reading without deciding it, and it belongs on the
+record. ADR-0036's own decision-level line says it "adds type constructors and
+**one** diagnostic code" — and that code is `E1402_INVALID_GUARD_LIFETIME`.
+ADR-0036 therefore does not allocate `E1213` or extend its operation set; §1
+*refers* to whatever ADR-0039 provides. Under that reading the two decisions do
+not conflict at all: ADR-0036 asserts the fact (a guard may not be constructed)
+and delegates the code, and the delegate's accepted revision says `E1202`. That
+reading is available, it is coherent, and `docs/38` still does not permit an
+agent to adopt it unilaterally — which is why it is an option below rather than a
+conclusion here.
+
+## What must not be done
+
+**Leaving it as it is.** The frontend and R070 say one thing; the registry that
+describes the frontend, and the ADR that allocated the code, say another. An
+implementation that answers a form differently from the published registry makes
+the registry advisory, and `docs/44` is the document an alternate implementation
+is measured against.
+
+**Deciding it in code.** `docs/38`: "Agents must not resolve conflicts by
+choosing the easiest implementation." Either answer is a Level 2 act because
+conformance evidence depends on it.
+
+## Options
+
+### A — the delegation reading: a nonconstructible type in value position is `E1202`
+
+ADR-0039 revision 3 stands as accepted. `Resolver::resolve` stops reporting
+`E1213`; the form is `E1202_UNKNOWN_VALUE_NAME`, which is exactly what the
+registry's `E1202` row describes ("a value name … resolves to no predeclared
+value, module item, parameter or in-scope binding"). R070 keeps its vector — it
+is ADR-0036 §7's required evidence and remains so — with the recorded code
+corrected to `E1202`, which is what ADR-0039 §4's own rule for R-vectors demands.
+ADR-0036 gains a revision 4 correcting §1's dangling sentence and §7's evidence
+item to name the code the form actually produces. `docs/44` does not move: it
+already says this.
+
+Costs: `MutexGuard(0i32)` is reported as an unknown value name, which points a
+reader towards a declaration that must never exist — the objection `b16cc6c`
+raised, and it is a real one about diagnostic quality. An accepted conformance
+expectation changes its recorded code, which is a change to accepted evidence
+even though it is a correction towards Tier 1.
+
+That cost is smaller than it looks, and the reason belongs in the option rather
+than in the recommendation. **The code is the contract; the message is not.**
+`docs/44` fixes what `E1202` means and what fields it carries, and nothing in any
+accepted document fixes the human-readable text. A frontend reporting `E1202` for
+a predeclared type may say so — that `MutexGuard` is a type, that V1 has no
+constructor for one, and that a guard comes from `lock()` — without changing the
+code an alternate implementation is measured against. The reader's problem is
+answerable inside A; the machine-facing disagreement is not answerable inside the
+status quo.
+
+### B — ADR-0039 revision 4: the value-position form rejoins `E1213`
+
+`E1213` covers a third operation: a nonconstructible type name in value
+position. The implementation and R070 stay as they are. `docs/44`'s `E1213` row
+loses its final sentence and gains the operation. ADR-0036 §1 becomes accurate as
+written.
+
+This option carries one fact revision 3 did not have. Revision 3 rejected these
+forms because "promising `E1213` for those forms would mean widening the grammar
+to let them through to the type stage purely so a diagnostic could fire".
+**That premise is false for a resolution-stage implementation**, and the running
+frontend is the proof: `Resolver::resolve` produces the finding with no grammar
+change whatever, because the callee name is resolved before any type exists. The
+rejected alternative in revision 3's own list — "widen the grammar so `Event()`
+reaches the type stage" — is not the only way to reach the diagnostic, and it is
+not the way the implementation took.
+
+It also restores a symmetry the registry currently breaks: `docs/40` §3 pairs
+`E1502_FORGED_CAPABILITY` with "the corresponding nonconstructible-type error"
+as two halves of one rule, and the capability half already covers construction
+(`docs/44`: "constructed or cast into existence … `operation` says which"). Today
+`system.time.Clock()` is a forgery with `operation=construct` and `Mutex(1i32)`
+is an unknown name.
+
+Costs: it reverses an explicit decision taken with reasons, and amends a Tier 2
+registry row. It must also fix what the implementation gets wrong today: a bare
+`Event` is not a construction, so either the operation field distinguishes the
+call form from the bare-name form, or the bare-name form stays `E1202`.
+
+### C — a third code for the form
+
+`E1213` keeps revision 3's two `as` operations, `E1202` keeps "no such name", and
+a new code — `E1214_PREDECLARED_TYPE_IN_VALUE_POSITION` — names the form
+precisely: this is a type, it is not a value, and no declaration will ever make
+it one.
+
+The number is free, and that was checked rather than assumed: `E1214` appears in
+ADR-0037 §5 as `E1214_INVALID_SHARE`, which is option 1 of that ADR's list and
+was **not** the option accepted — §5 allocates `E1215_ARGUMENT_TYPE_MISMATCH`
+instead. A number named in a rejected alternative is unassigned.
+
+Costs: one more code fixed for TOS Core 1.0, one more registry row, and a new
+precedence edge against `E1202` and `E1502`. It is the most accurate and the most
+expensive in contract surface, and V1's diagnostic surface is fixed at 1.0.
+
+## What each option costs to move
+
+| | A | B | C |
+|---|---|---|---|
+| Frontend behaviour changes | yes | no | yes |
+| R070's recorded code changes | yes (`E1202`) | no | yes (`E1214`) |
+| `docs/44` registry changes | no | yes | yes |
+| An accepted ADR is revised | ADR-0036 §1/§7 (dangling reference) | ADR-0039 (decision reversed) | both, by reference |
+| A code is added to TOS Core 1.0 | no | no | yes |
+| `MutexGuard(0i32)` reads as | an unknown name | a forged handle | a type in value position |
+| Capability/other-opaque symmetry | stays broken | restored | named explicitly |
+
+## Recommendation as proposed — not the decision taken
+
+Kept because a recommendation that is overruled is part of the record, and the
+reasons on both sides were what the choice was made between. The decision is B,
+stated at the top; §"Why B" there records the ground it was taken on.
+
+**A**, and the reason is fidelity rather than taste.
+
+Revision 3 is the later and narrower of the two decisions, it was accepted on a
+stated factual premise about what the frontend does, and `docs/44` — the document
+an alternate implementation is measured against — was written to match it and
+still says so. The change that broke the agreement was made in code, described in
+a commit message as fixing a gap, and never went through a decision. Restoring it
+returns the system to the state the Project Architect actually approved.
+
+The amendment A needs to ADR-0036 is a correction of a reference that its own
+scope line already tells us is a reference: ADR-0036 adds one diagnostic code and
+it is `E1402`. B's amendment is a reversal.
+
+The diagnostic-quality argument is serious, but it is an argument about a
+*message*, and A can answer it without moving a code: the finding stays `E1202`
+and its text says that `MutexGuard` is a type, that V1 has no constructor for
+one, and where a guard actually comes from.
+
+If the Project Architect nevertheless holds that the machine-facing code must
+distinguish a forged handle from a misspelled name — which is a defensible
+position, and the one the capability half of the rule already takes — then **B**
+should be chosen deliberately, with revision 4 recording that a resolution-stage
+implementation needs no grammar widening, and with the bare-name form given an
+`operation` value that is true of it. What should not happen is B by default,
+which is where the repository is now.
+
+## Evidence, as built
+
+`docs/38`'s conflict protocol asks for a test when the conflict was mechanically
+detectable, and this one was. The gate that should have caught it is named by
+ADR-0039 itself, in its own architecture impact statement: "checker unit tests …
+**for a predeclared type in value position still being `E1202`**". That test was
+required by the accepted decision and never written, which is why `b16cc6c` could
+change the answer without anything turning red.
+
+1. A checker unit test asserting the code and fields the accepted option gives
+   each of `Event()`, `Task(1i32)`, `Mutex(1i32)`, `MutexGuard(0i32)` and a bare
+   `Event` — the five forms, not one, because the drift lives in the difference
+   between them.
+2. A conformance vector for the form, recorded in `EXPECTATIONS.md` with the code
+   the accepted option assigns, so that the corpus an alternate implementation is
+   measured against contains the answer.
+3. A vector on **each** side of the boundary, which is what makes the drift
+   unrepeatable rather than merely corrected. The binding from a form to a code
+   exists and works — that is what a conformance vector is, and the corpus driver
+   holds the frontend to every recorded code. What it cannot do is notice a form
+   that has **no** vector: `check-stage2-language-contract.py` binds codes to
+   stages and checks that cited codes are registered, so a registry sentence
+   naming a code for a form nobody wrote a vector for is prose no gate reads.
+   ADR-0039 §4 excluded that vector deliberately, on the reasoning that the
+   form's answer was settled; the effect was that the one sentence recording the
+   answer became untested, and `b16cc6c` changed the answer with nothing to turn
+   red. That is the structural reason a contradiction between two accepted texts
+   and the implementation passed 58 gates.
+
+   Built: R070 (`reject/forged-guard.tos`, constructor form, `E1213`) and R081
+   (`reject/predeclared-type-in-value-position.tos`, bare name, `E1202`). A
+   frontend that keys the finding on the name instead of the position now fails
+   R081; one that drops the constructor form fails R070. Neither half can move
+   without the corpus saying so.
+
+   Not built, and named so it is not mistaken for built: a lint that reads a
+   registry *condition* and holds the corpus to it. That would generalize beyond
+   this row, and it is a separate decision about how much of the registry's prose
+   is machine-readable.
+
+## Architecture impact statement
+
+- **Change level:** 2. **Invariants affected:** none amended; I-15 is served —
+  one form gets one documented answer instead of three.
+- **Canonical representation:** unchanged under every option. No accepted source
+  becomes valid or invalid; only the code reported for an already-rejected form
+  moves.
+- **Trusted-base impact:** none. **Threat-model impact:** none directly; the form
+  is rejected under every option, and what differs is what the rejection is
+  called.
+- **Source-to-runtime impact:** none. No artifact, digest or runtime behaviour
+  depends on the diagnostic code.
+- **Recovery and rollback impact:** none.
+- **Compatibility profile:** TOS Core 1.0. Under C the diagnostic surface of 1.0
+  gains a code, which is why C is the expensive option.
+- **Stage identity gate:** Stage 2 conformance evidence (docs/37), which is what
+  R070 belongs to.
+- **Performance contract:** none applies.
+- **Dependencies, licence, patent impact:** none.
+- **Tests that enforce the decision:** the three items above.
+
+<!-- END docs/adr/0064-a-nonconstructible-type-in-value-position.md -->
 
 ---
 
