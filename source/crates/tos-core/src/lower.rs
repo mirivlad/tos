@@ -2586,6 +2586,7 @@ impl<'source> Lowerer<'source> {
                 ty,
                 op: Op::Capability {
                     import,
+                    further_imports: Vec::new(),
                     right: operation,
                     operands,
                 },
@@ -2974,10 +2975,16 @@ impl<'source> Lowerer<'source> {
     /// form of `docs/42` §2's rule that a handle's representation appears
     /// nowhere: it cannot leak from a place it never occupies.
     ///
-    /// A first argument that is anything else is refused rather than lowered.
-    /// ADR-0061 decided that authority arrives through a capability import;
-    /// a capability travelling as an ordinary value would be a second way for it
-    /// to arrive, invented here rather than decided.
+    /// A capability argument that is anything else is refused rather than
+    /// lowered. ADR-0061 decided that authority arrives through a capability
+    /// import; a capability travelling as an ordinary value would be a second
+    /// way for it to arrive, invented here rather than decided.
+    ///
+    /// **An operation may require more than one** (ADR-0063), and each is a
+    /// name of its own. They are taken from the front in the order the schema
+    /// declares them; the first becomes the instruction's `import` and the rest
+    /// its `further_imports`, so a reader sees which request each capability
+    /// answers and never a handle.
     fn lower_interface_operation(
         &mut self,
         name: &str,
@@ -2985,23 +2992,38 @@ impl<'source> Lowerer<'source> {
         builder: &mut BodyBuilder,
         at: usize,
     ) -> Result<Operand, Gap> {
-        let Some((capability, values)) = expression.arguments().split_first() else {
+        // How many the schema says this operation takes. The checker has already
+        // refused a declaration that does not match one, so this is the number
+        // the source's arguments were checked against.
+        let required = self
+            .extern_operation(name)
+            .map(|operation| operation.capabilities.len())
+            .unwrap_or(1);
+        let arguments = expression.arguments();
+        if arguments.len() < required {
             return Err(self.gap(
-                "interface operation without a capability",
+                "interface operation without its capabilities",
                 expression.span(),
             ));
-        };
-        let named = capability.value();
-        if named.form() != ExpressionForm::Name {
-            return Err(self.gap(
-                "interface operation on something other than a capability import",
-                named.span(),
-            ));
         }
-        let binding = named.span().text(self.source);
-        let Some(import) = self.capability_import_index.get(binding).copied() else {
-            return Err(self.gap("interface operation on an unimported name", named.span()));
-        };
+        let (capabilities, values) = arguments.split_at(required);
+        let mut imports = Vec::with_capacity(required);
+        for capability in capabilities {
+            let named = capability.value();
+            if named.form() != ExpressionForm::Name {
+                return Err(self.gap(
+                    "interface operation on something other than a capability import",
+                    named.span(),
+                ));
+            }
+            let binding = named.span().text(self.source);
+            let Some(import) = self.capability_import_index.get(binding).copied() else {
+                return Err(self.gap("interface operation on an unimported name", named.span()));
+            };
+            imports.push(import);
+        }
+        let (import, further_imports) = imports.split_first().expect("at least one capability");
+        let (import, further_imports) = (*import, further_imports.to_vec());
         let interface = self.capability_imports[import].clone();
         let mut operands = Vec::new();
         for argument in values {
@@ -3014,6 +3036,7 @@ impl<'source> Lowerer<'source> {
             ty,
             op: Op::Capability {
                 import,
+                further_imports,
                 right: name.to_string(),
                 operands,
             },
@@ -3027,6 +3050,17 @@ impl<'source> Lowerer<'source> {
             unsafe_interface: Some(interface),
         });
         Ok(Operand::Value(value))
+    }
+
+    /// The accepted operation an `extern` item of this name is, if a schema
+    /// declares one.
+    ///
+    /// Read from the schema rather than from the declaration: how many
+    /// capabilities an operation takes is the *interface's* statement, and a
+    /// declaration that disagreed was already refused by the checker.
+    fn extern_operation(&self, name: &str) -> Option<&'static crate::interfaces::Operation> {
+        let interface = self.externs.get(name)?;
+        crate::interfaces::interface(interface)?.operation(name)
     }
 
     fn extern_result_type(&mut self, name: &str) -> Result<TypeId, Gap> {

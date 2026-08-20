@@ -593,11 +593,20 @@ fn write_op(out: &mut Writer, op: &Op) {
         }
         Op::Capability {
             import,
+            further_imports,
             right,
             operands,
         } => {
             out.tag(17);
             out.count(*import);
+            // Every capability the operation requires is in the digest, in
+            // order. An artifact that required a second one would otherwise
+            // hash the same as one that did not, and two modules with different
+            // authority would share an identity.
+            out.count(further_imports.len());
+            for import in further_imports {
+                out.count(*import);
+            }
             out.text(right);
             write_operands(out, operands);
         }

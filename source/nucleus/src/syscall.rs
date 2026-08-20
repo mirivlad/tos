@@ -66,6 +66,11 @@ const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
 /// ADR-0054: self only, takes a status, does not return.
 const PROCESS_EXIT: u64 = 12;
+/// Answer a call and wait for the next message, in one crossing pair
+/// (ADR-0063). The only operation of this ABI version requiring two
+/// capabilities, and `SYSTEM_ABI_V1` §3 assigns their positions in §5 order:
+/// the reply it consumes in `rdi`, the endpoint it then waits on in `rsi`.
+const ENDPOINT_REPLY_RECEIVE: u64 = 13;
 
 /// The one call flag this contract version has.
 ///
@@ -132,6 +137,15 @@ impl Answer {
     /// nucleus's liveness rule, or by anything else that can cancel one.
     pub const fn cancelled() -> Answer {
         Answer::status(E_CANCELLED)
+    }
+
+    /// The status alone, for a caller that has to decide whether to go on.
+    ///
+    /// One place needs this — the two-capability operation, whose second half
+    /// runs only if the first succeeded — and it is a read rather than a second
+    /// copy of the field.
+    const fn status_of(&self) -> i64 {
+        self.status
     }
 
     /// The answer, as the process will see it in `rax` and `rdx`.
@@ -455,6 +469,27 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
                 Ok(_) => Answer::status(E_NO_CAPABILITY),
             }
         }
+        // Two capabilities, resolved **both before either is used**. A
+        // half-performed operation would leave a caller answered and this
+        // process not waiting, which is the state this operation exists to make
+        // impossible (ADR-0063), so nothing is delivered until both are known
+        // good. `IPC_V1` §9.3's rule for a failed send is the same rule.
+        ENDPOINT_REPLY_RECEIVE => {
+            let reply_handle = arguments.first();
+            let endpoint_handle = arguments.second();
+            let asked = match capability::resolve(caller, reply_handle, tos_launch::RIGHT_REPLY) {
+                Err(refused) => return refused.into(),
+                Ok(Object::Reply { caller: asked, .. }) => asked as usize,
+                Ok(_) => return Answer::status(E_NO_CAPABILITY),
+            };
+            let endpoint =
+                match capability::resolve(caller, endpoint_handle, tos_launch::RIGHT_RECEIVE) {
+                    Err(refused) => return refused.into(),
+                    Ok(Object::Endpoint(endpoint)) => endpoint,
+                    Ok(_) => return Answer::status(E_NO_CAPABILITY),
+                };
+            reply_receive(caller, asked, reply_handle, endpoint, frame)
+        }
         REGION_SHARE => refuse(caller, arguments.first(), ALL_RIGHTS),
 
         _ => Answer::status(E_NOT_SUPPORTED),
@@ -594,6 +629,35 @@ fn reply(replier: usize, asked: usize, handle: u64, frame: &mut TrapFrame) -> An
     // nothing is a table that fills up.
     let _ = capability::release(replier, handle);
     Answer::status(OK)
+}
+
+/// Answers a call and waits for the next message, without returning to CPL 3.
+///
+/// The two halves are one operation and the order is what makes it one: the
+/// answer is delivered first, because a delivery that failed must not leave a
+/// wait behind, and the wait is entered second, because a wait entered first
+/// would be a wait this process could be cancelled out of while still holding an
+/// unspent reply.
+///
+/// **Cancellation cannot un-answer.** If the wait is ended by ADR-0059's
+/// liveness rule after the answer was delivered, the caller keeps its answer and
+/// this operation returns `E_CANCELLED` — which is what the caller already
+/// observed as a completed call. Making the delivery conditional on something
+/// that happens afterwards would make a message's arrival depend on the future.
+fn reply_receive(
+    replier: usize,
+    asked: usize,
+    handle: u64,
+    endpoint: u32,
+    frame: &mut TrapFrame,
+) -> Answer {
+    let answer = reply(replier, asked, handle, frame);
+    if answer.status_of() != OK {
+        // Nothing was delivered, so nothing is waited on: the operation refuses
+        // whole rather than performing the half that worked.
+        return answer;
+    }
+    receive(replier, endpoint, frame)
 }
 
 /// Which module a `process_create` names, by path.

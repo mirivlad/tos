@@ -604,8 +604,26 @@ pub enum Op {
         failure_order: Option<MemoryOrder>,
     },
     /// An operation on a declared imported capability.
+    ///
+    /// `import` is the capability the operation is performed *under* — the one
+    /// whose interface the instruction records and whose effect the enclosing
+    /// function declares. `further_imports` are the other capabilities the
+    /// operation requires, in the order its interface declares them
+    /// (`SYSTEM_INTERFACE_V1` §4.1, ADR-0063).
+    ///
+    /// They are import indices and not operands, for the reason there is no
+    /// capability operand anywhere in an artifact: `docs/42` §2 keeps a handle's
+    /// representation out of provenance, and a representation that is never in
+    /// the IR cannot leak from it. What the instruction carries is *which
+    /// request* each capability answers, which is a name the module wrote.
+    ///
+    /// docs/43's operation table already required this instruction to carry
+    /// "effect/right/interface match" and "all semantic operands:
+    /// capability/effect" — several capabilities is that requirement met, not a
+    /// change to what it asks for.
     Capability {
         import: usize,
+        further_imports: Vec<usize>,
         right: String,
         operands: Vec<Operand>,
     },

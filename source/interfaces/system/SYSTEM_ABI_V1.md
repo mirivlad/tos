@@ -59,7 +59,8 @@ is always in the same place: a convention is a property of this edge, not of
 each operation, and an operation that put its handle elsewhere would make the
 dispatcher's first action depend on which operation it was dispatching. Should
 an operation ever require two capabilities, this contract assigns their
-positions in §5 order when that operation is added.
+positions in §5 order when that operation is added. Operation 13 is the first,
+and its row assigns `rdi` and `rsi`; its values then start at `rdx`.
 
 The three self-only operations — `context_yield`, `time_monotonic`,
 `process_exit` — require no capability, and `rdi` carries whatever their own
@@ -131,6 +132,7 @@ are marked and are exactly those a process can only apply to itself.
 | 10 | `context_yield` | *(self only)* | gives up the rest of the quantum |
 | 11 | `time_monotonic` | *(self only)* | reads the monotonic tick |
 | 12 | `process_exit` | *(self only)* | ends the calling process. `rdi` = the status it claims for itself; does not return (ADR-0054) |
+| 13 | `endpoint_reply_receive` | **two**: `rdi` = reply handle (single use), `rsi` = endpoint handle with `receive` | answers the call the reply names, then waits for the next message on the endpoint, without returning to CPL 3 in between. `rdx` = the answer's length, `r10` = flags. The length taken is returned in `rdx`, as for `endpoint_receive` (ADR-0063) |
 
 Operation `0` is not assigned and never will be. A register that was never
 written holds zero, so a zero selector is overwhelmingly likely to be a caller
@@ -195,9 +197,10 @@ about numbers that never states the numbers cannot be conformed to. Neither was 
 new decision: no operation, status, right or guarantee changed by writing them
 down.
 
-Operation 12, `process_exit`, **is** an addition, and it was decided by ADR-0054
-rather than here — this table carries that decision rather than making it. It is
-a minor version of this contract by the rule above: a process built against the
+Operations 12 (`process_exit`, ADR-0054) and 13 (`endpoint_reply_receive`,
+ADR-0063) **are** additions, and both were decided by an ADR rather than here —
+this table carries those decisions rather than making them. Each is a minor
+version of this contract by the rule above: a process built against the
 earlier set calls nothing that has changed meaning, and one built against this
 set that runs on an older nucleus receives `E_NOT_SUPPORTED` for 12 and is not
 terminated for asking.

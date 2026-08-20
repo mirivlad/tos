@@ -61,6 +61,7 @@ const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
 const PROCESS_EXIT: u64 = 12;
+const ENDPOINT_REPLY_RECEIVE: u64 = 13;
 
 /// Statuses, as `SYSTEM_ABI_V1` §4 assigns them. Named here because this image
 /// checks them: a refusal it could not name it could not report.
@@ -549,6 +550,10 @@ fn hold_direction_flag(_report: &mut Report) {}
 /// disagreement the gate catches rather than a call this table improvises.
 /// How an operation's value crosses (`SYSTEM_INTERFACE_V1` §4.1).
 enum Shape {
+    /// Two capabilities and a length: the reply in `rdi`, the endpoint in
+    /// `rsi`, the answer's length in `rdx` (ADR-0063). The only shape of this
+    /// version whose second register is a capability rather than a value.
+    ReplyThenReceive,
     /// No value after the capability.
     Nothing,
     /// One `u64`, in the register `SYSTEM_ABI_V1` §5 assigns the operation.
@@ -595,6 +600,12 @@ const PERFORMED: &[(&str, &str, u64, Shape)] = &[
         "process_create",
         PROCESS_CREATE,
         Shape::ModuleName,
+    ),
+    (
+        "system.ipc.Reply",
+        "endpoint_reply_receive",
+        ENDPOINT_REPLY_RECEIVE,
+        Shape::ReplyThenReceive,
     ),
 ];
 
@@ -694,6 +705,37 @@ impl System for Endowment<'_> {
                 // SAFETY: as above, with the length this call's own declaration
                 // says it takes.
                 unsafe { self::call(*operation, held.get(), *bytes as u64) }.0
+            }
+            Shape::ReplyThenReceive => {
+                // The second capability is an argument like the first, and is
+                // read like the first: the engine carried both without looking
+                // at either, and this is the only place either becomes a number
+                // (ADR-0061, ADR-0063).
+                let Some(Value::Capability(endpoint)) = call.arguments.get(1) else {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        "an operation requiring two capabilities was reached with one",
+                        call.source,
+                    ));
+                };
+                let Some(Value::Int(_, bytes)) = call.arguments.get(2) else {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        "an operation that takes a length was reached without one",
+                        call.source,
+                    ));
+                };
+                if *bytes < 0 {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        "an operation was reached with a negative length",
+                        call.source,
+                    ));
+                }
+                // SAFETY: `SYSTEM_ABI_V1` §5 row 13 — the reply in `rdi`, the
+                // endpoint in `rsi`, the answer's length in `rdx`, flags in
+                // `r10`; both handles were granted to this process.
+                unsafe { call4(*operation, held.get(), endpoint.get(), *bytes as u64, 0) }.0
             }
             Shape::ModuleName => {
                 let Some(Value::Text(name)) = call.arguments.get(1) else {

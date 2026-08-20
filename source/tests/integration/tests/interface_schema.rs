@@ -214,3 +214,130 @@ fn no_accepted_interface_admits_a_region() {
         }
     }
 }
+
+/// A module reaching the two-capability operation, with a body the caller picks.
+///
+/// Two imports, two bindings, two rights — and the call names each by its own
+/// name. That is ADR-0063's whole shape: nothing here derives one capability
+/// from the other, and nothing merges them.
+fn two_capability_module(call: &str) -> String {
+    format!(
+        "module system.test.reach version 1.0 profile full;
+import capability system.ipc.Reply as answer;
+import capability system.ipc.Endpoint as inbox;
+
+resource [
+    fuel: 1024, stack: 4KiB, allocation: 1KiB, tasks: 1, workers: 1,
+    sync: 0, shared: 0B, cleanup: 0, recursion: 4, imports: 2
+]
+
+extern fn endpoint_reply_receive(
+    reply: system.ipc.Reply,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [answer, inbox];
+
+pub fn main() -> i64 uses [answer, inbox] {{
+    return {call};
+}}
+"
+    )
+}
+
+#[test]
+fn an_operation_may_require_two_capabilities_named_separately() {
+    let module = lower(&two_capability_module(
+        "endpoint_reply_receive(answer, inbox, 8u64)",
+    ));
+    let entry = module
+        .functions
+        .iter()
+        .find(|function| function.signature.name == "main")
+        .expect("the entry is in the artifact");
+    let reaching: Vec<_> = entry
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .filter_map(|instruction| match &instruction.op {
+            Op::Capability {
+                import,
+                further_imports,
+                right,
+                ..
+            } => Some((*import, further_imports.clone(), right.clone())),
+            _ => None,
+        })
+        .collect();
+
+    // The first capability is the operation's own interface — the one the
+    // instruction records — and the second is a separate import index. Neither
+    // is an operand: there is no capability anywhere in the artifact.
+    assert_eq!(
+        reaching,
+        vec![(0, vec![1], String::from("endpoint_reply_receive"))]
+    );
+    assert_eq!(module.capability_imports[0].binding, "answer");
+    assert_eq!(module.capability_imports[0].interface, "system.ipc.Reply");
+    assert_eq!(module.capability_imports[1].binding, "inbox");
+    assert_eq!(
+        module.capability_imports[1].interface,
+        "system.ipc.Endpoint"
+    );
+    verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect("an operation naming both its capabilities verifies");
+}
+
+#[test]
+fn substituting_one_capability_for_the_other_is_refused() {
+    // The same two imports, passed the other way round. The checker refuses it
+    // before anything is lowered, because a capability parameter's interface is
+    // declared and `system.ipc.Endpoint` is not `system.ipc.Reply` — which is
+    // what keeps "reply here and wait there" from becoming "wait here and reply
+    // there" by writing the arguments in a different order.
+    let text = two_capability_module("endpoint_reply_receive(inbox, answer, 8u64)");
+    let source = tos_core::SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = tos_core::Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("the module parses");
+    let diagnostics = tos_core::Checker::check(&source, &schema);
+    assert!(
+        diagnostics
+            .iter()
+            .any(|d| d.severity() == tos_core::Severity::Error),
+        "passing the endpoint where the reply belongs was accepted"
+    );
+}
+
+#[test]
+fn one_capability_cannot_stand_in_for_two() {
+    // An artifact naming the same import twice would be one grant doing the work
+    // of two authorities, which is exactly what ADR-0063 forbids: the two are
+    // separate, separately granted and separately attenuable. Damaged here
+    // rather than written, because a frontend that emitted it is the thing the
+    // verifier exists to catch.
+    let mut module = lower(&two_capability_module(
+        "endpoint_reply_receive(answer, inbox, 8u64)",
+    ));
+    for function in &mut module.functions {
+        for block in &mut function.blocks {
+            for instruction in &mut block.instructions {
+                if let Op::Capability {
+                    import,
+                    further_imports,
+                    ..
+                } = &mut instruction.op
+                {
+                    *further_imports = alloc_vec(*import);
+                }
+            }
+        }
+    }
+    let finding = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect_err("one import standing in for two is refused");
+    assert_eq!(finding.code, "V2013_CAPABILITY");
+    assert!(finding.detail.contains("more than once"), "{finding:?}");
+}
+
+fn alloc_vec(value: usize) -> Vec<usize> {
+    vec![value]
+}
