@@ -21,6 +21,15 @@ require_text() {
     grep -Fq "$needle" "$file" || fail "missing '$needle' in ${file#$ROOT/}"
 }
 
+# Same as `require_text`, but by pattern: the inventory's columns are aligned for
+# a reader, and a fixed-string match would bind this contract to that alignment
+# instead of to the declaration.
+require_declared() {
+    local label=$1 function=$2 file=$3
+    grep -Eq "^gate +[a-z]+ +[a-z-]+ +\"$label\" +$function\$" "$file" ||
+        fail "no gate declares '$label' ($function) in ${file#$ROOT/}"
+}
+
 require_emitted() {
     local event=$1
     if ! grep -Fq "$event" "$LOADER" && ! grep -Fq "$event" "$NUCLEUS"; then
@@ -76,10 +85,14 @@ if [ "$(grep -o 'TOS.CAPSULE.OK' <<<"$success" | wc -l)" -ne 2 ]; then
     fail 'success contract must contain two TOS.CAPSULE.OK events'
 fi
 require_text '67) REQUIRE="TOS.BOOT.ENTRY TOS.BOOT.FAILC"' "$HARNESS"
-require_text 'run_gate "QEMU success boot" qemu_success' "$PREFLIGHT"
-require_text 'run_gate "QEMU negative suite" qemu_negative' "$PREFLIGHT"
-require_text 'run_gate "QEMU exception #UD" qemu_exception_ud2' "$PREFLIGHT"
-require_text 'run_gate "QEMU exception #GP" qemu_exception_gp' "$PREFLIGHT"
+# The four boot gates are declared in the inventory (ADR-0065), which is where
+# a gate exists at all. The labels are matched, not the surrounding syntax: what
+# this contract needs is that these gates are run, and the inventory is the one
+# place that can say so.
+require_declared 'QEMU success boot' qemu_success "$PREFLIGHT"
+require_declared 'QEMU negative suite' qemu_negative "$PREFLIGHT"
+require_declared 'QEMU exception #UD' qemu_exception_ud2 "$PREFLIGHT"
+require_declared 'QEMU exception #GP' qemu_exception_gp "$PREFLIGHT"
 
 case "${1-}" in
     '') ;;

@@ -131,3 +131,4 @@ docs/adr/0061-how-an-endowment-binds-to-a-module.md
 docs/adr/0062-arguments-an-operation-cannot-take-in-a-register.md
 docs/adr/0063-an-operation-that-requires-two-capabilities.md
 docs/adr/0064-a-nonconstructible-type-in-value-position.md
+docs/adr/0065-what-a-green-run-means.md

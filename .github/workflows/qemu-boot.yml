@@ -1,14 +1,19 @@
 # SPDX-License-Identifier: CC-BY-SA-4.0
 name: QEMU boot gate
 
-# The Stage 1 boot evidence required by docs/30_COMPLIANCE_AND_RELEASE_GATES.md
-# ("Engineering gate": QEMU suites pass) and docs/37_STAGE_IDENTITY_GATES.md
-# (Stage 1: corruption and identity-mismatch tests fail closed).
+# The `qemu` profile of the gate inventory in `scripts/preflight.sh`: the boot
+# artifacts and every gate that boots them, including the ADR-0026 performance
+# conformance run, whose evidence status is P2 here and P1 anywhere else —
+# ADR-0040 reserves P2 for the reference platform and the harness refuses to
+# emit it elsewhere.
 #
 # Kept separate from Source CI on purpose: a boot failure must read as a boot
 # failure, not as a compile job that went red somewhere near the end. This job
-# runs under TCG - GitHub runners have no KVM - exactly as the harness does
+# runs under TCG — GitHub runners have no KVM — exactly as the harness does
 # locally, so no acceleration-specific behaviour is involved.
+#
+# The job names a profile and never a gate (ADR-0065); the two steps that are
+# not the profile declare themselves environment in YAML.
 
 on:
   pull_request:
@@ -25,10 +30,7 @@ concurrency:
 jobs:
   boot:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-    defaults:
-      run:
-        working-directory: source
+    timeout-minutes: 45
     steps:
       # The capsule identity gate resolves repo-relative paths against HEAD and
       # verifies each source file with `git cat-file blob HEAD:<path>`, so the
@@ -36,14 +38,14 @@ jobs:
       # provides both.
       - uses: actions/checkout@v4
 
-      # A stalled Ubuntu mirror hung this step for the job's whole thirty-minute
-      # budget twice on 2026-08-19, so nothing that followed ran and the failure
-      # said only "cancelled". The bound and the retries are not tuning: apt's
-      # default is to wait indefinitely, and a step that can wait indefinitely
-      # inside a job that cannot is a step that reports a timeout as a mystery.
-      # `timeout-minutes` makes a stall name itself; `Acquire` makes a
-      # unreachable mirror fail in seconds and be tried again.
+      # A stalled Ubuntu mirror hung this step for the job's whole budget twice
+      # on 2026-08-19, so nothing that followed ran and the failure said only
+      # "cancelled". The bound and the retries are not tuning: apt's default is
+      # to wait indefinitely, and a step that can wait indefinitely inside a job
+      # that cannot is a step that reports a timeout as a mystery.
       - name: Firmware and tools
+        env:
+          GATE_PARITY: environment
         timeout-minutes: 10
         run: |
           # apt's own Acquire timeouts do not cover this: the mirror accepts the
@@ -74,119 +76,15 @@ jobs:
           ls -l /usr/share/OVMF/ || true
 
       - name: Toolchain and targets
+        env:
+          GATE_PARITY: environment
+        working-directory: source
         run: |
           rustup target add x86_64-unknown-uefi x86_64-unknown-none
           rustc --version
 
-      - name: Build boot artifacts
-        run: |
-          cargo build --release -p tos-capsule-tool
-          cargo build --release -p tos-uefi-loader --target x86_64-unknown-uefi
-          cargo build --release -p tos-nucleus --target x86_64-unknown-none
-          cargo build --release -p tos-runtime-image --target x86_64-unknown-none
-
-      # Success path: exit 33 (HALT_OK) plus the required boot events in order.
-      # The harness decides; this step just reports its verdict.
-      - name: Boot success gate
-        run: bash host-tools/qemu-test/run.sh --out target/qemu-ci/success --expect 33
-
-      # Every rejected fixture must fail closed in the loader with the rule its
-      # vectors.tsv row declares.
-      - name: Negative boot suite
-        run: bash host-tools/qemu-test/negative-suite.sh target/qemu-ci/negative
-
-      # ADR-0049 section 4: two runnable processes each make progress without
-      # either yielding. The gate builds its own nucleus in a separate target
-      # directory and checks that the production one did not change, so the
-      # artifact the steps above booted is still the artifact this job produced.
-      - name: Scheduler gate
-        run: bash host-tools/qemu-test/scheduler.sh target/qemu-ci/scheduler
-
-      # CAPABILITY_V1 section 7 and IPC_V1 section 9: authority is a handle a
-      # process was given rather than one it can construct, and a message
-      # crosses between two processes that hold one half each of one endpoint.
-      - name: Capabilities and IPC gate
-        run: bash host-tools/qemu-test/capabilities.sh target/qemu-ci/capabilities
-
-      # ADR-0055: authority has a root the launcher put there, and every grant
-      # after it is an attenuation of something the grantor already held. A
-      # process creates a process and ends it, and the nucleus names who did.
-      - name: Process authority gate
-        run: bash host-tools/qemu-test/supervisor.sh target/qemu-ci/supervisor
-
-      # ADR-0059: a wait nothing in the system can satisfy is ended, diagnosed
-      # and reported. The boot this gate runs is expected to FAIL — a system
-      # that stopped says so, which is the whole point of the rule.
-      - name: Blocking and liveness gate
-        run: bash host-tools/qemu-test/blocking.sh target/qemu-ci/blocking
-
-      # IPC_V1 section 4: the right to answer a call is made by the nucleus for
-      # that one call, given to whoever receives the request, and spent by being
-      # used. Nobody is endowed with it.
-      - name: Request and reply gate
-        run: bash host-tools/qemu-test/request-reply.sh target/qemu-ci/request-reply
-
-      # docs/35, restated by IPC_V1 section 8: at most four user/kernel
-      # crossings per request/reply. Measured as a slope over boots whose only
-      # IPC is the exchange, so that the fixed cost of entering and leaving the
-      # server's loop cancels instead of being guessed at (ADR-0063).
-      - name: What one request/reply costs gate
-        run: bash host-tools/qemu-test/exchange-cost.sh target/qemu-ci/exchange-cost
-
-      # CAPABILITY_V1 section 7.6, which docs/37 names as the test that fails
-      # quietly in systems passing the other five: a strong process acting for a
-      # weak one is bounded by what the weak one gave it, not by what it holds.
-      - name: Confused deputy gate
-        run: bash host-tools/qemu-test/deputy.sh target/qemu-ci/deputy
-
-      # IPC_V1 section 2: an endpoint has exactly one receive-rights holder at a
-      # time. The launcher constant this boots asks for two on purpose, because
-      # a rule that is only ever obeyed is a rule nobody has tested.
-      - name: One endpoint has one receiver gate
-        run: bash host-tools/qemu-test/second-receiver.sh target/qemu-ci/second-receiver
-
-      # docs/37's Stage 3 identity question: a TOS Core module, not the Rust
-      # runtime image, asks for a capability by name, is answered, and performs
-      # a real operation on it — and is refused the one its endowment withholds.
-      - name: A module performs an operation gate
-        run: bash host-tools/qemu-test/module-operation.sh target/qemu-ci/module-operation
-
-      # The schema's second interface, whose capability names a process rather
-      # than an endpoint. One module text, two launcher constants differing by
-      # one right: without `terminate` the operation is refused and the module
-      # returns the status, with it the module never returns.
-      - name: A module ends its own process gate
-        run: bash host-tools/qemu-test/process-control.sh target/qemu-ci/process-control
-
-      # The act a supervisor is made of: a TOS Core module names a module as a
-      # value and the system creates a process running it. One name the capsule
-      # carries and one it does not, through the same operation.
-      - name: A module launches a process gate
-        run: bash host-tools/qemu-test/process-launch.sh target/qemu-ci/process-launch
-
-      # docs/37 for the system's own structure: the thing that starts the
-      # services is text, and so is the policy that says which services those
-      # are. Two TOS Core modules, one capsule, one privileged party — the
-      # nucleus that answers `process_create`.
-      - name: A textual supervisor starts services gate
-        run: bash host-tools/qemu-test/supervisor-text.sh target/qemu-ci/supervisor-text
-
-      # An interrupt gate leaves DF as the interrupted context had it, and the
-      # nucleus's handlers are Rust, compiled on the promise that DF is clear.
-      # A process holds it across many ticks so the question is asked on every
-      # boot rather than on one in thirty, which is how often it was asked
-      # before this gate existed.
-      - name: Flags a process was holding gate
-        run: bash host-tools/qemu-test/direction-flag.sh target/qemu-ci/direction-flag
-
-      # ADR-0026 keeps q35/qemu64/TCG as the mandatory functional profile and
-      # makes the exact full-path/crypto p95 ratio its performance gate. This
-      # runner reuses the production boot harness and retains P2 raw evidence.
-      - name: Stage 1 ADR-0026 performance conformance
-        run: >
-          bash host-tools/qemu-test/stage1-performance-conformance.sh
-          --out target/qemu-ci/performance-adr-0026
-          --evidence-status P2
+      - name: Repository gates — qemu profile
+        run: bash scripts/preflight.sh --profile qemu
 
       # Serial logs are the Stage 1 evidence; keep them for a failed run so the
       # failure can be diagnosed without re-running the job.
@@ -196,10 +94,10 @@ jobs:
         with:
           name: qemu-boot-evidence
           path: |
-            source/target/qemu-ci/**/serial.log
-            source/target/qemu-ci/**/events.log
-            source/target/qemu-ci/**/capsule.meta.json
-            source/target/qemu-ci/*.log
-            source/target/qemu-ci/performance-adr-0026/**
+            source/target/preflight-qemu/**/serial.log
+            source/target/preflight-qemu/**/events.log
+            source/target/preflight-qemu/**/capsule.meta.json
+            source/target/preflight-qemu/*.log
+            source/target/preflight-qemu/performance-adr-0026/**
           if-no-files-found: warn
           retention-days: 90
