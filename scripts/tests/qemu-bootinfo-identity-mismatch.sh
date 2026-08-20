@@ -21,14 +21,14 @@ fail() {
 
 bash "$HARNESS" --help | grep -F -- '--loader FILE' >/dev/null \
     || fail "harness does not document --loader FILE"
-rg -Fx 'test-corrupt-bootinfo-identity = []' "$LOADER_MANIFEST" >/dev/null \
+grep -Fqx 'test-corrupt-bootinfo-identity = []' "$LOADER_MANIFEST" \
     || fail "loader feature is missing or carries implicit dependencies"
-if rg -q '^default\s*=.*test-corrupt-bootinfo-identity' "$LOADER_MANIFEST"; then
+if grep -Eq '^default[[:space:]]*=.*test-corrupt-bootinfo-identity' "$LOADER_MANIFEST"; then
     fail "corruption feature is enabled by default"
 fi
-rg -F 'target/test-corrupt-bootinfo' "$MISMATCH" >/dev/null \
+grep -Fq 'target/test-corrupt-bootinfo' "$MISMATCH" \
     || fail "mismatch scenario does not name the isolated target directory"
-rg -F -- '--loader' "$MISMATCH" >/dev/null \
+grep -Fq -- '--loader' "$MISMATCH" \
     || fail "mismatch scenario does not pass an explicit loader"
 
 # Parsing a missing explicit loader must reach the artifact check and name that
