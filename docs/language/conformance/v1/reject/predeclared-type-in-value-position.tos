@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.predeclared_type_in_value_position version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// ADR-0064: a predeclared type written alone constructs nothing. It is a name
+// that resolves to no value, which is what E1202 says — and the vector beside
+// this one (R070) is the same type applied to arguments, which is a
+// construction and E1213. The pair is what keeps the boundary from moving.
+pub fn main() -> unit {
+    let handle = Event;
+}
