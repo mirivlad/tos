@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: CC-BY-SA-4.0
 name: Provenance gates
 
-# The provenance half of docs/30_COMPLIANCE_AND_RELEASE_GATES.md: DCO sign-off
-# and SPDX headers. The scripts existed but nothing ran them, so a commit
-# without a sign-off or a file without a licence header could reach main.
+# The `provenance` profile of the gate inventory in `scripts/preflight.sh`: DCO
+# sign-off, SPDX headers and the provenance of embedded material — the gates
+# that need the full history rather than the tip commit.
+#
+# The job names a profile and never a gate (ADR-0065).
 
 on:
   pull_request:
@@ -18,28 +20,16 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  dco:
+  provenance:
     runs-on: ubuntu-latest
     steps:
-      # Full history: the gate verifies every commit, and a shallow clone would
-      # silently reduce that to the tip commit - a gate that checks less than it
+      # Full history: these gates verify every commit and bind generated
+      # fixtures to their historical source commits. A shallow clone would
+      # silently reduce that to the tip commit — a gate that checks less than it
       # claims is worse than no gate.
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: DCO sign-off
-        run: sh scripts/check-dco.sh
-
-  spdx:
-    runs-on: ubuntu-latest
-    steps:
-      # Capsule-vector provenance binds generated fixtures to their historical
-      # source and generator commits.  The SPDX gate verifies those bindings,
-      # so a shallow checkout would turn valid provenance into a false failure.
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: SPDX licence headers
-        run: sh scripts/check-spdx.sh
+      - name: Repository gates — provenance profile
+        run: bash scripts/preflight.sh --profile provenance

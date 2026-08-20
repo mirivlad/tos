@@ -1,6 +1,14 @@
 # SPDX-License-Identifier: CC-BY-SA-4.0
 name: Documentation integrity
 
+# The `docs` profile of the gate inventory in `scripts/preflight.sh`: the gates
+# that need nothing but text — the generated specification, the source manifest
+# and the release digests, the interface contracts and the diagnostic registry.
+#
+# This job names a **profile** and never a gate (ADR-0065). What is in the
+# profile is decided in one place, and `scripts/check-gate-parity.py` fails if a
+# profile has no job or a job runs a command that is not a profile.
+
 on:
   pull_request:
   push:
@@ -11,21 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Check generated consolidated specification
-        run: python3 tools/build-specification.py --check
-      # Ordering matters: the consolidated specification is part of the release
-      # package, so it must be regenerated (and verified above) before the
-      # package digests are checked.
-      - name: Check generated release manifest and digests
-        run: python3 tools/build-release-manifest.py --check
 
-      # The same script the local preflight runs. This check used to live here
-      # as its own inline copy, and the copy was the problem twice over: it was
-      # the only place the docs/38 release check was enforced, so
-      # `preflight --full` could be green while this job had been failing on
-      # every push since ADR-0061 was accepted; and it classified an ADR by
-      # whether the word "Accepted" appeared anywhere in its status line, which
-      # is not the same question as what its status is. One implementation, two
-      # callers.
-      - name: Validate source manifest and accepted ADR coverage
-        run: python3 scripts/check-specification-manifest.py --root .
+      - name: Repository gates — docs profile
+        run: bash scripts/preflight.sh --profile docs

@@ -79,7 +79,7 @@
 ├── tools/
 │   └── build-specification.py
 └── scripts/
-    └── check-generated-spec.sh
+    └── preflight.sh
 ```
 
 ## Licence defaults by area

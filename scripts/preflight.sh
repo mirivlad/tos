@@ -6,33 +6,72 @@ set -u
 
 ROOT=$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)
 MODE=default
+PROFILE=
+LIST=0
 
-case ${1-} in
-    '') ;;
-    --full) MODE=full ;;
-    -h|--help)
-        cat <<'EOF'
-Usage: ./scripts/preflight.sh [--full]
+usage() {
+    cat <<'EOF'
+Usage: ./scripts/preflight.sh [--full | --profile NAME | --list]
 
-Default: generated docs/release, SPDX, DCO, fmt, tests and clippy.
---full:  also run deterministic fuzzing and QEMU success/negative boot gates.
+  (no option)      every gate of local scope `default`
+  --full           the whole inventory, every profile and both scopes
+  --profile NAME   every gate of that profile, whatever its local scope
+  --list           print the inventory and run nothing
+
+The inventory below is the single declaration of what a gate is: its profile,
+its local scope, its label and the function that proves it. `--list` is the only
+source of that composition, and CI names **profiles** rather than gates so that
+no second list of gates can exist to drift from this one (ADR-0065).
+
+  profile  the environment class a gate needs, and the unit a CI job runs:
+           docs (text only), provenance (full git history), source (the Rust
+           toolchain), qemu (firmware and an emulator), selftest (fixtures —
+           these gates test the gates rather than the repository).
+  scope    `default` runs in a bare preflight; `full-only` needs --full.
 
 Every gate runs even if an earlier gate fails. The final status is PASS only
 when every selected authoritative command succeeds.
 EOF
-        exit 0 ;;
-    *)
-        echo "unknown option: $1" >&2
-        echo "usage: ./scripts/preflight.sh [--full]" >&2
-        exit 2 ;;
-esac
-if [ "$#" -gt 1 ]; then
-    echo "usage: ./scripts/preflight.sh [--full]" >&2
-    exit 2
-fi
+}
+
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --full) MODE=full; shift ;;
+        --list) LIST=1; shift ;;
+        --profile)
+            [ "$#" -ge 2 ] || { echo "--profile needs a name" >&2; exit 2; }
+            MODE=profile; PROFILE=$2; shift 2 ;;
+        -h|--help) usage; exit 0 ;;
+        *)
+            echo "unknown option: $1" >&2
+            usage >&2
+            exit 2 ;;
+    esac
+done
 
 failures=0
 selected=0
+
+# One line of the inventory: a profile, a local scope, a label and the function
+# that proves it. Declaring and selecting are the same act on purpose — a gate
+# that is declared is a gate that can be run, and there is nowhere to declare one
+# that nothing runs.
+gate() {
+    gate_profile=$1
+    gate_scope=$2
+    gate_label=$3
+    gate_function=$4
+    if [ "$LIST" -eq 1 ]; then
+        printf '%s\t%s\t%s\n' "$gate_profile" "$gate_scope" "$gate_label"
+        return 0
+    fi
+    case $MODE in
+        profile) [ "$gate_profile" = "$PROFILE" ] || return 0 ;;
+        default) [ "$gate_scope" = default ] || return 0 ;;
+        full) ;;
+    esac
+    run_gate "$gate_label" "$gate_function"
+}
 
 run_gate() {
     label=$1
@@ -70,9 +109,10 @@ boot_event_contract() {
 exception_foundation() {
     bash "$ROOT/scripts/tests/check-nucleus-exception-foundation.sh"
 }
+# The repository claim: every unsafe operation in the trusted base carries a
+# local rationale.
 unsafe_safety() {
-    python3 "$ROOT/scripts/check-unsafe-safety.py" --root "$ROOT" || return
-    bash "$ROOT/scripts/tests/check-unsafe-safety.sh"
+    python3 "$ROOT/scripts/check-unsafe-safety.py" --root "$ROOT"
 }
 capsule_provenance() {
     bash "$ROOT/scripts/tests/check-capsule-provenance.sh"
@@ -251,68 +291,132 @@ qemu_direction_flag() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/direction-flag.sh \
         target/preflight-qemu/direction-flag)
 }
+# ADR-0026's mandatory functional profile and its p95 ratio, on the boot harness
+# this repository ships. One gate, and the *evidence status* is the one thing
+# about it that is environment-specific: ADR-0040 reserves P2 for the reference
+# platform, and the script refuses to emit it anywhere else. The claim measured
+# is the same either way.
+qemu_performance_conformance() {
+    conformance_status=P1
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then
+        conformance_status=P2
+    fi
+    (cd "$ROOT/source" && bash host-tools/qemu-test/stage1-performance-conformance.sh \
+        --out target/preflight-qemu/performance-adr-0026 \
+        --evidence-status "$conformance_status")
+}
+qemu_bootinfo_identity_mismatch() {
+    bash "$ROOT/scripts/tests/qemu-bootinfo-identity-mismatch.sh"
+}
 
-run_gate "generated specification" specification
-run_gate "specification source manifest" specification_manifest
-run_gate "interface-contract authority" interface_contract_authority
-run_gate "accepted interface schema" interface_schema
-run_gate "system ABI operation numbers" abi_operations
-run_gate "Boot ABI event contract" boot_event_contract
-run_gate "nucleus exception foundation" exception_foundation
-run_gate "unsafe-code safety evidence" unsafe_safety
-run_gate "capsule provenance sidecar" capsule_provenance
-run_gate "embedded artwork provenance" embedded_artwork_provenance
-run_gate "run-tos launcher" run_tos_launcher
-run_gate "interactive QEMU mode" qemu_interactive_mode
-run_gate "QEMU event timestamp capture" qemu_event_capture
-run_gate "timed QEMU harness" qemu_timed_harness
-run_gate "Stage 1 performance workload" stage1_performance_workload
-run_gate "Stage 1 native validation harness" stage1_native_validation_harness
-run_gate "Stage 2 language-contract consistency" stage2_language_contract
-run_gate "freestanding runtime source" freestanding_runtime_source
-run_gate "freestanding runtime build" build_freestanding_runtime
-run_gate "release manifest and SHA256SUMS" release_manifest
-run_gate "SPDX licence inventory" spdx
-run_gate "DCO sign-off" dco
-run_gate "cargo fmt" fmt
-run_gate "cargo test" tests
-run_gate "clippy host" clippy_host
-run_gate "clippy UEFI loader" clippy_uefi
-run_gate "clippy nucleus" clippy_nucleus
+# --- gates that test the gates -------------------------------------------------
+# These prove nothing about the repository. Each one runs a checker or a harness
+# against a fixture and asserts that it still detects what it is for, which is a
+# different claim from the one the checker makes and is kept in its own profile
+# so the two are never read as one (ADR-0065).
+selftest_unsafe_safety() {
+    bash "$ROOT/scripts/tests/check-unsafe-safety.sh"
+}
+selftest_capsule_format_alignment() {
+    bash "$ROOT/scripts/tests/check-capsule-format-alignment.sh"
+}
+selftest_capsule_vector_provenance() {
+    bash "$ROOT/scripts/tests/check-capsule-vector-provenance.sh"
+}
+selftest_spdx_assembly() { bash "$ROOT/scripts/tests/check-spdx-assembly.sh"; }
+selftest_spdx_assets() { sh "$ROOT/scripts/tests/check-spdx-assets.sh"; }
+selftest_spdx_json() { sh "$ROOT/scripts/tests/check-spdx-json.sh"; }
+selftest_gate_parity() {
+    bash "$ROOT/scripts/tests/check-gate-parity.sh"
+}
 
-if [ "$MODE" = full ]; then
-    run_gate "capsule parser fuzz" fuzz
-    run_gate "build capsule tool" build_capsule_tool
-    run_gate "build UEFI loader" build_uefi
-    run_gate "build nucleus" build_nucleus
-    run_gate "build runtime image" build_runtime_image
-    run_gate "QEMU success boot" qemu_success
-    run_gate "QEMU negative suite" qemu_negative
-    run_gate "QEMU Stage 2 runtime path" qemu_stage2_runtime
-    run_gate "QEMU boot without a framebuffer" qemu_no_framebuffer
-    run_gate "QEMU multi-module capsule" qemu_module_set
-    run_gate "QEMU boot-module failure code" qemu_boot_module_failure
-    run_gate "QEMU capsule size limit" qemu_capsule_size_limit
-    run_gate "QEMU exception #UD" qemu_exception_ud2
-    run_gate "QEMU exception #GP" qemu_exception_gp
-    run_gate "QEMU unmapped page faults" qemu_paging_unmapped
-    run_gate "QEMU nucleus text is read-only" qemu_paging_readonly_text
-    run_gate "QEMU system ABI at CPL 3" qemu_process_abi
-    run_gate "QEMU privileged instruction at CPL 3" qemu_process_privileged
-    run_gate "QEMU process cannot write nucleus memory" qemu_process_nucleus_memory
-    run_gate "QEMU two processes are scheduled" qemu_scheduler
-    run_gate "QEMU capabilities and IPC" qemu_capabilities
-    run_gate "QEMU process authority" qemu_supervisor
-    run_gate "QEMU blocking and the liveness rule" qemu_blocking
-    run_gate "QEMU request and reply" qemu_request_reply
-    run_gate "QEMU what one request/reply costs" qemu_exchange_cost
-    run_gate "QEMU confused deputy" qemu_deputy
-    run_gate "QEMU one endpoint has one receiver" qemu_second_receiver
-    run_gate "QEMU a module performs an operation" qemu_module_operation
-    run_gate "QEMU a module ends its own process" qemu_process_control
-    run_gate "QEMU a module launches a process" qemu_process_launch
-    run_gate "QEMU a textual supervisor starts services" qemu_supervisor_text
-    run_gate "QEMU flags a process was holding" qemu_direction_flag
+# The parity between this inventory and what CI runs (ADR-0065). It reads the
+# inventory from `--list` and the workflows structurally; it is a gate like any
+# other, and its own regression test is in the selftest profile beside it.
+gate_parity() {
+    python3 "$ROOT/scripts/check-gate-parity.py" --root "$ROOT"
+}
+
+# --- the inventory ------------------------------------------------------------
+# Declared once, here. `--list` prints it; `--profile` selects by the first
+# column; a bare run selects by the second. CI names a profile and never a gate.
+
+gate docs       default   "generated specification"                    specification
+gate docs       default   "specification source manifest"              specification_manifest
+gate docs       default   "release manifest and SHA256SUMS"            release_manifest
+gate docs       default   "interface-contract authority"               interface_contract_authority
+gate docs       default   "accepted interface schema"                  interface_schema
+gate docs       default   "system ABI operation numbers"               abi_operations
+gate docs       default   "Boot ABI event contract"                    boot_event_contract
+gate docs       default   "nucleus exception foundation"               exception_foundation
+gate docs       default   "Stage 2 language-contract consistency"      stage2_language_contract
+gate docs       default   "CI and preflight prove the same gates"      gate_parity
+
+gate provenance default   "SPDX licence inventory"                     spdx
+gate provenance default   "DCO sign-off"                               dco
+gate provenance default   "embedded artwork provenance"                embedded_artwork_provenance
+
+gate source     default   "unsafe-code safety evidence"                unsafe_safety
+gate source     default   "capsule provenance sidecar"                 capsule_provenance
+gate source     default   "freestanding runtime source"                freestanding_runtime_source
+gate source     default   "freestanding runtime build"                 build_freestanding_runtime
+gate source     default   "cargo fmt"                                  fmt
+gate source     default   "cargo test"                                 tests
+gate source     default   "clippy host"                                clippy_host
+gate source     default   "clippy UEFI loader"                         clippy_uefi
+gate source     default   "clippy nucleus"                             clippy_nucleus
+gate source     full-only "capsule parser fuzz"                        fuzz
+
+gate selftest   default   "unsafe-safety checker self-test"            selftest_unsafe_safety
+gate selftest   default   "capsule format alignment self-test"         selftest_capsule_format_alignment
+gate selftest   default   "capsule vector provenance self-test"        selftest_capsule_vector_provenance
+gate selftest   default   "SPDX assembly classification self-test"     selftest_spdx_assembly
+gate selftest   default   "SPDX asset classification self-test"        selftest_spdx_assets
+gate selftest   default   "SPDX JSON classification self-test"         selftest_spdx_json
+gate selftest   default   "gate parity self-test"                      selftest_gate_parity
+gate selftest   default   "run-tos launcher self-test"                 run_tos_launcher
+gate selftest   default   "interactive QEMU mode self-test"            qemu_interactive_mode
+gate selftest   default   "QEMU event capture self-test"               qemu_event_capture
+gate selftest   default   "timed QEMU harness self-test"               qemu_timed_harness
+gate selftest   default   "Stage 1 performance workload self-test"     stage1_performance_workload
+gate selftest   default   "Stage 1 native validation harness self-test" stage1_native_validation_harness
+
+gate qemu       full-only "build capsule tool"                         build_capsule_tool
+gate qemu       full-only "build UEFI loader"                          build_uefi
+gate qemu       full-only "build nucleus"                              build_nucleus
+gate qemu       full-only "build runtime image"                        build_runtime_image
+gate qemu       full-only "QEMU success boot"                          qemu_success
+gate qemu       full-only "QEMU negative suite"                        qemu_negative
+gate qemu       full-only "QEMU Stage 2 runtime path"                  qemu_stage2_runtime
+gate qemu       full-only "QEMU boot without a framebuffer"            qemu_no_framebuffer
+gate qemu       full-only "QEMU multi-module capsule"                  qemu_module_set
+gate qemu       full-only "QEMU boot-module failure code"              qemu_boot_module_failure
+gate qemu       full-only "QEMU capsule size limit"                    qemu_capsule_size_limit
+gate qemu       full-only "QEMU exception #UD"                         qemu_exception_ud2
+gate qemu       full-only "QEMU exception #GP"                         qemu_exception_gp
+gate qemu       full-only "QEMU unmapped page faults"                  qemu_paging_unmapped
+gate qemu       full-only "QEMU nucleus text is read-only"             qemu_paging_readonly_text
+gate qemu       full-only "QEMU system ABI at CPL 3"                   qemu_process_abi
+gate qemu       full-only "QEMU privileged instruction at CPL 3"       qemu_process_privileged
+gate qemu       full-only "QEMU process cannot write nucleus memory"   qemu_process_nucleus_memory
+gate qemu       full-only "QEMU two processes are scheduled"           qemu_scheduler
+gate qemu       full-only "QEMU capabilities and IPC"                  qemu_capabilities
+gate qemu       full-only "QEMU process authority"                     qemu_supervisor
+gate qemu       full-only "QEMU blocking and the liveness rule"        qemu_blocking
+gate qemu       full-only "QEMU request and reply"                     qemu_request_reply
+gate qemu       full-only "QEMU what one request/reply costs"          qemu_exchange_cost
+gate qemu       full-only "QEMU confused deputy"                       qemu_deputy
+gate qemu       full-only "QEMU one endpoint has one receiver"         qemu_second_receiver
+gate qemu       full-only "QEMU a module performs an operation"        qemu_module_operation
+gate qemu       full-only "QEMU a module ends its own process"         qemu_process_control
+gate qemu       full-only "QEMU a module launches a process"           qemu_process_launch
+gate qemu       full-only "QEMU a textual supervisor starts services"  qemu_supervisor_text
+gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
+gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
+gate qemu       full-only "Stage 1 ADR-0026 performance conformance"   qemu_performance_conformance
+
+if [ "$LIST" -eq 1 ]; then
+    exit 0
 fi
 
 printf '\n'
