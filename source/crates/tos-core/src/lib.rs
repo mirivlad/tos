@@ -2999,12 +2999,130 @@ mod tests {
 
     #[test]
     fn an_opaque_handle_cast_is_not_a_conversion_error() {
-        // docs/40 section 3 routes these elsewhere; no code names the
-        // condition for the non-capability handles.
+        // docs/40 section 3 routes these elsewhere: `E1213` for a
+        // non-capability opaque handle, and never the generic conversion code.
         let (_, diagnostics) = check("fn main(task: Task<i32>) -> i32 { return task as i32; }");
         assert!(diagnostics
             .iter()
             .all(|d| d.code() != "E1212_INVALID_AS_CONVERSION"));
+    }
+
+    /// ADR-0064's boundary, in the position that decides it.
+    ///
+    /// Applying a nonconstructible type to arguments is an attempt to make one
+    /// out of data — `docs/39` §5 gives calls and constructions one form, so
+    /// this *is* the constructor form — and ADR-0039 revision 4 gives it
+    /// `E1213` with `operation=construct`.
+    #[test]
+    fn applying_a_nonconstructible_type_is_a_construction() {
+        for (body, spelled) in [
+            ("fn main() -> unit { let handle = Event(); }", "Event"),
+            ("fn main() -> unit { let handle = Task(1i32); }", "Task"),
+            ("fn main() -> unit { let handle = Mutex(1i32); }", "Mutex"),
+            (
+                "fn main() -> unit { let handle = Channel(1i32); }",
+                "Channel",
+            ),
+        ] {
+            let (_, diagnostics) = check(body);
+            let forged = diagnostics
+                .iter()
+                .find(|d| d.code() == "E1213_NONCONSTRUCTIBLE_TYPE")
+                .unwrap_or_else(|| std::panic!("{spelled} applied to arguments is a construction"));
+            assert_eq!(forged.field("type"), Some(spelled));
+            assert_eq!(forged.field("operation"), Some("construct"));
+            assert_eq!(forged.stage(), Stage::Type);
+            // ADR-0039 §2: one attempt produces one diagnostic.
+            assert_eq!(codes(&diagnostics, "E1213_NONCONSTRUCTIBLE_TYPE"), 1);
+            assert_eq!(
+                codes(&diagnostics, "E1202_UNKNOWN_VALUE_NAME"),
+                0,
+                "a construction is not an unresolved name as well"
+            );
+        }
+    }
+
+    /// The same rule for the three guards, which is ADR-0036 §1's sentence and
+    /// the vector its §7 requires. A guard has no constructor syntax at all, so
+    /// writing one is the only way to ask for a guard V1 cannot give.
+    #[test]
+    fn applying_a_guard_type_is_a_construction() {
+        let (_, diagnostics) = check("fn main() -> unit { let guard = MutexGuard(0i32); }");
+        let forged = diagnostics
+            .iter()
+            .find(|d| d.code() == "E1213_NONCONSTRUCTIBLE_TYPE")
+            .expect("a guard exists only as the result of a lock operation");
+        assert_eq!(forged.field("type"), Some("MutexGuard"));
+        assert_eq!(forged.field("operation"), Some("construct"));
+    }
+
+    /// The other half of ADR-0064, and the half the drift got wrong: a name
+    /// written alone constructs nothing, so it is an unresolved value name and
+    /// carries no `operation` at all.
+    #[test]
+    fn a_bare_nonconstructible_type_name_is_an_unknown_value() {
+        for (body, spelled) in [
+            ("fn main() -> unit { let handle = Event; }", "Event"),
+            (
+                "fn main() -> unit { let handle = MutexGuard; }",
+                "MutexGuard",
+            ),
+            (
+                "fn takes(value: i32) -> i32 { return value; } \
+                 fn main() -> i32 { return takes(Semaphore); }",
+                "Semaphore",
+            ),
+        ] {
+            let (_, diagnostics) = check(body);
+            let unknown = diagnostics
+                .iter()
+                .find(|d| d.code() == "E1202_UNKNOWN_VALUE_NAME")
+                .unwrap_or_else(|| std::panic!("{spelled} alone resolves to no value"));
+            assert_eq!(unknown.field("name"), Some(spelled));
+            assert_eq!(
+                codes(&diagnostics, "E1213_NONCONSTRUCTIBLE_TYPE"),
+                0,
+                "nothing was applied to anything, so nothing was constructed"
+            );
+            assert!(
+                diagnostics
+                    .iter()
+                    .all(|d| d.field("operation") != Some("construct")),
+                "a mention of a type must not be reported as a construction"
+            );
+        }
+    }
+
+    /// The operations ADR-0039 had from revision 3, unchanged by revision 4:
+    /// both directions of `as`, with `operation=as` rather than `construct`.
+    #[test]
+    fn an_as_conversion_with_a_nonconstructible_type_is_reported() {
+        for (body, from, to) in [
+            (
+                "fn main(value: i32) -> unit { let handle = value as Task<i32>; }",
+                "i32",
+                "Task<i32>",
+            ),
+            (
+                "fn main(guard: Mutex<i32>) -> i32 { return guard as i32; }",
+                "Mutex<i32>",
+                "i32",
+            ),
+        ] {
+            let (_, diagnostics) = check(body);
+            let forged = diagnostics
+                .iter()
+                .find(|d| d.code() == "E1213_NONCONSTRUCTIBLE_TYPE")
+                .unwrap_or_else(|| std::panic!("{from} as {to} fabricates an opaque handle"));
+            assert_eq!(forged.field("operation"), Some("as"));
+            assert_eq!(forged.field("from"), Some(from));
+            assert_eq!(forged.field("to"), Some(to));
+            assert_eq!(
+                codes(&diagnostics, "E1212_INVALID_AS_CONVERSION"),
+                0,
+                "docs/40 section 3: this is not a generic conversion error"
+            );
+        }
     }
 
     #[test]
@@ -4422,6 +4540,14 @@ mod tests {
             .find(|d| d.code() == "E1502_FORGED_CAPABILITY")
             .expect("a capability is nonconstructible");
         assert_eq!(forged.field("operation"), Some("construct"));
+        // ADR-0039 §2's precedence, now that a construction has two candidate
+        // codes: a capability is the more specific finding and names authority,
+        // so it is reported and `E1213` is not. One attempt, one diagnostic.
+        assert_eq!(
+            codes(&diagnostics, "E1213_NONCONSTRUCTIBLE_TYPE"),
+            0,
+            "a forged capability is not also reported as an opaque handle"
+        );
     }
 
     #[test]

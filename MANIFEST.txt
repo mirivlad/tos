@@ -38,7 +38,7 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 378
+- files in the release package: 379
 - active system invariants: 21
 - architecture decision records: 64 (40 accepted)
 
@@ -82,7 +82,7 @@ Architecture decision records
 - docs/adr/0036-synchronization-guard-representation.md — ADR-0036: TOS Core V1 synchronization guard representation [Accepted (Project Architect-approved)]
 - docs/adr/0037-region-transferability.md — ADR-0037: TOS Core V1 region and DMA-region transferability [**Accepted (revision 3)** — the region model, the `share` operation it]
 - docs/adr/0038-module-root-precedence.md — ADR-0038: TOS Core V1 module-root precedence and the exact `E1605` condition [Accepted (Project Architect-approved)]
-- docs/adr/0039-nonconstructible-opaque-types.md — ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles [Accepted (Project Architect-approved), revision 3]
+- docs/adr/0039-nonconstructible-opaque-types.md — ADR-0039: `E1213_NONCONSTRUCTIBLE_TYPE` for opaque non-capability handles [Accepted (Project Architect-approved), revision 4]
 - docs/adr/0040-stage2-reference-platform.md — ADR-0040: the Stage 2 reference platform profile [Accepted (Project Architect-approved)]
 - docs/adr/0041-runtime-memory-grant.md — ADR-0041: `RuntimeMemoryGrantV1` — the nucleus-to-runtime memory contract [Accepted (Project Architect-approved)]
 - docs/adr/0042-runtime-events-on-the-boot-log.md — ADR-0042: Runtime events on the Boot ABI v1 serial log [**Accepted** (Project Architect-approved)]
@@ -107,7 +107,7 @@ Architecture decision records
 - docs/adr/0061-how-an-endowment-binds-to-a-module.md — ADR-0061: How a process's endowment binds to the module it runs [**Accepted (surface B, key i)** (Project Architect-approved)]
 - docs/adr/0062-arguments-an-operation-cannot-take-in-a-register.md — ADR-0062: Arguments an operation cannot take in a register [**Accepted (option A)** — chosen from the accepted documents, under the]
 - docs/adr/0063-an-operation-that-requires-two-capabilities.md — ADR-0063: An operation that requires two capabilities, and the exchange that needs one [**Accepted (S-A and B)** (Project Architect-approved)]
-- docs/adr/0064-a-nonconstructible-type-in-value-position.md — ADR-0064: Which diagnostic a nonconstructible type in value position gets [**Proposed** — this text needs approval]
+- docs/adr/0064-a-nonconstructible-type-in-value-position.md — ADR-0064: Which diagnostic a nonconstructible type in value position gets [**Accepted (option B, with the boundary of §"The decision" below)**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

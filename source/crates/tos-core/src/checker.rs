@@ -234,6 +234,23 @@ fn resolve_value_names(source: &SourceUnit, schema: &Schema) -> Vec<Diagnostic> 
     resolver.diagnostics
 }
 
+/// Where a name is written, because what an unresolved name *means* depends on
+/// it (ADR-0064).
+///
+/// `docs/39` §5 gives calls and constructions one form, so the callee position
+/// is exactly the position in which a type name is being applied to arguments.
+/// A name anywhere else is being read as a value. Carrying the position rather
+/// than inspecting the name is the whole point: a rule keyed on the spelling
+/// would make every mention of a predeclared type a construction, which is the
+/// drift this replaced.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Position {
+    /// The callee of a call or construction: `Event()`.
+    Callee,
+    /// Any position where a value is expected: `Event`, `f(Event)`, `x + Event`.
+    Value,
+}
+
 struct Resolver<'source> {
     source: &'source SourceUnit,
     scopes: Vec<BTreeSet<&'source str>>,
@@ -258,16 +275,19 @@ impl<'source> Resolver<'source> {
         }
     }
 
-    fn resolve(&mut self, span: Span) {
+    fn resolve(&mut self, span: Span, position: Position) {
         let name = span.text(self.source);
         if self.scopes.iter().any(|scope| scope.contains(name)) {
             return;
         }
-        // ADR-0039 precedence: a nonconstructible type used where a value is
-        // expected is a forged handle, not an unknown name. Reporting it as
-        // unknown would send the reader looking for a declaration that must
-        // never exist — the constructor is absent by design.
-        if crate::typing::is_nonconstructible_name(name) {
+        // ADR-0039 revision 4, the boundary ADR-0064 fixed: **applying** a
+        // nonconstructible type to arguments is an attempt to make one out of
+        // data, and that is what this code is for. The same name written alone
+        // is not an attempt at anything — it is a name that does not resolve to
+        // a value, which is what `E1202` says. The difference is the form of the
+        // expression, never the spelling, so the caller supplies it and this
+        // function does not guess from the name.
+        if position == Position::Callee && crate::typing::is_nonconstructible_name(name) {
             self.diagnostics.push(
                 diagnostic(
                     "E1213_NONCONSTRUCTIBLE_TYPE",
@@ -417,7 +437,7 @@ impl<'source> Resolver<'source> {
 
     fn visit_expression(&mut self, expression: &'source Expression) {
         if expression.form() == ExpressionForm::Name {
-            self.resolve(expression.span());
+            self.resolve(expression.span(), Position::Value);
             return;
         }
         if expression.form() == ExpressionForm::Closure {
@@ -432,16 +452,23 @@ impl<'source> Resolver<'source> {
             self.pop_scope();
             return;
         }
-        for child in [
-            expression.left(),
-            expression.right(),
-            expression.inner(),
-            expression.callee(),
-        ]
-        .into_iter()
-        .flatten()
+        for child in [expression.left(), expression.right(), expression.inner()]
+            .into_iter()
+            .flatten()
         {
             self.visit_expression(child);
+        }
+        // The callee of a call is the one position that is not a value read, so
+        // it is resolved here — where the enclosing form is known — instead of
+        // by the `Name` arm above, which cannot see what encloses it. Every
+        // other callee shape (a path, a field, a parenthesised expression) is an
+        // ordinary child: a construction names its type directly or not at all.
+        if let Some(callee) = expression.callee() {
+            if expression.form() == ExpressionForm::Call && callee.form() == ExpressionForm::Name {
+                self.resolve(callee.span(), Position::Callee);
+            } else {
+                self.visit_expression(callee);
+            }
         }
         for argument in expression.arguments() {
             self.visit_expression(argument.value());

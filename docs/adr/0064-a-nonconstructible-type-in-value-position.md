@@ -2,14 +2,46 @@
 
 # ADR-0064: Which diagnostic a nonconstructible type in value position gets
 
-- Status: **Proposed** — this text needs approval
+- Status: **Accepted (option B, with the boundary of §"The decision" below)**
 - Date: 2026-08-21
 - Decision level: 2 — it settles which accepted diagnostic a source form
   produces; the docs/44 registry, conformance vector R070 and the frontend all
-  depend on the answer, and today the registry says one thing while the frontend
-  and the vector say another
-- Project Architect approval: *(pending)*
+  depend on the answer, and before this decision the registry said one thing
+  while the frontend and the vector said another
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-21
+- Carried out by: ADR-0039 revision 4 (the operations and the boundary),
+  `docs/44`'s `E1213` row, and conformance vectors R070 and R081. **ADR-0036 is
+  not amended and needs no amendment:** under option B its §1 sentence and its §7
+  evidence item are true as written, which is the dangling reference closing from
+  the other end
 - Relates to: ADR-0036 §1 and §7, ADR-0039 revision 3 §1 and §4
+
+## The decision
+
+Option **B**, and the boundary is part of it rather than a note on it. Not every
+nonconstructible type name in value position is `E1213`:
+
+| form | code | `operation` |
+|---|---|---|
+| a nonconstructible predeclared type applied to arguments — `Event()`, `Task(…)`, `Mutex(…)`, `MutexGuard(…)` | `E1213_NONCONSTRUCTIBLE_TYPE` | `construct` |
+| the same name written alone in value position — `Event` | `E1202_UNKNOWN_VALUE_NAME` | *(none)* |
+| `as` with a nonconstructible type, either side | `E1213_NONCONSTRUCTIBLE_TYPE` | `as` |
+| a capability, in any of those forms | `E1502_FORGED_CAPABILITY` | — |
+
+**Why B.** Revision 3's factual premise — that reaching the diagnostic would
+require widening the grammar — is disproved by the working frontend: the call
+form already exists, and it tells a fabrication attempt from an ordinary
+unresolved value name without any grammar change. And it keeps `docs/40` §3's
+rule symmetric: an opaque runtime handle may not be made out of data, whether the
+handle is authority or a lock.
+
+**What the decision requires of an implementation.** The finding must follow from
+the *position* the name is written in — a callee of a call or construction —
+never from the name alone. A special case keyed on the spelling is what produced
+`operation=construct` for a bare `Event`, and it is excluded by this decision
+rather than merely discouraged.
+
+Everything below is the analysis this decision was taken on, kept as written.
 
 ## Why this exists
 
@@ -239,7 +271,11 @@ expensive in contract surface, and V1's diagnostic surface is fixed at 1.0.
 | `MutexGuard(0i32)` reads as | an unknown name | a forged handle | a type in value position |
 | Capability/other-opaque symmetry | stays broken | restored | named explicitly |
 
-## Recommendation
+## Recommendation as proposed — not the decision taken
+
+Kept because a recommendation that is overruled is part of the record, and the
+reasons on both sides were what the choice was made between. The decision is B,
+stated at the top; §"Why B" there records the ground it was taken on.
 
 **A**, and the reason is fidelity rather than taste.
 
@@ -267,7 +303,7 @@ implementation needs no grammar widening, and with the bare-name form given an
 `operation` value that is true of it. What should not happen is B by default,
 which is where the repository is now.
 
-## Evidence required, whichever option is accepted
+## Evidence, as built
 
 `docs/38`'s conflict protocol asks for a test when the conflict was mechanically
 detectable, and this one was. The gate that should have caught it is named by
@@ -283,18 +319,29 @@ change the answer without anything turning red.
 2. A conformance vector for the form, recorded in `EXPECTATIONS.md` with the code
    the accepted option assigns, so that the corpus an alternate implementation is
    measured against contains the answer.
-3. A mechanical check binding the `docs/44` registry row to the corpus for this
-   form. The binding from a *form* to a code exists and works — that is what a
-   conformance vector is, and the corpus driver holds the frontend to every
-   recorded code. What it cannot do is notice a form that has **no** vector:
-   `check-stage2-language-contract.py` binds codes to stages and checks that
-   cited codes are registered, so a registry sentence naming a code for a form
-   nobody wrote a vector for is prose no gate reads. ADR-0039 §4 excluded that
-   vector deliberately, on the reasoning that the form's answer was settled; the
-   effect was that the one sentence recording the answer became untested, and
-   `b16cc6c` changed the answer with nothing to turn red. That is the structural
-   reason a contradiction between two accepted texts and the implementation
-   passed 58 gates.
+3. A vector on **each** side of the boundary, which is what makes the drift
+   unrepeatable rather than merely corrected. The binding from a form to a code
+   exists and works — that is what a conformance vector is, and the corpus driver
+   holds the frontend to every recorded code. What it cannot do is notice a form
+   that has **no** vector: `check-stage2-language-contract.py` binds codes to
+   stages and checks that cited codes are registered, so a registry sentence
+   naming a code for a form nobody wrote a vector for is prose no gate reads.
+   ADR-0039 §4 excluded that vector deliberately, on the reasoning that the
+   form's answer was settled; the effect was that the one sentence recording the
+   answer became untested, and `b16cc6c` changed the answer with nothing to turn
+   red. That is the structural reason a contradiction between two accepted texts
+   and the implementation passed 58 gates.
+
+   Built: R070 (`reject/forged-guard.tos`, constructor form, `E1213`) and R081
+   (`reject/predeclared-type-in-value-position.tos`, bare name, `E1202`). A
+   frontend that keys the finding on the name instead of the position now fails
+   R081; one that drops the constructor form fails R070. Neither half can move
+   without the corpus saying so.
+
+   Not built, and named so it is not mistaken for built: a lint that reads a
+   registry *condition* and holds the corpus to it. That would generalize beyond
+   this row, and it is a separate decision about how much of the registry's prose
+   is machine-readable.
 
 ## Architecture impact statement
 
