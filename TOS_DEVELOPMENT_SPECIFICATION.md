@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1  
-Source-manifest SHA-256: `3622e544965dc83aa6ad33c7ceaa71bc53495a04eb0186d829cddd28cce42b45`  
+Source-manifest SHA-256: `bdf89bf231010de78f7aeb07160c8116ef6192cd363c9f892c76a688053a9ac4`  
 Generator: `tools/build-specification.py`
 
 ---
@@ -2379,6 +2379,7 @@ are marked and are exactly those a process can only apply to itself.
 | 9 | `process_terminate` | process-authority capability for that process | ends it |
 | 10 | `context_yield` | *(self only)* | gives up the rest of the quantum |
 | 11 | `time_monotonic` | *(self only)* | reads the monotonic tick |
+| 12 | `process_exit` | *(self only)* | ends the calling process. `rdi` = the status it claims for itself; does not return (ADR-0054) |
 
 Operation `0` is not assigned and never will be. A register that was never
 written holds zero, so a zero selector is overwhelmingly likely to be a caller
@@ -2439,9 +2440,16 @@ reused: a retired operation returns `E_NOT_SUPPORTED` forever rather than being
 recycled into a different meaning. The assignment that rule governs is the one
 in the §5 table, and the status values are in §4; both were added to this
 contract when the first implementation of the edge was written, because a rule
-about numbers that never states the numbers cannot be conformed to. Neither is a
-new decision: no operation, status, right or guarantee changed, so this is still
-version 1.
+about numbers that never states the numbers cannot be conformed to. Neither was a
+new decision: no operation, status, right or guarantee changed by writing them
+down.
+
+Operation 12, `process_exit`, **is** an addition, and it was decided by ADR-0054
+rather than here — this table carries that decision rather than making it. It is
+a minor version of this contract by the rule above: a process built against the
+earlier set calls nothing that has changed meaning, and one built against this
+set that runs on an older nucleus receives `E_NOT_SUPPORTED` for 12 and is not
+terminated for asking.
 
 A process built against a later minor version that calls an unknown operation
 receives `E_NOT_SUPPORTED` and is not terminated for asking. A nucleus that
@@ -3140,8 +3148,19 @@ an event worth emitting.
 | parent supervisor | nucleus | the creating process's instance id |
 | start time | nucleus | monotonic tick (ADR-0049) |
 | restart generation | supervisor | §4 |
+| how it ended | nucleus | exited, faulted, terminated, or ended by the liveness rule; present once the process is over |
+| self-reported status | the process itself | the value it passed to `process_exit` (ADR-0054); absent when it did not end that way |
+| ended by | nucleus | the instance id of whoever terminated it, where something did |
 
-Two entries deserve their reason stated. The **granted** set is asserted by the
+**The exit record is three fields and not one**, which ADR-0054 fixes and §2's
+rule requires: "the nucleus asserts *that* the process exited and *when*, the
+process claims *with what*, and the two are never merged." A single `status`
+field would let a process's claim about itself be read as the system's finding,
+which is the one confusion this whole contract exists to prevent. A process that
+never reached `process_exit` — one that faulted, or was terminated — has no
+self-reported status at all, and an absent field says so where a zero would lie.
+
+Two more entries deserve their reason stated. The **granted** set is asserted by the
 nucleus and kept separate from the **requested** set, because the gap between
 them is the only durable record that policy did something; a single merged field
 would hide every denial. The **runtime engine id** is a consequence of ADR-0048:
