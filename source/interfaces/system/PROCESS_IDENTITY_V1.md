@@ -56,8 +56,19 @@ an event worth emitting.
 | parent supervisor | nucleus | the creating process's instance id |
 | start time | nucleus | monotonic tick (ADR-0049) |
 | restart generation | supervisor | §4 |
+| how it ended | nucleus | exited, faulted, terminated, or ended by the liveness rule; present once the process is over |
+| self-reported status | the process itself | the value it passed to `process_exit` (ADR-0054); absent when it did not end that way |
+| ended by | nucleus | the instance id of whoever terminated it, where something did |
 
-Two entries deserve their reason stated. The **granted** set is asserted by the
+**The exit record is three fields and not one**, which ADR-0054 fixes and §2's
+rule requires: "the nucleus asserts *that* the process exited and *when*, the
+process claims *with what*, and the two are never merged." A single `status`
+field would let a process's claim about itself be read as the system's finding,
+which is the one confusion this whole contract exists to prevent. A process that
+never reached `process_exit` — one that faulted, or was terminated — has no
+self-reported status at all, and an absent field says so where a zero would lie.
+
+Two more entries deserve their reason stated. The **granted** set is asserted by the
 nucleus and kept separate from the **requested** set, because the gap between
 them is the only durable record that policy did something; a single merged field
 would hide every denial. The **runtime engine id** is a consequence of ADR-0048:
