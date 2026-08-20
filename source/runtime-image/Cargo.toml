@@ -17,6 +17,24 @@ path = "src/main.rs"
 # is clear. Never selected by the normal runtime-image build: this is a process
 # doing something legal and unusual, and only a gate has a reason to ask for it.
 test-direction-flag = []
+# The boot whose only IPC is the exchange being measured: one process asks and
+# the other answers, and neither polls, probes or delegates. `IPC_V1` §8 bounds
+# crossings *per request/reply*, so a boot that also does other IPC measures a
+# subtraction rather than an exchange.
+test-exchange-cost = []
+# The same boot with three exchanges instead of one. Two boots differing in
+# nothing else are what turn a total into a slope: the crossings spent entering
+# and leaving the server's loop belong to no exchange, and a difference cancels
+# them.
+test-more-exchanges = []
+# The server answers and waits again in one operation (`endpoint_reply_receive`,
+# ADR-0063) rather than in two. Selected beside either of the above.
+test-reply-receive = []
+# Every way that operation must refuse — each capability absent, of the wrong
+# kind, or lacking its declared right, and a reply already spent — asked of a
+# live reply capability, so that what follows each refusal proves nothing was
+# delivered.
+test-reply-receive-refusals = []
 
 [dependencies]
 tos-launch = { path = "../crates/tos-launch" }

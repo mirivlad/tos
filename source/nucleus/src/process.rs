@@ -130,6 +130,14 @@ struct Slot {
     /// wait-for-anything, because waiting for anything is waiting on authority
     /// nobody granted.
     waiting: Waiting,
+    /// Which operation it is blocked *in*, while it is blocked.
+    ///
+    /// Not derivable from `waiting`: since ADR-0063 two operations wait for a
+    /// message on an endpoint — `endpoint_receive` and the receive half of
+    /// `endpoint_reply_receive` — so a record that inferred the operation from
+    /// what is being waited for would name an operation the process never
+    /// called. The audit record says which one, so it is carried.
+    blocked_in: u32,
     /// How it ended, once it has.
     ended: Ended,
     /// Whether the next time this context runs, that crossing is an operation's
@@ -174,6 +182,7 @@ impl Slot {
         last_tick: 0,
         reply_generation: 1,
         waiting: Waiting::Nothing,
+        blocked_in: 0,
         resumes_an_operation: false,
         ended: Ended::Fault(0),
         // One, not zero: an object named with a generation nobody wrote is an
@@ -223,16 +232,6 @@ pub enum Waiting {
 }
 
 impl Waiting {
-    /// The operation number the context is blocked in, for the audit record.
-    fn operation(&self) -> u32 {
-        match self {
-            Waiting::Nothing => 0,
-            Waiting::Message(_) => 2,
-            Waiting::Room(_) => 1,
-            Waiting::Reply => 3,
-        }
-    }
-
     /// The object it is waiting on.
     fn endpoint(&self) -> u32 {
         match self {
@@ -577,16 +576,19 @@ pub fn fault(vector: u64, error: u64, rip: u64, cr2: Option<u64>) -> bool {
 ///
 /// # Safety
 ///
-/// `frame` is the frame the stub built for the running process's call, and the
-/// caller has resolved the handle the wait is on.
+/// `frame` is the frame the stub built for the running process's call, `waiting`
+/// is what it waits for, `operation` is the `SYSTEM_ABI_V1` §5 number of the
+/// call it is waiting inside, and the caller has resolved the handle the wait is
+/// on.
 // SAFETY: the caller's promise that this is the running context's own frame is
 // what makes storing it storing this process.
-pub unsafe fn block(frame: &TrapFrame, waiting: Waiting) -> ! {
+pub unsafe fn block(frame: &TrapFrame, waiting: Waiting, operation: u32) -> ! {
     // SAFETY: single-context nucleus with interrupts masked.
     unsafe {
         let table = table();
         table[CURRENT].frame = *frame;
         table[CURRENT].waiting = waiting;
+        table[CURRENT].blocked_in = operation;
         table[CURRENT].state = State::Blocked;
         // The scheduler continues where it recorded it would, exactly as it does
         // when a process ends — the difference is in what this slot now says
@@ -706,24 +708,24 @@ fn cancel_every_block() {
     // the table itself, so a borrow held across it would be two live references
     // to one static — the same mistake this module has already made once, and
     // the reason nothing here iterates the table while calling into it.
-    let mut waits = [Waiting::Nothing; MAX_PROCESSES];
+    let mut waits = [(Waiting::Nothing, 0u32); MAX_PROCESSES];
     {
         // SAFETY: single-context nucleus; nothing is running.
         let table = unsafe { table() };
         for (index, slot) in table.iter().enumerate() {
             if slot.state == State::Blocked {
-                waits[index] = slot.waiting;
+                waits[index] = (slot.waiting, slot.blocked_in);
             }
         }
     }
-    for (index, waiting) in waits.iter().enumerate() {
+    for (index, (waiting, operation)) in waits.iter().enumerate() {
         if *waiting == Waiting::Nothing {
             continue;
         }
         tos_serial::puts(b"TOS.RUN.BLOCK_CANCELLED process=");
         tos_serial::put_u32_decimal(index as u32);
         tos_serial::puts(b" operation=");
-        tos_serial::put_u32_decimal(waiting.operation());
+        tos_serial::put_u32_decimal(*operation);
         tos_serial::puts(b" endpoint=");
         tos_serial::put_u32_decimal(waiting.endpoint());
         tos_serial::puts(b" reason=no-runnable-context asserted_by=nucleus\r\n");
@@ -964,7 +966,7 @@ unsafe fn retire(index: usize) {
             tos_serial::puts(b"TOS.RUN.PROCESS_DEADLOCKED process=");
             tos_serial::put_u32_decimal(index as u32);
             tos_serial::puts(b" operation=");
-            tos_serial::put_u32_decimal(slot.waiting.operation());
+            tos_serial::put_u32_decimal(slot.blocked_in);
             tos_serial::puts(b" endpoint=");
             tos_serial::put_u32_decimal(slot.waiting.endpoint());
             tos_serial::puts(b" asserted_by=nucleus\r\n");

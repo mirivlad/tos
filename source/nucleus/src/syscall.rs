@@ -247,11 +247,17 @@ pub fn crossings() -> (u64, u64, u64) {
     unsafe { (IPC_ENTRIES, OTHER_ENTRIES, RETURNS) }
 }
 
-/// Whether an operation is one of the four an exchange is made of.
+/// Whether an operation is one an exchange is made of.
+///
+/// `endpoint_reply_receive` is one of them and is the reason this predicate is
+/// load-bearing rather than descriptive: it performs the two halves an exchange
+/// spends on a server, so an instrument that did not count it would report the
+/// operation that meets `IPC_V1` §8's bound as belonging to no exchange, and
+/// the boot that met the bound would measure as costing less than nothing.
 fn is_ipc(operation: u64) -> bool {
     matches!(
         operation,
-        ENDPOINT_SEND | ENDPOINT_RECEIVE | ENDPOINT_CALL | ENDPOINT_REPLY
+        ENDPOINT_SEND | ENDPOINT_RECEIVE | ENDPOINT_CALL | ENDPOINT_REPLY | ENDPOINT_REPLY_RECEIVE
     )
 }
 
@@ -324,7 +330,10 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
         ENDPOINT_RECEIVE => {
             match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_RECEIVE) {
                 Err(refused) => refused.into(),
-                Ok(Object::Endpoint(endpoint)) => receive(caller, endpoint, frame),
+                // §5 row 2 puts this operation's flags in `rsi`.
+                Ok(Object::Endpoint(endpoint)) => {
+                    receive(caller, endpoint, frame.rsi, ENDPOINT_RECEIVE as u32, frame)
+                }
                 Ok(_) => Answer::status(E_NO_CAPABILITY),
             }
         }
@@ -463,8 +472,10 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
         ENDPOINT_REPLY => {
             match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_REPLY) {
                 Err(refused) => refused.into(),
+                // §5 row 4: the answer's length in `rsi`, where a one-capability
+                // operation's first value goes.
                 Ok(Object::Reply { caller: asked, .. }) => {
-                    reply(caller, asked as usize, arguments.first(), frame)
+                    reply(caller, asked as usize, arguments.first(), frame.rsi)
                 }
                 Ok(_) => Answer::status(E_NO_CAPABILITY),
             }
@@ -544,7 +555,13 @@ fn send(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
             // so the sender waits for room rather than the queue making some.
             // SAFETY: this is the running context's own frame, and the handle
             // the wait is on was resolved above.
-            unsafe { crate::process::block(frame, crate::process::Waiting::Room(endpoint)) }
+            unsafe {
+                crate::process::block(
+                    frame,
+                    crate::process::Waiting::Room(endpoint),
+                    ENDPOINT_SEND as u32,
+                )
+            }
         }
         Err(ipc::Refused::WouldBlock) => Answer::status(E_WOULD_BLOCK),
     }
@@ -596,7 +613,9 @@ fn call(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
             deliver_to_waiter(endpoint);
             // SAFETY: this is the running context's own frame, and the handle
             // the wait is on was resolved above.
-            unsafe { crate::process::block(frame, crate::process::Waiting::Reply) }
+            unsafe {
+                crate::process::block(frame, crate::process::Waiting::Reply, ENDPOINT_CALL as u32)
+            }
         }
         Err(ipc::Refused::BadArgument) => Answer::status(E_BAD_ARGUMENT),
         Err(_) => Answer::status(E_LIMIT),
@@ -608,7 +627,12 @@ fn call(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
 /// The answer does not go through a queue: the caller is already waiting for
 /// it, so this is one copy from the replier's argument region into the caller's
 /// and the caller's suspended call is answered where it stands.
-fn reply(replier: usize, asked: usize, handle: u64, frame: &mut TrapFrame) -> Answer {
+///
+/// `length` is the caller's, for the same reason `receive`'s flags are: the two
+/// operations that answer a call do not carry the answer's length in the same
+/// register — `endpoint_reply` in `rsi`, `endpoint_reply_receive` in `rdx`,
+/// because `rsi` is where §5 row 13 puts its second capability.
+fn reply(replier: usize, asked: usize, handle: u64, length: u64) -> Answer {
     let from = crate::process::arguments_region();
     let into = crate::process::arguments_of(asked);
     if from == 0 || into == 0 {
@@ -616,7 +640,7 @@ fn reply(replier: usize, asked: usize, handle: u64, frame: &mut TrapFrame) -> An
     }
     // SAFETY: both are argument regions the launcher mapped, reached through
     // the nucleus's own identity map.
-    let length = match unsafe { ipc::hand(from, into, frame.rsi) } {
+    let length = match unsafe { ipc::hand(from, into, length) } {
         Ok(length) => length,
         Err(_) => return Answer::status(E_BAD_ARGUMENT),
     };
@@ -651,13 +675,22 @@ fn reply_receive(
     endpoint: u32,
     frame: &mut TrapFrame,
 ) -> Answer {
-    let answer = reply(replier, asked, handle, frame);
+    // §5 row 13: the answer's length in `rdx`, the flags in `r10`. Neither is
+    // where the one-capability operations put them, because `rsi` is spoken for
+    // by the second capability.
+    let answer = reply(replier, asked, handle, frame.rdx);
     if answer.status_of() != OK {
         // Nothing was delivered, so nothing is waited on: the operation refuses
         // whole rather than performing the half that worked.
         return answer;
     }
-    receive(replier, endpoint, frame)
+    receive(
+        replier,
+        endpoint,
+        frame.r10,
+        ENDPOINT_REPLY_RECEIVE as u32,
+        frame,
+    )
 }
 
 /// Which module a `process_create` names, by path.
@@ -787,7 +820,20 @@ fn resolve_transfers(
 /// Taking a message frees a place in the queue, so a sender that was waiting
 /// for room is served here for the same reason a receiver is served by a send:
 /// the operation that satisfies a wait is the one that performs it.
-fn receive(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
+///
+/// `flags` and `operation` are the caller's, not this function's to find. Two
+/// operations wait here since ADR-0063 and they do not put their flags in the
+/// same register — `endpoint_receive` in `rsi`, `endpoint_reply_receive` in
+/// `r10`, where §5 row 13 puts them because `rsi` holds its second capability.
+/// Reading one register for both would have read a *handle* as a flag word, and
+/// a handle is odd as often as not.
+fn receive(
+    caller: usize,
+    endpoint: u32,
+    flags: u64,
+    operation: u32,
+    frame: &mut TrapFrame,
+) -> Answer {
     let into = crate::process::arguments_region();
     if into == 0 {
         return Answer::status(E_BAD_ARGUMENT);
@@ -800,12 +846,12 @@ fn receive(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
             accept_from_waiter(endpoint);
             Answer::value(length)
         }
-        Err(ipc::Refused::WouldBlock) if frame.rsi & NON_BLOCKING != 0 => {
-            Answer::status(E_WOULD_BLOCK)
-        }
+        Err(ipc::Refused::WouldBlock) if flags & NON_BLOCKING != 0 => Answer::status(E_WOULD_BLOCK),
         Err(ipc::Refused::WouldBlock) => {
             // SAFETY: as in `send`.
-            unsafe { crate::process::block(frame, crate::process::Waiting::Message(endpoint)) }
+            unsafe {
+                crate::process::block(frame, crate::process::Waiting::Message(endpoint), operation)
+            }
         }
         Err(ipc::Refused::BadArgument) => Answer::status(E_BAD_ARGUMENT),
         Err(ipc::Refused::Limit) => Answer::status(E_LIMIT),

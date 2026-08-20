@@ -144,12 +144,13 @@ copies=$(printf '%s' "$cost" | sed -n 's/.* payload_copies=\([0-9]*\) .*/\1/p')
 # totals, and the number moved with the interleaving instead of with the work.
 #
 # Balanced, it says something worth having: an IPC operation costs exactly two
-# crossings, one each way. A request/reply is three operations — `endpoint_call`,
-# `endpoint_receive`, `endpoint_reply` — so it costs six, where IPC_V1 section 8
-# allows four. Meeting that bound needs an operation that answers and waits again
-# in one crossing pair, which SYSTEM_ABI_V1 does not have; that is an addition to
-# the ABI rather than anything tunable here, and it is recorded rather than
-# quietly missed.
+# crossings, one each way. A request/reply served this way is three operations —
+# `endpoint_call`, `endpoint_receive`, `endpoint_reply` — so it costs six, where
+# IPC_V1 section 8 allows four. That is what operation 13 was added for
+# (ADR-0063), and the bound is met and measured by `exchange-cost.sh`, on boots
+# whose only IPC is the exchange. This boot is not one of them: it polls, probes
+# and delegates, so its total is a total and not an exchange's cost. What it
+# holds is the invariant underneath that measurement.
 ipc_in=$(printf '%s' "$cost" | sed -n 's/.* ipc_in=\([0-9]*\) .*/\1/p')
 ipc_out=$(printf '%s' "$cost" | sed -n 's/.* ipc_out=\([0-9]*\)$/\1/p')
 [ -n "$ipc_in" ] && [ -n "$ipc_out" ] || fail "the nucleus did not report its IPC crossings"
