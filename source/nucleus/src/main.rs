@@ -79,6 +79,13 @@
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
 
+#[cfg(all(
+    feature = "test-measurement-no-preemption",
+    any(feature = "test-two-processes", feature = "test-call-reply")
+))]
+compile_error!("the IPC numerator must keep preemption active");
+
+#[cfg_attr(feature = "test-measurement-no-preemption", allow(dead_code))]
 mod apic;
 mod capability;
 mod console;
@@ -603,10 +610,16 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // Interrupts are enabled here and nowhere else: after the substrate exists
     // and before the first process is entered, which is exactly where ADR-0049
     // puts it. Stage 1 and Stage 2 were measured with them off, and no number
-    // taken then is relabelled by this.
+    // taken then is relabelled by this. The one measurement-only exception is
+    // the conservative ADR-0066 floor/denominator build: the IPC numerator
+    // keeps preemption active, while its smaller comparator excludes timer
+    // excursions and therefore cannot make the relative budget easier.
     // SAFETY: the IDT has gates for both claimed vectors, the local APIC page is
     // mapped uncacheable in the space just activated, and nothing else runs.
-    unsafe { apic::start() };
+    #[cfg(not(feature = "test-measurement-no-preemption"))]
+    unsafe {
+        apic::start()
+    };
 
     // The excursion joins the table here and is entered by the scheduler with
     // everything else, so the fault it is built to take happens while a peer

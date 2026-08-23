@@ -51,6 +51,8 @@ EVENT_TIMESTAMPS=""
 # are the ordinary ones; what differs is that the wire has two ends.
 MEASURE=""
 MEASUREMENT_EVIDENCE_STATUS="P1"
+MEASUREMENT_BUILD_MANIFEST=""
+MEASUREMENT_PAIRED_CALIBRATION=0
 PRODUCTION_NUCLEUS_BEFORE_SHA256=""
 PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256=""
 QEMU_ACCEL=""
@@ -61,6 +63,8 @@ while [ $# -gt 0 ]; do
         --out)      OUT="$2"; shift 2 ;;
         --measure)  MEASURE="$2"; shift 2 ;;
         --measurement-evidence-status) MEASUREMENT_EVIDENCE_STATUS="$2"; shift 2 ;;
+        --measurement-build-manifest) MEASUREMENT_BUILD_MANIFEST="$2"; shift 2 ;;
+        --measurement-paired-calibration) MEASUREMENT_PAIRED_CALIBRATION=1; shift ;;
         --production-nucleus-before-sha256) PRODUCTION_NUCLEUS_BEFORE_SHA256="$2"; shift 2 ;;
         --production-runtime-image-before-sha256) PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256="$2"; shift 2 ;;
         --capsule)  CAPSULE_IN="$2"; shift 2 ;;
@@ -108,6 +112,10 @@ case "$MEASUREMENT_EVIDENCE_STATUS" in
     P1|P2) ;;
     *) echo "--measurement-evidence-status must be P1 or P2" >&2; exit 2 ;;
 esac
+if [ "$MEASUREMENT_PAIRED_CALIBRATION" -eq 1 ] && [ -z "$MEASUREMENT_BUILD_MANIFEST" ]; then
+    echo "--measurement-paired-calibration requires --measurement-build-manifest" >&2
+    exit 2
+fi
 
 case "$QEMU_ACCEL" in
     ""|tcg|kvm) ;;
@@ -261,6 +269,14 @@ if [ "$INTERACTIVE" -eq 0 ]; then
     QEMU_ARGS+=( -device isa-debug-exit )
 fi
 MEASUREMENT_IDENTITY_ARGS=()
+if [ -n "$MEASUREMENT_BUILD_MANIFEST" ]; then
+    MEASUREMENT_IDENTITY_ARGS+=(
+        --measurement-build-manifest "$MEASUREMENT_BUILD_MANIFEST"
+    )
+fi
+if [ "$MEASUREMENT_PAIRED_CALIBRATION" -eq 1 ]; then
+    MEASUREMENT_IDENTITY_ARGS+=( --paired-calibration )
+fi
 if [ -n "$PRODUCTION_NUCLEUS_BEFORE_SHA256" ]; then
     MEASUREMENT_IDENTITY_ARGS+=(
         --production-nucleus-before-sha256 "$PRODUCTION_NUCLEUS_BEFORE_SHA256"
@@ -290,6 +306,7 @@ else
         # itself before the first request is sent.
         python3 "$ROOT/host-tools/qemu-test/measure-channel.py" \
             --socket "$OUT/serial.sock" \
+            --qmp-socket "$OUT/qmp.sock" \
             --serial-log "$OUT/serial.log" \
             --stderr-log "$OUT/qemu.stderr" \
             --samples "$MEASURE" \
@@ -311,7 +328,8 @@ else
             -- qemu-system-x86_64 "${QEMU_ARGS[@]}" \
             -chardev "socket,id=tosserial,path=$OUT/serial.sock,server=on,wait=off" \
             -serial chardev:tosserial -display none \
-            -msg timestamp=on -trace "enable=serial_write,file=$OUT/serial.trace"
+            -qmp "unix:$OUT/qmp.sock,server=on,wait=off" \
+            -msg timestamp=on -trace "file=$OUT/serial.trace"
     elif [ -n "$EVENT_TIMESTAMPS" ]; then
         # This opt-in path retains the exact normal QEMU profile and verdict.
         # The helper only observes serial-byte arrival times for existing

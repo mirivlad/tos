@@ -5,13 +5,13 @@
 # `IPC_V1` §8 fixes what the relative budget is measured against: "a call to an
 # exported TOS Core function taking one 64-byte value parameter and returning
 # `unit`, executed by the same engine build, in the same process". This runs
-# that call between the same two markers the floor was measured between, on the
-# same clock, on the same machine profile, in the same boot shape.
+# that call between the same two markers as an adjacent empty observation, on
+# the same clock, in the same prepared process and in one boot.
 #
-# **Two boots, and the only difference between them is what sits between the
-# markers.** The first has nothing there and is the floor; the second has one
-# call. Both are reported, and neither is subtracted from the other: what the
-# pair is for is to say whether this instrument can resolve a call at all.
+# Every predeclared block contains one floor and one call with the same sequence
+# identity. Their order alternates by block. Neither is subtracted from the
+# other: adjacency controls boot, preparation and drift; the pair only decides
+# whether this instrument resolves the immutable denominator.
 #
 # Nothing here decides whether `8×` is provable. That needs the numerator, and
 # the numerator is not measured until the denominator is known to be resolvable.
@@ -64,7 +64,8 @@ production_image_before="$(sha256sum "$PRODUCTION_IMAGE" | cut -d' ' -f1)"
 before="$(sha256sum "$PRODUCTION_NUCLEUS" "$PRODUCTION_IMAGE")"
 
 (cd "$ROOT" && CARGO_TARGET_DIR="$TEST_TARGET" cargo build --release \
-    -p tos-nucleus --target x86_64-unknown-none --features test-measurement-port)
+    -p tos-nucleus --target x86_64-unknown-none \
+    --features test-measurement-no-preemption)
 (cd "$ROOT" && CARGO_TARGET_DIR="$TEST_TARGET" cargo build --release \
     -p tos-runtime-image --target x86_64-unknown-none --features test-measurement-call)
 
@@ -84,55 +85,94 @@ printf '/system/boot/init.tos\t%s\n/system/bench/call.tos\t%s\n' \
 python3 "$GITROOT/scripts/check-capsule-provenance.py" --root "$GITROOT" \
     --capsule "$OUT/measurement.bin" --manifest "$OUT/capsule.meta.json"
 
-# The floor, on the ordinary capsule and the channel-only image: nothing between
-# the markers.
-(cd "$ROOT" && CARGO_TARGET_DIR="$ROOT/target/test-measurement-port" cargo build --release \
-    -p tos-runtime-image --target x86_64-unknown-none --features test-measurement-port)
-bash "$HERE/run.sh" \
-    --out "$OUT/floor" \
-    --nucleus "$TEST_NUCLEUS" \
-    --runtime-image "$ROOT/target/test-measurement-port/x86_64-unknown-none/release/tos-runtime-image" \
-    --production-nucleus-before-sha256 "$production_nucleus_before" \
-    --production-runtime-image-before-sha256 "$production_image_before" \
-    --measurement-evidence-status "$EVIDENCE_STATUS" \
-    --measure 21 > "$OUT/floor.out" 2>&1 || { cat "$OUT/floor.out" >&2; fail "the floor boot did not complete"; }
-grep -E "^measure-channel:" "$OUT/floor.out" || true
+BUILD_MANIFEST="$OUT/measurement-build.json"
+python3 - "$GITROOT" "$TEST_TARGET" "$TEST_NUCLEUS" "$TEST_IMAGE" "$BUILD_MANIFEST" <<'PYTHON'
+import hashlib
+import json
+import subprocess
+import sys
+from pathlib import Path
 
-# The denominator, on the capsule that carries the benchmark.
+repository, target, nucleus, runtime_image, output = map(Path, sys.argv[1:])
+
+def sha256(path):
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+def build(package, artifact, features):
+    command = [
+        "cargo", "build", "--release", "-p", package,
+        "--target", "x86_64-unknown-none", "--features", ",".join(features),
+    ]
+    return {
+        "package": package,
+        "target": "x86_64-unknown-none",
+        "profile": "release",
+        "features": features,
+        "cargo_target_dir": str(target.resolve()),
+        "cargo_command": command,
+        "artifact_path": str(artifact.resolve()),
+        "artifact_sha256": sha256(artifact),
+    }
+
+manifest = {
+    "record_spdx_license": "CC-BY-SA-4.0",
+    "schema": "tos-measurement-build-v1",
+    "source_commit": subprocess.run(
+        ["git", "-C", str(repository), "rev-parse", "HEAD"],
+        check=True, capture_output=True, text=True,
+    ).stdout.strip(),
+    "builds": {
+        "nucleus": build(
+            "tos-nucleus", nucleus, ["test-measurement-no-preemption"]
+        ),
+        "runtime_image": build(
+            "tos-runtime-image", runtime_image, ["test-measurement-call"]
+        ),
+    },
+}
+output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+PYTHON
+
+# One boot, one prepared engine, and adjacent floor/call observations. The tag
+# selects only whether the already-prepared Work executes its immutable call.
 bash "$HERE/run.sh" \
-    --out "$OUT/call" \
+    --out "$OUT/paired" \
     --capsule "$OUT/measurement.bin" \
     --nucleus "$TEST_NUCLEUS" \
     --runtime-image "$TEST_IMAGE" \
     --production-nucleus-before-sha256 "$production_nucleus_before" \
     --production-runtime-image-before-sha256 "$production_image_before" \
     --measurement-evidence-status "$EVIDENCE_STATUS" \
-    --measure 21 > "$OUT/call.out" 2>&1 || { cat "$OUT/call.out" >&2; fail "the denominator boot did not complete"; }
-grep -E "^measure-channel:" "$OUT/call.out" || true
+    --measurement-build-manifest "$BUILD_MANIFEST" \
+    --measurement-paired-calibration \
+    --measure 21 > "$OUT/paired.out" 2>&1 || { cat "$OUT/paired.out" >&2; fail "the paired boot did not complete"; }
+grep -E "^measure-channel:" "$OUT/paired.out" || true
 
 # Every call has to have happened. A run whose engine refused them would show
 # the same interval shape and mean nothing.
 # The serial log carries the marker bytes as well as the text, so the line is
 # read out of the printable part of it rather than out of the raw stream.
-calls="$(tr -c '[:print:]\n' ' ' < "$OUT/call/serial.log" |
+calls="$(tr -c '[:print:]\n' ' ' < "$OUT/paired/serial.log" |
     sed -n 's/.*TOS\.RUN\.MEASURE\.ANSWERED samples=\([0-9]*\) calls=\([0-9]*\) refused=\([0-9]*\).*/\1 \2 \3/p' |
     tail -1)"
 [ -n "$calls" ] || fail "the measured process did not report what its calls did"
 set -- $calls
 [ "$3" = 0 ] || fail "$3 of the engine's calls were refused"
-[ "$2" = "$1" ] || fail "$1 samples but $2 calls"
+[ "$1" = 48 ] || fail "$1 answers, expected 48 adjacent observations"
+[ "$2" = 24 ] || fail "$2 calls, expected one in each of 24 blocks"
 
-python3 - "$OUT/floor/measurement.json" "$OUT/call/measurement.json" <<'PYTHON'
+python3 - "$OUT/paired/measurement.json" <<'PYTHON'
 import json, statistics, sys
 
-def load(path):
-    report = json.load(open(path))
-    if report["subtracted"] != "nothing":
-        raise SystemExit(f"{path}: something was subtracted")
-    return report["samples_us"]
-
-floor = load(sys.argv[1])
-call = load(sys.argv[2])
+report = json.load(open(sys.argv[1]))
+if report["subtracted"] != "nothing":
+    raise SystemExit(f"{sys.argv[1]}: something was subtracted")
+floor = report["floor_samples_us"]
+call = report["samples_us"]
 
 def line(name, values):
     ordered = sorted(values)
@@ -157,4 +197,4 @@ PYTHON
 
 echo "MEASUREMENT-DENOMINATOR: measured, not judged"
 echo "  the call is the one IPC_V1 section 8 names: exported, 64-byte value, unit result"
-echo "  same clock, same markers, same machine; the two boots differ only in what is between them"
+echo "  same boot, process, clock and markers; adjacent pair order alternates by block"

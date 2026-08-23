@@ -52,10 +52,10 @@ def render(paths: list[str]) -> bytes:
     parts = [
         "<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->\n\n",
         "# TOS — consolidated development specification\n\n",
-        "> **GENERATED FILE — DO NOT EDIT.**  \n",
+        "> **GENERATED FILE — DO NOT EDIT.**\\\n",
         "> This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.\n\n",
-        f"Version: {version}  \n",
-        f"Source-manifest SHA-256: `{digest}`  \n",
+        f"Version: {version}\\\n",
+        f"Source-manifest SHA-256: `{digest}`\\\n",
         "Generator: `tools/build-specification.py`\n\n",
         "---\n\n",
     ]

@@ -69,6 +69,10 @@ test-process-launch = []
 # wire without a system call. IOPL stays 0 and every other port faults exactly
 # as it does in the production build. Never selected by the normal build.
 test-measurement-port = []
+# Conservative ADR-0066 floor/denominator profile: the observer calibration and
+# fixed in-process call run without timer excursions. The IPC numerator never
+# selects this feature and must prove preemption active.
+test-measurement-no-preemption = ["test-measurement-port"]
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

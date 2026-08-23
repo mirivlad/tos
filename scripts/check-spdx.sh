@@ -10,15 +10,15 @@
 # .tsv were never covered at all. A gate that quietly ignores what it does not
 # recognise reports success it has not earned.
 #
-# The gate checks that a licence is declared and that it is one of the three
-# licences of the LICENSE.md matrix. It deliberately does NOT decide which of
-# the three a given file should use: that is a licensing decision for the
+# The gate checks that a licence is declared and that it is one of the
+# licences of the LICENSE.md matrix. It deliberately does NOT decide which one
+# a given file should use: that is a licensing decision for the
 # maintainer, not something a shell script should enforce by directory.
 set -eu
 cd "$(dirname "$0")/.."
 
 # Identifiers permitted by LICENSE.md.
-allowed='GPL-3.0-or-later|Apache-2.0|CC-BY-SA-4.0|Unicode-3.0|GPL-3.0-or-later OR Apache-2.0'
+allowed='GPL-3.0-or-later|Apache-2.0|CC-BY-SA-4.0|Unicode-3.0|MIT|GPL-3.0-or-later OR Apache-2.0'
 
 fail=0
 checked=0

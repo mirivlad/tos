@@ -9,20 +9,20 @@ TOS: the guest is never told what time it is, and nothing here becomes part of
 the system's semantics, capability surface or ABI. The system is measured the
 way a circuit is measured — the oscilloscope does not become a component.
 
-**The protocol.** The observer sends `GO | n`, the observed process does the
-thing being measured, and answers `DONE | n`. The echo is what makes a sample
-causal rather than coincidental: a `DONE` that does not name the `GO` it
-followed is discarded, never repaired.
+**The protocol.** The observer sends `GO | tag`, the observed process does the
+thing selected by the tag, and answers `OPEN | tag`, `CLOSE | tag`. The echo is
+what makes a sample causal rather than coincidental: an answer that does not
+name the exact planned request invalidates the whole series.
 
 **Where the clock is.** On QEMU's side of the wire, not this one. The diagnostic
 `log` backend prefixes events with a microsecond `gettimeofday` value.  The
-pinned conformance candidate uses QEMU's binary `simple` backend: integer
-nanoseconds from `CLOCK_MONOTONIC`, taken by `trace_record_start` immediately
-before the device model handles `serial_write`.  Both trace in the vCPU thread,
-synchronously at the guest's `out` boundary. Nothing this program does with its
-own scheduling can move that timestamp. The socket is kept for the *protocol*:
-it carries the request that starts a sample and the stop that ends the run, and
-it is not the clock.
+pinned conformance observer uses integer nanoseconds from
+`CLOCK_THREAD_CPUTIME_ID` in the sole TCG vCPU thread. It records OPEN after the
+UART has handled that marker and CLOSE before the UART handles it, then emits
+both untouched timestamps in one binary `simple` trace record. Nothing this
+program does with its own scheduling can move either boundary. The socket is
+kept for the *protocol*: it carries requests, replies and stop, and is not the
+clock.
 
 That matters because the obvious alternative is wrong in a direction that
 flatters the system. A reader on this side stamps a marker when it manages to
@@ -30,12 +30,11 @@ read it; if it is late to `OPEN` while the guest is already working, the interva
 it reports is **shorter** than the truth. An instrument that errs towards
 passing is not an instrument.
 
-**What a reading contains.** `t(CLOSE) - t(OPEN)`, both taken inside QEMU: the
-work, plus whatever the `OPEN` write itself still costs after its timestamp was
-taken. Every reading contains that floor and **none of it is subtracted**. The
-floor is measured by the same instrument over a run in which the work is
-nothing, and is published beside the result. A reading is therefore an upper
-bound on the work, which is the direction that makes a budget claim honest.
+**What a reading contains.** `t(CLOSE) - t(OPEN)`, both taken inside QEMU: all
+vCPU execution after the opening marker is delivered and before the closing
+marker is delivered. No transport cost, calibration value or floor is
+subtracted. The empty interval is measured by the same instrument and published
+beside the result; it demonstrates resolution but never corrects a sample.
 
 **Why the reader still spins.** It no longer times anything, but it must not be
 the reason a sample is late: the next request is sent when the previous answer is
@@ -62,7 +61,9 @@ from pathlib import Path
 GO = 0xC0
 OPEN = 0x80
 CLOSE = 0xA0
-SEQUENCE = 0x1F
+WORK = 0x10
+SEQUENCE = 0x0F
+TAG = WORK | SEQUENCE
 STOP = 0xE0
 READY = 0xFF
 WARMUPS = 3
@@ -72,6 +73,19 @@ SIMPLE_HEADER_MAGIC = 0xF2B177CB0AA429B4
 SIMPLE_HEADER_VERSION = 4
 SIMPLE_MAPPING_RECORD = 0
 SIMPLE_EVENT_RECORD = 1
+SIMPLE_TRACE_CLOCK = "CLOCK_THREAD_CPUTIME_ID pair on the one TCG vCPU thread"
+OBSERVER_SERIAL_SOURCE_SHA256 = (
+    "46548454bc48e12b430795fc69cb19f0349bbef3a63ee37c23aa365713978b91"
+)
+OBSERVER_SERIAL_MODIFIED_SHA256 = (
+    "5fb72ef50b75f630e68260c487760d5ad99f4fba28ba1bf573439abc4fe7a876"
+)
+OBSERVER_EVENTS_SOURCE_SHA256 = (
+    "64f70f77897a5e52957f12d55dcb5b0d09f692a56ed70afb757f5f8f5d16e364"
+)
+OBSERVER_EVENTS_MODIFIED_SHA256 = (
+    "7828c2cf29a8ecbc9da05210a29b6132efdc3215d9a72df21cae4841fdb0d466"
+)
 SIMPLE_OBSERVER_CONFIGURE = [
     "--prefix=/",
     "--target-list=x86_64-softmmu",
@@ -98,6 +112,7 @@ SIMPLE_CFLAGS_IDENTITY = (
 def arguments() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--socket", required=True, type=Path)
+    parser.add_argument("--qmp-socket", required=True, type=Path)
     parser.add_argument("--serial-log", required=True, type=Path)
     parser.add_argument("--stderr-log", required=True, type=Path)
     parser.add_argument("--samples", required=True, type=int)
@@ -117,14 +132,18 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--production-nucleus-before-sha256")
     parser.add_argument("--production-runtime-image-before-sha256")
     parser.add_argument("--quantum-source", required=True, type=Path)
+    parser.add_argument("--measurement-build-manifest", type=Path)
+    parser.add_argument("--paired-calibration", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command[:1] == ["--"]:
         args.command = args.command[1:]
     if not args.command:
         parser.error("the QEMU command is required after --")
-    if args.samples < 1 or args.samples > SEQUENCE:
-        parser.error(f"--samples must be 1..{SEQUENCE}")
+    if args.samples < 1 or args.samples > TAG:
+        parser.error(f"--samples must be 1..{TAG}")
+    if args.paired_calibration and args.measurement_build_manifest is None:
+        parser.error("--paired-calibration requires --measurement-build-manifest")
     return args
 
 
@@ -145,7 +164,7 @@ class Wire:
             connection.setblocking(False)
             self.socket = connection
             return
-        raise SystemExit("measure-channel: QEMU never offered its serial socket")
+        raise Invalid("QEMU never offered its serial socket")
 
     def send(self, byte: int) -> int:
         """Writes one byte and returns the moment it was written."""
@@ -208,6 +227,74 @@ class Wire:
         return None
 
 
+class Qmp:
+    """The control plane that bounds trace collection to the sample series."""
+
+    def __init__(self, path: Path, deadline: float) -> None:
+        self.next_id = 1
+        while time.monotonic() < deadline:
+            try:
+                connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                connection.connect(str(path))
+            except (FileNotFoundError, ConnectionRefusedError, OSError):
+                time.sleep(0.01)
+                continue
+            self.socket = connection
+            self.stream = connection.makefile("rwb", buffering=0)
+            greeting = self._read(deadline)
+            if "QMP" not in greeting:
+                raise Invalid("QMP did not send its greeting")
+            self.execute("qmp_capabilities", {}, deadline)
+            return
+        raise Invalid("QEMU never offered its QMP socket")
+
+    def _read(self, deadline: float) -> dict[str, object]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise Invalid("QMP response timed out")
+        self.socket.settimeout(remaining)
+        try:
+            line = self.stream.readline()
+        except OSError as error:
+            raise Invalid(f"QMP response failed: {error}") from error
+        if not line:
+            raise Invalid("QMP disconnected")
+        try:
+            response = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise Invalid("QMP sent malformed JSON") from error
+        if not isinstance(response, dict):
+            raise Invalid("QMP response is not an object")
+        return response
+
+    def execute(
+        self, command: str, arguments: dict[str, object], deadline: float
+    ) -> None:
+        command_id = self.next_id
+        self.next_id += 1
+        request = {"execute": command, "arguments": arguments, "id": command_id}
+        try:
+            self.stream.write(json.dumps(request).encode("utf-8") + b"\n")
+        except OSError as error:
+            raise Invalid(f"QMP {command} request failed: {error}") from error
+        while True:
+            response = self._read(deadline)
+            if response.get("id") != command_id:
+                continue
+            if "error" in response:
+                raise Invalid(f"QMP {command} failed: {response['error']}")
+            if "return" not in response:
+                raise Invalid(f"QMP {command} returned no verdict")
+            return
+
+    def trace_event(self, name: str, enabled: bool, deadline: float) -> None:
+        self.execute(
+            "trace-event-set-state",
+            {"name": name, "enable": enabled},
+            deadline,
+        )
+
+
 def _text_trace(path: Path) -> tuple[list[tuple[int, int]], dict[str, str], str]:
     """Decode the QEMU log backend without rounding its decimal timestamp."""
     markers: list[tuple[int, int]] = []
@@ -239,11 +326,14 @@ def _text_trace(path: Path) -> tuple[list[tuple[int, int]], dict[str, str], str]
     return markers, observer, clock
 
 
-def _simple_trace(path: Path) -> tuple[list[tuple[int, int]], dict[str, str], str]:
+def _simple_trace(
+    path: Path, clock_identity: str | None
+) -> tuple[list[tuple[int, int]], dict[str, str], str]:
     """Independently decode the pinned QEMU simple trace format version 4.
 
     The retained evidence must not depend on a pretty-printer's output.  This
-    decoder accepts only the format fields needed to identify `serial_write`,
+    decoder accepts only the format fields needed to identify the measurement
+    pair (or the older diagnostic `serial_write` record),
     and refuses unknown, truncated, ambiguous, or loss-reporting records.
     """
     data = path.read_bytes()
@@ -308,30 +398,52 @@ def _simple_trace(path: Path) -> tuple[list[tuple[int, int]], dict[str, str], st
             continue
         if event_id not in mappings:
             raise Invalid(f"unmapped QEMU simple trace event id {event_id}")
-        if mappings[event_id] != "serial_write":
-            continue
-        if payload_length != 16:
-            raise Invalid("invalid QEMU simple trace serial_write payload")
-        address, value = struct.unpack("=QQ", payload)
-        if address == 0 and value & 0x80:
-            markers.append((value, timestamp_ns))
+        event_name = mappings[event_id]
+        if event_name == "tos_measurement_pair":
+            if payload_length != 32:
+                raise Invalid("invalid QEMU measurement-pair payload")
+            opened, closed, open_ns, close_ns = struct.unpack("=QQQQ", payload)
+            markers.extend(((opened, open_ns), (closed, close_ns)))
+        elif event_name == "serial_write" and clock_identity != SIMPLE_TRACE_CLOCK:
+            if payload_length != 16:
+                raise Invalid("invalid QEMU simple trace serial_write payload")
+            address, value = struct.unpack("=QQ", payload)
+            if address == 0 and value & 0x80:
+                markers.append((value, timestamp_ns))
 
-    if "serial_write" not in names:
-        raise Invalid("QEMU simple trace has no serial_write mapping")
-    observer = {
-        "backend": "QEMU simple trace serial_write",
-        "clock": "CLOCK_MONOTONIC, nanosecond binary timestamp",
-        "timestamp_point": "trace_record_start before serial_write in the vCPU thread",
-        "trace_format": "QEMU simple trace version 4",
-    }
-    clock = (
-        "QEMU trace timestamp (simple backend, CLOCK_MONOTONIC, nanoseconds) "
-        "taken immediately before the device model handles the guest's write"
-    )
+    if clock_identity == SIMPLE_TRACE_CLOCK:
+        if "tos_measurement_pair" not in names:
+            raise Invalid("QEMU simple trace has no measurement-pair mapping")
+        observer = {
+            "backend": "QEMU simple trace symmetric UART measurement pair",
+            "clock": SIMPLE_TRACE_CLOCK,
+            "timestamp_point": "after OPEN handling and before CLOSE handling in the vCPU thread",
+            "trace_format": "QEMU simple trace version 4",
+        }
+        clock = (
+            "QEMU observer pair (simple backend, CLOCK_THREAD_CPUTIME_ID, "
+            "nanoseconds of the one TCG vCPU thread) taken after OPEN handling "
+            "and before CLOSE handling"
+        )
+    else:
+        if "serial_write" not in names:
+            raise Invalid("QEMU simple trace has no serial_write mapping")
+        observer = {
+            "backend": "QEMU simple trace serial_write",
+            "clock": "CLOCK_MONOTONIC, nanosecond binary timestamp",
+            "timestamp_point": "trace_record_start before serial_write in the vCPU thread",
+            "trace_format": "QEMU simple trace version 4",
+        }
+        clock = (
+            "QEMU trace timestamp (simple backend, CLOCK_MONOTONIC, nanoseconds) "
+            "taken immediately before the device model handles the guest's write"
+        )
     return markers, observer, clock
 
 
-def read_trace(path: Path) -> tuple[list[tuple[int, int]], dict[str, str], str]:
+def read_trace(
+    path: Path, simple_clock: str | None = None
+) -> tuple[list[tuple[int, int]], dict[str, str], str]:
     """Every marker byte QEMU wrote, plus the identity of its trace clock.
 
     A line is `pid@seconds.microseconds:serial_write write addr 0xNN val 0xNN`.
@@ -341,7 +453,7 @@ def read_trace(path: Path) -> tuple[list[tuple[int, int]], dict[str, str], str]:
     """
     prefix = path.read_bytes()[:24]
     if len(prefix) >= 8 and struct.unpack_from("=Q", prefix)[0] == SIMPLE_HEADER_EVENT_ID:
-        return _simple_trace(path)
+        return _simple_trace(path, simple_clock)
     if b"\x00" in prefix:
         raise Invalid("trace is neither QEMU log text nor QEMU simple version 4")
     return _text_trace(path)
@@ -458,6 +570,7 @@ def observer_build_manifest(qemu: Path) -> dict[str, object] | None:
         ),
         "qemu_sha256": sha256(qemu),
         "trace_backends": ["simple"],
+        "trace_clock": SIMPLE_TRACE_CLOCK,
         "network_downloads": "disabled",
         "source_date_epoch": 1782452340,
         "build_path_remap": "/usr/src/qemu-10.0.11",
@@ -470,6 +583,23 @@ def observer_build_manifest(qemu: Path) -> dict[str, object] | None:
                 f"observer manifest {field} is {manifest.get(field)!r}, "
                 f"expected {expected!r}"
             )
+    modifications = manifest.get("observer_modifications")
+    expected_modifications = [
+        {
+            "path": "hw/char/serial.c",
+            "upstream_sha256": OBSERVER_SERIAL_SOURCE_SHA256,
+            "modified_sha256": OBSERVER_SERIAL_MODIFIED_SHA256,
+            "scope": "capture after OPEN and before CLOSE; UART behavior unchanged",
+        },
+        {
+            "path": "hw/char/trace-events",
+            "upstream_sha256": OBSERVER_EVENTS_SOURCE_SHA256,
+            "modified_sha256": OBSERVER_EVENTS_MODIFIED_SHA256,
+            "scope": "one measurement-pair event carrying both raw timestamps",
+        },
+    ]
+    if modifications != expected_modifications:
+        raise Invalid("observer manifest does not bind the symmetric marker modification")
     engine_relative = manifest.get("qemu_engine_relative_path")
     if engine_relative != "qemu-system-x86_64.real":
         raise Invalid(f"observer manifest engine path is {engine_relative!r}")
@@ -512,6 +642,103 @@ def observer_build_manifest(qemu: Path) -> dict[str, object] | None:
     }
 
 
+def measurement_build_manifest(
+    path: Path | None,
+    artifacts: dict[str, Path],
+    source_commit: str,
+    paired_calibration: bool,
+) -> dict[str, object] | None:
+    """Bind declared Cargo features to the exact measured guest binaries."""
+    if path is None:
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise Invalid(f"cannot read measurement build manifest {path}: {error}") from error
+    if not isinstance(manifest, dict):
+        raise Invalid("measurement build manifest is not an object")
+    required_top = {
+        "record_spdx_license": "CC-BY-SA-4.0",
+        "schema": "tos-measurement-build-v1",
+        "source_commit": source_commit,
+    }
+    for field, expected in required_top.items():
+        if manifest.get(field) != expected:
+            raise Invalid(
+                f"measurement build manifest {field} is {manifest.get(field)!r}, "
+                f"expected {expected!r}"
+            )
+    builds = manifest.get("builds")
+    if not isinstance(builds, dict) or set(builds) != {"nucleus", "runtime_image"}:
+        raise Invalid("measurement build manifest must name nucleus and runtime_image")
+    required_builds = {
+        "nucleus": {
+            "package": "tos-nucleus",
+            "artifact": artifacts["measurement_nucleus"],
+            "features": ["test-measurement-no-preemption"],
+        },
+        "runtime_image": {
+            "package": "tos-runtime-image",
+            "artifact": artifacts["measurement_runtime_image"],
+            "features": ["test-measurement-call"],
+        },
+    }
+    for name, required in required_builds.items():
+        record = builds.get(name)
+        if not isinstance(record, dict):
+            raise Invalid(f"measurement build {name} is not an object")
+        expected_fields = {
+            "package": required["package"],
+            "target": "x86_64-unknown-none",
+            "profile": "release",
+            "artifact_path": str(required["artifact"].resolve()),
+            "artifact_sha256": sha256(required["artifact"]),
+        }
+        for field, expected in expected_fields.items():
+            if record.get(field) != expected:
+                raise Invalid(
+                    f"measurement build {name} {field} is {record.get(field)!r}, "
+                    f"expected {expected!r}"
+                )
+        features = record.get("features")
+        if (
+            not isinstance(features, list)
+            or not all(isinstance(feature, str) for feature in features)
+            or len(features) != len(set(features))
+        ):
+            raise Invalid(f"measurement build {name} features are invalid")
+        expected_command = [
+            "cargo",
+            "build",
+            "--release",
+            "-p",
+            required["package"],
+            "--target",
+            "x86_64-unknown-none",
+            "--features",
+            ",".join(features),
+        ]
+        if record.get("cargo_command") != expected_command:
+            raise Invalid(f"measurement build {name} cargo command is not exact")
+        target_dir = record.get("cargo_target_dir")
+        if not isinstance(target_dir, str) or not Path(target_dir).is_absolute():
+            raise Invalid(f"measurement build {name} target directory is not absolute")
+    if paired_calibration:
+        expected_features = {
+            name: required["features"] for name, required in required_builds.items()
+        }
+        for name, expected in expected_features.items():
+            if builds[name].get("features") != expected:
+                raise Invalid(
+                    f"paired calibration requires {name} features {expected!r}"
+                )
+    return {
+        "path": str(path.resolve()),
+        "sha256": sha256(path),
+        "contents": manifest,
+    }
+
+
 def evidence_status(
     requested: str, dirty: bool, production_isolation: bool, github_actions: bool
 ) -> str:
@@ -545,6 +772,7 @@ def environment(args: argparse.Namespace) -> dict[str, object]:
         raise Invalid(f"identity input is missing: {', '.join(missing)}")
 
     status = output(["git", "-C", str(repository), "status", "--porcelain"])
+    source_commit = output(["git", "-C", str(repository), "rev-parse", "HEAD"])
     cpu_model = "unknown"
     try:
         for line in Path("/proc/cpuinfo").read_text(errors="replace").splitlines():
@@ -570,16 +798,37 @@ def environment(args: argparse.Namespace) -> dict[str, object]:
 
     qemu_path = Path(qemu).resolve()
     build_manifest = observer_build_manifest(qemu_path)
+    measured_build = measurement_build_manifest(
+        args.measurement_build_manifest,
+        paths,
+        source_commit,
+        args.paired_calibration,
+    )
+    nucleus_features: list[str] = []
+    if measured_build is not None:
+        nucleus_features = measured_build["contents"]["builds"]["nucleus"][
+            "features"
+        ]
+    scheduler_preemption = (
+        "inactive"
+        if "test-measurement-no-preemption" in nucleus_features
+        else "active"
+        if measured_build is not None
+        else "unbound"
+    )
+    retained_status = evidence_status(
+        args.evidence_status,
+        bool(status),
+        production_isolation_proven,
+        os.environ.get("GITHUB_ACTIONS") == "true",
+    )
+    if measured_build is None:
+        retained_status = "exploratory"
 
     return {
-        "evidence_status": evidence_status(
-            args.evidence_status,
-            bool(status),
-            production_isolation_proven,
-            os.environ.get("GITHUB_ACTIONS") == "true",
-        ),
+        "evidence_status": retained_status,
         "source": {
-            "commit": output(["git", "-C", str(repository), "rev-parse", "HEAD"]),
+            "commit": source_commit,
             "dirty": bool(status),
         },
         "observer": {
@@ -594,9 +843,13 @@ def environment(args: argparse.Namespace) -> dict[str, object]:
             "rustc": output(["rustc", "--version", "--verbose"]),
         },
         "scheduler": {
-            "preemption": "active",
+            "preemption": scheduler_preemption,
+            "binding": "measurement-build-manifest"
+            if measured_build is not None
+            else "unbound",
             "quantum_count": quantum_count(args.quantum_source),
         },
+        "measurement_build": measured_build,
         "production_artifact_isolation": {
             name: {
                 "before_measurement_build_sha256": production_before[name],
@@ -614,17 +867,35 @@ def environment(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
-def pair_markers(markers: list[tuple[int, int]], warmups: int) -> list[float]:
-    """Intervals of `OPEN`/`CLOSE` pairs that name the same request.
+def measurement_plan(blocks: int, paired: bool) -> list[int]:
+    """Return the complete, predeclared request-tag sequence."""
+    plan: list[int] = []
+    for index in range(blocks):
+        sequence = index % (SEQUENCE + 1)
+        if paired and index % 2:
+            plan.extend((WORK | sequence, sequence))
+        elif paired:
+            plan.extend((sequence, WORK | sequence))
+        else:
+            plan.append(sequence)
+    return plan
+
+
+def pair_markers(
+    markers: list[tuple[int, int]], expected_tags: list[int]
+) -> list[tuple[int, float]]:
+    """Intervals whose complete tags match the predeclared request plan.
 
     A pair whose two halves disagree is not a measurement of anything and
-    invalidates the run rather than being dropped or repaired.
+    invalidates the run rather than being dropped or repaired. A valid duplicate
+    is still invalid when the plan calls for another tag: count alone cannot
+    allow one completed observation to replace a missing one.
 
     Timestamps stay integer nanoseconds through pairing.  A timestamp that goes
     backwards, or an interval of zero or less, makes the run invalid. Nothing
     is clamped, dropped or re-ordered.
     """
-    samples: list[float] = []
+    samples: list[tuple[int, float]] = []
     opened: tuple[int, int] | None = None
     previous = None
     for value, when in markers:
@@ -634,24 +905,32 @@ def pair_markers(markers: list[tuple[int, int]], warmups: int) -> list[float]:
             )
         previous = when
         family = value & 0xE0
-        sequence = value & SEQUENCE
+        tag = value & TAG
         if family == OPEN:
             if opened is not None:
-                open_sequence, _ = opened
-                if sequence == open_sequence:
-                    raise Invalid(f"sample {sequence} opened twice")
+                open_tag, _ = opened
+                if tag == open_tag:
+                    raise Invalid(f"sample tag {tag} opened twice")
                 raise Invalid(
-                    f"sample {sequence} opened while sample {open_sequence} is still open"
+                    f"sample tag {tag} opened while sample tag {open_tag} is still open"
                 )
-            opened = (sequence, when)
+            index = len(samples)
+            if index >= len(expected_tags):
+                raise Invalid(f"unexpected sample tag {tag} after the complete plan")
+            expected = expected_tags[index]
+            if tag != expected:
+                raise Invalid(
+                    f"sample {index} has tag {tag}, expected tag {expected}"
+                )
+            opened = (tag, when)
         elif family == CLOSE:
             if opened is None:
-                raise Invalid(f"sample {sequence} closed without an open")
-            open_sequence, open_when = opened
-            if sequence != open_sequence:
+                raise Invalid(f"sample tag {tag} closed without an open")
+            open_tag, open_when = opened
+            if tag != open_tag:
                 raise Invalid(
-                    f"close for sample {sequence} does not match open sample "
-                    f"{open_sequence}"
+                    f"close for sample tag {tag} does not match open sample tag "
+                    f"{open_tag}"
                 )
             interval = (when - open_when) / 1_000.0
             if interval <= 0:
@@ -659,12 +938,45 @@ def pair_markers(markers: list[tuple[int, int]], warmups: int) -> list[float]:
                     f"an interval of {interval:.3f} us: the two markers of one "
                     "sample carry the same time or worse"
                 )
-            samples.append(interval)
+            samples.append((tag, interval))
             opened = None
     if opened is not None:
-        sequence, _ = opened
-        raise Invalid(f"sample {sequence} was opened but never closed")
-    return samples[warmups:]
+        tag, _ = opened
+        raise Invalid(f"sample tag {tag} was opened but never closed")
+    if len(samples) != len(expected_tags):
+        raise Invalid(
+            f"trace completed {len(samples)} of {len(expected_tags)} planned samples"
+        )
+    return samples
+
+
+def split_paired_samples(
+    samples: list[tuple[int, float]], warmup_blocks: int
+) -> tuple[list[float], list[float], list[str]]:
+    """Split adjacent same-sequence floor/call blocks without re-pairing."""
+    if len(samples) % 2:
+        raise Invalid("paired calibration contains an incomplete block")
+    floor: list[float] = []
+    call: list[float] = []
+    order: list[str] = []
+    for block_index in range(len(samples) // 2):
+        first_tag, first_value = samples[block_index * 2]
+        second_tag, second_value = samples[block_index * 2 + 1]
+        if first_tag & SEQUENCE != second_tag & SEQUENCE:
+            raise Invalid(f"paired block {block_index} uses two sequence identities")
+        if bool(first_tag & WORK) == bool(second_tag & WORK):
+            raise Invalid(f"paired block {block_index} does not contain floor and call")
+        if block_index < warmup_blocks:
+            continue
+        if first_tag & WORK:
+            call.append(first_value)
+            floor.append(second_value)
+            order.append("call-floor")
+        else:
+            floor.append(first_value)
+            call.append(second_value)
+            order.append("floor-call")
+    return floor, call, order
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -691,10 +1003,11 @@ def main() -> int:
     except Invalid as invalid:
         print(f"measure-channel: environment invalid: {invalid}", file=sys.stderr)
         return 2
-    for path in (args.serial_log, args.stderr_log):
+    for path in (args.serial_log, args.stderr_log, args.qmp_socket):
         path.parent.mkdir(parents=True, exist_ok=True)
-    if args.socket.exists():
-        args.socket.unlink()
+    for path in (args.socket, args.qmp_socket):
+        if path.exists():
+            path.unlink()
 
     started = time.monotonic()
     deadline = started + args.timeout
@@ -703,7 +1016,16 @@ def main() -> int:
             args.command, stdout=subprocess.DEVNULL, stderr=stderr
         )
         try:
+            qmp = Qmp(args.qmp_socket, deadline)
             wire = Wire(args.socket, deadline)
+            build_manifest = run_environment["observer"]["build_manifest"]
+            trace_event = "serial_write"
+            if (
+                build_manifest is not None
+                and build_manifest["contents"].get("trace_clock")
+                == SIMPLE_TRACE_CLOCK
+            ):
+                trace_event = "tos_measurement_pair"
             # Until this arrives the far end of the wire is the firmware, not
             # the process being measured.
             if not wire.wait_for(READY, deadline):
@@ -712,27 +1034,31 @@ def main() -> int:
                     file=sys.stderr,
                 )
                 args.serial_log.write_bytes(bytes(wire.log))
+                if process.poll() is None:
+                    process.terminate()
                 return 1
-            samples: list[float] = []
-            discarded = 0
-            total = WARMUPS + args.samples
-            for index in range(total):
-                sequence = index % (SEQUENCE + 1)
+            qmp.trace_event(trace_event, True, deadline)
+            reader_pairs: list[tuple[int, float]] = []
+            total_blocks = WARMUPS + args.samples
+            expected_tags = measurement_plan(total_blocks, args.paired_calibration)
+            for index, tag in enumerate(expected_tags):
                 # The guest is still booting for the first request; give the
                 # whole remaining budget to each and let the timeout decide.
-                wire.send(GO | sequence)
+                wire.send(GO | tag)
                 opened = wire.read_until(OPEN, deadline)
                 closed = wire.read_until(CLOSE, deadline)
                 if opened is None or closed is None:
                     break
                 (open_byte, open_at), (close_byte, close_at) = opened, closed
-                if open_byte & SEQUENCE != sequence or close_byte & SEQUENCE != sequence:
-                    # Causality, not tidiness: a pair that names another request
-                    # is not a measurement of this one.
-                    discarded += 1
-                    continue
-                if index >= WARMUPS:
-                    samples.append((close_at - open_at) / 1000.0)
+                open_tag = open_byte & TAG
+                close_tag = close_byte & TAG
+                if open_tag != tag or close_tag != tag:
+                    raise Invalid(
+                        f"live sample {index} answered tags {open_tag}/{close_tag}, "
+                        f"expected tag {tag}"
+                    )
+                reader_pairs.append((tag, (close_at - open_at) / 1000.0))
+            qmp.trace_event(trace_event, False, deadline)
             wire.send(STOP)
             # The boot is not over when the samples are: the process leaves the
             # loop, ends, and the nucleus halts. Those bytes are the ordinary
@@ -743,6 +1069,11 @@ def main() -> int:
                 if not wire._fill(deadline):
                     break
             args.serial_log.write_bytes(bytes(wire.log))
+        except Invalid as invalid:
+            print(f"measure-channel: observer control invalid: {invalid}", file=sys.stderr)
+            if process.poll() is None:
+                process.terminate()
+            return 1
         finally:
             try:
                 process.wait(timeout=max(1.0, deadline - time.monotonic()))
@@ -754,42 +1085,53 @@ def main() -> int:
                     process.kill()
                     process.wait()
 
-    if discarded:
+    if len(reader_pairs) != len(expected_tags):
         print(
-            f"measure-channel: {discarded} answer(s) did not name their request",
+            f"measure-channel: {len(reader_pairs)} of {len(expected_tags)} "
+            "planned live samples arrived",
             file=sys.stderr,
         )
         return 1
-    if len(samples) != args.samples:
-        print(
-            f"measure-channel: {len(samples)} of {args.samples} samples arrived",
-            file=sys.stderr,
-        )
-        return 1
-    observed = samples
     if not (args.trace and args.trace.is_file()):
         print("measure-channel: no trace file: QEMU produced no clock", file=sys.stderr)
         return 1
     try:
-        markers, observer, trace_clock = read_trace(args.trace)
+        build_manifest = run_environment["observer"]["build_manifest"]
+        simple_clock = None
+        if build_manifest is not None:
+            simple_clock = build_manifest["contents"].get("trace_clock")
+        markers, observer, trace_clock = read_trace(args.trace, simple_clock)
         run_environment["observer"].update(observer)
         if (
-            observer["backend"] == "QEMU simple trace serial_write"
+            observer["backend"].startswith("QEMU simple trace")
             and run_environment["observer"]["build_manifest"] is None
         ):
             run_environment["evidence_status"] = "exploratory"
-        samples = pair_markers(markers, WARMUPS)
+        trace_pairs = pair_markers(markers, expected_tags)
     except Invalid as invalid:
         print(f"measure-channel: measurement invalid: {invalid}", file=sys.stderr)
         return 1
-    if len(samples) != args.samples:
-        print(
-            f"measure-channel: the trace holds {len(samples)} pair(s) of {args.samples}",
-            file=sys.stderr,
+    if args.paired_calibration:
+        floor_samples, samples, pair_order = split_paired_samples(
+            trace_pairs, WARMUPS
         )
+        floor_reader_samples, observed, reader_order = split_paired_samples(
+            reader_pairs, WARMUPS
+        )
+        if reader_order != pair_order:
+            print("measure-channel: live and trace pair orders differ", file=sys.stderr)
+            return 1
+    else:
+        floor_samples = []
+        pair_order = []
+        samples = [value for _tag, value in trace_pairs[WARMUPS:]]
+        observed = [value for _tag, value in reader_pairs[WARMUPS:]]
+        floor_reader_samples = []
+    if len(samples) != args.samples or (
+        args.paired_calibration and len(floor_samples) != args.samples
+    ):
+        print("measure-channel: the trace does not hold the complete sample plan", file=sys.stderr)
         return 1
-
-
     report = {
         "samples_us": samples,
         # The same intervals as this program's own reader saw them, for one
@@ -807,6 +1149,22 @@ def main() -> int:
         "subtracted": "nothing",
         "environment": run_environment,
     }
+    if args.paired_calibration:
+        report.update(
+            {
+                "measurement_mode": "adjacent-floor-call-pairs-v1",
+                "floor_samples_us": floor_samples,
+                "floor_reader_samples_us": floor_reader_samples,
+                "pair_order": pair_order,
+                "floor_statistics": {
+                    "median_us": statistics.median(floor_samples),
+                    "p99_us": percentile(floor_samples, 0.99),
+                    "min_us": min(floor_samples),
+                    "max_us": max(floor_samples),
+                    "jitter_us": max(floor_samples) - min(floor_samples),
+                },
+            }
+        )
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(encode_report(report))

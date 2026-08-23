@@ -14,8 +14,13 @@ TOS uses established licenses rather than a project-specific license. This repos
 | Code fragments embedded in documentation, unless a fragment says otherwise | dual licensed | `GPL-3.0-or-later OR Apache-2.0` |
 | Network services intentionally designated in their own directory | GNU Affero General Public License version 3 or later | `AGPL-3.0-or-later` |
 | Vendored Unicode Character Database data and its generated normalization tables | Unicode License v3 | `Unicode-3.0` |
+| QEMU observer build and patch tooling explicitly marked for GPLv2-compatible host instrumentation | MIT License | `MIT` |
 
 No directory becomes AGPL-licensed merely because it communicates over a network. An AGPL component requires an explicit ADR and SPDX declaration.
+
+The MIT row is narrow: it exists so code inserted into the external
+GPL-2.0-only QEMU test instrument has a compatible grant. It does not relicense
+the TOS nucleus, runtime, system services or general host tooling.
 
 ## Why GPLv3-or-later for the operating system
 
@@ -56,6 +61,7 @@ Examples:
 The corresponding license texts are stored in `LICENSES/`:
 
 - `LICENSES/GPL-3.0-or-later.txt`
+- `LICENSES/MIT.txt`
 - `LICENSES/Apache-2.0.txt`
 - `LICENSES/CC-BY-SA-4.0.txt`
 - `LICENSES/Unicode-3.0.txt` for the UCD material recorded in `THIRD_PARTY.toml`

@@ -2,8 +2,9 @@
 
 # Stage 3 QEMU simple observer P1
 
-Evidence level: **P1, locally measured**. Verdict: **observer candidate
-qualified locally; not P2 and not IPC conformance**.
+Evidence level: **P1, locally measured historical diagnostic**. Verdict:
+**this series separated, but subsequent clean repetitions rejected the
+unmodified observer; not P2 and not IPC conformance**.
 
 ## Exact identity
 
@@ -59,8 +60,8 @@ Each boot used three warm-ups followed by 21 individual samples:
 The complete floor range ends **2.671 µs below** the complete call range. The
 floor is 25.7% of the call at the median and 40.4% at nearest-rank p99. Unlike
 the rejected text-log observer, these distributions do not overlap in this
-series, so this observer resolves the immutable denominator locally without
-subtraction or selected samples.
+series. This statement describes the retained bytes only; it is not a stability
+or qualification claim.
 
 Raw licensed reports are retained verbatim as:
 
@@ -73,13 +74,24 @@ ordinary exported TOS Core function named by `IPC_V1` section 8: one 64-byte
 value argument, `unit` result, ordinary call accounting, argument read and
 writeback inside the markers.
 
+## Subsequent stability verdict
+
+After this record was committed, the repository gate was rerun six times from a
+clean source identity. All six repetitions had overlapping floor/call ranges.
+The separated series above was therefore not promoted or selected as P2. It is
+retained precisely because it shows why one locally successful distribution is
+not enough to qualify an observer.
+
+ADR-0066 now selects a distinct, hash-bound symmetric-pair observer profile.
+This historical report remains verbatim evidence for the unmodified upstream
+simple backend and must not be supplied to the current qualification gate.
+
 ## Boundary of the claim
 
-This is P1 because it was measured locally. It qualifies the pinned observer as
-a candidate for the repository P2 gate; it does not itself make the observer
-P2, does not measure IPC and does not satisfy either Stage 3 IPC budget. P2
-requires the repository gate to reproduce the same separation in CI and retain
-its raw artifacts. IPC timing may begin only after that gate exists and passes.
+This is P1 because it was measured locally. It does not qualify the current
+observer, does not measure IPC and does not satisfy either Stage 3 IPC budget.
+The reproduction commands below reconstruct the historical unmodified profile
+only when run against commit `e1d2b1e6518c146d2c457fc741fbf8052dbebbe5`.
 
 Reproduction on the recorded host:
 

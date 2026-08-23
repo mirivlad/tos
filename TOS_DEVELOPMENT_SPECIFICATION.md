@@ -2,11 +2,11 @@
 
 # TOS — consolidated development specification
 
-> **GENERATED FILE — DO NOT EDIT.**  
+> **GENERATED FILE — DO NOT EDIT.**\
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
-Version: 0.2.1  
-Source-manifest SHA-256: `88061bc4af012e25dd832edad3e99caeb29ce273cc933b89043d235ac566de24`  
+Version: 0.2.1\
+Source-manifest SHA-256: `981b061704a2854bb5e19bc99280c4f229a2217b91605354a0e3d76a31670d74`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -414,8 +414,13 @@ TOS uses established licenses rather than a project-specific license. This repos
 | Code fragments embedded in documentation, unless a fragment says otherwise | dual licensed | `GPL-3.0-or-later OR Apache-2.0` |
 | Network services intentionally designated in their own directory | GNU Affero General Public License version 3 or later | `AGPL-3.0-or-later` |
 | Vendored Unicode Character Database data and its generated normalization tables | Unicode License v3 | `Unicode-3.0` |
+| QEMU observer build and patch tooling explicitly marked for GPLv2-compatible host instrumentation | MIT License | `MIT` |
 
 No directory becomes AGPL-licensed merely because it communicates over a network. An AGPL component requires an explicit ADR and SPDX declaration.
+
+The MIT row is narrow: it exists so code inserted into the external
+GPL-2.0-only QEMU test instrument has a compatible grant. It does not relicense
+the TOS nucleus, runtime, system services or general host tooling.
 
 ## Why GPLv3-or-later for the operating system
 
@@ -456,6 +461,7 @@ Examples:
 The corresponding license texts are stored in `LICENSES/`:
 
 - `LICENSES/GPL-3.0-or-later.txt`
+- `LICENSES/MIT.txt`
 - `LICENSES/Apache-2.0.txt`
 - `LICENSES/CC-BY-SA-4.0.txt`
 - `LICENSES/Unicode-3.0.txt` for the UCD material recorded in `THIRD_PARTY.toml`
@@ -3149,12 +3155,18 @@ ADR-0066 fixes the measurement boundary. One external observer on the ADR-0040
 profile measures its empty marker floor, this call and the 64-byte IPC exchange
 with the same QEMU build, marker path and 3-warm-up/21-individual-sample
 discipline. No floor or marker cost is subtracted. A missing, duplicate,
-overlapping or mismatched marker, a reversed/zero/negative interval, a wrong
-sample count or a dropped trace event invalidates the series. A floor that is
-comparable with this call, including overlapping distributions, means that
-observer cannot establish the relative budget; it is retained as diagnostic
-evidence and IPC timing does not begin. Batching and dividing by the batch size
-does not measure the latency this section specifies.
+overlapping, mismatched or out-of-plan marker, a reversed/zero/negative
+interval, a wrong sample count or a dropped trace event invalidates the series.
+
+Before IPC timing, the observer must resolve this call in one prepared boot.
+Each retained block contains an adjacent floor/call pair with the same sequence;
+the work bit distinguishes them and their order alternates by block. At least 19
+of 21 paired differences must be positive, the predeclared one-sided exact sign
+test at `p <= 0.000111`; every non-positive difference remains raw and counts
+against the verdict. The exact nucleus/runtime hashes and Cargo features bind
+the no-preemption denominator build. Failure is diagnostic evidence and IPC
+timing does not begin. Batching and dividing by the batch size does not measure
+the latency this section specifies.
 
 ## 9. Conformance evidence
 
@@ -8498,10 +8510,27 @@ dividing by N is a throughput average and is not a latency sample. Missing,
 duplicate, overlapping or mismatched markers, reversed/zero/negative intervals,
 a wrong sample count or a dropped trace event invalidates the whole series.
 
-An observer whose floor is comparable with the denominator or whose two
-distributions overlap may produce P1 diagnostic evidence, but cannot establish
-the relative budget and must not proceed to IPC timing. QEMU `-icount` is
-virtual instruction time and is not an admissible physical-duration clock.
+ADR-0066's conformance profile uses the one TCG vCPU thread's physical
+`CLOCK_THREAD_CPUTIME_ID`. It captures one raw timestamp after QEMU handles
+`OPEN` and one before it handles `CLOSE`, then emits the pair. Marker transport,
+trace construction and host descheduling are outside the interval; no quantity
+is subtracted. Trace collection is enabled only for the 3+21 sample window.
+
+The floor and denominator disable timer preemption in their measurement-only
+nucleus; the IPC numerator keeps it active. This makes the denominator smaller,
+not easier. The exact measured artifact hashes and Cargo features bind that
+scheduler state; a caller-supplied label is not evidence.
+
+Observer resolution is proved in one prepared boot by 21 predeclared adjacent
+blocks after three warm-up blocks. Each block contains one floor and one call
+with a common sequence and distinct echoed work bit; block order alternates
+`floor/call`, then `call/floor`. At least 19 of 21 `call - floor` differences
+must be positive, the one-sided exact sign-test threshold `p <= 0.000111` (`232
+/ 2^21` at 19). Missing, duplicated or out-of-plan tags invalidate the series;
+non-positive differences remain in it and count against qualification. Every
+tail still determines its series' nearest-rank p99 and nothing is reordered,
+filtered or subtracted. QEMU `-icount` is virtual instruction time and is not
+an admissible physical-duration clock.
 
 Hard budgets for steady-state small-message IPC after initialization:
 
@@ -9552,6 +9581,14 @@ This applies to prose specifications, diagrams, governance and documentation. Co
 ### AGPL-3.0-or-later
 
 This is reserved for a future official network service whose value would otherwise be delivered as a modified hosted service without source reciprocity. AGPL adoption is component-specific and requires an ADR.
+
+### MIT
+
+MIT is reserved for external observer build or patch material that must be
+combined with a GPL-2.0-only test instrument. ADR-0066 applies it to the QEMU
+observer builder so the inserted UART observation code is compatible with both
+the MIT-licensed source file and the GPLv2 QEMU executable. This exception does
+not apply to production TOS implementation or general host tooling.
 
 ## GPL installation freedom and TOS
 
@@ -19716,6 +19753,7 @@ noticed locally.
   Stage 3 IPC budgets and clarifies the production time model without adding a
   production interface
 - Project Architect approval: Vladimir Tomashevskiy, 2026-08-23
+- Observer-profile amendment approval: Vladimir Tomashevskiy, 2026-08-23
 - Supersedes: ADR-0049 section 1 only where “calibration source” could be read as
   calibrating the Stage 3 tick into a duration unit
 
@@ -19761,7 +19799,22 @@ duration units supplied by the host-side QEMU measurement path. The observer is
 test tooling: it is not part of TOS Core semantics, a capability surface, the
 system ABI or the production trusted base.
 
-The exact observer backend and build identity are part of every report. A
+The conformance observer is a digest-pinned QEMU 10.0.11 build with the upstream
+binary `simple` backend and a narrow, hash-bound UART observation patch. While
+its measurement event is enabled, the one TCG vCPU thread reads
+`CLOCK_THREAD_CPUTIME_ID` after handling an `OPEN` marker and before handling
+the corresponding `CLOSE` marker. It emits the two raw timestamps together only
+after the closing timestamp exists. UART behavior is unchanged. Host
+descheduling, the two marker transports and trace-record construction are
+therefore outside the interval; no duration is estimated or subtracted.
+
+The event is enabled through QMP only after the observed process announces
+`READY`, and disabled immediately after the last `CLOSE`. Firmware and boot-log
+traffic cannot fill or perturb the measurement trace. Clock failure terminates
+the observer, and the decoder rejects a missing/malformed pair or any reported
+dropped event.
+
+The exact observer backend, source modifications and build identity are part of every report. A
 backend becomes a P2 conformance observer only after a versioned repository gate
 proves its identity, timestamp point, clock, dropped-event behavior and ability
 to resolve the fixed denominator against its own floor. Availability in another
@@ -19772,14 +19825,21 @@ QEMU build or suitability in principle is not evidence.
 The same observer, QEMU build, machine profile, marker path and sample discipline
 measure:
 
-1. the empty marker interval, published as the observer floor;
-2. the fixed in-process denominator of `IPC_V1` section 8; and
+1. the empty marker interval, published as the observer floor, with timer
+   preemption disabled only in this measurement build;
+2. the fixed in-process denominator of `IPC_V1` section 8, under that same
+   no-preemption measurement profile; and
 3. one 64-byte request/reply between two runnable processes with preemption
    active.
 
 Changing the observer between denominator and numerator invalidates the ratio.
 The fixed denominator is not replaced by a Rust call, an entry invocation, a
 batch average or a deliberately slower TOS Core function.
+
+Disabling preemption for the floor and denominator is conservative: it removes
+timer excursions and can only make the denominator smaller. The IPC numerator
+must prove preemption active, and the build rejects combining the no-preemption
+measurement feature with the two-process/request-reply profiles.
 
 ### 4. Measurement-only instrumentation is narrow and visible
 
@@ -19807,17 +19867,35 @@ marker, overlapping pair, sequence mismatch, reversed timestamp, zero or
 negative interval, wrong sample count or reported dropped trace event invalidates
 the whole series. Nothing is repaired, reordered, filtered or clamped.
 
+Observer resolution is a predeclared paired experiment in one prepared boot.
+After three warm-up blocks, each of 21 retained blocks contains an adjacent
+empty floor and denominator call with the same four-bit sequence identity. A
+fifth tag bit selects the call; both markers echo the complete tag. Order
+alternates `floor/call`, then `call/floor`, by block and is fixed before values
+are seen. The measured artifacts and exact Cargo feature sets are bound by a
+build manifest; scheduler preemption state is derived from that manifest, not
+declared by a caller.
+
+Resolution uses the one-sided exact sign test over all 21 paired differences
+`call - floor`, with non-positive differences counted conservatively against
+resolution. At least 19 of 21 must be positive: under the null of no directional
+separation this is `p = 232 / 2^21`, approximately `0.000111`, below the
+predeclared `0.000111` threshold. All values, including non-positive differences,
+remain in the raw series and determine their respective median and nearest-rank
+p99; no value is retried, filtered, reordered or subtracted. This controls
+same-boot preparation and drift without demanding that independent clock and
+emulation noise make every individual pair ordered.
+
 The p99 is the p99 of one exchange. Repeating N exchanges between two markers
 and dividing by N measures throughput/average and cannot satisfy this latency
 contract.
 
 ### 6. A coarse observer is a result, not a gate
 
-An observer whose floor is comparable with the denominator, or whose floor and
-denominator distributions overlap, may be retained as P1 diagnostic evidence.
-It cannot produce the relative conformance result and does not authorize IPC
-measurement. The next action is a separate observer/build decision, not a
-change to the denominator, budget or arithmetic.
+An observer that fails the predeclared floor/denominator sign test may be
+retained as P1 diagnostic evidence. It cannot produce the relative conformance
+result and does not authorize IPC measurement. The next action is a separate
+observer/build decision, not a change to the denominator, budget or arithmetic.
 
 Likewise, a valid observer that measures a value above either budget reports a
 red performance result. Threshold failure does not authorize changing the
@@ -19829,7 +19907,7 @@ QEMU `-icount` virtual instruction time is not cycle-accurate physical duration
 and instruction count does not establish real execution latency. It is excluded
 from both Stage 3 quantitative budgets.
 
-## Evidence status at acceptance
+## Evidence status and observer-profile amendment
 
 The measurement-only COM1 protocol and QEMU `serial_write` log timestamps have
 validated causal pairing, production-artifact isolation and the exact inner-call
@@ -19837,8 +19915,25 @@ semantic boundary at P1. The log backend is not accepted as the conformance
 observer: its empty floor overlaps the inner-call distribution. The declared
 Debian reference QEMU does not provide the binary `simple` trace backend.
 
-Therefore the Stage 3 IPC latency budgets remain open and IPC timing has not
-started. This is an honest intermediate result, not a closure claim.
+The first unmodified upstream simple-trace series happened to have disjoint
+ranges, but six subsequent clean repetitions all overlapped. Ten exploratory
+runs with whole-backend thread CPU timestamps and dynamically bounded tracing
+still overlapped in four runs. Those results reject both profiles; no successful
+run was selected as conformance evidence.
+
+The symmetric-pair patch was first exercised with floor and call in separate
+boots. The resulting 210 of 210 index-aligned differences are retained only as
+diagnostic evidence: an index does not make observations from distinct boots a
+causal pair. Independent review rejected that method before commit.
+
+The corrected candidate runs both observations adjacently in one prepared boot
+and alternates their order. Its first exploratory run resolved 20 of 21 pairs;
+five subsequent independent boots resolved 21 of 21 each, for 125 of 126 raw
+pairs overall. The single non-positive difference was retained. These data
+informed instrument development but do not qualify it: the exact sign-test rule
+above was accepted before any clean P1/P2 confirmation, and only a fresh clean
+gate may establish conformance. The Stage 3 IPC latency budgets remain open
+until that qualification and the subsequent IPC measurement pass.
 
 ## Architecture impact statement
 
@@ -19857,15 +19952,20 @@ started. This is an honest intermediate result, not a closure claim.
   3 performance evidence; it closes no metric by itself.
 - **Threat-model impact:** no new production boundary. A test build deliberately
   exposes COM1 to its observed CPL3 process and must prove confinement to those
-  ports and production-artifact separation.
+  ports and production-artifact separation. The host observer rejects malformed
+  trace records and terminates if its physical thread clock fails.
 - **Performance contract:** both `<= 8x` and `<= 200 microseconds` remain Stage 3
   requirements. Denominator, workload and sample discipline are unchanged.
 - **Compatibility profile:** ADR-0040 machine/cpu/vCPU/memory/TCG profile is
   unchanged. The observer backend and QEMU build/configuration are additional
   required report identities and change only through a versioned decision.
-- **Dependencies/licence/provenance:** no dependency enters TOS. A future
-  measurement QEMU build remains upstream host tooling and must record exact
-  source, configuration, compiler and digest under its own licence.
+- **Dependencies/licence/provenance:** no dependency enters TOS. The local-only
+  QEMU test bundle records its official source-archive digest, configuration,
+  compiler, dynamic inputs, engine digest and the before/after hashes of both
+  modified source files. The observer build/patch script is MIT-licensed so its
+  injected code is compatible with GPL-2.0-only QEMU and MIT `serial.c`. QEMU
+  remains under its upstream licences and is not vendored or distributed by
+  this repository.
 - **Patent impact:** no new runtime mechanism and no new identified high-risk
   claim combination. This ADR makes no patent-clearance claim.
 - **Tests:** observer pairing self-tests; production/test artifact hash parity;
@@ -19892,6 +19992,14 @@ passing number depend on a correction model.
 
 **Batch calls or exchanges.** Rejected: this contract bounds single-operation
 latency, not amortized throughput.
+
+**Use unmodified simple-trace timestamps.** Rejected by repeated measurement:
+shared-host descheduling and asymmetric UART/trace work produced overlapping
+tails. Keeping a lucky series would be result selection.
+
+**Use QEMU thread CPU time for every simple event.** Rejected by repeated
+measurement: it removed host descheduling but left asymmetric marker transport
+and trace-record work inside the interval.
 
 <!-- END docs/adr/0066-external-stage3-performance-observer.md -->
 

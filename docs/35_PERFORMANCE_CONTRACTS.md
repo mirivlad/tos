@@ -111,10 +111,27 @@ dividing by N is a throughput average and is not a latency sample. Missing,
 duplicate, overlapping or mismatched markers, reversed/zero/negative intervals,
 a wrong sample count or a dropped trace event invalidates the whole series.
 
-An observer whose floor is comparable with the denominator or whose two
-distributions overlap may produce P1 diagnostic evidence, but cannot establish
-the relative budget and must not proceed to IPC timing. QEMU `-icount` is
-virtual instruction time and is not an admissible physical-duration clock.
+ADR-0066's conformance profile uses the one TCG vCPU thread's physical
+`CLOCK_THREAD_CPUTIME_ID`. It captures one raw timestamp after QEMU handles
+`OPEN` and one before it handles `CLOSE`, then emits the pair. Marker transport,
+trace construction and host descheduling are outside the interval; no quantity
+is subtracted. Trace collection is enabled only for the 3+21 sample window.
+
+The floor and denominator disable timer preemption in their measurement-only
+nucleus; the IPC numerator keeps it active. This makes the denominator smaller,
+not easier. The exact measured artifact hashes and Cargo features bind that
+scheduler state; a caller-supplied label is not evidence.
+
+Observer resolution is proved in one prepared boot by 21 predeclared adjacent
+blocks after three warm-up blocks. Each block contains one floor and one call
+with a common sequence and distinct echoed work bit; block order alternates
+`floor/call`, then `call/floor`. At least 19 of 21 `call - floor` differences
+must be positive, the one-sided exact sign-test threshold `p <= 0.000111` (`232
+/ 2^21` at 19). Missing, duplicated or out-of-plan tags invalidate the series;
+non-positive differences remain in it and count against qualification. Every
+tail still determines its series' nearest-rank p99 and nothing is reordered,
+filtered or subtracted. QEMU `-icount` is virtual instruction time and is not
+an admissible physical-duration clock.
 
 Hard budgets for steady-state small-message IPC after initialization:
 

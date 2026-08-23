@@ -10,6 +10,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -21,14 +22,16 @@ measure_channel = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(measure_channel)
 
 
-def simple_trace(*records: bytes, version: int = 4) -> bytes:
+def simple_trace(
+    *records: bytes, version: int = 4, mapping_name: bytes = b"tos_measurement_pair"
+) -> bytes:
     header = struct.pack(
         "=QQQ",
         0xFFFFFFFFFFFFFFFF,
         0xF2B177CB0AA429B4,
         version,
     )
-    mapping = struct.pack("=QQL", 0, 7, len(b"serial_write")) + b"serial_write"
+    mapping = struct.pack("=QQL", 0, 7, len(mapping_name)) + mapping_name
     return header + mapping + b"".join(records)
 
 
@@ -50,10 +53,10 @@ class PairingTests(unittest.TestCase):
             (measure_channel.CLOSE | 2, 3_000_030_000),
         ]
 
-        samples = measure_channel.pair_markers(markers, 1)
-        self.assertEqual(len(samples), 2)
-        self.assertAlmostEqual(samples[0], 20.0)
-        self.assertAlmostEqual(samples[1], 30.0)
+        samples = measure_channel.pair_markers(markers, [0, 1, 2])
+        self.assertEqual(len(samples), 3)
+        self.assertAlmostEqual(samples[1][1], 20.0)
+        self.assertAlmostEqual(samples[2][1], 30.0)
 
     def test_duplicate_open_is_invalid(self) -> None:
         markers = [
@@ -63,7 +66,7 @@ class PairingTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(measure_channel.Invalid, "opened twice"):
-            measure_channel.pair_markers(markers, 0)
+            measure_channel.pair_markers(markers, [4])
 
     def test_overlapping_samples_are_invalid(self) -> None:
         markers = [
@@ -74,12 +77,12 @@ class PairingTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(measure_channel.Invalid, "still open"):
-            measure_channel.pair_markers(markers, 0)
+            measure_channel.pair_markers(markers, [4, 5])
 
     def test_close_without_open_is_invalid(self) -> None:
         with self.assertRaisesRegex(measure_channel.Invalid, "without an open"):
             measure_channel.pair_markers(
-                [(measure_channel.CLOSE | 7, 1_000_010_000)], 0
+                [(measure_channel.CLOSE | 7, 1_000_010_000)], [7]
             )
 
     def test_close_for_another_sequence_is_invalid(self) -> None:
@@ -89,12 +92,12 @@ class PairingTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(measure_channel.Invalid, "does not match"):
-            measure_channel.pair_markers(markers, 0)
+            measure_channel.pair_markers(markers, [6])
 
     def test_unclosed_sample_is_invalid(self) -> None:
         with self.assertRaisesRegex(measure_channel.Invalid, "never closed"):
             measure_channel.pair_markers(
-                [(measure_channel.OPEN | 7, 1_000_000_000)], 0
+                [(measure_channel.OPEN | 7, 1_000_000_000)], [7]
             )
 
     def test_timestamp_reversal_is_invalid(self) -> None:
@@ -104,7 +107,7 @@ class PairingTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(measure_channel.Invalid, "went backwards"):
-            measure_channel.pair_markers(markers, 0)
+            measure_channel.pair_markers(markers, [1])
 
     def test_zero_interval_is_invalid(self) -> None:
         markers = [
@@ -113,20 +116,110 @@ class PairingTests(unittest.TestCase):
         ]
 
         with self.assertRaisesRegex(measure_channel.Invalid, "interval of"):
-            measure_channel.pair_markers(markers, 0)
+            measure_channel.pair_markers(markers, [1])
+
+    def test_duplicate_completed_pair_is_not_a_substitute_for_next_request(self) -> None:
+        markers = [
+            (measure_channel.OPEN | 1, 1_000_000_000),
+            (measure_channel.CLOSE | 1, 1_000_010_000),
+            (measure_channel.OPEN | 1, 2_000_000_000),
+            (measure_channel.CLOSE | 1, 2_000_010_000),
+        ]
+
+        with self.assertRaisesRegex(measure_channel.Invalid, "expected tag 2"):
+            measure_channel.pair_markers(markers, [1, 2])
+
+    def test_duplicate_replacing_a_missing_pair_is_rejected_by_full_plan(self) -> None:
+        markers = [
+            (measure_channel.OPEN | 1, 1_000_000_000),
+            (measure_channel.CLOSE | 1, 1_000_010_000),
+            (measure_channel.OPEN | 2, 2_000_000_000),
+            (measure_channel.CLOSE | 2, 2_000_010_000),
+            (measure_channel.OPEN | 2, 3_000_000_000),
+            (measure_channel.CLOSE | 2, 3_000_010_000),
+        ]
+
+        with self.assertRaisesRegex(measure_channel.Invalid, "expected tag 3"):
+            measure_channel.pair_markers(markers, [1, 2, 3])
+
+    def test_paired_plan_is_adjacent_and_alternates_order(self) -> None:
+        self.assertEqual(
+            measure_channel.measurement_plan(3, paired=True),
+            [
+                0,
+                measure_channel.WORK | 0,
+                measure_channel.WORK | 1,
+                1,
+                2,
+                measure_channel.WORK | 2,
+            ],
+        )
+
+    def test_paired_samples_are_split_by_tag_after_complete_warmup_blocks(self) -> None:
+        pairs = [
+            (0, 2.0),
+            (measure_channel.WORK | 0, 9.0),
+            (measure_channel.WORK | 1, 10.0),
+            (1, 3.0),
+            (2, 4.0),
+            (measure_channel.WORK | 2, 11.0),
+        ]
+
+        floor, call, order = measure_channel.split_paired_samples(pairs, 1)
+
+        self.assertEqual(floor, [3.0, 4.0])
+        self.assertEqual(call, [10.0, 11.0])
+        self.assertEqual(order, ["call-floor", "floor-call"])
 
 
 class SimpleTraceTests(unittest.TestCase):
-    def test_binary_trace_retains_serial_markers_and_nanosecond_clock(self) -> None:
+    def test_binary_trace_duplicate_cannot_replace_a_planned_pair(self) -> None:
         trace = simple_trace(
-            simple_event(7, 1_000_000_000, 0, measure_channel.OPEN | 3),
-            simple_event(7, 1_000_004_250, 0, measure_channel.CLOSE | 3),
+            simple_event(
+                7,
+                9_000_000_000,
+                measure_channel.OPEN | 1,
+                measure_channel.CLOSE | 1,
+                1_000_000_000,
+                1_000_004_000,
+            ),
+            simple_event(
+                7,
+                9_000_001_000,
+                measure_channel.OPEN | 1,
+                measure_channel.CLOSE | 1,
+                1_000_005_000,
+                1_000_009_000,
+            ),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "serial.trace")
+            path.write_bytes(trace)
+            markers, _observer, _clock = measure_channel.read_trace(
+                path, measure_channel.SIMPLE_TRACE_CLOCK
+            )
+
+            with self.assertRaisesRegex(measure_channel.Invalid, "expected tag 2"):
+                measure_channel.pair_markers(markers, [1, 2])
+
+    def test_binary_trace_retains_symmetric_pair_and_nanosecond_clock(self) -> None:
+        trace = simple_trace(
+            simple_event(
+                7,
+                9_000_000_000,
+                measure_channel.OPEN | 3,
+                measure_channel.CLOSE | 3,
+                1_000_000_000,
+                1_000_004_250,
+            ),
         )
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory, "serial.trace")
             path.write_bytes(trace)
 
-            markers, observer, clock = measure_channel.read_trace(path)
+            markers, observer, clock = measure_channel.read_trace(
+                path, measure_channel.SIMPLE_TRACE_CLOCK
+            )
 
         self.assertEqual(
             markers,
@@ -135,8 +228,11 @@ class SimpleTraceTests(unittest.TestCase):
                 (measure_channel.CLOSE | 3, 1_000_004_250),
             ],
         )
-        self.assertEqual(observer["backend"], "QEMU simple trace serial_write")
-        self.assertIn("CLOCK_MONOTONIC", observer["clock"])
+        self.assertEqual(
+            observer["backend"],
+            "QEMU simple trace symmetric UART measurement pair",
+        )
+        self.assertIn("CLOCK_THREAD_CPUTIME_ID", observer["clock"])
         self.assertIn("nanosecond", clock)
 
     def test_binary_trace_refuses_reported_drops(self) -> None:
@@ -180,6 +276,29 @@ class SimpleTraceTests(unittest.TestCase):
         self.assertEqual(observer["backend"], "QEMU log trace serial_write")
 
 
+class QmpTests(unittest.TestCase):
+    def test_trace_event_names_the_exact_fail_closed_qmp_command(self) -> None:
+        qmp = object.__new__(measure_channel.Qmp)
+        qmp.execute = mock.Mock()
+
+        qmp.trace_event("tos_measurement_pair", True, 42.0)
+
+        qmp.execute.assert_called_once_with(
+            "trace-event-set-state",
+            {"name": "tos_measurement_pair", "enable": True},
+            42.0,
+        )
+
+    def test_response_timeout_is_an_observer_failure(self) -> None:
+        qmp = object.__new__(measure_channel.Qmp)
+        qmp.socket = mock.Mock()
+        qmp.stream = mock.Mock()
+        qmp.stream.readline.side_effect = TimeoutError("late")
+
+        with self.assertRaisesRegex(measure_channel.Invalid, "response failed"):
+            qmp._read(10**12)
+
+
 class StatisticsTests(unittest.TestCase):
     def test_nearest_rank_p99_of_twenty_one_samples_is_the_largest(self) -> None:
         samples = [float(value) for value in range(1, 22)]
@@ -196,6 +315,91 @@ class StatisticsTests(unittest.TestCase):
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_measurement_manifest_binds_features_to_exact_artifacts(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            nucleus = root / "tos-nucleus"
+            runtime_image = root / "tos-runtime-image"
+            nucleus.write_bytes(b"nucleus")
+            runtime_image.write_bytes(b"runtime")
+            builds = {}
+            for name, package, artifact, features in (
+                (
+                    "nucleus",
+                    "tos-nucleus",
+                    nucleus,
+                    ["test-measurement-no-preemption"],
+                ),
+                (
+                    "runtime_image",
+                    "tos-runtime-image",
+                    runtime_image,
+                    ["test-measurement-call"],
+                ),
+            ):
+                builds[name] = {
+                    "package": package,
+                    "target": "x86_64-unknown-none",
+                    "profile": "release",
+                    "features": features,
+                    "cargo_target_dir": str(root.resolve()),
+                    "cargo_command": [
+                        "cargo",
+                        "build",
+                        "--release",
+                        "-p",
+                        package,
+                        "--target",
+                        "x86_64-unknown-none",
+                        "--features",
+                        ",".join(features),
+                    ],
+                    "artifact_path": str(artifact.resolve()),
+                    "artifact_sha256": measure_channel.sha256(artifact),
+                }
+            manifest = root / "measurement-build.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "record_spdx_license": "CC-BY-SA-4.0",
+                        "schema": "tos-measurement-build-v1",
+                        "source_commit": "abc",
+                        "builds": builds,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            artifacts = {
+                "measurement_nucleus": nucleus,
+                "measurement_runtime_image": runtime_image,
+            }
+
+            bound = measure_channel.measurement_build_manifest(
+                manifest, artifacts, "abc", True
+            )
+
+            self.assertEqual(
+                bound["contents"]["builds"]["nucleus"]["features"],
+                ["test-measurement-no-preemption"],
+            )
+            builds["nucleus"]["features"] = ["test-measurement-port"]
+            builds["nucleus"]["cargo_command"][-1] = "test-measurement-port"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "record_spdx_license": "CC-BY-SA-4.0",
+                        "schema": "tos-measurement-build-v1",
+                        "source_commit": "abc",
+                        "builds": builds,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(measure_channel.Invalid, "requires nucleus"):
+                measure_channel.measurement_build_manifest(
+                    manifest, artifacts, "abc", True
+                )
+
     def test_p2_status_is_reserved_for_clean_ci_measurements(self) -> None:
         self.assertEqual(
             measure_channel.evidence_status("P2", False, True, True), "P2"
@@ -230,6 +434,21 @@ class EnvironmentTests(unittest.TestCase):
                 "qemu_engine_relative_path": "qemu-system-x86_64.real",
                 "qemu_engine_sha256": measure_channel.sha256(engine),
                 "trace_backends": ["simple"],
+                "trace_clock": measure_channel.SIMPLE_TRACE_CLOCK,
+                "observer_modifications": [
+                    {
+                        "path": "hw/char/serial.c",
+                        "upstream_sha256": measure_channel.OBSERVER_SERIAL_SOURCE_SHA256,
+                        "modified_sha256": measure_channel.OBSERVER_SERIAL_MODIFIED_SHA256,
+                        "scope": "capture after OPEN and before CLOSE; UART behavior unchanged",
+                    },
+                    {
+                        "path": "hw/char/trace-events",
+                        "upstream_sha256": measure_channel.OBSERVER_EVENTS_SOURCE_SHA256,
+                        "modified_sha256": measure_channel.OBSERVER_EVENTS_MODIFIED_SHA256,
+                        "scope": "one measurement-pair event carrying both raw timestamps",
+                    },
+                ],
                 "network_downloads": "disabled",
                 "source_date_epoch": 1782452340,
                 "build_path_remap": "/usr/src/qemu-10.0.11",
