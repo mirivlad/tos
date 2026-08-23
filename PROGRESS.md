@@ -4281,6 +4281,32 @@ qemu:     QEMU BootInfo identity mismatch        FAIL: loader feature is missing
 правило 16 `CAPSULE_FORMAT_V1`, изменённая строка feature в манифесте
 загрузчика — все три **detected**.
 
+### 2026-08-23 — ADR-0066 принят: внешний прибор, а не часы внутри системы
+
+Прежнее чтение «Stage 3 не имеет доверенных часов, значит временные бюджеты
+переносятся» отменено Project Architect. Оно смешивало две разные границы:
+**какое время система предоставляет процессу** и **чем измеряют саму систему**.
+
+ADR-0066 сохраняет production-модель ADR-0049 без расширения: monotonic tick для
+preemption и bounded timeout accounting, без пересчёта в duration, wall clock и
+`system.time.Clock`. Обе временные границы `docs/35` остаются Stage 3 gates и
+меряются внешним observer на профиле ADR-0040. Один observer обязан мерить floor,
+фиксированный TOS Core denominator и 64-byte IPC; 3 warm-up + 21 individual
+sample, raw values, median и nearest-rank p99, ничего не вычитается.
+
+Measurement-only COM1 path остаётся test-only: IOPL 0, TSS bitmap разрешает
+только `0x3f8..=0x3ff`, production nucleus/runtime сравниваются по байтам.
+Pairing теперь отказывает на duplicate, overlap, close без open, mismatched или
+незакрытую пару, reversal и non-positive interval; это проверяется отдельным
+self-test гейтом.
+
+Текущий QEMU log trace — **P1 diagnostic, не conformance observer**. Он доказал
+протокол и точную semantic boundary внутреннего вызова, но floor и call
+пересекаются. Reference Debian QEMU не несёт binary `simple` backend. Поэтому
+IPC timing не начинался, `8x` не объявлен и следующий шаг — отдельное versioned
+решение о воспроизводимом low-overhead QEMU observer после фактической проверки,
+а не смена denominator, batch average или subtraction.
+
 ### Требуют решения Project Architect
 
 **F. Что обязан гарантировать локальный preflight и что — CI — ЗАКРЫТО
@@ -4289,15 +4315,11 @@ qemu:     QEMU BootInfo identity mismatch        FAIL: loader feature is missing
 сохранена как запись того, чем это было до решения.
 
 
-**0a. Конфликт по времени — РЕШЁН ИЕРАРХИЕЙ, не мной.** `docs/38` §Tier 2:
-«A subsystem document must conform to Tier 0 and Tier 1». `docs/35` — нумерованный
-документ под `docs/`, то есть Tier 2; ADR-0049 — принятый ADR, то есть Tier 1.
-Значит **ADR-0049 §6 старше**, и его «этот этап не имеет часов» решает вопрос:
-временны́е границы `IPC_V1` §8 (p99, 200 µs, «8× внутрипроцессного вызова») на
-Stage 3 не измеряются, и это применение иерархии, а не дефект. Обязательство не
-исчезает — оно переходит на стадию, где часы появятся (`docs/34` относит
-временны́е угрозы к Stage 7). Счётная половина §8 от этого не зависела и сделана.
-Формулировка ниже сохранена как запись того, чем это выглядело до чтения §38.
+**0a. Конфликт по времени — ЗАКРЫТО ADR-0066, прежнее чтение отменено.**
+ADR-0049 ограничивает production time semantics, а не возможность измерить
+систему внешним прибором. Обе временные границы остаются Stage 3 requirements;
+точное решение и текущий отрицательный observer-result записаны выше. Исходная
+формулировка ниже сохранена как историческая запись ошибочного чтения.
 
 **0. Конфликт контрактов: временна́я половина бюджетов IPC.** Найден при работе
 над `IPC_V1` §9.7 и выносится, а не решается тихо. `docs/35` (через `IPC_V1` §8)

@@ -17,6 +17,23 @@ path = "src/main.rs"
 # is clear. Never selected by the normal runtime-image build: this is a process
 # doing something legal and unusual, and only a gate has a reason to ask for it.
 test-direction-flag = []
+# ADR-0066's observed side: this process answers an external instrument over
+# COM1 and makes no system call while it is being measured. Requires the
+# nucleus built with `test-measurement-port`, which is what permits CPL 3 those
+# ports.
+test-measurement-port = []
+# Milestone 6 of ADR-0066: the same channel, with one exported TOS Core call
+# between the markers. The frontend, verifier and engine become dependencies of
+# this build alone — the production image keeps the closure it has, which is
+# what the harness asserts by hashing it before and after.
+test-measurement-call = [
+    "test-measurement-port",
+    "dep:tos-core",
+    "dep:tos-ir",
+    "dep:tos-engine",
+    "tos-engine/measurement-marks",
+    "dep:tos-verifier",
+]
 # The boot whose only IPC is the exchange being measured: one process asks and
 # the other answers, and neither polls, probes or delegates. `IPC_V1` §8 bounds
 # crossings *per request/reply*, so a boot that also does other IPC measures a
@@ -40,3 +57,7 @@ test-reply-receive-refusals = []
 tos-launch = { path = "../crates/tos-launch" }
 tos-pipeline = { path = "../crates/tos-pipeline" }
 tos-runtime = { path = "../crates/tos-runtime" }
+tos-core = { path = "../crates/tos-core", optional = true }
+tos-ir = { path = "../crates/tos-ir", optional = true }
+tos-engine = { path = "../crates/tos-engine", optional = true }
+tos-verifier = { path = "../crates/tos-verifier", optional = true }

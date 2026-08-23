@@ -182,6 +182,17 @@ budget asks what IPC costs relative to what this system's own code already
 costs. The absolute 200 µs bound is measured independently, and both are
 reported, because either alone can be satisfied while the other is missed.
 
+ADR-0066 fixes the measurement boundary. One external observer on the ADR-0040
+profile measures its empty marker floor, this call and the 64-byte IPC exchange
+with the same QEMU build, marker path and 3-warm-up/21-individual-sample
+discipline. No floor or marker cost is subtracted. A missing, duplicate,
+overlapping or mismatched marker, a reversed/zero/negative interval, a wrong
+sample count or a dropped trace event invalidates the series. A floor that is
+comparable with this call, including overlapping distributions, means that
+observer cannot establish the relative budget; it is retained as diagnostic
+evidence and IPC timing does not begin. Batching and dividing by the batch size
+does not measure the latency this section specifies.
+
 ## 9. Conformance evidence
 
 1. Each of the three §3 bounds refuses rather than truncates: a message over

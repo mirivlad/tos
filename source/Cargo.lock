@@ -124,9 +124,13 @@ version = "0.1.0"
 name = "tos-runtime-image"
 version = "0.1.0"
 dependencies = [
+ "tos-core",
+ "tos-engine",
+ "tos-ir",
  "tos-launch",
  "tos-pipeline",
  "tos-runtime",
+ "tos-verifier",
 ]
 
 [[package]]

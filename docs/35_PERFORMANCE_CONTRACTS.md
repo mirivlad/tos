@@ -95,6 +95,27 @@ These are initial research gates, not claims of application-language competitive
 
 ## Stage 3 — IPC and capabilities
 
+### Measurement clock
+
+ADR-0066 fixes the distinction between system time and measurement time. Stage
+3 does not calibrate its production monotonic tick into a duration unit and
+does not add a wall clock or timing capability for this gate. Both quantitative
+IPC budgets below are measured by one external observer on the ADR-0040 QEMU
+profile. The observer's exact backend/build identity, timestamp point, clock and
+dropped-event behavior are retained with the report.
+
+The same observer measures its empty floor, the fixed in-process denominator
+and the IPC numerator. No observer cost is subtracted. Three warm-ups and 21
+individual samples are required for each series; batching N operations and
+dividing by N is a throughput average and is not a latency sample. Missing,
+duplicate, overlapping or mismatched markers, reversed/zero/negative intervals,
+a wrong sample count or a dropped trace event invalidates the whole series.
+
+An observer whose floor is comparable with the denominator or whose two
+distributions overlap may produce P1 diagnostic evidence, but cannot establish
+the relative budget and must not proceed to IPC timing. QEMU `-icount` is
+virtual instruction time and is not an admissible physical-duration clock.
+
 Hard budgets for steady-state small-message IPC after initialization:
 
 - no dynamic allocation in the nucleus fast path;

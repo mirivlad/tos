@@ -46,12 +46,21 @@ QEMU_TIMEOUT=90
 INTERACTIVE=0
 DISPLAY_BACKEND=""
 EVENT_TIMESTAMPS=""
+# ADR-0066: when set, the serial line is a duplex socket and an external
+# observer drives the protocol over it. The machine, the firmware and the ESP
+# are the ordinary ones; what differs is that the wire has two ends.
+MEASURE=""
+PRODUCTION_NUCLEUS_BEFORE_SHA256=""
+PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256=""
 QEMU_ACCEL=""
 NO_FRAMEBUFFER=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
         --out)      OUT="$2"; shift 2 ;;
+        --measure)  MEASURE="$2"; shift 2 ;;
+        --production-nucleus-before-sha256) PRODUCTION_NUCLEUS_BEFORE_SHA256="$2"; shift 2 ;;
+        --production-runtime-image-before-sha256) PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256="$2"; shift 2 ;;
         --capsule)  CAPSULE_IN="$2"; shift 2 ;;
         --loader)   LOADER_IN="$2"; shift 2 ;;
         --nucleus)  NUCLEUS_IN="$2"; shift 2 ;;
@@ -80,12 +89,17 @@ if [ "$INTERACTIVE" -eq 1 ]; then
         gtk|sdl) ;;
         *) echo "--interactive requires --display gtk or --display sdl" >&2; exit 2 ;;
     esac
-    if [ -n "$EVENT_TIMESTAMPS" ]; then
-        echo "--event-timestamps is not available with --interactive" >&2
+    if [ -n "$EVENT_TIMESTAMPS" ] || [ -n "$MEASURE" ]; then
+        echo "--event-timestamps and --measure are not available with --interactive" >&2
         exit 2
     fi
 elif [ -n "$DISPLAY_BACKEND" ]; then
     echo "--display is valid only with --interactive" >&2
+    exit 2
+fi
+
+if [ -n "$MEASURE" ] && [ "${NO_RUNTIME_IMAGE:-0}" -eq 1 ]; then
+    echo "--measure requires a runtime image" >&2
     exit 2
 fi
 
@@ -211,6 +225,7 @@ QEMU_ARGS=(
     -machine q35
     -cpu qemu64
     -m 256M
+    -smp 1
     -drive "if=pflash,format=raw,readonly=on,file=$OUT/OVMF_CODE.fd"
     -drive "if=pflash,format=raw,file=$OUT/OVMF_VARS.fd"
     -drive "if=none,id=esp0,format=raw,file=$ESP"
@@ -225,6 +240,10 @@ QEMU_ARGS=(
 # preparation, firmware, device and event-capture path.
 if [ -n "$QEMU_ACCEL" ]; then
     QEMU_ARGS+=( -accel "$QEMU_ACCEL" )
+elif [ -n "$MEASURE" ]; then
+    # Evidence must name the accelerator explicitly rather than depend on a
+    # host's QEMU default selection.
+    QEMU_ARGS+=( -accel tcg )
 fi
 # Without a display adapter the firmware has no GOP, so BootInfo declares the
 # framebuffer absent. The machine is otherwise the same one, which is the point:
@@ -234,6 +253,17 @@ if [ "$NO_FRAMEBUFFER" -eq 1 ]; then
 fi
 if [ "$INTERACTIVE" -eq 0 ]; then
     QEMU_ARGS+=( -device isa-debug-exit )
+fi
+MEASUREMENT_IDENTITY_ARGS=()
+if [ -n "$PRODUCTION_NUCLEUS_BEFORE_SHA256" ]; then
+    MEASUREMENT_IDENTITY_ARGS+=(
+        --production-nucleus-before-sha256 "$PRODUCTION_NUCLEUS_BEFORE_SHA256"
+    )
+fi
+if [ -n "$PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256" ]; then
+    MEASUREMENT_IDENTITY_ARGS+=(
+        --production-runtime-image-before-sha256 "$PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256"
+    )
 fi
 set +e
 if [ "$INTERACTIVE" -eq 1 ]; then
@@ -246,7 +276,36 @@ if [ "$INTERACTIVE" -eq 1 ]; then
         -serial chardev:tosserial
     RC=$?
 else
-    if [ -n "$EVENT_TIMESTAMPS" ]; then
+    if [ -n "$MEASURE" ]; then
+        # ADR-0066: the observer owns its own protocol and timeout; the machine
+        # profile above is untouched and the wire is the same COM1. What differs
+        # is that the line has two ends — `server=on,wait=off` lets QEMU start
+        # whether or not the observer has connected, and the guest announces
+        # itself before the first request is sent.
+        python3 "$ROOT/host-tools/qemu-test/measure-channel.py" \
+            --socket "$OUT/serial.sock" \
+            --serial-log "$OUT/serial.log" \
+            --stderr-log "$OUT/qemu.stderr" \
+            --samples "$MEASURE" \
+            --report "$OUT/measurement.json" \
+            --timeout "$QEMU_TIMEOUT" \
+            --trace "$OUT/serial.trace" \
+            --repository "$GITROOT" \
+            --capsule "$OUT/capsule.bin" \
+            --firmware-code "$OUT/OVMF_CODE.fd" \
+            --firmware-vars "$OUT/OVMF_VARS.fd" \
+            --loader "$LOADER" \
+            --nucleus "$NUCLEUS" \
+            --runtime-image "$RUNTIME_IMAGE" \
+            --production-nucleus "$ROOT/target/x86_64-unknown-none/release/tos-nucleus" \
+            --production-runtime-image "$ROOT/target/x86_64-unknown-none/release/tos-runtime-image" \
+            "${MEASUREMENT_IDENTITY_ARGS[@]}" \
+            --quantum-source "$ROOT/nucleus/src/apic.rs" \
+            -- qemu-system-x86_64 "${QEMU_ARGS[@]}" \
+            -chardev "socket,id=tosserial,path=$OUT/serial.sock,server=on,wait=off" \
+            -serial chardev:tosserial -display none \
+            -msg timestamp=on -trace "enable=serial_write,file=$OUT/serial.trace"
+    elif [ -n "$EVENT_TIMESTAMPS" ]; then
         # This opt-in path retains the exact normal QEMU profile and verdict.
         # The helper only observes serial-byte arrival times for existing
         # events; it does not create a guest timing interface.

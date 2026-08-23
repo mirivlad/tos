@@ -10,6 +10,15 @@ publish = false
 [lib]
 name = "tos_engine"
 
+[features]
+# ADR-0066 milestone 6b, and nothing else. Two function pointers are called
+# immediately around the execution of one `Op::Call` to a local function, so an
+# external instrument can put a marker on either side of a TOS Core call without
+# the call itself changing. Off by default: with the feature absent the hooks are
+# empty inline functions and the produced artifact is byte-for-byte the one that
+# ships, which the measurement harness asserts by hashing it before and after.
+measurement-marks = []
+
 [dependencies]
 tos-ir = { path = "../tos-ir" }
 tos-verifier = { path = "../tos-verifier" }

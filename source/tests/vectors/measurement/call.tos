@@ -1,0 +1,32 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// The denominator of `IPC_V1` §8, as that contract defines it: "a call to an
+// exported TOS Core function taking one 64-byte value parameter and returning
+// `unit`, executed by the same engine build, in the same process".
+//
+// Eight `i64` fields are the sixty-four bytes, written out rather than
+// abbreviated, because the size is the specification and a record whose width
+// depended on a type alias would be a different benchmark next year.
+//
+// The body is empty on purpose. What is being measured is the cost of *calling*
+// through this engine — the frame, the argument, the accounting, the return —
+// and any work inside it would be work the denominator was never meant to
+// carry.
+module system.bench.call version 1.0 profile bootstrap;
+
+resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+pub record Block [
+    a: i64, b: i64, c: i64, d: i64,
+    e: i64, f: i64, g: i64, h: i64
+]
+
+pub fn measured(value: Block) -> unit {
+}
+
+// What the observer's marks bracket. `bench` exists so that the measured call
+// is an ordinary `Op::Call` inside a run that has already started: the entry
+// invocation of a run is not one, and measuring it would measure everything
+// `run_set` does before any call happens.
+pub fn bench(value: Block) -> unit {
+    measured(value);
+}
