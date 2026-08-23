@@ -57,8 +57,10 @@ Three approaches were considered:
 - **Pinned upstream QEMU simple trace backend — selected.** It is the same QEMU
   implementation and machine model with a build-time upstream trace backend,
   not a new TOS mechanism. Its source version, configure flags, compiler and
-  resulting digest must be recorded. Source acquisition must follow the
-  repository's pinning and mirroring policy.
+  resulting digest must be recorded. The build consumes a separately acquired
+  release archive only after verifying its fixed SHA-256 and disables all
+  build-time downloads. The launcher, engine and retained ROM inputs are each
+  hashed in the build manifest.
 - **A custom QEMU marker device or trace patch — reserve only.** It could reduce
   overhead but would create a project-maintained measurement implementation.
   It is not admitted while an upstream backend can do the job.

@@ -9,12 +9,12 @@
 # floor and none of them may have it subtracted, which is why it is published
 # first and separately.
 #
-# **The clock is QEMU's, not this host's.** With `-msg timestamp=on` the log
-# trace backend prefixes every event with `pid@seconds.microseconds`, and
-# `serial_write` is emitted by the device model while it handles the guest's
-# `out` — in the vCPU thread, synchronously with the write. The socket is kept
-# for the protocol alone: it carries the request that starts a sample and the
-# stop that ends the run.
+# **The clock is QEMU's, not this host reader's.** The system QEMU `log` backend
+# is accepted only for diagnostic evidence.  A manifest-bound QEMU `simple`
+# backend supplies the conformance candidate's monotonic nanosecond timestamp.
+# Both observe `serial_write` synchronously in the vCPU thread at the guest's
+# `out` boundary. The socket is kept for the protocol alone: it carries the
+# request that starts a sample and the stop that ends the run.
 #
 # Two earlier forms were measured and rejected, and both erred towards passing:
 #
@@ -132,6 +132,6 @@ EOF
 echo "MEASUREMENT-CHANNEL PASS: the channel floor is $median us median, $p99 us p99, $jitter us jitter"
 echo "  21 individual samples after 3 warm-ups; both markers of every one named their request"
 echo "  nothing between the markers, and nothing subtracted from any reading"
-echo "  the clock is QEMU's own trace timestamp, taken while it handles the guest's write"
+echo "  the clock is QEMU's own trace timestamp at the guest write boundary"
 echo "  IOPL stays 0: the measurement nucleus clears the bitmap bits of COM1 and no others"
 echo "  the production nucleus and runtime image are unchanged by this build"

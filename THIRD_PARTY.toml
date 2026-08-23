@@ -11,3 +11,14 @@ role = "trusted-dependency"
 modified = false
 notice_files = ["LICENSES/Unicode-3.0.txt"]
 review = "ADR-0029; source/crates/tos-core/unicode/PROVENANCE.json"
+
+[[component]]
+name = "QEMU simple-trace measurement observer"
+version = "10.0.11"
+upstream = "https://download.qemu.org/qemu-10.0.11.tar.xz"
+source_revision = "release archive sha256:22e410fe784021c535756350a811ee78ae71356546ff90f5418493448a34b871"
+license_expression = "GPL-2.0-only"
+role = "host-side-test-instrument"
+modified = false
+notice_files = []
+review = "ADR-0066; local bundle only, not vendored or distributed; upstream archive retains component and ROM notices"

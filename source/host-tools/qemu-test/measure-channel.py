@@ -14,14 +14,15 @@ thing being measured, and answers `DONE | n`. The echo is what makes a sample
 causal rather than coincidental: a `DONE` that does not name the `GO` it
 followed is discarded, never repaired.
 
-**Where the clock is.** On QEMU's side of the wire, not this one. With
-`-msg timestamp=on` the log trace backend prefixes every event with
-`pid@seconds.microseconds`, and `serial_write` is emitted by the device model
-while it is handling the guest's `out` instruction — in the vCPU thread,
-synchronously with the write. So a marker's time is taken where the marker
-happens, and nothing this program does with its own scheduling can move it. The
-socket is kept for the *protocol*: it carries the request that starts a sample
-and the stop that ends the run, and it is not the clock.
+**Where the clock is.** On QEMU's side of the wire, not this one. The diagnostic
+`log` backend prefixes events with a microsecond `gettimeofday` value.  The
+pinned conformance candidate uses QEMU's binary `simple` backend: integer
+nanoseconds from `CLOCK_MONOTONIC`, taken by `trace_record_start` immediately
+before the device model handles `serial_write`.  Both trace in the vCPU thread,
+synchronously at the guest's `out` boundary. Nothing this program does with its
+own scheduling can move that timestamp. The socket is kept for the *protocol*:
+it carries the request that starts a sample and the stop that ends the run, and
+it is not the clock.
 
 That matters because the obvious alternative is wrong in a direction that
 flatters the system. A reader on this side stamps a marker when it manages to
@@ -31,11 +32,10 @@ passing is not an instrument.
 
 **What a reading contains.** `t(CLOSE) - t(OPEN)`, both taken inside QEMU: the
 work, plus whatever the `OPEN` write itself still costs after its timestamp was
-taken — the rest of the device model's write path and the trace line. Every
-reading contains that floor and **none of them has it subtracted**. The floor is
-measured by the same instrument over a run in which the work is nothing, and it
-is published beside the result. A reading is therefore an upper bound on the
-work, which is the direction that makes a budget claim honest.
+taken. Every reading contains that floor and **none of it is subtracted**. The
+floor is measured by the same instrument over a run in which the work is
+nothing, and is published beside the result. A reading is therefore an upper
+bound on the work, which is the direction that makes a budget claim honest.
 
 **Why the reader still spins.** It no longer times anything, but it must not be
 the reason a sample is late: the next request is sent when the previous answer is
@@ -52,6 +52,7 @@ import re
 import shutil
 import socket
 import statistics
+import struct
 import subprocess
 import sys
 import time
@@ -64,6 +65,33 @@ SEQUENCE = 0x1F
 STOP = 0xE0
 READY = 0xFF
 WARMUPS = 3
+SIMPLE_HEADER_EVENT_ID = 0xFFFFFFFFFFFFFFFF
+SIMPLE_DROPPED_EVENT_ID = 0xFFFFFFFFFFFFFFFE
+SIMPLE_HEADER_MAGIC = 0xF2B177CB0AA429B4
+SIMPLE_HEADER_VERSION = 4
+SIMPLE_MAPPING_RECORD = 0
+SIMPLE_EVENT_RECORD = 1
+SIMPLE_OBSERVER_CONFIGURE = [
+    "--prefix=/",
+    "--target-list=x86_64-softmmu",
+    "--enable-trace-backends=simple",
+    "--enable-fdt=disabled",
+    "--disable-download",
+    "--disable-docs",
+    "--disable-tools",
+    "--disable-guest-agent",
+    "--disable-slirp",
+    "--disable-plugins",
+    "--disable-vnc",
+    "--disable-gtk",
+    "--disable-sdl",
+    "--disable-werror",
+    "--disable-debug-info",
+]
+SIMPLE_CFLAGS_IDENTITY = (
+    "-O2 plus file, debug and macro prefix maps from the temporary build root "
+    "to /usr/src/qemu-10.0.11"
+)
 
 
 def arguments() -> argparse.Namespace:
@@ -178,28 +206,143 @@ class Wire:
         return None
 
 
-def trace_markers(path: Path) -> list[tuple[int, float]]:
-    """Every marker byte QEMU wrote, with the time it wrote it.
+def _text_trace(path: Path) -> tuple[list[tuple[int, int]], dict[str, str], str]:
+    """Decode the QEMU log backend without rounding its decimal timestamp."""
+    markers: list[tuple[int, int]] = []
+    for line in path.read_text(errors="replace").splitlines():
+        stamp, _, rest = line.partition(":")
+        if not rest.startswith("serial_write write addr 0x00 val "):
+            continue
+        _, separator, seconds = stamp.partition("@")
+        whole, point, fraction = seconds.partition(".")
+        try:
+            if not separator or point != "." or not 1 <= len(fraction) <= 9:
+                raise ValueError("timestamp is not seconds.fraction")
+            when_ns = int(whole) * 1_000_000_000 + int(fraction.ljust(9, "0"))
+            value = int(rest.rsplit(" ", 1)[1], 16)
+        except ValueError as error:
+            raise Invalid(f"malformed log trace serial_write: {line!r}") from error
+        if value & 0x80:
+            markers.append((value, when_ns))
+    observer = {
+        "backend": "QEMU log trace serial_write",
+        "clock": "gettimeofday, microsecond text timestamp",
+        "timestamp_point": "serial_write in the vCPU thread",
+        "trace_format": "QEMU log text",
+    }
+    clock = (
+        "QEMU log trace timestamp (gettimeofday, microseconds) taken in "
+        "the vCPU thread while the device model handles the guest's write"
+    )
+    return markers, observer, clock
+
+
+def _simple_trace(path: Path) -> tuple[list[tuple[int, int]], dict[str, str], str]:
+    """Independently decode the pinned QEMU simple trace format version 4.
+
+    The retained evidence must not depend on a pretty-printer's output.  This
+    decoder accepts only the format fields needed to identify `serial_write`,
+    and refuses unknown, truncated, ambiguous, or loss-reporting records.
+    """
+    data = path.read_bytes()
+    header_size = struct.calcsize("=QQQ")
+    if len(data) < header_size:
+        raise Invalid("truncated QEMU simple trace header")
+    header_id, magic, version = struct.unpack_from("=QQQ", data)
+    if header_id != SIMPLE_HEADER_EVENT_ID or magic != SIMPLE_HEADER_MAGIC:
+        raise Invalid("invalid QEMU simple trace header")
+    if version != SIMPLE_HEADER_VERSION:
+        raise Invalid(f"QEMU simple trace version {version} is not supported")
+
+    offset = header_size
+    mappings: dict[int, str] = {}
+    names: dict[str, int] = {}
+    markers: list[tuple[int, int]] = []
+
+    def require(size: int, what: str) -> None:
+        if size < 0 or len(data) - offset < size:
+            raise Invalid(f"truncated QEMU simple trace {what}")
+
+    while offset < len(data):
+        require(8, "record type")
+        record_type = struct.unpack_from("=Q", data, offset)[0]
+        offset += 8
+        if record_type == SIMPLE_MAPPING_RECORD:
+            require(12, "mapping")
+            event_id, name_length = struct.unpack_from("=QL", data, offset)
+            offset += 12
+            require(name_length, "mapping name")
+            try:
+                name = data[offset : offset + name_length].decode("utf-8")
+            except UnicodeDecodeError as error:
+                raise Invalid("invalid UTF-8 in QEMU simple trace mapping") from error
+            offset += name_length
+            if event_id in mappings or name in names:
+                raise Invalid(f"duplicate QEMU simple trace mapping for {name!r}")
+            mappings[event_id] = name
+            names[name] = event_id
+            continue
+        if record_type != SIMPLE_EVENT_RECORD:
+            raise Invalid(f"unknown QEMU simple trace record type {record_type}")
+
+        require(24, "event header")
+        event_id, timestamp_ns, record_length, _pid = struct.unpack_from(
+            "=QQII", data, offset
+        )
+        if record_length < 24:
+            raise Invalid(f"invalid QEMU simple trace record length {record_length}")
+        payload_length = record_length - 24
+        offset += 24
+        require(payload_length, "event payload")
+        payload = data[offset : offset + payload_length]
+        offset += payload_length
+
+        if event_id == SIMPLE_DROPPED_EVENT_ID:
+            if payload_length != 8:
+                raise Invalid("invalid QEMU simple trace dropped-event payload")
+            dropped = struct.unpack("=Q", payload)[0]
+            if dropped:
+                raise Invalid(f"QEMU simple trace dropped {dropped} event(s)")
+            continue
+        if event_id not in mappings:
+            raise Invalid(f"unmapped QEMU simple trace event id {event_id}")
+        if mappings[event_id] != "serial_write":
+            continue
+        if payload_length != 16:
+            raise Invalid("invalid QEMU simple trace serial_write payload")
+        address, value = struct.unpack("=QQ", payload)
+        if address == 0 and value & 0x80:
+            markers.append((value, timestamp_ns))
+
+    if "serial_write" not in names:
+        raise Invalid("QEMU simple trace has no serial_write mapping")
+    observer = {
+        "backend": "QEMU simple trace serial_write",
+        "clock": "CLOCK_MONOTONIC, nanosecond binary timestamp",
+        "timestamp_point": "trace_record_start before serial_write in the vCPU thread",
+        "trace_format": "QEMU simple trace version 4",
+    }
+    clock = (
+        "QEMU trace timestamp (simple backend, CLOCK_MONOTONIC, nanoseconds) "
+        "taken immediately before the device model handles the guest's write"
+    )
+    return markers, observer, clock
+
+
+def read_trace(path: Path) -> tuple[list[tuple[int, int]], dict[str, str], str]:
+    """Every marker byte QEMU wrote, plus the identity of its trace clock.
 
     A line is `pid@seconds.microseconds:serial_write write addr 0xNN val 0xNN`.
     Only writes to register 0 are data; the others are the UART being
     configured, and the boot log's own bytes are ASCII, outside the marker
     range.
     """
-    markers: list[tuple[int, float]] = []
-    for line in path.read_text(errors="replace").splitlines():
-        stamp, _, rest = line.partition(":")
-        if not rest.startswith("serial_write write addr 0x00 val "):
-            continue
-        _, _, seconds = stamp.partition("@")
-        try:
-            when = float(seconds)
-            value = int(rest.rsplit(" ", 1)[1], 16)
-        except ValueError:
-            continue
-        if value & 0x80:
-            markers.append((value, when))
-    return markers
+    prefix = path.read_bytes()[:24]
+    if len(prefix) >= 8 and struct.unpack_from("=Q", prefix)[0] == SIMPLE_HEADER_EVENT_ID:
+        return _simple_trace(path)
+    if b"\x00" in prefix:
+        raise Invalid("trace is neither QEMU log text nor QEMU simple version 4")
+    return _text_trace(path)
 
 
 class Invalid(Exception):
@@ -294,6 +437,79 @@ def output(command: list[str]) -> str:
         raise Invalid(f"cannot identify {' '.join(command)}: {error}") from error
 
 
+def observer_build_manifest(qemu: Path) -> dict[str, object] | None:
+    """Load a build record placed beside a repository-built observer."""
+    path = qemu.parent / "observer-build.json"
+    if not path.is_file():
+        return None
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise Invalid(f"cannot read observer build manifest {path}: {error}") from error
+    if not isinstance(manifest, dict):
+        raise Invalid(f"observer build manifest {path} is not an object")
+    required = {
+        "record_spdx_license": "CC-BY-SA-4.0",
+        "qemu_version": "10.0.11",
+        "qemu_source_sha256": (
+            "22e410fe784021c535756350a811ee78ae71356546ff90f5418493448a34b871"
+        ),
+        "qemu_sha256": sha256(qemu),
+        "trace_backends": ["simple"],
+        "network_downloads": "disabled",
+        "source_date_epoch": 1782452340,
+        "build_path_remap": "/usr/src/qemu-10.0.11",
+        "configure": SIMPLE_OBSERVER_CONFIGURE,
+        "cflags": SIMPLE_CFLAGS_IDENTITY,
+    }
+    for field, expected in required.items():
+        if manifest.get(field) != expected:
+            raise Invalid(
+                f"observer manifest {field} is {manifest.get(field)!r}, "
+                f"expected {expected!r}"
+            )
+    engine_relative = manifest.get("qemu_engine_relative_path")
+    if engine_relative != "qemu-system-x86_64.real":
+        raise Invalid(f"observer manifest engine path is {engine_relative!r}")
+    retained_data = manifest.get("retained_data")
+    if not isinstance(retained_data, dict):
+        raise Invalid("observer manifest retained_data is not an object")
+    retained = {
+        engine_relative: manifest.get("qemu_engine_sha256"),
+        "../share/qemu/kvmvapic.bin": retained_data.get(
+            "../share/qemu/kvmvapic.bin"
+        ),
+        "../share/qemu/vgabios-stdvga.bin": retained_data.get(
+            "../share/qemu/vgabios-stdvga.bin"
+        ),
+        "../share/qemu/efi-e1000e.rom": retained_data.get(
+            "../share/qemu/efi-e1000e.rom"
+        ),
+    }
+    for relative, expected_sha256 in retained.items():
+        retained_path = qemu.parent / relative
+        if not retained_path.is_file() or sha256(retained_path) != expected_sha256:
+            raise Invalid(f"observer retained file does not match manifest: {relative}")
+    dynamic_dependencies = manifest.get("dynamic_dependencies")
+    if not isinstance(dynamic_dependencies, dict) or not dynamic_dependencies:
+        raise Invalid("observer manifest has no dynamic dependency identity")
+    for dependency, expected_sha256 in dynamic_dependencies.items():
+        dependency_path = Path(dependency)
+        if (
+            not dependency_path.is_absolute()
+            or not dependency_path.is_file()
+            or sha256(dependency_path) != expected_sha256
+        ):
+            raise Invalid(
+                f"observer dynamic dependency does not match manifest: {dependency}"
+            )
+    return {
+        "path": str(path.resolve()),
+        "sha256": sha256(path),
+        "contents": manifest,
+    }
+
+
 def environment(args: argparse.Namespace) -> dict[str, object]:
     """Collect the identities needed to reproduce or reject this evidence."""
     repository = args.repository.resolve()
@@ -339,6 +555,9 @@ def environment(args: argparse.Namespace) -> dict[str, object]:
             )
     production_isolation_proven = all(production_before.values())
 
+    qemu_path = Path(qemu).resolve()
+    build_manifest = observer_build_manifest(qemu_path)
+
     return {
         "evidence_status": (
             "P1" if not status and production_isolation_proven else "exploratory"
@@ -348,12 +567,10 @@ def environment(args: argparse.Namespace) -> dict[str, object]:
             "dirty": bool(status),
         },
         "observer": {
-            "backend": "QEMU log trace serial_write",
-            "clock": "gettimeofday, microsecond text timestamp",
-            "timestamp_point": "serial_write in the vCPU thread",
             "qemu_path": qemu,
-            "qemu_sha256": sha256(Path(qemu)),
+            "qemu_sha256": sha256(qemu_path),
             "qemu_version": output([qemu, "--version"]).splitlines()[0],
+            "build_manifest": build_manifest,
         },
         "guest_profile": command_profile(args.command),
         "host": {
@@ -381,26 +598,23 @@ def environment(args: argparse.Namespace) -> dict[str, object]:
     }
 
 
-def pair_markers(markers: list[tuple[int, float]], warmups: int) -> list[float]:
+def pair_markers(markers: list[tuple[int, int]], warmups: int) -> list[float]:
     """Intervals of `OPEN`/`CLOSE` pairs that name the same request.
 
     A pair whose two halves disagree is not a measurement of anything and
     invalidates the run rather than being dropped or repaired.
 
-    **The clock is `CLOCK_REALTIME`**, which is the one QEMU's trace backend
-    offers, and a real-time clock may be stepped or slewed underneath a
-    measurement. So this refuses rather than repairs: a timestamp that goes
-    backwards, or an interval of zero or less, makes the run invalid. Nothing is
-    clamped, dropped or re-ordered — a measurement taken across a clock
-    adjustment is not a slightly wrong measurement, it is not one.
+    Timestamps stay integer nanoseconds through pairing.  A timestamp that goes
+    backwards, or an interval of zero or less, makes the run invalid. Nothing
+    is clamped, dropped or re-ordered.
     """
     samples: list[float] = []
-    opened: tuple[int, float] | None = None
+    opened: tuple[int, int] | None = None
     previous = None
     for value, when in markers:
         if previous is not None and when < previous:
             raise Invalid(
-                f"the clock went backwards, from {previous:.6f} to {when:.6f}"
+                f"the clock went backwards, from {previous} ns to {when} ns"
             )
         previous = when
         family = value & 0xE0
@@ -423,7 +637,7 @@ def pair_markers(markers: list[tuple[int, float]], warmups: int) -> list[float]:
                     f"close for sample {sequence} does not match open sample "
                     f"{open_sequence}"
                 )
-            interval = (when - open_when) * 1_000_000.0
+            interval = (when - open_when) / 1_000.0
             if interval <= 0:
                 raise Invalid(
                     f"an interval of {interval:.3f} us: the two markers of one "
@@ -541,7 +755,14 @@ def main() -> int:
         print("measure-channel: no trace file: QEMU produced no clock", file=sys.stderr)
         return 1
     try:
-        samples = pair_markers(trace_markers(args.trace), WARMUPS)
+        markers, observer, trace_clock = read_trace(args.trace)
+        run_environment["observer"].update(observer)
+        if (
+            observer["backend"] == "QEMU simple trace serial_write"
+            and run_environment["observer"]["build_manifest"] is None
+        ):
+            run_environment["evidence_status"] = "exploratory"
+        samples = pair_markers(markers, WARMUPS)
     except Invalid as invalid:
         print(f"measure-channel: measurement invalid: {invalid}", file=sys.stderr)
         return 1
@@ -566,8 +787,7 @@ def main() -> int:
         "min_us": min(samples),
         "max_us": max(samples),
         "jitter_us": max(samples) - min(samples),
-        "clock": "QEMU trace timestamp (gettimeofday, microseconds) taken in "
-        "the vCPU thread while the device model handles the guest's write",
+        "clock": trace_clock,
         "subtracted": "nothing",
         "environment": run_environment,
     }

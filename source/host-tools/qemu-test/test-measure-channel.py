@@ -5,6 +5,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import struct
 import sys
 import tempfile
 import unittest
@@ -19,15 +21,33 @@ measure_channel = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(measure_channel)
 
 
+def simple_trace(*records: bytes, version: int = 4) -> bytes:
+    header = struct.pack(
+        "=QQQ",
+        0xFFFFFFFFFFFFFFFF,
+        0xF2B177CB0AA429B4,
+        version,
+    )
+    mapping = struct.pack("=QQL", 0, 7, len(b"serial_write")) + b"serial_write"
+    return header + mapping + b"".join(records)
+
+
+def simple_event(event_id: int, timestamp_ns: int, *arguments: int) -> bytes:
+    payload = struct.pack(f"={len(arguments)}Q", *arguments)
+    return struct.pack(
+        "=QQQII", 1, event_id, timestamp_ns, 24 + len(payload), 1234
+    ) + payload
+
+
 class PairingTests(unittest.TestCase):
     def test_valid_pairs_retain_every_sample_after_warmups(self) -> None:
         markers = [
-            (measure_channel.OPEN | 0, 1.000000),
-            (measure_channel.CLOSE | 0, 1.000010),
-            (measure_channel.OPEN | 1, 2.000000),
-            (measure_channel.CLOSE | 1, 2.000020),
-            (measure_channel.OPEN | 2, 3.000000),
-            (measure_channel.CLOSE | 2, 3.000030),
+            (measure_channel.OPEN | 0, 1_000_000_000),
+            (measure_channel.CLOSE | 0, 1_000_010_000),
+            (measure_channel.OPEN | 1, 2_000_000_000),
+            (measure_channel.CLOSE | 1, 2_000_020_000),
+            (measure_channel.OPEN | 2, 3_000_000_000),
+            (measure_channel.CLOSE | 2, 3_000_030_000),
         ]
 
         samples = measure_channel.pair_markers(markers, 1)
@@ -37,9 +57,9 @@ class PairingTests(unittest.TestCase):
 
     def test_duplicate_open_is_invalid(self) -> None:
         markers = [
-            (measure_channel.OPEN | 4, 1.000000),
-            (measure_channel.OPEN | 4, 1.000001),
-            (measure_channel.CLOSE | 4, 1.000010),
+            (measure_channel.OPEN | 4, 1_000_000_000),
+            (measure_channel.OPEN | 4, 1_000_001_000),
+            (measure_channel.CLOSE | 4, 1_000_010_000),
         ]
 
         with self.assertRaisesRegex(measure_channel.Invalid, "opened twice"):
@@ -47,10 +67,10 @@ class PairingTests(unittest.TestCase):
 
     def test_overlapping_samples_are_invalid(self) -> None:
         markers = [
-            (measure_channel.OPEN | 4, 1.000000),
-            (measure_channel.OPEN | 5, 1.000001),
-            (measure_channel.CLOSE | 4, 1.000010),
-            (measure_channel.CLOSE | 5, 1.000020),
+            (measure_channel.OPEN | 4, 1_000_000_000),
+            (measure_channel.OPEN | 5, 1_000_001_000),
+            (measure_channel.CLOSE | 4, 1_000_010_000),
+            (measure_channel.CLOSE | 5, 1_000_020_000),
         ]
 
         with self.assertRaisesRegex(measure_channel.Invalid, "still open"):
@@ -59,13 +79,13 @@ class PairingTests(unittest.TestCase):
     def test_close_without_open_is_invalid(self) -> None:
         with self.assertRaisesRegex(measure_channel.Invalid, "without an open"):
             measure_channel.pair_markers(
-                [(measure_channel.CLOSE | 7, 1.000010)], 0
+                [(measure_channel.CLOSE | 7, 1_000_010_000)], 0
             )
 
     def test_close_for_another_sequence_is_invalid(self) -> None:
         markers = [
-            (measure_channel.OPEN | 6, 1.000000),
-            (measure_channel.CLOSE | 7, 1.000010),
+            (measure_channel.OPEN | 6, 1_000_000_000),
+            (measure_channel.CLOSE | 7, 1_000_010_000),
         ]
 
         with self.assertRaisesRegex(measure_channel.Invalid, "does not match"):
@@ -74,13 +94,13 @@ class PairingTests(unittest.TestCase):
     def test_unclosed_sample_is_invalid(self) -> None:
         with self.assertRaisesRegex(measure_channel.Invalid, "never closed"):
             measure_channel.pair_markers(
-                [(measure_channel.OPEN | 7, 1.000000)], 0
+                [(measure_channel.OPEN | 7, 1_000_000_000)], 0
             )
 
     def test_timestamp_reversal_is_invalid(self) -> None:
         markers = [
-            (measure_channel.OPEN | 1, 2.000000),
-            (measure_channel.CLOSE | 1, 1.000000),
+            (measure_channel.OPEN | 1, 2_000_000_000),
+            (measure_channel.CLOSE | 1, 1_000_000_000),
         ]
 
         with self.assertRaisesRegex(measure_channel.Invalid, "went backwards"):
@@ -88,12 +108,76 @@ class PairingTests(unittest.TestCase):
 
     def test_zero_interval_is_invalid(self) -> None:
         markers = [
-            (measure_channel.OPEN | 1, 2.000000),
-            (measure_channel.CLOSE | 1, 2.000000),
+            (measure_channel.OPEN | 1, 2_000_000_000),
+            (measure_channel.CLOSE | 1, 2_000_000_000),
         ]
 
         with self.assertRaisesRegex(measure_channel.Invalid, "interval of"):
             measure_channel.pair_markers(markers, 0)
+
+
+class SimpleTraceTests(unittest.TestCase):
+    def test_binary_trace_retains_serial_markers_and_nanosecond_clock(self) -> None:
+        trace = simple_trace(
+            simple_event(7, 1_000_000_000, 0, measure_channel.OPEN | 3),
+            simple_event(7, 1_000_004_250, 0, measure_channel.CLOSE | 3),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "serial.trace")
+            path.write_bytes(trace)
+
+            markers, observer, clock = measure_channel.read_trace(path)
+
+        self.assertEqual(
+            markers,
+            [
+                (measure_channel.OPEN | 3, 1_000_000_000),
+                (measure_channel.CLOSE | 3, 1_000_004_250),
+            ],
+        )
+        self.assertEqual(observer["backend"], "QEMU simple trace serial_write")
+        self.assertIn("CLOCK_MONOTONIC", observer["clock"])
+        self.assertIn("nanosecond", clock)
+
+    def test_binary_trace_refuses_reported_drops(self) -> None:
+        trace = simple_trace(simple_event(0xFFFFFFFFFFFFFFFE, 1, 9))
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "serial.trace")
+            path.write_bytes(trace)
+
+            with self.assertRaisesRegex(measure_channel.Invalid, "dropped 9"):
+                measure_channel.read_trace(path)
+
+    def test_binary_trace_refuses_truncated_record(self) -> None:
+        trace = simple_trace(simple_event(7, 1, 0, measure_channel.OPEN)[:-1])
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "serial.trace")
+            path.write_bytes(trace)
+
+            with self.assertRaisesRegex(measure_channel.Invalid, "truncated"):
+                measure_channel.read_trace(path)
+
+    def test_binary_trace_refuses_another_format_version(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "serial.trace")
+            path.write_bytes(simple_trace(version=3))
+
+            with self.assertRaisesRegex(measure_channel.Invalid, "version 3"):
+                measure_channel.read_trace(path)
+
+    def test_text_trace_is_retained_as_integer_nanoseconds(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory, "serial.trace")
+            path.write_text(
+                "7@123.000001:serial_write write addr 0x00 val 0x83\n"
+                "7@123.000009:serial_write write addr 0x00 val 0xa3\n",
+                encoding="utf-8",
+            )
+
+            markers, observer, _clock = measure_channel.read_trace(path)
+
+        self.assertEqual(markers, [(0x83, 123_000_001_000), (0xA3, 123_000_009_000)])
+        self.assertEqual(observer["backend"], "QEMU log trace serial_write")
 
 
 class StatisticsTests(unittest.TestCase):
@@ -112,6 +196,49 @@ class StatisticsTests(unittest.TestCase):
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_observer_manifest_binds_launcher_engine_and_roms(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            binary = root / "bin"
+            data = root / "share" / "qemu"
+            binary.mkdir(parents=True)
+            data.mkdir(parents=True)
+            launcher = binary / "qemu-system-x86_64"
+            engine = binary / "qemu-system-x86_64.real"
+            launcher.write_bytes(b"launcher")
+            engine.write_bytes(b"engine")
+            retained = {}
+            for name in ("kvmvapic.bin", "vgabios-stdvga.bin", "efi-e1000e.rom"):
+                path = data / name
+                path.write_bytes(name.encode("ascii"))
+                retained[f"../share/qemu/{name}"] = measure_channel.sha256(path)
+            manifest = {
+                "record_spdx_license": "CC-BY-SA-4.0",
+                "qemu_version": "10.0.11",
+                "qemu_source_sha256": "22e410fe784021c535756350a811ee78ae71356546ff90f5418493448a34b871",
+                "qemu_sha256": measure_channel.sha256(launcher),
+                "qemu_engine_relative_path": "qemu-system-x86_64.real",
+                "qemu_engine_sha256": measure_channel.sha256(engine),
+                "trace_backends": ["simple"],
+                "network_downloads": "disabled",
+                "source_date_epoch": 1782452340,
+                "build_path_remap": "/usr/src/qemu-10.0.11",
+                "configure": measure_channel.SIMPLE_OBSERVER_CONFIGURE,
+                "cflags": measure_channel.SIMPLE_CFLAGS_IDENTITY,
+                "retained_data": retained,
+                "dynamic_dependencies": {
+                    str(engine.resolve()): measure_channel.sha256(engine)
+                },
+            }
+            (binary / "observer-build.json").write_text(
+                json.dumps(manifest), encoding="utf-8"
+            )
+
+            self.assertIsNotNone(measure_channel.observer_build_manifest(launcher))
+            (data / "kvmvapic.bin").write_bytes(b"tampered")
+            with self.assertRaisesRegex(measure_channel.Invalid, "does not match"):
+                measure_channel.observer_build_manifest(launcher)
+
     def test_reference_profile_is_read_from_the_command(self) -> None:
         command = [
             "qemu-system-x86_64",
