@@ -4468,6 +4468,15 @@ Raw denominator, numerator и оба fail-closed qualification records сохр�
 дальше нужны CI evidence на pushed SHA, restart identity, E3 adversarial suite и
 versioned Stage 3 identity/trusted-base report.
 
+Первый QEMU workflow на evidence commit остановился до toolchain и измерений:
+`build-simple-observer.sh` сохранил относительный output path, вошёл в свой
+build-directory и потому искал `source/configure` относительно нового cwd.
+Output теперь канонизируется через `realpath -m` до создания временного дерева.
+Точная workflow-форма с относительным `source/target/...` локально построила
+observer до конца с прежним launcher SHA-256 `39474e...`; observer patch,
+платформа и performance contracts не изменялись. Нужен новый CI run на commit с
+этим исправлением; красный run `32644604992` остаётся историческим результатом.
+
 ### Требуют решения Project Architect
 
 **F. Что обязан гарантировать локальный preflight и что — CI — ЗАКРЫТО
