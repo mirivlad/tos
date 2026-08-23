@@ -8,6 +8,7 @@
   Stage 3 IPC budgets and clarifies the production time model without adding a
   production interface
 - Project Architect approval: Vladimir Tomashevskiy, 2026-08-23
+- Observer-profile amendment approval: Vladimir Tomashevskiy, 2026-08-23
 - Supersedes: ADR-0049 section 1 only where “calibration source” could be read as
   calibrating the Stage 3 tick into a duration unit
 
@@ -53,7 +54,22 @@ duration units supplied by the host-side QEMU measurement path. The observer is
 test tooling: it is not part of TOS Core semantics, a capability surface, the
 system ABI or the production trusted base.
 
-The exact observer backend and build identity are part of every report. A
+The conformance observer is a digest-pinned QEMU 10.0.11 build with the upstream
+binary `simple` backend and a narrow, hash-bound UART observation patch. While
+its measurement event is enabled, the one TCG vCPU thread reads
+`CLOCK_THREAD_CPUTIME_ID` after handling an `OPEN` marker and before handling
+the corresponding `CLOSE` marker. It emits the two raw timestamps together only
+after the closing timestamp exists. UART behavior is unchanged. Host
+descheduling, the two marker transports and trace-record construction are
+therefore outside the interval; no duration is estimated or subtracted.
+
+The event is enabled through QMP only after the observed process announces
+`READY`, and disabled immediately after the last `CLOSE`. Firmware and boot-log
+traffic cannot fill or perturb the measurement trace. Clock failure terminates
+the observer, and the decoder rejects a missing/malformed pair or any reported
+dropped event.
+
+The exact observer backend, source modifications and build identity are part of every report. A
 backend becomes a P2 conformance observer only after a versioned repository gate
 proves its identity, timestamp point, clock, dropped-event behavior and ability
 to resolve the fixed denominator against its own floor. Availability in another
@@ -64,14 +80,21 @@ QEMU build or suitability in principle is not evidence.
 The same observer, QEMU build, machine profile, marker path and sample discipline
 measure:
 
-1. the empty marker interval, published as the observer floor;
-2. the fixed in-process denominator of `IPC_V1` section 8; and
+1. the empty marker interval, published as the observer floor, with timer
+   preemption disabled only in this measurement build;
+2. the fixed in-process denominator of `IPC_V1` section 8, under that same
+   no-preemption measurement profile; and
 3. one 64-byte request/reply between two runnable processes with preemption
    active.
 
 Changing the observer between denominator and numerator invalidates the ratio.
 The fixed denominator is not replaced by a Rust call, an entry invocation, a
 batch average or a deliberately slower TOS Core function.
+
+Disabling preemption for the floor and denominator is conservative: it removes
+timer excursions and can only make the denominator smaller. The IPC numerator
+must prove preemption active, and the build rejects combining the no-preemption
+measurement feature with the two-process/request-reply profiles.
 
 ### 4. Measurement-only instrumentation is narrow and visible
 
@@ -99,17 +122,35 @@ marker, overlapping pair, sequence mismatch, reversed timestamp, zero or
 negative interval, wrong sample count or reported dropped trace event invalidates
 the whole series. Nothing is repaired, reordered, filtered or clamped.
 
+Observer resolution is a predeclared paired experiment in one prepared boot.
+After three warm-up blocks, each of 21 retained blocks contains an adjacent
+empty floor and denominator call with the same four-bit sequence identity. A
+fifth tag bit selects the call; both markers echo the complete tag. Order
+alternates `floor/call`, then `call/floor`, by block and is fixed before values
+are seen. The measured artifacts and exact Cargo feature sets are bound by a
+build manifest; scheduler preemption state is derived from that manifest, not
+declared by a caller.
+
+Resolution uses the one-sided exact sign test over all 21 paired differences
+`call - floor`, with non-positive differences counted conservatively against
+resolution. At least 19 of 21 must be positive: under the null of no directional
+separation this is `p = 232 / 2^21`, approximately `0.000111`, below the
+predeclared `0.000111` threshold. All values, including non-positive differences,
+remain in the raw series and determine their respective median and nearest-rank
+p99; no value is retried, filtered, reordered or subtracted. This controls
+same-boot preparation and drift without demanding that independent clock and
+emulation noise make every individual pair ordered.
+
 The p99 is the p99 of one exchange. Repeating N exchanges between two markers
 and dividing by N measures throughput/average and cannot satisfy this latency
 contract.
 
 ### 6. A coarse observer is a result, not a gate
 
-An observer whose floor is comparable with the denominator, or whose floor and
-denominator distributions overlap, may be retained as P1 diagnostic evidence.
-It cannot produce the relative conformance result and does not authorize IPC
-measurement. The next action is a separate observer/build decision, not a
-change to the denominator, budget or arithmetic.
+An observer that fails the predeclared floor/denominator sign test may be
+retained as P1 diagnostic evidence. It cannot produce the relative conformance
+result and does not authorize IPC measurement. The next action is a separate
+observer/build decision, not a change to the denominator, budget or arithmetic.
 
 Likewise, a valid observer that measures a value above either budget reports a
 red performance result. Threshold failure does not authorize changing the
@@ -121,7 +162,7 @@ QEMU `-icount` virtual instruction time is not cycle-accurate physical duration
 and instruction count does not establish real execution latency. It is excluded
 from both Stage 3 quantitative budgets.
 
-## Evidence status at acceptance
+## Evidence status and observer-profile amendment
 
 The measurement-only COM1 protocol and QEMU `serial_write` log timestamps have
 validated causal pairing, production-artifact isolation and the exact inner-call
@@ -129,8 +170,25 @@ semantic boundary at P1. The log backend is not accepted as the conformance
 observer: its empty floor overlaps the inner-call distribution. The declared
 Debian reference QEMU does not provide the binary `simple` trace backend.
 
-Therefore the Stage 3 IPC latency budgets remain open and IPC timing has not
-started. This is an honest intermediate result, not a closure claim.
+The first unmodified upstream simple-trace series happened to have disjoint
+ranges, but six subsequent clean repetitions all overlapped. Ten exploratory
+runs with whole-backend thread CPU timestamps and dynamically bounded tracing
+still overlapped in four runs. Those results reject both profiles; no successful
+run was selected as conformance evidence.
+
+The symmetric-pair patch was first exercised with floor and call in separate
+boots. The resulting 210 of 210 index-aligned differences are retained only as
+diagnostic evidence: an index does not make observations from distinct boots a
+causal pair. Independent review rejected that method before commit.
+
+The corrected candidate runs both observations adjacently in one prepared boot
+and alternates their order. Its first exploratory run resolved 20 of 21 pairs;
+five subsequent independent boots resolved 21 of 21 each, for 125 of 126 raw
+pairs overall. The single non-positive difference was retained. These data
+informed instrument development but do not qualify it: the exact sign-test rule
+above was accepted before any clean P1/P2 confirmation, and only a fresh clean
+gate may establish conformance. The Stage 3 IPC latency budgets remain open
+until that qualification and the subsequent IPC measurement pass.
 
 ## Architecture impact statement
 
@@ -149,15 +207,20 @@ started. This is an honest intermediate result, not a closure claim.
   3 performance evidence; it closes no metric by itself.
 - **Threat-model impact:** no new production boundary. A test build deliberately
   exposes COM1 to its observed CPL3 process and must prove confinement to those
-  ports and production-artifact separation.
+  ports and production-artifact separation. The host observer rejects malformed
+  trace records and terminates if its physical thread clock fails.
 - **Performance contract:** both `<= 8x` and `<= 200 microseconds` remain Stage 3
   requirements. Denominator, workload and sample discipline are unchanged.
 - **Compatibility profile:** ADR-0040 machine/cpu/vCPU/memory/TCG profile is
   unchanged. The observer backend and QEMU build/configuration are additional
   required report identities and change only through a versioned decision.
-- **Dependencies/licence/provenance:** no dependency enters TOS. A future
-  measurement QEMU build remains upstream host tooling and must record exact
-  source, configuration, compiler and digest under its own licence.
+- **Dependencies/licence/provenance:** no dependency enters TOS. The local-only
+  QEMU test bundle records its official source-archive digest, configuration,
+  compiler, dynamic inputs, engine digest and the before/after hashes of both
+  modified source files. The observer build/patch script is MIT-licensed so its
+  injected code is compatible with GPL-2.0-only QEMU and MIT `serial.c`. QEMU
+  remains under its upstream licences and is not vendored or distributed by
+  this repository.
 - **Patent impact:** no new runtime mechanism and no new identified high-risk
   claim combination. This ADR makes no patent-clearance claim.
 - **Tests:** observer pairing self-tests; production/test artifact hash parity;
@@ -184,3 +247,11 @@ passing number depend on a correction model.
 
 **Batch calls or exchanges.** Rejected: this contract bounds single-operation
 latency, not amortized throughput.
+
+**Use unmodified simple-trace timestamps.** Rejected by repeated measurement:
+shared-host descheduling and asymmetric UART/trace work produced overlapping
+tails. Keeping a lucky series would be result selection.
+
+**Use QEMU thread CPU time for every simple event.** Rejected by repeated
+measurement: it removed host descheduling but left asymmetric marker transport
+and trace-record work inside the interval.

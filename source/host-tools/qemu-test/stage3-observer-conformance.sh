@@ -11,10 +11,12 @@ usage() {
     cat <<'EOF'
 Usage: stage3-observer-conformance.sh [--out DIR] [--evidence-status P1|P2]
 
-Measures the empty floor and immutable 64-byte TOS Core denominator with one
-manifest-bound QEMU simple observer. The gate passes only when all 21-sample
-ranges are disjoint, the floor p99 is at most 40 us, and every identity and
-production-isolation check agrees. P2 is reserved for GitHub Actions.
+Measures adjacent empty-floor and immutable 64-byte TOS Core observations in
+one prepared boot with one manifest-bound QEMU simple observer. The gate passes
+only when at least 19 of 21 predeclared, alternating-order pairs resolve the
+call above its adjacent floor (one-sided exact sign p <= 0.000111), floor p99 is
+at most 40 us, and the observer, guest build and production-isolation identities
+agree. P2 is reserved for GitHub Actions.
 EOF
 }
 
@@ -49,8 +51,7 @@ qemu="$(command -v qemu-system-x86_64 || true)"
 bash "$ROOT/host-tools/qemu-test/measurement-denominator.sh" \
     --out "$OUT" --evidence-status "$EVIDENCE_STATUS"
 python3 "$ROOT/host-tools/qemu-test/qualify-observer.py" \
-    --floor "$OUT/floor/measurement.json" \
-    --call "$OUT/call/measurement.json" \
+    --measurement "$OUT/paired/measurement.json" \
     --out "$OUT/qualification.json" \
     --evidence-status "$EVIDENCE_STATUS"
 

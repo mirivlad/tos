@@ -4344,6 +4344,76 @@ simple observer локально разрешает immutable denominator. Ст�
 следующий обязательный шаг — versioned CI gate и retained P2 artifact, не IPC
 claim по локальному удачному прогону.
 
+### 2026-08-23 — профиль observer уточнён после повторяемости, удачный run не выбран
+
+После добавления clean gate прежний upstream simple observer не подтвердил
+устойчивость: первый повтор и ещё пять независимых чистых повторов дали overlap
+floor/call. Перевод timestamp всего simple backend на
+`CLOCK_THREAD_CPUTIME_ID` исключил host descheduling, а ограничение trace через
+QMP убрало boot events, но 4 из 10 exploratory runs всё равно пересекались.
+Причина осталась в асимметрии самой границы: интервал включал transport и trace
+работу после `OPEN`, но не эквивалентную работу после `CLOSE`.
+
+Project Architect утвердил узкое Level 2 уточнение ADR-0066. Пинованный QEMU
+10.0.11 теперь меняется только по exact before/after SHA-256 в
+`hw/char/serial.c` и `hw/char/trace-events`: один TCG vCPU thread фиксирует
+physical `CLOCK_THREAD_CPUTIME_ID` после обработки `OPEN` и до обработки
+`CLOSE`, затем пишет оба raw timestamp одной simple-trace парой. UART работает
+как прежде; marker transport, trace construction и host descheduling не входят
+в interval, и никакая величина не вычитается. Event включается QMP только между
+`READY` и последним `CLOSE`.
+
+Floor и immutable denominator измеряются без timer preemption; будущий IPC
+numerator обязан сохранить preemption active. Это консервативно уменьшает
+denominator и делает `8x` строже. Build-time guard запрещает совмещать
+no-preemption профиль с two-process/call-reply numerator.
+
+Критерий resolution теперь причинно парный и задан до чтения значений: после
+одинаковых трёх warm-up каждый `call[i]` обязан быть строго больше
+`floor[i]`, все 21 individual tail остаются в raw series и в p99. В десяти
+независимых локальных прогонах получено 210/210 resolved pairs без retry,
+selection, filtering или subtraction. Девять прогонов имели также disjoint
+global ranges; в одном unrelated floor tail пересёк чужой call minimum, но его
+собственная call pair осталась больше. Это exploratory подтверждение кандидата,
+не P2: следующий шаг — commit, clean gate и retained CI artifact.
+
+Observer builder и внедряемый им код выделены в узкую MIT-категорию
+`LICENSE.md`: GPL-3.0-or-later TOS code нельзя смешивать с GPL-2.0-only QEMU,
+тогда как MIT совместим и с общим QEMU executable, и с MIT `serial.c`.
+Production-лицензирование TOS и остальные host tools не изменены.
+
+### 2026-08-23 — парность observer исправлена после независимого review
+
+Независимый review отверг позиционное сопоставление floor и call из разных
+boot: одинаковый индекс не связывает TCG phase, подготовку, cache/frequency
+state или drift, поэтому прежние 210/210 остаются только diagnostic и не могут
+квалифицировать observer. До commit и clean evidence метод исправлен, а не
+защищён удобной интерпретацией.
+
+Теперь один `test-measurement-call` process один раз подготавливает module,
+verified receipt, argument и engine boundary. Каждый из 3 warm-up и 21 retained
+blocks содержит два соседних запроса с общим 4-bit sequence и разным work bit;
+порядок заранее чередуется `floor/call`, затем `call/floor`. Trace decoder и
+live protocol обязаны увидеть точный план всех 48 complete tags. Duplicate
+complete pair больше не может заменить пропуск. Один build manifest связывает
+SHA-256 nucleus/runtime-image с exact Cargo features; `preemption=inactive`
+выводится только из `test-measurement-no-preemption`, а прежний caller label
+удалён.
+
+Project Architect принял Level 2 уточнение qualification до нового clean P1/P2:
+по всем 21 raw differences `call-floor` применяется one-sided exact sign test,
+неположительные разности остаются в серии и считаются против observer. Порог
+`p <= 0.000111` требует минимум 19/21 positive pairs (`232 / 2^21`, примерно
+0,000111). Это не фильтр и не замена p99: обе raw серии, все tails и их
+nearest-rank p99 сохраняются, ничего не вычитается.
+
+Первый исправленный exploratory boot дал 20/21 positive pairs: единственные
+`floor=12,535 µs` и `call=10,858 µs` сохранены как неположительная разность.
+Пять следующих независимых boot дали 21/21 каждый; итого 125/126 raw pairs,
+без retry selection. Floor p99 по этим пяти повторениям находился между 5,674
+и 9,939 µs. Это подтверждает пригодность кандидата для fresh clean gate, но
+dirty exploratory данные сами не являются P1/P2 и не разрешают IPC timing.
+
 ### Требуют решения Project Architect
 
 **F. Что обязан гарантировать локальный preflight и что — CI — ЗАКРЫТО

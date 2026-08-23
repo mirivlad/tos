@@ -186,12 +186,18 @@ ADR-0066 fixes the measurement boundary. One external observer on the ADR-0040
 profile measures its empty marker floor, this call and the 64-byte IPC exchange
 with the same QEMU build, marker path and 3-warm-up/21-individual-sample
 discipline. No floor or marker cost is subtracted. A missing, duplicate,
-overlapping or mismatched marker, a reversed/zero/negative interval, a wrong
-sample count or a dropped trace event invalidates the series. A floor that is
-comparable with this call, including overlapping distributions, means that
-observer cannot establish the relative budget; it is retained as diagnostic
-evidence and IPC timing does not begin. Batching and dividing by the batch size
-does not measure the latency this section specifies.
+overlapping, mismatched or out-of-plan marker, a reversed/zero/negative
+interval, a wrong sample count or a dropped trace event invalidates the series.
+
+Before IPC timing, the observer must resolve this call in one prepared boot.
+Each retained block contains an adjacent floor/call pair with the same sequence;
+the work bit distinguishes them and their order alternates by block. At least 19
+of 21 paired differences must be positive, the predeclared one-sided exact sign
+test at `p <= 0.000111`; every non-positive difference remains raw and counts
+against the verdict. The exact nucleus/runtime hashes and Cargo features bind
+the no-preemption denominator build. Failure is diagnostic evidence and IPC
+timing does not begin. Batching and dividing by the batch size does not measure
+the latency this section specifies.
 
 ## 9. Conformance evidence
 

@@ -9,12 +9,12 @@
 # floor and none of them may have it subtracted, which is why it is published
 # first and separately.
 #
-# **The clock is QEMU's, not this host reader's.** The system QEMU `log` backend
-# is accepted only for diagnostic evidence.  A manifest-bound QEMU `simple`
-# backend supplies the conformance candidate's monotonic nanosecond timestamp.
-# Both observe `serial_write` synchronously in the vCPU thread at the guest's
-# `out` boundary. The socket is kept for the protocol alone: it carries the
-# request that starts a sample and the stop that ends the run.
+# **The clock is QEMU's, not this host reader's.** This diagnostic deliberately
+# exercises the unmodified system QEMU `log` backend: its `serial_write` event
+# uses a microsecond text timestamp at the guest's `out` boundary. It is not the
+# conformance observer. The latter is a separately manifest-bound `simple`
+# build whose symmetric UART event carries two thread-CPU nanosecond timestamps.
+# The socket is kept for protocol alone in either case.
 #
 # Two earlier forms were measured and rejected, and both erred towards passing:
 #
@@ -108,8 +108,8 @@ EOF
 
 [ "$count" = 21 ] || fail "$count samples, and the contract asks for 21"
 [ "$subtracted" = nothing ] || fail "the observer subtracted '$subtracted'"
-grep -Fq "QEMU trace timestamp" "$REPORT" ||
-    fail "the report does not name QEMU's trace timestamp as its clock"
+grep -Fq "QEMU log trace timestamp" "$REPORT" ||
+    fail "the report does not name QEMU's diagnostic log timestamp as its clock"
 
 # A zero means the observer read both markers in one go and cannot tell them
 # apart; a floor this wide means the host descheduled the observer. Either way
@@ -132,6 +132,6 @@ EOF
 echo "MEASUREMENT-CHANNEL PASS: the channel floor is $median us median, $p99 us p99, $jitter us jitter"
 echo "  21 individual samples after 3 warm-ups; both markers of every one named their request"
 echo "  nothing between the markers, and nothing subtracted from any reading"
-echo "  the clock is QEMU's own trace timestamp at the guest write boundary"
+echo "  the diagnostic clock is QEMU's log timestamp at the guest write boundary"
 echo "  IOPL stays 0: the measurement nucleus clears the bitmap bits of COM1 and no others"
 echo "  the production nucleus and runtime image are unchanged by this build"

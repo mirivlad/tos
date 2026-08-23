@@ -41,6 +41,14 @@ This applies to prose specifications, diagrams, governance and documentation. Co
 
 This is reserved for a future official network service whose value would otherwise be delivered as a modified hosted service without source reciprocity. AGPL adoption is component-specific and requires an ADR.
 
+### MIT
+
+MIT is reserved for external observer build or patch material that must be
+combined with a GPL-2.0-only test instrument. ADR-0066 applies it to the QEMU
+observer builder so the inserted UART observation code is compatible with both
+the MIT-licensed source file and the GPLv2 QEMU executable. This exception does
+not apply to production TOS implementation or general host tooling.
+
 ## GPL installation freedom and TOS
 
 Official distributions must not satisfy source obligations while blocking the owner from installing modified covered software. Where GPLv3 Installation Information obligations apply, the distributor must provide the necessary methods, procedures or authorization material. Independently of the narrow legal trigger, owner-controlled boot remains a TOS conformance requirement for official builds.

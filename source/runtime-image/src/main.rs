@@ -973,10 +973,10 @@ mod wire {
 /// line and an observer could not tell. It also proves the line is transparent
 /// to eight bits: if it were not, `READY` would not arrive.
 ///
-/// A request carries a sequence number in its low five bits and **both** markers
-/// echo it. The echo is what makes a sample causal rather than coincidental: a
-/// pair that does not name the request it followed is discarded by the observer,
-/// not repaired.
+/// A request carries a four-bit sequence number and a one-bit work selector in
+/// its low five bits, and **both** markers echo the complete tag. The echo is
+/// what makes a sample causal rather than coincidental: a pair that does not
+/// name the exact request it followed invalidates the series.
 ///
 /// The measured interval is between the two markers this side emits, and the
 /// request that starts a sample is deliberately outside it. Milestone 1 measured
@@ -993,7 +993,12 @@ mod protocol {
     pub const OPEN: u8 = 0x80;
     /// Guest to host: the interval closes.
     pub const CLOSE: u8 = 0xa0;
-    pub const SEQUENCE: u8 = 0x1f;
+    /// In a paired calibration request, execute the denominator call.
+    pub const WORK: u8 = 0x10;
+    /// Sequence identity within either request class.
+    pub const SEQUENCE: u8 = 0x0f;
+    /// The complete request identity echoed by both markers.
+    pub const TAG: u8 = WORK | SEQUENCE;
     /// Host to guest: no more samples.
     pub const STOP: u8 = 0xe0;
     /// Guest to host, once, before the first request may be sent.
@@ -1125,12 +1130,12 @@ fn measure_channel(launch: &Launch, report: &mut Report) {
         if !protocol::is_go(request) {
             continue;
         }
-        let sequence = request & protocol::SEQUENCE;
+        let tag = request & protocol::TAG;
         // The interval opens here and closes below, and between them is the
         // whole of what is being measured. Nothing else may go between: no
         // report line, no system call, no second thought.
-        work.mark(sequence);
-        work.perform();
+        work.mark(tag);
+        work.perform(tag & protocol::WORK != 0);
         answered += 1;
     }
     report.line(&alloc::format!(
@@ -1159,17 +1164,17 @@ impl Work {
     }
 
     /// Which sample the next marks belong to.
-    fn mark(&mut self, sequence: u8) {
-        self.0 = sequence;
+    fn mark(&mut self, tag: u8) {
+        self.0 = tag;
     }
 
     /// The two marks with nothing between them: the floor of the channel, and
     /// the same two writes the engine makes when there is a call between them.
-    fn perform(&mut self) {
+    fn perform(&mut self, _measure_call: bool) {
         // SAFETY: the measurement nucleus permits CPL 3 these ports.
-        unsafe { wire_write(protocol::OPEN | (self.0 & protocol::SEQUENCE)) };
+        unsafe { wire_write(protocol::OPEN | (self.0 & protocol::TAG)) };
         // SAFETY: as above.
-        unsafe { wire_write(protocol::CLOSE | (self.0 & protocol::SEQUENCE)) };
+        unsafe { wire_write(protocol::CLOSE | (self.0 & protocol::TAG)) };
     }
 
     fn summary(&self) -> alloc::string::String {
@@ -1226,12 +1231,12 @@ impl tos_pipeline::System for Marked {
 
     fn mark_before_call(&mut self) {
         // SAFETY: the measurement nucleus permits CPL 3 these ports.
-        unsafe { wire_write(protocol::OPEN | (self.sequence & protocol::SEQUENCE)) };
+        unsafe { wire_write(protocol::OPEN | (self.sequence & protocol::TAG)) };
     }
 
     fn mark_after_call(&mut self) {
         // SAFETY: as above.
-        unsafe { wire_write(protocol::CLOSE | (self.sequence & protocol::SEQUENCE)) };
+        unsafe { wire_write(protocol::CLOSE | (self.sequence & protocol::TAG)) };
     }
 }
 
@@ -1303,8 +1308,8 @@ impl Work {
     }
 
     /// Which sample the engine's marks belong to.
-    fn mark(&mut self, sequence: u8) {
-        self.system.sequence = sequence;
+    fn mark(&mut self, tag: u8) {
+        self.system.sequence = tag;
     }
 
     /// Starts a run and lets the engine mark the call inside it.
@@ -1312,7 +1317,15 @@ impl Work {
     /// The run itself is *not* the sample: the marks are taken by the engine,
     /// around the one `Op::Call` this module makes, and everything before the
     /// first mark is startup this measurement deliberately excludes.
-    fn perform(&mut self) {
+    fn perform(&mut self, measure_call: bool) {
+        if !measure_call {
+            // The adjacent floor uses the exact same prepared process, UART,
+            // observer and trace window. Only the immutable work selector
+            // differs, and no work lies between these marks.
+            self.system.mark_before_call();
+            self.system.mark_after_call();
+            return;
+        }
         match tos_engine::run(
             &self.module,
             &self.receipt,

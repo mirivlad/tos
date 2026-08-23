@@ -18,11 +18,12 @@ The work has three reviewable results and is implemented in this order:
    channel and denominator result as P1 diagnostic evidence. The current QEMU
    log backend is explicitly insufficient for the relative budget; it is not a
    conformance observer.
-2. **Conformance observer and IPC report.** Use an upstream, reproducibly pinned
-   low-overhead QEMU trace backend on the unchanged q35/qemu64/one-vCPU/256-MiB/
-   TCG machine profile. Validate it before measuring IPC. If no such upstream
-   backend can resolve one call, stop with evidence; do not introduce batches,
-   subtraction, a slower denominator, or a custom replacement implementation.
+2. **Conformance observer and IPC report.** Use a reproducibly pinned QEMU build
+   with the upstream low-overhead simple-trace backend and the accepted narrow,
+   hash-bound symmetric UART observation patch on the unchanged
+   q35/qemu64/one-vCPU/256-MiB/TCG machine profile. Validate it before measuring
+   IPC. Do not introduce batches, subtraction, a slower denominator, or a
+   replacement TOS implementation.
 3. **Stage 3 closure evidence.** Implement the accepted restart identity
    contract, add the E3 capability and ABI adversarial tests required by
    `docs/34`, and produce the trusted-base/identity report required by
@@ -44,33 +45,46 @@ emits sequence-tagged `OPEN` and `CLOSE` markers. Both the fixed in-process call
 and the IPC exchange use the same marker path, QEMU build, machine profile,
 warm-up policy, and 21 individual samples. No observer cost is subtracted.
 
+The QEMU observer records thread CPU time after handling `OPEN` and before
+handling `CLOSE`, and emits both timestamps together. QMP enables this one event
+only between `READY` and the final `CLOSE`. The empty floor and fixed denominator
+use a measurement-only nucleus with timer preemption inactive; the IPC numerator
+must keep preemption active. The smaller denominator makes the ratio stricter.
+
 The denominator is immutable: one ordinary local TOS Core call to an exported
 function taking one 64-byte value and returning `unit`, with run setup outside
 the marks and the unavoidable call accounting inside them. IPC is not measured
-until the observer separates that call from its own floor without dropped,
-reversed, zero, or negative observations.
+until one prepared boot supplies 21 adjacent, alternating-order floor/call
+blocks after three warm-ups and at least 19 paired differences are positive
+(one-sided exact sign `p <= 0.000111`). The build manifest binds exact artifacts,
+features and no-preemption state. Dropped, duplicated, out-of-plan, reversed,
+zero-duration or negative-duration observations invalidate the series.
 
 ## Observer choice
 
 Three approaches were considered:
 
-- **Pinned upstream QEMU simple trace backend — selected.** It is the same QEMU
-  implementation and machine model with a build-time upstream trace backend,
-  not a new TOS mechanism. Its source version, configure flags, compiler and
-  resulting digest must be recorded. The build consumes a separately acquired
-  release archive only after verifying its fixed SHA-256 and disables all
-  build-time downloads. The launcher, engine and retained ROM inputs are each
-  hashed in the build manifest.
-- **A custom QEMU marker device or trace patch — reserve only.** It could reduce
-  overhead but would create a project-maintained measurement implementation.
-  It is not admitted while an upstream backend can do the job.
+- **Pinned QEMU simple trace plus symmetric UART observation — selected after
+  measurement.** The unmodified backend failed six clean stability repetitions;
+  applying thread CPU time to the whole backend still failed four of ten. The
+  selected observer instead changes exactly two hash-bound QEMU source files:
+  the UART captures the two physical thread-CPU timestamps outside marker
+  transport, and one trace event carries the untouched pair. Guest-visible UART
+  behavior and the machine model do not change. Source version, both before and
+  after hashes, configure flags, compiler and resulting binary digest are
+  recorded. The build consumes a separately acquired release archive only after
+  verifying its fixed SHA-256 and disables all build-time downloads. The
+  launcher, engine and retained ROM inputs are each hashed in the manifest.
+- **A custom QEMU marker device — rejected.** The accepted patch observes the
+  existing measurement-only COM1 path; it adds no replacement device or TOS
+  semantic mechanism.
 - **Batching, division, overhead subtraction, host-reader timestamps, RDTSC or
   `-icount` — rejected.** They measure throughput/averages, can understate the
   interval, or substitute virtual instruction time for physical duration.
 
-If the selected backend remains unable to resolve the call, that is a red
-measurement result and a new observer/platform decision, not permission to use
-the rejected approaches.
+If the selected observer fails the predeclared exact sign test in the clean P2
+gate, that is a red measurement result and a new observer/platform decision, not
+permission to use the rejected approaches.
 
 ## Failure handling and evidence
 
