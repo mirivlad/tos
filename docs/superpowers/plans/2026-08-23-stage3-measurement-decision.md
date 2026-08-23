@@ -147,7 +147,7 @@ Clarify ADR-0049's calibration sentence without calibrating the tick; make
 Add ADR-0066 in numerical order, run `python3 tools/build-specification.py`,
 and record the validated channel plus unresolved denominator in `PROGRESS.md`.
 
-- [ ] **Step 4: Run documentation gates**
+- [x] **Step 4: Run documentation gates**
 
 Run:
 
@@ -177,18 +177,18 @@ Make the harness record source tree identity, QEMU version, firmware digests,
 machine/cpu/vCPU/memory/accelerator, build mode, quantum/preemption state and
 observer backend. A missing identity field invalidates evidence.
 
-- [ ] **Step 2: Run the channel and inner-call series on one frozen tree**
+- [x] **Step 2: Run the channel and inner-call series on one frozen tree**
 
 Run `measurement-denominator.sh` once after all source changes. Preserve exactly
 the two emitted JSON reports; do not copy earlier scratch results.
 
-- [ ] **Step 3: Write the evidence interpretation**
+- [x] **Step 3: Write the evidence interpretation**
 
 Report raw samples, median/p99/min/max, floor/call ratios and overlap. State that
 the semantic boundary passed but the log backend is not a conformance observer
 and IPC was not measured.
 
-- [ ] **Step 4: Verify production identity**
+- [x] **Step 4: Verify production identity**
 
 Hash ordinary production nucleus/runtime before and after the measurement build
 and retain both equal pairs in the report.
