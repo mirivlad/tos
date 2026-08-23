@@ -16,13 +16,28 @@
 # Nothing here decides whether `8×` is provable. That needs the numerator, and
 # the numerator is not measured until the denominator is known to be resolvable.
 #
-#   bash host-tools/qemu-test/measurement-denominator.sh [OUT_DIR]
+#   bash host-tools/qemu-test/measurement-denominator.sh [--out DIR] [--evidence-status P1|P2]
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && cd ../.. && pwd)"
 GITROOT="$(cd "$ROOT/.." && pwd)"
 HERE="$ROOT/host-tools/qemu-test"
-OUT="${1:-$ROOT/target/qemu-measurement-denominator}"
+OUT="$ROOT/target/qemu-measurement-denominator"
+EVIDENCE_STATUS=P1
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --out) OUT="$2"; shift 2 ;;
+        --evidence-status) EVIDENCE_STATUS="$2"; shift 2 ;;
+        -h|--help) sed -n '3,24p' "$0"; exit 0 ;;
+        --*) echo "unknown option: $1" >&2; exit 2 ;;
+        *) OUT="$1"; shift ;;
+    esac
+done
+case "$EVIDENCE_STATUS" in
+    P1|P2) ;;
+    *) echo "invalid evidence status: $EVIDENCE_STATUS" >&2; exit 2 ;;
+esac
 
 TOOL="$ROOT/target/release/tos-capsule-tool"
 FIXTURE="$ROOT/tests/vectors/measurement"
@@ -79,6 +94,7 @@ bash "$HERE/run.sh" \
     --runtime-image "$ROOT/target/test-measurement-port/x86_64-unknown-none/release/tos-runtime-image" \
     --production-nucleus-before-sha256 "$production_nucleus_before" \
     --production-runtime-image-before-sha256 "$production_image_before" \
+    --measurement-evidence-status "$EVIDENCE_STATUS" \
     --measure 21 > "$OUT/floor.out" 2>&1 || { cat "$OUT/floor.out" >&2; fail "the floor boot did not complete"; }
 grep -E "^measure-channel:" "$OUT/floor.out" || true
 
@@ -90,6 +106,7 @@ bash "$HERE/run.sh" \
     --runtime-image "$TEST_IMAGE" \
     --production-nucleus-before-sha256 "$production_nucleus_before" \
     --production-runtime-image-before-sha256 "$production_image_before" \
+    --measurement-evidence-status "$EVIDENCE_STATUS" \
     --measure 21 > "$OUT/call.out" 2>&1 || { cat "$OUT/call.out" >&2; fail "the denominator boot did not complete"; }
 grep -E "^measure-channel:" "$OUT/call.out" || true
 

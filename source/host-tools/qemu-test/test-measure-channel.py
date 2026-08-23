@@ -196,6 +196,16 @@ class StatisticsTests(unittest.TestCase):
 
 
 class EnvironmentTests(unittest.TestCase):
+    def test_p2_status_is_reserved_for_clean_ci_measurements(self) -> None:
+        self.assertEqual(
+            measure_channel.evidence_status("P2", False, True, True), "P2"
+        )
+        with self.assertRaisesRegex(measure_channel.Invalid, "GitHub Actions"):
+            measure_channel.evidence_status("P2", False, True, False)
+        self.assertEqual(
+            measure_channel.evidence_status("P2", True, True, True), "exploratory"
+        )
+
     def test_observer_manifest_binds_launcher_engine_and_roms(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
