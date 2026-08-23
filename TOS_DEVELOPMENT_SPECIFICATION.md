@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `981b061704a2854bb5e19bc99280c4f229a2217b91605354a0e3d76a31670d74`\
+Source-manifest SHA-256: `7bb7de77f6e70d9cdd034a0732a8c5e377179b3c6e45f59acd7eb74212060ce3`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -19931,9 +19931,15 @@ and alternates their order. Its first exploratory run resolved 20 of 21 pairs;
 five subsequent independent boots resolved 21 of 21 each, for 125 of 126 raw
 pairs overall. The single non-positive difference was retained. These data
 informed instrument development but do not qualify it: the exact sign-test rule
-above was accepted before any clean P1/P2 confirmation, and only a fresh clean
-gate may establish conformance. The Stage 3 IPC latency budgets remain open
-until that qualification and the subsequent IPC measurement pass.
+above was accepted before any clean P1/P2 confirmation.
+
+A fresh local gate on clean commit `626876b64d0692443a6bac3aa3ebeb15c7b7d09d`
+then resolved 21 of 21 pairs (`p = 2^-21`), with floor median/p99
+`2.996/5.570 µs` and denominator median/p99 `9.623/29.896 µs`. The complete P1
+record is retained in `docs/evidence/STAGE3_SYMMETRIC_OBSERVER_P1.md`. This
+qualifies the observer locally and permits numerator implementation; P2 and the
+Stage 3 IPC latency budgets remain open until CI qualification and the
+subsequent IPC measurement pass.
 
 ## Architecture impact statement
 
