@@ -50,6 +50,7 @@ EVENT_TIMESTAMPS=""
 # observer drives the protocol over it. The machine, the firmware and the ESP
 # are the ordinary ones; what differs is that the wire has two ends.
 MEASURE=""
+MEASUREMENT_EVIDENCE_STATUS="P1"
 PRODUCTION_NUCLEUS_BEFORE_SHA256=""
 PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256=""
 QEMU_ACCEL=""
@@ -59,6 +60,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --out)      OUT="$2"; shift 2 ;;
         --measure)  MEASURE="$2"; shift 2 ;;
+        --measurement-evidence-status) MEASUREMENT_EVIDENCE_STATUS="$2"; shift 2 ;;
         --production-nucleus-before-sha256) PRODUCTION_NUCLEUS_BEFORE_SHA256="$2"; shift 2 ;;
         --production-runtime-image-before-sha256) PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256="$2"; shift 2 ;;
         --capsule)  CAPSULE_IN="$2"; shift 2 ;;
@@ -102,6 +104,10 @@ if [ -n "$MEASURE" ] && [ "${NO_RUNTIME_IMAGE:-0}" -eq 1 ]; then
     echo "--measure requires a runtime image" >&2
     exit 2
 fi
+case "$MEASUREMENT_EVIDENCE_STATUS" in
+    P1|P2) ;;
+    *) echo "--measurement-evidence-status must be P1 or P2" >&2; exit 2 ;;
+esac
 
 case "$QEMU_ACCEL" in
     ""|tcg|kvm) ;;
@@ -287,6 +293,7 @@ else
             --serial-log "$OUT/serial.log" \
             --stderr-log "$OUT/qemu.stderr" \
             --samples "$MEASURE" \
+            --evidence-status "$MEASUREMENT_EVIDENCE_STATUS" \
             --report "$OUT/measurement.json" \
             --timeout "$QEMU_TIMEOUT" \
             --trace "$OUT/serial.trace" \

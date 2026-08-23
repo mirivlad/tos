@@ -48,6 +48,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 import shutil
 import socket
@@ -100,6 +101,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--serial-log", required=True, type=Path)
     parser.add_argument("--stderr-log", required=True, type=Path)
     parser.add_argument("--samples", required=True, type=int)
+    parser.add_argument("--evidence-status", choices=("P1", "P2"), default="P1")
     parser.add_argument("--timeout", required=True, type=float)
     parser.add_argument("--report", type=Path)
     parser.add_argument("--trace", type=Path)
@@ -510,6 +512,17 @@ def observer_build_manifest(qemu: Path) -> dict[str, object] | None:
     }
 
 
+def evidence_status(
+    requested: str, dirty: bool, production_isolation: bool, github_actions: bool
+) -> str:
+    """Reserve P2 for a clean repository gate running in GitHub Actions."""
+    if requested == "P2" and not github_actions:
+        raise Invalid("P2 evidence may only be emitted by GitHub Actions")
+    if dirty or not production_isolation:
+        return "exploratory"
+    return requested
+
+
 def environment(args: argparse.Namespace) -> dict[str, object]:
     """Collect the identities needed to reproduce or reject this evidence."""
     repository = args.repository.resolve()
@@ -559,8 +572,11 @@ def environment(args: argparse.Namespace) -> dict[str, object]:
     build_manifest = observer_build_manifest(qemu_path)
 
     return {
-        "evidence_status": (
-            "P1" if not status and production_isolation_proven else "exploratory"
+        "evidence_status": evidence_status(
+            args.evidence_status,
+            bool(status),
+            production_isolation_proven,
+            os.environ.get("GITHUB_ACTIONS") == "true",
         ),
         "source": {
             "commit": output(["git", "-C", str(repository), "rev-parse", "HEAD"]),

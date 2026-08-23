@@ -64,7 +64,8 @@ jobs:
             echo "apt-get update did not finish; using the image's package lists"
           for attempt in 1 2 3; do
             apt_get install -y --no-install-recommends \
-              qemu-system-x86 ovmf mtools && break
+              qemu-system-x86 ovmf mtools ninja-build pkg-config \
+              libglib2.0-dev libpixman-1-dev python3-venv && break
             if [ "$attempt" = 3 ]; then
               echo "the packages this gate boots on could not be installed" >&2
               exit 1
@@ -74,6 +75,20 @@ jobs:
           done
           qemu-system-x86_64 --version | head -1
           ls -l /usr/share/OVMF/ || true
+
+      - name: Reproducible ADR-0066 observer
+        env:
+          GATE_PARITY: environment
+        timeout-minutes: 10
+        run: |
+          archive="$RUNNER_TEMP/qemu-10.0.11.tar.xz"
+          curl --fail --location --retry 3 \
+            https://download.qemu.org/qemu-10.0.11.tar.xz \
+            --output "$archive"
+          bash source/host-tools/qemu-test/build-simple-observer.sh \
+            "$archive" source/target/qemu-simple-observer
+          echo "$GITHUB_WORKSPACE/source/target/qemu-simple-observer/bin" \
+            >> "$GITHUB_PATH"
 
       - name: Toolchain and targets
         env:
@@ -99,5 +114,6 @@ jobs:
             source/target/preflight-qemu/**/capsule.meta.json
             source/target/preflight-qemu/*.log
             source/target/preflight-qemu/performance-adr-0026/**
+            source/target/preflight-qemu/performance-stage3-observer/**
           if-no-files-found: warn
           retention-days: 90

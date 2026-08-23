@@ -305,6 +305,16 @@ qemu_performance_conformance() {
         --out target/preflight-qemu/performance-adr-0026 \
         --evidence-status "$conformance_status")
 }
+qemu_stage3_observer_conformance() {
+    conformance_status=P1
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then
+        conformance_status=P2
+    fi
+    (cd "$ROOT/source" && \
+        bash host-tools/qemu-test/stage3-observer-conformance.sh \
+        --out target/preflight-qemu/performance-stage3-observer \
+        --evidence-status "$conformance_status")
+}
 qemu_bootinfo_identity_mismatch() {
     bash "$ROOT/scripts/tests/qemu-bootinfo-identity-mismatch.sh"
 }
@@ -331,6 +341,7 @@ selftest_gate_parity() {
 }
 selftest_measurement_observer() {
     python3 "$ROOT/source/host-tools/qemu-test/test-measure-channel.py"
+    python3 "$ROOT/source/host-tools/qemu-test/test-qualify-observer.py"
 }
 
 # The parity between this inventory and what CI runs (ADR-0065). It reads the
@@ -418,6 +429,7 @@ gate qemu       full-only "QEMU a textual supervisor starts services"  qemu_supe
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0026 performance conformance"   qemu_performance_conformance
+gate qemu       full-only "Stage 3 ADR-0066 observer conformance"     qemu_stage3_observer_conformance
 
 if [ "$LIST" -eq 1 ]; then
     exit 0

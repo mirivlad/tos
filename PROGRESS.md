@@ -4335,6 +4335,15 @@ P2 evidence и не повод фильтровать sample: сначала к�
 быть закоммичены, затем с чистого SHA снимается повторяемая серия. IPC timing
 до такой квалификации observer по-прежнему не начинается.
 
+Чистая P1 серия с commit
+`e1d2b1e6518c146d2c457fc741fbf8052dbebbe5` теперь сохранена в
+`docs/evidence/STAGE3_SIMPLE_OBSERVER_P1.md` и двух raw JSON. Floor:
+median 3,532 µs, p99/max 9,990 µs; exact call: median 13,760 µs, p99/max
+24,732 µs, min 12,661 µs. Полные диапазоны разделены gap 2,671 µs, поэтому
+simple observer локально разрешает immutable denominator. Статус остаётся P1:
+следующий обязательный шаг — versioned CI gate и retained P2 artifact, не IPC
+claim по локальному удачному прогону.
+
 ### Требуют решения Project Architect
 
 **F. Что обязан гарантировать локальный preflight и что — CI — ЗАКРЫТО
