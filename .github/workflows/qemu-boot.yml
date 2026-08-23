@@ -115,5 +115,6 @@ jobs:
             source/target/preflight-qemu/*.log
             source/target/preflight-qemu/performance-adr-0026/**
             source/target/preflight-qemu/performance-stage3-observer/**
+            source/target/preflight-qemu/performance-stage3-ipc/**
           if-no-files-found: warn
           retention-days: 90

@@ -4431,6 +4431,27 @@ Raw report и fail-closed qualification сохранены в
 прибора и разрешение перейти к IPC numerator, а не результат IPC budgets. P2
 остаётся за GitHub Actions gate и его retained artifact.
 
+### 2026-08-23 — реальный IPC numerator реализован, exploratory tail пока красный
+
+Добавлен не benchmark substitute, а measurement-only запуск существующего
+двухпроцессного endpoint path. Неизмеряемый 64-byte priming exchange оставляет
+server внутри atomic `endpoint_reply_receive`; затем каждый host request
+обрамляет `OPEN/CLOSE` ровно один реальный 64-byte `endpoint_call` и его 64-byte
+reply. Server снова блокируется до следующего `OPEN`; после последнего reply он
+остаётся в wait до client `STOP`/exit и получает `E_CANCELLED` уже вне interval.
+Nucleus собран с `test-call-reply,test-measurement-port`, timer preemption active
+и manifest-bound; runtime image — с единственным `test-measurement-ipc`.
+
+Каждый exploratory boot подтвердил `24/24` measured answers плюс один prime,
+`50` messages, `75` payload copies (не более двух на message), `25` exchanges и
+balanced `51/51` IPC operation crossings. После исправления последнего reply,
+который первоначально оставлял server runnable и дал ложный 98-ms shutdown tail
+внутри последней пары, получены семь независимых серий: шесть с p99 от `53,303`
+до `106,690 µs`, одна с p99 `213,193 µs`. Последняя честно нарушает абсолютные
+`200 µs`; она не отфильтрована и не заменена удачным прогоном. Текущий код
+готовит fail-closed combined gate, но clean P1 после commit должен выполняться
+ровно один раз: его результат, зелёный или красный, и будет retained evidence.
+
 ### Требуют решения Project Architect
 
 **F. Что обязан гарантировать локальный preflight и что — CI — ЗАКРЫТО

@@ -96,6 +96,19 @@ timer excursions and can only make the denominator smaller. The IPC numerator
 must prove preemption active, and the build rejects combining the no-preemption
 measurement feature with the two-process/request-reply profiles.
 
+The numerator is the production IPC path under measurement-only endowments, not
+a second benchmark implementation. One server is blocked in
+`endpoint_reply_receive` before each retained interval. An unmeasured 64-byte
+priming exchange establishes that steady state before `READY`. Each subsequent
+host request makes the client emit `OPEN`, execute exactly one 64-byte
+`endpoint_call` whose 64-byte reply comes from the other process, and emit
+`CLOSE` immediately after that call returns. The server answers and waits again
+atomically, including after the last measured reply; its final unsatisfiable
+wait is cancelled only after the client consumes `STOP` and exits, outside all
+intervals. Thus each sample contains the full request/reply, scheduler choices,
+four user/nucleus crossings and both address spaces, while preparation, report
+lines and shutdown remain outside it.
+
 ### 4. Measurement-only instrumentation is narrow and visible
 
 A measurement build may add an observation path if all of these hold:
@@ -144,6 +157,12 @@ emulation noise make every individual pair ordered.
 The p99 is the p99 of one exchange. Repeating N exchanges between two markers
 and dividing by N measures throughput/average and cannot satisfy this latency
 contract.
+
+The IPC verdict uses the numerator's nearest-rank p99 without retry selection:
+that one value must be at most both `8 * denominator_p99` and `200 µs`. Passing
+one bound cannot hide failure of the other. A timer/preemption tail is part of
+the active-preemption numerator and is neither removed nor relabelled as
+observer cost.
 
 ### 6. A coarse observer is a result, not a gate
 

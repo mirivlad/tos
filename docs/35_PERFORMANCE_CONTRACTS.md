@@ -145,6 +145,15 @@ Reference-platform budget:
 
 - p99 request/reply latency for a 64-byte message between two runnable processes is no more than 8 times an in-process function-call benchmark and no more than 200 microseconds on the declared QEMU CI profile.
 
+The latency numerator uses the real endpoint path. After one unmeasured
+64-byte exchange primes a server already cycling through atomic
+`endpoint_reply_receive`, each of 3 warm-up and 21 retained intervals brackets
+exactly one client `endpoint_call` and its 64-byte reply. Timer preemption stays
+active and any interrupt tail remains in the sample. The retained nearest-rank
+numerator p99 must independently satisfy both `numerator_p99 <= 8 *
+denominator_p99` and `numerator_p99 <= 200 µs`; no successful retry may replace
+a failed series.
+
 Both relative and absolute limits are required because either alone can mislead.
 
 The in-process function-call benchmark is fixed by

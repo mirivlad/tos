@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import statistics
@@ -200,11 +201,13 @@ def main() -> int:
     parser.add_argument("--evidence-status", required=True, choices=("P1", "P2"))
     args = parser.parse_args()
     try:
-        measurement = json.loads(args.measurement.read_text(encoding="utf-8"))
+        measurement_bytes = args.measurement.read_bytes()
+        measurement = json.loads(measurement_bytes)
         summary = qualify(measurement, args.evidence_status)
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, Invalid) as error:
         print(f"qualify-observer: FAIL: {error}", file=sys.stderr)
         return 1
+    summary["measurement_report_sha256"] = hashlib.sha256(measurement_bytes).hexdigest()
     summary["report"] = str(args.measurement.resolve())
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(summary, indent=2) + "\n", encoding="utf-8")

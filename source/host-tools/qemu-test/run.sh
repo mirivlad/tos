@@ -53,6 +53,7 @@ MEASURE=""
 MEASUREMENT_EVIDENCE_STATUS="P1"
 MEASUREMENT_BUILD_MANIFEST=""
 MEASUREMENT_PAIRED_CALIBRATION=0
+MEASUREMENT_IPC=0
 PRODUCTION_NUCLEUS_BEFORE_SHA256=""
 PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256=""
 QEMU_ACCEL=""
@@ -65,6 +66,7 @@ while [ $# -gt 0 ]; do
         --measurement-evidence-status) MEASUREMENT_EVIDENCE_STATUS="$2"; shift 2 ;;
         --measurement-build-manifest) MEASUREMENT_BUILD_MANIFEST="$2"; shift 2 ;;
         --measurement-paired-calibration) MEASUREMENT_PAIRED_CALIBRATION=1; shift ;;
+        --measurement-ipc) MEASUREMENT_IPC=1; shift ;;
         --production-nucleus-before-sha256) PRODUCTION_NUCLEUS_BEFORE_SHA256="$2"; shift 2 ;;
         --production-runtime-image-before-sha256) PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256="$2"; shift 2 ;;
         --capsule)  CAPSULE_IN="$2"; shift 2 ;;
@@ -112,8 +114,13 @@ case "$MEASUREMENT_EVIDENCE_STATUS" in
     P1|P2) ;;
     *) echo "--measurement-evidence-status must be P1 or P2" >&2; exit 2 ;;
 esac
-if [ "$MEASUREMENT_PAIRED_CALIBRATION" -eq 1 ] && [ -z "$MEASUREMENT_BUILD_MANIFEST" ]; then
-    echo "--measurement-paired-calibration requires --measurement-build-manifest" >&2
+if [ "$MEASUREMENT_PAIRED_CALIBRATION" -eq 1 ] && [ "$MEASUREMENT_IPC" -eq 1 ]; then
+    echo "--measurement-paired-calibration and --measurement-ipc are exclusive" >&2
+    exit 2
+fi
+if { [ "$MEASUREMENT_PAIRED_CALIBRATION" -eq 1 ] || [ "$MEASUREMENT_IPC" -eq 1 ]; } &&
+    [ -z "$MEASUREMENT_BUILD_MANIFEST" ]; then
+    echo "the selected measurement mode requires --measurement-build-manifest" >&2
     exit 2
 fi
 
@@ -276,6 +283,9 @@ if [ -n "$MEASUREMENT_BUILD_MANIFEST" ]; then
 fi
 if [ "$MEASUREMENT_PAIRED_CALIBRATION" -eq 1 ]; then
     MEASUREMENT_IDENTITY_ARGS+=( --paired-calibration )
+fi
+if [ "$MEASUREMENT_IPC" -eq 1 ]; then
+    MEASUREMENT_IDENTITY_ARGS+=( --ipc-measurement )
 fi
 if [ -n "$PRODUCTION_NUCLEUS_BEFORE_SHA256" ]; then
     MEASUREMENT_IDENTITY_ARGS+=(

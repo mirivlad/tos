@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `7bb7de77f6e70d9cdd034a0732a8c5e377179b3c6e45f59acd7eb74212060ce3`\
+Source-manifest SHA-256: `4a941e1926ef55deb6010802beda540f2c9d9c250bcf84e12a9b780f566602db`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -3150,6 +3150,18 @@ It is an in-process *TOS Core* call, not a Rust call and not an empty loop: the
 budget asks what IPC costs relative to what this system's own code already
 costs. The absolute 200 µs bound is measured independently, and both are
 reported, because either alone can be satisfied while the other is missed.
+
+The numerator is one actual 64-byte `endpoint_call` and its 64-byte reply
+between the two endowed processes. One unmeasured exchange first leaves the
+server blocked in atomic `endpoint_reply_receive`; `OPEN` is emitted immediately
+before each subsequent call and `CLOSE` immediately after it returns. The
+server's atomic answer-and-enter-wait operation is part of the request/reply
+interval: it blocks the server before the client call returns. Only the server's
+subsequent residence in that blocked state, client/report preparation and
+shutdown stay outside the interval. Preemption is active, so a timer tail is
+part of the latency rather than a removable observer cost. The nearest-rank p99
+must satisfy both the relative and absolute bounds in the same retained series;
+a retry cannot replace a failure.
 
 ADR-0066 fixes the measurement boundary. One external observer on the ADR-0040
 profile measures its empty marker floor, this call and the 64-byte IPC exchange
@@ -8543,6 +8555,15 @@ Hard budgets for steady-state small-message IPC after initialization:
 Reference-platform budget:
 
 - p99 request/reply latency for a 64-byte message between two runnable processes is no more than 8 times an in-process function-call benchmark and no more than 200 microseconds on the declared QEMU CI profile.
+
+The latency numerator uses the real endpoint path. After one unmeasured
+64-byte exchange primes a server already cycling through atomic
+`endpoint_reply_receive`, each of 3 warm-up and 21 retained intervals brackets
+exactly one client `endpoint_call` and its 64-byte reply. Timer preemption stays
+active and any interrupt tail remains in the sample. The retained nearest-rank
+numerator p99 must independently satisfy both `numerator_p99 <= 8 *
+denominator_p99` and `numerator_p99 <= 200 µs`; no successful retry may replace
+a failed series.
 
 Both relative and absolute limits are required because either alone can mislead.
 
@@ -19841,6 +19862,19 @@ timer excursions and can only make the denominator smaller. The IPC numerator
 must prove preemption active, and the build rejects combining the no-preemption
 measurement feature with the two-process/request-reply profiles.
 
+The numerator is the production IPC path under measurement-only endowments, not
+a second benchmark implementation. One server is blocked in
+`endpoint_reply_receive` before each retained interval. An unmeasured 64-byte
+priming exchange establishes that steady state before `READY`. Each subsequent
+host request makes the client emit `OPEN`, execute exactly one 64-byte
+`endpoint_call` whose 64-byte reply comes from the other process, and emit
+`CLOSE` immediately after that call returns. The server answers and waits again
+atomically, including after the last measured reply; its final unsatisfiable
+wait is cancelled only after the client consumes `STOP` and exits, outside all
+intervals. Thus each sample contains the full request/reply, scheduler choices,
+four user/nucleus crossings and both address spaces, while preparation, report
+lines and shutdown remain outside it.
+
 ### 4. Measurement-only instrumentation is narrow and visible
 
 A measurement build may add an observation path if all of these hold:
@@ -19889,6 +19923,12 @@ emulation noise make every individual pair ordered.
 The p99 is the p99 of one exchange. Repeating N exchanges between two markers
 and dividing by N measures throughput/average and cannot satisfy this latency
 contract.
+
+The IPC verdict uses the numerator's nearest-rank p99 without retry selection:
+that one value must be at most both `8 * denominator_p99` and `200 µs`. Passing
+one bound cannot hide failure of the other. A timer/preemption tail is part of
+the active-preemption numerator and is neither removed nor relabelled as
+observer cost.
 
 ### 6. A coarse observer is a result, not a gate
 
