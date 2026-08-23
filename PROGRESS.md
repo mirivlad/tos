@@ -4307,6 +4307,13 @@ IPC timing не начинался, `8x` не объявлен и следующ
 решение о воспроизводимом low-overhead QEMU observer после фактической проверки,
 а не смена denominator, batch average или subtraction.
 
+Сохраняемый прогон на чистом `d4f788a4017e15d87963c7338abe3c3285e5d616`
+лежит в `docs/evidence/STAGE3_MEASUREMENT_CHANNEL_P1.md` вместе с двумя raw JSON.
+В нём диапазоны разделились, но floor median всё ещё равен 45,5% call median,
+а call p99 имеет 111,103 µs outlier. Это не отменяет отрицательный итог:
+observer остаётся comparable с denominator, прежние серии пересекались, и
+выбирать удачный прогон вместо воспроизводимого прибора запрещает ADR-0066.
+
 ### Требуют решения Project Architect
 
 **F. Что обязан гарантировать локальный preflight и что — CI — ЗАКРЫТО

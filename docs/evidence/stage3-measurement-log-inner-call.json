@@ -1,0 +1,134 @@
+{
+  "record_spdx_license": "CC-BY-SA-4.0",
+  "samples_us": [
+    21.93450927734375,
+    21.219253540039062,
+    111.10305786132812,
+    30.994415283203125,
+    28.848648071289062,
+    30.994415283203125,
+    25.987625122070312,
+    21.93450927734375,
+    24.080276489257812,
+    21.93450927734375,
+    27.894973754882812,
+    21.93450927734375,
+    27.179718017578125,
+    24.080276489257812,
+    23.126602172851562,
+    22.172927856445312,
+    22.172927856445312,
+    25.033950805664062,
+    41.00799560546875,
+    22.88818359375,
+    21.93450927734375
+  ],
+  "reader_samples_us": [
+    14.667,
+    16.956,
+    98.35,
+    25.102,
+    22.435,
+    22.464,
+    18.507,
+    16.406,
+    16.896,
+    16.51,
+    16.79,
+    18.45,
+    18.702,
+    16.762,
+    21.505,
+    16.677,
+    14.637,
+    16.682,
+    29.417,
+    18.712,
+    14.971
+  ],
+  "warmups": 3,
+  "count": 21,
+  "median_us": 24.080276489257812,
+  "p99_us": 111.10305786132812,
+  "min_us": 21.219253540039062,
+  "max_us": 111.10305786132812,
+  "jitter_us": 89.88380432128906,
+  "clock": "QEMU trace timestamp (gettimeofday, microseconds) taken in the vCPU thread while the device model handles the guest's write",
+  "subtracted": "nothing",
+  "environment": {
+    "evidence_status": "P1",
+    "source": {
+      "commit": "d4f788a4017e15d87963c7338abe3c3285e5d616",
+      "dirty": false
+    },
+    "observer": {
+      "backend": "QEMU log trace serial_write",
+      "clock": "gettimeofday, microsecond text timestamp",
+      "timestamp_point": "serial_write in the vCPU thread",
+      "qemu_path": "/usr/bin/qemu-system-x86_64",
+      "qemu_sha256": "184914c77ba4074281a6e7bd5d1959f0115abb553688a8c8f02940627ad197fa",
+      "qemu_version": "QEMU emulator version 10.0.11 (Debian 1:10.0.11+ds-0+deb13u1)"
+    },
+    "guest_profile": {
+      "accelerator": "tcg",
+      "cpu": "qemu64",
+      "machine": "q35",
+      "memory_mib": 256,
+      "vcpus": 1
+    },
+    "host": {
+      "cpu_model": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6"
+    },
+    "scheduler": {
+      "preemption": "active",
+      "quantum_count": 100000
+    },
+    "production_artifact_isolation": {
+      "production_nucleus": {
+        "before_measurement_build_sha256": "9da0d65199ce21851b90813b66e25321fed2dbb4dd5496012244a6b29fccb665",
+        "after_measurement_build_sha256": "9da0d65199ce21851b90813b66e25321fed2dbb4dd5496012244a6b29fccb665",
+        "unchanged": true
+      },
+      "production_runtime_image": {
+        "before_measurement_build_sha256": "45bf0b9e5abc156226f6c333b411f14b554b21ae1160a3a53fc7a82b916c3ee1",
+        "after_measurement_build_sha256": "45bf0b9e5abc156226f6c333b411f14b554b21ae1160a3a53fc7a82b916c3ee1",
+        "unchanged": true
+      }
+    },
+    "artifacts": {
+      "capsule": {
+        "path": "/home/mirivlad/git/tos/source/target/stage3-measurement-log-p1-d4f788a/call/capsule.bin",
+        "sha256": "396bbc232e3e8acfcde4547d6e93ac87d2b1c690481b00aa3b0582779556d044"
+      },
+      "firmware_code": {
+        "path": "/home/mirivlad/git/tos/source/target/stage3-measurement-log-p1-d4f788a/call/OVMF_CODE.fd",
+        "sha256": "624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0"
+      },
+      "firmware_vars": {
+        "path": "/home/mirivlad/git/tos/source/target/stage3-measurement-log-p1-d4f788a/call/OVMF_VARS.fd",
+        "sha256": "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e"
+      },
+      "loader": {
+        "path": "/home/mirivlad/git/tos/source/target/x86_64-unknown-uefi/release/tos-uefi-loader.efi",
+        "sha256": "d2323495f950c40f4b47c7267aeba8026742d9175c9dacce1391187cca500df2"
+      },
+      "measurement_nucleus": {
+        "path": "/home/mirivlad/git/tos/source/target/test-measurement-call/x86_64-unknown-none/release/tos-nucleus",
+        "sha256": "7db15e49d86658bfe20346e1533c6f9242f9238b98832218601612e637624bcc"
+      },
+      "measurement_runtime_image": {
+        "path": "/home/mirivlad/git/tos/source/target/test-measurement-call/x86_64-unknown-none/release/tos-runtime-image",
+        "sha256": "8429d6bd466211177c823ab6753a10820fe6cac2863508c921ec4d2a4d7121ba"
+      },
+      "production_nucleus": {
+        "path": "/home/mirivlad/git/tos/source/target/x86_64-unknown-none/release/tos-nucleus",
+        "sha256": "9da0d65199ce21851b90813b66e25321fed2dbb4dd5496012244a6b29fccb665"
+      },
+      "production_runtime_image": {
+        "path": "/home/mirivlad/git/tos/source/target/x86_64-unknown-none/release/tos-runtime-image",
+        "sha256": "45bf0b9e5abc156226f6c333b411f14b554b21ae1160a3a53fc7a82b916c3ee1"
+      }
+    }
+  }
+}
