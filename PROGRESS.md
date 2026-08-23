@@ -4314,6 +4314,27 @@ IPC timing не начинался, `8x` не объявлен и следующ
 observer остаётся comparable с denominator, прежние серии пересекались, и
 выбирать удачный прогон вместо воспроизводимого прибора запрещает ADR-0066.
 
+### 2026-08-23 — QEMU simple observer: реализация кандидата, P2 ещё не заявлен
+
+Для выбранного в design низконакладного пути реализован независимый strict
+decoder QEMU simple trace v4. Он сохраняет timestamps как integer nanoseconds,
+отказывает на unknown/truncated/duplicate mapping и любой `dropped event`, а
+`serial_write` принимает только с точным 16-byte payload. Text log остаётся
+поддержан для сохранённого P1 diagnostic, но не маскируется под simple backend.
+
+Добавлен `source/host-tools/qemu-test/build-simple-observer.sh`: он принимает
+заранее полученный upstream QEMU 10.0.11 archive только с фиксированным SHA-256,
+запрещает Meson downloads, использует vendored wheels, отключает ненужный для
+x86_64 `libfdt` и выпускает self-contained bundle. Manifest хеширует launcher,
+реальный QEMU engine и три реально читаемых ROM input; observer перепроверяет
+эти хеши до boot. Ни QEMU, ни ROM не входят в production TOS или репозиторий.
+
+Exploratory серии уже различают floor и fixed call по median (типично около
+5–9 µs против 14–15 µs), но один прогон имел floor outlier 60,134 µs. Это не
+P2 evidence и не повод фильтровать sample: сначала код и build recipe должны
+быть закоммичены, затем с чистого SHA снимается повторяемая серия. IPC timing
+до такой квалификации observer по-прежнему не начинается.
+
 ### Требуют решения Project Architect
 
 **F. Что обязан гарантировать локальный preflight и что — CI — ЗАКРЫТО
