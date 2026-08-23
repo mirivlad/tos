@@ -102,6 +102,14 @@ class StatisticsTests(unittest.TestCase):
 
         self.assertEqual(measure_channel.percentile(samples, 0.99), 21.0)
 
+    def test_report_declares_its_record_licence_in_the_first_field(self) -> None:
+        encoded = measure_channel.encode_report({"count": 21})
+
+        self.assertEqual(
+            encoded.splitlines()[1],
+            '  "record_spdx_license": "CC-BY-SA-4.0",',
+        )
+
 
 class EnvironmentTests(unittest.TestCase):
     def test_reference_profile_is_read_from_the_command(self) -> None:
