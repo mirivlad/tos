@@ -448,6 +448,12 @@ def percentile(values: list[float], fraction: float) -> float:
     return ordered[rank - 1]
 
 
+def encode_report(report: dict[str, object]) -> str:
+    """Encode a repository evidence record with its own licence identity."""
+    licensed = {"record_spdx_license": "CC-BY-SA-4.0", **report}
+    return json.dumps(licensed, indent=2) + "\n"
+
+
 def main() -> int:
     args = arguments()
     try:
@@ -567,7 +573,7 @@ def main() -> int:
     }
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        args.report.write_text(encode_report(report))
     print(
         "measure-channel: {count} sample(s) after {warmups} warm-up(s): "
         "median {median_us:.2f} us, p99 {p99_us:.2f} us, "
