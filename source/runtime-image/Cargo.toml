@@ -34,6 +34,15 @@ test-measurement-call = [
     "tos-engine/measurement-marks",
     "dep:tos-verifier",
 ]
+# ADR-0066 numerator: the real two-process request/reply path, driven one
+# exchange at a time through the same COM1 marker protocol. The nucleus supplies
+# the endpoint and keeps timer preemption active; this feature only selects the
+# process behavior and marker permission required by the evidence boot.
+test-measurement-ipc = [
+    "test-measurement-port",
+    "test-exchange-cost",
+    "test-reply-receive",
+]
 # The boot whose only IPC is the exchange being measured: one process asks and
 # the other answers, and neither polls, probes or delegates. `IPC_V1` §8 bounds
 # crossings *per request/reply*, so a boot that also does other IPC measures a

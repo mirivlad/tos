@@ -86,56 +86,14 @@ python3 "$GITROOT/scripts/check-capsule-provenance.py" --root "$GITROOT" \
     --capsule "$OUT/measurement.bin" --manifest "$OUT/capsule.meta.json"
 
 BUILD_MANIFEST="$OUT/measurement-build.json"
-python3 - "$GITROOT" "$TEST_TARGET" "$TEST_NUCLEUS" "$TEST_IMAGE" "$BUILD_MANIFEST" <<'PYTHON'
-import hashlib
-import json
-import subprocess
-import sys
-from pathlib import Path
-
-repository, target, nucleus, runtime_image, output = map(Path, sys.argv[1:])
-
-def sha256(path):
-    digest = hashlib.sha256()
-    with path.open("rb") as source:
-        for chunk in iter(lambda: source.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
-
-def build(package, artifact, features):
-    command = [
-        "cargo", "build", "--release", "-p", package,
-        "--target", "x86_64-unknown-none", "--features", ",".join(features),
-    ]
-    return {
-        "package": package,
-        "target": "x86_64-unknown-none",
-        "profile": "release",
-        "features": features,
-        "cargo_target_dir": str(target.resolve()),
-        "cargo_command": command,
-        "artifact_path": str(artifact.resolve()),
-        "artifact_sha256": sha256(artifact),
-    }
-
-manifest = {
-    "record_spdx_license": "CC-BY-SA-4.0",
-    "schema": "tos-measurement-build-v1",
-    "source_commit": subprocess.run(
-        ["git", "-C", str(repository), "rev-parse", "HEAD"],
-        check=True, capture_output=True, text=True,
-    ).stdout.strip(),
-    "builds": {
-        "nucleus": build(
-            "tos-nucleus", nucleus, ["test-measurement-no-preemption"]
-        ),
-        "runtime_image": build(
-            "tos-runtime-image", runtime_image, ["test-measurement-call"]
-        ),
-    },
-}
-output.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-PYTHON
+python3 "$HERE/write-measurement-build-manifest.py" \
+    --repository "$GITROOT" \
+    --target-dir "$TEST_TARGET" \
+    --nucleus "$TEST_NUCLEUS" \
+    --nucleus-features test-measurement-no-preemption \
+    --runtime-image "$TEST_IMAGE" \
+    --runtime-features test-measurement-call \
+    --out "$BUILD_MANIFEST"
 
 # One boot, one prepared engine, and adjacent floor/call observations. The tag
 # selects only whether the already-prepared Work executes its immutable call.

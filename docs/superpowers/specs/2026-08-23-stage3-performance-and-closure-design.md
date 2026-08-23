@@ -60,6 +60,16 @@ blocks after three warm-ups and at least 19 paired differences are positive
 features and no-preemption state. Dropped, duplicated, out-of-plan, reversed,
 zero-duration or negative-duration observations invalidate the series.
 
+The numerator uses the production endpoint path with timer preemption active.
+One unmeasured 64-byte request/reply primes the server into its atomic
+`endpoint_reply_receive` loop. Each of the following three warm-up and 21
+retained intervals contains exactly one client `endpoint_call`, one 64-byte
+request and one 64-byte reply from the other address space. The server waits
+again before the next interval; report generation and process shutdown remain
+outside every interval. Its nearest-rank p99 must satisfy both the relative and
+absolute budgets in the same series. A failed series is retained and cannot be
+replaced by a successful retry.
+
 ## Observer choice
 
 Three approaches were considered:
@@ -93,6 +103,9 @@ reversal, zero/negative interval, wrong sample count, dropped trace event,
 changed production artifact, wrong QEMU identity, or wrong machine profile.
 Raw samples and environment identities are retained. Median and nearest-rank
 p99 are derived from the retained samples; no sample is repaired or filtered.
+The qualifier writes a red verdict record before returning failure so that a
+threshold miss remains reviewable evidence rather than disappearing as a
+failed command.
 
 The current log-trace series remains useful negative evidence: it validates the
 protocol and the semantic call boundary but its floor overlaps the call. It

@@ -134,6 +134,7 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--quantum-source", required=True, type=Path)
     parser.add_argument("--measurement-build-manifest", type=Path)
     parser.add_argument("--paired-calibration", action="store_true")
+    parser.add_argument("--ipc-measurement", action="store_true")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.command[:1] == ["--"]:
@@ -142,8 +143,12 @@ def arguments() -> argparse.Namespace:
         parser.error("the QEMU command is required after --")
     if args.samples < 1 or args.samples > TAG:
         parser.error(f"--samples must be 1..{TAG}")
-    if args.paired_calibration and args.measurement_build_manifest is None:
-        parser.error("--paired-calibration requires --measurement-build-manifest")
+    if args.paired_calibration and args.ipc_measurement:
+        parser.error("--paired-calibration and --ipc-measurement are exclusive")
+    if (
+        args.paired_calibration or args.ipc_measurement
+    ) and args.measurement_build_manifest is None:
+        parser.error("the selected measurement mode requires --measurement-build-manifest")
     return args
 
 
@@ -647,6 +652,7 @@ def measurement_build_manifest(
     artifacts: dict[str, Path],
     source_commit: str,
     paired_calibration: bool,
+    ipc_measurement: bool,
 ) -> dict[str, object] | None:
     """Bind declared Cargo features to the exact measured guest binaries."""
     if path is None:
@@ -675,12 +681,10 @@ def measurement_build_manifest(
         "nucleus": {
             "package": "tos-nucleus",
             "artifact": artifacts["measurement_nucleus"],
-            "features": ["test-measurement-no-preemption"],
         },
         "runtime_image": {
             "package": "tos-runtime-image",
             "artifact": artifacts["measurement_runtime_image"],
-            "features": ["test-measurement-call"],
         },
     }
     for name, required in required_builds.items():
@@ -725,12 +729,21 @@ def measurement_build_manifest(
             raise Invalid(f"measurement build {name} target directory is not absolute")
     if paired_calibration:
         expected_features = {
-            name: required["features"] for name, required in required_builds.items()
+            "nucleus": ["test-measurement-no-preemption"],
+            "runtime_image": ["test-measurement-call"],
         }
+    elif ipc_measurement:
+        expected_features = {
+            "nucleus": ["test-call-reply", "test-measurement-port"],
+            "runtime_image": ["test-measurement-ipc"],
+        }
+    else:
+        expected_features = None
+    if expected_features is not None:
         for name, expected in expected_features.items():
             if builds[name].get("features") != expected:
                 raise Invalid(
-                    f"paired calibration requires {name} features {expected!r}"
+                    f"measurement mode requires {name} features {expected!r}"
                 )
     return {
         "path": str(path.resolve()),
@@ -803,6 +816,7 @@ def environment(args: argparse.Namespace) -> dict[str, object]:
         paths,
         source_commit,
         args.paired_calibration,
+        args.ipc_measurement,
     )
     nucleus_features: list[str] = []
     if measured_build is not None:
@@ -1165,6 +1179,8 @@ def main() -> int:
                 },
             }
         )
+    elif args.ipc_measurement:
+        report["measurement_mode"] = "ipc-request-reply-v1"
     if args.report:
         args.report.parent.mkdir(parents=True, exist_ok=True)
         args.report.write_text(encode_report(report))

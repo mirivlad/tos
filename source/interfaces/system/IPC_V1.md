@@ -182,6 +182,18 @@ budget asks what IPC costs relative to what this system's own code already
 costs. The absolute 200 µs bound is measured independently, and both are
 reported, because either alone can be satisfied while the other is missed.
 
+The numerator is one actual 64-byte `endpoint_call` and its 64-byte reply
+between the two endowed processes. One unmeasured exchange first leaves the
+server blocked in atomic `endpoint_reply_receive`; `OPEN` is emitted immediately
+before each subsequent call and `CLOSE` immediately after it returns. The
+server's atomic answer-and-enter-wait operation is part of the request/reply
+interval: it blocks the server before the client call returns. Only the server's
+subsequent residence in that blocked state, client/report preparation and
+shutdown stay outside the interval. Preemption is active, so a timer tail is
+part of the latency rather than a removable observer cost. The nearest-rank p99
+must satisfy both the relative and absolute bounds in the same retained series;
+a retry cannot replace a failure.
+
 ADR-0066 fixes the measurement boundary. One external observer on the ADR-0040
 profile measures its empty marker floor, this call and the 64-byte IPC exchange
 with the same QEMU build, marker path and 3-warm-up/21-individual-sample

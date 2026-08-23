@@ -20,6 +20,16 @@
 #![no_std]
 #![no_main]
 
+#[cfg(all(
+    feature = "test-measurement-ipc",
+    any(
+        feature = "test-measurement-call",
+        feature = "test-more-exchanges",
+        feature = "test-reply-receive-refusals"
+    )
+))]
+compile_error!("the IPC numerator has one exact measurement workload");
+
 extern crate alloc;
 
 use core::panic::PanicInfo;
@@ -954,7 +964,10 @@ fn authority(launch: &Launch, report: &mut Report) {
 }
 
 /// On a boot that is not being measured, nothing.
-#[cfg(not(feature = "test-measurement-port"))]
+#[cfg(any(
+    not(feature = "test-measurement-port"),
+    feature = "test-measurement-ipc"
+))]
 fn measure_channel(_launch: &Launch, _report: &mut Report) {}
 
 /// COM1, and the four registers this protocol touches.
@@ -1111,7 +1124,10 @@ unsafe fn wire_write(byte: u8) {
 /// This process makes no system call inside the loop, which is the reason the
 /// marker is a port write rather than a report line: a line would put the
 /// nucleus inside the measurement.
-#[cfg(feature = "test-measurement-port")]
+#[cfg(all(
+    feature = "test-measurement-port",
+    not(feature = "test-measurement-ipc")
+))]
 fn measure_channel(launch: &Launch, report: &mut Report) {
     let mut work = Work::prepare(launch, report);
     let mut answered = 0u32;
@@ -1150,13 +1166,15 @@ fn measure_channel(launch: &Launch, report: &mut Report) {
 /// that boot is for, and a floor with work in it is not a floor.
 #[cfg(all(
     feature = "test-measurement-port",
-    not(feature = "test-measurement-call")
+    not(feature = "test-measurement-call"),
+    not(feature = "test-measurement-ipc")
 ))]
 struct Work(u8);
 
 #[cfg(all(
     feature = "test-measurement-port",
-    not(feature = "test-measurement-call")
+    not(feature = "test-measurement-call"),
+    not(feature = "test-measurement-ipc")
 ))]
 impl Work {
     fn prepare(_launch: &Launch, _report: &mut Report) -> Work {
@@ -1410,16 +1428,26 @@ fn exchange_only(launch: &Launch, report: &mut Report, first: &LaunchCapability)
 }
 
 /// What one exchange carries, in both directions.
-#[cfg(any(
-    feature = "test-exchange-cost",
-    feature = "test-reply-receive-refusals"
+#[cfg(all(
+    any(
+        feature = "test-exchange-cost",
+        feature = "test-reply-receive-refusals"
+    ),
+    not(feature = "test-measurement-ipc")
 ))]
 const QUESTION: &[u8] = b"what-does-an-exchange-cost";
-#[cfg(any(
-    feature = "test-exchange-cost",
-    feature = "test-reply-receive-refusals"
+#[cfg(all(
+    any(
+        feature = "test-exchange-cost",
+        feature = "test-reply-receive-refusals"
+    ),
+    not(feature = "test-measurement-ipc")
 ))]
 const ANSWER: &[u8] = b"four-crossings";
+#[cfg(feature = "test-measurement-ipc")]
+const QUESTION: &[u8] = b"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+#[cfg(feature = "test-measurement-ipc")]
+const ANSWER: &[u8] = b"fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
 
 /// How many questions the client asks.
 ///
@@ -1427,10 +1455,20 @@ const ANSWER: &[u8] = b"four-crossings";
 /// measurement a **slope**. Entering the server's loop and leaving it cost one
 /// crossing each and belong to no exchange; a difference between two boots
 /// cancels them without anybody having to decide which two they were.
-#[cfg(all(feature = "test-exchange-cost", not(feature = "test-more-exchanges")))]
+#[cfg(all(
+    feature = "test-exchange-cost",
+    not(feature = "test-more-exchanges"),
+    not(feature = "test-measurement-ipc")
+))]
 const EXCHANGES: usize = 1;
-#[cfg(all(feature = "test-exchange-cost", feature = "test-more-exchanges"))]
+#[cfg(all(
+    feature = "test-exchange-cost",
+    feature = "test-more-exchanges",
+    not(feature = "test-measurement-ipc")
+))]
 const EXCHANGES: usize = 3;
+#[cfg(feature = "test-measurement-ipc")]
+const EXCHANGES: usize = 25;
 /// The refusal boot asks twice: the first question is what the refusals are
 /// tried against, and the second is what the server is waiting for while it
 /// tries them.
@@ -1475,6 +1513,24 @@ fn is_answer(region: u64, length: u64) -> bool {
     bytes == ANSWER
 }
 
+/// Whether the server received the complete declared request payload.
+#[cfg(feature = "test-measurement-ipc")]
+fn is_question(region: u64, length: u64) -> bool {
+    if length as usize != QUESTION.len() {
+        return false;
+    }
+    // SAFETY: the nucleus returned `length` only after writing that many bytes
+    // into this process's argument region; the IPC contract bounds it to the
+    // inline message capacity.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<u8>(region as usize),
+            length as usize,
+        )
+    };
+    bytes == QUESTION
+}
+
 /// The client: [`EXCHANGES`] questions, one operation each, and nothing else.
 ///
 /// It counts its own operations, so the nucleus's count of what crossed the edge
@@ -1482,7 +1538,7 @@ fn is_answer(region: u64, length: u64) -> bool {
 /// counter nobody can check from the other side is a number the nucleus tells
 /// about itself.
 #[cfg(any(
-    feature = "test-exchange-cost",
+    all(feature = "test-exchange-cost", not(feature = "test-measurement-ipc")),
     feature = "test-reply-receive-refusals"
 ))]
 fn asking(launch: &Launch, report: &mut Report, handle: u64) {
@@ -1516,6 +1572,67 @@ fn asking(launch: &Launch, report: &mut Report, handle: u64) {
     ));
 }
 
+/// The measured client: prime the steady-state server, then execute exactly one
+/// real 64-byte request/reply inside each externally requested interval.
+#[cfg(feature = "test-measurement-ipc")]
+fn asking(launch: &Launch, report: &mut Report, handle: u64) {
+    put(launch.arguments_base, QUESTION);
+    // The unmeasured prime proves the server has reached its atomic
+    // reply-and-receive loop before READY is emitted. Without it the first
+    // sample could include server-loop startup rather than a steady-state
+    // exchange.
+    // SAFETY: this process holds the endpoint call capability, the request is
+    // in its bounded argument region, and the zero transfer count reads no
+    // capability slots.
+    let (prime_status, prime_length) =
+        unsafe { call_transferring(ENDPOINT_CALL, handle, QUESTION.len() as u64, 0) };
+    if prime_status != OK || !is_answer(launch.arguments_base, prime_length) {
+        report.line("TOS.RUN.MEASURE.IPC.UNSTARTABLE reason=prime-refused");
+        return;
+    }
+
+    let mut answered = 0u32;
+    let mut refused = 0u32;
+    // Anything received before READY belongs to firmware or an earlier user of
+    // the line, never to this protocol.
+    // SAFETY: the measurement nucleus grants CPL 3 exactly COM1's ports.
+    unsafe { wire_drain() };
+    // SAFETY: as above.
+    unsafe { wire_write(protocol::READY) };
+    loop {
+        // SAFETY: as above.
+        let request = unsafe { wire_read() };
+        if request == protocol::STOP {
+            break;
+        }
+        if !protocol::is_go(request) {
+            continue;
+        }
+        let tag = request & protocol::TAG;
+        put(launch.arguments_base, QUESTION);
+        // SAFETY: as above. The request itself and payload preparation are
+        // outside the interval; the complete endpoint_call is inside it.
+        unsafe { wire_write(protocol::OPEN | tag) };
+        // SAFETY: the same endpoint, bounded argument region and zero transfer
+        // count as the validated prime are used for every measured call.
+        let (status, length) =
+            unsafe { call_transferring(ENDPOINT_CALL, handle, QUESTION.len() as u64, 0) };
+        // SAFETY: as above. No work lies between the completed call and CLOSE.
+        unsafe { wire_write(protocol::CLOSE | tag) };
+        if status == OK && is_answer(launch.arguments_base, length) {
+            answered += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    report.line(&alloc::format!(
+        "TOS.RUN.MEASURE.IPC samples={} answered={answered} refused={refused} request_bytes={} reply_bytes={} primed=1",
+        answered + refused,
+        QUESTION.len(),
+        ANSWER.len()
+    ));
+}
+
 /// The server: one wait to begin with, and then one operation per exchange.
 ///
 /// The loop ends the only way it can end — the wait nobody will satisfy is
@@ -1523,7 +1640,7 @@ fn asking(launch: &Launch, report: &mut Report, handle: u64) {
 /// returns is reported, because `E_CANCELLED` arriving *after* an answer was
 /// delivered is ADR-0063's rule that a cancellation cannot un-answer.
 #[cfg(any(
-    feature = "test-exchange-cost",
+    all(feature = "test-exchange-cost", not(feature = "test-measurement-ipc")),
     feature = "test-reply-receive-refusals"
 ))]
 fn answering(launch: &Launch, report: &mut Report, endpoint: u64) {
@@ -1553,6 +1670,46 @@ fn answering(launch: &Launch, report: &mut Report, endpoint: u64) {
     }
     report.line(&alloc::format!(
         "TOS.RUN.EXCHANGE.SERVED answered={answered} last={status} operations={operations}"
+    ));
+}
+
+/// The measured server is already waiting before every retained client marker.
+#[cfg(feature = "test-measurement-ipc")]
+fn answering(launch: &Launch, report: &mut Report, endpoint: u64) {
+    // SAFETY: the endpoint is this process's receive endowment.
+    let (mut status, mut length) = unsafe { call(ENDPOINT_RECEIVE, endpoint, 0) };
+    let mut answered = 0usize;
+    let mut refused = 0usize;
+    let mut handled = 0usize;
+    while status == OK && handled < EXCHANGES {
+        let valid_request = is_question(launch.arguments_base, length);
+        // SAFETY: the received call places its single-use reply in the fixed
+        // final transfer slot.
+        let reply = unsafe {
+            transferred(
+                launch.arguments_base,
+                tos_launch::MAX_TRANSFERRED_CAPABILITIES as usize - 1,
+            )
+        };
+        put(launch.arguments_base, ANSWER);
+        handled += 1;
+        let (next_status, next_length) = answer_and_wait(reply, endpoint);
+        // `reply_receive` answers before it waits. On the final exchange the
+        // client receives the answer, emits CLOSE, consumes STOP and exits;
+        // only then may liveness return E_CANCELLED to this now-unsatisfiable
+        // wait. The delivered answer does not depend on that next wait's
+        // status.
+        if valid_request {
+            answered += 1;
+        } else {
+            refused += 1;
+        }
+        status = next_status;
+        length = next_length;
+    }
+    report.line(&alloc::format!(
+        "TOS.RUN.MEASURE.IPC.SERVER served={answered} refused={refused} payload_bytes={} last={status}",
+        QUESTION.len(),
     ));
 }
 
@@ -1602,6 +1759,7 @@ fn answer_and_wait(reply: u64, endpoint: u64) -> (i64, u64) {
 /// How many operations one answer costs the server: the whole difference.
 #[cfg(all(
     feature = "test-reply-receive",
+    not(feature = "test-measurement-ipc"),
     any(
         feature = "test-exchange-cost",
         feature = "test-reply-receive-refusals"
@@ -1612,6 +1770,7 @@ fn operations_per_answer() -> u64 {
 }
 #[cfg(all(
     not(feature = "test-reply-receive"),
+    not(feature = "test-measurement-ipc"),
     any(
         feature = "test-exchange-cost",
         feature = "test-reply-receive-refusals"
@@ -1622,7 +1781,7 @@ fn operations_per_answer() -> u64 {
 }
 
 /// Nothing, on the boots that are counting rather than probing.
-#[cfg(feature = "test-exchange-cost")]
+#[cfg(all(feature = "test-exchange-cost", not(feature = "test-measurement-ipc")))]
 fn refusals(
     _launch: &Launch,
     _report: &mut Report,

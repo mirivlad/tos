@@ -375,12 +375,39 @@ class EnvironmentTests(unittest.TestCase):
             }
 
             bound = measure_channel.measurement_build_manifest(
-                manifest, artifacts, "abc", True
+                manifest, artifacts, "abc", True, False
             )
 
             self.assertEqual(
                 bound["contents"]["builds"]["nucleus"]["features"],
                 ["test-measurement-no-preemption"],
+            )
+            builds["nucleus"]["features"] = [
+                "test-call-reply",
+                "test-measurement-port",
+            ]
+            builds["nucleus"]["cargo_command"][-1] = (
+                "test-call-reply,test-measurement-port"
+            )
+            builds["runtime_image"]["features"] = ["test-measurement-ipc"]
+            builds["runtime_image"]["cargo_command"][-1] = "test-measurement-ipc"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "record_spdx_license": "CC-BY-SA-4.0",
+                        "schema": "tos-measurement-build-v1",
+                        "source_commit": "abc",
+                        "builds": builds,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            bound = measure_channel.measurement_build_manifest(
+                manifest, artifacts, "abc", False, True
+            )
+            self.assertEqual(
+                bound["contents"]["builds"]["runtime_image"]["features"],
+                ["test-measurement-ipc"],
             )
             builds["nucleus"]["features"] = ["test-measurement-port"]
             builds["nucleus"]["cargo_command"][-1] = "test-measurement-port"
@@ -397,7 +424,7 @@ class EnvironmentTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(measure_channel.Invalid, "requires nucleus"):
                 measure_channel.measurement_build_manifest(
-                    manifest, artifacts, "abc", True
+                    manifest, artifacts, "abc", False, True
                 )
 
     def test_p2_status_is_reserved_for_clean_ci_measurements(self) -> None:
