@@ -24,7 +24,7 @@ fail() {
 
 [ "$#" -eq 2 ] || fail "usage: $0 QEMU-10.0.11.tar.xz OUTPUT-DIRECTORY"
 archive="$(realpath "$1")"
-output="$2"
+output="$(realpath -m "$2")"
 [ -f "$archive" ] || fail "source archive does not exist: $archive"
 [ ! -e "$output" ] || fail "output already exists: $output"
 
