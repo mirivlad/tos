@@ -64,6 +64,11 @@ test-process-terminate = []
 # for it: the module is then the thing that launches a process, which is the act
 # a supervisor is made of.
 test-process-launch = []
+# The measurement constant of ADR-0066: a TSS I/O permission bitmap whose only
+# cleared bits are COM1's, so the observed process can put a marker byte on the
+# wire without a system call. IOPL stays 0 and every other port faults exactly
+# as it does in the production build. Never selected by the normal build.
+test-measurement-port = []
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
 

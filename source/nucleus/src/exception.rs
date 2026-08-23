@@ -74,9 +74,77 @@ struct TaskStateSegment {
     reserved2: u64,
     reserved3: u16,
     io_map_base: u16,
+    /// The I/O permission bitmap, under the measurement constant only.
+    ///
+    /// ADR-0066's instrument is external, and the one thing it needs of the
+    /// machine is a way for the observed process to say "now" without asking
+    /// the system for anything — a system call would put the nucleus inside the
+    /// interval being measured. A bit cleared here lets CPL 3 reach one port
+    /// and nothing else.
+    ///
+    /// **IOPL stays 0.** This is not a privilege level change: with IOPL below
+    /// CPL the processor consults this bitmap per port, so every port whose bit
+    /// is set still faults exactly as it does in the production build.
+    #[cfg(feature = "test-measurement-port")]
+    io_bitmap: IoBitmap,
 }
 
+/// One bit per port for the first 1024 ports, then the terminating byte the
+/// architecture requires after the map.
+///
+/// A set bit denies. Every bit is set but the eight of COM1, so the map is a
+/// deny-list with one hole in it rather than a permission the process could
+/// widen.
+#[cfg(feature = "test-measurement-port")]
+#[repr(C, packed)]
+struct IoBitmap {
+    ports: [u8; 128],
+    terminator: u8,
+}
+
+#[cfg(feature = "test-measurement-port")]
+impl IoBitmap {
+    /// COM1's eight ports, 0x3f8..=0x3ff, which are one whole byte of the map.
+    const COM1_BYTE: usize = 0x3f8 / 8;
+
+    const ALLOWING_COM1: Self = {
+        let mut ports = [0xff; 128];
+        ports[Self::COM1_BYTE] = 0x00;
+        Self {
+            ports,
+            terminator: 0xff,
+        }
+    };
+}
+
+/// The architecture fixes these, and a wrong offset would silently point the
+/// processor at the middle of the map. Checked at compile time rather than
+/// trusted: the bitmap's base is read by hardware and never by this code.
+#[cfg(feature = "test-measurement-port")]
+const _: () = {
+    assert!(TaskStateSegment::IO_MAP_OFFSET == 104);
+    assert!(size_of::<TaskStateSegment>() == 104 + 128 + 1);
+    assert!(IoBitmap::COM1_BYTE == 127);
+    let map = IoBitmap::ALLOWING_COM1;
+    let mut byte = 0;
+    while byte < map.ports.len() {
+        if byte == IoBitmap::COM1_BYTE {
+            assert!(map.ports[byte] == 0x00);
+        } else {
+            assert!(map.ports[byte] == 0xff);
+        }
+        byte += 1;
+    }
+    assert!(map.terminator == 0xff);
+};
+
 impl TaskStateSegment {
+    /// Where the bitmap begins, measured rather than assumed: the fields before
+    /// it are fixed by the architecture, and `size_of::<Self>()` is not the
+    /// answer once the map is part of the structure.
+    #[cfg(feature = "test-measurement-port")]
+    const IO_MAP_OFFSET: u16 = 104;
+
     const EMPTY: Self = Self {
         reserved0: 0,
         rsp: [0; 3],
@@ -84,7 +152,14 @@ impl TaskStateSegment {
         ist: [0; 7],
         reserved2: 0,
         reserved3: 0,
+        // Without a map, this points past the segment limit, which is how the
+        // architecture spells "no port is permitted at CPL 3".
+        #[cfg(not(feature = "test-measurement-port"))]
         io_map_base: size_of::<Self>() as u16,
+        #[cfg(feature = "test-measurement-port")]
+        io_map_base: Self::IO_MAP_OFFSET,
+        #[cfg(feature = "test-measurement-port")]
+        io_bitmap: IoBitmap::ALLOWING_COM1,
     };
 }
 

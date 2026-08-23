@@ -278,6 +278,29 @@ pub trait System {
     /// host cannot perform at all, which is not an answer the program could
     /// have handled.
     fn reach(&mut self, call: Reach<'_>) -> Result<Value, Trap>;
+
+    /// Marks the instant before one TOS Core call, for an external observer.
+    ///
+    /// **The seam of ADR-0066 milestone 6b, and it exists only when this crate
+    /// is built with `measurement-marks`.** The engine that ships has no
+    /// observation point at all; with the feature, these are called immediately
+    /// around the execution of one `Op::Call` to a local function, which is what
+    /// `IPC_V1` §8's denominator is a call *of*.
+    ///
+    /// The marks flow through the system the caller handed the engine rather
+    /// than through a global, for the reason `run_set` gives about everything
+    /// else: what a run can reach is decided at the call site. Both default to
+    /// nothing, so a host that is not being measured says nothing by saying
+    /// nothing.
+    ///
+    /// An observation that could influence the call would not be one: these take
+    /// no argument, return nothing, and the engine ignores whatever they do.
+    #[cfg(feature = "measurement-marks")]
+    fn mark_before_call(&mut self) {}
+
+    /// Marks the instant after it.
+    #[cfg(feature = "measurement-marks")]
+    fn mark_after_call(&mut self) {}
 }
 
 /// A system with nothing on the other side of it.
@@ -1029,15 +1052,36 @@ impl Engine<'_, '_> {
                 Some(Value::Int(*to, magnitude))
             }
             Op::Call { target, operands } => {
-                let mut arguments = Vec::new();
-                for operand in operands {
-                    arguments.push(self.operand(operand, values, source)?);
-                }
                 match target {
+                    // ADR-0066 milestone 6b puts its marks here, and the
+                    // boundary is exactly this expression. Between them:
+                    // reading the 64-byte argument from the caller's slot,
+                    // collecting the callee's parameter modes, `call_capturing`
+                    // — the depth increment and its recursion check, the frame's
+                    // allocation, cleanup and synchronization charges being set
+                    // aside, the callee's value slots being made and the
+                    // arguments moved in, the fuel-counted block loop that runs
+                    // the body, the depth decrement and the release of what the
+                    // frame charged — and the mutable-borrow writeback. That is
+                    // a call and its inevitable accounting: what `IPC_V1` §8
+                    // names, without anything a run does once.
+                    //
                     CallTarget::Local(index) => {
-                        Some(self.call_with_writeback(*index, arguments, operands, values, source)?)
+                        #[cfg(feature = "measurement-marks")]
+                        self.system.mark_before_call();
+                        let called =
+                            self.arguments(operands, values, source)
+                                .and_then(|arguments| {
+                                    self.call_with_writeback(
+                                        *index, arguments, operands, values, source,
+                                    )
+                                });
+                        #[cfg(feature = "measurement-marks")]
+                        self.system.mark_after_call();
+                        Some(called?)
                     }
                     CallTarget::Imported { import, name } => {
+                        let arguments = self.arguments(operands, values, source)?;
                         Some(self.call_imported(*import, name, arguments, source)?)
                     }
                     // Two different things share this target, and the
@@ -1046,10 +1090,15 @@ impl Engine<'_, '_> {
                     // carrying an accepted interface path is an operation the
                     // language does not perform at all, and the difference is
                     // exactly the field the verifier checked.
-                    CallTarget::Predeclared(name) => match &instruction.unsafe_interface {
-                        None => Some(self.predeclared(name, arguments, source)?),
-                        Some(interface) => Some(self.reach(interface, name, arguments, source)?),
-                    },
+                    CallTarget::Predeclared(name) => {
+                        let arguments = self.arguments(operands, values, source)?;
+                        match &instruction.unsafe_interface {
+                            None => Some(self.predeclared(name, arguments, source)?),
+                            Some(interface) => {
+                                Some(self.reach(interface, name, arguments, source)?)
+                            }
+                        }
+                    }
                 }
             }
             Op::Closure { body, captures } => {
@@ -1271,6 +1320,18 @@ impl Engine<'_, '_> {
             Constant::Text(value) => Value::Text(value.clone()),
             Constant::Bytes(value) => Value::Bytes(value.clone()),
         })
+    }
+
+    fn arguments(
+        &self,
+        operands: &[Operand],
+        values: &[Option<Value>],
+        source: SourceRef,
+    ) -> Result<Vec<Value>, Trap> {
+        operands
+            .iter()
+            .map(|operand| self.operand(operand, values, source))
+            .collect()
     }
 
     fn operand(

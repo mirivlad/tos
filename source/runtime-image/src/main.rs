@@ -475,6 +475,11 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
 
     hold_direction_flag(&mut report);
 
+    // ADR-0066's observed side. Under the measurement constant this process
+    // answers an external instrument and does nothing else with the time it is
+    // being measured over.
+    measure_channel(launch, &mut report);
+
     // What this process was given, and what it does with it. Empty on a
     // canonical boot, because the launcher's constant grants nothing a module
     // did not request (ADR-0055) — and a process with no authority reports that
@@ -946,6 +951,414 @@ fn authority(launch: &Launch, report: &mut Report) {
     report.line(&alloc::format!(
         "TOS.RUN.CAPABILITY.RELEASED status={released} reuse={after}"
     ));
+}
+
+/// On a boot that is not being measured, nothing.
+#[cfg(not(feature = "test-measurement-port"))]
+fn measure_channel(_launch: &Launch, _report: &mut Report) {}
+
+/// COM1, and the four registers this protocol touches.
+#[cfg(feature = "test-measurement-port")]
+mod wire {
+    pub const DATA: u16 = 0x3f8;
+    pub const LINE_STATUS: u16 = 0x3fd;
+    pub const DATA_READY: u8 = 0x01;
+    pub const TRANSMITTER_EMPTY: u8 = 0x20;
+}
+
+/// The instrument's half of the protocol, as this side sees it.
+///
+/// **Every protocol byte has its high bit set.** The same wire carries the boot
+/// log, which is ASCII, so a marker inside 0x00..0x7f could be a letter of a log
+/// line and an observer could not tell. It also proves the line is transparent
+/// to eight bits: if it were not, `READY` would not arrive.
+///
+/// A request carries a sequence number in its low five bits and **both** markers
+/// echo it. The echo is what makes a sample causal rather than coincidental: a
+/// pair that does not name the request it followed is discarded by the observer,
+/// not repaired.
+///
+/// The measured interval is between the two markers this side emits, and the
+/// request that starts a sample is deliberately outside it. Milestone 1 measured
+/// why: a byte travelling *into* the machine costs 30 µs median and 94 µs p99,
+/// because QEMU delivers it from its main loop while this process hammers the
+/// line-status register from the vCPU thread. A byte travelling *out* leaves
+/// synchronously with the instruction that wrote it. An interval built from two
+/// outward markers therefore carries neither the inward path nor its jitter.
+#[cfg(feature = "test-measurement-port")]
+mod protocol {
+    /// Host to guest: begin sample `n`.
+    pub const GO: u8 = 0xc0;
+    /// Guest to host: the interval opens.
+    pub const OPEN: u8 = 0x80;
+    /// Guest to host: the interval closes.
+    pub const CLOSE: u8 = 0xa0;
+    pub const SEQUENCE: u8 = 0x1f;
+    /// Host to guest: no more samples.
+    pub const STOP: u8 = 0xe0;
+    /// Guest to host, once, before the first request may be sent.
+    ///
+    /// Without it the observer would be talking to the firmware: OVMF drives
+    /// this same UART during boot and consumes what arrives on it, so a request
+    /// sent before this process is listening is not late — it is gone.
+    pub const READY: u8 = 0xff;
+
+    pub fn is_go(byte: u8) -> bool {
+        byte & 0xe0 == GO
+    }
+}
+
+/// Reads one byte of COM1's receive register, waiting for it.
+///
+/// # Safety
+///
+/// The TSS I/O bitmap of the measurement nucleus permits CPL 3 exactly these
+/// ports; every other port still faults.
+// SAFETY: the caller runs only under the measurement feature whose nucleus
+// permits exactly COM1 through the TSS I/O bitmap.
+#[cfg(feature = "test-measurement-port")]
+unsafe fn wire_read() -> u8 {
+    loop {
+        let status: u8;
+        // SAFETY: per this function's contract.
+        unsafe {
+            core::arch::asm!("in al, dx", out("al") status, in("dx") wire::LINE_STATUS,
+                             options(nomem, nostack, preserves_flags));
+        }
+        if status & wire::DATA_READY != 0 {
+            let byte: u8;
+            // SAFETY: as above.
+            unsafe {
+                core::arch::asm!("in al, dx", out("al") byte, in("dx") wire::DATA,
+                                 options(nomem, nostack, preserves_flags));
+            }
+            return byte;
+        }
+        core::hint::spin_loop();
+    }
+}
+
+/// Empties the receive register of anything that arrived before now.
+///
+/// # Safety
+///
+/// As `wire_read`.
+// SAFETY: as `wire_read`; every access is confined to COM1.
+#[cfg(feature = "test-measurement-port")]
+unsafe fn wire_drain() {
+    loop {
+        let status: u8;
+        // SAFETY: per this function's contract.
+        unsafe {
+            core::arch::asm!("in al, dx", out("al") status, in("dx") wire::LINE_STATUS,
+                             options(nomem, nostack, preserves_flags));
+        }
+        if status & wire::DATA_READY == 0 {
+            return;
+        }
+        let _discarded: u8;
+        // SAFETY: as above.
+        unsafe {
+            core::arch::asm!("in al, dx", out("al") _discarded, in("dx") wire::DATA,
+                             options(nomem, nostack, preserves_flags));
+        }
+    }
+}
+
+/// Puts one byte on the wire.
+///
+/// The transmitter-empty poll comes **first**, so that the write itself is the
+/// last instruction before the byte leaves and nothing this side does after it
+/// lands inside the interval the observer measures.
+///
+/// # Safety
+///
+/// As `wire_read`.
+// SAFETY: as `wire_read`; every access is confined to COM1.
+#[cfg(feature = "test-measurement-port")]
+unsafe fn wire_write(byte: u8) {
+    loop {
+        let status: u8;
+        // SAFETY: per this function's contract.
+        unsafe {
+            core::arch::asm!("in al, dx", out("al") status, in("dx") wire::LINE_STATUS,
+                             options(nomem, nostack, preserves_flags));
+        }
+        if status & wire::TRANSMITTER_EMPTY != 0 {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    // SAFETY: as above.
+    unsafe {
+        core::arch::asm!("out dx, al", in("dx") wire::DATA, in("al") byte,
+                         options(nomem, nostack, preserves_flags));
+    }
+}
+
+/// Answers the instrument until it says stop.
+///
+/// What sits between the `GO` and the `DONE` is the whole of what is being
+/// measured, and under this constant alone it is **nothing**: the floor of the
+/// channel is the first thing that has to be known, because every later reading
+/// contains it and none of them may have it subtracted (ADR-0066).
+///
+/// This process makes no system call inside the loop, which is the reason the
+/// marker is a port write rather than a report line: a line would put the
+/// nucleus inside the measurement.
+#[cfg(feature = "test-measurement-port")]
+fn measure_channel(launch: &Launch, report: &mut Report) {
+    let mut work = Work::prepare(launch, report);
+    let mut answered = 0u32;
+    // Anything already in the receive register belongs to whoever was using
+    // this line before this process existed.
+    // SAFETY: the measurement nucleus permits CPL 3 these ports.
+    unsafe { wire_drain() };
+    // SAFETY: as above.
+    unsafe { wire_write(protocol::READY) };
+    loop {
+        // SAFETY: as above.
+        let request = unsafe { wire_read() };
+        if request == protocol::STOP {
+            break;
+        }
+        if !protocol::is_go(request) {
+            continue;
+        }
+        let sequence = request & protocol::SEQUENCE;
+        // The interval opens here and closes below, and between them is the
+        // whole of what is being measured. Nothing else may go between: no
+        // report line, no system call, no second thought.
+        work.mark(sequence);
+        work.perform();
+        answered += 1;
+    }
+    report.line(&alloc::format!(
+        "TOS.RUN.MEASURE.ANSWERED samples={answered}{}",
+        work.summary()
+    ));
+}
+
+/// What the instrument measures.
+///
+/// Nothing, in the channel-validation build: the floor of the channel is what
+/// that boot is for, and a floor with work in it is not a floor.
+#[cfg(all(
+    feature = "test-measurement-port",
+    not(feature = "test-measurement-call")
+))]
+struct Work(u8);
+
+#[cfg(all(
+    feature = "test-measurement-port",
+    not(feature = "test-measurement-call")
+))]
+impl Work {
+    fn prepare(_launch: &Launch, _report: &mut Report) -> Work {
+        Work(0)
+    }
+
+    /// Which sample the next marks belong to.
+    fn mark(&mut self, sequence: u8) {
+        self.0 = sequence;
+    }
+
+    /// The two marks with nothing between them: the floor of the channel, and
+    /// the same two writes the engine makes when there is a call between them.
+    fn perform(&mut self) {
+        // SAFETY: the measurement nucleus permits CPL 3 these ports.
+        unsafe { wire_write(protocol::OPEN | (self.0 & protocol::SEQUENCE)) };
+        // SAFETY: as above.
+        unsafe { wire_write(protocol::CLOSE | (self.0 & protocol::SEQUENCE)) };
+    }
+
+    fn summary(&self) -> alloc::string::String {
+        alloc::string::String::new()
+    }
+}
+
+/// One TOS Core call inside a run that has already started — the denominator
+/// `IPC_V1` §8 defines, measured by the instrument that measures the numerator.
+///
+/// **Where the marks are.** Not here: they are taken inside the engine,
+/// immediately around the execution of one `Op::Call`, through the two methods
+/// ADR-0066 adds to `System` under `measurement-marks`. Everything a run does
+/// once — the receipt and digest check, the entry lookup, the arity check, the
+/// capability grants, the engine's construction and its resource state, the
+/// worker reservation — happens before the first mark and is not in any sample.
+///
+/// The module's `bench(value)` therefore exists to make the measured call an
+/// ordinary one: its single statement is `measured(value)`, and that call is the
+/// `Op::Call` the marks bracket.
+#[cfg(feature = "test-measurement-call")]
+struct Work {
+    module: tos_ir::Module,
+    receipt: tos_verifier::VerifiedModule,
+    argument: tos_engine::Value,
+    system: Marked,
+    performed: u32,
+    refused: u32,
+}
+
+/// The system the measured run reaches: nothing, and two marks.
+///
+/// It grants no capability and performs no operation — the benchmark asks for
+/// neither — so the only thing it does is put a byte on the wire at the two
+/// instants the engine hands it.
+#[cfg(feature = "test-measurement-call")]
+struct Marked {
+    sequence: u8,
+}
+
+#[cfg(feature = "test-measurement-call")]
+impl tos_pipeline::System for Marked {
+    fn granted(&mut self, _request: tos_pipeline::CapabilityRequest<'_>) -> Option<Handle> {
+        None
+    }
+
+    fn reach(&mut self, call: tos_pipeline::Reach<'_>) -> Result<tos_engine::Value, Trap> {
+        Err(Trap::new(
+            "RUNTIME_OPERATION_NOT_IMPLEMENTED",
+            "the benchmark reaches nothing",
+            call.source,
+        ))
+    }
+
+    fn mark_before_call(&mut self) {
+        // SAFETY: the measurement nucleus permits CPL 3 these ports.
+        unsafe { wire_write(protocol::OPEN | (self.sequence & protocol::SEQUENCE)) };
+    }
+
+    fn mark_after_call(&mut self) {
+        // SAFETY: as above.
+        unsafe { wire_write(protocol::CLOSE | (self.sequence & protocol::SEQUENCE)) };
+    }
+}
+
+/// Where the benchmark's canonical text lives in the capsule.
+#[cfg(feature = "test-measurement-call")]
+const BENCH_PATH: &str = "system/bench/call.tos";
+/// The entry whose one statement is the call being measured, and the eight
+/// fields that make the 64 bytes.
+#[cfg(feature = "test-measurement-call")]
+const BENCH_ENTRY: &str = "bench";
+#[cfg(feature = "test-measurement-call")]
+const BENCH_FIELDS: usize = 8;
+
+#[cfg(feature = "test-measurement-call")]
+impl Work {
+    fn prepare(launch: &Launch, report: &mut Report) -> Work {
+        let bytes = unit_bytes(launch, BENCH_PATH).unwrap_or_else(|| {
+            report.line("TOS.RUN.MEASURE.UNSTARTABLE reason=no-benchmark-module");
+            exit(EXIT_UNSTARTABLE)
+        });
+        let source = tos_core::SourceReader::read(bytes).unwrap_or_else(|_| {
+            report.line("TOS.RUN.MEASURE.UNSTARTABLE reason=benchmark-not-transport-valid");
+            exit(EXIT_UNSTARTABLE)
+        });
+        let Some(schema) = tos_core::Parser::parse_schema(&source).into_accepted() else {
+            report.line("TOS.RUN.MEASURE.UNSTARTABLE reason=benchmark-not-parsed");
+            exit(EXIT_UNSTARTABLE)
+        };
+        if tos_core::Checker::check(&source, &schema)
+            .iter()
+            .any(|d| d.severity() == tos_core::Severity::Error)
+        {
+            report.line("TOS.RUN.MEASURE.UNSTARTABLE reason=benchmark-not-checked");
+            exit(EXIT_UNSTARTABLE)
+        }
+        let context = tos_core::ModuleContext {
+            source_set: alloc::string::String::from("measurement"),
+            path: alloc::string::String::from(BENCH_PATH),
+            content_id: tos_pipeline::content_id(bytes),
+            dependency_digest: tos_pipeline::list_digest(&[]),
+            capability_interface_digest: tos_pipeline::list_digest(&[]),
+        };
+        let Ok(module) = tos_core::lower_module(&source, &schema, &context) else {
+            report.line("TOS.RUN.MEASURE.UNSTARTABLE reason=benchmark-not-lowered");
+            exit(EXIT_UNSTARTABLE)
+        };
+        let Ok(receipt) = tos_verifier::verify(
+            &module,
+            &tos_verifier::ResolutionSnapshot::default(),
+            &tos_verifier::Limits::default(),
+        ) else {
+            report.line("TOS.RUN.MEASURE.UNSTARTABLE reason=benchmark-not-verified");
+            exit(EXIT_UNSTARTABLE)
+        };
+        // Sixty-four bytes as the record declares them: eight `i64` in order.
+        let argument = tos_engine::Value::Aggregate(
+            (0..BENCH_FIELDS)
+                .map(|field| tos_engine::Value::Int(tos_pipeline::IntKind::I64, field as i128))
+                .collect(),
+        );
+        Work {
+            module,
+            receipt,
+            argument,
+            system: Marked { sequence: 0 },
+            performed: 0,
+            refused: 0,
+        }
+    }
+
+    /// Which sample the engine's marks belong to.
+    fn mark(&mut self, sequence: u8) {
+        self.system.sequence = sequence;
+    }
+
+    /// Starts a run and lets the engine mark the call inside it.
+    ///
+    /// The run itself is *not* the sample: the marks are taken by the engine,
+    /// around the one `Op::Call` this module makes, and everything before the
+    /// first mark is startup this measurement deliberately excludes.
+    fn perform(&mut self) {
+        match tos_engine::run(
+            &self.module,
+            &self.receipt,
+            BENCH_ENTRY,
+            alloc::vec![self.argument.clone()],
+            &mut self.system,
+        ) {
+            Ok(Ok(_)) => self.performed += 1,
+            _ => self.refused += 1,
+        }
+    }
+
+    /// What the calls did, so that a run whose engine refused every one of them
+    /// cannot be read as a run that measured them.
+    fn summary(&self) -> alloc::string::String {
+        alloc::format!(" calls={} refused={}", self.performed, self.refused)
+    }
+}
+
+/// The bytes of one unit of the launch record, by canonical path.
+#[cfg(feature = "test-measurement-call")]
+fn unit_bytes<'a>(launch: &'a Launch, wanted: &str) -> Option<&'a [u8]> {
+    for index in 0..launch.unit_count as usize {
+        // SAFETY: the launcher states the record holds `unit_count` units at
+        // `units`, mapped readable, each naming bytes it also mapped.
+        let unit = unsafe {
+            &*core::ptr::with_exposed_provenance::<LaunchUnit>(launch.units as usize).add(index)
+        };
+        // SAFETY: as above.
+        let (path, bytes) = unsafe {
+            (
+                core::slice::from_raw_parts(
+                    core::ptr::with_exposed_provenance::<u8>(unit.path as usize),
+                    unit.path_length as usize,
+                ),
+                core::slice::from_raw_parts(
+                    core::ptr::with_exposed_provenance::<u8>(unit.bytes as usize),
+                    unit.bytes_length as usize,
+                ),
+            )
+        };
+        if path == wanted.as_bytes() {
+            return Some(bytes);
+        }
+    }
+    None
 }
 
 /// On a boot that is not measuring an exchange, nothing (and it says so).

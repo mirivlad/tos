@@ -329,6 +329,9 @@ selftest_spdx_json() { sh "$ROOT/scripts/tests/check-spdx-json.sh"; }
 selftest_gate_parity() {
     bash "$ROOT/scripts/tests/check-gate-parity.sh"
 }
+selftest_measurement_observer() {
+    python3 "$ROOT/source/host-tools/qemu-test/test-measure-channel.py"
+}
 
 # The parity between this inventory and what CI runs (ADR-0065). It reads the
 # inventory from `--list` and the workflows structurally; it is a gate like any
@@ -374,6 +377,7 @@ gate selftest   default   "SPDX assembly classification self-test"     selftest_
 gate selftest   default   "SPDX asset classification self-test"        selftest_spdx_assets
 gate selftest   default   "SPDX JSON classification self-test"         selftest_spdx_json
 gate selftest   default   "gate parity self-test"                      selftest_gate_parity
+gate selftest   default   "measurement observer self-test"             selftest_measurement_observer
 gate selftest   default   "run-tos launcher self-test"                 run_tos_launcher
 gate selftest   default   "interactive QEMU mode self-test"            qemu_interactive_mode
 gate selftest   default   "QEMU event capture self-test"               qemu_event_capture

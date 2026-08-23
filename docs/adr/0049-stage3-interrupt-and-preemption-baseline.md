@@ -31,8 +31,10 @@ preemption and timekeeping.**
 1. **Controller.** The legacy 8259 PIC is masked entirely. Interrupt routing is
    through the local APIC, using its timer in periodic or TSC-deadline mode; the
    I/O APIC is configured but no external device source is routed in Stage 3,
-   because Stage 3 has no drivers. The concrete calibration source and mode are
-   implementation choices recorded in the interface contract, not in this ADR.
+   because Stage 3 has no drivers. The concrete timer input, divider, initial
+   count and mode are implementation choices recorded in the implementation
+   evidence. Under ADR-0066 they are not calibrated into a physical-duration
+   unit: Stage 3 performance duration is measured by an external observer.
 2. **Vector space.** Vectors 0–31 keep their ADR-0023 meaning exactly. Stage 3
    claims a small, documented range above 31: one timer vector and one spurious
    vector. Every other vector above 31 stays absent, and an interrupt on an
@@ -54,7 +56,9 @@ preemption and timekeeping.**
 6. **Timekeeping.** The timer establishes a monotonic tick. Stage 3 exposes it
    only as far as a scheduler and a bounded IPC timeout need. Wall-clock time,
    a `system.time.Clock` capability implementation and any notion of a trusted
-   time source are out of scope; docs/34 assigns time threats to Stage 7.
+   time source are out of scope; docs/34 assigns time threats to Stage 7. This
+   does not defer the Stage 3 IPC latency budgets: ADR-0066 measures them with
+   an external clock that never becomes a system interface.
 
 ## What this deliberately does not do
 
