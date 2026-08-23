@@ -4452,6 +4452,22 @@ balanced `51/51` IPC operation crossings. После исправления по
 готовит fail-closed combined gate, но clean P1 после commit должен выполняться
 ровно один раз: его результат, зелёный или красный, и будет retained evidence.
 
+### 2026-08-23 — clean P1 IPC latency прошёл оба бюджета
+
+После commit `d759ad49e44a76791fb780b0a1a35e6ba86d32ac` combined gate был
+выполнен ровно один раз на чистом tree. Observer снова квалифицирован: `21/21`
+положительных adjacent pairs, sign `p=4.76837158203125e-07`, denominator p99
+`23.513 µs`. Реальный 64-byte request/reply с active preemption дал median
+`59.965 µs`, p99 `100.761 µs`, то есть `4.285331518734317x` denominator при
+лимите `8x` и ниже абсолютных `200 µs`. Guest/nucleus подтвердили один prime,
+24 warm-up/retained exchanges, `50` messages, `75` copies, `25` exchanges и
+`51/51` IPC crossings. Ничего не вычиталось и не фильтровалось.
+
+Raw denominator, numerator и оба fail-closed qualification records сохранены в
+`docs/evidence/STAGE3_IPC_LATENCY_P1.md`. Это P1, не P2 и не закрытие Stage 3:
+дальше нужны CI evidence на pushed SHA, restart identity, E3 adversarial suite и
+versioned Stage 3 identity/trusted-base report.
+
 ### Требуют решения Project Architect
 
 **F. Что обязан гарантировать локальный preflight и что — CI — ЗАКРЫТО

@@ -1,0 +1,41 @@
+{
+  "record_spdx_license": "CC-BY-SA-4.0",
+  "adr": "ADR-0066",
+  "evidence_status": "P1",
+  "verdict": "observer-qualified",
+  "source_commit": "d759ad49e44a76791fb780b0a1a35e6ba86d32ac",
+  "observer": {
+    "backend": "QEMU simple trace symmetric UART measurement pair",
+    "qemu_sha256": "39474e280cac27e6f249db33c5ce49fe23e33282738023c7c58cf5f81f840a89",
+    "build_manifest_sha256": "66841d3e28a4fe30df4d4449a950c348e4774048abc068f8070036980b2c39d4"
+  },
+  "measurement_build_manifest_sha256": "581e93e7637bd3fefd46da34840aa1590e83b5921d9513b70d08cc939d399472",
+  "floor": {
+    "median_us": 1.846,
+    "p99_us": 5.416,
+    "min_us": 1.333,
+    "max_us": 5.416
+  },
+  "denominator": {
+    "median_us": 9.744,
+    "p99_us": 23.513,
+    "min_us": 8.445,
+    "max_us": 23.513
+  },
+  "paired_resolution": {
+    "resolved": 21,
+    "positive_pairs": 21,
+    "total_pairs": 21,
+    "required_positive_pairs": 19,
+    "one_sided_sign_p": 4.76837158203125e-07,
+    "minimum_gap_us": 4.68,
+    "median_gap_us": 8.154
+  },
+  "floor_over_denominator": {
+    "median": 0.18945,
+    "p99": 0.230341
+  },
+  "subtracted": "nothing",
+  "measurement_report_sha256": "504bf8bf04bcabc9d201597aa86b7b47771e738a467dfc643a036b5f4a838214",
+  "report": "/home/mirivlad/git/tos/source/target/stage3-ipc-p1-d759ad4/observer/paired/measurement.json"
+}
