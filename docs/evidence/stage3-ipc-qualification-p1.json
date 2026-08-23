@@ -1,0 +1,53 @@
+{
+  "record_spdx_license": "CC-BY-SA-4.0",
+  "adr": "ADR-0066",
+  "evidence_status": "P1",
+  "verdict": "ipc-latency-qualified",
+  "source_commit": "d759ad49e44a76791fb780b0a1a35e6ba86d32ac",
+  "observer": {
+    "backend": "QEMU simple trace symmetric UART measurement pair",
+    "qemu_sha256": "39474e280cac27e6f249db33c5ce49fe23e33282738023c7c58cf5f81f840a89",
+    "build_manifest_sha256": "66841d3e28a4fe30df4d4449a950c348e4774048abc068f8070036980b2c39d4"
+  },
+  "denominator": {
+    "median_us": 9.744,
+    "p99_us": 23.513
+  },
+  "numerator": {
+    "median_us": 59.965,
+    "p99_us": 100.761,
+    "min_us": 42.408,
+    "max_us": 100.761
+  },
+  "budgets": {
+    "relative_ratio": 4.285331518734317,
+    "relative_limit": 8.0,
+    "relative_limit_us": 188.104,
+    "relative_pass": true,
+    "absolute_us": 100.761,
+    "absolute_limit_us": 200.0,
+    "absolute_pass": true
+  },
+  "scheduler": {
+    "preemption": "active",
+    "binding": "measurement-build-manifest",
+    "quantum_count": 100000
+  },
+  "workload": {
+    "measured_exchanges": 24,
+    "priming_exchanges": 1,
+    "request_bytes": 64,
+    "reply_bytes": 64,
+    "messages": 50,
+    "payload_copies": 75,
+    "ipc_in": 51,
+    "ipc_out": 51
+  },
+  "subtracted": "nothing",
+  "reports": {
+    "denominator": "/home/mirivlad/git/tos/source/target/stage3-ipc-p1-d759ad4/observer/paired/measurement.json",
+    "observer_qualification": "/home/mirivlad/git/tos/source/target/stage3-ipc-p1-d759ad4/observer/qualification.json",
+    "numerator": "/home/mirivlad/git/tos/source/target/stage3-ipc-p1-d759ad4/numerator/ipc/measurement.json",
+    "serial_log": "/home/mirivlad/git/tos/source/target/stage3-ipc-p1-d759ad4/numerator/ipc/serial.log"
+  }
+}
