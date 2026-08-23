@@ -1,0 +1,40 @@
+{
+  "record_spdx_license": "CC-BY-SA-4.0",
+  "adr": "ADR-0066",
+  "evidence_status": "P1",
+  "verdict": "observer-qualified",
+  "source_commit": "626876b64d0692443a6bac3aa3ebeb15c7b7d09d",
+  "observer": {
+    "backend": "QEMU simple trace symmetric UART measurement pair",
+    "qemu_sha256": "39474e280cac27e6f249db33c5ce49fe23e33282738023c7c58cf5f81f840a89",
+    "build_manifest_sha256": "66841d3e28a4fe30df4d4449a950c348e4774048abc068f8070036980b2c39d4"
+  },
+  "measurement_build_manifest_sha256": "a9a762259e0e42b30a895a6bdd2c326f9fc3c754f93f4334b5dedfa1f07b412a",
+  "floor": {
+    "median_us": 2.996,
+    "p99_us": 5.57,
+    "min_us": 1.198,
+    "max_us": 5.57
+  },
+  "denominator": {
+    "median_us": 9.623,
+    "p99_us": 29.896,
+    "min_us": 8.779,
+    "max_us": 29.896
+  },
+  "paired_resolution": {
+    "resolved": 21,
+    "positive_pairs": 21,
+    "total_pairs": 21,
+    "required_positive_pairs": 19,
+    "one_sided_sign_p": 4.76837158203125e-07,
+    "minimum_gap_us": 4.947,
+    "median_gap_us": 7.919
+  },
+  "floor_over_denominator": {
+    "median": 0.311337,
+    "p99": 0.186313
+  },
+  "subtracted": "nothing",
+  "report": "/home/mirivlad/git/tos/source/target/stage3-observer-p1-626876b/paired/measurement.json"
+}

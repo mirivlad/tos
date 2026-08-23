@@ -4414,6 +4414,23 @@ nearest-rank p99 сохраняются, ничего не вычитается.
 и 9,939 µs. Это подтверждает пригодность кандидата для fresh clean gate, но
 dirty exploratory данные сами не являются P1/P2 и не разрешают IPC timing.
 
+### 2026-08-23 — symmetric observer прошёл fresh clean P1
+
+Observer implementation и accepted ADR-0066 amendment зафиксированы DCO commit
+`626876b64d0692443a6bac3aa3ebeb15c7b7d09d`. После этого на действительно clean
+tree выполнен `stage3-observer-conformance.sh --evidence-status P1`. Gate
+получил 21/21 positive adjacent pairs, exact sign `p=2^-21`; floor
+median/p99 `2,996/5,570 µs`, immutable denominator median/p99
+`9,623/29,896 µs`, minimum paired gap `4,947 µs`. Все 42 retained intervals
+остались raw, ничего не вычиталось и не фильтровалось.
+
+Raw report и fail-closed qualification сохранены в
+`docs/evidence/stage3-observer-paired-p1.json` и
+`docs/evidence/stage3-observer-qualification-p1.json`; читаемый boundary report
+— `docs/evidence/STAGE3_SYMMETRIC_OBSERVER_P1.md`. Это локальная квалификация
+прибора и разрешение перейти к IPC numerator, а не результат IPC budgets. P2
+остаётся за GitHub Actions gate и его retained artifact.
+
 ### Требуют решения Project Architect
 
 **F. Что обязан гарантировать локальный preflight и что — CI — ЗАКРЫТО
