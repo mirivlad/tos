@@ -110,16 +110,44 @@ Consequences that belong in the decision rather than in the implementation:
    are reported side by side, so the difference between them **is** the
    platform's preemption exposure, published rather than argued.
 
-### A precondition this ADR does not hide
+### A precondition this ADR does not hide, and what measuring it found
 
 The counterfactual has been measured, and it is not simply "the same path minus
 interrupts". Paired across an interleaved matrix, the inactive-preemption IPC
 numerator was **slower** than the active one by `+7.23 µs` at the median,
-positive in 9 of 12 iterations. Nothing measured explains why. Until it is
-explained, point 2 rests on an assumption the evidence does not support, and
-adopting it would replace a stochastic comparison with a systematic one of
-unknown sign. **Explaining that difference is a precondition of implementing
-this ADR, not a follow-up to it.**
+positive in 9 of 12 iterations.
+
+Those two series came from different builds, so compile-time layout was a live
+explanation, and it has since been eliminated. Section 6 of
+[STAGE3_PREEMPTION_TAIL_P1.md](../evidence/STAGE3_PREEMPTION_TAIL_P1.md) boots
+**one** nucleus and **one** runtime image, byte for byte, in three modes chosen
+at boot from a capsule unit before any process exists, with the three capsules
+equal in size:
+
+- against ACTIVE's tick-free samples, NO-TIMER is `+16.62 µs` slower (12 of 15
+  iterations) and MASKED `+18.45 µs` slower (14 of 15);
+- MASKED and NO-TIMER are indistinguishable (`−7.43 µs`, 5 of 15), so the cause
+  is interrupt **delivery**, not the APIC being programmed or the timer
+  counting;
+- all three modes report the contract's counters identically.
+
+**This runs against section 2 rather than for it.** Measuring the relative
+budget under a no-preemption profile would remove a `~14 µs` interrupt tail from
+the numerator and add a `~17 µs` platform effect to it, on this host — and the
+denominator's workload showed no such effect at the median, so the two sides
+would not even be inflated together. A ratio built that way would not be
+measuring intrinsic IPC overhead; it would be measuring intrinsic overhead plus
+an unexplained artifact of the emulator, and calling the sum a property of the
+system.
+
+The effect size on the ADR-0040 reference runner is **unknown**: everything
+above is one developer machine. So the precondition stands and is now sharper
+than "explain the difference". Before section 2 could be adopted, the delivery
+effect has to be characterised on the reference platform, and by a route that is
+not the diagnostic patch — which exists to remove conformance protections and
+must never run a gate. If it turns out to be of the same order there, section 2
+is not adoptable as written, and the alternative of dropping the ratio becomes
+the serious one.
 
 ## 3. Why "make both sides preemptible" is rejected
 
@@ -265,10 +293,12 @@ to a coin flip — so it is selection with a known bias rather than a measuremen
 section 4 forbids subtracting any observer or excursion cost, and a subtracted
 tail is an estimate presented as a measurement.
 
-**Drop the relative budget and keep only `200 µs`.** Not proposed here, but it
-is the honest alternative if the precondition in section 2 cannot be met: a
-ratio whose two sides cannot be measured under one profile is not a measurement
-of anything stable. It would need its own decision and its own justification for
+**Drop the relative budget and keep only `200 µs`.** Not proposed here, but the
+measurement of section 2's precondition has moved weight towards it: a
+no-preemption numerator is not a clean numerator on the one platform where this
+has been measured. It is the honest alternative if the precondition cannot be
+met: a ratio whose two sides cannot be measured under one profile is not a
+measurement of anything stable. It would need its own decision and its own justification for
 losing the mechanism-level statement the ratio exists to make.
 
 **Raise the quantum so ticks are rarer.** Rejected as a measurement decision: it
