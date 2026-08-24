@@ -75,7 +75,10 @@ capability = object + rights + scope + lifetime + generation
 
 - **object**: the endpoint, region, process or interface publication it refers
   to; never a class of objects, never "all of them";
-- **rights**: a finite set from the object type's declared rights;
+- **rights**: a finite set from the object type's declared rights — for an
+  endpoint `send`, `receive` and `call` (`IPC_V1` §2); for a process `create`,
+  `terminate` and `wait_child` (ADR-0067), which are exactly the operations of
+  `SYSTEM_ABI_V1` §5 that name one;
 - **scope**: the range or subset the rights apply to, where the object has one;
 - **lifetime**: bounded by the object, and never longer than the grantor's own.
 

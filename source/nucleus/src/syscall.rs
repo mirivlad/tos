@@ -71,6 +71,12 @@ const PROCESS_EXIT: u64 = 12;
 /// capabilities, and `SYSTEM_ABI_V1` §3 assigns their positions in §5 order:
 /// the reply it consumes in `rdi`, the endpoint it then waits on in `rsi`.
 const ENDPOINT_REPLY_RECEIVE: u64 = 13;
+/// The endings of the direct children of the process object this names
+/// (ADR-0067). `rdi` = a process capability with `wait_child`, `rsi` = flags.
+pub const PROCESS_WAIT_CHILD: u64 = 14;
+/// `process_create` with the restart generation its caller asserts (ADR-0067).
+/// Operation 8 is unchanged and asserts none.
+const PROCESS_CREATE_WITH_GENERATION: u64 = 15;
 
 /// The one call flag this contract version has.
 ///
@@ -125,11 +131,11 @@ pub struct Answer {
 }
 
 impl Answer {
-    const fn status(status: i64) -> Answer {
+    pub(crate) const fn status(status: i64) -> Answer {
         Answer { status, value: 0 }
     }
 
-    const fn value(value: u64) -> Answer {
+    pub(crate) const fn value(value: u64) -> Answer {
         Answer { status: OK, value }
     }
 
@@ -356,7 +362,58 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
         // and rules out a class. The caller names the process the child is
         // created under, which in every case this stage can express is its own,
         // and it can only do that because its launcher gave it that authority.
-        PROCESS_CREATE => {
+        PROCESS_CREATE => create_process(caller, frame, None),
+        // ADR-0067: the same creation, with the restart generation its caller
+        // asserts. A separate number rather than an argument on operation 8,
+        // because an old caller leaves `r8` uninitialised and `rdx` already
+        // carries the child's capability handle — extending 8 in place would
+        // break the minor-version rule §7 states.
+        PROCESS_CREATE_WITH_GENERATION => create_process(caller, frame, Some(frame.r8)),
+
+        // The endings of a process object's direct children (ADR-0067). The
+        // authority is over a *process*, and what it scopes is that process's
+        // child relation: this is not a wait-for-anything, it is a wait on the
+        // set one handle names.
+        PROCESS_WAIT_CHILD => {
+            match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_WAIT_CHILD) {
+                Err(refused) => refused.into(),
+                Ok(Object::Process { slot, .. }) => {
+                    let target = crate::process::instance(slot as usize);
+                    if target == 0 {
+                        // The capability resolved, so the object is live; a
+                        // process with no identity is a defect, not an answer.
+                        return Answer::status(E_BAD_ARGUMENT);
+                    }
+                    // SAFETY: the caller is the running process and this is its
+                    // own frame; `target` is the instance the capability named.
+                    unsafe {
+                        crate::process::wait_child(
+                            caller,
+                            frame,
+                            target,
+                            frame.rsi & NON_BLOCKING != 0,
+                        )
+                    }
+                }
+                Ok(_) => Answer::status(E_NO_CAPABILITY),
+            }
+        }
+        // Everything from `process_terminate` on. The split is a consequence of
+        // this function having grown one operation at a time; it changes no
+        // dispatch order, because a match on distinct constants has none.
+        _ => answer_rest(operation, frame, caller),
+    }
+}
+
+/// `process_create` (8) and `process_create_with_generation` (15).
+///
+/// One body, because the two differ in exactly one thing: whether a supervisor
+/// asserted a restart generation. Operation 8 passes `None` and the child then
+/// has no generation at all — not zero, which would be a claim nobody made.
+fn create_process(caller: usize, frame: &mut TrapFrame, restart_generation: Option<u64>) -> Answer {
+    let arguments = &*frame;
+    {
+        {
             match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_CREATE) {
                 Err(refused) => refused.into(),
                 Ok(Object::Process { .. }) => {
@@ -394,9 +451,17 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
                         Ok(given) => count += given,
                         Err(answer) => return answer,
                     }
+                    let parent = crate::process::instance(caller);
                     // SAFETY: the template was established at boot from validated
                     // inputs, and no process is running: this call is the nucleus.
-                    match unsafe { crate::process::create(entry, &endowment[..count]) } {
+                    match unsafe {
+                        crate::process::create(
+                            entry,
+                            &endowment[..count],
+                            parent,
+                            restart_generation,
+                        )
+                    } {
                         Ok(child) => {
                             // The caller gets authority over what it made, carrying
                             // exactly the rights the authority it used carried.
@@ -417,7 +482,23 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
                                 )
                                 .ok()
                             }) {
-                                Some(handle) => Answer::value(handle),
+                                Some(handle) => {
+                                    // The identity, where the caller asked for
+                                    // the form that reports one. `rdx` carries
+                                    // the handle either way, and a handle is not
+                                    // an identity (ADR-0067 §7).
+                                    if restart_generation.is_some()
+                                        && !crate::process::write_created_instance(caller, child)
+                                    {
+                                        // The caller cannot be told which child
+                                        // it made, so it does not get one.
+                                        // SAFETY: the child was just created and
+                                        // has never run.
+                                        unsafe { crate::process::terminate(caller, child) };
+                                        return Answer::status(E_BAD_ARGUMENT);
+                                    }
+                                    Answer::value(handle)
+                                }
                                 // The child exists and the caller cannot name it.
                                 // Ending it is the only honest response: a process
                                 // nobody holds authority over is a process nobody
@@ -439,6 +520,13 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
                 Ok(_) => Answer::status(E_NO_CAPABILITY),
             }
         }
+    }
+}
+
+/// The rest of `answer`, from `process_terminate` on.
+fn answer_rest(operation: u64, frame: &mut TrapFrame, caller: usize) -> Answer {
+    let arguments = &*frame;
+    match operation {
         PROCESS_TERMINATE => {
             match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_TERMINATE) {
                 Err(refused) => refused.into(),

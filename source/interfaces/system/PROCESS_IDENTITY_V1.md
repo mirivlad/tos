@@ -55,7 +55,7 @@ an event worth emitting.
 | memory grant | nucleus | base, length, generation (ADR-0050) |
 | parent supervisor | nucleus | the creating process's instance id |
 | start time | nucleus | monotonic tick (ADR-0049) |
-| restart generation | supervisor | §4 |
+| restart generation | supervisor | §4; **absent** when the creator asserted none |
 | how it ended | nucleus | exited, faulted, terminated, or ended by the liveness rule; present once the process is over |
 | self-reported status | the process itself | the value it passed to `process_exit` (ADR-0054); absent when it did not end that way |
 | ended by | nucleus | the instance id of whoever terminated it, where something did |
@@ -80,7 +80,27 @@ property of the system and becomes a property of the process.
 A restart produces a new process instance id and increments the restart
 generation, keeping the same module and supervisor lineage. Identity is not
 reused: an instance id that came back would make two different executions
-indistinguishable in the log.
+indistinguishable in the log — so the instance id is neither a slot index, which
+is reused, nor a capability handle, which is an index in one table and means
+nothing in another.
+
+**Who says what** (ADR-0067). The nucleus assigns the instance id and gives it
+to the creator: `process_create_with_generation` (15) leaves it in the creator's
+argument region, because the handle it returns is not an identity. The
+supervisor asserts the generation and passes it in `r8` of that same operation;
+the nucleus records it and never computes or increments it. A child created by
+`process_create` (8) has **no** restart generation at all — its caller asserted
+none, and §5's rule applies: absence is the true value and a zero would be a
+claim. A restart lineage is therefore built through operation 15 from its first
+launch.
+
+**How a supervisor learns a restart is due.** `process_wait_child` (14) returns
+the earliest pending ending among the direct children of a process object the
+caller holds authority over, carrying the child's instance id, the ending kind,
+the self-reported status where there is one, who ended it where something did,
+that child's asserted restart generation, and a boot-monotonic ending order. It
+is not a message: nothing can forge it, and it is bounded by the process table
+because the record lives in the ended child's own slot until it is collected.
 
 docs/37 requires that service restart preserve identity and audit records. That
 means the lineage — module, source content id, supervisor, generation sequence —

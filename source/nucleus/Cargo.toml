@@ -27,6 +27,9 @@ test-two-processes = []
 # ADR-0055 describes — a process creating a process, bounded by what it was
 # given — is exercised rather than described.
 test-supervisor = []
+# ADR-0067: the boot process is endowed with create, terminate and wait_child
+# over itself, which is what a supervisor is made of.
+test-lifecycle = []
 # Gives one process the right to receive on an endpoint nobody can send to, so
 # that the state ADR-0059's liveness rule is about is a real state of a real
 # system rather than a description of one.
