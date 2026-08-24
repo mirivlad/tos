@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 417
+- files in the release package: 418
 - active system invariants: 21
-- architecture decision records: 67 (40 accepted)
+- architecture decision records: 68 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -111,6 +111,7 @@ Architecture decision records
 - docs/adr/0065-what-a-green-run-means.md — ADR-0065: What a green local run means, and what a green CI run means [**Accepted (option A′)** (Project Architect-approved)]
 - docs/adr/0066-external-stage3-performance-observer.md — ADR-0066: Stage 3 performance is measured by an external observer [**Accepted** (Project Architect-approved)]
 - docs/adr/0067-how-a-supervisor-learns-a-service-ended.md — ADR-0067: How a supervisor learns that a service ended [**Proposed**]
+- docs/adr/0068-what-the-two-stage3-latency-budgets-measure.md — ADR-0068: What each of the two Stage 3 latency budgets is measuring [**Proposed**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
