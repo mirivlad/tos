@@ -134,3 +134,4 @@ docs/adr/0064-a-nonconstructible-type-in-value-position.md
 docs/adr/0065-what-a-green-run-means.md
 docs/adr/0066-external-stage3-performance-observer.md
 docs/adr/0067-how-a-supervisor-learns-a-service-ended.md
+docs/adr/0068-what-the-two-stage3-latency-budgets-measure.md
