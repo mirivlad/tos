@@ -2,16 +2,24 @@
 
 # ADR-0067: How a supervisor learns that a service ended
 
-- Status: **Proposed** (option D; the first form of this ADR offered A, B and C
-  and recommended B)
+- Status: **Accepted (option D)** (Project Architect-approved)
 - Date: 2026-08-24, decision form 2026-08-25
 - Decision level: 2 — it adds **two** operations to the closed `SYSTEM_ABI_V1`
   §5 table, a right to the process object's declared set, and one piece of
   per-process nucleus state. **It changes no existing operation**, no Tier 0
   invariant and no TOS Core V1 semantics
-- Project Architect approval: **not given; this ADR proposes, it does not decide**
-- Amends, if accepted: `SYSTEM_ABI_V1` §3, §5 and §7; `CAPABILITY_V1` §3's
-  process-object rights; `PROCESS_IDENTITY_V1` §3 and §4
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-25. Approved after
+  four amendments — operation 8 left untouched and operation 15 added rather
+  than extending it; the restart generation carried in the lifecycle record as a
+  stored supervisor assertion; the orphan case resolved so no slot becomes
+  eternal; the exhaustion test corrected for the slot the living supervisor
+  occupies — and two final semantic ones: a legacy child has **no** restart
+  generation rather than zero, and a blocked wait is cancelled when the relation
+  it watches ends
+- History: the first form of this ADR offered A, B and C and recommended B; D
+  was chosen and B is retained below as a rejected alternative
+- Amends: `SYSTEM_ABI_V1` §3, §5 and §7; `CAPABILITY_V1` §3's process-object
+  rights; `PROCESS_IDENTITY_V1` §3 and §4
 
 ## The gap, stated once
 
@@ -98,10 +106,15 @@ The record is:
   and labelled as the child's own claim (`PROCESS_IDENTITY_V1` §2);
 - ended-by: the instance id of whoever terminated it, where something did;
 - the child's **restart generation, as its creator asserted it** — stored and
-  returned verbatim, never computed here. It is in the record because a
-  supervisor restarting a service needs the generation it is succeeding, and
-  because `PROCESS_IDENTITY_V1` §3 assigns that field to a supervisor: the
-  nucleus is repeating an assertion, not making one, and the record says which;
+  returned verbatim, never computed here, and **absent when the child was
+  created by operation 8**, which asserts no generation. It is in the record
+  because a supervisor restarting a service needs the generation it is
+  succeeding, and because `PROCESS_IDENTITY_V1` §3 assigns that field to a
+  supervisor: the nucleus repeats an assertion rather than making one, and an
+  absent field says that nobody made it. This is the same rule the self-reported
+  status follows two lines above, and the same rule §5 of
+  `PROCESS_IDENTITY_V1` applies to the system commit id: absence is the true
+  value, and a zero would be a claim;
 - the ending order: a boot-monotonic ending sequence number, and the tick the
   ending was recorded at.
 
@@ -213,11 +226,22 @@ process built against the smaller set keeps working:
 - `rdx` is **already in use** on return: operation 8 answers with the child's
   capability handle. It is not a spare result register.
 
-So operation 8 is unchanged. Its children get a restart generation of **`0`**,
-recorded as the legacy form's fixed value rather than as an assertion anybody
-made, and the nucleus assigns their instance id and parent relation internally
-exactly as for any other child. Nothing about the tombstone, the wait or the
-audit trail depends on which form created the process.
+So operation 8 is unchanged. A child it creates has **no restart generation at
+all** — not zero. Zero is a value a supervisor asserts for a first launch, and
+an old caller asserted nothing; recording `0` for it would manufacture a claim
+and would make a legacy child indistinguishable from a deliberately-first one.
+The field is therefore absent from that child's identity and absent from its
+lifecycle record, exactly as the self-reported status is absent for a process
+that never reached `process_exit`.
+
+The nucleus still assigns such a child an instance id and a parent relation, and
+its ending still produces a tombstone a wait collects. Nothing else about the
+tombstone, the wait or the audit trail depends on which form created it.
+
+**Stage 3 restart lineage is built through operation 15 from the first launch.**
+A supervisor that intends to restart a service starts it with 15 and generation
+`0`; a lineage whose first link came from operation 8 has no generation to
+succeed, and this ADR does not invent one for it.
 
 **Operation 15, `process_create_with_generation`, is the new form.**
 
@@ -237,9 +261,10 @@ nucleus into a fixed result slot of the caller's own argument region,
 `CREATE_INSTANCE_ID`, because `rdx` is spoken for and identity may not be
 inferred from a handle.
 
-A supervisor that wants either of the two new things uses operation 15 for
-**every** launch it makes — the first with generation `0`, a restart with the
-ended instance's generation plus one. Mixing the forms per service would mean a
+Operation 15 **always** carries a supervisor-asserted generation, including the
+`0` of a first launch: there is no absent case here, because the caller chose
+this form and thereby made the assertion. A supervisor uses it for **every**
+launch of a service it may restart. Mixing the forms per service would mean a
 lineage whose first link nobody asserted.
 
 ### 9. The restart generation is the supervisor's
@@ -255,6 +280,24 @@ lineage whose first link nobody asserted.
 
 This closes the restart-identity half of the gap. Whether to restart, how often,
 and what marks a candidate unhealthy remain the supervisor's.
+
+### 9a. A blocked wait ends with the relation it was watching
+
+`RIGHT_WAIT_CHILD` is delegable, so the process blocked in
+`process_wait_child` need not be the process object whose children it observes.
+If **that object** ends while a wait on it is blocked, the wait is answered
+`E_CANCELLED`.
+
+It is the honest answer and the only one available. The event set the waiter
+subscribed to is "endings of the direct children of *this* process", and after
+that process is over the set can never gain another member: §10 releases the
+pending tombstones and later children hold none. A wait left blocking would be a
+wait nothing could ever satisfy, which ADR-0059 exists to forbid; and answering
+`OK` with an empty record would be a result that looks like a measurement.
+
+`E_CANCELLED` already means exactly this — a blocking operation ended by
+something other than its own completion — and the nucleus records who was
+blocked on what, as it does for the liveness rule.
 
 ### 10. When the supervisor itself ends
 
@@ -299,7 +342,9 @@ answer, and it introduces no restart policy.
   authority to release.
 - **No unkillable wait.** A supervisor blocked in `process_wait_child` is
   cancellable by authority over it and by the liveness rule, so the operation
-  adds no authority the system cannot revoke (`SYSTEM_ABI_V1` §6).
+  adds no authority the system cannot revoke (`SYSTEM_ABI_V1` §6). A delegated
+  waiter is additionally cancelled when the relation it watches ends (§9a), so
+  no wait outlives the thing it was waiting on.
 - **No new ambient surface.** The operation requires a capability, writes only
   into the caller's own argument region at a fixed offset, and adds no path by
   which a process reaches a process it was not given.
@@ -347,6 +392,12 @@ answer, and it introduces no restart policy.
    audit events remain on the log, and the slots become free.
 9a. **A child that ends after its parent** leaves its audit event on the log,
     holds no tombstone, and its slot is immediately reusable.
+9b. **A delegated waiter is cancelled with the relation.** A process holding
+    `RIGHT_WAIT_CHILD` over *another* process blocks in `process_wait_child`;
+    that other process then ends; the waiter is answered `E_CANCELLED`, is not
+    left blocked, and does not receive a record. A child of the ended process
+    that ends afterwards holds no tombstone, and the waiter's next call is
+    refused rather than answered from a relation that no longer exists.
 10. **`E_NOT_SUPPORTED`** from a nucleus built before operations 14 and 15, for
     each of them, without the caller being terminated for asking
     (`SYSTEM_ABI_V1` §7).
