@@ -2,14 +2,18 @@
 #
 # DIAGNOSTIC ARTIFACT — NOT PRODUCTION CODE, NOT A PROPOSED CHANGE.
 #
-# This patch is retained so that the preemption-tail diagnostic recorded in
+# This patch is retained so that the preemption diagnostics recorded in
 # STAGE3_PREEMPTION_TAIL_P1.md can be reproduced. It is applied to a throwaway
 # git worktree and never to a branch. It removes conformance protections on
 # purpose and must not be merged:
 #
 #   * nucleus/src/main.rs   lifts the compile_error that forbids building an
-#                           inactive-preemption IPC numerator;
-#   * nucleus/src/apic.rs   adds a second, cfg-selected scheduler quantum;
+#                           inactive-preemption IPC numerator, and selects the
+#                           boot's timer mode from a capsule unit read before
+#                           any process exists;
+#   * nucleus/src/apic.rs   adds a second, cfg-selected scheduler quantum and
+#                           `start_masked`, which makes every write `start`
+#                           makes and sets the LVT mask bit;
 #   * measure-channel.py    admits the preemption counterfactual of each
 #                           measurement mode and two QUANTUM definitions;
 #   * runtime-image         reads the monotonic tick outside both markers, so a
@@ -110,10 +114,20 @@ index acdba28..3f42a5d 100644
  test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
  
 diff --git a/source/nucleus/src/apic.rs b/source/nucleus/src/apic.rs
-index 0976a4f..7809004 100644
+index 0976a4f..5f3ada9 100644
 --- a/source/nucleus/src/apic.rs
 +++ b/source/nucleus/src/apic.rs
-@@ -53,7 +53,12 @@ const DIVIDE_BY_16: u32 = 0b0011;
+@@ -43,6 +43,9 @@ pub const SPURIOUS_VECTOR: u8 = 255;
+ const SOFTWARE_ENABLE: u32 = 1 << 8;
+ /// Periodic mode in the timer's local vector table entry.
+ const PERIODIC: u32 = 1 << 17;
++/// DIAGNOSTIC WORKTREE ONLY: the LVT mask bit. Set, the timer counts and
++/// reloads exactly as it does when active, and delivers nothing.
++const LVT_MASKED: u32 = 1 << 16;
+ /// Divide the bus clock by 16.
+ const DIVIDE_BY_16: u32 = 0b0011;
+ 
+@@ -53,7 +56,12 @@ const DIVIDE_BY_16: u32 = 0b0011;
  /// spend the machine on interrupt entry. ADR-0049 leaves the concrete source
  /// and mode to the implementation; what it fixes is that there is one timer and
  /// that its purpose is preemption and timekeeping.
@@ -126,8 +140,47 @@ index 0976a4f..7809004 100644
  
  /// Timer interrupts taken since the timer was started.
  ///
+@@ -142,6 +150,38 @@ pub unsafe fn start() {
+     unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
+ }
+ 
++/// DIAGNOSTIC WORKTREE ONLY: `start`, with the timer's deliveries masked.
++///
++/// Every write `start` makes is made here in the same order with the same
++/// values, save one bit in the local vector table entry. The APIC is enabled,
++/// the divider is set, the count runs and reloads, `IF` is set — and no timer
++/// interrupt reaches the processor. It exists so that "the timer is off" and
++/// "the interrupt is not delivered" can be told apart.
++///
++/// # Safety
++///
++/// As [`start`].
++pub unsafe fn start_masked() {
++    // SAFETY: as `start`.
++    unsafe { mask_legacy_controller() };
++    // SAFETY: as `start`.
++    unsafe {
++        msr::write(
++            IA32_APIC_BASE,
++            msr::read(IA32_APIC_BASE) | APIC_GLOBAL_ENABLE,
++        )
++    };
++    // SAFETY: as `start`; the one difference is the mask bit.
++    unsafe {
++        write(SPURIOUS, SOFTWARE_ENABLE | u32::from(SPURIOUS_VECTOR));
++        write(TIMER_DIVIDE, DIVIDE_BY_16);
++        write(LVT_TIMER, PERIODIC | LVT_MASKED | u32::from(TIMER_VECTOR));
++        write(TIMER_INITIAL, QUANTUM);
++    }
++    // SAFETY: as `start`.
++    unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
++}
++
+ /// The state of whatever the timer interrupted.
+ ///
+ /// Laid out to match what `timer_stub` pushes, in that order, followed by the
 diff --git a/source/nucleus/src/main.rs b/source/nucleus/src/main.rs
-index 0c1d85e..598aa9e 100644
+index 0c1d85e..153b48f 100644
 --- a/source/nucleus/src/main.rs
 +++ b/source/nucleus/src/main.rs
 @@ -79,11 +79,13 @@
@@ -149,6 +202,63 @@ index 0c1d85e..598aa9e 100644
  
  #[cfg_attr(feature = "test-measurement-no-preemption", allow(dead_code))]
  mod apic;
+@@ -549,6 +551,27 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
+     // the capsule — the version marker, the licence notice — is not source and
+     // is not offered as such: a set that included them would ask the frontend
+     // to parse a file that never claimed to be a module.
++    // DIAGNOSTIC WORKTREE ONLY: which timer mode this boot runs in, read from
++    // the capsule before any process exists. Absent means the production one.
++    let mut diag_timer_mode: &[u8] = b"active";
++    for file in cap.files() {
++        if file.name.ends_with(b"timer-mode") {
++            // The unit carries an SPDX line like every other source file, so
++            // the mode is its last non-empty line.
++            let mut end = file.content.len();
++            while end > 0
++                && matches!(file.content[end - 1], b'\n' | b'\r' | b' ')
++            {
++                end -= 1;
++            }
++            let mut start = end;
++            while start > 0 && file.content[start - 1] != b'\n' && file.content[start - 1] != b'\r' {
++                start -= 1;
++            }
++            diag_timer_mode = &file.content[start..end];
++        }
++    }
++
+     let mut modules: [(&[u8], &[u8]); launch::MAX_BOOT_MODULES] =
+         [(&[], &[]); launch::MAX_BOOT_MODULES];
+     let mut module_count = 0usize;
+@@ -616,10 +639,24 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
+     // excursions and therefore cannot make the relative budget easier.
+     // SAFETY: the IDT has gates for both claimed vectors, the local APIC page is
+     // mapped uncacheable in the space just activated, and nothing else runs.
+-    #[cfg(not(feature = "test-measurement-no-preemption"))]
+-    unsafe {
+-        apic::start()
+-    };
++    // DIAGNOSTIC WORKTREE ONLY: one binary, three timer modes, chosen at boot
++    // from a capsule unit and applied long before the observed process says
++    // READY. The measured path below is the same machine code in all three.
++    match diag_timer_mode {
++        b"no-timer" => tos_serial::puts(b"TOS.DIAG.TIMER.MODE mode=no-timer\r\n"),
++        b"masked" => {
++            tos_serial::puts(b"TOS.DIAG.TIMER.MODE mode=masked\r\n");
++            // SAFETY: as the active case below.
++            unsafe { apic::start_masked() };
++        }
++        _ => {
++            tos_serial::puts(b"TOS.DIAG.TIMER.MODE mode=active\r\n");
++            // SAFETY: the IDT has gates for both claimed vectors, the local APIC
++            // page is mapped uncacheable in the space just activated, and
++            // nothing else runs.
++            unsafe { apic::start() };
++        }
++    }
+ 
+     // The excursion joins the table here and is entered by the scheduler with
+     // everything else, so the fault it is built to take happens while a peer
 diff --git a/source/runtime-image/Cargo.toml b/source/runtime-image/Cargo.toml
 index 24f4d3a..e4805cc 100644
 --- a/source/runtime-image/Cargo.toml

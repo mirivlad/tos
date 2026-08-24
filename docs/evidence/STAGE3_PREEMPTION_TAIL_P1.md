@@ -252,4 +252,15 @@ To repeat the experiment, apply the retained patch to a worktree of the recorded
 commit, put an observer bundle built by `build-simple-observer.sh` first on
 `PATH`, and run each configuration's features through
 `host-tools/qemu-test/run.sh` with `--measure 21`, interleaving the
-configurations.
+configurations. The patch has been verified to apply cleanly to commit
+`6f2837b76275c4ea5ab8f4d0491294d74543c687` from a fresh checkout.
+
+One correction to this record, stated rather than quietly fixed: commit
+`c917ea6` retained an **incomplete** copy of the patch. The export was written
+from inside the diagnostic worktree by a relative path, so the worktree's copy
+was updated and the repository's was not, while this document and the JSON
+already named the new digest. Section 6 was therefore not reproducible from what
+was committed. The complete patch — the one carrying `apic::start_masked` and
+the boot-time mode selection — is the one retained now, at the digest named
+above. No measurement changed; what was wrong was the artifact needed to repeat
+them.
