@@ -133,6 +133,8 @@ are marked and are exactly those a process can only apply to itself.
 | 11 | `time_monotonic` | *(self only)* | reads the monotonic tick |
 | 12 | `process_exit` | *(self only)* | ends the calling process. `rdi` = the status it claims for itself; does not return (ADR-0054) |
 | 13 | `endpoint_reply_receive` | **two**: `rdi` = reply handle (single use), `rsi` = endpoint handle with `receive` | answers the call the reply names, then waits for the next message on the endpoint, without returning to CPL 3 in between. `rdx` = the answer's length, `r10` = flags. The length taken is returned in `rdx`, as for `endpoint_receive` (ADR-0063) |
+| 14 | `process_wait_child` | process capability with `wait_child` | the earliest pending ending among that process object's **direct children** (ADR-0067). `rsi` = flags. `rdx` returns the ended child's instance id, and the record is written to the caller's argument region at `WAIT_CHILD_RECORD`. Blocks with no pending ending; `E_WOULD_BLOCK` when asked not to; `E_CANCELLED` when the relation it watches ends or the liveness rule fires |
+| 15 | `process_create_with_generation` | process-authority capability | `process_create` (8) plus `r8` = the **supervisor-asserted restart generation**, recorded and never computed. `rdx` returns the child's capability handle as for 8; the child's instance id is written to the argument region at `CREATE_INSTANCE_ID` (ADR-0067) |
 
 Operation `0` is not assigned and never will be. A register that was never
 written holds zero, so a zero selector is overwhelmingly likely to be a caller
@@ -197,9 +199,18 @@ about numbers that never states the numbers cannot be conformed to. Neither was 
 new decision: no operation, status, right or guarantee changed by writing them
 down.
 
-Operations 12 (`process_exit`, ADR-0054) and 13 (`endpoint_reply_receive`,
-ADR-0063) **are** additions, and both were decided by an ADR rather than here —
-this table carries those decisions rather than making them. Each is a minor
+Operations 12 (`process_exit`, ADR-0054), 13 (`endpoint_reply_receive`,
+ADR-0063), 14 (`process_wait_child`) and 15 (`process_create_with_generation`,
+both ADR-0067) **are** additions, and each was decided by an ADR rather than
+here — this table carries those decisions rather than making them.
+
+**Operation 8 is unchanged by the addition of 15**, and the reason is the rule
+in this section rather than caution: a process built against the earlier set
+does not initialise `r8`, so reading a restart generation from it would read a
+register nobody wrote, and `rdx` already carries the child's capability handle
+on return. A number was cheaper than a compatibility break. A child created by
+operation 8 therefore has **no** restart generation — not zero, which would be
+a claim its caller never made. Each is a minor
 version of this contract by the rule above: a process built against the
 earlier set calls nothing that has changed meaning, and one built against this
 set that runs on an older nucleus receives `E_NOT_SUPPORTED` for 12 and is not

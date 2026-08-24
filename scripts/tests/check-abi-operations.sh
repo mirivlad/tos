@@ -43,8 +43,11 @@ expected=$(seq 1 "$(printf '%s\n' "$numbers" | wc -l)")
 # Each party's own constants, by name. The nucleus dispatches on them and the
 # runtime image calls them; both write the number beside the operation's name,
 # which is what makes a comparison possible without either being the source.
+# `pub` is accepted because visibility is not the number: an operation the
+# nucleus exports to its own modules is still that operation, and a gate that
+# read only private constants could be evaded by adding a keyword.
 constants_of() {
-    sed -n 's/^const \([A-Z_]*\): u64 = \([0-9]*\);$/\1 \2/p' "$1" |
+    sed -n 's/^\(pub \)\?const \([A-Z_]*\): u64 = \([0-9]*\);$/\2 \3/p' "$1" |
         awk '{ name = tolower($1); print name, $2 }' | sort
 }
 

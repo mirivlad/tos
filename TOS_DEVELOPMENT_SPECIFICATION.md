@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `817bc3eccb68da349b8e12a29c1cd8062a473e53f8f6afec05571cac4db006f0`\
+Source-manifest SHA-256: `db9310d3a92f2e89ce7a3afd72438fa29b3500f0fbf53829e932a3568dbcf9b8`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2388,6 +2388,8 @@ are marked and are exactly those a process can only apply to itself.
 | 11 | `time_monotonic` | *(self only)* | reads the monotonic tick |
 | 12 | `process_exit` | *(self only)* | ends the calling process. `rdi` = the status it claims for itself; does not return (ADR-0054) |
 | 13 | `endpoint_reply_receive` | **two**: `rdi` = reply handle (single use), `rsi` = endpoint handle with `receive` | answers the call the reply names, then waits for the next message on the endpoint, without returning to CPL 3 in between. `rdx` = the answer's length, `r10` = flags. The length taken is returned in `rdx`, as for `endpoint_receive` (ADR-0063) |
+| 14 | `process_wait_child` | process capability with `wait_child` | the earliest pending ending among that process object's **direct children** (ADR-0067). `rsi` = flags. `rdx` returns the ended child's instance id, and the record is written to the caller's argument region at `WAIT_CHILD_RECORD`. Blocks with no pending ending; `E_WOULD_BLOCK` when asked not to; `E_CANCELLED` when the relation it watches ends or the liveness rule fires |
+| 15 | `process_create_with_generation` | process-authority capability | `process_create` (8) plus `r8` = the **supervisor-asserted restart generation**, recorded and never computed. `rdx` returns the child's capability handle as for 8; the child's instance id is written to the argument region at `CREATE_INSTANCE_ID` (ADR-0067) |
 
 Operation `0` is not assigned and never will be. A register that was never
 written holds zero, so a zero selector is overwhelmingly likely to be a caller
@@ -2452,9 +2454,18 @@ about numbers that never states the numbers cannot be conformed to. Neither was 
 new decision: no operation, status, right or guarantee changed by writing them
 down.
 
-Operations 12 (`process_exit`, ADR-0054) and 13 (`endpoint_reply_receive`,
-ADR-0063) **are** additions, and both were decided by an ADR rather than here —
-this table carries those decisions rather than making them. Each is a minor
+Operations 12 (`process_exit`, ADR-0054), 13 (`endpoint_reply_receive`,
+ADR-0063), 14 (`process_wait_child`) and 15 (`process_create_with_generation`,
+both ADR-0067) **are** additions, and each was decided by an ADR rather than
+here — this table carries those decisions rather than making them.
+
+**Operation 8 is unchanged by the addition of 15**, and the reason is the rule
+in this section rather than caution: a process built against the earlier set
+does not initialise `r8`, so reading a restart generation from it would read a
+register nobody wrote, and `rdx` already carries the child's capability handle
+on return. A number was cheaper than a compatibility break. A child created by
+operation 8 therefore has **no** restart generation — not zero, which would be
+a claim its caller never made. Each is a minor
 version of this contract by the rule above: a process built against the
 earlier set calls nothing that has changed meaning, and one built against this
 set that runs on an older nucleus receives `E_NOT_SUPPORTED` for 12 and is not
@@ -2894,7 +2905,10 @@ capability = object + rights + scope + lifetime + generation
 
 - **object**: the endpoint, region, process or interface publication it refers
   to; never a class of objects, never "all of them";
-- **rights**: a finite set from the object type's declared rights;
+- **rights**: a finite set from the object type's declared rights — for an
+  endpoint `send`, `receive` and `call` (`IPC_V1` §2); for a process `create`,
+  `terminate` and `wait_child` (ADR-0067), which are exactly the operations of
+  `SYSTEM_ABI_V1` §5 that name one;
 - **scope**: the range or subset the rights apply to, where the object has one;
 - **lifetime**: bounded by the object, and never longer than the grantor's own.
 
@@ -3281,7 +3295,7 @@ an event worth emitting.
 | memory grant | nucleus | base, length, generation (ADR-0050) |
 | parent supervisor | nucleus | the creating process's instance id |
 | start time | nucleus | monotonic tick (ADR-0049) |
-| restart generation | supervisor | §4 |
+| restart generation | supervisor | §4; **absent** when the creator asserted none |
 | how it ended | nucleus | exited, faulted, terminated, or ended by the liveness rule; present once the process is over |
 | self-reported status | the process itself | the value it passed to `process_exit` (ADR-0054); absent when it did not end that way |
 | ended by | nucleus | the instance id of whoever terminated it, where something did |
@@ -3306,7 +3320,27 @@ property of the system and becomes a property of the process.
 A restart produces a new process instance id and increments the restart
 generation, keeping the same module and supervisor lineage. Identity is not
 reused: an instance id that came back would make two different executions
-indistinguishable in the log.
+indistinguishable in the log — so the instance id is neither a slot index, which
+is reused, nor a capability handle, which is an index in one table and means
+nothing in another.
+
+**Who says what** (ADR-0067). The nucleus assigns the instance id and gives it
+to the creator: `process_create_with_generation` (15) leaves it in the creator's
+argument region, because the handle it returns is not an identity. The
+supervisor asserts the generation and passes it in `r8` of that same operation;
+the nucleus records it and never computes or increments it. A child created by
+`process_create` (8) has **no** restart generation at all — its caller asserted
+none, and §5's rule applies: absence is the true value and a zero would be a
+claim. A restart lineage is therefore built through operation 15 from its first
+launch.
+
+**How a supervisor learns a restart is due.** `process_wait_child` (14) returns
+the earliest pending ending among the direct children of a process object the
+caller holds authority over, carrying the child's instance id, the ending kind,
+the self-reported status where there is one, who ended it where something did,
+that child's asserted restart generation, and a boot-monotonic ending order. It
+is not a message: nothing can forge it, and it is bounded by the process table
+because the record lives in the ended child's own slot until it is collected.
 
 docs/37 requires that service restart preserve identity and audit records. That
 means the lineage — module, source content id, supervisor, generation sequence —

@@ -67,6 +67,10 @@ const CAPABILITY_RELEASE: u64 = 6;
 const ENDPOINT_CALL: u64 = 3;
 const ENDPOINT_REPLY: u64 = 4;
 const PROCESS_CREATE: u64 = 8;
+#[cfg(feature = "test-lifecycle")]
+const PROCESS_WAIT_CHILD: u64 = 14;
+#[cfg(feature = "test-lifecycle")]
+const PROCESS_CREATE_WITH_GENERATION: u64 = 15;
 const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
@@ -929,7 +933,10 @@ fn authority(launch: &Launch, report: &mut Report) {
         ));
     }
     if first.object == tos_launch::OBJECT_PROCESS {
+        #[cfg(not(feature = "test-lifecycle"))]
         supervise(launch, report, first.handle);
+        #[cfg(feature = "test-lifecycle")]
+        lifecycle(launch, report, first.handle);
     }
 
     // Asking for more than was held yields less, not more (`CAPABILITY_V1`
@@ -2038,7 +2045,296 @@ fn deputy(launch: &Launch, report: &mut Report, own: u64) {
     }
 }
 
+/// ADR-0067: a supervisor that outlives its children and collects their endings.
+///
+/// One boot, five phases, each a conformance test of the decision. The table
+/// holds four processes and this supervisor is one of them, so three children
+/// exist at a time — which is what makes the exhaustion phase a real bound
+/// rather than a simulated one.
+#[cfg(feature = "test-lifecycle")]
+fn lifecycle(launch: &Launch, report: &mut Report, handle: u64) {
+    let module = b"system/boot/init.tos";
+    for (offset, byte) in module.iter().enumerate() {
+        // SAFETY: `arguments_base` names a writable mapping the launcher made,
+        // and the module offset plus a short name is far inside it.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u8>(
+                (launch.arguments_base + tos_launch::CREATE_MODULE) as usize,
+            )
+            .add(offset)
+            .write(*byte)
+        };
+    }
+    let name_length = module.len() as u64;
+
+    // Phase 1 — two children that ended before a single wait.
+    //
+    // Both are created with an asserted generation, both are ended by this
+    // process, and only then is anything collected. Neither record may be lost
+    // and their order is the order they ended in, not the order of the slots
+    // they happened to occupy.
+    let (first_status, first_handle) =
+        create_child(handle, name_length, LIFECYCLE_FIRST_GENERATION);
+    let first_instance = created_instance(launch);
+    let (second_status, second_handle) =
+        create_child(handle, name_length, LIFECYCLE_SECOND_GENERATION);
+    let second_instance = created_instance(launch);
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.CREATED first={first_status}/{first_instance} \
+second={second_status}/{second_instance}"
+    ));
+    // SAFETY: each handle names the child this process just created.
+    let ended = unsafe {
+        (
+            call(PROCESS_TERMINATE, first_handle, 0).0,
+            call(PROCESS_TERMINATE, second_handle, 0).0,
+        )
+    };
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.ENDED first={} second={}",
+        ended.0,
+        ended.1
+    ));
+    let first_record = wait_child(launch, handle, false);
+    let second_record = wait_child(launch, handle, false);
+    // A third, with nothing left to collect. Non-blocking, because a blocking
+    // one here would be answered by the liveness rule and end the boot — which
+    // phase 5 does deliberately, at the end.
+    let empty = wait_child(launch, handle, true);
+    report_record(report, "first", &first_record);
+    report_record(report, "second", &second_record);
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.EMPTY status={}",
+        empty.0
+    ));
+
+    // Phase 2 — a stale capability does not come back to life.
+    //
+    // The first child's slot is free now: its record was collected. Whoever
+    // takes that slot is a different process, and the handle this supervisor
+    // still holds over the ended child must refuse rather than name the new
+    // occupant (ADR-0067 §7).
+    let (reused_status, reused_handle) =
+        create_child(handle, name_length, LIFECYCLE_THIRD_GENERATION);
+    let reused_instance = created_instance(launch);
+    // SAFETY: the handle named a process that has ended; what it names now is
+    // the question this asks.
+    let (stale, _) = unsafe { call(PROCESS_TERMINATE, first_handle, 0) };
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.STALE created={reused_status}/{reused_instance} status={stale}"
+    ));
+    // That child goes back before the next phase, which is about slots: leaving
+    // it alive would measure the memory bound instead.
+    // The wait is blocking on purpose: a process this one ended is retired by
+    // the scheduler's own loop, and blocking is how a supervisor reaches it.
+    // SAFETY: the handle names the child created just above.
+    unsafe { call(PROCESS_TERMINATE, reused_handle, 0) };
+    wait_child(launch, handle, false);
+    drain(launch, handle);
+
+    // Phase 3 — a capability without the right cannot observe.
+    //
+    // Attenuation is subtractive, so this asks for everything but `wait_child`
+    // and gets a handle that can still create and terminate.
+    // SAFETY: `capability_attenuate` names the capability and a rights mask.
+    let (attenuated_status, blind) = unsafe {
+        call(
+            CAPABILITY_ATTENUATE,
+            handle,
+            u64::from(tos_launch::RIGHT_CREATE | tos_launch::RIGHT_TERMINATE),
+        )
+    };
+    let blind_wait = if attenuated_status == OK {
+        wait_child(launch, blind, true).0
+    } else {
+        attenuated_status
+    };
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.UNRIGHTED attenuate={attenuated_status} wait={blind_wait}"
+    ));
+
+    // Phase 4 — a legacy child, which asserts no generation and ends itself.
+    //
+    // One child answers two questions. It comes from `process_create` (8),
+    // which carries no generation at all, so its record must report absence
+    // rather than a zero its caller never asserted. And it is left to reach its
+    // own `process_exit` instead of being ended, so the same record carries the
+    // other ending kind and the self-reported status that goes with it — the
+    // one a terminated child cannot have.
+    //
+    // Four children is what a boot affords: each grant takes the largest
+    // contiguous run there is, so the runs get smaller and the fourth is the
+    // last that fits. The nucleus says which bound it hit, in its own log.
+    // SAFETY: `process_create` names the process the child is created under,
+    // the module name's length, an endowment count and the child's rights over
+    // itself. It takes no generation, which is the point.
+    let (legacy_status, _) = unsafe { call4(PROCESS_CREATE, handle, name_length, 0, 0) };
+    settle();
+    let legacy = wait_child(launch, handle, true);
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.LEGACY created={legacy_status} status={} kind={} \
+status_present={} generation_present={} generation={}",
+        legacy.0,
+        legacy.1.ending_kind,
+        legacy.1.has_self_reported_status,
+        legacy.1.has_restart_generation,
+        legacy.1.restart_generation
+    ));
+
+    // Phase 5 — a wait nothing can end is ended by the nucleus.
+    //
+    // Everything pending is drained first, so this blocks with nothing to
+    // collect and nothing else runnable. ADR-0059's liveness rule answers it,
+    // and `E_CANCELLED` is exact rather than approximate.
+    drain(launch, handle);
+    let cancelled = wait_child(launch, handle, false);
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.CANCELLED status={}",
+        cancelled.0
+    ));
+}
+
+/// Gives the machine the turns a child needs to run, end and be retired.
+///
+/// Not `context_yield`: that operation answers `OK` and returns, leaving this
+/// process on the processor. What moves a child along is the timer, and what
+/// turns an ended child into a record is the scheduler's own loop — which runs
+/// when a context blocks or ends, and so runs when the child ends itself.
+///
+/// So this waits by the only clock a process has (`time_monotonic`, operation
+/// 11), which counts timer interrupts. Ticks rather than iterations because an
+/// iteration count is a guess about a machine's speed and a tick is not.
+#[cfg(feature = "test-lifecycle")]
+fn settle() {
+    let start = monotonic().unwrap_or(0);
+    loop {
+        match monotonic() {
+            Some(now) if now >= start + LIFECYCLE_SETTLE_TICKS => return,
+            // No clock is not a reason to spin forever.
+            None => return,
+            Some(_) => {}
+        }
+    }
+}
+
+/// How many timer interrupts a child is given to run, end and be retired.
+///
+/// Measured rather than guessed: a child of this image takes about sixty ticks
+/// to reach its own exit, so this is that with room. Too small a number does
+/// not make the test flaky in the dangerous direction — it makes the next
+/// creation fail for want of memory the previous child still holds, loudly.
+#[cfg(feature = "test-lifecycle")]
+const LIFECYCLE_SETTLE_TICKS: u64 = 150;
+
+/// Collects every ending already recorded, without blocking for one that is not.
+#[cfg(feature = "test-lifecycle")]
+fn drain(launch: &Launch, handle: u64) {
+    loop {
+        settle();
+        if wait_child(launch, handle, true).0 != OK {
+            return;
+        }
+    }
+}
+
+/// Generations this supervisor asserts. Distinct so a record cannot be read as
+/// having come from another creation, and none of them zero — a legacy child's
+/// absent generation must not be confusable with an asserted one.
+#[cfg(feature = "test-lifecycle")]
+const LIFECYCLE_FIRST_GENERATION: u64 = 7;
+#[cfg(feature = "test-lifecycle")]
+const LIFECYCLE_SECOND_GENERATION: u64 = 9;
+#[cfg(feature = "test-lifecycle")]
+const LIFECYCLE_THIRD_GENERATION: u64 = 11;
+
+/// `process_create_with_generation`: a child, and the generation its creator
+/// asserts for it.
+#[cfg(feature = "test-lifecycle")]
+fn create_child(handle: u64, name_length: u64, generation: u64) -> (i64, u64) {
+    let status: i64;
+    let value: u64;
+    // SAFETY: operation 15 takes the authority in `rdi`, the module name's
+    // length in `rsi`, the endowment count in `rdx`, the child's rights over
+    // itself in `r10` and the asserted generation in `r8`.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") PROCESS_CREATE_WITH_GENERATION => status,
+            in("rdi") handle,
+            in("rsi") name_length,
+            inlateout("rdx") 0u64 => value,
+            in("r10") 0u64,
+            in("r8") generation,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        )
+    };
+    (status, value)
+}
+
+/// The instance id operation 15 left in this process's argument region.
+#[cfg(feature = "test-lifecycle")]
+fn created_instance(launch: &Launch) -> u64 {
+    // SAFETY: the region is the launcher's own mapping and the offset is the
+    // one the contract fixes.
+    unsafe {
+        core::ptr::with_exposed_provenance::<u64>(
+            (launch.arguments_base + tos_launch::CREATE_INSTANCE_ID) as usize,
+        )
+        .read_unaligned()
+    }
+}
+
+/// `process_wait_child`, and the record it left behind.
+#[cfg(feature = "test-lifecycle")]
+fn wait_child(
+    launch: &Launch,
+    handle: u64,
+    non_blocking: bool,
+) -> (i64, tos_launch::WaitChildRecord) {
+    let flags = u64::from(non_blocking);
+    // SAFETY: operation 14 takes the authority in `rdi` and its flags in `rsi`.
+    let (status, _) = unsafe { call(PROCESS_WAIT_CHILD, handle, flags) };
+    if status != OK {
+        return (status, tos_launch::WaitChildRecord::default());
+    }
+    // SAFETY: the nucleus wrote the record at the fixed offset of this
+    // process's own region, and only on success.
+    let record = unsafe {
+        core::ptr::with_exposed_provenance::<tos_launch::WaitChildRecord>(
+            (launch.arguments_base + tos_launch::WAIT_CHILD_RECORD) as usize,
+        )
+        .read_unaligned()
+    };
+    (status, record)
+}
+
+/// One collected ending, as the log carries it.
+#[cfg(feature = "test-lifecycle")]
+fn report_record(report: &mut Report, which: &str, collected: &(i64, tos_launch::WaitChildRecord)) {
+    let (status, record) = collected;
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.RECORD which={which} status={status} child={} parent={} kind={} \
+status_present={} ended_by={}/{} generation={}/{} order={}",
+        record.child_instance,
+        record.parent_instance,
+        record.ending_kind,
+        record.has_self_reported_status,
+        record.ended_by,
+        record.has_ended_by,
+        record.restart_generation,
+        record.has_restart_generation,
+        record.ending_order
+    ));
+}
+
 /// Creates a process and ends it, on authority this process was given.
+///
+/// The lifecycle build runs its own supervisor instead of this one, which is
+/// why this is compiled out there rather than left as an unused function: a
+/// warning suppressed is a warning that stops being read.
+#[cfg(not(feature = "test-lifecycle"))]
 ///
 /// A supervisor is not a special kind of program: it is a process that was
 /// endowed with authority over itself, and everything it can do to another

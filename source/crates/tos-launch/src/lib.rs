@@ -78,6 +78,11 @@ pub const RIGHT_CALL: u32 = 1 << 2;
 /// object beside it to be understood.
 pub const RIGHT_CREATE: u32 = 1 << 3;
 pub const RIGHT_TERMINATE: u32 = 1 << 4;
+/// The right to observe the endings of a process object's **direct children**
+/// (ADR-0067). It is delegable like any other right, which is what lets a
+/// supervision hierarchy exist without ambient authority, and subtractable by
+/// attenuation, which is what keeps the observation itself a granted thing.
+pub const RIGHT_WAIT_CHILD: u32 = 1 << 6;
 
 /// One capability the launcher endowed this process with, described to the
 /// process that holds it.
@@ -240,6 +245,62 @@ pub const CREATE_MODULE: u64 = CREATE_SELF_BINDING + MAX_BINDING;
 /// rather than of the region: the nucleus must not size a read from a number a
 /// caller chose, even where the region would have held more.
 pub const MAX_MODULE_PATH: u64 = 256;
+
+/// Where `process_create_with_generation` (15) leaves the child's **instance
+/// id** (ADR-0067).
+///
+/// A result rather than an argument, and in the region rather than in a
+/// register, because `rdx` already carries the child's capability handle and a
+/// handle is not an identity: it is an index in one table and means nothing in
+/// another. Placed after the create arguments so the two never overlap.
+pub const CREATE_INSTANCE_ID: u64 = CREATE_MODULE + MAX_MODULE_PATH;
+
+/// Where `process_wait_child` (14) leaves the lifecycle record (ADR-0067).
+pub const WAIT_CHILD_RECORD: u64 = CREATE_INSTANCE_ID + 64;
+
+/// How a child ended, as the nucleus asserts it.
+pub const ENDING_EXITED: u64 = 1;
+pub const ENDING_FAULTED: u64 = 2;
+pub const ENDING_TERMINATED: u64 = 3;
+pub const ENDING_DEADLOCKED: u64 = 4;
+
+/// The lifecycle record `process_wait_child` writes into the caller's argument
+/// region (ADR-0067 §1).
+///
+/// **Every optional field carries its own presence flag**, and none of them is
+/// encoded as a zero. `PROCESS_IDENTITY_V1` §5 states the rule this follows:
+/// absence is the true value, and a zero would be a claim. A child that never
+/// reached `process_exit` has no self-reported status; a child nothing
+/// terminated has no ender; and a child created by `process_create` (8) has no
+/// restart generation at all, because that operation's caller asserted none and
+/// the nucleus does not assert it for anybody.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WaitChildRecord {
+    /// The ended child, by the identity `process_create_with_generation` gave
+    /// its creator. Never a slot index and never a handle.
+    pub child_instance: u64,
+    /// The process object whose child relation this record belongs to.
+    pub parent_instance: u64,
+    /// One of the `ENDING_*` constants.
+    pub ending_kind: u64,
+    /// The child's own claim about its work (ADR-0054), present only when it
+    /// ended by `process_exit`.
+    pub self_reported_status: u64,
+    pub has_self_reported_status: u64,
+    /// Who ended it, where something did.
+    pub ended_by: u64,
+    pub has_ended_by: u64,
+    /// What the child's creator asserted, repeated verbatim. The nucleus never
+    /// computes or increments it.
+    pub restart_generation: u64,
+    pub has_restart_generation: u64,
+    /// A boot-monotonic ending sequence number: which of two children ended
+    /// first, answerable without comparing ticks that can repeat.
+    pub ending_order: u64,
+    /// The tick the ending was recorded at.
+    pub ended_tick: u64,
+}
 
 /// One entry of the endowment a parent gives a child.
 ///

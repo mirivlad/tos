@@ -22,6 +22,9 @@ test-direction-flag = []
 # nucleus built with `test-measurement-port`, which is what permits CPL 3 those
 # ports.
 test-measurement-port = []
+# ADR-0067: the supervisor workload that creates children, ends them and
+# collects what the nucleus recorded about how they ended.
+test-lifecycle = []
 # Milestone 6 of ADR-0066: the same channel, with one exported TOS Core call
 # between the markers. The frontend, verifier and engine become dependencies of
 # this build alone — the production image keeps the closure it has, which is

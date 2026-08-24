@@ -164,7 +164,34 @@ struct Slot {
     /// has ended stops resolving rather than quietly transferring to whoever
     /// occupies the slot next.
     generation: u32,
+    /// Which process this is, for the life of the boot (ADR-0067).
+    ///
+    /// Not the slot index and not a handle: slots are reused and handles are
+    /// indices in one table, while `PROCESS_IDENTITY_V1` §4 requires an
+    /// identity that never comes back — "an instance id that came back would
+    /// make two different executions indistinguishable in the log".
+    instance: u64,
+    /// The instance that created it, where one did. The boot process has none.
+    parent: u64,
+    /// What that creator asserted about the restart lineage, where it asserted
+    /// anything. `process_create` (8) asserts nothing and this stays absent:
+    /// a zero would be a claim nobody made (ADR-0067 §8).
+    restart_generation: u64,
+    has_restart_generation: bool,
+    /// The ending, kept in the slot until the parent collects it (ADR-0067 §4).
+    ///
+    /// The storage for the notice is the storage for the process, reserved when
+    /// the process was created, which is what makes a notice impossible to lose
+    /// without a queue, an allocation or a bound anybody has to choose.
+    notice_pending: bool,
+    ending_order: u64,
+    ended_tick: u64,
 }
+
+/// Which process the next `create` names, and which ending the next `retire`
+/// numbers. Both are boot-monotonic and neither is ever reused.
+static mut NEXT_INSTANCE: u64 = 1;
+static mut NEXT_ENDING: u64 = 1;
 
 impl Slot {
     const FREE: Slot = Slot {
@@ -188,6 +215,13 @@ impl Slot {
         // One, not zero: an object named with a generation nobody wrote is an
         // object nobody was given.
         generation: 1,
+        instance: 0,
+        parent: 0,
+        restart_generation: 0,
+        has_restart_generation: false,
+        notice_pending: false,
+        ending_order: 0,
+        ended_tick: 0,
     };
 }
 
@@ -229,13 +263,20 @@ pub enum Waiting {
     /// waiting on the one capability it handed out, and whoever holds that
     /// knows exactly which context to answer.
     Reply,
+    /// An ending among the direct children of this process instance
+    /// (ADR-0067 §6). It names the *relation*, not one child: the waiter asked
+    /// about a set that a capability scopes, and any member of that set answers
+    /// it. That is still waiting on a handle the process holds, which is what
+    /// `SYSTEM_ABI_V1` §6 requires — the alternative it forbids is waiting on
+    /// authority nobody granted.
+    ChildOf(u64),
 }
 
 impl Waiting {
     /// The object it is waiting on.
     fn endpoint(&self) -> u32 {
         match self {
-            Waiting::Nothing | Waiting::Reply => 0,
+            Waiting::Nothing | Waiting::Reply | Waiting::ChildOf(_) => 0,
             Waiting::Message(endpoint) | Waiting::Room(endpoint) => *endpoint,
         }
     }
@@ -986,6 +1027,44 @@ unsafe fn retire(index: usize) {
         }
     }
 
+    // ADR-0067: the ending becomes a record before the memory goes back, and
+    // the record lives in this slot. Everything the table needs is read out
+    // here, because the work below names the table again and a borrow held
+    // across that would be two live references to one static.
+    let (instance, parent, ended, generation, has_generation) = (
+        slot.instance,
+        slot.parent,
+        slot.ended,
+        slot.restart_generation,
+        slot.has_restart_generation,
+    );
+    // SAFETY: single-context nucleus; the handler cannot be re-entered.
+    let order = unsafe {
+        let order = NEXT_ENDING;
+        NEXT_ENDING = NEXT_ENDING.wrapping_add(1);
+        order
+    };
+    slot.ending_order = order;
+    slot.ended_tick = crate::apic::ticks();
+    // A process that ends stops being a receiver: its own children's pending
+    // notices have nobody entitled to them, and anything blocked waiting on its
+    // children is waiting on a relation that can gain no further member.
+    release_notices_of(instance);
+    cancel_child_waiters(instance);
+    // The notice is kept only while somebody could still collect it. When the
+    // parent is already over, the audit event on the log is the whole of the
+    // record and the slot goes straight back (ADR-0067 §10).
+    let keep = parent != 0 && live_instance(parent).is_some();
+    {
+        // SAFETY: single-context nucleus; the process is over.
+        let slot = unsafe { &mut table()[index] };
+        slot.notice_pending = keep;
+    }
+    if keep {
+        deliver_child_notice(parent);
+    }
+    let _ = (ended, generation, has_generation);
+
     let (Some(space), Some(reclaim)) = (slot.space.as_mut(), slot.reclaim) else {
         // A process the nucleus did not build a space for holds nothing of the
         // pool's through that space, and its builder takes back what it lent.
@@ -1028,6 +1107,285 @@ unsafe fn retire(index: usize) {
     tos_serial::puts(b" available=");
     tos_serial::put_u32_decimal(frames.available() as u32);
     tos_serial::puts(b"\r\n");
+}
+
+/// Which slot a live instance is in, if it is still live (ADR-0067).
+///
+/// "Live" is anything that has not been retired: a process being ended is still
+/// entitled to its children's notices until its own ending is recorded.
+fn live_instance(instance: u64) -> Option<usize> {
+    if instance == 0 {
+        return None;
+    }
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    (0..MAX_PROCESSES).find(|index| {
+        table[*index].instance == instance
+            && matches!(
+                table[*index].state,
+                State::Runnable | State::Blocked | State::Ending
+            )
+    })
+}
+
+/// Frees the tombstones held for a parent that is itself over (ADR-0067 §10).
+///
+/// The audit records were emitted at each child's ending and are on the log;
+/// what is released is the programmatic notice, which now has no receiver that
+/// could ever read it. Holding one would make a slot eternal for the sake of a
+/// reader that has ended.
+fn release_notices_of(parent_instance: u64) {
+    if parent_instance == 0 {
+        return;
+    }
+    // SAFETY: single-context nucleus; nothing is running.
+    let table = unsafe { table() };
+    for slot in table.iter_mut() {
+        if slot.state == State::Over && slot.notice_pending && slot.parent == parent_instance {
+            slot.notice_pending = false;
+            slot.state = State::Free;
+        }
+    }
+}
+
+/// Cancels a wait on the child relation of a process that has ended.
+///
+/// ADR-0067 §9a: the waiter subscribed to "endings of the direct children of
+/// this process", and after that process is over the set can gain no further
+/// member — §10 releases what was pending and later children hold nothing. A
+/// wait left blocking would be one nothing could ever satisfy, which ADR-0059
+/// forbids, and an `OK` with an empty record would be a result that looks like
+/// a measurement.
+fn cancel_child_waiters(instance: u64) {
+    let mut blocked = [false; MAX_PROCESSES];
+    {
+        // SAFETY: single-context nucleus.
+        let table = unsafe { table() };
+        for index in 0..MAX_PROCESSES {
+            blocked[index] = table[index].state == State::Blocked
+                && table[index].waiting == Waiting::ChildOf(instance);
+        }
+    }
+    for (index, waiting) in blocked.iter().enumerate() {
+        if !waiting {
+            continue;
+        }
+        tos_serial::puts(b"TOS.RUN.WAIT_CANCELLED process=");
+        tos_serial::put_u32_decimal(index as u32);
+        tos_serial::puts(b" reason=parent-ended asserted_by=nucleus\r\n");
+        // SAFETY: the context is blocked, and this is the answer to the call it
+        // blocked in.
+        unsafe { wake(index, crate::syscall::Answer::cancelled()) };
+    }
+}
+
+/// Hands a freshly recorded ending to a parent already blocked for one.
+///
+/// The wait is satisfied by the operation that produced what it waited for, the
+/// same rule `IPC_V1` §7 states for messages: a woken context does not wake up
+/// to ask again.
+fn deliver_child_notice(parent_instance: u64) {
+    let Some(parent) = live_instance(parent_instance) else {
+        return;
+    };
+    let blocked = {
+        // SAFETY: single-context nucleus.
+        let table = unsafe { table() };
+        table[parent].state == State::Blocked
+            && table[parent].waiting == Waiting::ChildOf(parent_instance)
+    };
+    if !blocked {
+        return;
+    }
+    let Some((child, record)) = take_child_notice(parent_instance) else {
+        return;
+    };
+    let answer = match write_child_record(parent, &record) {
+        // The record is in the waiter's own region and the identity is its
+        // result, exactly as a call that had not blocked would have left them.
+        Ok(()) => crate::syscall::Answer::value(record.child_instance),
+        // The waiter cannot be told, so the notice is not consumed: it goes
+        // back to pending rather than being lost between two frames.
+        Err(answer) => {
+            restore_child_notice(child);
+            answer
+        }
+    };
+    // SAFETY: the context is blocked, and this is the answer to the call it
+    // blocked in.
+    unsafe { wake(parent, answer) };
+}
+
+/// Which process occupies a slot, by the identity of ADR-0067 §7.
+///
+/// Zero for a slot holding nobody. Public because the edge needs to turn the
+/// object a capability named into the identity a record carries: a slot index
+/// is not an identity, and the edge must not publish one as if it were.
+pub fn instance(index: usize) -> u64 {
+    instance_of(index)
+}
+
+/// Leaves the child's instance id in the creator's argument region.
+///
+/// `process_create_with_generation` (15) reports identity here rather than in
+/// `rdx`, which already carries the child's capability handle. False when the
+/// creator has no region to be told in — refused rather than half-answered.
+pub fn write_created_instance(creator: usize, child: usize) -> bool {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    let base = table[creator].arguments_phys;
+    if base == 0 || child >= MAX_PROCESSES {
+        return false;
+    }
+    let instance = table[child].instance;
+    let at = base + tos_launch::CREATE_INSTANCE_ID;
+    // SAFETY: the region is one frame the nucleus mapped for this process and
+    // reaches through its own identity map; the offset is inside that frame.
+    unsafe { core::ptr::with_exposed_provenance_mut::<u64>(at as usize).write_unaligned(instance) };
+    true
+}
+
+/// The earliest pending ending among a process object's direct children.
+///
+/// "Earliest" is by the ending order of ADR-0067 §1 and not by slot position:
+/// which of two children died first must not depend on where the table put
+/// them, and two observers must agree.
+fn take_child_notice(parent_instance: u64) -> Option<(usize, tos_launch::WaitChildRecord)> {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    let mut best: Option<usize> = None;
+    for index in 0..MAX_PROCESSES {
+        if table[index].state != State::Over
+            || !table[index].notice_pending
+            || table[index].parent != parent_instance
+        {
+            continue;
+        }
+        if best.is_none_or(|found| table[index].ending_order < table[found].ending_order) {
+            best = Some(index);
+        }
+    }
+    let index = best?;
+    let slot = &mut table[index];
+    let (kind, status, has_status, ended_by, has_ended_by) = match slot.ended {
+        // The status is the child's own claim (ADR-0054) and travels labelled.
+        Ended::Exited(status) => (tos_launch::ENDING_EXITED, status, 1, 0, 0),
+        Ended::Fault(_) => (tos_launch::ENDING_FAULTED, 0, 0, 0, 0),
+        Ended::Deadlocked => (tos_launch::ENDING_DEADLOCKED, 0, 0, 0, 0),
+        // Who ended it, by identity rather than by slot: the slot may already
+        // hold somebody else by the time this record is read.
+        Ended::Terminated(by) => (tos_launch::ENDING_TERMINATED, 0, 0, instance_of(by), 1),
+    };
+    let record = tos_launch::WaitChildRecord {
+        child_instance: slot.instance,
+        parent_instance,
+        ending_kind: kind,
+        self_reported_status: status,
+        has_self_reported_status: has_status,
+        ended_by,
+        has_ended_by,
+        restart_generation: slot.restart_generation,
+        has_restart_generation: u64::from(slot.has_restart_generation),
+        ending_order: slot.ending_order,
+        ended_tick: slot.ended_tick,
+    };
+    // Collected: the notice is gone and the slot is reusable from this instant
+    // and not before. The slot's *generation* was advanced when the process
+    // ended, not here, so no capability naming the child comes back to life
+    // when the slot is taken by somebody else.
+    slot.notice_pending = false;
+    slot.state = State::Free;
+    Some((index, record))
+}
+
+/// Puts a notice back, for the one path that cannot deliver it.
+fn restore_child_notice(index: usize) {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    table[index].notice_pending = true;
+    table[index].state = State::Over;
+}
+
+/// Which instance occupies a slot, or zero for a slot that holds nobody.
+fn instance_of(index: usize) -> u64 {
+    if index >= MAX_PROCESSES {
+        return 0;
+    }
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    table[index].instance
+}
+
+/// Writes a lifecycle record into a process's own argument region.
+///
+/// Into the region the nucleus mapped for that process at a fixed offset, never
+/// through an address the process supplied: `SYSTEM_ABI_V1` §3's rule that the
+/// nucleus walks no pointer a caller chose holds for results as well as for
+/// arguments.
+fn write_child_record(
+    index: usize,
+    record: &tos_launch::WaitChildRecord,
+) -> Result<(), crate::syscall::Answer> {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    let base = table[index].arguments_phys;
+    if base == 0 {
+        // A process with no argument region cannot be handed a record. It is
+        // refused rather than partially answered.
+        return Err(crate::syscall::Answer::status(
+            crate::syscall::E_BAD_ARGUMENT,
+        ));
+    }
+    let at = base + tos_launch::WAIT_CHILD_RECORD;
+    // SAFETY: the region is one frame the nucleus mapped for this process and
+    // reaches through its own identity map, and the record is far inside it:
+    // the offset plus the record's size is below the frame's end.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<tos_launch::WaitChildRecord>(at as usize)
+            .write_unaligned(*record)
+    };
+    Ok(())
+}
+
+/// `process_wait_child` (ADR-0067): the earliest pending ending, or a block.
+///
+/// # Safety
+///
+/// `caller` is the running process and `target` is the instance its capability
+/// named.
+// SAFETY: the caller's promise that this is the running context is what makes
+// setting its frame down and picking it up later a suspended call rather than
+// a lost one.
+pub unsafe fn wait_child(
+    caller: usize,
+    frame: &TrapFrame,
+    target: u64,
+    non_blocking: bool,
+) -> crate::syscall::Answer {
+    if let Some((child, record)) = take_child_notice(target) {
+        return match write_child_record(caller, &record) {
+            Ok(()) => crate::syscall::Answer::value(record.child_instance),
+            Err(answer) => {
+                restore_child_notice(child);
+                answer
+            }
+        };
+    }
+    if non_blocking {
+        return crate::syscall::Answer::status(crate::syscall::E_WOULD_BLOCK);
+    }
+    let _ = caller;
+    // Does not return: the call is set down and picked up when a child ends, is
+    // cancelled with the relation (§9a), or is cancelled by the liveness rule.
+    // SAFETY: this is the running context's own frame, and the wait is on the
+    // relation the resolved capability named.
+    unsafe {
+        block(
+            frame,
+            Waiting::ChildOf(target),
+            crate::syscall::PROCESS_WAIT_CHILD as u32,
+        )
+    }
 }
 
 /// Which occupant of `index` is there now, or nothing when the slot holds no
@@ -1099,12 +1457,30 @@ unsafe fn admit(
     report: (u64, u64),
     message: u64,
     reclaim: Option<Reclaim>,
+    parent: u64,
+    restart_generation: Option<u64>,
 ) -> Result<usize, Unlaunchable> {
     // SAFETY: single-context nucleus; nothing else touches the table.
     let table = unsafe { table() };
-    let index = (0..MAX_PROCESSES)
-        .find(|index| table[*index].state == State::Free)
-        .ok_or(Unlaunchable::TooManyProcesses)?;
+    let index = match (0..MAX_PROCESSES).find(|index| table[*index].state == State::Free) {
+        Some(index) => index,
+        None => {
+            // `SYSTEM_ABI_V1` §4 has one status for a bound that would be
+            // exceeded, and a caller gets `E_LIMIT` whichever bound it was. The
+            // log does not have to be that terse: which resource ran out is a
+            // fact the nucleus knows and an operator needs, and after ADR-0067
+            // one of the two causes is "an ending nobody has collected still
+            // holds its slot", which looks like nothing at all from outside.
+            let pending = table
+                .iter()
+                .filter(|slot| slot.state == State::Over && slot.notice_pending)
+                .count();
+            tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-slot uncollected=");
+            tos_serial::put_u32_decimal(pending as u32);
+            tos_serial::puts(b" asserted_by=nucleus\r\n");
+            return Err(Unlaunchable::TooManyProcesses);
+        }
+    };
     let slot = &mut table[index];
     // The generation survives the reset: it belongs to the slot, not to the
     // process, and it is what keeps an authority over the last occupant from
@@ -1112,6 +1488,21 @@ unsafe fn admit(
     let generation = slot.generation;
     *slot = Slot::FREE;
     slot.generation = generation;
+    // Who this is, for the life of the boot. The counter is the identity: the
+    // slot index is reused and would make two executions look like one
+    // (`PROCESS_IDENTITY_V1` §4), and a handle is an index in one table.
+    // SAFETY: single-context nucleus; nothing else advances this.
+    slot.instance = unsafe {
+        let instance = NEXT_INSTANCE;
+        NEXT_INSTANCE = NEXT_INSTANCE.wrapping_add(1);
+        instance
+    };
+    slot.parent = parent;
+    // Recorded, never computed: `PROCESS_IDENTITY_V1` §3 makes the supervisor
+    // the asserter, and a nucleus that filled this in for a caller who asserted
+    // nothing would be manufacturing a claim (ADR-0067 §8).
+    slot.has_restart_generation = restart_generation.is_some();
+    slot.restart_generation = restart_generation.unwrap_or(0);
     slot.state = State::Runnable;
     slot.root = root;
     slot.space = space;
@@ -1163,7 +1554,8 @@ pub unsafe fn admit_borrowed(
 ) -> Result<usize, Unlaunchable> {
     // SAFETY: per this function's contract; the slot carries no space and no
     // reclamation because the process owns neither.
-    unsafe { admit(root, None, entry, stack, argument, (0, 0), 0, None) }
+    // The test excursion is nobody's child and nobody asserted a lineage for it.
+    unsafe { admit(root, None, entry, stack, argument, (0, 0), 0, None, 0, None) }
 }
 
 /// Builds a process and puts it in the table, without entering it.
@@ -1190,6 +1582,8 @@ pub unsafe fn admit_borrowed(
 pub unsafe fn create(
     entry_index: usize,
     endowment: &[crate::capability::Endowment],
+    parent: u64,
+    restart_generation: Option<u64>,
 ) -> Result<usize, Unlaunchable> {
     let template = crate::launch::template().ok_or(Unlaunchable::NoRuntimeImage)?;
     if !template.holds(entry_index) {
@@ -1290,9 +1684,17 @@ pub unsafe fn create(
 
     // The grant. One region, contiguous, mapped writable and not executable —
     // ADR-0041's property, one address space further out.
-    let grant = frames
-        .grant(identity)
-        .map_err(|_| Unlaunchable::OutOfFrames)?;
+    let grant = frames.grant(identity).map_err(|refused| {
+        // The other bound, named for the same reason as the slot one: an
+        // operator reading `E_LIMIT` cannot tell a full process table from a
+        // pool with no contiguous run left, and the two are repaired by
+        // different actions — collect the endings, or ask for less memory.
+        tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-grant available=");
+        tos_serial::put_u32_decimal(frames.available() as u32);
+        tos_serial::puts(b" asserted_by=nucleus\r\n");
+        let _ = refused;
+        Unlaunchable::OutOfFrames
+    })?;
     let grant_span = Span::new(grant.base as u64, (grant.base + grant.length) as u64);
     map_range(
         &mut space,
@@ -1450,6 +1852,8 @@ pub unsafe fn create(
                 record_length: record_span.length(),
                 grant: grant_span,
             }),
+            parent,
+            restart_generation,
         )
     }?;
 

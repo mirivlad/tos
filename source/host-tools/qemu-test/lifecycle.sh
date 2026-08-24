@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+# SPDX-License-Identifier: GPL-3.0-or-later
+# ADR-0067: a supervisor collects the endings of its own children.
+#
+# The decision's claim is that a lifecycle notice can be neither lost nor
+# forged, without a queue, an allocation or a bound anybody had to choose: the
+# record lives in the ended child's own slot until the parent takes it, and the
+# storage for the notice is the storage for the process. This boot is where that
+# stops being a claim.
+#
+# One supervisor, endowed with `create`, `terminate` and `wait_child` over
+# itself, and four children — which is what a boot affords, because each memory
+# grant takes the largest contiguous run there is and the runs get smaller. What
+# it demonstrates, in the order the log carries it:
+#
+#   1. two children that ended before a single wait: both records survive, in
+#      the order they ended in, and a third wait has nothing to take;
+#   2. identity travels: the instance id `process_create_with_generation` left
+#      in the argument region is the one the record carries, and it is not the
+#      capability handle;
+#   3. the restart generation is repeated verbatim from what the supervisor
+#      asserted — 7 and 9 here, chosen so neither could be a default;
+#   4. a capability over a collected child does not come back to life;
+#   5. a process capability without `wait_child` cannot observe, though it can
+#      still create and terminate;
+#   6. a child of `process_create` (8) has **no** generation rather than zero,
+#      and one that reaches its own `process_exit` carries the self-reported
+#      status a terminated child cannot have;
+#   7. a wait nothing can end is ended by the nucleus, as `E_CANCELLED`.
+#
+#   bash host-tools/qemu-test/lifecycle.sh [OUT_DIR]
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && cd ../.. && pwd)"
+OUT="${1:-$ROOT/target/qemu-lifecycle}"
+FEATURE=test-lifecycle
+PRODUCTION_NUCLEUS="$ROOT/target/x86_64-unknown-none/release/tos-nucleus"
+PRODUCTION_IMAGE="$ROOT/target/x86_64-unknown-none/release/tos-runtime-image"
+TEST_TARGET="$ROOT/target/test-lifecycle"
+TEST_NUCLEUS="$TEST_TARGET/x86_64-unknown-none/release/tos-nucleus"
+TEST_IMAGE="$TEST_TARGET/x86_64-unknown-none/release/tos-runtime-image"
+
+# `SYSTEM_ABI_V1` §4 statuses and ADR-0067's ending kinds, by the numbers the
+# contract assigns rather than by the names this script would prefer.
+OK=0
+E_NO_CAPABILITY=-1
+E_WOULD_BLOCK=-4
+E_CANCELLED=-5
+ENDING_EXITED=1
+ENDING_TERMINATED=3
+
+fail() {
+    echo "lifecycle: FAIL: $*" >&2
+    exit 1
+}
+
+for artifact in "$PRODUCTION_NUCLEUS" "$PRODUCTION_IMAGE"; do
+    [ -f "$artifact" ] || { echo "missing production artifact: $artifact" >&2; exit 2; }
+done
+before="$(sha256sum "$PRODUCTION_NUCLEUS" "$PRODUCTION_IMAGE")"
+
+(cd "$ROOT" && CARGO_TARGET_DIR="$TEST_TARGET" cargo build --release \
+    -p tos-nucleus --target x86_64-unknown-none --features "$FEATURE")
+(cd "$ROOT" && CARGO_TARGET_DIR="$TEST_TARGET" cargo build --release \
+    -p tos-runtime-image --target x86_64-unknown-none --features "$FEATURE")
+after="$(sha256sum "$PRODUCTION_NUCLEUS" "$PRODUCTION_IMAGE")"
+[ "$before" = "$after" ] ||
+    fail "a production artifact changed while building the test ones"
+
+bash "$ROOT/host-tools/qemu-test/run.sh" \
+    --out "$OUT" \
+    --nucleus "$TEST_NUCLEUS" \
+    --runtime-image "$TEST_IMAGE" > "$OUT.log" 2>&1 || {
+        cat "$OUT.log" >&2
+        fail "the lifecycle boot did not complete"
+    }
+
+log="$(tr -c '[:print:]\n' ' ' < "$OUT/serial.log")"
+field() { # line-prefix field-name
+    printf '%s\n' "$log" | sed -n "s/.*$1[^\\n]*[ ]$2=\([-0-9]*\).*/\1/p" | tail -1
+}
+line() { printf '%s\n' "$log" | grep -F "$1" | tail -1; }
+
+# 1. Two endings, both collected, in the order they happened.
+first="$(line 'TOS.RUN.LIFECYCLE.RECORD which=first')"
+second="$(line 'TOS.RUN.LIFECYCLE.RECORD which=second')"
+[ -n "$first" ] && [ -n "$second" ] || fail "the supervisor collected fewer than two endings"
+for record in "$first" "$second"; do
+    printf '%s\n' "$record" | grep -q " status=$OK " ||
+        fail "a collection did not answer OK: $record"
+    printf '%s\n' "$record" | grep -q "kind=$ENDING_TERMINATED " ||
+        fail "an ended-by-authority child is not recorded as terminated: $record"
+    printf '%s\n' "$record" | grep -q "ended_by=1/1" ||
+        fail "the record does not name who ended the child: $record"
+    printf '%s\n' "$record" | grep -q "status_present=0" ||
+        fail "a terminated child reports a self-reported status it never made: $record"
+done
+first_order="$(printf '%s\n' "$first" | sed -n 's/.* order=\([0-9]*\).*/\1/p')"
+second_order="$(printf '%s\n' "$second" | sed -n 's/.* order=\([0-9]*\).*/\1/p')"
+[ "$first_order" -lt "$second_order" ] ||
+    fail "the endings were collected out of order: $first_order then $second_order"
+
+# A third wait, with nothing left: the count is a fact, not a convenience.
+empty="$(field 'TOS.RUN.LIFECYCLE.EMPTY' 'status')"
+[ "$empty" = "$E_WOULD_BLOCK" ] ||
+    fail "a wait with nothing pending answered $empty, expected $E_WOULD_BLOCK"
+
+# 2 and 3. Identity and the asserted generation, neither invented by the nucleus.
+created="$(line 'TOS.RUN.LIFECYCLE.CREATED')"
+first_instance="$(printf '%s\n' "$created" | sed -n 's/.*first=0\/\([0-9]*\).*/\1/p')"
+second_instance="$(printf '%s\n' "$created" | sed -n 's/.*second=0\/\([0-9]*\).*/\1/p')"
+[ -n "$first_instance" ] && [ "$first_instance" != 0 ] ||
+    fail "process_create_with_generation reported no instance id: $created"
+[ "$first_instance" != "$second_instance" ] ||
+    fail "two children were given the same instance id: $created"
+printf '%s\n' "$first" | grep -q "child=$first_instance " ||
+    fail "the record names a child the creator was not told about: $first"
+printf '%s\n' "$second" | grep -q "child=$second_instance " ||
+    fail "the record names a child the creator was not told about: $second"
+printf '%s\n' "$first" | grep -q "generation=7/1" ||
+    fail "the first child's asserted generation is not repeated verbatim: $first"
+printf '%s\n' "$second" | grep -q "generation=9/1" ||
+    fail "the second child's asserted generation is not repeated verbatim: $second"
+
+# 4. A capability over a collected child names nothing, not somebody else.
+stale="$(field 'TOS.RUN.LIFECYCLE.STALE' 'status')"
+[ "$stale" = "$E_NO_CAPABILITY" ] ||
+    fail "a stale child capability answered $stale, expected $E_NO_CAPABILITY"
+
+# 5. Observation is a right, and attenuation takes it away.
+unrighted="$(field 'TOS.RUN.LIFECYCLE.UNRIGHTED' 'wait')"
+[ "$unrighted" = "$E_NO_CAPABILITY" ] ||
+    fail "a capability without wait_child answered $unrighted, expected $E_NO_CAPABILITY"
+
+# 6. The legacy form asserts no generation, and a self-exit carries its status.
+legacy="$(line 'TOS.RUN.LIFECYCLE.LEGACY')"
+printf '%s\n' "$legacy" | grep -q "created=$OK status=$OK " ||
+    fail "the legacy child was not created and collected: $legacy"
+printf '%s\n' "$legacy" | grep -q "kind=$ENDING_EXITED " ||
+    fail "a child that reached process_exit is not recorded as exited: $legacy"
+printf '%s\n' "$legacy" | grep -q "status_present=1" ||
+    fail "an exited child carries no self-reported status: $legacy"
+printf '%s\n' "$legacy" | grep -q "generation_present=0 generation=0" ||
+    fail "a child of operation 8 was given a generation nobody asserted: $legacy"
+
+# 7. A wait nothing can end is ended, and says so exactly.
+cancelled="$(field 'TOS.RUN.LIFECYCLE.CANCELLED' 'status')"
+[ "$cancelled" = "$E_CANCELLED" ] ||
+    fail "an unsatisfiable wait answered $cancelled, expected $E_CANCELLED"
+
+# The nucleus names which bound it hit when it refuses to create. Not asserted as
+# a particular value: on this platform the memory grant runs out before the
+# process table does, and a gate that demanded `no-slot` would be demanding a
+# property of the allocator rather than of this decision.
+refusals="$(printf '%s\n' "$log" | grep -c 'TOS.RUN.PROCESS_REFUSED' || true)"
+
+echo "LIFECYCLE PASS: two endings collected in order, identity and generation"
+echo "  carried verbatim, stale authority refused, observation requires the right,"
+echo "  operation 8 asserts no generation, and an unsatisfiable wait is cancelled"
+echo "  ($refusals creation refusal(s) named their bound in the log)"

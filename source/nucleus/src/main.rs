@@ -75,7 +75,13 @@
     all(feature = "test-process-launch", feature = "test-module-operation"),
     all(feature = "test-process-launch", feature = "test-wrong-kind"),
     all(feature = "test-process-launch", feature = "test-process-control"),
-    all(feature = "test-process-launch", feature = "test-process-terminate")
+    all(feature = "test-process-launch", feature = "test-process-terminate"),
+    all(feature = "test-lifecycle", feature = "test-process-launch"),
+    all(feature = "test-lifecycle", feature = "test-two-processes"),
+    all(feature = "test-lifecycle", feature = "test-supervisor"),
+    all(feature = "test-lifecycle", feature = "test-call-reply"),
+    all(feature = "test-lifecycle", feature = "test-process-control"),
+    all(feature = "test-lifecycle", feature = "test-process-terminate")
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
 
@@ -717,7 +723,9 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     let build = |endowment: &[capability::Endowment]| {
         // SAFETY: the template was established immediately above from validated
         // inputs, and the nucleus's own address space is the live one.
-        let built = unsafe { process::create(entry_index, endowment) };
+        // The boot process is created by the nucleus, not by a supervisor: it
+        // has no parent instance, and nobody asserted a restart lineage for it.
+        let built = unsafe { process::create(entry_index, endowment, 0, None) };
         // Announced once the process exists and by the slot it occupies, so
         // that every later event about it names the same process this one does.
         // A launch announced before it succeeded would be a claim about a
@@ -929,6 +937,18 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         binding: binding(b"control"),
         rights: tos_launch::RIGHT_CREATE,
     }];
+    // ADR-0067's supervisor: it creates children, ends them, and collects what
+    // the nucleus recorded about how they ended. Three rights, because those are
+    // the three operations `SYSTEM_ABI_V1` §5 names over a process — and a
+    // supervisor that could not end what it started could not produce the
+    // endings it then waits for.
+    #[cfg(feature = "test-lifecycle")]
+    let first_endowment = [capability::Endowment::Own {
+        binding: binding(b"control"),
+        rights: tos_launch::RIGHT_CREATE
+            | tos_launch::RIGHT_TERMINATE
+            | tos_launch::RIGHT_WAIT_CHILD,
+    }];
     #[cfg(not(any(
         feature = "test-process-launch",
         feature = "test-two-processes",
@@ -940,7 +960,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-deadlock",
         feature = "test-call-reply",
         feature = "test-second-receiver",
-        feature = "test-deputy"
+        feature = "test-deputy",
+        feature = "test-lifecycle"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];
     let first = match build(&first_endowment) {
