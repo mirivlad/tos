@@ -1,0 +1,277 @@
+{
+  "record_spdx_license": "CC-BY-SA-4.0",
+  "samples_us": [
+    40.796,
+    37.01,
+    38.191,
+    51.546,
+    37.25,
+    40.376,
+    37.169,
+    41.227,
+    36.548,
+    36.469,
+    36.438,
+    36.959,
+    40.385,
+    38.071,
+    36.818,
+    38.432,
+    38.231,
+    37.51,
+    38.181,
+    40.005,
+    36.007
+  ],
+  "reader_samples_us": [
+    44.894,
+    43.452,
+    43.231,
+    57.888,
+    40.936,
+    46.377,
+    53.569,
+    46.617,
+    41.348,
+    41.698,
+    40.255,
+    41.798,
+    45.886,
+    43.0,
+    41.778,
+    43.311,
+    43.18,
+    43.141,
+    41.728,
+    46.456,
+    40.185
+  ],
+  "warmups": 3,
+  "count": 21,
+  "median_us": 38.071,
+  "p99_us": 51.546,
+  "min_us": 36.007,
+  "max_us": 51.546,
+  "jitter_us": 15.539000000000001,
+  "clock": "QEMU observer pair (simple backend, CLOCK_THREAD_CPUTIME_ID, nanoseconds of the one TCG vCPU thread) taken after OPEN handling and before CLOSE handling",
+  "subtracted": "nothing",
+  "environment": {
+    "evidence_status": "P2",
+    "source": {
+      "commit": "78447b31c62cd24a1549f5c2ac7833cdd6fe153b",
+      "dirty": false
+    },
+    "observer": {
+      "qemu_path": "/home/runner/work/tos/tos/source/target/qemu-simple-observer/bin/qemu-system-x86_64",
+      "qemu_sha256": "39474e280cac27e6f249db33c5ce49fe23e33282738023c7c58cf5f81f840a89",
+      "qemu_version": "QEMU emulator version 10.0.11",
+      "build_manifest": {
+        "path": "/home/runner/work/tos/tos/source/target/qemu-simple-observer/bin/observer-build.json",
+        "sha256": "739b51d5c1372a49a96d8465ca0a4dc89b2cf649ccbf4c90f1363fa2d8d4f559",
+        "contents": {
+          "record_spdx_license": "CC-BY-SA-4.0",
+          "qemu_version": "10.0.11",
+          "qemu_version_output": "QEMU emulator version 10.0.11",
+          "qemu_source_url": "https://download.qemu.org/qemu-10.0.11.tar.xz",
+          "qemu_source_sha256": "22e410fe784021c535756350a811ee78ae71356546ff90f5418493448a34b871",
+          "qemu_sha256": "39474e280cac27e6f249db33c5ce49fe23e33282738023c7c58cf5f81f840a89",
+          "qemu_engine_relative_path": "qemu-system-x86_64.real",
+          "qemu_engine_sha256": "2189eb13fae58fe8b5522c3aa3f8fcb74e6e0470921a829e8ea7d387b809e04e",
+          "trace_backends": [
+            "simple"
+          ],
+          "trace_clock": "CLOCK_THREAD_CPUTIME_ID pair on the one TCG vCPU thread",
+          "observer_modifications": [
+            {
+              "path": "hw/char/serial.c",
+              "upstream_sha256": "46548454bc48e12b430795fc69cb19f0349bbef3a63ee37c23aa365713978b91",
+              "modified_sha256": "5fb72ef50b75f630e68260c487760d5ad99f4fba28ba1bf573439abc4fe7a876",
+              "scope": "capture after OPEN and before CLOSE; UART behavior unchanged"
+            },
+            {
+              "path": "hw/char/trace-events",
+              "upstream_sha256": "64f70f77897a5e52957f12d55dcb5b0d09f692a56ed70afb757f5f8f5d16e364",
+              "modified_sha256": "7828c2cf29a8ecbc9da05210a29b6132efdc3215d9a72df21cae4841fdb0d466",
+              "scope": "one measurement-pair event carrying both raw timestamps"
+            }
+          ],
+          "network_downloads": "disabled",
+          "source_date_epoch": 1782452340,
+          "build_path_remap": "/usr/src/qemu-10.0.11",
+          "configure": [
+            "--prefix=/",
+            "--target-list=x86_64-softmmu",
+            "--enable-trace-backends=simple",
+            "--enable-fdt=disabled",
+            "--disable-download",
+            "--disable-docs",
+            "--disable-tools",
+            "--disable-guest-agent",
+            "--disable-slirp",
+            "--disable-plugins",
+            "--disable-vnc",
+            "--disable-gtk",
+            "--disable-sdl",
+            "--disable-werror",
+            "--disable-debug-info"
+          ],
+          "cflags": "-O2 plus file, debug and macro prefix maps from the temporary build root to /usr/src/qemu-10.0.11",
+          "compiler": "cc (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0",
+          "python": "Python 3.12.3",
+          "vendored_wheels": {
+            "meson-1.5.0-py3-none-any.whl": "52b34f4903b882df52ad0d533146d4b992c018ea77399f825579737672ae7b20",
+            "pycotap-1.3.1-py3-none-any.whl": "1c3a25b3ff89e48f4e00f1f71dbbc1642b4f65c65d416524d07e73492fff25ea"
+          },
+          "retained_data": {
+            "../share/qemu/kvmvapic.bin": "cdf057a71b07e3b52b19cbe210bdefa59250d01a9810b960f7fe1f98eed95a27",
+            "../share/qemu/vgabios-stdvga.bin": "651513519f9e0d5b99d3b051a8f5c68db69e987339b59a441d371068c34c146b",
+            "../share/qemu/efi-e1000e.rom": "102c20348be2d0ebe45a77b076b31848182c2f7b4364775b6bc2ece6e97b4024"
+          },
+          "dynamic_dependencies": {
+            "/lib/x86_64-linux-gnu/libpixman-1.so.0": "73aa0daeedb7228754d798b194e2ff69c8b82a689b9aa4f1d8ab32a8763b0cc5",
+            "/lib/x86_64-linux-gnu/libgio-2.0.so.0": "d8c4cf698e9b8790584cc5ede813a86ec4f041c0d58daa452b72431572685a87",
+            "/lib/x86_64-linux-gnu/libgobject-2.0.so.0": "99bf0727e0ca4faf12ab09b753b3d03294562c29c559b970c4dad435f9ec2bc6",
+            "/lib/x86_64-linux-gnu/libglib-2.0.so.0": "42467d0dbcc0a6c9e0a31f05a5944095504ce98f093c3fe0825f0a1533fa8207",
+            "/lib/x86_64-linux-gnu/libz.so.1": "9b64150b28505a33d6bc3ecf709c279f6de97a1c184dbda65d06ee4537f6d286",
+            "/lib/x86_64-linux-gnu/libzstd.so.1": "0a2128bc10841fb29e76d08d945864dfb0b6a66da5df6df5d8299197439e54bb",
+            "/lib/x86_64-linux-gnu/libncursesw.so.6": "32cab5fb18c4f844e2f86aa175ed88943577233c2a588296ceee70580a68a0bf",
+            "/lib/x86_64-linux-gnu/libtinfo.so.6": "28ab8e2e29d46dc8f7222025ca2d61e0b898364c6426cc631bf4ecc7c7f5ac52",
+            "/lib/x86_64-linux-gnu/libm.so.6": "e9c4b28d340e415b8137480ec442662f981e1399386c5931dae0e886e3639e91",
+            "/lib/x86_64-linux-gnu/libc.so.6": "8db37cf3f2169f59a0f07ef1fea308c35656668c64c8ff294e1860f4121eb161",
+            "/lib64/ld-linux-x86-64.so.2": "cd4df4f3c7b83673d61189bf2eaebd33ca4f2853ab9772b8a25e025ef99b1e81",
+            "/lib/x86_64-linux-gnu/libgmodule-2.0.so.0": "f8445c01952fd3ff0bb4f17f73be821af3e4b9b61546ff517392e9baeb8f2126",
+            "/lib/x86_64-linux-gnu/libmount.so.1": "43831ab1f85948e5599c5c0295d87ad6d03e3d58b801534abdf4cd5d266388de",
+            "/lib/x86_64-linux-gnu/libselinux.so.1": "0ec0843463f90e227b0e138e1f379774f50b5514bd7f5dbd4c8a87aca0aa6670",
+            "/lib/x86_64-linux-gnu/libffi.so.8": "00f593fe192f2851b8ce23b25cec2488d769beb5a8f63e8c9e563071e1075153",
+            "/lib/x86_64-linux-gnu/libpcre2-8.so.0": "e00576d71d81d3ba0cfa4903c835a44a8723aac96f72f79ff75200b4cff9071b",
+            "/lib/x86_64-linux-gnu/libblkid.so.1": "f3d6283f6b58de134f0f13094deac9c3af6764923c62e85f08a5780ad4ebe039"
+          },
+          "libfdt": "disabled; unused by the measured x86_64 profile"
+        }
+      },
+      "backend": "QEMU simple trace symmetric UART measurement pair",
+      "clock": "CLOCK_THREAD_CPUTIME_ID pair on the one TCG vCPU thread",
+      "timestamp_point": "after OPEN handling and before CLOSE handling in the vCPU thread",
+      "trace_format": "QEMU simple trace version 4"
+    },
+    "guest_profile": {
+      "accelerator": "tcg",
+      "cpu": "qemu64",
+      "machine": "q35",
+      "memory_mib": 256,
+      "vcpus": 1
+    },
+    "host": {
+      "cpu_model": "AMD EPYC 7763 64-Core Processor",
+      "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)\nbinary: rustc\ncommit-hash: 8bab26f4f68e0e26f0bb7960be334d5b520ea452\ncommit-date: 2026-07-14\nhost: x86_64-unknown-linux-gnu\nrelease: 1.97.1\nLLVM version: 22.1.6"
+    },
+    "scheduler": {
+      "preemption": "active",
+      "binding": "measurement-build-manifest",
+      "quantum_count": 100000
+    },
+    "measurement_build": {
+      "path": "/home/runner/work/tos/tos/source/target/preflight-qemu/performance-stage3-ipc/numerator/measurement-build.json",
+      "sha256": "9e6168dc16f4228deb48b3715059dc851b9b0088cfb0d9a7ec91875cbc2dd642",
+      "contents": {
+        "record_spdx_license": "CC-BY-SA-4.0",
+        "schema": "tos-measurement-build-v1",
+        "source_commit": "78447b31c62cd24a1549f5c2ac7833cdd6fe153b",
+        "builds": {
+          "nucleus": {
+            "package": "tos-nucleus",
+            "target": "x86_64-unknown-none",
+            "profile": "release",
+            "features": [
+              "test-call-reply",
+              "test-measurement-port"
+            ],
+            "cargo_target_dir": "/home/runner/work/tos/tos/source/target/test-measurement-ipc",
+            "cargo_command": [
+              "cargo",
+              "build",
+              "--release",
+              "-p",
+              "tos-nucleus",
+              "--target",
+              "x86_64-unknown-none",
+              "--features",
+              "test-call-reply,test-measurement-port"
+            ],
+            "artifact_path": "/home/runner/work/tos/tos/source/target/test-measurement-ipc/x86_64-unknown-none/release/tos-nucleus",
+            "artifact_sha256": "3cd72f37da843204279441f741d6128900bb138e9ed68b2176aa771cd4a62b97"
+          },
+          "runtime_image": {
+            "package": "tos-runtime-image",
+            "target": "x86_64-unknown-none",
+            "profile": "release",
+            "features": [
+              "test-measurement-ipc"
+            ],
+            "cargo_target_dir": "/home/runner/work/tos/tos/source/target/test-measurement-ipc",
+            "cargo_command": [
+              "cargo",
+              "build",
+              "--release",
+              "-p",
+              "tos-runtime-image",
+              "--target",
+              "x86_64-unknown-none",
+              "--features",
+              "test-measurement-ipc"
+            ],
+            "artifact_path": "/home/runner/work/tos/tos/source/target/test-measurement-ipc/x86_64-unknown-none/release/tos-runtime-image",
+            "artifact_sha256": "d8401ad6ff3867a4bf842f57984f4d2656ae609f05866e2913773992af9f5f9e"
+          }
+        }
+      }
+    },
+    "production_artifact_isolation": {
+      "production_nucleus": {
+        "before_measurement_build_sha256": "9da0d65199ce21851b90813b66e25321fed2dbb4dd5496012244a6b29fccb665",
+        "after_measurement_build_sha256": "9da0d65199ce21851b90813b66e25321fed2dbb4dd5496012244a6b29fccb665",
+        "unchanged": true
+      },
+      "production_runtime_image": {
+        "before_measurement_build_sha256": "45bf0b9e5abc156226f6c333b411f14b554b21ae1160a3a53fc7a82b916c3ee1",
+        "after_measurement_build_sha256": "45bf0b9e5abc156226f6c333b411f14b554b21ae1160a3a53fc7a82b916c3ee1",
+        "unchanged": true
+      }
+    },
+    "artifacts": {
+      "capsule": {
+        "path": "/home/runner/work/tos/tos/source/target/preflight-qemu/performance-stage3-ipc/numerator/ipc/capsule.bin",
+        "sha256": "96129936a711c6c3d50cb48feb95bfae752e11f29dc0083e2610838ace1994e5"
+      },
+      "firmware_code": {
+        "path": "/home/runner/work/tos/tos/source/target/preflight-qemu/performance-stage3-ipc/numerator/ipc/OVMF_CODE.fd",
+        "sha256": "949bfa5389c4c48582737481e7d24f46b3a16b276ef44c4089a56858c6a0a446"
+      },
+      "firmware_vars": {
+        "path": "/home/runner/work/tos/tos/source/target/preflight-qemu/performance-stage3-ipc/numerator/ipc/OVMF_VARS.fd",
+        "sha256": "5d2ac383371b408398accee7ec27c8c09ea5b74a0de0ceea6513388b15be5d1e"
+      },
+      "loader": {
+        "path": "/home/runner/work/tos/tos/source/target/x86_64-unknown-uefi/release/tos-uefi-loader.efi",
+        "sha256": "5001c860e03d9c98ef842d272451488840ee8533729a9f85be9ec835ec9c1f1b"
+      },
+      "measurement_nucleus": {
+        "path": "/home/runner/work/tos/tos/source/target/test-measurement-ipc/x86_64-unknown-none/release/tos-nucleus",
+        "sha256": "3cd72f37da843204279441f741d6128900bb138e9ed68b2176aa771cd4a62b97"
+      },
+      "measurement_runtime_image": {
+        "path": "/home/runner/work/tos/tos/source/target/test-measurement-ipc/x86_64-unknown-none/release/tos-runtime-image",
+        "sha256": "d8401ad6ff3867a4bf842f57984f4d2656ae609f05866e2913773992af9f5f9e"
+      },
+      "production_nucleus": {
+        "path": "/home/runner/work/tos/tos/source/target/x86_64-unknown-none/release/tos-nucleus",
+        "sha256": "9da0d65199ce21851b90813b66e25321fed2dbb4dd5496012244a6b29fccb665"
+      },
+      "production_runtime_image": {
+        "path": "/home/runner/work/tos/tos/source/target/x86_64-unknown-none/release/tos-runtime-image",
+        "sha256": "45bf0b9e5abc156226f6c333b411f14b554b21ae1160a3a53fc7a82b916c3ee1"
+      }
+    }
+  },
+  "measurement_mode": "ipc-request-reply-v1"
+}

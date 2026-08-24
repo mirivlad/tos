@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `4a941e1926ef55deb6010802beda540f2c9d9c250bcf84e12a9b780f566602db`\
+Source-manifest SHA-256: `de2f0aba0579d0c280055d0fc701c99d95d1b7da7b7e991b3cd5c00a1fd634eb`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -19980,6 +19980,20 @@ record is retained in `docs/evidence/STAGE3_SYMMETRIC_OBSERVER_P1.md`. This
 qualifies the observer locally and permits numerator implementation; P2 and the
 Stage 3 IPC latency budgets remain open until CI qualification and the
 subsequent IPC measurement pass.
+
+Both then passed in one GitHub Actions `qemu`-profile job on pushed commit
+`78447b31c62cd24a1549f5c2ac7833cdd6fe153b` (run 32644830444). The observer was
+qualified twice independently in that job, 21 of 21 positive pairs each time,
+and the real 64-byte request/reply gave p99 `51.546 µs` against a denominator
+p99 of `7.254 µs` — `7.105872622001654x`, inside both the `8x` relative limit
+and the `200 µs` absolute one. The section 2 requirement that a backend become a
+P2 conformance observer only through a versioned repository gate is therefore
+met, and both quantitative budgets of section 5 are measured rather than open.
+The records are `docs/evidence/STAGE3_SYMMETRIC_OBSERVER_P2.md` and
+`docs/evidence/STAGE3_IPC_LATENCY_P2.md`. The relative margin is `11.2%`: the
+quieter CI host tightened the denominator more than the numerator, so the CI
+ratio is the stricter of the two measurements, and section 6 governs any future
+red result on it.
 
 ## Architecture impact statement
 
