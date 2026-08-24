@@ -164,23 +164,30 @@ From docs/35 §Stage 3, restated as obligations on the implementation:
   scheduler preemption;
 - capability validation constant-time in the holder's capability count.
 
-### The benchmark the relative budget is measured against
+### The observational benchmark, and the bound that was withdrawn
 
-docs/35 bounds p99 request/reply for a 64-byte message at "no more than 8 times
-an in-process function-call benchmark". That denominator is defined **here, and
-before any measurement exists**, because a benchmark chosen afterwards can be
-made slow enough to pass anything:
+This section once bounded p99 request/reply at "no more than 8 times an
+in-process function-call benchmark". **ADR-0068 removed that bound from the
+Stage 3 conformance budgets**, having measured that no measurement profile
+available on the ADR-0040 platform yields a ratio interpretable as intrinsic IPC
+overhead. It was not replaced by another coefficient and the denominator was not
+redefined to make a quotient pass. The absolute bound below is the conformance
+latency budget of this contract.
+
+The benchmark itself is retained, and its definition still stands where it was
+written **before any measurement existed**, because a benchmark chosen
+afterwards can be made slow enough to pass anything:
 
 > The in-process function-call benchmark is a call to an exported TOS Core
 > function taking one 64-byte value parameter and returning `unit`, executed by
 > the same engine build, in the same process, on the same reference platform
-> (ADR-0040), measured over the same sample discipline docs/35 requires of the
-> IPC series: 3 warm-ups, 21 measurements, p99 reported alongside median.
+> (ADR-0040).
 
-It is an in-process *TOS Core* call, not a Rust call and not an empty loop: the
-budget asks what IPC costs relative to what this system's own code already
-costs. The absolute 200 µs bound is measured independently, and both are
-reported, because either alone can be satisfied while the other is missed.
+It is an in-process *TOS Core* call, not a Rust call and not an empty loop. It
+is measured, retained and reported beside the IPC series, together with the
+ratio it forms, as **observational and regression data**: a large movement in
+either series between commits is worth investigating, and neither can make a run
+red. A report presenting the ratio says which of the two it is.
 
 The numerator is one actual 64-byte `endpoint_call` and its 64-byte reply
 between the two endowed processes. One unmeasured exchange first leaves the
@@ -191,15 +198,26 @@ interval: it blocks the server before the client call returns. Only the server's
 subsequent residence in that blocked state, client/report preparation and
 shutdown stay outside the interval. Preemption is active, so a timer tail is
 part of the latency rather than a removable observer cost. The nearest-rank p99
-must satisfy both the relative and absolute bounds in the same retained series;
-a retry cannot replace a failure.
+of the retained series must satisfy `<= 200 µs`; a retry cannot replace a
+failure.
+
+A latency series is **3 warm-ups and 300 retained individual samples**
+(ADR-0068). At 21 the nearest-rank p99 is the maximum of the series and is below
+the true p99 four times in five; at 300 it is rank 297, and it reports a tail
+value across the whole measured range of interrupt rates rather than in about
+half of series. The active-preemption record binds the scheduler quantum and the
+APIC divider, because the tail's arrival rate is the interval divided by the
+tick period.
 
 ADR-0066 fixes the measurement boundary. One external observer on the ADR-0040
 profile measures its empty marker floor, this call and the 64-byte IPC exchange
-with the same QEMU build, marker path and 3-warm-up/21-individual-sample
-discipline. No floor or marker cost is subtracted. A missing, duplicate,
-overlapping, mismatched or out-of-plan marker, a reversed/zero/negative
-interval, a wrong sample count or a dropped trace event invalidates the series.
+with the same QEMU build and marker path. No floor or marker cost is subtracted.
+A missing, duplicate, overlapping, mismatched or out-of-plan marker, a
+reversed/zero/negative interval, a wrong sample count or a dropped trace event
+invalidates the series. The marker protocol's four-bit sequence identity wraps
+every sixteen blocks, which is admissible only because the decoder verifies a
+predeclared exact tag plan: a duplicate the plan did not predict, or a tag out
+of the planned order, invalidates the run rather than being tolerated as a wrap.
 
 Before IPC timing, the observer must resolve this call in one prepared boot.
 Each retained block contains an adjacent floor/call pair with the same sequence;

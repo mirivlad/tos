@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `49915a8f579c7b5923f87fbb60fe271046179f9d2a286a9f4628a47d89ffdeaa`\
+Source-manifest SHA-256: `15557e313944858a3af4d2e20222eb879400153e20308ffa435d0407da96cf8a`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -3133,23 +3133,30 @@ From docs/35 §Stage 3, restated as obligations on the implementation:
   scheduler preemption;
 - capability validation constant-time in the holder's capability count.
 
-### The benchmark the relative budget is measured against
+### The observational benchmark, and the bound that was withdrawn
 
-docs/35 bounds p99 request/reply for a 64-byte message at "no more than 8 times
-an in-process function-call benchmark". That denominator is defined **here, and
-before any measurement exists**, because a benchmark chosen afterwards can be
-made slow enough to pass anything:
+This section once bounded p99 request/reply at "no more than 8 times an
+in-process function-call benchmark". **ADR-0068 removed that bound from the
+Stage 3 conformance budgets**, having measured that no measurement profile
+available on the ADR-0040 platform yields a ratio interpretable as intrinsic IPC
+overhead. It was not replaced by another coefficient and the denominator was not
+redefined to make a quotient pass. The absolute bound below is the conformance
+latency budget of this contract.
+
+The benchmark itself is retained, and its definition still stands where it was
+written **before any measurement existed**, because a benchmark chosen
+afterwards can be made slow enough to pass anything:
 
 > The in-process function-call benchmark is a call to an exported TOS Core
 > function taking one 64-byte value parameter and returning `unit`, executed by
 > the same engine build, in the same process, on the same reference platform
-> (ADR-0040), measured over the same sample discipline docs/35 requires of the
-> IPC series: 3 warm-ups, 21 measurements, p99 reported alongside median.
+> (ADR-0040).
 
-It is an in-process *TOS Core* call, not a Rust call and not an empty loop: the
-budget asks what IPC costs relative to what this system's own code already
-costs. The absolute 200 µs bound is measured independently, and both are
-reported, because either alone can be satisfied while the other is missed.
+It is an in-process *TOS Core* call, not a Rust call and not an empty loop. It
+is measured, retained and reported beside the IPC series, together with the
+ratio it forms, as **observational and regression data**: a large movement in
+either series between commits is worth investigating, and neither can make a run
+red. A report presenting the ratio says which of the two it is.
 
 The numerator is one actual 64-byte `endpoint_call` and its 64-byte reply
 between the two endowed processes. One unmeasured exchange first leaves the
@@ -3160,15 +3167,26 @@ interval: it blocks the server before the client call returns. Only the server's
 subsequent residence in that blocked state, client/report preparation and
 shutdown stay outside the interval. Preemption is active, so a timer tail is
 part of the latency rather than a removable observer cost. The nearest-rank p99
-must satisfy both the relative and absolute bounds in the same retained series;
-a retry cannot replace a failure.
+of the retained series must satisfy `<= 200 µs`; a retry cannot replace a
+failure.
+
+A latency series is **3 warm-ups and 300 retained individual samples**
+(ADR-0068). At 21 the nearest-rank p99 is the maximum of the series and is below
+the true p99 four times in five; at 300 it is rank 297, and it reports a tail
+value across the whole measured range of interrupt rates rather than in about
+half of series. The active-preemption record binds the scheduler quantum and the
+APIC divider, because the tail's arrival rate is the interval divided by the
+tick period.
 
 ADR-0066 fixes the measurement boundary. One external observer on the ADR-0040
 profile measures its empty marker floor, this call and the 64-byte IPC exchange
-with the same QEMU build, marker path and 3-warm-up/21-individual-sample
-discipline. No floor or marker cost is subtracted. A missing, duplicate,
-overlapping, mismatched or out-of-plan marker, a reversed/zero/negative
-interval, a wrong sample count or a dropped trace event invalidates the series.
+with the same QEMU build and marker path. No floor or marker cost is subtracted.
+A missing, duplicate, overlapping, mismatched or out-of-plan marker, a
+reversed/zero/negative interval, a wrong sample count or a dropped trace event
+invalidates the series. The marker protocol's four-bit sequence identity wraps
+every sixteen blocks, which is admissible only because the decoder verifies a
+predeclared exact tag plan: a duplicate the plan did not predict, or a tag out
+of the planned order, invalidates the run rather than being tolerated as a wrap.
 
 Before IPC timing, the observer must resolve this call in one prepared boot.
 Each retained block contains an adjacent floor/call pair with the same sequence;
@@ -8554,27 +8572,43 @@ Hard budgets for steady-state small-message IPC after initialization:
 
 Reference-platform budget:
 
-- p99 request/reply latency for a 64-byte message between two runnable processes is no more than 8 times an in-process function-call benchmark and no more than 200 microseconds on the declared QEMU CI profile.
+- p99 request/reply latency for a 64-byte message between two runnable processes is no more than 200 microseconds on the declared QEMU CI profile.
 
 The latency numerator uses the real endpoint path. After one unmeasured
 64-byte exchange primes a server already cycling through atomic
-`endpoint_reply_receive`, each of 3 warm-up and 21 retained intervals brackets
+`endpoint_reply_receive`, each of 3 warm-up and 300 retained intervals brackets
 exactly one client `endpoint_call` and its 64-byte reply. Timer preemption stays
 active and any interrupt tail remains in the sample. The retained nearest-rank
-numerator p99 must independently satisfy both `numerator_p99 <= 8 *
-denominator_p99` and `numerator_p99 <= 200 µs`; no successful retry may replace
-a failed series.
+numerator p99 must satisfy `numerator_p99 <= 200 µs`; no successful retry may
+replace a failed series.
 
-Both relative and absolute limits are required because either alone can mislead.
+The series is 300 samples because the nearest-rank p99 of 21 is the maximum of
+21, which sits at the `21/22` quantile in expectation and is below the true p99
+four times in five. At 300 the p99 is rank 297 — an interior order statistic at
+`297/301` — and the distribution-free interval `X_(290)` to `X_(300)` covers it
+with 95.07% confidence. ADR-0068 records the arithmetic.
 
-The in-process function-call benchmark is fixed by
-`source/interfaces/system/IPC_V1.md` section 8, and was fixed there before any
-IPC measurement existed: a call to an exported TOS Core function taking one
-64-byte value parameter and returning `unit`, executed by the same engine build,
-in the same process, on the ADR-0040 reference platform, under the sample
-discipline this document requires of the IPC series. The denominator is defined
-in advance because a benchmark chosen afterwards can be made slow enough to
-satisfy any ratio, which would turn the relative limit into a fitted number.
+**A relative bound is deliberately absent, and its absence is a decision rather
+than an omission.** ADR-0068 removed `numerator_p99 <= 8 * denominator_p99` from
+the Stage 3 conformance budgets after measuring that no measurement profile
+available on this platform yields a ratio interpretable as intrinsic IPC
+overhead: a timer interrupt landing inside one interval dominates the percentile,
+and neither exposing both sides to it nor exposing neither produces a comparable
+pair. It was withdrawn rather than widened, and the denominator was not
+redefined to make a quotient pass.
+
+The in-process function-call benchmark is retained, measured and reported beside
+the IPC series as **observational and regression data**, and so is the ratio it
+forms. Neither carries a threshold, closes a Stage 3 evidence item or fails a
+run. It is fixed by `source/interfaces/system/IPC_V1.md` section 8, and was
+fixed there before any IPC measurement existed: a call to an exported TOS Core
+function taking one 64-byte value parameter and returning `unit`, executed by
+the same engine build, in the same process, on the ADR-0040 reference platform.
+
+For active-preemption measurements the reference platform's identity includes
+the scheduler quantum and the APIC divider, because how often an interrupt lands
+inside an interval is the interval divided by the tick period. A record that
+does not bind both describes a platform it cannot name.
 
 ## Stage 4 — VirtIO block textual driver
 
@@ -19853,14 +19887,25 @@ measure:
 3. one 64-byte request/reply between two runnable processes with preemption
    active.
 
-Changing the observer between denominator and numerator invalidates the ratio.
-The fixed denominator is not replaced by a Rust call, an entry invocation, a
-batch average or a deliberately slower TOS Core function.
+Changing the observer between denominator and numerator invalidates the
+comparison. The fixed denominator is not replaced by a Rust call, an entry
+invocation, a batch average or a deliberately slower TOS Core function.
 
-Disabling preemption for the floor and denominator is conservative: it removes
-timer excursions and can only make the denominator smaller. The IPC numerator
-must prove preemption active, and the build rejects combining the no-preemption
-measurement feature with the two-process/request-reply profiles.
+**Amended by ADR-0068.** The ratio these two series form is no longer a
+conformance budget: it is retained as observational and regression data, and no
+run is red because of it. The denominator keeps this no-preemption profile for
+that purpose, and the conformance latency budget is the absolute one, measured
+on item 3 with preemption active.
+
+Disabling preemption for the floor and denominator was called conservative here,
+on the reasoning that it removes timer excursions and can only make the
+denominator smaller. **That reasoning was wrong in a specific way and ADR-0068
+records why:** it removes from one side of a ratio the single largest term on
+the other, which is not a margin but an incomparability. The sentence is left
+standing as what this ADR claimed, and the ratio it justified is no longer a
+budget. The IPC numerator must still prove preemption active, and the build
+still rejects combining the no-preemption measurement feature with the
+two-process/request-reply profiles.
 
 The numerator is the production IPC path under measurement-only endowments, not
 a second benchmark implementation. One server is blocked in
@@ -19895,11 +19940,17 @@ work out of the measured interval is not an observer of this contract.
 
 ### 5. Samples fail closed
 
-Each series has three warm-ups followed by 21 individual measurements. Raw
-samples, median and nearest-rank p99 are retained. A missing marker, duplicate
-marker, overlapping pair, sequence mismatch, reversed timestamp, zero or
-negative interval, wrong sample count or reported dropped trace event invalidates
-the whole series. Nothing is repaired, reordered, filtered or clamped.
+Each series has three warm-ups followed by individual measurements: **300 for a
+latency series (ADR-0068), and 21 for the observer-qualification pairs below,
+whose size that ADR deliberately leaves alone.** Raw samples, median and
+nearest-rank p99 are retained. A missing marker, duplicate marker, overlapping
+pair, sequence mismatch, reversed timestamp, zero or negative interval, wrong
+sample count or reported dropped trace event invalidates the whole series.
+Nothing is repaired, reordered, filtered or clamped. The four-bit sequence
+identity wraps every sixteen blocks in a series longer than that; the decoder
+verifies the predeclared exact tag plan, so a wrap is expected only where the
+plan says it is, and a duplicate or out-of-order tag the plan did not predict
+invalidates the run rather than passing as one.
 
 Observer resolution is a predeclared paired experiment in one prepared boot.
 After three warm-up blocks, each of 21 retained blocks contains an adjacent
@@ -19925,10 +19976,11 @@ and dividing by N measures throughput/average and cannot satisfy this latency
 contract.
 
 The IPC verdict uses the numerator's nearest-rank p99 without retry selection:
-that one value must be at most both `8 * denominator_p99` and `200 µs`. Passing
-one bound cannot hide failure of the other. A timer/preemption tail is part of
-the active-preemption numerator and is neither removed nor relabelled as
-observer cost.
+that one value must be at most `200 µs` (ADR-0068). A timer/preemption tail is
+part of the active-preemption numerator and is neither removed nor relabelled as
+observer cost — it is the largest thing that number contains, and it is what a
+client waits for. The relative comparison against the denominator is computed and
+retained beside it, and decides nothing.
 
 ### 6. A coarse observer is a result, not a gate
 
@@ -20310,15 +20362,17 @@ deliberate deferral with its own reason rather than as an item still open.
 
 # ADR-0068: Which of the two Stage 3 latency budgets is a conformance budget
 
-- Status: **Proposed**
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-25
 - Decision level: 2 — it removes a quantitative bound from the Stage 3
   conformance set, fixes the size of a retained latency series, and adds two
   required identities to the reference platform. It changes no other threshold,
   no workload, no observer, and no invariant
-- Project Architect approval: **not given; this ADR proposes, it does not decide**
-- Amends, if accepted: `docs/35` Stage 3 latency line, `IPC_V1` section 8's
-  relative bound, ADR-0066 sections 3 and 5
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-25, after the
+  order-statistic argument of section 5 was corrected: rank 297 of 300 is the
+  fourth largest sample, so it is a tail value when `N >= 4`, not when `N >= 1`
+- Amends: `docs/35` Stage 3 latency line, `IPC_V1` section 8's relative bound,
+  ADR-0066 sections 3 and 5
 - Evidence: `docs/evidence/STAGE3_IPC_LATENCY_P2.md`,
   `docs/evidence/STAGE3_IPC_LATENCY_P2_RED.md`,
   `docs/evidence/STAGE3_PREEMPTION_TAIL_P1.md`
@@ -20465,12 +20519,27 @@ to `X_(300)` only `59.82%`. A normal approximation around rank 297 suggests a
 far narrower interval and is wrong here, because the binomial is skewed at
 `p = 0.99` and the interval's upper end is truncated at the maximum.
 
-The length also settles the surviving budget's stability. At a per-sample hit
-rate near 3%, a 300-sample series contains at least one ticked interval with
-probability `0.9999`: the absolute p99 reliably *includes* the tail instead of
-sampling it by luck. Measured tails of `44–52 µs` sit inside `200 µs` by
-roughly a factor of four, so making the tail certain does not endanger the
-budget — it makes the verdict deterministic.
+The length also settles the surviving budget's stability, and the argument has
+to be made about the right order statistic. Rank 297 of 300 is the **fourth
+largest** sample, so it is a ticked value only when the series contains at least
+**four** ticked intervals — not merely one. "At least one" is nearly certain and
+nearly irrelevant: it would place a ticked value at rank 300 and say nothing
+about rank 297.
+
+With `N ~ Binomial(300, p)`, the measured per-sample hit rates give:
+
+| Hit rate | `P(N >= 1)` | `P(N >= 4)` — the one that matters | `E[N]` |
+|---|---:|---:|---:|
+| 2.8% (lowest measured) | 99.98% | **96.94%** | 8.4 |
+| 3.0% | 99.99% | **98.01%** | 9.0 |
+| 4.4% (highest measured) | 100.00% | **99.93%** | 13.2 |
+
+So across the whole measured range the reported p99 is a tail value in `96.9%`
+to `99.9%` of series, against `47.8%` at `n = 21`. That is what makes the
+surviving verdict stable rather than a coin flip: not that a tail appears, but
+that enough tails appear to reach the rank the contract reads. Measured tails of
+`44–52 µs` sit inside `200 µs` by roughly a factor of four, so making the tail
+reliably reported does not endanger the budget.
 
 Cost is not an obstacle: one sample is one host round trip, of order
 milliseconds. The marker protocol's four-bit sequence identity wraps every 16
@@ -20517,8 +20586,8 @@ that does not depend on a clock, and nothing in this ADR touches them.
 `STAGE3_IPC_LATENCY_P2.md` and `STAGE3_IPC_LATENCY_P2_RED.md` remain as taken:
 historical evidence of measurements made under the old structure. **Nothing is
 renamed to a pass, reclassified, or quietly superseded.** The red run stays red.
-Both records gain, when this ADR is accepted, a pointer saying which structure
-they were taken under; their numbers, verdicts and wording do not change.
+Both records gain a pointer saying which structure they were taken under; their
+numbers, verdicts and wording do not change.
 
 ## What this ADR does not decide
 
@@ -20526,8 +20595,8 @@ It does not change `200 µs`, the workload, the observer, the benchmark's
 definition, the counted budgets, or the observer-qualification experiment. It
 does not claim Stage 3 meets the surviving budget: the absolute bound was met in
 both retained runs, but a conformance verdict under the series length of section
-5 has not been taken. It does not touch `docs/35`, `IPC_V1` or the gate, which
-change when and if it is accepted, in the same change as the implementation.
+5 has not been taken. `docs/35`, `IPC_V1`, ADR-0066 and the gate carry it in one change, so no
+document states the old composition while another states the new one.
 
 ## What replaces the removed bound
 

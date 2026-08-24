@@ -16,6 +16,13 @@ satisfied. It does not establish the relative one.**
 > green run is one draw, not a closed budget. Everything measured below stands
 > exactly as it was recorded; only the claim built on it was wrong.
 
+> **Structure note (ADR-0068).** This record was taken under the two-budget
+> structure, in which the numerator's p99 was scored against both `8 x` the
+> no-preemption denominator and `200 µs`. ADR-0068 removed the relative bound
+> from the Stage 3 conformance budgets and left the absolute one in force. This
+> record is unchanged: its numbers, its verdict and its wording are what was
+> measured under the structure of the day, and nothing here is reclassified.
+
 ## Identity and boundary
 
 The run is the `Stage 3 IPC latency conformance` gate of the `qemu` profile in

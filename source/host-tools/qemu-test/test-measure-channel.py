@@ -142,6 +142,60 @@ class PairingTests(unittest.TestCase):
         with self.assertRaisesRegex(measure_channel.Invalid, "expected tag 3"):
             measure_channel.pair_markers(markers, [1, 2, 3])
 
+    def test_plan_wraps_the_four_bit_sequence_and_says_where(self) -> None:
+        # A 300-sample latency series is 303 blocks (ADR-0068), so the tag
+        # space turns over eighteen times. The plan is what makes that
+        # admissible: a repeat is only ever a repeat where the plan says so.
+        plan = measure_channel.measurement_plan(303, paired=False)
+
+        self.assertEqual(len(plan), 303)
+        self.assertEqual(plan, [index % 16 for index in range(303)])
+        self.assertGreater(len(plan) // 16, 18 - 1)
+        self.assertEqual(plan[0], plan[16])
+        self.assertEqual(plan[16], plan[288])
+
+    def test_repeatedly_wrapped_plan_pairs_every_sample(self) -> None:
+        plan = measure_channel.measurement_plan(303, paired=False)
+        markers = []
+        for index, tag in enumerate(plan):
+            base = 1_000_000_000 + index * 1_000_000
+            markers.append((measure_channel.OPEN | tag, base))
+            markers.append((measure_channel.CLOSE | tag, base + 10_000))
+
+        samples = measure_channel.pair_markers(markers, plan)
+
+        self.assertEqual(len(samples), 303)
+        self.assertEqual([tag for tag, _ in samples], plan)
+
+    def test_a_duplicate_across_a_wrap_is_still_out_of_plan(self) -> None:
+        # Tag 5 is legitimately used at blocks 5, 21, 37 … Repeating block 20's
+        # tag at block 21's position is a *valid* tag arriving where the plan
+        # calls for another, which is exactly what a wrap could be mistaken for.
+        plan = measure_channel.measurement_plan(64, paired=False)
+        markers = []
+        for index, tag in enumerate(plan):
+            if index == 21:
+                tag = plan[20]
+            base = 1_000_000_000 + index * 1_000_000
+            markers.append((measure_channel.OPEN | tag, base))
+            markers.append((measure_channel.CLOSE | tag, base + 10_000))
+
+        with self.assertRaisesRegex(measure_channel.Invalid, "sample 21 has tag 4"):
+            measure_channel.pair_markers(markers, plan)
+
+    def test_two_blocks_arriving_in_the_wrong_order_are_invalid(self) -> None:
+        plan = measure_channel.measurement_plan(40, paired=False)
+        order = list(range(40))
+        order[17], order[18] = order[18], order[17]
+        markers = []
+        for position, index in enumerate(order):
+            base = 1_000_000_000 + position * 1_000_000
+            markers.append((measure_channel.OPEN | plan[index], base))
+            markers.append((measure_channel.CLOSE | plan[index], base + 10_000))
+
+        with self.assertRaisesRegex(measure_channel.Invalid, "sample 17 has tag 2"):
+            measure_channel.pair_markers(markers, plan)
+
     def test_paired_plan_is_adjacent_and_alternates_order(self) -> None:
         self.assertEqual(
             measure_channel.measurement_plan(3, paired=True),
@@ -570,6 +624,27 @@ class EnvironmentTests(unittest.TestCase):
 
             with self.assertRaisesRegex(measure_channel.Invalid, "exactly one"):
                 measure_channel.quantum_count(source)
+
+    def test_apic_divider_is_read_from_the_constant_that_names_it(self) -> None:
+        # Part of the active-preemption platform identity (ADR-0068 section 6).
+        # The divisor comes from the name because the register encoding alone
+        # (0b0011) is a number nobody can compare across records.
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "apic.rs")
+            source.write_text("const DIVIDE_BY_16: u32 = 0b0011;\n", encoding="utf-8")
+
+            self.assertEqual(measure_channel.apic_divider(source), 16)
+
+    def test_two_apic_dividers_are_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory, "apic.rs")
+            source.write_text(
+                "const DIVIDE_BY_16: u32 = 0b0011;\nconst DIVIDE_BY_2: u32 = 0b0000;\n",
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(measure_channel.Invalid, "exactly one APIC"):
+                measure_channel.apic_divider(source)
 
 
 if __name__ == "__main__":

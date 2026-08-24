@@ -1467,8 +1467,19 @@ const EXCHANGES: usize = 1;
     not(feature = "test-measurement-ipc")
 ))]
 const EXCHANGES: usize = 3;
+/// The measured server answers one priming exchange and then one per block of
+/// the latency series: three warm-ups and the retained samples (ADR-0068
+/// section 5). It is written as that sum rather than as the total, because a
+/// bare number here was sized for a 21-sample series and stopped the server
+/// mid-run when the series grew — the client's next call then found nobody
+/// runnable and the liveness rule ended the boot, which is the gate failing
+/// closed rather than reporting a short series.
 #[cfg(feature = "test-measurement-ipc")]
-const EXCHANGES: usize = 25;
+const LATENCY_WARMUPS: usize = 3;
+#[cfg(feature = "test-measurement-ipc")]
+const LATENCY_SAMPLES: usize = 300;
+#[cfg(feature = "test-measurement-ipc")]
+const EXCHANGES: usize = 1 + LATENCY_WARMUPS + LATENCY_SAMPLES;
 /// The refusal boot asks twice: the first question is what the refusals are
 /// tried against, and the second is what the server is waiting for while it
 /// tries them.

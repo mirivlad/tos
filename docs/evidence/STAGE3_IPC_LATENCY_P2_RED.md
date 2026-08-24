@@ -7,6 +7,13 @@ pushed commit**. Verdict: **red. The relative budget was missed at
 `8.046022830222865x` against the limit of `8x`, by the same four artifacts that
 had passed at `7.105872622001654x` one run earlier.**
 
+> **Structure note (ADR-0068).** This record was taken under the two-budget
+> structure, in which the numerator's p99 was scored against both `8 x` the
+> no-preemption denominator and `200 µs`. ADR-0068 removed the relative bound
+> from the Stage 3 conformance budgets and left the absolute one in force. This
+> record is unchanged: its numbers, its verdict and its wording are what was
+> measured under the structure of the day, and nothing here is reclassified.
+
 ## Identity and boundary
 
 The run is the `Stage 3 IPC latency conformance` gate of the `qemu` profile in

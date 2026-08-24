@@ -143,27 +143,43 @@ Hard budgets for steady-state small-message IPC after initialization:
 
 Reference-platform budget:
 
-- p99 request/reply latency for a 64-byte message between two runnable processes is no more than 8 times an in-process function-call benchmark and no more than 200 microseconds on the declared QEMU CI profile.
+- p99 request/reply latency for a 64-byte message between two runnable processes is no more than 200 microseconds on the declared QEMU CI profile.
 
 The latency numerator uses the real endpoint path. After one unmeasured
 64-byte exchange primes a server already cycling through atomic
-`endpoint_reply_receive`, each of 3 warm-up and 21 retained intervals brackets
+`endpoint_reply_receive`, each of 3 warm-up and 300 retained intervals brackets
 exactly one client `endpoint_call` and its 64-byte reply. Timer preemption stays
 active and any interrupt tail remains in the sample. The retained nearest-rank
-numerator p99 must independently satisfy both `numerator_p99 <= 8 *
-denominator_p99` and `numerator_p99 <= 200 µs`; no successful retry may replace
-a failed series.
+numerator p99 must satisfy `numerator_p99 <= 200 µs`; no successful retry may
+replace a failed series.
 
-Both relative and absolute limits are required because either alone can mislead.
+The series is 300 samples because the nearest-rank p99 of 21 is the maximum of
+21, which sits at the `21/22` quantile in expectation and is below the true p99
+four times in five. At 300 the p99 is rank 297 — an interior order statistic at
+`297/301` — and the distribution-free interval `X_(290)` to `X_(300)` covers it
+with 95.07% confidence. ADR-0068 records the arithmetic.
 
-The in-process function-call benchmark is fixed by
-`source/interfaces/system/IPC_V1.md` section 8, and was fixed there before any
-IPC measurement existed: a call to an exported TOS Core function taking one
-64-byte value parameter and returning `unit`, executed by the same engine build,
-in the same process, on the ADR-0040 reference platform, under the sample
-discipline this document requires of the IPC series. The denominator is defined
-in advance because a benchmark chosen afterwards can be made slow enough to
-satisfy any ratio, which would turn the relative limit into a fitted number.
+**A relative bound is deliberately absent, and its absence is a decision rather
+than an omission.** ADR-0068 removed `numerator_p99 <= 8 * denominator_p99` from
+the Stage 3 conformance budgets after measuring that no measurement profile
+available on this platform yields a ratio interpretable as intrinsic IPC
+overhead: a timer interrupt landing inside one interval dominates the percentile,
+and neither exposing both sides to it nor exposing neither produces a comparable
+pair. It was withdrawn rather than widened, and the denominator was not
+redefined to make a quotient pass.
+
+The in-process function-call benchmark is retained, measured and reported beside
+the IPC series as **observational and regression data**, and so is the ratio it
+forms. Neither carries a threshold, closes a Stage 3 evidence item or fails a
+run. It is fixed by `source/interfaces/system/IPC_V1.md` section 8, and was
+fixed there before any IPC measurement existed: a call to an exported TOS Core
+function taking one 64-byte value parameter and returning `unit`, executed by
+the same engine build, in the same process, on the ADR-0040 reference platform.
+
+For active-preemption measurements the reference platform's identity includes
+the scheduler quantum and the APIC divider, because how often an interrupt lands
+inside an interval is the interval divided by the tick period. A record that
+does not bind both describes a platform it cannot name.
 
 ## Stage 4 — VirtIO block textual driver
 
