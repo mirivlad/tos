@@ -222,12 +222,23 @@ and the real 64-byte request/reply gave p99 `51.546 µs` against a denominator
 p99 of `7.254 µs` — `7.105872622001654x`, inside both the `8x` relative limit
 and the `200 µs` absolute one. The section 2 requirement that a backend become a
 P2 conformance observer only through a versioned repository gate is therefore
-met, and both quantitative budgets of section 5 are measured rather than open.
-The records are `docs/evidence/STAGE3_SYMMETRIC_OBSERVER_P2.md` and
-`docs/evidence/STAGE3_IPC_LATENCY_P2.md`. The relative margin is `11.2%`: the
-quieter CI host tightened the denominator more than the numerator, so the CI
-ratio is the stricter of the two measurements, and section 6 governs any future
-red result on it.
+met: the observer is qualified, and it has been requalified in every job since.
+
+**The IPC verdict did not survive its next run, and the record says so rather
+than keeping the better number.** On commit
+`2a7ca2033ce7e1d55f50c03cf6ce1ad6b1096dcf` — which retained the green evidence
+and changed no source file — run 32734827424 measured the same four
+byte-identical artifacts at p99 `44.406 µs` against a denominator p99 of
+`5.519 µs`, or `8.046022830222865x`, and went red by `0.254 µs`. The absolute
+bound was met in both. The two records are
+`docs/evidence/STAGE3_IPC_LATENCY_P2.md` and
+`docs/evidence/STAGE3_IPC_LATENCY_P2_RED.md`.
+
+So the relative budget of section 5 is **open, not met**: its ratio straddles
+`8x` on the reference platform, and a single passing draw does not close it.
+Both runs put the miss in the same place — one preemption tail, at a percentile
+where the denominator by section 3 has no tails at all. Section 6 governs what
+may be done about that, and it is not this ADR that decides it.
 
 ## Architecture impact statement
 

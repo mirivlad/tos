@@ -3,9 +3,18 @@
 # Stage 3 IPC latency P2
 
 Evidence level: **P2, produced by the repository's own reproducible gate on the
-pushed commit**. Verdict: **the real Stage 3 IPC request/reply path satisfies
-both ADR-0066 latency budgets in CI; this closes the quantitative half of the
-Stage 3 IPC performance contract and does not close Stage 3**.
+pushed commit**. Verdict: **this run measured both ADR-0066 latency budgets as
+satisfied. It does not establish the relative one.**
+
+> **Corrected after the fact, and the correction is the point.** This record
+> first claimed that it closed the quantitative half of the Stage 3 IPC
+> performance contract. The next CI run, on the commit that retained this very
+> file and changed no source, measured the same four byte-identical artifacts at
+> `8.046022830222865x` and went red — see
+> [STAGE3_IPC_LATENCY_P2_RED.md](STAGE3_IPC_LATENCY_P2_RED.md). The ratio's
+> distribution straddles the `8x` limit on the reference platform, so a single
+> green run is one draw, not a closed budget. Everything measured below stands
+> exactly as it was recorded; only the claim built on it was wrong.
 
 ## Identity and boundary
 
@@ -122,12 +131,17 @@ belongs to IPC path work, not to the denominator, the workload or the
 arithmetic — ADR-0066 section 6 forbids answering a threshold with a change to
 the instrument.
 
+The thin margin was not thin enough. The very next run of this gate consumed all
+of it and `0.254 µs` more.
+
 ## Claim boundary and reproduction
 
-This is P2 evidence for both quantitative IPC latency budgets of `docs/35`
-section on Stage 3 and `IPC_V1` section 8. The counted half of that section —
-copies, crossings, absence of allocation, constant-time capability check — is
-separate evidence and is not restated here.
+This is one P2 measurement of both quantitative IPC latency budgets of `docs/35`
+section on Stage 3 and `IPC_V1` section 8. The absolute `200 µs` bound is met
+here by a factor of four and is met in every run taken so far; the relative `8x`
+bound is not established by this run and is currently red. The counted half of
+that section — copies, crossings, absence of allocation, constant-time
+capability check — is separate evidence and is not restated here.
 
 Stage 3 still requires service restart identity/audit evidence, the remaining
 E3 adversarial coverage and its versioned identity and trusted-base report.
