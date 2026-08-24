@@ -159,6 +159,59 @@ def records(
     return denominator, qualification, numerator, serial
 
 
+INPUT_FILES = {
+    "denominator": "denominator.json",
+    "observer_qualification": "observer.json",
+    "numerator": "numerator.json",
+    "serial_log": "serial.log",
+}
+
+
+def write_records(
+    root: Path,
+    denominator: dict[str, object],
+    observer: dict[str, object],
+    numerator: dict[str, object],
+    serial: bytes,
+) -> Path:
+    """Lay the four gate inputs out on disk under their CLI names."""
+    for name, value in (
+        ("denominator", denominator),
+        ("observer_qualification", observer),
+        ("numerator", numerator),
+    ):
+        (root / INPUT_FILES[name]).write_text(json.dumps(value), encoding="utf-8")
+    (root / INPUT_FILES["serial_log"]).write_bytes(serial)
+    return root
+
+
+def run_cli(root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            str(MODULE_PATH),
+            "--denominator",
+            str(root / INPUT_FILES["denominator"]),
+            "--observer-qualification",
+            str(root / INPUT_FILES["observer_qualification"]),
+            "--numerator",
+            str(root / INPUT_FILES["numerator"]),
+            "--serial-log",
+            str(root / INPUT_FILES["serial_log"]),
+            "--out",
+            str(root / "qualification.json"),
+            "--evidence-status",
+            "P1",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+
+def on_disk_sha256(root: Path, name: str) -> str:
+    return hashlib.sha256((root / INPUT_FILES[name]).read_bytes()).hexdigest()
+
+
 def qualify_records(
     denominator: dict[str, object],
     observer: dict[str, object],
@@ -244,46 +297,50 @@ class QualificationTests(unittest.TestCase):
             qualify_records(denominator, observer, numerator, serial)
 
     def test_failed_budget_is_retained_as_red_evidence(self) -> None:
-        denominator, observer, numerator, serial = records(30.0, 201.0)
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            inputs = {
-                "denominator": denominator,
-                "observer": observer,
-                "numerator": numerator,
-            }
-            for name, value in inputs.items():
-                (root / f"{name}.json").write_text(json.dumps(value), encoding="utf-8")
-            (root / "serial.log").write_bytes(serial)
-            output = root / "qualification.json"
+            root = write_records(Path(directory), *records(30.0, 201.0))
 
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(MODULE_PATH),
-                    "--denominator",
-                    str(root / "denominator.json"),
-                    "--observer-qualification",
-                    str(root / "observer.json"),
-                    "--numerator",
-                    str(root / "numerator.json"),
-                    "--serial-log",
-                    str(root / "serial.log"),
-                    "--out",
-                    str(output),
-                    "--evidence-status",
-                    "P1",
-                ],
-                capture_output=True,
-                text=True,
-            )
+            completed = run_cli(root)
 
             self.assertEqual(completed.returncode, 1)
-            retained = json.loads(output.read_text(encoding="utf-8"))
+            retained = json.loads((root / "qualification.json").read_text("utf-8"))
             self.assertEqual(retained["verdict"], "ipc-latency-red")
             self.assertEqual(retained["numerator"]["p99_us"], 201.0)
             self.assertTrue(retained["budgets"]["relative_pass"])
             self.assertFalse(retained["budgets"]["absolute_pass"])
+
+    def test_retained_verdict_binds_each_input_by_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = write_records(Path(directory), *records())
+
+            completed = run_cli(root)
+
+            self.assertEqual(completed.returncode, 0)
+            retained = json.loads((root / "qualification.json").read_text("utf-8"))
+            self.assertEqual(
+                retained["reports_sha256"],
+                {name: on_disk_sha256(root, name) for name in INPUT_FILES},
+            )
+
+    def test_a_digest_is_recorded_for_every_input_actually_read(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = write_records(Path(directory), *records())
+            (root / INPUT_FILES["serial_log"]).unlink()
+
+            completed = run_cli(root)
+
+            self.assertEqual(completed.returncode, 1)
+            retained = json.loads((root / "qualification.json").read_text("utf-8"))
+            self.assertEqual(retained["verdict"], "ipc-evidence-invalid")
+            # The serial log was never read, so no digest may be invented for
+            # it; the three files that were read are still bound by theirs.
+            self.assertEqual(
+                retained["reports_sha256"],
+                {
+                    name: on_disk_sha256(root, name)
+                    for name in ("denominator", "observer_qualification", "numerator")
+                },
+            )
 
 
 if __name__ == "__main__":

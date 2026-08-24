@@ -309,20 +309,37 @@ def main() -> int:
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--evidence-status", required=True, choices=("P1", "P2"))
     args = parser.parse_args()
-    reports = {
-        "denominator": str(args.denominator.resolve()),
-        "observer_qualification": str(args.observer_qualification.resolve()),
-        "numerator": str(args.numerator.resolve()),
-        "serial_log": str(args.serial_log.resolve()),
+    inputs = {
+        "denominator": args.denominator,
+        "observer_qualification": args.observer_qualification,
+        "numerator": args.numerator,
+        "serial_log": args.serial_log,
     }
+    reports = {name: str(path.resolve()) for name, path in inputs.items()}
+    # A retained verdict that names its inputs by path only is checkable while
+    # the run's directory exists and unverifiable afterwards. Every input is
+    # therefore hashed here and the digests travel in the record, so a retained
+    # qualification and a retained raw series can be shown to be the same bytes.
+    # Digests are filled in as each file is read, so a record that fails on a
+    # later input still says exactly which earlier bytes were seen.
+    digests: dict[str, str] = {}
+
+    def read(name: str) -> bytes:
+        content = inputs[name].read_bytes()
+        digests[name] = hashlib.sha256(content).hexdigest()
+        return content
+
     try:
-        denominator_bytes = args.denominator.read_bytes()
+        denominator_bytes = read("denominator")
+        observer_bytes = read("observer_qualification")
+        numerator_bytes = read("numerator")
+        serial_bytes = read("serial_log")
         result = qualify(
             json.loads(denominator_bytes),
-            hashlib.sha256(denominator_bytes).hexdigest(),
-            json.loads(args.observer_qualification.read_bytes()),
-            json.loads(args.numerator.read_bytes()),
-            args.serial_log.read_bytes(),
+            digests["denominator"],
+            json.loads(observer_bytes),
+            json.loads(numerator_bytes),
+            serial_bytes,
             args.evidence_status,
         )
     except (OSError, UnicodeDecodeError, json.JSONDecodeError, Invalid) as error:
@@ -333,12 +350,14 @@ def main() -> int:
             "verdict": "ipc-evidence-invalid",
             "failure": str(error),
             "reports": reports,
+            "reports_sha256": digests,
         }
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
         print(f"qualify-ipc: FAIL: {error}", file=sys.stderr)
         return 1
     result["reports"] = reports
+    result["reports_sha256"] = digests
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     if result["verdict"] == "ipc-latency-red":
