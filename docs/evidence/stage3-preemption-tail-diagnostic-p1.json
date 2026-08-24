@@ -4,7 +4,7 @@
  "evidence_status": "P1-diagnostic",
  "not_conformance_evidence": "Produced in a throwaway worktree carrying stage3-preemption-tail-diagnostic.patch, which removes conformance protections. qualify-observer refuses an active-preemption denominator and qualify-ipc refuses an inactive-preemption numerator, so no series here can become evidence for a gate. The green and red P2 records are untouched.",
  "source_commit": "6f2837b76275c4ea5ab8f4d0491294d74543c687",
- "diagnostic_patch_sha256": "77e8918e6d12bf2f1d9d48fb9051922d9c84e0ca66f46f880525f8a14962bb34",
+ "diagnostic_patch_sha256": "f8a67a4fc924421ca68c2d358cd52bf5d82ba394738872d7b210351662282a88",
  "observer": {
   "backend": "QEMU simple trace symmetric UART measurement pair",
   "qemu_sha256": "39474e280cac27e6f249db33c5ce49fe23e33282738023c7c58cf5f81f840a89",
@@ -11596,5 +11596,6 @@
    }
   }
  },
- "quantum_metadata_defect": "The diagnostic patch gives nucleus/src/apic.rs two cfg-selected QUANTUM constants and makes the harness report the smaller one, so every run taken after that patch \u2014 matrix 4 \u2014 records quantum_count 10000 whatever it was built with. The field is retained as reported and the effective value is stated beside it, derived from the build's own features: diag-fast-quantum selects 10000 and its absence 100000. The measurements themselves show which build ran: the reference series ticks 2.8% of intervals and the fast series 46.4%, a ratio the shared metadata could not have produced. Matrices 1 to 3 predate the patch and report correctly."
+ "quantum_metadata_defect": "The diagnostic patch gives nucleus/src/apic.rs two cfg-selected QUANTUM constants and makes the harness report the smaller one, so every run taken after that patch \u2014 matrix 4 \u2014 records quantum_count 10000 whatever it was built with. The field is retained as reported and the effective value is stated beside it, derived from the build's own features: diag-fast-quantum selects 10000 and its absence 100000. The measurements themselves show which build ran: the reference series ticks 2.8% of intervals and the fast series 46.4%, a ratio the shared metadata could not have produced. Matrices 1 to 3 predate the patch and report correctly.",
+ "diagnostic_patch_correction": "Commit c917ea6 retained an incomplete copy of this patch: the export was written from inside the diagnostic worktree by a relative path, so the worktree's copy was updated and the repository's was not, while the evidence document and this record already named the new digest. The complete patch \u2014 the one that carries apic::start_masked and the boot-time timer-mode selection, and therefore the only one that reproduces matrix 5 \u2014 is retained here with digest f8a67a4fc924421ca68c2d358cd52bf5d82ba394738872d7b210351662282a88, verified to apply cleanly to commit 6f2837b76275c4ea5ab8f4d0491294d74543c687. No measurement changed; what was wrong was the artifact needed to repeat them."
 }
