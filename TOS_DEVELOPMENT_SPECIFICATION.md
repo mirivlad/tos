@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `3db0c38369b240a9cbe1c9469bc38ae972a1fdbaa74d0dfedc5e5bf9511343d0`\
+Source-manifest SHA-256: `c41546140f8043a854fb79fdf3b5b72f1a37d9b2ac2a68d4581ada1e9618f5ae`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -20137,10 +20137,10 @@ and trace-record work inside the interval.
 - Status: **Proposed** (option D; the first form of this ADR offered A, B and C
   and recommended B)
 - Date: 2026-08-24, decision form 2026-08-25
-- Decision level: 2 — it adds an operation to the closed `SYSTEM_ABI_V1` §5
-  table, a right to the process object's declared set, an argument register to
-  an existing operation, a return value to it, and one piece of per-process
-  nucleus state. It changes no Tier 0 invariant and no TOS Core V1 semantics
+- Decision level: 2 — it adds **two** operations to the closed `SYSTEM_ABI_V1`
+  §5 table, a right to the process object's declared set, and one piece of
+  per-process nucleus state. **It changes no existing operation**, no Tier 0
+  invariant and no TOS Core V1 semantics
 - Project Architect approval: **not given; this ADR proposes, it does not decide**
 - Amends, if accepted: `SYSTEM_ABI_V1` §3, §5 and §7; `CAPABILITY_V1` §3's
   process-object rights; `PROCESS_IDENTITY_V1` §3 and §4
@@ -20229,6 +20229,11 @@ The record is:
 - self-reported status, **present only when the child reached `process_exit`**,
   and labelled as the child's own claim (`PROCESS_IDENTITY_V1` §2);
 - ended-by: the instance id of whoever terminated it, where something did;
+- the child's **restart generation, as its creator asserted it** — stored and
+  returned verbatim, never computed here. It is in the record because a
+  supervisor restarting a service needs the generation it is succeeding, and
+  because `PROCESS_IDENTITY_V1` §3 assigns that field to a supervisor: the
+  nucleus is repeating an assertion, not making one, and the record says which;
 - the ending order: a boot-monotonic ending sequence number, and the tick the
   ending was recorded at.
 
@@ -20328,52 +20333,82 @@ nucleus has a slot index and a per-slot generation, and no parent field at all.
 Adding the instance counter and the parent link is part of implementing this
 ADR, not an assumption it makes.
 
-### 8. Correlation: `process_create` returns the child's instance id
+### 8. `process_create` (8) is not touched, and operation 15 is the new form
 
-`process_create` gains a return value: `rdx` carries the new child's instance id,
-using the result convention `SYSTEM_ABI_V1` §3 already fixes. The lifecycle
-record of §1 carries the same id.
+Operation 8 keeps every property it has today, because a minor version means a
+process built against the smaller set keeps working:
 
-Without this a creator would have to correlate by handle, which §7 rules out, or
-by module name, which is not unique across restarts — the very case this ADR
-exists to serve.
+- an old caller does not initialise `r8`, so reading a restart generation from
+  it would read whatever that register happened to hold. Treating that as a
+  domain error would break callers the version rule promises not to break, and
+  treating it as a generation would record a number nobody asserted;
+- `rdx` is **already in use** on return: operation 8 answers with the child's
+  capability handle. It is not a spare result register.
 
-### 9. The restart generation is the supervisor's, and travels in `r8`
+So operation 8 is unchanged. Its children get a restart generation of **`0`**,
+recorded as the legacy form's fixed value rather than as an assertion anybody
+made, and the nucleus assigns their instance id and parent relation internally
+exactly as for any other child. Nothing about the tombstone, the wait or the
+audit trail depends on which form created the process.
 
-`process_create` gains `r8` = **supervisor-asserted restart generation**.
+**Operation 15, `process_create_with_generation`, is the new form.**
 
-- The nucleus **records** it in the launch record and in process identity. It
-  does not compute it, does not increment it, and does not validate it beyond
-  its domain. A nucleus that incremented it would be asserting a field
-  `PROCESS_IDENTITY_V1` §3 assigns to the supervisor.
-- A first launch passes `0`. A supervisor restarting a service passes the ended
-  instance's generation **plus one**, which it knows because it collected the
-  ending.
+| Register | Meaning |
+|---|---|
+| `rax` | operation 15 |
+| `rdi` | the process-authority capability, as operation 8 |
+| `rsi` | the module name's length |
+| `rdx` | how many capabilities the child is endowed with |
+| `r10` | the rights the child holds over itself |
+| `r8` | **supervisor-asserted restart generation** |
+| `rdx` (out) | the child's capability handle, as operation 8 |
+
+The name and the endowment are in the argument region at `CREATE_MODULE` and
+`CREATE_ENDOWMENT`, unchanged. The child's **instance id** is written by the
+nucleus into a fixed result slot of the caller's own argument region,
+`CREATE_INSTANCE_ID`, because `rdx` is spoken for and identity may not be
+inferred from a handle.
+
+A supervisor that wants either of the two new things uses operation 15 for
+**every** launch it makes — the first with generation `0`, a restart with the
+ended instance's generation plus one. Mixing the forms per service would mean a
+lineage whose first link nobody asserted.
+
+### 9. The restart generation is the supervisor's
+
+- The nucleus **records** `r8` in the launch record, in process identity, and in
+  the lifecycle record of §1. It does not compute it, does not increment it, and
+  does not interpret it. A nucleus that incremented it would be asserting a
+  field `PROCESS_IDENTITY_V1` §3 assigns to the supervisor.
+- A first launch passes `0`. A restart passes the ended instance's generation
+  plus one, which the supervisor knows because it collected the ending.
 - The nucleus asserting the instance id and the supervisor asserting the
-  generation is exactly §2's rule: each field has one asserter, and the two are
-  never merged.
+  generation is §2's rule: one asserter per field, never merged.
 
 This closes the restart-identity half of the gap. Whether to restart, how often,
-and what marks a candidate unhealthy remain the supervisor's, and are not
-decided here.
+and what marks a candidate unhealthy remain the supervisor's.
 
 ### 10. When the supervisor itself ends
 
-Its pending tombstones have no authorized receiver left. Then:
+The capability-scoped receiver of its children's lifecycle events no longer
+exists, so:
 
-- **the audit records remain.** They were emitted at each child's ending and are
-  on the boot log; nothing about them depends on collection. No evidence is lost;
-- **the programmatic notices are released**, and their slots become free.
+- **its already-pending tombstones are released at its death**, and those slots
+  become free;
+- **a child that ends *after* its parent has ended keeps its audit event and
+  holds no tombstone at all.** There is nobody who could ever collect one, so
+  the slot goes straight to reusable;
+- **the audit records remain** in both cases. They are emitted at each ending,
+  on the boot log, and nothing about them depends on collection.
 
-A notice nobody can read is not evidence, and keeping it would make a slot
-eternal for the sake of a reader that does not exist. This is the one place
-where a record is discarded, and it is discarded only after the party entitled
-to it has itself ended.
+No evidence is lost, because the evidence is the audit record. What is released
+is a programmatic notice with no authorized receiver — and holding one would
+make a slot eternal for the sake of a reader that has itself ended.
 
 **No reparenting.** The children of an ended supervisor are not adopted, not
 re-assigned and not automatically terminated by this ADR; what happens to a
 running service whose supervisor died is a policy question this ADR does not
-answer. Nor does it introduce any restart policy.
+answer, and it introduces no restart policy.
 
 ## Threat model
 
@@ -20408,22 +20443,32 @@ answer. Nor does it introduce any restart policy.
    returns the child that ended first by the ending order, the second call
    returns the other, and a third call blocks — or answers `E_WOULD_BLOCK` when
    asked not to wait. Neither record is lost, merged or reordered.
-2. **A slot with an uncollected record is not reused.** With the table full of
-   ended-but-uncollected children, `process_create` answers `E_LIMIT`; after one
-   collection it succeeds exactly once more.
+2. **A slot with an uncollected record is not reused.** The living supervisor
+   occupies a slot itself, so the test fills every *remaining* slot with
+   ended-but-uncollected children. The next create answers `E_LIMIT`; one
+   `process_wait_child` then frees exactly one slot and permits exactly one new
+   create, and the one after that is `E_LIMIT` again.
 3. **Stale child capabilities do not revive.** A handle to a collected child,
    used after its slot has been reused by a different process, answers
    `E_NO_CAPABILITY` — not `OK`, and not `E_BAD_HANDLE`.
 4. **Scope is direct parentage.** A grandchild's ending is never returned to the
    grandparent, and a capability without `RIGHT_WAIT_CHILD` answers
    `E_NO_CAPABILITY`.
-5. **Correlation holds.** The instance id `process_create` returned equals the id
-   in that child's lifecycle record, across a slot reuse in between.
-6. **Restart identity** (`PROCESS_IDENTITY_V1` §7.4). A restart increments the
-   generation, changes the instance id, and preserves module and supervisor
-   lineage — with the generation coming from the supervisor: a nucleus that
-   incremented it is a defect, proven by launching with a generation the nucleus
-   would not have chosen and reading it back unchanged.
+5. **Correlation holds.** The instance id operation 15 wrote to
+   `CREATE_INSTANCE_ID` equals the id in that child's lifecycle record, across a
+   slot reuse in between — and differs from the capability handle `rdx`
+   returned, so neither can be mistaken for the other.
+6. **Restart identity** (`PROCESS_IDENTITY_V1` §7.4). A restart through
+   operation 15 increments the generation, changes the instance id, and
+   preserves module and supervisor lineage — with the generation coming from the
+   supervisor: a nucleus that incremented it is a defect, proven by launching
+   with a generation the nucleus would not have chosen and reading it back
+   unchanged from identity and from the lifecycle record.
+6a. **Operation 8 is unchanged.** A child created by the legacy form still gets
+   an instance id and a parent relation, still produces a tombstone a wait
+   collects, and reports restart generation `0`; `rdx` still returns its
+   capability handle. A caller that leaves `r8` holding anything at all is
+   unaffected.
 7. **The ending kinds are distinguishable.** Exited with a status, terminated by
    another process, faulted, and ended by the liveness rule each produce their
    own kind, and the self-reported status is absent in the three that never
@@ -20432,8 +20477,11 @@ answer. Nor does it introduce any restart policy.
    the liveness rule fires, and the nucleus records who was blocked on what.
 9. **A supervisor's death releases its uncollected notices**, its children's
    audit events remain on the log, and the slots become free.
-10. **`E_NOT_SUPPORTED`** from a nucleus built before operation 14, without the
-    caller being terminated for asking (`SYSTEM_ABI_V1` §7).
+9a. **A child that ends after its parent** leaves its audit event on the log,
+    holds no tombstone, and its slot is immediately reusable.
+10. **`E_NOT_SUPPORTED`** from a nucleus built before operations 14 and 15, for
+    each of them, without the caller being terminated for asking
+    (`SYSTEM_ABI_V1` §7).
 
 ## Architecture impact statement
 
@@ -20442,8 +20490,8 @@ answer. Nor does it introduce any restart policy.
   assertion and reaches the supervisor without becoming a claim.
 - **Canonical representation:** unchanged. Supervisor and policy remain
   canonical TOS Core text; no binary configuration and no new file kind.
-- **Trusted-base impact:** one operation, one right, one argument register, one
-  return value, and per-slot lifecycle state that replaces nothing. No
+- **Trusted-base impact:** two operations, one right, and per-slot lifecycle
+  state that replaces nothing. No
   allocation, no queue, no new nucleus subsystem, and no work proportional to
   anything but the process table.
 - **Source-to-runtime impact:** unchanged.
@@ -20458,11 +20506,12 @@ answer. Nor does it introduce any restart policy.
   operation is not on the request/reply path and carries no latency budget;
   `process_create` gains one register read and one value write.
 - **Compatibility profile:** a minor version of `SYSTEM_ABI_V1` under §7.
-  Operation 14 is spent forever. `process_create` gains an argument and a return
-  value, which is a compatible extension only because `r8` was unassigned and
-  `rdx` was unused on return — a process built against the earlier set passes
-  whatever `r8` held, so the implementation must treat the missing argument as
-  the domain error it is rather than as generation zero.
+  Operations 14 and 15 are spent forever. **No existing operation changes**: a
+  process built against the earlier set calls nothing whose meaning moved, and
+  one built against this set meets `E_NOT_SUPPORTED` on an older nucleus without
+  being terminated for asking. The new form is a new number precisely because
+  operation 8 could not carry it compatibly — an old caller leaves `r8`
+  uninitialised, and `rdx` already returns the child's capability handle.
 - **Dependencies, licence, patents:** none.
 
 ## Alternatives considered
@@ -20486,6 +20535,12 @@ slot the process already occupies, without touching `IPC_V1` at all.
 polling costs on this scheduler — 2077 ticks against 81 for the peer doing the
 work — and chose blocking over exactly this shape.
 
+**Extending operation 8 in place.** Rejected on the version rule. `r8` is
+uninitialised in an old caller, so a generation read from it is a number nobody
+asserted; and `rdx` already carries the child's capability handle, so there is no
+spare result register for an instance id. A number is cheaper than a
+compatibility break, and operation 15 costs one number.
+
 **A tombstone with a timeout.** Rejected: a notice that expires is a notice that
 can be lost, and the loss would be silent and load-dependent. `E_LIMIT` on
 create is the visible form of the same pressure.
@@ -20493,10 +20548,11 @@ create is the visible form of the same pressure.
 ## Consequences
 
 The fifth Stage 3 evidence item becomes reachable, and the restart generation
-becomes assertable by the party the contract assigns it to. The cost is one ABI
-operation, one right, and a rule that a supervisor which ignores its children
-stops being able to create them — which is a bound, stated, rather than a
-notice quietly dropped.
+becomes assertable by the party the contract assigns it to. The cost is two ABI
+operation numbers, one right, and a rule that a supervisor which ignores its
+children stops being able to create them — a bound, stated, rather than a notice
+quietly dropped. Nothing that exists today changes behaviour: a system that never
+calls 14 or 15 cannot tell this decision was taken.
 
 Restart *policy* — how often, how many times, what marks a candidate commit
 unhealthy — remains where docs/10 puts it, in the supervisor, and is not decided
