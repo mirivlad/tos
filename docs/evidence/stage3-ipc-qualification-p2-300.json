@@ -1,0 +1,63 @@
+{
+  "record_spdx_license": "CC-BY-SA-4.0",
+  "adr": "ADR-0066",
+  "evidence_status": "P2",
+  "verdict": "ipc-latency-qualified",
+  "source_commit": "615dcacbbd145e48f778353f0e64a858aee7fc3c",
+  "observer": {
+    "backend": "QEMU simple trace symmetric UART measurement pair",
+    "qemu_sha256": "39474e280cac27e6f249db33c5ce49fe23e33282738023c7c58cf5f81f840a89",
+    "build_manifest_sha256": "739b51d5c1372a49a96d8465ca0a4dc89b2cf649ccbf4c90f1363fa2d8d4f559"
+  },
+  "denominator": {
+    "median_us": 5.077,
+    "p99_us": 5.498
+  },
+  "numerator": {
+    "median_us": 21.362,
+    "p99_us": 39.459,
+    "min_us": 21.131,
+    "max_us": 58.338
+  },
+  "budgets": {
+    "absolute_us": 39.459,
+    "absolute_limit_us": 200.0,
+    "absolute_pass": true
+  },
+  "observational": {
+    "adr": "ADR-0068",
+    "is_a_budget": false,
+    "relative_ratio": 7.176973444889051,
+    "withdrawn_relative_limit": 8.0,
+    "denominator_profile": "no-preemption; not comparable to the active-preemption numerator, which is why this decides nothing"
+  },
+  "scheduler": {
+    "preemption": "active",
+    "binding": "measurement-build-manifest",
+    "quantum_count": 100000,
+    "apic_divider": 16
+  },
+  "workload": {
+    "measured_exchanges": 303,
+    "priming_exchanges": 1,
+    "request_bytes": 64,
+    "reply_bytes": 64,
+    "messages": 608,
+    "payload_copies": 912,
+    "ipc_in": 609,
+    "ipc_out": 609
+  },
+  "subtracted": "nothing",
+  "reports": {
+    "denominator": "/home/runner/work/tos/tos/source/target/preflight-qemu/performance-stage3-ipc/observer/paired/measurement.json",
+    "observer_qualification": "/home/runner/work/tos/tos/source/target/preflight-qemu/performance-stage3-ipc/observer/qualification.json",
+    "numerator": "/home/runner/work/tos/tos/source/target/preflight-qemu/performance-stage3-ipc/numerator/ipc/measurement.json",
+    "serial_log": "/home/runner/work/tos/tos/source/target/preflight-qemu/performance-stage3-ipc/numerator/ipc/serial.log"
+  },
+  "reports_sha256": {
+    "denominator": "277d809af1813c670ac0786f25a7d81bec199bae144acd2da36d5eba3ce078cc",
+    "observer_qualification": "d265dd66c165423dc68de39c8f3e686fc17995dcda48e89a14c55c44920744db",
+    "numerator": "042fa39add0c0c4334249dee1cc3a1e81532bddb8f7ed38d211cecf9a25f8e3e",
+    "serial_log": "c47625263858cf7633d8ef49e1f65d90dddd444b84a344758460ec84ccb89ac9"
+  }
+}
