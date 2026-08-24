@@ -43,15 +43,20 @@ def common_environment() -> dict[str, object]:
     }
 
 
+def nearest_rank_p99(values: list[float]) -> float:
+    ordered = sorted(values)
+    return ordered[max(1, -(-99 * len(ordered) // 100)) - 1]
+
+
 def report(values: list[float], mode: str, environment: dict[str, object]) -> dict[str, object]:
     return {
         "record_spdx_license": "CC-BY-SA-4.0",
         "measurement_mode": mode,
         "samples_us": values,
         "warmups": 3,
-        "count": 21,
+        "count": len(values),
         "median_us": statistics.median(values),
-        "p99_us": max(values),
+        "p99_us": nearest_rank_p99(values),
         "min_us": min(values),
         "max_us": max(values),
         "clock": "clock",
@@ -69,11 +74,13 @@ def records(
         "preemption": "inactive",
         "binding": "measurement-build-manifest",
         "quantum_count": 100000,
+        "apic_divider": 16,
     }
     numerator_environment["scheduler"] = {
         "preemption": "active",
         "binding": "measurement-build-manifest",
         "quantum_count": 100000,
+        "apic_divider": 16,
     }
     denominator_environment["measurement_build"] = {
         "sha256": "denominator-build",
@@ -122,7 +129,9 @@ def records(
         "production_runtime_image": {"unchanged": True},
     }
     denominator_values = [10.0] * 20 + [denominator_p99]
-    numerator_values = [50.0] * 20 + [numerator_p99]
+    # 300 samples: rank 297 is the p99, so the three above it are the ones a
+    # maximum-based reader would have reported instead.
+    numerator_values = [50.0] * 296 + [numerator_p99] + [numerator_p99 + 5.0] * 3
     denominator = report(
         denominator_values, "adjacent-floor-call-pairs-v1", denominator_environment
     )
@@ -149,12 +158,16 @@ def records(
         },
         "subtracted": "nothing",
     }
+    bound = qualify_ipc.expected_workload(qualify_ipc.LATENCY_SAMPLES)
     serial = (
-        "TOS.RUN.MEASURE.IPC samples=24 answered=24 refused=0 "
-        "request_bytes=64 reply_bytes=64 primed=1\n"
-        "TOS.RUN.MEASURE.IPC.SERVER served=25 refused=0 payload_bytes=64 last=-5\n"
-        "TOS.RUN.IPC.COST messages=50 payload_copies=75 ipc_in=51 other_in=42 "
-        "returns=41 resumptions=52 exchanges=25 ipc_out=51\n"
+        f"TOS.RUN.MEASURE.IPC samples={bound['measured']} answered={bound['measured']} "
+        "refused=0 request_bytes=64 reply_bytes=64 primed=1\n"
+        f"TOS.RUN.MEASURE.IPC.SERVER served={bound['served']} refused=0 "
+        "payload_bytes=64 last=-5\n"
+        f"TOS.RUN.IPC.COST messages={bound['messages']} "
+        f"payload_copies={3 * bound['exchanges']} ipc_in={bound['crossings']} "
+        f"other_in=42 returns=41 resumptions=52 exchanges={bound['exchanges']} "
+        f"ipc_out={bound['crossings']}\n"
     ).encode("ascii")
     return denominator, qualification, numerator, serial
 
@@ -229,32 +242,70 @@ def qualify_records(
 
 
 class QualificationTests(unittest.TestCase):
-    def test_both_latency_budgets_and_workload_qualify(self) -> None:
+    def test_the_absolute_budget_and_the_workload_qualify(self) -> None:
         denominator, observer, numerator, serial = records()
 
         result = qualify_records(denominator, observer, numerator, serial)
 
         self.assertEqual(result["verdict"], "ipc-latency-qualified")
-        self.assertAlmostEqual(result["budgets"]["relative_ratio"], 100.0 / 30.0)
+        self.assertTrue(result["budgets"]["absolute_pass"])
         self.assertEqual(result["workload"]["request_bytes"], 64)
+        self.assertEqual(
+            result["workload"]["measured_exchanges"],
+            3 + qualify_ipc.LATENCY_SAMPLES,
+        )
 
-    def test_absolute_budget_failure_is_not_hidden_by_relative_pass(self) -> None:
+    def test_the_absolute_budget_is_the_one_that_can_fail(self) -> None:
         denominator, observer, numerator, serial = records(30.0, 201.0)
 
         result = qualify_records(denominator, observer, numerator, serial)
 
         self.assertEqual(result["verdict"], "ipc-latency-red")
-        self.assertTrue(result["budgets"]["relative_pass"])
         self.assertFalse(result["budgets"]["absolute_pass"])
 
-    def test_relative_budget_failure_is_not_hidden_by_absolute_pass(self) -> None:
+    def test_a_ratio_far_above_eight_still_qualifies(self) -> None:
+        # ADR-0068: the ratio is retained and decides nothing. 100 over 10 is
+        # 10x, which the withdrawn bound would have failed.
         denominator, observer, numerator, serial = records(10.0, 100.0)
 
         result = qualify_records(denominator, observer, numerator, serial)
 
-        self.assertEqual(result["verdict"], "ipc-latency-red")
-        self.assertFalse(result["budgets"]["relative_pass"])
-        self.assertTrue(result["budgets"]["absolute_pass"])
+        self.assertEqual(result["verdict"], "ipc-latency-qualified")
+        self.assertAlmostEqual(result["observational"]["relative_ratio"], 10.0)
+        self.assertFalse(result["observational"]["is_a_budget"])
+        self.assertNotIn("relative_pass", result["budgets"])
+        self.assertNotIn("relative_limit_us", result["budgets"])
+
+    def test_the_p99_is_rank_297_and_not_the_maximum(self) -> None:
+        denominator, observer, numerator, serial = records(30.0, 100.0)
+
+        result = qualify_records(denominator, observer, numerator, serial)
+
+        # The fixture puts three larger samples above rank 297 on purpose.
+        self.assertEqual(result["numerator"]["p99_us"], 100.0)
+        self.assertEqual(result["numerator"]["max_us"], 105.0)
+
+    def test_a_series_of_the_wrong_length_is_refused(self) -> None:
+        denominator, observer, numerator, serial = records()
+        numerator["samples_us"] = numerator["samples_us"][:-1]
+        numerator["count"] = len(numerator["samples_us"])
+
+        with self.assertRaisesRegex(qualify_ipc.Invalid, "3\\+300 discipline"):
+            qualify_records(denominator, observer, numerator, serial)
+
+    def test_a_platform_with_another_quantum_is_refused(self) -> None:
+        denominator, observer, numerator, serial = records()
+        numerator["environment"]["scheduler"]["quantum_count"] = 10000
+
+        with self.assertRaisesRegex(qualify_ipc.Invalid, "quantum is 10000"):
+            qualify_records(denominator, observer, numerator, serial)
+
+    def test_a_platform_with_another_apic_divider_is_refused(self) -> None:
+        denominator, observer, numerator, serial = records()
+        numerator["environment"]["scheduler"]["apic_divider"] = 128
+
+        with self.assertRaisesRegex(qualify_ipc.Invalid, "APIC divider is 128"):
+            qualify_records(denominator, observer, numerator, serial)
 
     def test_inactive_preemption_is_refused(self) -> None:
         denominator, observer, numerator, serial = records()
@@ -306,8 +357,8 @@ class QualificationTests(unittest.TestCase):
             retained = json.loads((root / "qualification.json").read_text("utf-8"))
             self.assertEqual(retained["verdict"], "ipc-latency-red")
             self.assertEqual(retained["numerator"]["p99_us"], 201.0)
-            self.assertTrue(retained["budgets"]["relative_pass"])
             self.assertFalse(retained["budgets"]["absolute_pass"])
+            self.assertIn("relative_ratio", retained["observational"])
 
     def test_retained_verdict_binds_each_input_by_digest(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

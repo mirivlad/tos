@@ -67,6 +67,8 @@ TAG = WORK | SEQUENCE
 STOP = 0xE0
 READY = 0xFF
 WARMUPS = 3
+# Not a protocol limit; see the note where it is checked.
+MAX_SAMPLES = 2000
 SIMPLE_HEADER_EVENT_ID = 0xFFFFFFFFFFFFFFFF
 SIMPLE_DROPPED_EVENT_ID = 0xFFFFFFFFFFFFFFFE
 SIMPLE_HEADER_MAGIC = 0xF2B177CB0AA429B4
@@ -141,8 +143,14 @@ def arguments() -> argparse.Namespace:
         args.command = args.command[1:]
     if not args.command:
         parser.error("the QEMU command is required after --")
-    if args.samples < 1 or args.samples > TAG:
-        parser.error(f"--samples must be 1..{TAG}")
+    # The four-bit sequence used to bound the series at one tag per sample.
+    # ADR-0068 section 5 makes a latency series 300, which turns the tag space
+    # over eighteen times; what makes that admissible is the predeclared exact
+    # plan, which says where every repeat belongs and refuses one anywhere else.
+    # The remaining bound is a sanity limit rather than a property of the
+    # protocol: a series this long already takes minutes under TCG.
+    if args.samples < 1 or args.samples > MAX_SAMPLES:
+        parser.error(f"--samples must be 1..{MAX_SAMPLES}")
     if args.paired_calibration and args.ipc_measurement:
         parser.error("--paired-calibration and --ipc-measurement are exclusive")
     if (
@@ -523,6 +531,27 @@ def command_profile(command: list[str]) -> dict[str, str | int]:
     return actual
 
 
+def apic_divider(path: Path) -> int:
+    """Read the APIC timer divider the nucleus compiles in.
+
+    Part of the reference platform's identity for an active-preemption
+    measurement (ADR-0068 section 6): how often an interrupt lands inside an
+    interval is the interval divided by the tick period, and the period is the
+    quantum divided by nothing without this. The divisor is read from the
+    constant's name because that is what the write means — a register value of
+    `0b0011` is `divide by 16` only by the architecture's table, and a record
+    that carried the encoding alone would name a number nobody could compare.
+    """
+    matches = re.findall(
+        r"^\s*const\s+DIVIDE_BY_(\d+)\s*:\s*u32\s*=",
+        path.read_text(encoding="utf-8"),
+        flags=re.MULTILINE,
+    )
+    if len(matches) != 1:
+        raise Invalid(f"expected exactly one APIC divider constant, found {len(matches)}")
+    return int(matches[0])
+
+
 def quantum_count(path: Path) -> int:
     """Read the one scheduler quantum constant that is compiled into the nucleus."""
     matches = re.findall(
@@ -862,6 +891,7 @@ def environment(args: argparse.Namespace) -> dict[str, object]:
             if measured_build is not None
             else "unbound",
             "quantum_count": quantum_count(args.quantum_source),
+            "apic_divider": apic_divider(args.quantum_source),
         },
         "measurement_build": measured_build,
         "production_artifact_isolation": {
@@ -1062,6 +1092,15 @@ def main() -> int:
                 opened = wire.read_until(OPEN, deadline)
                 closed = wire.read_until(CLOSE, deadline)
                 if opened is None or closed is None:
+                    # Say which request went unanswered. A silent break leaves
+                    # the next failure — a QMP call to a machine that is already
+                    # gone — describing the symptom instead of the cause.
+                    print(
+                        f"measure-channel: request {index} of {len(expected_tags)} "
+                        f"(tag {tag}) went unanswered; the guest stopped responding",
+                        file=sys.stderr,
+                    )
+                    args.serial_log.write_bytes(bytes(wire.log))
                     break
                 (open_byte, open_at), (close_byte, close_at) = opened, closed
                 open_tag = open_byte & TAG

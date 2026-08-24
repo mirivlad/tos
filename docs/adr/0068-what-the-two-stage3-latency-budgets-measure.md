@@ -2,15 +2,17 @@
 
 # ADR-0068: Which of the two Stage 3 latency budgets is a conformance budget
 
-- Status: **Proposed**
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-25
 - Decision level: 2 — it removes a quantitative bound from the Stage 3
   conformance set, fixes the size of a retained latency series, and adds two
   required identities to the reference platform. It changes no other threshold,
   no workload, no observer, and no invariant
-- Project Architect approval: **not given; this ADR proposes, it does not decide**
-- Amends, if accepted: `docs/35` Stage 3 latency line, `IPC_V1` section 8's
-  relative bound, ADR-0066 sections 3 and 5
+- Project Architect approval: Vladimir Tomashevskiy, 2026-08-25, after the
+  order-statistic argument of section 5 was corrected: rank 297 of 300 is the
+  fourth largest sample, so it is a tail value when `N >= 4`, not when `N >= 1`
+- Amends: `docs/35` Stage 3 latency line, `IPC_V1` section 8's relative bound,
+  ADR-0066 sections 3 and 5
 - Evidence: `docs/evidence/STAGE3_IPC_LATENCY_P2.md`,
   `docs/evidence/STAGE3_IPC_LATENCY_P2_RED.md`,
   `docs/evidence/STAGE3_PREEMPTION_TAIL_P1.md`
@@ -157,12 +159,27 @@ to `X_(300)` only `59.82%`. A normal approximation around rank 297 suggests a
 far narrower interval and is wrong here, because the binomial is skewed at
 `p = 0.99` and the interval's upper end is truncated at the maximum.
 
-The length also settles the surviving budget's stability. At a per-sample hit
-rate near 3%, a 300-sample series contains at least one ticked interval with
-probability `0.9999`: the absolute p99 reliably *includes* the tail instead of
-sampling it by luck. Measured tails of `44–52 µs` sit inside `200 µs` by
-roughly a factor of four, so making the tail certain does not endanger the
-budget — it makes the verdict deterministic.
+The length also settles the surviving budget's stability, and the argument has
+to be made about the right order statistic. Rank 297 of 300 is the **fourth
+largest** sample, so it is a ticked value only when the series contains at least
+**four** ticked intervals — not merely one. "At least one" is nearly certain and
+nearly irrelevant: it would place a ticked value at rank 300 and say nothing
+about rank 297.
+
+With `N ~ Binomial(300, p)`, the measured per-sample hit rates give:
+
+| Hit rate | `P(N >= 1)` | `P(N >= 4)` — the one that matters | `E[N]` |
+|---|---:|---:|---:|
+| 2.8% (lowest measured) | 99.98% | **96.94%** | 8.4 |
+| 3.0% | 99.99% | **98.01%** | 9.0 |
+| 4.4% (highest measured) | 100.00% | **99.93%** | 13.2 |
+
+So across the whole measured range the reported p99 is a tail value in `96.9%`
+to `99.9%` of series, against `47.8%` at `n = 21`. That is what makes the
+surviving verdict stable rather than a coin flip: not that a tail appears, but
+that enough tails appear to reach the rank the contract reads. Measured tails of
+`44–52 µs` sit inside `200 µs` by roughly a factor of four, so making the tail
+reliably reported does not endanger the budget.
 
 Cost is not an obstacle: one sample is one host round trip, of order
 milliseconds. The marker protocol's four-bit sequence identity wraps every 16
@@ -209,8 +226,8 @@ that does not depend on a clock, and nothing in this ADR touches them.
 `STAGE3_IPC_LATENCY_P2.md` and `STAGE3_IPC_LATENCY_P2_RED.md` remain as taken:
 historical evidence of measurements made under the old structure. **Nothing is
 renamed to a pass, reclassified, or quietly superseded.** The red run stays red.
-Both records gain, when this ADR is accepted, a pointer saying which structure
-they were taken under; their numbers, verdicts and wording do not change.
+Both records gain a pointer saying which structure they were taken under; their
+numbers, verdicts and wording do not change.
 
 ## What this ADR does not decide
 
@@ -218,8 +235,8 @@ It does not change `200 µs`, the workload, the observer, the benchmark's
 definition, the counted budgets, or the observer-qualification experiment. It
 does not claim Stage 3 meets the surviving budget: the absolute bound was met in
 both retained runs, but a conformance verdict under the series length of section
-5 has not been taken. It does not touch `docs/35`, `IPC_V1` or the gate, which
-change when and if it is accepted, in the same change as the implementation.
+5 has not been taken. `docs/35`, `IPC_V1`, ADR-0066 and the gate carry it in one change, so no
+document states the old composition while another states the new one.
 
 ## What replaces the removed bound
 

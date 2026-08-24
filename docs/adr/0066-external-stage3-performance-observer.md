@@ -87,14 +87,25 @@ measure:
 3. one 64-byte request/reply between two runnable processes with preemption
    active.
 
-Changing the observer between denominator and numerator invalidates the ratio.
-The fixed denominator is not replaced by a Rust call, an entry invocation, a
-batch average or a deliberately slower TOS Core function.
+Changing the observer between denominator and numerator invalidates the
+comparison. The fixed denominator is not replaced by a Rust call, an entry
+invocation, a batch average or a deliberately slower TOS Core function.
 
-Disabling preemption for the floor and denominator is conservative: it removes
-timer excursions and can only make the denominator smaller. The IPC numerator
-must prove preemption active, and the build rejects combining the no-preemption
-measurement feature with the two-process/request-reply profiles.
+**Amended by ADR-0068.** The ratio these two series form is no longer a
+conformance budget: it is retained as observational and regression data, and no
+run is red because of it. The denominator keeps this no-preemption profile for
+that purpose, and the conformance latency budget is the absolute one, measured
+on item 3 with preemption active.
+
+Disabling preemption for the floor and denominator was called conservative here,
+on the reasoning that it removes timer excursions and can only make the
+denominator smaller. **That reasoning was wrong in a specific way and ADR-0068
+records why:** it removes from one side of a ratio the single largest term on
+the other, which is not a margin but an incomparability. The sentence is left
+standing as what this ADR claimed, and the ratio it justified is no longer a
+budget. The IPC numerator must still prove preemption active, and the build
+still rejects combining the no-preemption measurement feature with the
+two-process/request-reply profiles.
 
 The numerator is the production IPC path under measurement-only endowments, not
 a second benchmark implementation. One server is blocked in
@@ -129,11 +140,17 @@ work out of the measured interval is not an observer of this contract.
 
 ### 5. Samples fail closed
 
-Each series has three warm-ups followed by 21 individual measurements. Raw
-samples, median and nearest-rank p99 are retained. A missing marker, duplicate
-marker, overlapping pair, sequence mismatch, reversed timestamp, zero or
-negative interval, wrong sample count or reported dropped trace event invalidates
-the whole series. Nothing is repaired, reordered, filtered or clamped.
+Each series has three warm-ups followed by individual measurements: **300 for a
+latency series (ADR-0068), and 21 for the observer-qualification pairs below,
+whose size that ADR deliberately leaves alone.** Raw samples, median and
+nearest-rank p99 are retained. A missing marker, duplicate marker, overlapping
+pair, sequence mismatch, reversed timestamp, zero or negative interval, wrong
+sample count or reported dropped trace event invalidates the whole series.
+Nothing is repaired, reordered, filtered or clamped. The four-bit sequence
+identity wraps every sixteen blocks in a series longer than that; the decoder
+verifies the predeclared exact tag plan, so a wrap is expected only where the
+plan says it is, and a duplicate or out-of-order tag the plan did not predict
+invalidates the run rather than passing as one.
 
 Observer resolution is a predeclared paired experiment in one prepared boot.
 After three warm-up blocks, each of 21 retained blocks contains an adjacent
@@ -159,10 +176,11 @@ and dividing by N measures throughput/average and cannot satisfy this latency
 contract.
 
 The IPC verdict uses the numerator's nearest-rank p99 without retry selection:
-that one value must be at most both `8 * denominator_p99` and `200 µs`. Passing
-one bound cannot hide failure of the other. A timer/preemption tail is part of
-the active-preemption numerator and is neither removed nor relabelled as
-observer cost.
+that one value must be at most `200 µs` (ADR-0068). A timer/preemption tail is
+part of the active-preemption numerator and is neither removed nor relabelled as
+observer cost — it is the largest thing that number contains, and it is what a
+client waits for. The relative comparison against the denominator is computed and
+retained beside it, and decides nothing.
 
 ### 6. A coarse observer is a result, not a gate
 

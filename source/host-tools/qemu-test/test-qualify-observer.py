@@ -70,6 +70,7 @@ def report(
                 "preemption": "inactive",
                 "binding": "measurement-build-manifest",
                 "quantum_count": 100000,
+                "apic_divider": 16,
             },
             "measurement_build": {
                 "sha256": "measurement-manifest",
