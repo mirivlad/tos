@@ -178,9 +178,15 @@ unchanged three warm-ups**, for both numerators and the denominator.
 
 - Nearest rank puts the p99 at rank 297 of 300, an interior order statistic
   whose expected level is `297/301 = 98.7%` rather than 95.5%.
-- The 95% distribution-free rank interval for the true p99 is ranks 294 to 300,
-  so the retained record can state a confidence interval instead of a point that
-  looks exact.
+- A distribution-free interval for the true p99 can then be stated instead of a
+  point that looks exact. Its coverage is exactly
+  `P(X_(r) <= xi_p <= X_(s)) = sum_{k=r}^{s-1} C(n,k) p^k (1-p)^(n-k)`, which at
+  `n = 300`, `p = 0.99` gives **`X_(290)` to `X_(300)` = 95.07%**. It is `290`
+  and not a rank closer to 297: `X_(294)` to `X_(300)` covers only `91.82%`, and
+  `X_(297)` to `X_(300)` only `59.82%`. A normal approximation around rank 297
+  suggests a much narrower interval and is wrong here, because the binomial is
+  skewed at `p = 0.99` and the interval's upper end is truncated at the maximum
+  rather than extending past it.
 - Cost is not the obstacle: one sample is one host round trip, of order
   milliseconds, so a 300-sample series is under a second of guest time.
 - The marker protocol's four-bit sequence identity wraps every 16 blocks. That
