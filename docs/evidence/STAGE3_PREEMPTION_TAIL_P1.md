@@ -6,9 +6,11 @@ Evidence level: **P1 diagnostic. Not conformance evidence, and it replaces
 nothing.** The green [P2 record](STAGE3_IPC_LATENCY_P2.md) and the red
 [P2 record](STAGE3_IPC_LATENCY_P2_RED.md) stand exactly as taken.
 
-Question asked: **what produces the single p99 tail of the Stage 3 IPC
+Questions asked: **what produces the single p99 tail of the Stage 3 IPC
 numerator, what does it cost, and is it a removable cost of this implementation
-or the expected cost of timer preemption on the ADR-0040 TCG profile?**
+or the expected cost of timer preemption on the ADR-0040 TCG profile?** And,
+added afterwards: **does the slowdown of the inactive-preemption path survive
+when the measured binaries are byte-for-byte identical?**
 
 Answer measured: **it is one timer interrupt landing inside the measured
 interval. It is not the scheduler and not the address-space switch. Its rate
@@ -22,12 +24,13 @@ Every series was taken in a throwaway `git worktree` at commit
 `6f2837b76275c4ea5ab8f4d0491294d74543c687`, carrying
 [stage3-preemption-tail-diagnostic.patch](stage3-preemption-tail-diagnostic.patch)
 (SHA-256
-`77e8918e6d12bf2f1d9d48fb9051922d9c84e0ca66f46f880525f8a14962bb34`). That patch
+`f8a67a4fc924421ca68c2d358cd52bf5d82ba394738872d7b210351662282a88`). That patch
 removes conformance protections deliberately: it lifts the `compile_error` that
 forbids an inactive-preemption IPC numerator, adds a second cfg-selected
-scheduler quantum, admits both preemption cases of each measurement mode in the
-harness, and reads the monotonic tick **outside both markers** so a sample can
-be attributed to a tick. It adds no work between `OPEN` and `CLOSE`: the
+scheduler quantum and a masked-delivery variant of `apic::start`, selects a
+boot's timer mode from a capsule unit, admits both preemption cases of each
+measurement mode in the harness, and reads the monotonic tick **outside both
+markers** so a sample can be attributed to a tick. It adds no work between `OPEN` and `CLOSE`: the
 measured path is the measured path.
 
 It is retained as a diagnostic artifact and is not a proposed change. Nothing
@@ -140,8 +143,73 @@ median: `median(B − A) = −0.36 µs`.
 
 This is recorded because it matters to any proposal that would measure the
 relative budget with preemption inactive on both sides: **that path is not
-merely the production path minus the interrupts, and why it is slower is not
-explained by anything measured here.** It is an open question, not a finding.
+merely the production path minus the interrupts.** The two series compared there
+came from two different builds, so a difference in compile-time layout was a
+live explanation. Section 6 removes it.
+
+## 6. One artifact, three boot modes: the slowdown is not a build artifact
+
+Section 5's comparison was between two builds. This one is between three boots
+of **the same two files**:
+
+- nucleus `0f4811c1…`, features `test-call-reply,test-measurement-port`;
+- runtime image `3c670daf…`, feature `diag-tick-attribution`.
+
+The timer mode is chosen at boot from a capsule unit `/system/diag/timer-mode`,
+read before any process exists and long before the observed process says
+`READY`. The three mode words are padded to one length, so the three capsules
+differ in content and **not** in size — 3256 bytes each — which removes capsule
+layout as an explanation:
+
+| Mode | What the nucleus does | Capsule SHA-256 |
+|---|---|---|
+| ACTIVE | `apic::start()` | `890141b7…` |
+| MASKED | `apic::start_masked()` — every write `start` makes, plus the LVT mask bit | `11bbb759…` |
+| NO-TIMER | the APIC timer is not started | `8dcd79ce…` |
+
+MASKED exists to separate two things the earlier matrix could not: the APIC
+being programmed and counting, and interrupts being delivered. In MASKED the
+APIC is enabled, the divider is set, the count runs and reloads and `IF` is set;
+only the mask bit differs from ACTIVE.
+
+Fifteen interleaved iterations of each. Every mode reported the contract's own
+counters identically — `50` messages, `75` payload copies, `25` exchanges,
+`51/51` crossings, `24/24/0` client answers — and the guest reported which mode
+it booted in, with the per-sample tick deltas corroborating it: 14 ticked
+intervals of 315 in ACTIVE, **0 of 315** in both MASKED and NO-TIMER.
+
+Paired by iteration, against ACTIVE's tick-free samples only:
+
+| Comparison | Median | Positive |
+|---|---:|---:|
+| MASKED − ACTIVE(clean) | **+18.45 µs** | 14/15 |
+| NO-TIMER − MASKED | −7.43 µs | 5/15 |
+| NO-TIMER − ACTIVE(clean) | **+16.62 µs** | 12/15 |
+
+Pooled medians: ACTIVE clean `50.33 µs` (n=301), ACTIVE ticked `98.98 µs`
+(n=14), MASKED `71.26 µs`, NO-TIMER `67.39 µs`.
+
+Three things follow, and the first is the answer to the question this
+experiment was run to settle.
+
+1. **The systematic slowdown survives byte-identical artifacts.** It is not a
+   compile-time feature or build-layout effect. Section 5 measured `+7.23 µs`
+   between two builds; the same comparison between two boots of one build is
+   `+16.62 µs`.
+2. **It is caused by delivery, not by the APIC being programmed.** MASKED and
+   NO-TIMER are indistinguishable — `−7.43 µs`, positive in 5 of 15, a coin
+   flip — while both differ from ACTIVE. A timer that counts and reloads but
+   delivers nothing behaves like no timer at all.
+3. **Delivering periodic interrupts makes the interrupt-free intervals faster**,
+   by roughly the size of the tail an interrupt adds when it does land. Nothing
+   measured here explains why; it is a property of the guest's execution under
+   this emulator, not of anything the measured path does differently — the path
+   is identical machine code performing identical counted work.
+
+The scheduler-dependent counters differ by one between some ACTIVE runs
+(`returns`/`resumptions` of `89/53` against `90/52`), which is the second door
+ADR-0063 describes counting a preemption-driven resumption. The contract's
+counters do not move.
 
 ## Conclusion
 
@@ -166,7 +234,7 @@ budget inside the result that measured it.
 
 ## Reproduction
 
-Raw series for every run of all four matrices — samples, floor samples, pair
+Raw series for every run of all five matrices — samples, floor samples, pair
 order, per-sample tick deltas, build features and effective quantum — are
 retained in
 [stage3-preemption-tail-diagnostic-p1.json](stage3-preemption-tail-diagnostic-p1.json).
