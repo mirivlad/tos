@@ -84,9 +84,11 @@ Their SHA-256 digests in that order are:
 
 The first digest is the value the gate recorded as `measurement_report_sha256`
 inside the observer qualification, so that raw series is bound by digest to its
-verdict. The IPC qualification record names its denominator and numerator
-reports by path only; binding them by digest as well is an open improvement to
-the gate, not a claim made here.
+verdict. The IPC qualification record retained here names its denominator,
+numerator and serial log by path only, which is checkable while the CI run's
+directory exists and not afterwards. The gate has since been changed to record
+a `reports_sha256` digest for every input it reads; that applies to runs after
+this one and is not claimed for these four files.
 
 ## The same artifacts, a different machine
 
