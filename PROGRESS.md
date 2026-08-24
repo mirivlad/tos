@@ -4477,6 +4477,50 @@ observer до конца с прежним launcher SHA-256 `39474e...`; observe
 платформа и performance contracts не изменялись. Нужен новый CI run на commit с
 этим исправлением; красный run `32644604992` остаётся историческим результатом.
 
+### 2026-08-24 — оба Stage 3 бюджета латентности получили P2
+
+Исправленный workflow прошёл целиком на pushed commit
+`78447b31c62cd24a1549f5c2ac7833cdd6fe153b`: run `32644830444`, job
+`97207387908`, `qemu` profile, 15 мин 17 с, зелёный. Оба Stage 3 gate внутри
+одной job выдали `evidence_status: P2` — статус, который сам скрипт
+отказывается печатать вне GitHub Actions.
+
+Observer квалифицирован дважды независимо, каждый раз из своего boot: 21/21
+положительных adjacent pairs, sign `p=4.76837158203125e-07`. Floor median/p99
+`1,834/2,264 µs` и `1,944/2,274 µs`; denominator `6,492/7,484 µs` и
+`6,342/7,254 µs`. Реальный 64-байтный request/reply с active preemption дал
+median `38,071 µs`, p99 `51,546 µs` — `7,105872622001654x` от denominator p99
+при лимите `8x` (`58,032 µs`) и вдвое ниже абсолютных `200 µs`. Guest и nucleus
+снова подтвердили один prime, 24 measured exchange, 25 served, `50` messages,
+`75` copies, `25` exchanges, `51/51` crossings. Ничего не вычиталось и не
+фильтровалось.
+
+Два факта из сравнения с локальным P1 записаны прямо, а не подразумеваются.
+Первый: все четыре измеренных артефакта (nucleus и runtime image для
+denominator и numerator) побайтно совпали с локальными при других хосте,
+компиляторе и toolchain — различие чисел целиком средовое. Launcher observer'а
+тот же `39474e…`, engine другой (`2189eb13…` против `90f836fd…`), потому что
+он компилируется на месте из того же pinned архива; digests обоих patched
+файлов, `configure`, `SOURCE_DATE_EPOCH` и wheels совпадают.
+
+Второй: относительный бюджет в CI строже, а не мягче. Локально было
+`4,285x`, в CI `7,106x` — при том что абсолютная латентность в CI лучше
+(`51,546` против `100,761 µs`). Тихий runner сжал denominator (`7,254` против
+`23,513 µs`) сильнее, чем numerator. То есть шумный хост раздувает denominator
+и льстит отношению; настоящий запас — `11,2%`, и наблюдать нужно именно
+CI-число. По ADR-0066 §6 красный результат на нём решается работой над IPC
+path, а не сменой инструмента, знаменателя или арифметики.
+
+Записи сохранены как `docs/evidence/STAGE3_SYMMETRIC_OBSERVER_P2.md` и
+`docs/evidence/STAGE3_IPC_LATENCY_P2.md` с шестью licensed JSON. Raw серии
+observer'а связаны с вердиктом по digest самим gate (`measurement_report_sha256`
+совпадает с retained-файлом); IPC qualification свои два raw report называет
+только путём — это записанный пробел gate, а не заявленное свойство.
+
+Закрыта количественная половина Stage 3 IPC performance contract. Stage 3 не
+закрыт: остаются restart identity/audit, оставшееся E3 adversarial coverage и
+versioned Stage 3 identity/trusted-base report.
+
 ### Требуют решения Project Architect
 
 **F. Что обязан гарантировать локальный preflight и что — CI — ЗАКРЫТО
