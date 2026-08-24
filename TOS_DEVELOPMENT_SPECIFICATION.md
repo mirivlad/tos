@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `504b1979aac6ac3658c2595d16fe6a61c0fa57627208877d69f18b3d63a1ab62`\
+Source-manifest SHA-256: `084f938fef24b0aa7d5f04ac4658cc09d540a204155d927c0e1bb4fd2ee8cda7`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -20486,9 +20486,15 @@ unchanged three warm-ups**, for both numerators and the denominator.
 
 - Nearest rank puts the p99 at rank 297 of 300, an interior order statistic
   whose expected level is `297/301 = 98.7%` rather than 95.5%.
-- The 95% distribution-free rank interval for the true p99 is ranks 294 to 300,
-  so the retained record can state a confidence interval instead of a point that
-  looks exact.
+- A distribution-free interval for the true p99 can then be stated instead of a
+  point that looks exact. Its coverage is exactly
+  `P(X_(r) <= xi_p <= X_(s)) = sum_{k=r}^{s-1} C(n,k) p^k (1-p)^(n-k)`, which at
+  `n = 300`, `p = 0.99` gives **`X_(290)` to `X_(300)` = 95.07%**. It is `290`
+  and not a rank closer to 297: `X_(294)` to `X_(300)` covers only `91.82%`, and
+  `X_(297)` to `X_(300)` only `59.82%`. A normal approximation around rank 297
+  suggests a much narrower interval and is wrong here, because the binomial is
+  skewed at `p = 0.99` and the interval's upper end is truncated at the maximum
+  rather than extending past it.
 - Cost is not the obstacle: one sample is one host round trip, of order
   milliseconds, so a 300-sample series is under a second of guest time.
 - The marker protocol's four-bit sequence identity wraps every 16 blocks. That
