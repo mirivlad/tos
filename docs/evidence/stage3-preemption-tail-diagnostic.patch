@@ -1,0 +1,304 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# DIAGNOSTIC ARTIFACT — NOT PRODUCTION CODE, NOT A PROPOSED CHANGE.
+#
+# This patch is retained so that the preemption-tail diagnostic recorded in
+# STAGE3_PREEMPTION_TAIL_P1.md can be reproduced. It is applied to a throwaway
+# git worktree and never to a branch. It removes conformance protections on
+# purpose and must not be merged:
+#
+#   * nucleus/src/main.rs   lifts the compile_error that forbids building an
+#                           inactive-preemption IPC numerator;
+#   * nucleus/src/apic.rs   adds a second, cfg-selected scheduler quantum;
+#   * measure-channel.py    admits the preemption counterfactual of each
+#                           measurement mode and two QUANTUM definitions;
+#   * runtime-image         reads the monotonic tick outside both markers, so a
+#                           sample can be attributed to a timer tick. It adds no
+#                           work between OPEN and CLOSE.
+#
+# Everything it produces is refused by the conformance qualifiers: an
+# active-preemption denominator by qualify-observer, an inactive-preemption
+# numerator by qualify-ipc. Both fail closed, which is why this patch cannot
+# turn a diagnostic run into evidence for a gate.
+#
+# Applied to commit 6f2837b76275c4ea5ab8f4d0491294d74543c687 of this repository.
+diff --git a/source/host-tools/qemu-test/measure-channel.py b/source/host-tools/qemu-test/measure-channel.py
+index dccedea..bb13620 100755
+--- a/source/host-tools/qemu-test/measure-channel.py
++++ b/source/host-tools/qemu-test/measure-channel.py
+@@ -530,9 +530,14 @@ def quantum_count(path: Path) -> int:
+         path.read_text(encoding="utf-8"),
+         flags=re.MULTILINE,
+     )
+-    if len(matches) != 1:
+-        raise Invalid(f"expected exactly one QUANTUM definition, found {len(matches)}")
+-    return int(matches[0].replace("_", ""))
++    # DIAGNOSTIC WORKTREE ONLY: the repository's harness requires exactly one
++    # definition, which is the right rule for a build that can only have one.
++    # This copy carries a second, cfg-selected constant for the tick-rate
++    # experiment and reports the smaller of the two so the record names the
++    # rate the fast build actually ran at.
++    if not 1 <= len(matches) <= 2:
++        raise Invalid(f"expected one or two QUANTUM definitions, found {len(matches)}")
++    return min(int(m.replace("_", "")) for m in matches)
+ 
+ 
+ def sha256(path: Path) -> str:
+@@ -727,24 +732,37 @@ def measurement_build_manifest(
+         target_dir = record.get("cargo_target_dir")
+         if not isinstance(target_dir, str) or not Path(target_dir).is_absolute():
+             raise Invalid(f"measurement build {name} target directory is not absolute")
++    # DIAGNOSTIC WORKTREE ONLY -- NOT THE REPOSITORY'S HARNESS.
++    # The conformance harness pins one nucleus feature set per mode. This copy
++    # admits the preemption counterfactual of each mode so that the two can be
++    # measured against each other. Nothing produced here is conformance
++    # evidence: qualify-observer refuses an active-preemption denominator and
++    # qualify-ipc refuses an inactive-preemption numerator, both fail-closed.
+     if paired_calibration:
+-        expected_features = {
+-            "nucleus": ["test-measurement-no-preemption"],
+-            "runtime_image": ["test-measurement-call"],
+-        }
++        allowed_nucleus = [
++            ["test-measurement-no-preemption"],
++            ["test-measurement-port"],
++        ]
++        expected_image = ["test-measurement-call"]
++        if builds["runtime_image"].get("features") == ["diag-tick-attribution-call"]:
++            expected_image = ["diag-tick-attribution-call"]
+     elif ipc_measurement:
+-        expected_features = {
+-            "nucleus": ["test-call-reply", "test-measurement-port"],
+-            "runtime_image": ["test-measurement-ipc"],
+-        }
++        allowed_nucleus = [
++            ["test-call-reply", "test-measurement-port"],
++            ["test-call-reply", "test-measurement-no-preemption"],
++            ["test-call-reply", "test-measurement-port", "diag-fast-quantum"],
++        ]
++        expected_image = ["test-measurement-ipc"]
++        if builds["runtime_image"].get("features") == ["diag-tick-attribution"]:
++            expected_image = ["diag-tick-attribution"]
+     else:
+-        expected_features = None
+-    if expected_features is not None:
+-        for name, expected in expected_features.items():
+-            if builds[name].get("features") != expected:
+-                raise Invalid(
+-                    f"measurement mode requires {name} features {expected!r}"
+-                )
++        allowed_nucleus = None
++        expected_image = None
++    if allowed_nucleus is not None:
++        if builds["nucleus"].get("features") not in allowed_nucleus:
++            raise Invalid(f"measurement mode requires one of {allowed_nucleus!r}")
++        if builds["runtime_image"].get("features") != expected_image:
++            raise Invalid(f"measurement mode requires runtime_image {expected_image!r}")
+     return {
+         "path": str(path.resolve()),
+         "sha256": sha256(path),
+diff --git a/source/nucleus/Cargo.toml b/source/nucleus/Cargo.toml
+index acdba28..3f42a5d 100644
+--- a/source/nucleus/Cargo.toml
++++ b/source/nucleus/Cargo.toml
+@@ -73,6 +73,7 @@ test-measurement-port = []
+ # fixed in-process call run without timer excursions. The IPC numerator never
+ # selects this feature and must prove preemption active.
+ test-measurement-no-preemption = ["test-measurement-port"]
++diag-fast-quantum = []
+ # Isolated evidence artifact only; never selected by the normal nucleus build.
+ test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
+ 
+diff --git a/source/nucleus/src/apic.rs b/source/nucleus/src/apic.rs
+index 0976a4f..7809004 100644
+--- a/source/nucleus/src/apic.rs
++++ b/source/nucleus/src/apic.rs
+@@ -53,7 +53,12 @@ const DIVIDE_BY_16: u32 = 0b0011;
+ /// spend the machine on interrupt entry. ADR-0049 leaves the concrete source
+ /// and mode to the implementation; what it fixes is that there is one timer and
+ /// that its purpose is preemption and timekeeping.
++#[cfg(not(feature = "diag-fast-quantum"))]
+ const QUANTUM: u32 = 100_000;
++// DIAGNOSTIC WORKTREE ONLY: ten times the tick rate, to test whether the tail
++// count follows the tick count.
++#[cfg(feature = "diag-fast-quantum")]
++const QUANTUM: u32 = 10_000;
+ 
+ /// Timer interrupts taken since the timer was started.
+ ///
+diff --git a/source/nucleus/src/main.rs b/source/nucleus/src/main.rs
+index 0c1d85e..598aa9e 100644
+--- a/source/nucleus/src/main.rs
++++ b/source/nucleus/src/main.rs
+@@ -79,11 +79,13 @@
+ ))]
+ compile_error!("these are different launcher constants, and a build must be one of them");
+ 
+-#[cfg(all(
+-    feature = "test-measurement-no-preemption",
+-    any(feature = "test-two-processes", feature = "test-call-reply")
+-))]
+-compile_error!("the IPC numerator must keep preemption active");
++// DIAGNOSTIC WORKTREE ONLY: the conformance guard below is what keeps an
++// inactive-preemption numerator from ever being built. It is lifted here to
++// measure the counterfactual and is present, unmodified, on every committed
++// branch.
++// #[cfg(all(feature = "test-measurement-no-preemption",
++//           any(feature = "test-two-processes", feature = "test-call-reply")))]
++// compile_error!("the IPC numerator must keep preemption active");
+ 
+ #[cfg_attr(feature = "test-measurement-no-preemption", allow(dead_code))]
+ mod apic;
+diff --git a/source/runtime-image/Cargo.toml b/source/runtime-image/Cargo.toml
+index 24f4d3a..e4805cc 100644
+--- a/source/runtime-image/Cargo.toml
++++ b/source/runtime-image/Cargo.toml
+@@ -43,6 +43,11 @@ test-measurement-ipc = [
+     "test-exchange-cost",
+     "test-reply-receive",
+ ]
++# DIAGNOSTIC WORKTREE ONLY: reads the monotonic tick outside both markers so a
++# tail sample can be attributed to a timer tick or cleared of one. Adds no work
++# between OPEN and CLOSE, so the measured path is the same path.
++diag-tick-attribution = ["test-measurement-ipc"]
++diag-tick-attribution-call = ["test-measurement-call"]
+ # The boot whose only IPC is the exchange being measured: one process asks and
+ # the other answers, and neither polls, probes or delegates. `IPC_V1` §8 bounds
+ # crossings *per request/reply*, so a boot that also does other IPC measures a
+diff --git a/source/runtime-image/src/main.rs b/source/runtime-image/src/main.rs
+index ecb47b0..9334d26 100644
+--- a/source/runtime-image/src/main.rs
++++ b/source/runtime-image/src/main.rs
+@@ -1231,6 +1231,14 @@ struct Work {
+ #[cfg(feature = "test-measurement-call")]
+ struct Marked {
+     sequence: u8,
++    // DIAGNOSTIC WORKTREE ONLY: one tick delta per marked pair, reported after
++    // the last sample and never between the markers.
++    #[cfg(feature = "diag-tick-attribution-call")]
++    diag_tick_before: u64,
++    #[cfg(feature = "diag-tick-attribution-call")]
++    diag_ticks: [u32; 64],
++    #[cfg(feature = "diag-tick-attribution-call")]
++    diag_at: usize,
+ }
+ 
+ #[cfg(feature = "test-measurement-call")]
+@@ -1248,6 +1256,11 @@ impl tos_pipeline::System for Marked {
+     }
+ 
+     fn mark_before_call(&mut self) {
++        // DIAGNOSTIC WORKTREE ONLY: before OPEN, never between the markers.
++        #[cfg(feature = "diag-tick-attribution-call")]
++        {
++            self.diag_tick_before = monotonic().unwrap_or(0);
++        }
+         // SAFETY: the measurement nucleus permits CPL 3 these ports.
+         unsafe { wire_write(protocol::OPEN | (self.sequence & protocol::TAG)) };
+     }
+@@ -1255,6 +1268,16 @@ impl tos_pipeline::System for Marked {
+     fn mark_after_call(&mut self) {
+         // SAFETY: as above.
+         unsafe { wire_write(protocol::CLOSE | (self.sequence & protocol::TAG)) };
++        // DIAGNOSTIC WORKTREE ONLY: after CLOSE.
++        #[cfg(feature = "diag-tick-attribution-call")]
++        {
++            let after = monotonic().unwrap_or(0);
++            let at = self.diag_at;
++            if at < self.diag_ticks.len() {
++                self.diag_ticks[at] = after.saturating_sub(self.diag_tick_before) as u32;
++                self.diag_at = at + 1;
++            }
++        }
+     }
+ }
+ 
+@@ -1319,7 +1342,15 @@ impl Work {
+             module,
+             receipt,
+             argument,
+-            system: Marked { sequence: 0 },
++            system: Marked {
++                sequence: 0,
++                #[cfg(feature = "diag-tick-attribution-call")]
++                diag_tick_before: 0,
++                #[cfg(feature = "diag-tick-attribution-call")]
++                diag_ticks: [0u32; 64],
++                #[cfg(feature = "diag-tick-attribution-call")]
++                diag_at: 0,
++            },
+             performed: 0,
+             refused: 0,
+         }
+@@ -1359,6 +1390,19 @@ impl Work {
+     /// What the calls did, so that a run whose engine refused every one of them
+     /// cannot be read as a run that measured them.
+     fn summary(&self) -> alloc::string::String {
++        #[cfg(feature = "diag-tick-attribution-call")]
++        {
++            let mut line = alloc::string::String::from(" TOS.DIAG.CALL.TICKS");
++            for index in 0..self.system.diag_at {
++                line.push_str(&alloc::format!(" {}", self.system.diag_ticks[index]));
++            }
++            return alloc::format!(
++                " calls={} refused={}{line}",
++                self.performed,
++                self.refused
++            );
++        }
++        #[cfg(not(feature = "diag-tick-attribution-call"))]
+         alloc::format!(" calls={} refused={}", self.performed, self.refused)
+     }
+ }
+@@ -1593,6 +1637,10 @@ fn asking(launch: &Launch, report: &mut Report, handle: u64) {
+ 
+     let mut answered = 0u32;
+     let mut refused = 0u32;
++    // DIAGNOSTIC WORKTREE ONLY: one tick delta per exchange, reported after the
++    // last one, so nothing is written to the log inside a measured interval.
++    #[cfg(feature = "diag-tick-attribution")]
++    let mut diag_ticks = [0u32; 32];
+     // Anything received before READY belongs to firmware or an earlier user of
+     // the line, never to this protocol.
+     // SAFETY: the measurement nucleus grants CPL 3 exactly COM1's ports.
+@@ -1610,6 +1658,9 @@ fn asking(launch: &Launch, report: &mut Report, handle: u64) {
+         }
+         let tag = request & protocol::TAG;
+         put(launch.arguments_base, QUESTION);
++        // DIAGNOSTIC WORKTREE ONLY: before OPEN, never between the markers.
++        #[cfg(feature = "diag-tick-attribution")]
++        let tick_before = monotonic().unwrap_or(0);
+         // SAFETY: as above. The request itself and payload preparation are
+         // outside the interval; the complete endpoint_call is inside it.
+         unsafe { wire_write(protocol::OPEN | tag) };
+@@ -1619,12 +1670,30 @@ fn asking(launch: &Launch, report: &mut Report, handle: u64) {
+             unsafe { call_transferring(ENDPOINT_CALL, handle, QUESTION.len() as u64, 0) };
+         // SAFETY: as above. No work lies between the completed call and CLOSE.
+         unsafe { wire_write(protocol::CLOSE | tag) };
++        // DIAGNOSTIC WORKTREE ONLY: after CLOSE. The window this delta covers is
++        // wider than the measured interval, so it can only over-attribute ticks.
++        #[cfg(feature = "diag-tick-attribution")]
++        {
++            let after = monotonic().unwrap_or(0);
++            if (answered + refused) < diag_ticks.len() as u32 {
++                diag_ticks[(answered + refused) as usize] =
++                    after.saturating_sub(tick_before) as u32;
++            }
++        }
+         if status == OK && is_answer(launch.arguments_base, length) {
+             answered += 1;
+         } else {
+             refused += 1;
+         }
+     }
++    #[cfg(feature = "diag-tick-attribution")]
++    {
++        let mut line = alloc::string::String::from("TOS.DIAG.IPC.TICKS");
++        for index in 0..(answered + refused) as usize {
++            line.push_str(&alloc::format!(" {}", diag_ticks[index]));
++        }
++        report.line(&line);
++    }
+     report.line(&alloc::format!(
+         "TOS.RUN.MEASURE.IPC samples={} answered={answered} refused={refused} request_bytes={} reply_bytes={} primed=1",
+         answered + refused,

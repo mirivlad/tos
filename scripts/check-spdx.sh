@@ -122,7 +122,10 @@ for f in $(git ls-files); do
             continue ;;
 
         # --- text formats that must carry an SPDX header ---
-        *.rs|*.S|*.sh|*.py|*.ld|*.md|*.yml|*.yaml|*.toml|*.tsv|*.tos|*.txt)
+        # `.patch` is here for retained diagnostic patches, whose first lines are
+        # a `#` header the patch format ignores; the diff body below it is not
+        # scanned, because a diff of licensed files is not a third licence.
+        *.rs|*.S|*.sh|*.py|*.ld|*.md|*.yml|*.yaml|*.toml|*.tsv|*.tos|*.txt|*.patch)
             checked=$((checked+1))
             # The identifier must appear in the first five lines: after a
             # shebang, an HTML comment opener or a short header block, but not
