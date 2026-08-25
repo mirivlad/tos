@@ -26,7 +26,10 @@
 #   6. a child of `process_create` (8) has **no** generation rather than zero,
 #      and one that reaches its own `process_exit` carries the self-reported
 #      status a terminated child cannot have;
-#   7. a wait nothing can end is ended by the nucleus, as `E_CANCELLED`.
+#   7. three uncollected endings hold the three slots this supervisor is not in,
+#      so a fourth creation is refused for want of a *slot* — the nucleus names
+#      which bound it hit — and one collection frees exactly one;
+#   8. a wait nothing can end is ended by the nucleus, as `E_CANCELLED`.
 #
 # Then a second boot, because the arrangement it needs — a supervisor, a middle
 # parent and a delegated observer — is three live processes, and each memory
@@ -63,6 +66,7 @@ OK=0
 E_NO_CAPABILITY=-1
 E_WOULD_BLOCK=-4
 E_CANCELLED=-5
+E_LIMIT=-6
 ENDING_EXITED=1
 ENDING_TERMINATED=3
 
@@ -148,6 +152,23 @@ stale="$(field 'TOS.RUN.LIFECYCLE.STALE' 'status')"
 unrighted="$(field 'TOS.RUN.LIFECYCLE.UNRIGHTED' 'wait')"
 [ "$unrighted" = "$E_NO_CAPABILITY" ] ||
     fail "a capability without wait_child answered $unrighted, expected $E_NO_CAPABILITY"
+
+# 7. An uncollected ending is a slot nobody can have.
+exhausted="$(line 'TOS.RUN.LIFECYCLE.EXHAUSTED')"
+printf '%s\n' "$exhausted" | grep -q 'filled=3 ' ||
+    fail "the supervisor could not fill the table it shares with three children: $exhausted"
+printf '%s\n' "$exhausted" | grep -q "full=$E_LIMIT " ||
+    fail "a creation with every slot held by a record was not refused: $exhausted"
+printf '%s\n' "$exhausted" | grep -q "collected=$OK " ||
+    fail "the collection that should free a slot did not happen: $exhausted"
+printf '%s\n' "$exhausted" | grep -q "after_one=$OK " ||
+    fail "one collection did not free exactly one slot: $exhausted"
+printf '%s\n' "$exhausted" | grep -q "full_again=$E_LIMIT" ||
+    fail "one collection freed more than one slot: $exhausted"
+# And the refusal named the bound, which is the whole reason the log says it:
+# `E_LIMIT` alone cannot tell a full table from a pool with nothing left.
+printf '%s\n' "$log" | grep -q 'PROCESS_REFUSED reason=no-slot uncollected=3' ||
+    fail "the refusal did not name the uncollected endings that caused it"
 
 # 6. The legacy form asserts no generation, and a self-exit carries its status.
 legacy="$(line 'TOS.RUN.LIFECYCLE.LEGACY')"
