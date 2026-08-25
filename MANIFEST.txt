@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 425
+- files in the release package: 426
 - active system invariants: 21
-- architecture decision records: 69 (40 accepted)
+- architecture decision records: 70 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -113,6 +113,7 @@ Architecture decision records
 - docs/adr/0067-how-a-supervisor-learns-a-service-ended.md — ADR-0067: How a supervisor learns that a service ended [**Accepted (option D)** (Project Architect-approved)]
 - docs/adr/0068-what-the-two-stage3-latency-budgets-measure.md — ADR-0068: Which of the two Stage 3 latency budgets is a conformance budget [**Accepted** (Project Architect-approved)]
 - docs/adr/0069-stage3-reference-process-grant.md — ADR-0069: The Stage 3 reference process grant [**Proposed**]
+- docs/adr/0070-compact-verified-execution-image.md — ADR-0070: A compact verified execution image, as a derived cache [**Proposed**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
