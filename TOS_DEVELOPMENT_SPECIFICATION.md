@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `99841876738a94c122114592e941fe3a7010eb2b338371d06c79f0a12b2dd96d`\
+Source-manifest SHA-256: `4f5476cd846cc478ea234517a920462766f244c267f349d5252fe4e04d59a1d5`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -21036,6 +21036,9 @@ rather than with a number that could not be trusted.
 - Project Architect approval: **not given; this ADR proposes, it does not decide**
 - Evidence: `docs/evidence/STAGE2_ARENA_BOUND.md`,
   `docs/evidence/STAGE3_PROCESS_GRANT.md`
+- Note: §6 was rewritten on 2026-08-25 after the Project Architect identified
+  the first reading as evidence of implementation retention rather than of a
+  contract requirement
 
 ## The gap, stated once
 
@@ -21133,27 +21136,56 @@ measured range.
 already need twice it. This is stated rather than smoothed over: the size was
 not chosen to fit a workload, and the workload does not fit it.
 
-## 6. The promise the implementation currently makes, and cannot keep
+## 6. What the closure measurement actually found
 
-docs/44 §2 requires an implementation to publish exact numeric limits and allows
-a **lower** cap "if reported in the implementation's declared conformance
-profile". The reference implementation declares none: `tos_verifier::limits`
-`Limits::default()` is the accepted V1 ceiling, with `modules: 256`, and
-`tos_core::MAX_SOURCE_BYTES` is the 256 KiB source unit. The promise is
-therefore the ceiling itself.
+The first version of this section read the closure slope as the cost of TOS
+Core V1's declared ceiling. That reading was wrong, and the correction matters
+more than the number: **the measurement had found `execute_set` departing from
+an accepted memory architecture, not a fundamental requirement.**
 
-Extrapolating the measured slope, honouring it needs about **6.3 GiB** of arena
-for one process — roughly twenty-five times the whole reference platform. The
-gap is not between the grant and the promise; it is between the promise and the
-machine.
+`docs/evidence/STAGE2_ARENA_BOUND.md` already fixes that architecture. Set-wide
+resolution over 256 ceiling-sized module **summaries** was measured at
+`52.01 MiB`; the executable path is to be phased module by module;
+`ModuleEntry::summarize()` returns an *owned* summary precisely so the parse
+tree can be dropped at once; and `check_module_summaries()` exists so that
+resolution never needs a tree at all.
 
-**This ADR does not choose a smaller cap.** Doing so would be picking a number
-to fit a grant, which is the failure mode section 2 exists to prevent, and it is
-a decision about the conformance profile rather than about memory. What this ADR
-records is that one is needed: either the implementation declares a conformance
-profile with a closure cap it can honour on the reference platform, or the
-reference platform stops being where the full ceiling is claimed. Both are Level
-2 decisions and neither is taken here.
+`execute_set` did none of that. It parsed every module and held every tree for
+the whole run, then accumulated every lowered module beside them. The phase
+breakdown, on ceiling-sized modules, attributes the slope:
+
+| Retained object | Per ceiling-sized module |
+|---|---:|
+| normalized `SourceUnit` | 0.22 MiB |
+| **parse tree (`Schema`)** | **13.99 MiB** |
+| owned summary | 0.19 MiB |
+| **lowered IR (`Module`)** | **15.13 MiB** |
+
+Restoring the discipline — parse, check and summarize one module at a time,
+drop each tree at the end of its turn, resolve over summaries, and re-parse a
+module only to lower it — moved the measured production `execute_set`:
+
+| Ceiling-sized modules | Retaining path | Phased path |
+|---:|---:|---:|
+| 2 | 109.40 MiB | **92.83 MiB** |
+| 4 | 160.07 MiB | **118.16 MiB** |
+| 8 | 261.25 MiB | **168.76 MiB** |
+| 16 | 460.00 MiB | **268.15 MiB** |
+
+`25.03 MiB` per module became `12.52 MiB`, which is the lowered IR and no
+longer the trees.
+
+**So `~6.3 GiB` is retained here only as an extrapolation of the retaining
+implementation path, and explicitly not as the necessary cost of TOS Core V1.**
+The phased path extrapolates to about `3.2 GiB` at 256 modules — still far past
+this platform, and still an extrapolation of an implementation that keeps every
+lowered module alive because `run_set` is handed the whole set at once.
+
+Whether that last component is reducible is the open question, and it is left
+open here rather than answered by rebuilding the engine as a side effect of a
+memory measurement. **No lower conformance cap is introduced.** One becomes a
+question only if a bounded, phased implementation still shows an irreducible
+requirement incompatible with ADR-0040, and nothing measured so far shows that.
 
 ## 7. Four processes, and what binds next
 
@@ -21167,11 +21199,15 @@ that is not arithmetic on paper — the ADR-0067 lifecycle gate now reaches
 `TOS.RUN.PROCESS_REFUSED reason=no-slot uncollected=3`, which is only reachable
 when the fourth slot is occupied rather than unaffordable.
 
-**Memory is what binds next, through the process table.** At a grant much above
-`55.3 MiB` the fourth process stops fitting, and the refusal changes from
-`reason=no-slot` to `reason=no-grant`. So the two declared numbers —
-`MAX_PROCESSES = 4` and the grant size — are one decision with two names, and
-raising either lowers the other.
+**Memory is what binds next, through the process table.** At a grant of roughly
+`55 MiB` or more the fourth process stops fitting, and the refusal changes from
+`reason=no-slot` to `reason=no-grant`. The figure is **approximate on purpose**:
+a larger grant is also more page tables, so the per-process overhead above the
+grant is itself a function of the grant, and the crossing point moves with it.
+
+`MAX_PROCESSES` and the grant size are therefore **jointly constrained by the
+ADR-0040 memory budget** — neither can be raised without lowering the other on
+this platform, and neither number means anything without the other beside it.
 
 ## What this ADR does not decide
 

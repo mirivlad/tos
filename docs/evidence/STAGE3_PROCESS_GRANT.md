@@ -55,6 +55,43 @@ Least squares over those four points: **`25.03 MiB` per module** above a base of
 **`59.94 MiB`**, linear across the measured range — the residuals are under a
 megabyte at every point.
 
+## Where the slope came from, and what removing it did
+
+The slope above was measured against `execute_set` **as it was**: it parsed
+every module and held every parse tree for the whole run, then accumulated every
+lowered module beside them. Walking the same phases on the same fixture and
+reading the arena between them attributes it, per ceiling-sized module:
+
+| Retained object | Per module |
+|---|---:|
+| normalized `SourceUnit` | 0.22 MiB |
+| **parse tree (`Schema`)** | **13.99 MiB** |
+| owned summary | 0.19 MiB |
+| **lowered IR (`Module`)** | **15.13 MiB** |
+
+The parse-tree figure is the one `STAGE2_ARENA_BOUND.md` already published —
+`14 040 464 B` per ceiling-sized module — and the summary is `74x` smaller,
+which is why that evidence has `summarize()` return an owned value and
+`check_module_summaries()` take no tree.
+
+`execute_set` now does what that architecture says: parse, check and summarize
+one module at a time, drop each tree at the end of its turn, resolve over
+summaries, and build a tree again only to lower the module it belongs to — a
+second run of the same deterministic parser over the same normalized bytes, with
+every frontend and verifier boundary intact.
+
+| Ceiling-sized modules | Retaining path | Phased path |
+|---:|---:|---:|
+| 2 | 109.40 MiB | **92.83 MiB** |
+| 4 | 160.07 MiB | **118.16 MiB** |
+| 8 | 261.25 MiB | **168.76 MiB** |
+| 16 | 460.00 MiB | **268.15 MiB** |
+
+`25.03 MiB` per module became **`12.52 MiB`**, above a base of `68.09 MiB`. The
+remaining slope is the lowered IR: `run_set` is handed every module of the set
+at once, so every `Module` stays alive until the run ends. Whether that is
+reducible is an open question and is not answered here.
+
 ## What that says about the declared limit
 
 docs/44 §2 requires published numeric limits and permits a lower cap "if
@@ -63,10 +100,16 @@ implementation reports none: `tos_verifier::limits::Limits::default()` is the
 accepted V1 ceiling with `modules: 256`, and `tos_core::MAX_SOURCE_BYTES` is
 `256 KiB`. So the implementation promises the ceiling.
 
-At the measured slope that promise costs `59.94 + 256 x 25.03 ≈ 6 468 MiB`,
-about **`6.3 GiB`** — roughly twenty-five times the whole ADR-0040 reference
-platform, which has `256 MiB`. The gap is between the promise and the machine,
-not between the promise and the grant.
+Extrapolating the **retaining** path gave about `6.3 GiB`, and that figure is
+retained here only as what that implementation would have cost. It is **not** the
+necessary cost of TOS Core V1: half of it was parse trees the accepted
+architecture says to drop. The phased path extrapolates to about `3.2 GiB`,
+which is still an extrapolation of an implementation that keeps every lowered
+module alive, not a contract requirement either.
+
+No lower conformance cap follows from this. One would become a question only if
+a bounded, phased implementation still showed an irreducible requirement
+incompatible with ADR-0040, and nothing measured so far shows that.
 
 ## The candidate, and its margin
 
@@ -99,13 +142,15 @@ frames.
 
 ## What binds next
 
-**Memory, through the process table.** A grant much above `55.3 MiB` leaves the
-fourth process without one: `(229.8 - 4 x 2.08) / 4 = 55.37 MiB`. Past that the
-refusal changes from `reason=no-slot` to `reason=no-grant`, and `MAX_PROCESSES`
-becomes three in practice while still saying four.
+**Memory, through the process table.** A grant of roughly `55 MiB` or more
+leaves the fourth process without one — `(229.8 - 4 x 2.08) / 4 = 55.37 MiB` —
+after which the refusal changes from `reason=no-slot` to `reason=no-grant` and
+`MAX_PROCESSES` says four while meaning three.
 
-So the process table size and the grant size are one decision with two names.
-Neither can be raised without lowering the other, on this platform.
+The crossing point is **approximate**: a larger grant needs more page tables, so
+the per-process overhead above the grant is itself a function of the grant size.
+`MAX_PROCESSES` and the grant are jointly constrained by the ADR-0040 memory
+budget rather than independently choosable.
 
 ## Reproduction
 

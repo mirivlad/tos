@@ -42,7 +42,10 @@
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use tos_core::{ModuleEntry, ModuleSummary, Parser, Schema, SourceReader, SourceUnit};
+use tos_core::{
+    lower_module_in_set, ModuleContext, ModuleEntry, ModuleSummary, Parser, ResolvedImport, Schema,
+    SourceReader, SourceUnit,
+};
 use tos_pipeline::{execute, execute_set, Request, Run, SetRequest, Silent, Unit, Unreachable};
 use tos_runtime::{GlobalHeap, RuntimeMemoryGrant, GRANT_VERSION};
 
@@ -160,6 +163,17 @@ fn main() {
     // The published ceiling, in its own process for the same reason every other
     // bound gets one: a frontier that never falls would otherwise carry another
     // measurement's high-water mark into this one.
+    if std::env::args().any(|argument| argument == "--phases") {
+        println!("TOS implementation-arena bound: phase breakdown");
+        println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
+        let modules = std::env::args()
+            .skip_while(|argument| argument != "--modules")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(8);
+        phase_breakdown(modules, SOURCE_CEILING);
+        return;
+    }
     if std::env::args().any(|argument| argument == "--ceiling") {
         println!("TOS implementation-arena bound: execute_set at the published ceiling");
         println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
@@ -461,6 +475,163 @@ fn an_executed_closure(sizes: &[usize]) -> Vec<(usize, usize)> {
         measured.push((count, after.frontier));
     }
     measured
+}
+
+/// Where the arena goes, phase by phase, on the ceiling-sized closure.
+///
+/// Diagnostic, not conformance. It walks the same phases `execute_set` walks,
+/// in the same order, on the same fixture, and reads the arena between them —
+/// which `execute_set` itself cannot be asked to do without instrumenting
+/// production code. What it is for is attribution: a linear cost per module is
+/// a fact, and *which retained object* is linear is a different fact.
+fn phase_breakdown(count: usize, unit_bytes: usize) {
+    println!();
+    println!("== phases, {count} modules of {unit_bytes} bytes ==");
+    let dependencies: Vec<String> = (1..count)
+        .map(|index| canonical_module_calling(index, unit_bytes))
+        .collect();
+    let entry = entry_summing(count - 1, unit_bytes);
+    let paths: Vec<String> = (1..count).map(module_path).collect();
+    let mut units = vec![Unit {
+        path: "set/entry.tos",
+        bytes: entry.as_bytes(),
+    }];
+    for (index, text) in dependencies.iter().enumerate() {
+        units.push(Unit {
+            path: &paths[index],
+            bytes: text.as_bytes(),
+        });
+    }
+    let corpus = arena();
+    mark("corpus (capsule bytes in TOS, not grant)", corpus, corpus);
+
+    // Read: normalized source units, which is what the frontend works on.
+    let mut sources = Vec::with_capacity(units.len());
+    for unit in &units {
+        let source = SourceReader::read(unit.bytes).expect("the fixture is valid");
+        sources.push(source);
+    }
+    let after_read = arena();
+    mark("after read (SourceUnit x N)", corpus, after_read);
+
+    // Parse: the trees. This is the object the accepted architecture says a
+    // caller may drop as soon as it has a summary.
+    let mut schemas = Vec::with_capacity(sources.len());
+    for source in &sources {
+        let parsed = Parser::parse_schema(source);
+        schemas.push(parsed.into_accepted().expect("the fixture parses"));
+    }
+    let after_parse = arena();
+    mark("after parse (Schema x N)", after_read, after_parse);
+
+    let entries: Vec<ModuleEntry<'_>> = sources
+        .iter()
+        .zip(schemas.iter())
+        .zip(units.iter())
+        .map(|((source, schema), unit)| ModuleEntry::new(unit.path, source, schema))
+        .collect();
+    let after_entries = arena();
+    mark("after entries", after_parse, after_entries);
+
+    for entry in &entries {
+        let diagnostics = entry.check();
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|d| d.severity() == tos_core::Severity::Error),
+            "the fixture checks clean"
+        );
+    }
+    let after_check = arena();
+    mark("after per-module check", after_entries, after_check);
+
+    let summaries: Vec<ModuleSummary> = entries.iter().map(|entry| entry.summarize()).collect();
+    let after_summaries = arena();
+    mark("after summaries (owned)", after_check, after_summaries);
+
+    let diagnostics = tos_core::check_module_summaries(&summaries);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|d| d.severity() == tos_core::Severity::Error),
+        "the set resolves"
+    );
+    let after_resolution = arena();
+    mark(
+        "after set resolution over summaries",
+        after_summaries,
+        after_resolution,
+    );
+
+    // Lowering, in dependency order: the fixture's entry is unit 0 and imports
+    // every other, so the dependencies are lowered first and the entry last.
+    let names: Vec<String> = entries.iter().map(|entry| entry.summarize().name).collect();
+    let mut lowered: Vec<(usize, tos_ir::Module)> = Vec::with_capacity(entries.len());
+    let order: Vec<usize> = (1..entries.len()).chain(core::iter::once(0)).collect();
+    let mut lowering_marks = Vec::new();
+    for &index in &order {
+        let context = ModuleContext {
+            source_set: "tos-arena-bound".to_string(),
+            path: entries[index].path().to_string(),
+            content_id: tos_pipeline::content_id(sources[index].bytes()),
+            dependency_digest: tos_pipeline::list_digest(&[]),
+            capability_interface_digest: tos_pipeline::list_digest(&[]),
+        };
+        let imports: Vec<ResolvedImport<'_>> = lowered
+            .iter()
+            .map(|(at, module)| ResolvedImport {
+                name: names[*at].as_str(),
+                module,
+            })
+            .collect();
+        let module = lower_module_in_set(&sources[index], &schemas[index], &context, &imports)
+            .expect("the fixture lowers");
+        lowered.push((index, module));
+        lowering_marks.push(arena().frontier);
+    }
+    let after_lowering = arena();
+    mark(
+        "after lowering (Module x N)",
+        after_resolution,
+        after_lowering,
+    );
+    if lowering_marks.len() > 2 {
+        let first = lowering_marks[0] - after_resolution.frontier;
+        let last =
+            lowering_marks[lowering_marks.len() - 1] - lowering_marks[lowering_marks.len() - 2];
+        println!(
+            "  first lowering +{} B ({:.2} MiB); last lowering +{} B ({:.2} MiB)",
+            first,
+            mib(first),
+            last,
+            mib(last)
+        );
+    }
+
+    println!(
+        "  by phase delta: sources {:.2} MiB, parse trees {:.2} MiB, summaries {:.2} MiB (committed), lowered IR {:.2} MiB",
+        mib(after_read.frontier - corpus.frontier),
+        mib(after_parse.frontier - after_read.frontier),
+        mib(after_summaries.committed - after_check.committed),
+        mib(after_lowering.frontier - after_resolution.frontier)
+    );
+    println!(
+        "  per module: parse tree {:.2} MiB, summary {:.2} MiB, lowered IR {:.2} MiB",
+        mib((after_parse.frontier - after_read.frontier) / count),
+        mib((after_summaries.committed - after_check.committed) / count),
+        mib((after_lowering.frontier - after_resolution.frontier) / count)
+    );
+}
+
+/// One phase boundary.
+fn mark(what: &str, before: Arena, now: Arena) {
+    println!(
+        "  {what:<44} committed {:>12} B  frontier {:>12} B (+{} B, {:.2} MiB)",
+        now.committed,
+        now.frontier,
+        now.frontier - before.frontier,
+        mib(now.frontier - before.frontier)
+    );
 }
 
 /// The full promise, measured: `execute_set` over the published ceiling.
