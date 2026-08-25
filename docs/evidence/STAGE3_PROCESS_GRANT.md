@@ -92,6 +92,48 @@ remaining slope is the lowered IR: `run_set` is handed every module of the set
 at once, so every `Module` stays alive until the run ends. Whether that is
 reducible is an open question and is not answered here.
 
+## What the remaining slope is made of
+
+The `12.52 MiB` per module that survived the phasing is the lowered IR, and the
+next question is what *that* is: semantic content, or this representation
+carrying it. Measured per lowered `tos_ir::Module` on the same fixture, with
+`canonical_stream` used **only** as a density estimate of the semantic payload —
+docs/43 has deliberately not fixed an on-disk encoding and nothing here proposes
+one:
+
+| | Live `Module` | Canonical stream | Ratio |
+|---|---:|---:|---:|
+| a ceiling-sized dependency | 12.10 MiB | 5.26 MiB | **2.3x** |
+| the entry (more functions) | 19.18 MiB | 8.41 MiB | **2.3x** |
+| 8-module closure, total | 104.03 MiB | 45.24 MiB | **2.3x** |
+
+The ratio is the same at 2, 4 and 8 modules, so it is a property of the
+representation rather than of the fixture.
+
+Table counts for one ceiling-sized dependency module: `2 268` types, `2 268`
+exports, `2 268` functions, `2 268` blocks, `6 801` instructions, `9 068` SSA
+values, `1` constant, and **`11 338` source-map entries**.
+
+And the source map is where the repetition lives. Each `SourceMapEntry` owns six
+`String`s — source set, path, content id, frontend identity, language version
+and normalization baseline — of which five name the *module*, not the operation:
+
+| | Strings held | Distinct bytes | Repetition |
+|---|---:|---:|---:|
+| dependency module | 1 666 686 B (1.59 MiB) | **147 B** | 11 338x |
+| entry module | 3 198 450 B (3.05 MiB) | **150 B** | 21 323x |
+
+So `13–16 %` of a live module is one hundred and fifty bytes of text, written
+out once per lowered operation.
+
+**The answer to "how much of a live module is meaning".** Of about `15 MiB`
+live per ceiling-sized module, roughly `6.5 MiB` is canonical semantic stream
+and roughly `8.5 MiB` is this representation carrying it — `Vec` capacity slack,
+per-node struct padding, `String` headers, and the repeated identity text above.
+
+This is diagnostic. What to do about it is ADR-0070's question, and the engine is
+not touched until that is decided.
+
 ## What that says about the declared limit
 
 docs/44 §2 requires published numeric limits and permits a lower cap "if

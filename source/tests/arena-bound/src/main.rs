@@ -163,6 +163,17 @@ fn main() {
     // The published ceiling, in its own process for the same reason every other
     // bound gets one: a frontier that never falls would otherwise carry another
     // measurement's high-water mark into this one.
+    if std::env::args().any(|argument| argument == "--ir") {
+        println!("TOS implementation-arena bound: lowered IR breakdown");
+        println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
+        let modules = std::env::args()
+            .skip_while(|argument| argument != "--modules")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2);
+        ir_breakdown(modules, SOURCE_CEILING);
+        return;
+    }
     if std::env::args().any(|argument| argument == "--phases") {
         println!("TOS implementation-arena bound: phase breakdown");
         println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
@@ -475,6 +486,151 @@ fn an_executed_closure(sizes: &[usize]) -> Vec<(usize, usize)> {
         measured.push((count, after.frontier));
     }
     measured
+}
+
+/// What a lowered module is made of: semantic payload against representation.
+///
+/// Diagnostic. `canonical_stream` is used here **only** as a density estimate
+/// for the semantic content — docs/43 has deliberately not fixed an on-disk
+/// encoding, and nothing here proposes one. The question it answers is narrow:
+/// of the live bytes a `tos_ir::Module` occupies, how many are the module's
+/// meaning and how many are this representation carrying it.
+fn ir_breakdown(count: usize, unit_bytes: usize) {
+    println!();
+    println!("== lowered IR, {count} modules of {unit_bytes} bytes ==");
+    let dependencies: Vec<String> = (1..count)
+        .map(|index| canonical_module_calling(index, unit_bytes))
+        .collect();
+    let entry = entry_summing(count.max(2) - 1, unit_bytes);
+    let paths: Vec<String> = (1..count).map(module_path).collect();
+    let mut units = vec![Unit {
+        path: "set/entry.tos",
+        bytes: entry.as_bytes(),
+    }];
+    for (index, text) in dependencies.iter().enumerate() {
+        units.push(Unit {
+            path: &paths[index],
+            bytes: text.as_bytes(),
+        });
+    }
+    let mut sources = Vec::with_capacity(units.len());
+    for unit in &units {
+        sources.push(SourceReader::read(unit.bytes).expect("the fixture is valid"));
+    }
+    let summaries: Vec<ModuleSummary> = sources
+        .iter()
+        .zip(units.iter())
+        .map(|(source, unit)| {
+            let parsed = Parser::parse_schema(source);
+            let schema = parsed.into_accepted().expect("the fixture parses");
+            ModuleEntry::new(unit.path, source, &schema).summarize()
+        })
+        .collect();
+    let names: Vec<String> = summaries.iter().map(|s| s.name.clone()).collect();
+
+    let mut lowered: Vec<(usize, tos_ir::Module)> = Vec::with_capacity(units.len());
+    let order: Vec<usize> = (1..units.len()).chain(core::iter::once(0)).collect();
+    let mut live_total = 0usize;
+    let mut stream_total = 0usize;
+    for &index in &order {
+        let context = ModuleContext {
+            source_set: "tos-arena-bound".to_string(),
+            path: summaries[index].path.clone(),
+            content_id: tos_pipeline::content_id(sources[index].bytes()),
+            dependency_digest: tos_pipeline::list_digest(&[]),
+            capability_interface_digest: tos_pipeline::list_digest(&[]),
+        };
+        let imports: Vec<ResolvedImport<'_>> = lowered
+            .iter()
+            .map(|(at, module)| ResolvedImport {
+                name: names[*at].as_str(),
+                module,
+            })
+            .collect();
+        let before = arena();
+        let reparsed = Parser::parse_schema(&sources[index]);
+        let schema = reparsed.into_accepted().expect("the fixture parses");
+        let module = lower_module_in_set(&sources[index], &schema, &context, &imports)
+            .expect("the fixture lowers");
+        drop(schema);
+        let after = arena();
+        let live = after.committed.saturating_sub(before.committed);
+        let stream = tos_ir::canonical_stream(&module).len();
+        live_total += live;
+        stream_total += stream;
+        report_module(index, live, stream, &module);
+        lowered.push((index, module));
+    }
+    println!();
+    println!(
+        "  totals: live {} B ({:.2} MiB); canonical stream {} B ({:.2} MiB); ratio {:.1}x",
+        live_total,
+        mib(live_total),
+        stream_total,
+        mib(stream_total),
+        live_total as f64 / stream_total.max(1) as f64
+    );
+}
+
+/// One lowered module, counted.
+fn report_module(index: usize, live: usize, stream: usize, module: &tos_ir::Module) {
+    let blocks: usize = module.functions.iter().map(|f| f.blocks.len()).sum();
+    let instructions: usize = module
+        .functions
+        .iter()
+        .flat_map(|f| f.blocks.iter())
+        .map(|b| b.instructions.len())
+        .sum();
+    let values: usize = module.functions.iter().map(|f| f.values.len()).sum();
+    // The source map's own strings, and how much of them is the same text
+    // repeated. Six owned strings per entry, and five of them name the module
+    // rather than the operation.
+    let mut map_bytes = 0usize;
+    let mut unique = std::collections::BTreeSet::new();
+    for entry in &module.source_map {
+        for text in [
+            &entry.source_set,
+            &entry.path,
+            &entry.content_id,
+            &entry.frontend_identity,
+            &entry.language_version,
+            &entry.unicode_normalization_baseline,
+        ] {
+            map_bytes += text.len();
+            unique.insert(text.clone());
+        }
+    }
+    let unique_bytes: usize = unique.iter().map(|text| text.len()).sum();
+    println!(
+        "  module {index:>3}: live {:>11} B ({:>6.2} MiB)  stream {:>10} B ({:>5.2} MiB)  {:>5.1}x",
+        live,
+        mib(live),
+        stream,
+        mib(stream),
+        live as f64 / stream.max(1) as f64
+    );
+    println!(
+        "            types {:>5} imports {:>4} cap-imports {:>3} exports {:>5} constants {:>5}",
+        module.types.len(),
+        module.imports.len(),
+        module.capability_imports.len(),
+        module.exports.len(),
+        module.constants.len()
+    );
+    println!(
+        "            functions {:>5} blocks {:>6} instructions {:>7} ssa values {:>7}",
+        module.functions.len(),
+        blocks,
+        instructions,
+        values
+    );
+    println!(
+        "            source map {:>6} entries; strings {:>10} B, of which distinct {:>8} B ({:.0}x repeated)",
+        module.source_map.len(),
+        map_bytes,
+        unique_bytes,
+        map_bytes as f64 / unique_bytes.max(1) as f64
+    );
 }
 
 /// Where the arena goes, phase by phase, on the ceiling-sized closure.
