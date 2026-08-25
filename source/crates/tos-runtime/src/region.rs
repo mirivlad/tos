@@ -32,18 +32,29 @@ pub const MAX_GRANT: usize = 96 * 1024 * 1024;
 /// was first and failed because it was fourth would report a fact about
 /// scheduling as though it were a fact about the program.
 ///
-/// The number comes from measurement, not from taste.
-/// `docs/evidence/STAGE2_ARENA_BOUND.md` measured the reference path's arena
-/// high-water mark at **52.01 MiB** for its worst case — set-wide resolution
-/// over derived summaries with 256 ceiling-sized modules — and `peak_extent`
-/// is a bound that errs upward by construction. This is that, rounded up to a
-/// whole 54 MiB.
+/// **Provisional candidate, not a ratified size** (ADR-0069, Proposed).
+///
+/// The number is the measured single-module bound with rounding, and what it
+/// covers is stated precisely because the first version of this comment
+/// overstated it. `docs/evidence/STAGE2_ARENA_BOUND.md` measures two different
+/// things: `resolution_over_summaries` reports **committed** live state —
+/// 52.01 MiB — while `one_module_at_the_ceiling` and `an_executed_closure`
+/// report the **frontier**, the arena high-water mark, which is the figure a
+/// grant has to cover. The frontier for one module at the published 256 KiB
+/// ceiling is **50.33 MiB**, and this is that rounded up.
+///
+/// It does **not** cover a multi-module closure of ceiling-sized modules:
+/// measured through the production `execute_set`, that costs about 25 MiB per
+/// module above a base near 60 MiB, so even two of them exceed this. What the
+/// implementation currently *declares* — `tos_verifier::limits::Limits::default`
+/// with 256 modules — would need something over six gigabytes. ADR-0069 carries
+/// that gap; this constant does not pretend to close it.
 ///
 /// It is also what makes the declared process table usable: the reference
 /// platform has 256 MiB, of which about 230 reach the pool, and four processes
 /// at this size fit inside it with room for their stacks, records and page
-/// tables. At [`MAX_GRANT`] — which is a ceiling, never a target — the second
-/// process would not start.
+/// tables. At [`MAX_GRANT`] — a ceiling, never a target — the second process
+/// would not start.
 pub const RUNTIME_GRANT: usize = 54 * 1024 * 1024;
 
 /// The smallest region that will be granted.
