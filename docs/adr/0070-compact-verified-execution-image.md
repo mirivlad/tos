@@ -1,23 +1,23 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 
-# ADR-0070: A compact verified execution image, as a derived cache
+# ADR-0070: A compact verified module image
 
 - Status: **Proposed**
 - Date: 2026-08-25
-- Decision level: 2 — it adds a derived artifact between the verifier and the
-  engine, and a rule about what may be trusted from it. It changes no TOS Core
-  semantics, no ABI operation and no invariant
+- Decision level: 2 — it adds a bounded, versioned encoding of `tos-ir/v1` that
+  the verifier reads and the engine executes. It changes no TOS Core semantics,
+  no ABI operation and no invariant
 - Project Architect approval: **not given; this ADR proposes, it does not decide**
 - Evidence: `docs/evidence/STAGE3_PROCESS_GRANT.md`
-- Related: ADR-0069 (Proposed) measures the memory this is about; docs/43 fixes
-  the IR contract and has deliberately **not** fixed an on-disk encoding
+- Related: ADR-0044 (Proposed) — digest scheme v2, whose stated operational
+  reason has now arrived; ADR-0069 (Proposed) — the grant this measurement came
+  from; docs/43 §1, whose obligations any persisted form must meet
 
 ## The gap, stated once
 
-`execute_set` holds every lowered module alive for the whole run, because
-`run_set` is handed the whole set at once. After the frontend was phased
-(ADR-0069 §6) that is what remains of the arena's slope: `12.52 MiB` per
-ceiling-sized module.
+`execute_set` holds every lowered module alive for the whole run, and after the
+frontend was phased (ADR-0069 §6) that is what remains of the arena's slope:
+`12.52 MiB` per ceiling-sized module.
 
 Measured, that live cost is mostly not the module's meaning:
 
@@ -34,112 +34,163 @@ operation.
 So of `~15 MiB` live, about `6.5 MiB` is semantic payload and about `8.5 MiB` is
 the in-memory representation carrying it.
 
-`canonical_stream` is used above **as a density estimate only**. docs/43 has not
-fixed an on-disk encoding, and this ADR does not fix one either.
-
 ## Decision
 
-### 1. A verified execution image, produced after verification
+### 1. The encoding is untrusted input to the verifier, not a verified output
 
-The pipeline may produce, for a module that has been verified, a **compact
-immutable execution image**: the same semantics in a representation built for
-being held and executed rather than for being constructed and edited.
+The trust chain is:
 
-It is produced **after** the verifier, from what the verifier saw, and it
-carries the receipt that was issued for it. Nothing about the frontend or the
-verifier moves: the image is downstream of both.
+```text
+source -> lower -> untrusted compact encoding -> verifier -> receipt -> engine
+```
 
-### 2. It is a derived cache, and the source stays canonical
+The compact form is produced **before** verification and is treated as hostile
+bytes until the verifier has read it, exactly as any other external input is
+(docs/34). The verifier checks **that representation** — not a `Module` some
+other code decoded and vouched for — and issues a receipt bound to two things:
+the **semantic module digest** and the **exact artifact identity** of the bytes
+it read. The engine executes the verified image, or a view over it.
 
-The image is a **derived artifact** in the sense AGENTS.md §9 already fixes for
-this project: traceable to its source inputs, commit, builder version and output
-digest; deletable at any time; and **fully regenerable from source**. Deleting
-every image must not remove system functionality — only speed.
+This replaces the shape the first draft of this ADR proposed, which produced an
+image after verification and then had to choose between verifying it again and
+trusting a binding. That choice is removed rather than answered: a cache that is
+trusted because of who made it is the failure this decision exists to prevent,
+and re-verifying an artifact the verifier had already approved is work done to
+undo an ordering that was wrong.
 
-The canonical form remains the source text. An image is never a second source of
-truth, is never edited, and is never the thing a module's identity is computed
-from.
+### 2. A persisted form meets docs/43 §1, in full
 
-### 3. Digest-bound, and the verifier boundary is not bypassed
+Whatever bytes exist on the wire or on storage carry:
 
-An image is named by the digests it is derived from — the module digest the IR
-contract already defines, the verifier receipt's identity, and the builder's —
-so an image that does not belong to the module being run cannot be mistaken for
-one that does.
+- a **magic** that identifies the format;
+- an **encoding version**, independent of `tos-ir/v1`'s semantic version, so a
+  reader knows how to interpret before it knows what it holds;
+- **explicit length and table bounds**, checked before any allocation sized from
+  them — the parser is total over arbitrary bytes and never sizes a read from a
+  number it has not bounded;
+- **canonical rules**: one encoding per value, so two encoders that agree on the
+  meaning agree on the bytes;
+- **unknown-field and unknown-version behaviour, failing closed** — a reader
+  that meets something it does not know refuses rather than skipping;
+- an **artifact digest** over the bytes themselves, distinct from the semantic
+  digest of §3;
+- **parser negative tests** as a condition of acceptance, not as follow-up work.
 
-**Loading an image is not a way to skip verification.** Either the image is
-verified on load with the same verifier, or it is bound to a receipt that was
-issued for exactly these bytes and the binding is checked before use. Which of
-those two is the mechanism is the substance of this decision and needs the
-Project Architect's choice; what is not open is that an unverified image may
-never execute, and that a cache may never become the reason something ran
-unchecked.
+### 3. One canonical semantic representation, shared with ADR-0044
 
-### 4. What it is expected to buy, and what would prove it
+ADR-0044 proposes digest scheme v2 — canonical varints, and **module-level
+identity referenced rather than repeated** — and says in as many words that it
+is "waiting on an operational reason, such as receipt or cache persistence,
+boot-time pressure, many modules, or transport over storage or a network". Three
+of those four have now arrived, measured.
 
-The measured `2.3x` and the repeated identity text are the target: an image that
-interned module identity once instead of once per operation, and held tables
-without construction slack, would carry the same meaning in something near the
-canonical stream's density.
+**Two encodings must not be invented.** Either the image *is* ADR-0044's v2
+canonical semantic representation inside the frame of §2, or the image's
+verifier independently recomputes the same versioned semantic digest from what
+it read. Anything else leaves two canonical forms that must be proved equivalent
+to each other forever, by every future implementation.
 
-**No number is claimed here.** The claim to make is a measurement of the same
-fixture with the image in place, against the figures in
-`docs/evidence/STAGE3_PROCESS_GRANT.md`, and it belongs in this ADR before it is
-accepted rather than after.
+Source-map identity interning belongs to that shared representation. **Logically
+every source-map entry still carries the docs/43 fields it carries today**;
+physically the five that name the module reference one module-identity record.
+The contract's content does not change; its repetition does.
+
+### 4. This ADR is about the density of one module, and promises nothing about a closure
+
+It decides how much memory **one verified module image** costs. It does **not**
+propose that a whole dependency closure be resident.
+
+The arithmetic that rules that out is already in hand: eight canonical streams
+of ceiling-sized modules are `45.24 MiB`, so extrapolating today's density to
+256 modules is on the order of **`1.35 GiB`**. That is not a bound on a future
+encoding — a better encoding is exactly what §3 is for — but it is enough to say
+that "make the modules smaller and keep them all" is not an answer to the grant
+question, and this ADR does not offer it as one.
+
+### 5. Bounded residency is a required follow-up, not an alternative
+
+A separate ADR must define **bounded verified-module residency**: how many
+verified modules an execution may hold at once, and what supplies the rest.
+
+Its shape is constrained here so that the follow-up cannot quietly become an
+ambient authority:
+
+- the supplier is an **explicit argument to the engine**, never a global, a
+  default, or something the engine reaches for on its own;
+- it is **constrained to the exact resolved closure and identities** the run was
+  given — a provider that could return a module the resolution did not name
+  would be module search by another name;
+- **no ambient filesystem, network or module search**, and no path the engine
+  can walk to find something it was not handed.
+
+This is listed as a requirement rather than an alternative because it answers a
+different question. Density and residency multiply; neither substitutes for the
+other.
+
+### 6. What must be measured before this is accepted
+
+A prototype encoder, parser and verifier path, built for measurement and **not**
+switched into the production engine, reporting for a ceiling-sized module:
+
+1. image byte size;
+2. reduction against the live `Module`;
+3. reduction against the current canonical stream;
+4. verifier peak memory while checking the image;
+5. encode, decode and verify time;
+6. the source-map identity contribution after interning;
+7. negatives: malformed, truncated, oversized, unknown-version and wrong-digest
+   inputs, each refused.
+
+No number is claimed in this ADR. The claim belongs in the evidence, before
+acceptance rather than after it.
 
 ## What this ADR does not decide
 
-- **Not an on-disk encoding for docs/43.** `canonical_stream` was a measuring
-  stick, not a proposal. A persisted format is its own decision.
-- **Not streaming or lazy execution.** Whether `run_set` must hold every module
-  at once is a separate question about the engine, and it is deliberately left
-  where it is: the engine is not rebuilt as a side effect of a memory
-  measurement.
-- **Not a conformance cap.** Nothing here narrows what the implementation
-  promises.
+- **Not the engine.** `run_set` is not rebuilt here, and no integration happens
+  before §6's evidence exists.
+- **Not residency.** §5 is a requirement on a later decision, not a design.
 - **Not the grant size.** ADR-0069 stays Proposed and `54 MiB` stays
-  provisional; if this ADR is accepted and implemented, the grant question is
-  re-measured rather than re-argued.
+  provisional; the grant is re-measured once this and residency are settled,
+  not re-argued.
+- **Not ADR-0044's acceptance.** That decision remains its own; this ADR states
+  that the two must share one representation, not that either is approved.
 
 ## Architecture impact statement
 
-- **Change level:** 2. **Invariants affected:** none amended. I-02's canonical
-  source and the source-to-runtime chain are served only if §2 and §3 hold —
-  which is why they are the decision rather than optimisation notes.
-- **Canonical representation:** unchanged. The image is derived; the text is
-  canonical.
-- **Trusted-base impact:** an additional representation the engine can execute.
-  Its safety rests entirely on §3: a binding that is checked, or a verification
-  that is repeated. A third option — trusting the cache because it is ours — is
-  the failure this ADR exists to forbid.
-- **Source-to-runtime impact:** the chain gains a link, and the link is
-  digest-bound in both directions. Provenance must be able to answer "which
-  source, which verifier, which builder" for an image as it can for a capsule.
-- **Recovery and rollback impact:** deleting the cache is always safe, by §2.
+- **Change level:** 2. **Invariants affected:** none amended. The canonical form
+  remains the source text; an image is derived from it and is regenerable.
+- **Canonical representation:** unchanged. A module's identity is still computed
+  from its source, and an image never becomes a second source of truth.
+- **Trusted-base impact:** a new parser that reads untrusted bytes — which is
+  why §2's obligations are the decision rather than notes attached to it. The
+  verifier's position in the chain does not move; what it reads does.
+- **Source-to-runtime impact:** the chain gains an artifact, and both digests —
+  semantic and artifact — travel with the receipt, so "which source, which
+  bytes, which verifier" stays answerable.
+- **Recovery and rollback impact:** an image is derived and deletable; deleting
+  every image costs speed and no functionality (AGENTS.md §9).
 - **Stage identity gate:** none claimed.
-- **Threat-model impact:** a cache is an attack surface — a poisoned or stale
-  image that executed would be a verified-looking path to unverified code.
-  Negative tests are required: an image whose digest does not match, one bound
-  to another module's receipt, and one whose builder identity is unknown, must
-  all be refused rather than regenerated silently.
-- **Performance contract:** the point of the change is memory, and the measured
-  claim of §4 is what would have to be produced. Any effect on the Stage 3 IPC
-  path is not expected and would be measured, not assumed.
+- **Threat-model impact:** the parser is a new attack surface and is treated as
+  one: total over arbitrary bytes, bounds before allocation, fail-closed on
+  unknown versions, and negative tests required before acceptance. A poisoned,
+  stale or foreign image must be refused by the verifier, not by convention.
+- **Performance contract:** the change is about memory; encode/decode/verify
+  time is measured in §6 rather than assumed, because a smaller image bought
+  with a slower verifier is a trade this project states rather than takes.
 - **Dependencies, licence, patents:** none.
 
 ## Alternatives considered
 
-**Intern the source-map strings and leave the representation otherwise alone.**
-This is the cheap part of the win — `13–16 %` of a live module — and it needs no
-new artifact at all. It should probably be done regardless; it is listed as an
-alternative because it is *not* a substitute for §1, and because doing only it
-would leave the `2.3x` in place.
+**Intern the source-map identity and change nothing else.** The cheap part of
+the win — `13–16 %` of a live module — and it needs no new artifact. It is not a
+substitute: it leaves the `2.3x` in place, and under §3 the interning is part of
+the shared representation anyway rather than a separate change to argue about.
 
-**Make `run_set` stream modules instead of holding them.** A different answer to
-the same measurement, and possibly a better one. It is an engine change, and the
-data to choose between them is not in hand — which is why this ADR proposes the
-representation and explicitly leaves the engine alone.
+**Keep the current in-memory form and accept the cost.** Understood and
+measured, and it makes the grant question harder every time the closure grows.
+Rejected as a default rather than as a possibility: it is what happens if
+nothing is decided.
 
-**Do nothing until the grant question forces it.** Rejected as a way of
-deciding: the grant size would then be chosen around an implementation's
-retention, which is what ADR-0069 §2 exists to prevent.
+**Invent a compact encoding independent of the digest scheme.** Rejected in §3.
+Two canonical forms would have to be proved equivalent by every implementation
+that ever reads either.
