@@ -2414,18 +2414,22 @@ status_present={} generation_present={} generation={}",
 
 /// Gives the machine the turns a child needs to run, end and be retired.
 ///
-/// Not `context_yield`: that operation answers `OK` and returns, leaving this
-/// process on the processor. What moves a child along is the timer, and what
-/// turns an ended child into a record is the scheduler's own loop — which runs
-/// when a context blocks or ends, and so runs when the child ends itself.
+/// Two operations, and each does a different half. `context_yield` hands the
+/// processor to the next runnable context — since ADR-0067's implementation it
+/// really does, rather than answering `OK` and keeping it — which is what gets
+/// a freshly created child onto the processor promptly. What turns an *ended*
+/// child into a record is the scheduler's own loop, which a yield also reaches.
 ///
-/// So this waits by the only clock a process has (`time_monotonic`, operation
-/// 11), which counts timer interrupts. Ticks rather than iterations because an
-/// iteration count is a guess about a machine's speed and a tick is not.
+/// The waiting is still measured by the only clock a process has
+/// (`time_monotonic`, operation 11), which counts timer interrupts: ticks
+/// rather than iterations, because an iteration count is a guess about a
+/// machine's speed and a tick is not.
 #[cfg(feature = "test-lifecycle")]
 fn settle() {
     let start = monotonic().unwrap_or(0);
     loop {
+        // SAFETY: `context_yield` is self-only and takes nothing.
+        unsafe { call(CONTEXT_YIELD, 0, 0) };
         match monotonic() {
             Some(now) if now >= start + LIFECYCLE_SETTLE_TICKS => return,
             // No clock is not a reason to spin forever.

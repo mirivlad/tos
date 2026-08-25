@@ -542,10 +542,58 @@ pub fn entries() -> u64 {
 
 /// The lowest runnable slot, or nothing when the table holds no process that
 /// can be given the processor.
-fn first_runnable() -> Option<usize> {
+/// The next runnable context after this one, wrapping.
+///
+/// ADR-0049 §4 says round-robin over runnable contexts, and the timer's
+/// `preempt` has always searched from the running slot. The scheduler's own
+/// loop searched from zero, which was invisible while only a block or an ending
+/// reached it — whoever was resumed had just stopped being runnable. It stops
+/// being invisible the moment a context gives up its quantum while still
+/// runnable: searching from zero would hand it straight back.
+fn next_runnable_after(current: usize) -> Option<usize> {
     // SAFETY: single-context nucleus; nothing else touches the table.
     let table = unsafe { table() };
-    (0..MAX_PROCESSES).find(|index| table[*index].state == State::Runnable)
+    (1..=MAX_PROCESSES)
+        .map(|step| (current + step) % MAX_PROCESSES)
+        .find(|index| table[*index].state == State::Runnable)
+}
+
+/// `context_yield` (`SYSTEM_ABI_V1` §5, operation 10): gives up the rest of the
+/// quantum.
+///
+/// The contract's words are "gives up the rest of the quantum", and until now
+/// the implementation answered `OK` and returned — which gives up nothing: the
+/// caller kept the processor and the call was a no-op with a status. A process
+/// that yielded to let a peer run did not let it run.
+///
+/// So this sets the call down the way a blocking one is set down, with two
+/// differences: the answer is written **now**, because nothing will wake this
+/// context to write it later, and the state stays `Runnable`, because giving up
+/// a turn is not waiting for anything. The scheduler's round-robin does the
+/// rest — and a context that yields with nobody else runnable is simply given
+/// the processor again, which is the honest outcome rather than a special case.
+///
+/// # Safety
+///
+/// `frame` is the running context's own syscall frame.
+// SAFETY: the caller's promise that this is the running context is what makes
+// storing this frame storing a call that can be resumed.
+pub unsafe fn yield_now(frame: &TrapFrame) -> ! {
+    // SAFETY: single-context nucleus with interrupts masked.
+    unsafe {
+        let table = table();
+        table[CURRENT].frame = *frame;
+        crate::syscall::Answer::status(crate::syscall::OK).into_frame(&mut table[CURRENT].frame);
+        // It is still runnable: the scheduler may hand the processor straight
+        // back, and that is a turn taken rather than a wait.
+        //
+        // `resumes_an_operation` is deliberately **not** set. That flag is what
+        // makes the scheduler and the timer count an *IPC* operation's way out
+        // by a door that is not the edge (ADR-0063), and a yield is not an IPC
+        // operation: counting it would put crossings into `IPC_V1` §8's number
+        // that the exchange it bounds never made.
+        process_resume(addr_of_mut!(RETURN), 1)
+    }
 }
 
 /// Ends the running process because it said so (`process_exit`, ADR-0054).
@@ -874,7 +922,9 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
                 unsafe { retire(index) };
             }
         }
-        let next = match first_runnable() {
+        // SAFETY: single-context nucleus; nothing else writes this.
+        let current = unsafe { CURRENT };
+        let next = match next_runnable_after(current) {
             Some(next) => next,
             // Nothing to run. Whether that is the end of the boot or a system
             // that has stopped depends on whether anybody is waiting, and in
