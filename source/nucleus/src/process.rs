@@ -1142,6 +1142,15 @@ fn release_notices_of(parent_instance: u64) {
     let table = unsafe { table() };
     for slot in table.iter_mut() {
         if slot.state == State::Over && slot.notice_pending && slot.parent == parent_instance {
+            // Said out loud. The audit event for this child's ending is already
+            // on the log; what is dropped here is the programmatic notice, and
+            // a record that vanished without a line would leave an operator to
+            // infer it from a slot count.
+            tos_serial::puts(b"TOS.RUN.NOTICE_RELEASED child=");
+            tos_serial::put_u32_decimal(slot.instance as u32);
+            tos_serial::puts(b" parent=");
+            tos_serial::put_u32_decimal(parent_instance as u32);
+            tos_serial::puts(b" reason=parent-ended asserted_by=nucleus\r\n");
             slot.notice_pending = false;
             slot.state = State::Free;
         }

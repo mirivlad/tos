@@ -28,6 +28,16 @@
 #      status a terminated child cannot have;
 #   7. a wait nothing can end is ended by the nucleus, as `E_CANCELLED`.
 #
+# Then a second boot, because the arrangement it needs — a supervisor, a middle
+# parent and a delegated observer — is three live processes, and each memory
+# grant takes the largest contiguous run there is. It demonstrates §9a and §10:
+#
+#   8. an observer holding `wait_child` over *another* process blocks on that
+#      process's children, and is answered `E_CANCELLED` when that process ends,
+#      because the set it subscribed to can gain no further member;
+#   9. an ending its parent never collected is released when the parent itself
+#      ends, rather than holding a slot for a reader that no longer exists.
+#
 #   bash host-tools/qemu-test/lifecycle.sh [OUT_DIR]
 set -euo pipefail
 
@@ -154,7 +164,52 @@ cancelled="$(field 'TOS.RUN.LIFECYCLE.CANCELLED' 'status')"
 # property of the allocator rather than of this decision.
 refusals="$(printf '%s\n' "$log" | grep -c 'TOS.RUN.PROCESS_REFUSED' || true)"
 
+# --- The second boot: a delegated observer, and an uncollected ending ---------
+(cd "$ROOT" && CARGO_TARGET_DIR="$ROOT/target/test-lifecycle-delegate" cargo build --release \
+    -p tos-runtime-image --target x86_64-unknown-none --features test-lifecycle-delegate)
+delegate_image="$ROOT/target/test-lifecycle-delegate/x86_64-unknown-none/release/tos-runtime-image"
+after="$(sha256sum "$PRODUCTION_NUCLEUS" "$PRODUCTION_IMAGE")"
+[ "$before" = "$after" ] ||
+    fail "a production artifact changed while building the delegate image"
+
+bash "$ROOT/host-tools/qemu-test/run.sh" \
+    --out "$OUT-delegate" \
+    --nucleus "$TEST_NUCLEUS" \
+    --runtime-image "$delegate_image" > "$OUT-delegate.log" 2>&1 || {
+        cat "$OUT-delegate.log" >&2
+        fail "the delegated-observer boot did not complete"
+    }
+log="$(tr -c '[:print:]\n' ' ' < "$OUT-delegate/serial.log")"
+
+# 8. The delegated observer waited on a relation it did not own, and was
+#    cancelled with it rather than left blocked or answered with an empty record.
+arranged="$(line 'TOS.RUN.LIFECYCLE.ARRANGED')"
+printf '%s\n' "$arranged" | grep -q "attenuate=$OK watcher=$OK" ||
+    fail "the observer was not endowed with an attenuated authority: $arranged"
+printf '%s\n' "$log" | grep -q 'TOS.RUN.LIFECYCLE.WATCHER waiting=1' ||
+    fail "the observer never reached its wait"
+watcher="$(printf '%s\n' "$log" | sed -n 's/.*WATCHER status=\(-\?[0-9]*\).*/\1/p' | tail -1)"
+[ "$watcher" = "$E_CANCELLED" ] ||
+    fail "a delegated wait answered $watcher when its relation ended, expected $E_CANCELLED"
+
+# The supervisor collected the parent's own ending, which is the ending that
+# cancelled the observer: the two are one event seen from two authorities.
+orphaned="$(line 'TOS.RUN.LIFECYCLE.ORPHANED')"
+printf '%s\n' "$orphaned" | grep -q "collected=$OK " ||
+    fail "the supervisor did not collect the ending it caused: $orphaned"
+printf '%s\n' "$orphaned" | grep -q "kind=$ENDING_TERMINATED" ||
+    fail "the middle parent is not recorded as terminated: $orphaned"
+
+# 9. And the ending nobody was left to collect was released, not kept.
+released="$(line 'TOS.RUN.NOTICE_RELEASED')"
+[ -n "$released" ] ||
+    fail "an uncollected ending survived its parent without being released"
+printf '%s\n' "$released" | grep -q 'reason=parent-ended asserted_by=nucleus' ||
+    fail "the release is not asserted by the nucleus with its reason: $released"
+
 echo "LIFECYCLE PASS: two endings collected in order, identity and generation"
 echo "  carried verbatim, stale authority refused, observation requires the right,"
 echo "  operation 8 asserts no generation, and an unsatisfiable wait is cancelled"
 echo "  ($refusals creation refusal(s) named their bound in the log)"
+echo "  and a second boot: a delegated observer cancelled with the relation it"
+echo "  watched, and an ending nobody was left to collect released rather than kept"

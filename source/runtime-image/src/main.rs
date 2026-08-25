@@ -935,8 +935,20 @@ fn authority(launch: &Launch, report: &mut Report) {
     if first.object == tos_launch::OBJECT_PROCESS {
         #[cfg(not(feature = "test-lifecycle"))]
         supervise(launch, report, first.handle);
+        // ADR-0067's arrangement has three roles and one image. Which one this
+        // process is, is the name its authority was bound to (ADR-0061): the
+        // supervisor was given "control", the middle parent "parent", and the
+        // delegated observer "watch". A role read from a binding is a role
+        // somebody granted; a role read from a slot index would be a guess.
         #[cfg(feature = "test-lifecycle")]
-        lifecycle(launch, report, first.handle);
+        match named(first) {
+            "parent" => lifecycle_parent(launch, report, first.handle),
+            "watch" => lifecycle_watcher(launch, report, first.handle),
+            #[cfg(feature = "test-lifecycle-delegate")]
+            _ => lifecycle_arrangement(launch, report, first.handle),
+            #[cfg(not(feature = "test-lifecycle-delegate"))]
+            _ => lifecycle(launch, report, first.handle),
+        }
     }
 
     // Asking for more than was held yields less, not more (`CAPABILITY_V1`
@@ -2045,13 +2057,184 @@ fn deputy(launch: &Launch, report: &mut Report, own: u64) {
     }
 }
 
+/// The middle of the arrangement: a process with children of its own.
+///
+/// It creates one child, lets it end, and then keeps its ending uncollected on
+/// purpose. When this process is itself ended, that uncollected notice has no
+/// receiver left — ADR-0067 §10 — and the nucleus says so on the log rather
+/// than letting a slot become eternal.
+#[cfg(feature = "test-lifecycle")]
+fn lifecycle_parent(_launch: &Launch, report: &mut Report, _handle: u64) {
+    // It creates nothing. The observer below waits on *this* process's child
+    // relation, and the point of that wait is that nothing can ever satisfy
+    // it: an ending delivered to it would answer the wait rather than test
+    // what happens when the relation itself ends. So this process only has to
+    // be alive, and then not be.
+    report.line("TOS.RUN.LIFECYCLE.PARENT childless=1");
+    loop {
+        settle();
+    }
+}
+
+/// The delegated observer: it watches a relation that is not its own.
+///
+/// `RIGHT_WAIT_CHILD` was delegated to it over another process's object, so the
+/// set it waits on is that process's children. When that process ends, the set
+/// can gain no further member, and ADR-0067 §9a says what the wait gets.
+#[cfg(feature = "test-lifecycle")]
+fn lifecycle_watcher(launch: &Launch, report: &mut Report, handle: u64) {
+    report.line("TOS.RUN.LIFECYCLE.WATCHER waiting=1");
+    let waited = wait_child(launch, handle, false);
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.WATCHER status={} child={}",
+        waited.0,
+        waited.1.child_instance
+    ));
+}
+
+/// Puts a module name where `process_create` reads one.
+#[cfg(feature = "test-lifecycle-delegate")]
+fn write_module_name(launch: &Launch, module: &[u8]) {
+    for (offset, byte) in module.iter().enumerate() {
+        // SAFETY: `arguments_base` names a writable mapping the launcher made,
+        // and the module offset plus a short name is far inside it.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u8>(
+                (launch.arguments_base + tos_launch::CREATE_MODULE) as usize,
+            )
+            .add(offset)
+            .write(*byte)
+        };
+    }
+}
+
+/// ADR-0067 §9a and §10: an observer of somebody else's children, and what
+/// becomes of an ending nobody is left to collect.
+///
+/// Three processes and one image. This one creates a middle parent, gives a
+/// second child the right to watch *that* parent's children, and then ends the
+/// parent. Two things must follow, and neither is arranged by this process:
+///
+///   - the watcher's blocked wait is answered `E_CANCELLED`, because the
+///     relation it subscribed to can gain no further member;
+///   - the ending the parent had not collected is released rather than holding
+///     a slot forever, and the nucleus says so on the log.
+///
+/// A separate boot from the collection scenario because it needs three live
+/// processes at once, and each memory grant takes the largest contiguous run
+/// there is.
+#[cfg(feature = "test-lifecycle-delegate")]
+fn lifecycle_arrangement(launch: &Launch, report: &mut Report, handle: u64) {
+    let module = b"system/boot/init.tos";
+    write_module_name(launch, module);
+    let name_length = module.len() as u64;
+
+    // The middle parent, told by its binding which role it is, and given the
+    // three rights a parent needs over itself.
+    write_self_binding(launch, b"parent");
+    let (parent_status, parent_handle) = create_child_with_rights(
+        handle,
+        name_length,
+        LIFECYCLE_FIRST_GENERATION,
+        u64::from(
+            tos_launch::RIGHT_CREATE | tos_launch::RIGHT_TERMINATE | tos_launch::RIGHT_WAIT_CHILD,
+        ),
+    );
+    let parent_instance = created_instance(launch);
+    settle();
+
+    // The watcher gets one capability: the right to observe the parent's
+    // children, and nothing else — not create, not terminate. Attenuation is
+    // what makes that a subset rather than a promise.
+    // SAFETY: `capability_attenuate` names the capability it attenuates and a
+    // rights mask.
+    let (attenuated, watch_handle) = unsafe {
+        call(
+            CAPABILITY_ATTENUATE,
+            parent_handle,
+            u64::from(tos_launch::RIGHT_WAIT_CHILD),
+        )
+    };
+    write_endowment(launch, watch_handle, tos_launch::RIGHT_WAIT_CHILD, b"watch");
+    // No rights over itself: this child is an observer, and an observer that
+    // could end things would be something else.
+    let (watcher_status, _) = create_child_endowed(handle, name_length, 1, 0);
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.ARRANGED parent={parent_status}/{parent_instance} \
+attenuate={attenuated} watcher={watcher_status}"
+    ));
+    // Long enough for the watcher to start, reach its wait and block in it.
+    // Three processes share the turns here, and a child of this image spends
+    // most of its first fifty ticks getting through reader, checker, verifier
+    // and engine before it makes its first call.
+    settle();
+    settle();
+    settle();
+
+    // And now the parent ends. Everything after this is the nucleus's doing.
+    // SAFETY: the handle names the middle parent this process created.
+    let (ended, _) = unsafe { call(PROCESS_TERMINATE, parent_handle, 0) };
+    // Blocking, because ending a process is not retiring it: the scheduler's
+    // loop does that, and blocking is how this process reaches it.
+    // What comes back is the parent's own ending — the earliest by ending
+    // order, since the watcher is cancelled *by* that retirement and so ends
+    // after it.
+    let collected = wait_child(launch, handle, false);
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.ORPHANED ended={ended} collected={} child={} kind={}",
+        collected.0,
+        collected.1.child_instance,
+        collected.1.ending_kind
+    ));
+    // And then this process ends without collecting the watcher's ending.
+    // Nobody is left who could: §10 releases that notice rather than holding a
+    // slot for a reader that has itself ended, and the nucleus says so.
+    settle();
+}
+
+/// Writes the name a child's authority over itself is bound to (ADR-0061).
+#[cfg(feature = "test-lifecycle-delegate")]
+fn write_self_binding(launch: &Launch, name: &[u8]) {
+    let mut binding = [0u8; tos_launch::MAX_BINDING as usize];
+    binding[..name.len()].copy_from_slice(name);
+    // SAFETY: the slot is at a fixed offset in this process's own argument
+    // region, which the launcher mapped writable.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<[u8; tos_launch::MAX_BINDING as usize]>(
+            (launch.arguments_base + tos_launch::CREATE_SELF_BINDING) as usize,
+        )
+        .write(binding)
+    };
+}
+
+/// Writes one endowment entry: a capability this process holds, the rights the
+/// child is to have over it, and the name the child knows it by.
+#[cfg(feature = "test-lifecycle-delegate")]
+fn write_endowment(launch: &Launch, handle: u64, rights: u32, name: &[u8]) {
+    let mut binding = [0u8; tos_launch::MAX_BINDING as usize];
+    binding[..name.len()].copy_from_slice(name);
+    // SAFETY: the endowment table is at a fixed offset in this process's own
+    // argument region.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<tos_launch::CreateEndowment>(
+            (launch.arguments_base + tos_launch::CREATE_ENDOWMENT) as usize,
+        )
+        .write(tos_launch::CreateEndowment {
+            handle,
+            rights,
+            binding_length: name.len() as u32,
+            binding,
+        })
+    };
+}
+
 /// ADR-0067: a supervisor that outlives its children and collects their endings.
 ///
 /// One boot, five phases, each a conformance test of the decision. The table
 /// holds four processes and this supervisor is one of them, so three children
 /// exist at a time — which is what makes the exhaustion phase a real bound
 /// rather than a simulated one.
-#[cfg(feature = "test-lifecycle")]
+#[cfg(all(feature = "test-lifecycle", not(feature = "test-lifecycle-delegate")))]
 fn lifecycle(launch: &Launch, report: &mut Report, handle: u64) {
     let module = b"system/boot/init.tos";
     for (offset, byte) in module.iter().enumerate() {
@@ -2227,7 +2410,7 @@ fn settle() {
 const LIFECYCLE_SETTLE_TICKS: u64 = 150;
 
 /// Collects every ending already recorded, without blocking for one that is not.
-#[cfg(feature = "test-lifecycle")]
+#[cfg(all(feature = "test-lifecycle", not(feature = "test-lifecycle-delegate")))]
 fn drain(launch: &Launch, handle: u64) {
     loop {
         settle();
@@ -2242,14 +2425,14 @@ fn drain(launch: &Launch, handle: u64) {
 /// absent generation must not be confusable with an asserted one.
 #[cfg(feature = "test-lifecycle")]
 const LIFECYCLE_FIRST_GENERATION: u64 = 7;
-#[cfg(feature = "test-lifecycle")]
+#[cfg(all(feature = "test-lifecycle", not(feature = "test-lifecycle-delegate")))]
 const LIFECYCLE_SECOND_GENERATION: u64 = 9;
-#[cfg(feature = "test-lifecycle")]
+#[cfg(all(feature = "test-lifecycle", not(feature = "test-lifecycle-delegate")))]
 const LIFECYCLE_THIRD_GENERATION: u64 = 11;
 
 /// `process_create_with_generation`: a child, and the generation its creator
 /// asserts for it.
-#[cfg(feature = "test-lifecycle")]
+#[cfg(all(feature = "test-lifecycle", not(feature = "test-lifecycle-delegate")))]
 fn create_child(handle: u64, name_length: u64, generation: u64) -> (i64, u64) {
     let status: i64;
     let value: u64;
@@ -2271,6 +2454,48 @@ fn create_child(handle: u64, name_length: u64, generation: u64) -> (i64, u64) {
         )
     };
     (status, value)
+}
+
+/// `process_create_with_generation`, with the rights the child holds over
+/// itself and the number of endowment entries spelled out.
+#[cfg(feature = "test-lifecycle-delegate")]
+fn create_child_endowed(
+    handle: u64,
+    name_length: u64,
+    endowed: u64,
+    own_rights: u64,
+) -> (i64, u64) {
+    let status: i64;
+    let value: u64;
+    // SAFETY: operation 15 takes the authority in `rdi`, the module name's
+    // length in `rsi`, the endowment count in `rdx`, the child's rights over
+    // itself in `r10` and the asserted generation in `r8`.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") PROCESS_CREATE_WITH_GENERATION => status,
+            in("rdi") handle,
+            in("rsi") name_length,
+            inlateout("rdx") endowed => value,
+            in("r10") own_rights,
+            in("r8") LIFECYCLE_FIRST_GENERATION,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        )
+    };
+    (status, value)
+}
+
+/// The same, with no endowment and the child's own rights chosen.
+#[cfg(feature = "test-lifecycle-delegate")]
+fn create_child_with_rights(
+    handle: u64,
+    name_length: u64,
+    _generation: u64,
+    own_rights: u64,
+) -> (i64, u64) {
+    create_child_endowed(handle, name_length, 0, own_rights)
 }
 
 /// The instance id operation 15 left in this process's argument region.
@@ -2311,7 +2536,7 @@ fn wait_child(
 }
 
 /// One collected ending, as the log carries it.
-#[cfg(feature = "test-lifecycle")]
+#[cfg(all(feature = "test-lifecycle", not(feature = "test-lifecycle-delegate")))]
 fn report_record(report: &mut Report, which: &str, collected: &(i64, tos_launch::WaitChildRecord)) {
     let (status, record) = collected;
     report.line(&alloc::format!(
