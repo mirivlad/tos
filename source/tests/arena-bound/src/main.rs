@@ -157,6 +157,39 @@ fn main() {
     // call it the closure's — and a measurement that preceded it would leave
     // its freed blocks under the published single-module bound. Separate
     // processes are the only way each number is its own.
+    // The published ceiling, in its own process for the same reason every other
+    // bound gets one: a frontier that never falls would otherwise carry another
+    // measurement's high-water mark into this one.
+    if std::env::args().any(|argument| argument == "--ceiling") {
+        println!("TOS implementation-arena bound: execute_set at the published ceiling");
+        println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
+        let modules = std::env::args()
+            .skip_while(|argument| argument != "--modules")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(CLOSURE_CEILING);
+        let unit_bytes = std::env::args()
+            .skip_while(|argument| argument != "--unit-bytes")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(SOURCE_CEILING);
+        let (total, corpus, above) = the_published_ceiling(modules, unit_bytes);
+        println!();
+        println!("== the bound ==");
+        println!(
+            "execute_set over {modules} x {unit_bytes} B: {:>12} B ({:.2} MiB) above the corpus",
+            above,
+            mib(above)
+        );
+        println!(
+            "  corpus {:>12} B ({:.2} MiB); total frontier {:>12} B ({:.2} MiB)",
+            corpus,
+            mib(corpus),
+            total,
+            mib(total)
+        );
+        return;
+    }
     if std::env::args().any(|argument| argument == "--closure") {
         println!("TOS implementation-arena bound: one executed closure");
         println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
@@ -428,6 +461,120 @@ fn an_executed_closure(sizes: &[usize]) -> Vec<(usize, usize)> {
         measured.push((count, after.frontier));
     }
     measured
+}
+
+/// The full promise, measured: `execute_set` over the published ceiling.
+///
+/// docs/44 §2 lets an implementation declare a **lower** cap in its conformance
+/// profile. This one declares none: `tos_verifier::limits::Limits::default()`
+/// is the accepted V1 ceiling — 256 modules in a closure — and
+/// `tos_core::MAX_SOURCE_BYTES` is the 256 KiB source unit. So the promise is
+/// the ceiling itself, and this is what the promise costs.
+///
+/// **The source corpus is not the arena's to carry.** In TOS the units are
+/// bytes of the capsule, mapped outside the process grant; here they are host
+/// allocations, and they are made *before* the frontier is read. What the run
+/// needed above them is the difference — the frontier never falls, so the
+/// corpus sits below and the delta is the pipeline's own extent. Both figures
+/// are printed, because a reader must be able to see which is which.
+fn the_published_ceiling(count: usize, unit_bytes: usize) -> (usize, usize, usize) {
+    println!();
+    println!("== execute_set at the published ceiling ==");
+    println!("fixture: {count} modules of {unit_bytes} bytes each");
+    // The corpus first, and its extent recorded before anything is run.
+    let dependencies: Vec<String> = (1..count)
+        .map(|index| canonical_module_calling(index, unit_bytes))
+        .collect();
+    let entry = entry_summing(count - 1, unit_bytes);
+    let paths: Vec<String> = (1..count).map(module_path).collect();
+    let mut units = vec![Unit {
+        path: "set/entry.tos",
+        bytes: entry.as_bytes(),
+    }];
+    for (index, text) in dependencies.iter().enumerate() {
+        units.push(Unit {
+            path: &paths[index],
+            bytes: text.as_bytes(),
+        });
+    }
+    let corpus = arena();
+    println!(
+        "corpus in place: frontier {} bytes ({:.2} MiB) — capsule bytes in TOS, not grant",
+        corpus.frontier,
+        mib(corpus.frontier)
+    );
+    let run = execute_set(
+        &SetRequest {
+            source_set: "tos-arena-bound",
+            units: &units,
+            entry_path: "set/entry.tos",
+            entry: "main",
+        },
+        Vec::new(),
+        &mut Silent,
+        &mut Unreachable,
+    )
+    .expect("the set names an entry it contains");
+    let after = arena();
+    let Run::Completed(completion) = &run else {
+        panic!("the closure must complete: {:?}", run.failed_at());
+    };
+    let expected = (1..count as i128).sum::<i128>();
+    let tos_engine::Value::Int(_, number) = completion.value else {
+        panic!("the entry returns an integer");
+    };
+    assert_eq!(number, expected, "every dependency must have been reached");
+    let above = after.frontier - corpus.frontier;
+    println!(
+        "peak extent {} bytes ({:.2} MiB) total; {} bytes ({:.2} MiB) above the corpus",
+        after.frontier,
+        mib(after.frontier),
+        above,
+        mib(above)
+    );
+    println!(
+        "committed {} -> {}; blocks {} ({} free)",
+        corpus.committed, after.committed, after.blocks, after.free
+    );
+    (after.frontier, corpus.frontier, above)
+}
+
+/// A ceiling-sized dependency that also exports the function the entry calls.
+fn canonical_module_calling(index: usize, bytes: usize) -> String {
+    let mut text = canonical_module(index, bytes);
+    text.push_str(&format!(
+        "pub fn value{index}() -> i32 {{ return {index}i32; }} "
+    ));
+    text
+}
+
+/// A ceiling-sized entry that imports every dependency and calls each once.
+fn entry_summing(count: usize, bytes: usize) -> String {
+    let mut text = String::from("module set.entry version 1.0 profile bootstrap; ");
+    for index in 1..=count {
+        text.push_str(&format!("import set.m{index} as m{index}; "));
+    }
+    text.push_str(
+        "resource [fuel: 10000000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 256] ",
+    );
+    // Padding first, so the entry is a ceiling-sized unit like every other.
+    let mut filler = 0usize;
+    while text.len() + 4096 < bytes {
+        text.push_str(&format!(
+            "pub fn entry_fill{filler}(x: i32) -> i32 {{ return x + {filler}i32; }} "
+        ));
+        filler += 1;
+    }
+    text.push_str("pub fn main() -> i32 { return ");
+    for index in 1..=count {
+        if index > 1 {
+            text.push_str(" + ");
+        }
+        text.push_str(&format!("m{index}.value{index}()"));
+    }
+    text.push_str("; }");
+    text
 }
 
 /// A dependency exporting one function that returns its own index.
