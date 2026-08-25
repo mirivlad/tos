@@ -38,6 +38,13 @@
 #   9. an ending its parent never collected is released when the parent itself
 #      ends, rather than holding a slot for a reader that no longer exists.
 #
+# And a third, for the half of §6 the other two cannot reach: a delegated
+# collector that is **already blocked** when a child of the live parent it
+# watches ends. Delivery must find it — being blocked on the relation is the
+# authorization, the capability having been checked when the call was made — and
+# a delivery that looked only at the parent left it blocked beside a record it
+# was entitled to. That is the shape this boot exists to refuse.
+#
 #   bash host-tools/qemu-test/lifecycle.sh [OUT_DIR]
 set -euo pipefail
 
@@ -207,9 +214,46 @@ released="$(line 'TOS.RUN.NOTICE_RELEASED')"
 printf '%s\n' "$released" | grep -q 'reason=parent-ended asserted_by=nucleus' ||
     fail "the release is not asserted by the nucleus with its reason: $released"
 
+# --- The third boot: a collector already blocked when the ending happens ------
+(cd "$ROOT" && CARGO_TARGET_DIR="$ROOT/target/test-lifecycle-collector" cargo build --release \
+    -p tos-runtime-image --target x86_64-unknown-none --features test-lifecycle-collector)
+collector_image="$ROOT/target/test-lifecycle-collector/x86_64-unknown-none/release/tos-runtime-image"
+after="$(sha256sum "$PRODUCTION_NUCLEUS" "$PRODUCTION_IMAGE")"
+[ "$before" = "$after" ] ||
+    fail "a production artifact changed while building the collector image"
+
+bash "$ROOT/host-tools/qemu-test/run.sh" \
+    --out "$OUT-collector" \
+    --nucleus "$TEST_NUCLEUS" \
+    --runtime-image "$collector_image" > "$OUT-collector.log" 2>&1 || {
+        cat "$OUT-collector.log" >&2
+        fail "the blocked-collector boot did not complete"
+    }
+log="$(tr -c '[:print:]\n' ' ' < "$OUT-collector/serial.log")"
+
+# The order matters and the log carries it: the collector was waiting before the
+# child existed, so what reached it was a delivery and not a poll.
+printf '%s\n' "$log" | grep -q 'TOS.RUN.LIFECYCLE.WATCHER waiting=1' ||
+    fail "the delegated collector never reached its wait"
+printf '%s\n' "$log" | grep -q 'TOS.RUN.LIFECYCLE.PARENT child=0' ||
+    fail "the watched parent did not create the child whose ending is the test"
+waiting_at="$(printf '%s\n' "$log" | grep -n 'WATCHER waiting=1' | head -1 | cut -d: -f1)"
+child_at="$(printf '%s\n' "$log" | grep -n 'PARENT child=0' | head -1 | cut -d: -f1)"
+[ "$waiting_at" -lt "$child_at" ] ||
+    fail "the collector was not already blocked when the child was created"
+
+collected="$(printf '%s\n' "$log" | sed -n 's/.*WATCHER status=\(-\?[0-9]*\) child=\([0-9]*\).*/\1 \2/p' | tail -1)"
+set -- $collected
+[ "${1:-}" = "$OK" ] ||
+    fail "a blocked delegated collector answered ${1:-nothing}, expected $OK"
+[ "${2:-0}" != 0 ] ||
+    fail "the delivered record names no child: $collected"
+
 echo "LIFECYCLE PASS: two endings collected in order, identity and generation"
 echo "  carried verbatim, stale authority refused, observation requires the right,"
 echo "  operation 8 asserts no generation, and an unsatisfiable wait is cancelled"
 echo "  ($refusals creation refusal(s) named their bound in the log)"
 echo "  and a second boot: a delegated observer cancelled with the relation it"
-echo "  watched, and an ending nobody was left to collect released rather than kept"
+echo "  watched, and an ending nobody was left to collect released rather than kept;"
+echo "  and a third: an ending delivered to a delegated collector already blocked"
+echo "  for it, which is the authority being consumptive rather than a broadcast"
