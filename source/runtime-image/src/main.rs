@@ -2064,13 +2064,30 @@ fn deputy(launch: &Launch, report: &mut Report, own: u64) {
 /// receiver left — ADR-0067 §10 — and the nucleus says so on the log rather
 /// than letting a slot become eternal.
 #[cfg(feature = "test-lifecycle")]
-fn lifecycle_parent(_launch: &Launch, report: &mut Report, _handle: u64) {
-    // It creates nothing. The observer below waits on *this* process's child
-    // relation, and the point of that wait is that nothing can ever satisfy
-    // it: an ending delivered to it would answer the wait rather than test
-    // what happens when the relation itself ends. So this process only has to
-    // be alive, and then not be.
-    report.line("TOS.RUN.LIFECYCLE.PARENT childless=1");
+fn lifecycle_parent(launch: &Launch, report: &mut Report, handle: u64) {
+    // Two scenarios need a middle parent and they need opposite things of it.
+    //
+    // The cancellation one needs it childless: an ending delivered to the
+    // waiting observer would answer the wait rather than test what happens when
+    // the relation itself ends. The collection one needs exactly one child,
+    // ending while the observer is already blocked — which is the case a
+    // delivery that looked only at the parent would have got wrong.
+    #[cfg(feature = "test-lifecycle-collector")]
+    {
+        let module = b"system/boot/init.tos";
+        write_module_name(launch, module);
+        // Late enough that the observer has reached its wait; the child then
+        // ends on its own while that wait is blocked.
+        settle();
+        settle();
+        let (created, _) = create_child_endowed(handle, module.len() as u64, 0, 0);
+        report.line(&alloc::format!("TOS.RUN.LIFECYCLE.PARENT child={created}"));
+    }
+    #[cfg(not(feature = "test-lifecycle-collector"))]
+    {
+        let _ = (launch, handle);
+        report.line("TOS.RUN.LIFECYCLE.PARENT childless=1");
+    }
     loop {
         settle();
     }
@@ -2171,8 +2188,26 @@ attenuate={attenuated} watcher={watcher_status}"
     settle();
     settle();
 
+    // In the collection scenario the parent stays alive: what is tested there
+    // is a delivery to a blocked collector that is not the parent, and ending
+    // the parent would cancel that wait instead of answering it.
+    #[cfg(feature = "test-lifecycle-collector")]
+    {
+        settle();
+        settle();
+        settle();
+        report.line("TOS.RUN.LIFECYCLE.ARRANGED collector=1");
+        // The parent loops forever by design, so somebody has to end it or the
+        // machine never halts. It is ended after the collection it was staged
+        // for, which is why this is cleanup rather than part of the test.
+        // SAFETY: the handle names the middle parent this process created.
+        unsafe { call(PROCESS_TERMINATE, parent_handle, 0) };
+        wait_child(launch, handle, false);
+        return;
+    }
     // And now the parent ends. Everything after this is the nucleus's doing.
     // SAFETY: the handle names the middle parent this process created.
+    #[allow(unreachable_code)]
     let (ended, _) = unsafe { call(PROCESS_TERMINATE, parent_handle, 0) };
     // Blocking, because ending a process is not retiring it: the scheduler's
     // loop does that, and blocking is how this process reaches it.

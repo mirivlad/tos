@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `db9310d3a92f2e89ce7a3afd72438fa29b3500f0fbf53829e932a3568dbcf9b8`\
+Source-manifest SHA-256: `85628e57d4010c7568bee2aff026ca8c23964395e11350cc47dbf1b39f2499bb`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -20181,7 +20181,10 @@ and trace-record work inside the interval.
   eternal; the exhaustion test corrected for the slot the living supervisor
   occupies — and two final semantic ones: a legacy child has **no** restart
   generation rather than zero, and a blocked wait is cancelled when the relation
-  it watches ends
+  it watches ends. Amended again on 2026-08-25, during implementation: the right
+  is stated as consumptive collection authority with a deterministic rule for
+  competing collectors, and delivery is required to reach any authorized blocked
+  collector rather than only the parent
 - History: the first form of this ADR offered A, B and C and recommended B; D
   was chosen and B is retained below as a rejected alternative
 - Amends: `SYSTEM_ABI_V1` §3, §5 and §7; `CAPABILITY_V1` §3's process-object
@@ -20307,6 +20310,21 @@ descent. And a supervisor may be given `RIGHT_WAIT_CHILD` over *another*
 process, which lets a supervision hierarchy be built without ambient authority —
 and is an information flow that §7 treats as one.
 
+**The right is consumptive collection authority, not broadcast observation.** A
+tombstone is collected exactly **once**: the collector that takes it is the one
+the record reaches, and the notice is gone. `RIGHT_WAIT_CHILD` does not publish
+an ending to everyone entitled to see it, and nothing here is a subscription.
+Delegating it therefore hands over the *ability to collect in the immediate
+parent's place*, which is a deliberate property and not a side effect — a
+supervisor that delegates it to a monitor has arranged for the monitor to
+receive endings the supervisor will then not see.
+
+Where more than one authorized collector is blocked on the same relation, the
+one that gets the record is fixed by a rule rather than by arrival or by table
+order: **the smallest process instance id among those already blocked**. Order
+of arrival is not a fact the system publishes, and the table's order is an
+implementation's; two boots of the same arrangement must decide alike.
+
 ### 3. A lifecycle notice is not a message
 
 It is **not IPC**. It does not enter an endpoint queue, does not consume the
@@ -20349,7 +20367,14 @@ depends on load.
 
 `process_wait_child` returns the **earliest pending direct-child record** by the
 ending order of §1. With no pending record it blocks; with bit 0 of `rsi` set it
-answers `E_WOULD_BLOCK` instead. A blocked wait is cancellable, observably as
+answers `E_WOULD_BLOCK` instead.
+
+**An ending is delivered to whoever is blocked for it, not only to the parent.**
+A context blocked on a relation passed the capability check when it made the
+call, so being blocked there *is* the authorization; a delivery that consulted
+only the parent would leave a delegated collector blocked beside a record it was
+entitled to, until something unrelated woke it. Delivery therefore selects among
+blocked collectors of that relation by the rule in §2. A blocked wait is cancellable, observably as
 `E_CANCELLED`, and ADR-0059's liveness rule applies unchanged: a supervisor
 waiting for a child that can never end is not a state the system can sit in.
 
@@ -20492,11 +20517,23 @@ answer, and it introduces no restart policy.
 - **Forgery is structurally impossible.** The notice is nucleus-produced and
   nucleus-read. No process can synthesise one, which is the property option B
   could not have without a rule about every endowment.
-- **Observation is a capability.** `RIGHT_WAIT_CHILD` over a process object
-  discloses its children's ending kinds and their self-reported statuses. That is
-  an information flow, granted deliberately by whoever delegates the right and
-  removable by attenuation (`CAPABILITY_V1` §4). A negative test must show that a
-  process-authority capability *without* the right answers `E_NO_CAPABILITY`.
+- **Observation is a capability, and collection is consumptive.**
+  `RIGHT_WAIT_CHILD` over a process object discloses its children's ending
+  kinds and their self-reported statuses. That is an information flow, granted
+  deliberately by whoever delegates the right and removable by attenuation
+  (`CAPABILITY_V1` §4). A negative test must show that a process-authority
+  capability *without* the right answers `E_NO_CAPABILITY`.
+
+  **Delegation also takes endings away from the delegator.** Because a tombstone
+  is collected exactly once, a delegated collector that is blocked when a child
+  ends receives that record and the parent does not — the parent will find
+  nothing pending for it. This is what makes a monitor possible without ambient
+  authority, and it is equally what makes the right worth guarding: granting it
+  is granting the ability to consume a supervisor's own lifecycle events, and a
+  supervisor that delegates it while still relying on those events has given
+  away what it depends on. The rule of §2 decides who collects when several are
+  blocked, so the outcome is a property of the arrangement rather than of
+  timing.
 - **The self-report is still a claim.** A child that lies about its exit status
   changes only the labelled self-report; the ending kind, the ended-by and the
   audit record are the nucleus's. A supervisor that reads the claim as the
@@ -20545,9 +20582,10 @@ answer, and it introduces no restart policy.
    unchanged from identity and from the lifecycle record.
 6a. **Operation 8 is unchanged.** A child created by the legacy form still gets
    an instance id and a parent relation, still produces a tombstone a wait
-   collects, and reports restart generation `0`; `rdx` still returns its
-   capability handle. A caller that leaves `r8` holding anything at all is
-   unaffected.
+   collects, and reports its restart generation as **absent** — not zero, which
+   is what a supervisor asserts for a first launch and what nobody asserted
+   here. `rdx` still returns its capability handle, and a caller that leaves
+   `r8` holding anything at all is unaffected.
 7. **The ending kinds are distinguishable.** Exited with a status, terminated by
    another process, faulted, and ended by the liveness rule each produce their
    own kind, and the self-reported status is absent in the three that never
@@ -20556,6 +20594,12 @@ answer, and it introduces no restart policy.
    the liveness rule fires, and the nucleus records who was blocked on what.
 9. **A supervisor's death releases its uncollected notices**, its children's
    audit events remain on the log, and the slots become free.
+8a. **A delegated collector already blocked is the one delivered to.** A process
+    holding `RIGHT_WAIT_CHILD` over another process blocks in
+    `process_wait_child`; a child of that still-live parent then ends. The
+    blocked collector is answered `OK` with that child's record — not left
+    blocked, and not made to ask again — and the parent, which was not waiting,
+    does not also receive it: the tombstone is consumed once.
 9a. **A child that ends after its parent** leaves its audit event on the log,
     holds no tombstone, and its slot is immediately reusable.
 9b. **A delegated waiter is cancelled with the relation.** A process holding

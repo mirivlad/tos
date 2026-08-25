@@ -28,6 +28,9 @@ test-lifecycle = []
 # The second lifecycle boot: three processes, a delegated observer, and an
 # ending nobody is left to collect (ADR-0067 §9a and §10).
 test-lifecycle-delegate = ["test-lifecycle"]
+# The third lifecycle boot: a delegated collector already blocked when a child
+# of the live parent it watches ends (ADR-0067 §6).
+test-lifecycle-collector = ["test-lifecycle-delegate"]
 # Milestone 6 of ADR-0066: the same channel, with one exported TOS Core call
 # between the markers. The frontend, verifier and engine become dependencies of
 # this build alone — the production image keeps the closure it has, which is

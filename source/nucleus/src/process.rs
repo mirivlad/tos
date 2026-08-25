@@ -1028,24 +1028,23 @@ unsafe fn retire(index: usize) {
     }
 
     // ADR-0067: the ending becomes a record before the memory goes back, and
-    // the record lives in this slot. Everything the table needs is read out
-    // here, because the work below names the table again and a borrow held
-    // across that would be two live references to one static.
-    let (instance, parent, ended, generation, has_generation) = (
-        slot.instance,
-        slot.parent,
-        slot.ended,
-        slot.restart_generation,
-        slot.has_restart_generation,
-    );
+    // the record lives in this slot. The borrow above ends here: everything
+    // below names the table again — directly or through a call — and a borrow
+    // held across that would be two live references to one static.
+    let (instance, parent) = (slot.instance, slot.parent);
     // SAFETY: single-context nucleus; the handler cannot be re-entered.
     let order = unsafe {
         let order = NEXT_ENDING;
         NEXT_ENDING = NEXT_ENDING.wrapping_add(1);
         order
     };
-    slot.ending_order = order;
-    slot.ended_tick = crate::apic::ticks();
+    let ended_tick = crate::apic::ticks();
+    {
+        // SAFETY: single-context nucleus; the process is over.
+        let slot = unsafe { &mut table()[index] };
+        slot.ending_order = order;
+        slot.ended_tick = ended_tick;
+    }
     // A process that ends stops being a receiver: its own children's pending
     // notices have nobody entitled to them, and anything blocked waiting on its
     // children is waiting on a relation that can gain no further member.
@@ -1063,9 +1062,16 @@ unsafe fn retire(index: usize) {
     if keep {
         deliver_child_notice(parent);
     }
-    let _ = (ended, generation, has_generation);
 
-    let (Some(space), Some(reclaim)) = (slot.space.as_mut(), slot.reclaim) else {
+    // What has to be given back, taken out of the table before the giving back
+    // begins. `reclaim` is a small value and copies; the space is moved out, so
+    // the page tables this walks are nobody else's to reach while it does.
+    // SAFETY: single-context nucleus; the process is over and nothing else
+    // holds this slot.
+    let slot = unsafe { &mut table()[index] };
+    let reclaim = slot.reclaim.take();
+    let mut space_taken = slot.space.take();
+    let (Some(space), Some(reclaim)) = (space_taken.as_mut(), reclaim) else {
         // A process the nucleus did not build a space for holds nothing of the
         // pool's through that space, and its builder takes back what it lent.
         return;
@@ -1188,32 +1194,45 @@ fn cancel_child_waiters(instance: u64) {
     }
 }
 
-/// Hands a freshly recorded ending to a parent already blocked for one.
+/// Hands a freshly recorded ending to whoever is blocked waiting for one.
 ///
-/// The wait is satisfied by the operation that produced what it waited for, the
-/// same rule `IPC_V1` §7 states for messages: a woken context does not wake up
-/// to ask again.
+/// **Not only the parent.** `RIGHT_WAIT_CHILD` is delegable, so the process
+/// blocked on a relation need not be the process that relation belongs to — and
+/// a delivery that looked only at the parent would leave a delegated collector
+/// blocked beside a record it is entitled to, until something else woke it.
+/// Every context blocked in `Waiting::ChildOf` passed the capability check when
+/// it made the call, so being blocked on this relation *is* the authorization.
+///
+/// The right is **consumptive**: a tombstone is collected exactly once, by one
+/// collector, and this is where competing collectors are settled. The rule is
+/// the smallest process instance id among those already blocked — a rule rather
+/// than an order of arrival, because the table's order is not a fact anybody
+/// published and two boots must decide alike.
 fn deliver_child_notice(parent_instance: u64) {
-    let Some(parent) = live_instance(parent_instance) else {
-        return;
-    };
-    let blocked = {
+    let mut chosen: Option<(usize, u64)> = None;
+    {
         // SAFETY: single-context nucleus.
         let table = unsafe { table() };
-        table[parent].state == State::Blocked
-            && table[parent].waiting == Waiting::ChildOf(parent_instance)
-    };
-    if !blocked {
-        return;
+        for (index, slot) in table.iter().enumerate() {
+            if slot.state != State::Blocked || slot.waiting != Waiting::ChildOf(parent_instance) {
+                continue;
+            }
+            if chosen.is_none_or(|(_, instance)| slot.instance < instance) {
+                chosen = Some((index, slot.instance));
+            }
+        }
     }
+    let Some((collector, _)) = chosen else {
+        return;
+    };
     let Some((child, record)) = take_child_notice(parent_instance) else {
         return;
     };
-    let answer = match write_child_record(parent, &record) {
-        // The record is in the waiter's own region and the identity is its
+    let answer = match write_child_record(collector, &record) {
+        // The record is in the collector's own region and the identity is its
         // result, exactly as a call that had not blocked would have left them.
         Ok(()) => crate::syscall::Answer::value(record.child_instance),
-        // The waiter cannot be told, so the notice is not consumed: it goes
+        // The collector cannot be told, so the notice is not consumed: it goes
         // back to pending rather than being lost between two frames.
         Err(answer) => {
             restore_child_notice(child);
@@ -1222,7 +1241,7 @@ fn deliver_child_notice(parent_instance: u64) {
     };
     // SAFETY: the context is blocked, and this is the answer to the call it
     // blocked in.
-    unsafe { wake(parent, answer) };
+    unsafe { wake(collector, answer) };
 }
 
 /// Which process occupies a slot, by the identity of ADR-0067 §7.
