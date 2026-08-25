@@ -46,8 +46,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_core::{
-    check_module_set, lower_module_in_set, Gap, ModuleContext, ModuleEntry, Parser, ResolvedImport,
-    SourceReader, SourceUnit,
+    check_module_summaries, lower_module_in_set, Gap, ModuleContext, ModuleEntry, ModuleSummary,
+    Parser, ResolvedImport, SourceReader, SourceUnit,
 };
 
 /// The frontend types this crate's own results are made of.
@@ -351,32 +351,39 @@ pub fn execute_set(
     }
 
     trace.entering(PipelineStage::Parse);
-    let mut schemas = Vec::with_capacity(sources.len());
-    for source in &sources {
+    // Parse, check and summarize **one module at a time**, keeping only what is
+    // owned. `ModuleEntry::summarize` returns an owned summary precisely so the
+    // tree can go, and `check_module_summaries` exists so set-wide resolution
+    // never needs one — `docs/evidence/STAGE2_ARENA_BOUND.md` measures why: a
+    // ceiling-sized module's parse tree costs about 14 MiB and its summary
+    // about 0.2 MiB, and holding every tree made the arena linear in the
+    // closure at seventy times the necessary slope.
+    // The two stages now interleave, one module at a time, so `Check` is
+    // announced when it is first entered rather than before the first parse —
+    // a trace that named it earlier would name a stage that a run failing in
+    // the parser never reached.
+    let mut checking = false;
+    let mut summaries: Vec<ModuleSummary> = Vec::with_capacity(sources.len());
+    let mut diagnostics = Vec::new();
+    for (unit, source) in request.units.iter().zip(sources.iter()) {
         let parsed = Parser::parse_schema(source);
-        let diagnostics = parsed.diagnostics().to_vec();
+        let schema_diagnostics = parsed.diagnostics().to_vec();
         let Some(schema) = parsed.into_accepted() else {
             return Ok(Run::Diagnosed {
                 stage: PipelineStage::Parse,
-                diagnostics,
+                diagnostics: schema_diagnostics,
             });
         };
-        schemas.push(schema);
-    }
-
-    let entries: Vec<ModuleEntry<'_>> = request
-        .units
-        .iter()
-        .zip(sources.iter().zip(schemas.iter()))
-        .map(|(unit, (source, schema))| ModuleEntry::new(unit.path, source, schema))
-        .collect();
-
-    trace.entering(PipelineStage::Check);
-    // Each module's diagnostics carry its identity, because a line and column
-    // mean nothing across a set without saying which module they are in.
-    let mut diagnostics = Vec::new();
-    for entry in &entries {
+        if !checking {
+            trace.entering(PipelineStage::Check);
+            checking = true;
+        }
+        let entry = ModuleEntry::new(unit.path, source, &schema);
         diagnostics.extend(entry.check());
+        summaries.push(entry.summarize());
+        // The tree goes here, at the end of this module's turn. Everything
+        // after this point reads the summary.
+        drop(schema);
     }
     if diagnostics.iter().any(is_error) {
         return Ok(Run::Diagnosed {
@@ -386,7 +393,7 @@ pub fn execute_set(
     }
 
     trace.entering(PipelineStage::Resolve);
-    let diagnostics = check_module_set(&entries);
+    let diagnostics = check_module_summaries(&summaries);
     if diagnostics.iter().any(is_error) {
         return Ok(Run::Diagnosed {
             stage: PipelineStage::Resolve,
@@ -397,23 +404,43 @@ pub fn execute_set(
     // what runs, and ordering it anyway would put it in the dependency digest.
     // Dependencies come first, so each module is lowered after everything it
     // imports and can be given their computed identities.
-    let closure = closure_of(&entries, entry_index);
+    let closure = closure_of_summaries(&summaries, entry_index);
 
     trace.entering(PipelineStage::Lower);
-    let names: Vec<String> = entries.iter().map(|entry| entry.summarize().name).collect();
+    let names: Vec<String> = summaries
+        .iter()
+        .map(|summary| summary.name.clone())
+        .collect();
     let mut lowered: Vec<(usize, Module)> = Vec::with_capacity(closure.len());
     for &index in &closure {
         let source = &sources[index];
-        let schema = &schemas[index];
+        // The tree is built again, for this module alone, and dropped when the
+        // module is lowered. A second pass over the same canonical source is a
+        // second run of the same total function: `SourceUnit` is normalized
+        // bytes and `Parser::parse_schema` is deterministic over them, so this
+        // is the same tree the check phase saw, not a cheaper substitute for
+        // it. Nothing skips the frontend and nothing skips the checker — what
+        // is not done twice is *holding* the result.
+        let reparsed = Parser::parse_schema(source);
+        let Some(schema) = reparsed.into_accepted() else {
+            // A module that parsed in the check phase and not here would mean
+            // the parser is not a function of its input. It is refused rather
+            // than worked around.
+            return Ok(Run::Diagnosed {
+                stage: PipelineStage::Parse,
+                diagnostics: Vec::new(),
+            });
+        };
+        let schema = &schema;
         // Each module's own dependency digest, over its own closure: a
         // dependency's identity cannot be the entry's, or two modules that
         // depend on different things would claim the same one.
-        let own_closure = closure_of(&entries, index);
+        let own_closure = closure_of_summaries(&summaries, index);
         let context = ModuleContext {
             source_set: request.source_set.to_string(),
-            path: entries[index].path().to_string(),
+            path: summaries[index].path.clone(),
             content_id: content_id(source.bytes()),
-            dependency_digest: closure_digest(&entries, &own_closure, index),
+            dependency_digest: closure_digest_of_summaries(&summaries, &own_closure, index),
             capability_interface_digest: list_digest(&[]),
         };
         let imports: Vec<ResolvedImport<'_>> = lowered
@@ -478,7 +505,7 @@ pub fn execute_set(
             Ok(Err(trap)) => Run::Trapped {
                 code: trap.code,
                 detail: trap.detail.clone(),
-                at: site_of_in_set(&module, &sources, &entries, source, &trap),
+                at: site_of_in_set(&module, &sources, &summaries, source, &trap),
             },
             Ok(Ok(outcome)) => {
                 let accounting = Accounting::of(&module, &outcome);
@@ -536,8 +563,13 @@ fn snapshot_of(lowered: &[(usize, Module)], entry: &Module) -> ResolutionSnapsho
 /// walk cannot loop and cannot be asked for a module that is not there. It
 /// still guards, because a total function is cheaper than a proof that no
 /// caller ever reaches it in another order.
-fn closure_of(entries: &[ModuleEntry<'_>], entry: usize) -> Vec<usize> {
-    let summaries: Vec<_> = entries.iter().map(ModuleEntry::summarize).collect();
+/// The closure's order, over summaries.
+///
+/// This is the shape the accepted memory architecture asks for: a summary is
+/// owned and a parse tree is not needed to order a closure — which is what lets
+/// the trees be dropped one module at a time
+/// (`docs/evidence/STAGE2_ARENA_BOUND.md`).
+fn closure_of_summaries(summaries: &[ModuleSummary], entry: usize) -> Vec<usize> {
     let by_name: alloc::collections::BTreeMap<&str, usize> = summaries
         .iter()
         .enumerate()
@@ -549,7 +581,7 @@ fn closure_of(entries: &[ModuleEntry<'_>], entry: usize) -> Vec<usize> {
     let mut open = alloc::collections::BTreeSet::new();
     visit(
         entry,
-        &summaries,
+        summaries,
         &by_name,
         &mut settled,
         &mut open,
@@ -584,15 +616,21 @@ fn visit(
 /// The entry is excluded: a module's dependency digest describes what it
 /// depends on, and including itself would make the digest change for a reason
 /// that is already the content id.
-fn closure_digest(entries: &[ModuleEntry<'_>], closure: &[usize], entry: usize) -> String {
-    let summaries: Vec<_> = closure
+/// The dependency digest of one module's own closure, over summaries.
+fn closure_digest_of_summaries(
+    summaries: &[ModuleSummary],
+    closure: &[usize],
+    entry: usize,
+) -> String {
+    let pairs: Vec<(&str, &str)> = closure
         .iter()
         .filter(|index| **index != entry)
-        .map(|index| entries[*index].summarize())
-        .collect();
-    let pairs: Vec<(&str, &str)> = summaries
-        .iter()
-        .map(|summary| (summary.name.as_str(), summary.content_id.as_str()))
+        .map(|index| {
+            (
+                summaries[*index].name.as_str(),
+                summaries[*index].content_id.as_str(),
+            )
+        })
         .collect();
     list_digest(&pairs)
 }
@@ -610,14 +648,14 @@ fn is_error(diagnostic: &Diagnostic) -> bool {
 fn site_of_in_set(
     module: &Module,
     sources: &[SourceUnit],
-    entries: &[ModuleEntry<'_>],
+    summaries: &[ModuleSummary],
     entry_source: &SourceUnit,
     trap: &tos_engine::Trap,
 ) -> Option<Site> {
     let mapped = tos_engine::trap_source(module, trap)?;
-    let source = entries
+    let source = summaries
         .iter()
-        .position(|entry| entry.path() == mapped.path)
+        .position(|summary| summary.path == mapped.path)
         .and_then(|index| sources.get(index))
         .unwrap_or(entry_source);
     Some(Site {
