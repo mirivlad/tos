@@ -2371,6 +2371,37 @@ second={second_status}/{second_instance}"
         "TOS.RUN.LIFECYCLE.UNRIGHTED attenuate={attenuated_status} wait={blind_wait}"
     ));
 
+    // Phase 4 — an uncollected ending holds its slot, and `E_LIMIT` says so.
+    //
+    // Three children, one at a time, each left to end itself and each left
+    // uncollected. Their memory went back at their retirement; their records
+    // did not, and a record is what a slot is holding. With this supervisor in
+    // the fourth slot there is nowhere to put a fifth process, and the nucleus
+    // says which bound it hit rather than leaving `E_LIMIT` to be guessed at.
+    let mut filled = 0;
+    for _ in 0..3 {
+        let (status, _) = create_child(handle, name_length, LIFECYCLE_FIRST_GENERATION);
+        if status != OK {
+            break;
+        }
+        filled += 1;
+        settle();
+    }
+    let (full, _) = create_child(handle, name_length, LIFECYCLE_FIRST_GENERATION);
+    // One collection frees one slot, and exactly one: the other two records
+    // still hold theirs.
+    let collected = wait_child(launch, handle, true);
+    let (after_one, _) = create_child(handle, name_length, LIFECYCLE_FIRST_GENERATION);
+    let (full_again, _) = create_child(handle, name_length, LIFECYCLE_FIRST_GENERATION);
+    report.line(&alloc::format!(
+        "TOS.RUN.LIFECYCLE.EXHAUSTED filled={filled} full={full} collected={} \
+kind={} after_one={after_one} full_again={full_again}",
+        collected.0,
+        collected.1.ending_kind
+    ));
+    settle();
+    drain(launch, handle);
+
     // Phase 4 — a legacy child, which asserts no generation and ends itself.
     //
     // One child answers two questions. It comes from `process_create` (8),

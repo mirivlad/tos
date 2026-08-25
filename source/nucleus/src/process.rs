@@ -292,7 +292,10 @@ struct Reclaim {
     data_at: u64,
     data_length: u64,
     record_length: u64,
-    grant: Span,
+    /// How much of the grant to give back. It is released the way every other
+    /// process mapping is — out of the page tables it was mapped into — rather
+    /// than as one physical span, because it is not one.
+    grant_length: u64,
 }
 
 /// Every process this nucleus has.
@@ -542,6 +545,21 @@ pub fn entries() -> u64 {
 
 /// The lowest runnable slot, or nothing when the table holds no process that
 /// can be given the processor.
+/// How many bytes one process's grant is, or zero when the pool cannot serve it.
+///
+/// The size is a constant of the reference platform (`RUNTIME_GRANT`), not a
+/// share of what remains: see that constant for why, and for where its number
+/// comes from. What the pool decides is only whether the answer is yes.
+fn grant_bytes(frames: &Frames) -> u64 {
+    let wanted = tos_runtime::region::RUNTIME_GRANT as u64;
+    debug_assert!(wanted <= tos_runtime::region::MAX_GRANT as u64);
+    debug_assert!(wanted >= tos_runtime::region::MIN_GRANT as u64);
+    if frames.available() * FRAME_SIZE < wanted {
+        return 0;
+    }
+    wanted
+}
+
 /// The next runnable context after this one, wrapping.
 ///
 /// ADR-0049 §4 says round-robin over runnable contexts, and the timer's
@@ -1151,7 +1169,7 @@ unsafe fn retire(index: usize) {
         release_mapped(space, frames, STACK, STACK_FRAMES * FRAME_SIZE);
         release_mapped(space, frames, REPORT, REPORT_FRAMES * FRAME_SIZE);
         release_mapped(space, frames, ARGUMENTS, ARGUMENT_FRAMES * FRAME_SIZE);
-        frames.release(reclaim.grant);
+        release_mapped(space, frames, GRANT, reclaim.grant_length);
     }
     // Measured, not asserted: the pool says how many frames came back and how
     // many it holds now. A reclamation nobody counts is a claim, and this is
@@ -1762,25 +1780,25 @@ pub unsafe fn create(
 
     // The grant. One region, contiguous, mapped writable and not executable —
     // ADR-0041's property, one address space further out.
-    let grant = frames.grant(identity).map_err(|refused| {
-        // The other bound, named for the same reason as the slot one: an
-        // operator reading `E_LIMIT` cannot tell a full process table from a
-        // pool with no contiguous run left, and the two are repaired by
-        // different actions — collect the endings, or ask for less memory.
+    // The grant is **virtually** contiguous and physically whatever the pool
+    // has. Nothing requires more: the process is told `grant_base = GRANT`, a
+    // virtual address, and `tos-frames` says which of its two doors this is —
+    // `allocate_frame` "is what an address space, a page table or a per-process
+    // grant is built from", while `carve` is "for the few structures that must
+    // be contiguous because nothing maps them yet", which at boot is the Stage 2
+    // heap. A per-process grant is mapped, so it is not one of those.
+    //
+    // Carving it was the reason a fourth process could not start on a machine
+    // with tens of thousands of free frames: each carve took the largest run
+    // there was and left the next one a smaller largest run.
+    let grant_length = grant_bytes(frames);
+    if grant_length == 0 {
         tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-grant available=");
         tos_serial::put_u32_decimal(frames.available() as u32);
         tos_serial::puts(b" asserted_by=nucleus\r\n");
-        let _ = refused;
-        Unlaunchable::OutOfFrames
-    })?;
-    let grant_span = Span::new(grant.base as u64, (grant.base + grant.length) as u64);
-    map_range(
-        &mut space,
-        frames,
-        GRANT,
-        grant_span,
-        PRESENT_USER | WRITABLE | NO_EXECUTE,
-    )?;
+        return Err(Unlaunchable::OutOfFrames);
+    }
+    map_fresh(&mut space, frames, GRANT, grant_length / FRAME_SIZE)?;
 
     map_fresh(&mut space, frames, STACK, STACK_FRAMES)?;
     let report = map_fresh(&mut space, frames, REPORT, REPORT_FRAMES)?;
@@ -1847,10 +1865,14 @@ pub unsafe fn create(
         version: LAUNCH_VERSION,
         unit_count: units.len() as u32,
         entry_index: entry_index as u32,
-        grant_version: grant.version,
+        // The grant contract's own version and the identity of the nucleus
+        // build that made it (ADR-0041 §1, ADR-0050 §2). Neither depended on
+        // the grant being one physical span, which is why assembling it from
+        // frames changes what the process is told about it not at all.
+        grant_version: tos_runtime::GRANT_VERSION,
         grant_base: GRANT,
-        grant_length: grant.length as u64,
-        grant_identity: grant.identity,
+        grant_length,
+        grant_identity: identity,
         units: unit_table,
         report_base: REPORT,
         report_length: REPORT_FRAMES * FRAME_SIZE,
@@ -1928,7 +1950,7 @@ pub unsafe fn create(
                 data_at: IMAGE + header.text,
                 data_length: header.memory - header.text,
                 record_length: record_span.length(),
-                grant: grant_span,
+                grant_length,
             }),
             parent,
             restart_generation,

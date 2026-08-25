@@ -25,6 +25,27 @@ pub const GRANT_ALIGNMENT: usize = 4096;
 /// over-allocating run look healthy right up to the point where it was not.
 pub const MAX_GRANT: usize = 96 * 1024 * 1024;
 
+/// What one Stage 3 process is granted, on the ADR-0040 reference platform.
+///
+/// A **fixed size, not a share of what is left**. The size a process gets must
+/// not depend on how many started before it: a run that succeeded because it
+/// was first and failed because it was fourth would report a fact about
+/// scheduling as though it were a fact about the program.
+///
+/// The number comes from measurement, not from taste.
+/// `docs/evidence/STAGE2_ARENA_BOUND.md` measured the reference path's arena
+/// high-water mark at **52.01 MiB** for its worst case — set-wide resolution
+/// over derived summaries with 256 ceiling-sized modules — and `peak_extent`
+/// is a bound that errs upward by construction. This is that, rounded up to a
+/// whole 54 MiB.
+///
+/// It is also what makes the declared process table usable: the reference
+/// platform has 256 MiB, of which about 230 reach the pool, and four processes
+/// at this size fit inside it with room for their stacks, records and page
+/// tables. At [`MAX_GRANT`] — which is a ceiling, never a target — the second
+/// process would not start.
+pub const RUNTIME_GRANT: usize = 54 * 1024 * 1024;
+
 /// The smallest region that will be granted.
 ///
 /// Below this the reference path cannot be expected to run at all, and running
