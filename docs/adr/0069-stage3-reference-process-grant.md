@@ -68,8 +68,14 @@ profile is measured against the same arena.
 ### 3. `54 MiB` is a candidate, not a ratified size
 
 The implementation carries `RUNTIME_GRANT = 54 MiB` as a **provisional
-candidate** pending this ADR's approval. Section 5 states what it does and does
-not cover, and section 6 what would have to change to cover more.
+candidate**. It stays provisional until two things exist that do not exist yet:
+the compact verified module image of ADR-0070, measured, and the bounded
+verified-module residency that ADR-0070 §5 requires of a further decision. Both
+change what a running closure costs, and a size ratified before them would be a
+size fitted to an implementation this project has already decided to change.
+
+Section 5 states what the candidate covers, and section 6 what the measurement
+that produced it actually found.
 
 ### 4. `MAX_GRANT` stays a ceiling
 
@@ -183,6 +189,14 @@ grant is itself a function of the grant, and the crossing point moves with it.
 ADR-0040 memory budget** — neither can be raised without lowering the other on
 this platform, and neither number means anything without the other beside it.
 
+**A note the residency decision will need.** Process-grant memory and the
+physical residency of images or caches are **counted separately** — they are
+different regions with different owners and different lifetimes — but both are
+spent from the same ADR-0040 whole-machine budget. Moving IR out of a process's
+arena is therefore not, by itself, a saving of physical memory: it moves the
+cost to another line of the same account. A residency decision that reported
+only the arena would be reporting half a ledger.
+
 ## What this ADR does not decide
 
 It does not set the conformance profile's closure cap (§6), does not change
@@ -227,9 +241,14 @@ unusable, and it bought a contiguity nothing asked for.
 **Size the grant from what is left.** Rejected in §2: it makes a program's
 success depend on how many processes preceded it.
 
-**Raise the grant until the declared ceiling fits.** Impossible on this
-platform by a factor of twenty-five (§6), and it would take the process table
-down to one.
+**Raise the grant until the declared ceiling fits.** Rejected, but no longer on
+the ground the first draft gave. "A factor of twenty-five" was an extrapolation
+of the retaining implementation path, and §6 withdrew it as a statement about
+what TOS Core V1 costs. What remains true is narrower and enough: the grant is
+bounded by the whole-machine budget shared with three other processes (§7), and
+a closure large enough to matter is not made to fit by enlarging one arena. What
+the closure actually requires is open until ADR-0070's compact image and the
+bounded-residency decision it requires have been measured.
 
 **Lower the declared closure cap here.** Refused as out of scope in §6: choosing
 a cap so that it fits a grant is choosing a conformance profile by its memory
