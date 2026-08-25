@@ -318,7 +318,11 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
             // process and there is nothing to end.
             Answer::status(E_NO_CAPABILITY)
         }
-        CONTEXT_YIELD => Answer::status(OK),
+        // "Gives up the rest of the quantum" (§5). It does not return here:
+        // the call is set down with its answer already written and picked up
+        // when the scheduler comes back round.
+        // SAFETY: this is the running context's own frame.
+        CONTEXT_YIELD => unsafe { crate::process::yield_now(frame) },
         // The monotonic tick, which counts timer interrupts and nothing else:
         // Stage 3 claims no wall-clock time and no trusted time source, so this
         // is a number that only ever goes up, not a duration.
