@@ -105,17 +105,36 @@ ADR adds is a **lifetime**: the record outlives the image and the materialized
 module, and is what everything later compares against.
 
 **`VerifiedClosureManifest` — built once, after the whole closure is verified.**
-It is where the variable part lives, bounded by the closure rather than by any
-module's body. It holds the cross-module links the execution will actually use,
-already resolved:
+It is where the variable part lives, bounded by the closure's **import
+topology** rather than by any module's body or call count. It holds one entry
+per **declared import slot**:
 
 ```text
-(caller ClosureModuleId, import site) -> (callee ClosureModuleId, function index)
+(caller ClosureModuleId, import slot) -> callee ClosureModuleId
 ```
 
-and nothing else. Not an export table, not a name-to-function map, not a lookup
-structure — the resolved links themselves, one per import site the closure
-contains.
+and nothing else. Not an export table, not a name-to-function map, not a call
+site.
+
+**Which function a call reaches is not in the manifest.** It is reconstructed
+inside the module the manifest already fixed, once that module is resident. That
+is not module search by another name: the callee is already chosen, the provider
+cannot widen it (§3), and the lookup can only fail — it can never select a
+different module. Any `(export name -> function index)` table built for it is
+**resident module-derived state under §7**, inside the byte bound and evicted
+with the module.
+
+The reason is a bound. A manifest holding one link per *call site* was derived
+against the accepted V1 ceilings and came to `8 257 536` links — `378 MiB` on a
+`256 MiB` machine. Import edges are bounded by the closure instead: a module may
+import at most the other 255 of a 256-module closure, so **65 280 edges,
+`0.50 MiB`**, `0.2 %` of the whole-machine budget at the absolute worst case.
+That is §2's structural limit and it is recorded as one.
+
+Resolution of an edge is **exact**: a pending edge carries the content ID the
+import itself declares, and is matched by 32-byte equality against the callee's
+own record. Not a name, not a hash of a name, and not a truncation of one — a
+correctness property is not something to hold with high probability.
 
 It can only be built after every module is verified, which is the other half of
 why §1 is eager: a link may not be resolved against a module whose own
@@ -497,7 +516,15 @@ every other is the closure's whole export surface.
 **The manifest bound.** §2's structural claim needs a real one, and the accepted
 V1 ceilings do not supply an acceptable one. See below.
 
-### 2a. The manifest's upper bound is a Level-2 question, not a measurement
+### 2a. The manifest's upper bound, derived
+
+The earlier per-call-site form of §2 was measured against the accepted V1
+ceilings and did not fit the machine; the arithmetic is kept below because §2's
+change of shape only means something against it. **The import-edge form fits:
+65 280 edges, `0.50 MiB`.** No conformance profile was lowered and no ceiling was
+touched.
+
+### 2b. What the call-site form would have cost
 
 docs/44 §2 bounds "IR tables/blocks/instructions" by the **declared module
 resource envelope**, whose ten fields are `u128` and self-declared, so the IR
@@ -513,19 +540,24 @@ sites**, so:
 | × `size_of::<Link>()` = 48 B | **378 MiB** |
 | ADR-0040 whole-machine budget | **256 MiB** |
 
-**A conforming closure may require a manifest larger than the whole machine.**
-An all-`u32` link is 24 bytes and still `189 MiB`, on a platform that must also
-hold a nucleus and four processes; fitting `8.26 M` links into any plausible
-budget would need about two bytes each, which no encoding of five indices
-provides.
+**A conforming closure would have required a manifest larger than the whole
+machine.** An all-`u32` link is 24 bytes and still `189 MiB`. That was raised as
+a Level-2 question about which contract had to give — and the answer was that
+neither did: the manifest was holding the wrong thing. Which function a call
+reaches is not part of fixing a closure's identity or a provider's authority,
+which is what a manifest is for.
 
-This is brought as a **Level-2 decision and deliberately not answered**. docs/44
-§2 permits a lower cap only in a declared conformance profile, and choosing a
-conformance profile by its memory bill is a decision rather than a measurement.
-The candidates differ in kind — bound call sites per module, bound links per
-closure, make the manifest itself partially resident under this ADR's own
-discipline, or declare a lower profile — and picking one here would be picking it
-by which was easiest to implement.
+Two open bounds remain, and neither is answered by a larger grant:
+**`module_digest` materializes the canonical stream before hashing it**
+(`15.75 MiB` on a ceiling-sized module, and the whole of the verifier's
+workspace — the other nine verification steps allocate nothing), and **the
+widest single-module declared-resolution surface is `156.83 MiB`**, of which
+`7.93 MiB` is export-name text and the rest is the `ResolutionSnapshot`
+representation carrying it at `20x`. The first is a change to `tos-ir`'s digest
+path; the second is a change to an accepted verifier interface. Both are
+decisions, and both are recorded in
+`docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md` §10 and §11 rather than taken
+here.
 
 ## Alternatives considered
 

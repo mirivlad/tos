@@ -13,7 +13,14 @@ ADR-0071 remains **Proposed**. `RUNTIME_GRANT = 54 MiB` remains **provisional**.
 engine integration, which waits on an image format covering 100 % of
 `tos-ir/v1` and closing docs/43 §1 in full.
 
-Verdict, stated once: **sequential launch accumulates nothing — after phasing,
+Verdict, stated once: **the manifest's bound is closed — import edges, not call
+sites, `0.50 MiB` at the absolute V1 worst case against `378 MiB` for the form
+it replaces. The verifier's workspace turned out to be one line: nine
+verification steps of nine allocate nothing, and the whole of it is
+`module_digest` materializing the canonical stream before hashing it. And a
+third bound is now measured and open: the widest single-module import surface is
+`156.83 MiB`, nearly three times the provisional grant. Sequential launch
+accumulates nothing — after phasing,
 live state carried across a 16-module closure is `5 616 B` and the frontier does
 not move at all from the first module's release to the last — but the launch
 peak is `52.10 MiB` above the store at two modules and `55.76 MiB` at sixteen,
@@ -27,8 +34,10 @@ upper bound under the accepted V1 ceilings — a conforming closure may require
 `378 MiB` of links on a `256 MiB` machine, which §9 brings as a Level-2
 question.**
 
-Two of the seven gates are **not closed** by this document, and say so: the
-launch peak (§8) and the manifest bound (§9).
+The manifest bound (§9) is **closed**. The launch peak (§8) is **not**, and now
+has two named owners with hard bounds behind them — the digest buffer (§10) and
+the widest import surface (§11) — neither of which is answered by a larger
+grant.
 
 ## What was built
 
@@ -364,7 +373,143 @@ imports everything would not show it. Stated rather than hidden, because the
 fixture is the worst case for this term and a friendlier fixture would have made
 the bound look closed when it is not.
 
-## 9. The manifest's real upper bound
+## 9. The manifest's real upper bound — import edges, not call sites
+
+An earlier version of this section derived the bound for a manifest holding
+**one link per cross-module call site** and found it incompatible with the
+platform: `32 256` sites in a conforming module, `8 257 536` links at the
+closure ceiling, `378 MiB` of them on a `256 MiB` machine. That was raised as a
+Level-2 question, and the answer was that the manifest was holding the wrong
+thing.
+
+**What the manifest is for is fixing the exact executable closure and the
+provider's authority before the first instruction.** That needs one entry per
+*declared import slot* — which module a caller's import names. It does not need
+to know which function each call reaches: once the module is fixed and resident,
+that lookup happens **inside** the module the manifest already chose, and cannot
+widen anything. Any `(export name -> function index)` table built for it is
+resident module-derived state under §7, inside the byte bound and evicted with
+the module.
+
+Derived at the V1 ceilings:
+
+| | |
+|---|---:|
+| import declarations that fit in one conforming unit | 10 520 (source-derived) |
+| the reference profile's cap on imports per module | 256 |
+| **the binding constraint — a 256-module closure** | **255** |
+| × 256 modules | **65 280 import edges** |
+| stored as one `ClosureModuleId` per slot plus per-module offsets | **523 268 B (0.50 MiB)** |
+| ADR-0040 whole-machine budget | 268 435 456 B (256 MiB) |
+
+**`0.2 %` of the machine at the absolute worst case**, against `378 MiB` for the
+form it replaces — a factor of `126`. The Level-2 question §9 used to raise is
+closed by a change of shape rather than by a smaller cap, which is the outcome
+that was worth waiting for: no conformance profile was lowered and no ceiling
+was touched.
+
+The measured closure of 16 modules now carries **15 import edges in 268 B**,
+where the call-site form carried 15 links in 816 B — and, more to the point, a
+closure with many calls across few edges no longer pays per call.
+
+### Resolution is exact, not probabilistic
+
+An intermediate version of the launch path named the callee by a **128-bit
+truncation** of the sha-256 of its module name, on the argument that a collision
+at this population is vanishingly unlikely. That argument is about probability
+and what it buys is bytes; what it risks is resolving a call to a *different
+function*, silently, in the trusted launch path. It is gone.
+
+A pending edge now carries the **content ID the import itself declares** — an
+exact identity the frontend already put in the IR — and resolution is a 32-byte
+equality against the callee's own record. Not a name, not a hash of a name, not
+a truncation of anything. A wrong match is not improbable; it is impossible.
+
+## 10. Where the verifier's memory goes
+
+§8 found the verifier's own workspace to be the largest single term in a launch
+peak. A total cannot say whether that is one large structure or nine modest ones
+in sequence, and those have different answers, so each of `VERIFY_STEPS` was
+measured — sequentially in one process, and again **one step per process** so
+that no step inherits another's high-water mark.
+
+| Step | Survivors | Own frontier (isolated) |
+|---|---:|---:|
+| `limits` | 0 | **0** |
+| `schema` | 0 | **0** |
+| `source_identity` | 0 | **0** |
+| `table_order` | 0 | **0** |
+| `types_and_imports` | 0 | **0** |
+| `control_flow` | 0 | **0** |
+| `ownership_and_profile` | 0 | **0** |
+| `tasks_sync_atomics_unsafe` | 0 | **0** |
+| `source_maps` | 0 | **0** |
+| **`module_digest`** | 128 B | **16 515 360 B (15.75 MiB)** |
+| `source_map_digest` | 128 B | 0 |
+
+**Nine verification steps out of nine allocate nothing measurable.** The entire
+"verifier workspace" is one line: `tos_ir::module_digest`, which builds the whole
+canonical byte stream in a `Vec` and then hashes it. The stream for this module
+is `5.30 MiB`; the frontier it costs is `15.75 MiB`, because a growing `Vec`
+reallocates.
+
+So there is no cumulative scratch to pool and no reusable verifier arena to
+propose. **The remedy is to hash the canonical stream incrementally instead of
+materializing it** — feed the same bytes to the digest as they are produced, in
+the same order. That is not a semantic shortcut and not an index to be trusted:
+the digest is unchanged byte for byte, every check still runs, and what
+disappears is a buffer, not a traversal. Its scratch would be O(1) rather than
+O(module).
+
+Two figures for scale on a ceiling-sized module: decode is `11.82 MiB` of live
+`Module`, and everything the verifier adds above it is that one buffer.
+
+**Not implemented here.** It touches `tos-ir`'s digest path, which every module
+identity in the project depends on, and it deserves its own change with its own
+before-and-after digest comparison.
+
+## 11. The widest single-module import surface
+
+§8's other residue: a module's declared resolution, held while that module is
+verified. The fixture's entry imports every dependency, so the term was visible
+at `0.8 → 4.4 MiB` — but a fixture is not a bound. Derived at the V1 ceilings:
+
+| | |
+|---|---:|
+| exports in the densest conforming module | 6 745 (source-derived; the profile caps a table at 65 536) |
+| that module's entry in a declared resolution | 644 896 B (0.62 MiB), measured |
+| a module may import at most | 255 others |
+| **widest single-module import surface** | **164 448 480 B (156.83 MiB)** |
+| of which export-name text | 8 316 825 B (7.93 MiB) |
+| the representation carrying it | **20x** |
+| provisional `RUNTIME_GRANT` | 56 623 104 B (54 MiB) |
+| ADR-0040 whole-machine budget | 268 435 456 B (256 MiB) |
+
+**The widest import surface alone is nearly three times the provisional grant,
+and 61 % of the whole machine.** A launch verifying such a module holds it on
+top of that module's decoded form and the digest buffer of §10.
+
+Two things follow, and they are different in kind.
+
+The **content** is `7.93 MiB` of export-name text; the `156.83 MiB` is the
+reference `ResolutionSnapshot` — `BTreeMap<String, BTreeSet<String>>` with an
+owned `String` per name — carrying it at `20x`. That ratio is the same shape as
+the `2.3x` ADR-0070 measured on live IR, and it says the same thing: the number
+is a property of a representation, not of the contract.
+
+But the contract is what it is: `tos_verifier::verify` takes a declared
+resolution containing every imported module's export names, and this harness
+does not change the verifier. **So the remedy is a decision, not a measurement**
+— a more compact declared-resolution representation carrying the same
+information (export identities rather than owned name text) would be a change to
+an accepted verifier interface, and choosing it is not this document's to make.
+
+Until it is made, `54 MiB` has two things to answer for and not one: the
+digest buffer of §10, and this.
+
+## 9a. The manifest's earlier bound, retained
+
+
 
 `~11 KiB at 256 modules` was an extrapolation of this fixture's
 one-link-per-dependency shape. It is not a V1 bound. A conforming closure may
@@ -465,14 +610,24 @@ cargo run --release -p tos-residency-prototype -- --eviction
 cargo run --release -p tos-residency-prototype -- --negatives
 ```
 
+§9's import-edge bound, §10's verifier breakdown and §11's import surface:
+
+```sh
+cargo run --release -p tos-residency-prototype -- --manifest-bound
+```
+
+```sh
+cargo run --release -p tos-image-prototype -- --verify-steps target/ceiling.tosimg0
+```
+
+```sh
+cargo run --release -p tos-residency-prototype -- --import-surface
+```
+
 The frontier attribution of §8, per closure size:
 
 ```sh
 for n in 2 4 8 16; do cargo run --release -p tos-residency-prototype -- --attribute --dir target/res$n; done
 ```
 
-The manifest bound of §9:
 
-```sh
-cargo run --release -p tos-residency-prototype -- --manifest-bound
-```
