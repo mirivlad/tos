@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-image-prototype"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Measurement-only prototype of a compact verified module image (ADR-0070 section 6). Experimental v0; never executed by the engine."
+publish = false
+
+[dependencies]
+tos-core = { path = "../../crates/tos-core" }
+tos-ir = { path = "../../crates/tos-ir" }
+tos-verifier = { path = "../../crates/tos-verifier" }
+tos-runtime = { path = "../../crates/tos-runtime" }
+tos-pipeline = { path = "../../crates/tos-pipeline" }
+tos-hash = { path = "../../crates/tos-hash" }
