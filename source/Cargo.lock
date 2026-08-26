@@ -129,6 +129,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tos-residency-prototype"
+version = "0.1.0"
+dependencies = [
+ "tos-core",
+ "tos-hash",
+ "tos-image-prototype",
+ "tos-ir",
+ "tos-pipeline",
+ "tos-runtime",
+ "tos-verifier",
+]
+
+[[package]]
 name = "tos-runtime"
 version = "0.1.0"
 

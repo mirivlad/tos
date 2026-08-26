@@ -24,7 +24,7 @@
 //!   digest — the hostile case, where the attacker controls the bytes and the
 //!   digest both, and only the payload parser stands between them and a module.
 
-mod image;
+use tos_image_prototype::image;
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -35,7 +35,7 @@ use tos_ir::Module;
 use tos_runtime::{GlobalHeap, RuntimeMemoryGrant, GRANT_VERSION};
 use tos_verifier::{Limits, ResolutionSnapshot};
 
-use image::ImageError;
+use crate::image::ImageError;
 
 /// The region every measurement runs in, the shape a nucleus grant has.
 const ARENA_BYTES: usize = 1024 * 1024 * 1024;

@@ -24,6 +24,7 @@ members = [
     "tests/performance-core",
     "tests/arena-bound",
     "tests/image-prototype",
+    "tests/residency",
 ]
 # Target-only crates (UEFI / freestanding) are members but not default members:
 # they are built explicitly with their target, never on the host default build.
@@ -48,6 +49,7 @@ default-members = [
     "tests/performance-core",
     "tests/arena-bound",
     "tests/image-prototype",
+    "tests/residency",
 ]
 
 [profile.release]

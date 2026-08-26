@@ -8,7 +8,8 @@
   at once, what supplies the rest, and what survives a module image being
   released. It changes no TOS Core semantics, no ABI operation and no invariant
 - Project Architect approval: **not given; this ADR proposes, it does not decide**
-- Evidence: `docs/evidence/STAGE3_COMPACT_IMAGE_P1.md`,
+- Evidence: `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md` (this ADR's own
+  evidence gate, measured), `docs/evidence/STAGE3_COMPACT_IMAGE_P1.md`,
   `docs/evidence/STAGE3_PROCESS_GRANT.md`, `docs/evidence/STAGE2_ARENA_BOUND.md`
 - Related: ADR-0070 (Accepted) §5, which requires this decision and constrains
   its shape; ADR-0069 (Proposed) — the grant, still provisional pending this;
@@ -461,7 +462,9 @@ stands**: production engine integration waits on a format that covers 100 % of
 `tos-ir/v1` and closes docs/43 §1 in full. Evidence taken on a subset is evidence
 about residency, never a claim that the format is ready.
 
-No number is claimed in this ADR.
+No number is claimed in this ADR. They are in
+`docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md`, measured against this list, and
+the status stays **Proposed** until the Project Architect has read them.
 
 ## Alternatives considered
 
