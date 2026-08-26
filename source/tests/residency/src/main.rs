@@ -274,9 +274,23 @@ fn entry_calling(pattern: &[usize], imports: usize, bytes: usize) -> String {
 
 struct Prepared {
     store: Store,
-    snapshot: ResolutionSnapshot,
+    /// The declared resolution, **sliced per module**: what each module's own
+    /// verification needs, and no more.
+    ///
+    /// One closure-wide snapshot was the second owner the attribution found. The
+    /// verifier consults only the modules a module imports, so the closure-wide
+    /// form was holding the other 255 for nothing — and the shape a launch
+    /// receives its resolution in is an input-format question, not a verifier
+    /// change.
+    slices: Vec<ResolutionSnapshot>,
     entry: usize,
     expected: i128,
+}
+
+impl Prepared {
+    fn resolver(&self) -> impl Fn(usize) -> ResolutionSnapshot + '_ {
+        |position: usize| self.slices[position].clone()
+    }
 }
 
 /// Everything before launch: source, lowering, encoding. Not measured — it is
@@ -328,22 +342,37 @@ fn prepare(dependencies: usize, pattern: &[usize], unit_bytes: usize) -> Prepare
     }
 
     // The declared resolution: an input to launch, never something launch
-    // discovers (docs/43 §5). Built from the same resolution that produced the
-    // closure, and released once the manifest exists.
-    let mut snapshot = ResolutionSnapshot::default();
+    // discovers (docs/43 §5). Sliced per module, because that is what each
+    // module's verification actually consults.
+    let mut slices: Vec<ResolutionSnapshot> = Vec::with_capacity(lowered.len());
     for module in &lowered {
-        snapshot.modules.insert(
-            module.header.module_name.clone(),
-            module.header.content_id.clone(),
-        );
-        snapshot.exports.insert(
-            module.header.module_name.clone(),
-            module
-                .exports
-                .iter()
-                .map(|export| export.name.clone())
-                .collect(),
-        );
+        let mut slice = ResolutionSnapshot::default();
+        let wanted: Vec<&str> = core::iter::once(module.header.module_name.as_str())
+            .chain(
+                module
+                    .imports
+                    .iter()
+                    .map(|import| import.module_name.as_str()),
+            )
+            .collect();
+        for other in &lowered {
+            if !wanted.contains(&other.header.module_name.as_str()) {
+                continue;
+            }
+            slice.modules.insert(
+                other.header.module_name.clone(),
+                other.header.content_id.clone(),
+            );
+            slice.exports.insert(
+                other.header.module_name.clone(),
+                other
+                    .exports
+                    .iter()
+                    .map(|export| export.name.clone())
+                    .collect(),
+            );
+        }
+        slices.push(slice);
     }
 
     let images: Vec<Snapshot> = lowered
@@ -359,7 +388,7 @@ fn prepare(dependencies: usize, pattern: &[usize], unit_bytes: usize) -> Prepare
 
     Prepared {
         store: Store { images },
-        snapshot,
+        slices,
         entry: dependencies,
         expected,
     }
@@ -386,15 +415,22 @@ fn prepare_mode(modules: usize, directory: &str) {
     sidecar.push_str(&format!("count {}\n", prepared.store.images.len()));
     sidecar.push_str(&format!("entry {}\n", prepared.entry));
     sidecar.push_str(&format!("expected {}\n", prepared.expected));
-    for (name, content_id) in &prepared.snapshot.modules {
-        sidecar.push_str(&format!("module {name} {content_id}\n"));
-    }
-    for (name, exports) in &prepared.snapshot.exports {
-        for export in exports {
-            sidecar.push_str(&format!("export {name} {export}\n"));
-        }
-    }
     std::fs::write(format!("{directory}/closure.txt"), sidecar).expect("the sidecar is writable");
+    // One resolution slice per module, so a launch reads one module's import
+    // surface rather than the closure's.
+    for (at, slice) in prepared.slices.iter().enumerate() {
+        let mut text = String::new();
+        for (name, content_id) in &slice.modules {
+            text.push_str(&format!("module {name} {content_id}\n"));
+        }
+        for (name, exports) in &slice.exports {
+            for export in exports {
+                text.push_str(&format!("export {name} {export}\n"));
+            }
+        }
+        std::fs::write(format!("{directory}/resolution.{at:03}"), text)
+            .expect("the slice is writable");
+    }
     println!("== prepared ==");
     println!(
         "{} modules, {} B of images, written to {directory}",
@@ -405,29 +441,16 @@ fn prepare_mode(modules: usize, directory: &str) {
 }
 
 /// Reads back what `--prepare` wrote.
-fn read_prepared(directory: &str) -> (Store, ResolutionSnapshot, usize) {
+fn read_prepared(directory: &str) -> (Store, usize) {
     let sidecar =
         std::fs::read_to_string(format!("{directory}/closure.txt")).expect("run --prepare first");
     let mut count = 0usize;
     let mut entry = 0usize;
-    let mut snapshot = ResolutionSnapshot::default();
     for line in sidecar.lines() {
         let mut parts = line.split(' ');
-        match (parts.next(), parts.next(), parts.next()) {
-            (Some("count"), Some(value), _) => count = value.parse().expect("a count"),
-            (Some("entry"), Some(value), _) => entry = value.parse().expect("an entry index"),
-            (Some("module"), Some(name), Some(content_id)) => {
-                snapshot
-                    .modules
-                    .insert(name.to_string(), content_id.to_string());
-            }
-            (Some("export"), Some(name), Some(export)) => {
-                snapshot
-                    .exports
-                    .entry(name.to_string())
-                    .or_default()
-                    .insert(export.to_string());
-            }
+        match (parts.next(), parts.next()) {
+            (Some("count"), Some(value)) => count = value.parse().expect("a count"),
+            (Some("entry"), Some(value)) => entry = value.parse().expect("an entry index"),
             _ => {}
         }
     }
@@ -437,7 +460,39 @@ fn read_prepared(directory: &str) -> (Store, ResolutionSnapshot, usize) {
             Snapshot::from(bytes.into_boxed_slice())
         })
         .collect();
-    (Store { images }, snapshot, entry)
+    (Store { images }, entry)
+}
+
+/// Reads one module's resolution slice, and nothing else.
+///
+/// Held only while that module is verified. What this bounds is the term the
+/// attribution found accumulating across the closure; what it does **not**
+/// bound is a single module that imports everything, whose slice is the whole
+/// closure's export surface. That residue is stated in the evidence rather than
+/// hidden by a fixture that never builds one.
+fn resolution_slice(directory: &str, position: usize) -> ResolutionSnapshot {
+    let text = std::fs::read_to_string(format!("{directory}/resolution.{position:03}"))
+        .expect("a resolution slice");
+    let mut slice = ResolutionSnapshot::default();
+    for line in text.lines() {
+        let mut parts = line.split(' ');
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some("module"), Some(name), Some(content_id)) => {
+                slice
+                    .modules
+                    .insert(name.to_string(), content_id.to_string());
+            }
+            (Some("export"), Some(name), Some(export)) => {
+                slice
+                    .exports
+                    .entry(name.to_string())
+                    .or_default()
+                    .insert(export.to_string());
+            }
+            _ => {}
+        }
+    }
+    slice
 }
 
 fn argument(name: &str, fallback: usize) -> usize {
@@ -465,6 +520,8 @@ fn main() {
     match mode {
         "--prepare" => prepare_mode(argument("--modules", 8), &directory()),
         "--launch" => launch_mode(&directory()),
+        "--attribute" => attribute_mode(&directory()),
+        "--manifest-bound" => manifest_bound_mode(),
         "--sizes" => sizes_mode(argument("--modules", 8)),
         "--residency" => residency_mode(argument("--modules", 8), argument("--bound-count", 2)),
         "--adversarial" => adversarial_mode(argument("--repeats", 8)),
@@ -488,7 +545,7 @@ fn launched(prepared: &Prepared, limits: &Limits) -> (closure::Launched, usize, 
     let started = Instant::now();
     let result = closure::launch(
         &prepared.store.images,
-        &prepared.snapshot,
+        &prepared.resolver(),
         limits,
         prepared.entry,
         "main",
@@ -503,7 +560,7 @@ fn launched(prepared: &Prepared, limits: &Limits) -> (closure::Launched, usize, 
 /// **1. Launch peak.** The claim is that sequential verification makes the peak
 /// one module's working set rather than the closure's.
 fn launch_mode(directory: &str) {
-    let (store, resolution, entry) = read_prepared(directory);
+    let (store, entry) = read_prepared(directory);
     let modules = store.images.len();
     let limits = Limits::default();
     let store_bytes = store.bytes();
@@ -526,7 +583,7 @@ fn launch_mode(directory: &str) {
     let started = Instant::now();
     let result = closure::launch(
         &store.images,
-        &resolution,
+        &|position| resolution_slice(directory, position),
         &limits,
         entry,
         "main",
@@ -535,7 +592,6 @@ fn launch_mode(directory: &str) {
     )
     .expect("the fixture's closure verifies");
     let elapsed = started.elapsed().as_micros() as usize;
-    drop(resolution);
 
     println!();
     println!(
@@ -594,6 +650,346 @@ fn launch_mode(directory: &str) {
         result.manifest.heap_bytes(),
         elapsed
     );
+}
+
+/// Where launch's frontier actually goes, by owner.
+///
+/// ADR-0069 sizes a grant from the **frontier**, so a flat live working set is
+/// not by itself a flat launch bound. This walks the same launch and reads the
+/// arena at every phase boundary, because "which owner" is invisible from a
+/// peak.
+fn attribute_mode(directory: &str) {
+    let base_committed = committed();
+    let (store, entry) = read_prepared(directory);
+    let modules = store.images.len();
+    let limits = Limits::default();
+    let store_bytes = store.bytes();
+    let snapshot_bytes = committed()
+        .saturating_sub(base_committed)
+        .saturating_sub(store_bytes);
+
+    println!("== launch frontier attribution, closure of {modules} modules ==");
+    println!(
+        "images {} B ({:.2} MiB); declared resolution ~{} B ({:.2} MiB)",
+        store_bytes,
+        mib(store_bytes),
+        snapshot_bytes,
+        mib(snapshot_bytes)
+    );
+    println!("  the resolution snapshot is launch **input**, required by the verifier for");
+    println!("  every module (docs/43 §5). It is closure-scaled and it is not this harness's");
+    println!("  to change: `tos_verifier::verify` takes it by reference.");
+    println!();
+
+    let result = closure::launch(
+        &store.images,
+        &|position| resolution_slice(directory, position),
+        &limits,
+        entry,
+        "main",
+        committed,
+        frontier,
+    )
+    .expect("the fixture's closure verifies");
+
+    let base = result.marks[0];
+    println!(
+        "{:<22} {:>4}  {:>13}  {:>13}  {:>13}  {:>13}",
+        "phase", "mod", "committed", "d committed", "frontier", "d frontier"
+    );
+    let mut previous = base;
+    for mark in &result.marks {
+        println!(
+            "{:<22} {:>4}  {:>13}  {:>+13}  {:>13}  {:>+13}",
+            mark.label,
+            mark.module
+                .map(|at| at.to_string())
+                .unwrap_or_else(|| "-".to_string()),
+            mark.committed,
+            mark.committed as i64 - previous.committed as i64,
+            mark.frontier,
+            mark.frontier as i64 - previous.frontier as i64
+        );
+        previous = *mark;
+    }
+
+    let releases: Vec<&closure::Mark> = result
+        .marks
+        .iter()
+        .filter(|mark| mark.label == "module released")
+        .collect();
+    let first_release = releases.first().expect("at least one module");
+    let last_release = releases.last().expect("at least one module");
+    let temporary_growth = last_release.committed as i64 - first_release.committed as i64;
+    let frontier_growth = last_release.frontier as i64 - first_release.frontier as i64;
+
+    let decoded: i64 = result
+        .marks
+        .windows(2)
+        .filter(|pair| pair[1].label == "decoded Module")
+        .map(|pair| pair[1].frontier as i64 - pair[0].frontier as i64)
+        .max()
+        .unwrap_or(0);
+    let workspace: i64 = result
+        .marks
+        .windows(2)
+        .filter(|pair| pair[1].label == "verifier workspace")
+        .map(|pair| pair[1].frontier as i64 - pair[0].frontier as i64)
+        .max()
+        .unwrap_or(0);
+    let exports_total: i64 = result
+        .marks
+        .windows(2)
+        .filter(|pair| pair[1].label == "export table")
+        .map(|pair| pair[1].committed as i64 - pair[0].committed as i64)
+        .sum();
+    let pending_total: i64 = result
+        .marks
+        .windows(2)
+        .filter(|pair| pair[1].label == "pending links")
+        .map(|pair| pair[1].committed as i64 - pair[0].committed as i64)
+        .sum();
+    let records_total = modules * core::mem::size_of::<VerifiedModuleRecord>();
+
+    println!();
+    println!("== owners ==");
+    println!(
+        "  one-module scratch, worst decode        {:>12} B ({:>7.2} MiB)",
+        decoded,
+        decoded as f64 / (1024.0 * 1024.0)
+    );
+    println!(
+        "  one-module scratch, verifier workspace  {:>12} B ({:>7.2} MiB)",
+        workspace,
+        workspace as f64 / (1024.0 * 1024.0)
+    );
+    println!(
+        "  closure-wide: export lookup tables      {:>12} B ({:>7.2} MiB)",
+        exports_total,
+        exports_total as f64 / (1024.0 * 1024.0)
+    );
+    println!(
+        "  closure-wide: pending links             {:>12} B ({:>7.2} KiB)",
+        pending_total,
+        pending_total as f64 / 1024.0
+    );
+    println!(
+        "  closure-wide: records                   {:>12} B ({:>7.2} KiB)",
+        records_total,
+        kib(records_total)
+    );
+    println!(
+        "  closure-wide: declared resolution       {:>12} B ({:>7.2} MiB)  [verifier input]",
+        snapshot_bytes,
+        mib(snapshot_bytes)
+    );
+    println!();
+    println!(
+        "  live temporary state accumulated across the closure: {temporary_growth:+} B ({:.2} MiB)",
+        temporary_growth as f64 / (1024.0 * 1024.0)
+    );
+    println!(
+        "  frontier carried over the same span:                 {frontier_growth:+} B ({:.2} MiB)",
+        frontier_growth as f64 / (1024.0 * 1024.0)
+    );
+    println!();
+    println!(
+        "ATTRIB MODULES {modules} STORE {store_bytes} SNAPSHOT {snapshot_bytes} DECODE {decoded} WORKSPACE {workspace} EXPORTS {exports_total} PENDING {pending_total} RECORDS {records_total} TEMP_GROWTH {temporary_growth} FRONTIER_GROWTH {frontier_growth} PEAK {}",
+        result.peak
+    );
+}
+
+/// The real upper bound on a `VerifiedClosureManifest`, from the accepted V1
+/// ceilings rather than from a fixture.
+///
+/// The fixture's one-link-per-dependency shape is a property of the fixture. A
+/// conforming closure may pack cross-module call sites as densely as its source
+/// allows, and the manifest holds one link per site — so the bound is set by how
+/// many call sites fit in a conforming source unit, times the closure ceiling.
+///
+/// docs/44 §2 bounds "IR tables/blocks/instructions" by the **declared module
+/// resource envelope**, whose fields are `u128` and self-declared, so the IR
+/// side supplies no finite bound of its own. What does bound it is the source
+/// unit: every call site must be written down.
+fn manifest_bound_mode() {
+    println!("== the manifest's upper bound, derived ==");
+    println!();
+    println!("accepted V1 ceilings in play (docs/44 §2):");
+    println!(
+        "  normalized source unit      {} B (256 KiB)",
+        tos_core::MAX_SOURCE_BYTES
+    );
+    println!("  module dependency closure   {CLOSURE_CEILING} modules");
+    println!("  IR tables/blocks/instructions   bounded by the declared resource envelope");
+    println!("                                  — u128 fields, self-declared, no finite bound");
+    println!();
+
+    // The densest packing of cross-module call sites the reference frontend
+    // accepts inside one conforming source unit. Measured, not assumed: the
+    // shortest text for one call decides the number, and guessing it would be
+    // guessing the answer.
+    let callee = "module set.a version 1.0 profile bootstrap; \
+         resource [fuel: 100, stack: 1KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 1, recursion: 1, imports: 0] \
+         pub fn v() -> i32 { return 1i32; } "
+        .to_string();
+    let head = "module set.d version 1.0 profile bootstrap; import set.a as a; \
+         resource [fuel: 100000000000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 1, recursion: 1, imports: 1] \
+         pub fn f() -> i32 { return a.v()";
+    let _ = head;
+    // Call sites are spread across functions rather than packed into one
+    // expression. A single 32 738-term sum is inside every published limit —
+    // 256 KiB of source, delimiter nesting of one — and it **overflows the
+    // reference parser's stack**, which is recorded in the evidence as a defect
+    // against docs/44 §2 rather than worked around silently. The chunk size
+    // here is chosen to stay well clear of it, and it costs almost nothing in
+    // density: 8.4 bytes per call site against a theoretical 9.
+    let chunk = argument("--chunk", 512);
+    let mut dense = String::from(
+        "module set.d version 1.0 profile bootstrap; import set.a as a; \
+         resource [fuel: 100000000000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 1, recursion: 1, imports: 1] ",
+    );
+    let mut sites = 0usize;
+    let mut function = 0usize;
+    loop {
+        let mut body = format!("pub fn f{function}() -> i32 {{ return a.v()");
+        for _ in 1..chunk {
+            body.push_str(" + a.v()");
+        }
+        body.push_str("; } ");
+        if dense.len() + body.len() > tos_core::MAX_SOURCE_BYTES {
+            break;
+        }
+        dense.push_str(&body);
+        sites += chunk;
+        function += 1;
+    }
+    println!(
+        "densest conforming caller: {} B of source, {} written call sites",
+        dense.len(),
+        sites
+    );
+
+    let callee_source = SourceReader::read(callee.as_bytes()).expect("valid");
+    let dense_source = SourceReader::read(dense.as_bytes()).expect("valid");
+    let callee_schema = Parser::parse_schema(&callee_source)
+        .into_accepted()
+        .expect("the callee parses");
+    let callee_module = lower_module_in_set(
+        &callee_source,
+        &callee_schema,
+        &ModuleContext {
+            source_set: "bound".to_string(),
+            path: "set/a.tos".to_string(),
+            content_id: tos_pipeline::content_id(callee_source.bytes()),
+            dependency_digest: tos_pipeline::list_digest(&[]),
+            capability_interface_digest: tos_pipeline::list_digest(&[]),
+        },
+        &[],
+    )
+    .expect("the callee lowers");
+    let dense_schema = match Parser::parse_schema(&dense_source).into_accepted() {
+        Some(schema) => schema,
+        None => {
+            println!();
+            println!("the frontend refused the densest caller; the bound below is the");
+            println!("source-arithmetic one and is not confirmed by lowering");
+            report_manifest_bound(sites);
+            return;
+        }
+    };
+    let lowered = lower_module_in_set(
+        &dense_source,
+        &dense_schema,
+        &ModuleContext {
+            source_set: "bound".to_string(),
+            path: "set/d.tos".to_string(),
+            content_id: tos_pipeline::content_id(dense_source.bytes()),
+            dependency_digest: tos_pipeline::list_digest(&[]),
+            capability_interface_digest: tos_pipeline::list_digest(&[]),
+        },
+        &[ResolvedImport {
+            name: "set.a",
+            module: &callee_module,
+        }],
+    );
+    match lowered {
+        Ok(module) => {
+            let imported: usize = module
+                .functions
+                .iter()
+                .flat_map(|function| function.blocks.iter())
+                .flat_map(|block| block.instructions.iter())
+                .filter(|instruction| {
+                    matches!(
+                        &instruction.op,
+                        tos_ir::Op::Call {
+                            target: tos_ir::CallTarget::Imported { .. },
+                            ..
+                        }
+                    )
+                })
+                .count();
+            let instructions: usize = module
+                .functions
+                .iter()
+                .flat_map(|function| function.blocks.iter())
+                .map(|block| block.instructions.len())
+                .sum();
+            println!(
+                "lowered: {imported} cross-module call sites, {instructions} instructions, \
+                 {} source-map entries",
+                module.source_map.len()
+            );
+            let published = Limits::default();
+            println!(
+                "reference profile: instructions/block {}, blocks/function {}, source-map entries {}",
+                published.instructions_per_block,
+                published.blocks_per_function,
+                published.source_map_entries
+            );
+            report_manifest_bound(imported);
+        }
+        Err(_) => {
+            println!();
+            println!("the densest caller did not lower under the reference limits; the");
+            println!("source-arithmetic bound below stands as the ceiling either way");
+            report_manifest_bound(sites);
+        }
+    }
+}
+
+fn report_manifest_bound(links_per_module: usize) {
+    let link = core::mem::size_of::<closure::Link>();
+    let total = links_per_module * CLOSURE_CEILING;
+    let bytes = total * link;
+    println!();
+    println!("== the bound ==");
+    println!("  cross-module call sites in one conforming module   {links_per_module}");
+    println!("  x {CLOSURE_CEILING} modules                                        {total}");
+    println!(
+        "  x size_of::<Link>() = {link} B                          {bytes} B ({:.0} MiB)",
+        mib(bytes)
+    );
+    println!();
+    println!("  ADR-0040 whole-machine budget                      268435456 B (256 MiB)");
+    if bytes > 256 * 1024 * 1024 {
+        println!();
+        println!("  THE BOUND EXCEEDS THE WHOLE MACHINE. A conforming closure may require a");
+        println!("  manifest larger than the reference platform's entire memory, so ADR-0071 §2");
+        println!("  cannot be accepted as written without a decision about which contract gives.");
+        println!("  No lower cap is chosen here: docs/44 §2 permits one only in a declared");
+        println!("  conformance profile, and choosing a conformance profile by its memory bill");
+        println!("  is a Level-2 decision, not a measurement.");
+    } else {
+        println!();
+        println!("  The bound fits the budget and can be recorded as ADR-0071 §2's structural");
+        println!("  limit.");
+    }
+    println!();
+    println!("MANIFEST_BOUND LINKS_PER_MODULE {links_per_module} TOTAL {total} LINK {link} BYTES {bytes}");
 }
 
 /// **2. Record and manifest size**, reported apart from each other and
