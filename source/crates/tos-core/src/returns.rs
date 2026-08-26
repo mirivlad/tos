@@ -207,30 +207,20 @@ fn collect_expression_scopes<'tree>(
     expression: &'tree Expression,
     out: &mut Vec<&'tree Expression>,
 ) {
-    if matches!(
-        expression.form(),
-        ExpressionForm::Closure | ExpressionForm::Spawn
-    ) {
-        // The body belongs to this scope; its own nested scopes are collected
-        // when that scope is analysed.
-        out.push(expression);
-        return;
-    }
-    for child in [
-        expression.left(),
-        expression.right(),
-        expression.inner(),
-        expression.callee(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        collect_expression_scopes(child, out);
-    }
-    for argument in expression.arguments() {
-        collect_expression_scopes(argument.value(), out);
-    }
-    for element in expression.elements() {
-        collect_expression_scopes(element, out);
-    }
+    // Iteratively: a flat operator chain is as deep as it is long.
+    crate::walk::walk_tree(expression, false, |node| {
+        let crate::walk::Node::Expression(expression) = node else {
+            return crate::walk::Descend::Children;
+        };
+        if matches!(
+            expression.form(),
+            ExpressionForm::Closure | ExpressionForm::Spawn
+        ) {
+            // The body belongs to this scope; its own nested scopes are
+            // collected when that scope is analysed.
+            out.push(expression);
+            return crate::walk::Descend::Skip;
+        }
+        crate::walk::Descend::Children
+    });
 }

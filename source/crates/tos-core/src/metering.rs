@@ -109,24 +109,12 @@ fn walk_expression(
     expression: &crate::parser::Expression,
     out: &mut Vec<Diagnostic>,
 ) {
-    if let Some(body) = expression.body() {
-        walk_block(source, body, out);
-    }
-    for child in [
-        expression.left(),
-        expression.right(),
-        expression.inner(),
-        expression.callee(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        walk_expression(source, child, out);
-    }
-    for argument in expression.arguments() {
-        walk_expression(source, argument.value(), out);
-    }
-    for element in expression.elements() {
-        walk_expression(source, element, out);
-    }
+    // Iteratively: a flat operator chain is as deep as it is long. This slice
+    // walked a body before the subexpressions, and still does.
+    crate::walk::walk_tree(expression, true, |node| {
+        if let crate::walk::Node::Block(block) = node {
+            walk_block(source, block, out);
+        }
+        crate::walk::Descend::Children
+    });
 }

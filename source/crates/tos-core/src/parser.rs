@@ -571,6 +571,42 @@ pub struct Expression {
     span: Span,
 }
 
+/// Takes an expression tree apart without recursing along an operator chain.
+///
+/// A left-associative chain is as deep as it is long, and so is a run of prefix
+/// operators. The compiler's generated drop glue follows `left` and `inner`
+/// recursively, so freeing a conforming 256 KiB source unit could overflow the
+/// stack even after every *walk* over it had been made iterative — a crash on
+/// the way out rather than on the way in, and just as far from the structured
+/// rejection docs/44 section 2 requires.
+///
+/// Only the boxed single children are unwound here. `arguments`, `elements` and
+/// `body` are dropped by the ordinary glue, because those nest only where the
+/// source nests and the delimiter-nesting limit already bounds them.
+impl Drop for Expression {
+    fn drop(&mut self) {
+        let mut pending: Vec<Box<Expression>> = Vec::new();
+        let detach = |expression: &mut Expression, pending: &mut Vec<Box<Expression>>| {
+            for slot in [
+                &mut expression.left,
+                &mut expression.right,
+                &mut expression.inner,
+                &mut expression.callee,
+            ] {
+                if let Some(child) = slot.take() {
+                    pending.push(child);
+                }
+            }
+        };
+        detach(self, &mut pending);
+        while let Some(mut node) = pending.pop() {
+            detach(&mut node, &mut pending);
+            // `node` goes out of scope with its boxed children already taken,
+            // so its own drop reaches no further.
+        }
+    }
+}
+
 impl Expression {
     pub fn form(&self) -> ExpressionForm {
         self.form
@@ -2065,46 +2101,49 @@ impl<'source> TokenCursor<'source> {
         Ok(left)
     }
 
+    /// Parses a run of prefix operators and the operand under it.
+    ///
+    /// The run is collected first and the nodes are built from the operand
+    /// outwards. A run of prefix operators nests nothing that the
+    /// delimiter-nesting limit bounds, so it must not cost a stack frame each:
+    /// `!!!!…b` inside a conforming 256 KiB unit would otherwise be as deep as
+    /// it is long.
     fn parse_unary_expression(&mut self) -> Result<Expression, ParseError> {
-        let operator = if matches!(self.current_text(), "!" | "-" | "~" | "await" | "join") {
-            Some(Span::from(self.advance()))
-        } else if self.current_text() == "borrow" {
-            let start = Span::from(self.advance());
-            let end = if self.current_text() == "mut" {
+        let mut operators: Vec<Span> = Vec::new();
+        loop {
+            let operator = if matches!(self.current_text(), "!" | "-" | "~" | "await" | "join") {
                 Span::from(self.advance())
+            } else if self.current_text() == "borrow" {
+                let start = Span::from(self.advance());
+                let end = if self.current_text() == "mut" {
+                    Span::from(self.advance())
+                } else {
+                    start
+                };
+                Span {
+                    start: start.start(),
+                    end: end.end(),
+                }
             } else {
-                start
+                break;
             };
-            Some(Span {
-                start: start.start(),
-                end: end.end(),
-            })
-        } else {
-            None
-        };
-        if let Some(operator) = operator {
-            let inner = self.parse_unary_expression()?;
-            let end = inner.span.end();
-            return Ok(Expression {
-                form: ExpressionForm::Unary,
-                left: None,
-                operator: Some(operator),
-                right: None,
-                inner: Some(Box::new(inner)),
-                callee: None,
-                arguments: Vec::new(),
-                elements: Vec::new(),
-                parameters: Vec::new(),
-                body: None,
-                name: None,
-                cast_type: None,
-                span: Span {
+            operators.push(operator);
+        }
+        let mut operand = self.parse_postfix_expression()?;
+        for operator in operators.into_iter().rev() {
+            let end = operand.span.end();
+            let mut node = Expression::node(
+                ExpressionForm::Unary,
+                Span {
                     start: operator.start(),
                     end,
                 },
-            });
+            );
+            node.operator = Some(operator);
+            node.inner = Some(Box::new(operand));
+            operand = node;
         }
-        self.parse_postfix_expression()
+        Ok(operand)
     }
 
     /// Parses `primary ( call_suffix | index | field | question | cast )*`
@@ -2296,16 +2335,18 @@ impl<'source> TokenCursor<'source> {
         let first = self.parse_expression()?;
         if self.current().kind() != TokenKind::Comma {
             let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
-            return Ok(Expression {
-                inner: Some(Box::new(first)),
-                ..Expression::node(
-                    ExpressionForm::Group,
-                    Span {
-                        start: start.start(),
-                        end: end.end(),
-                    },
-                )
-            });
+            // Built by assignment rather than by functional update: an
+            // `Expression` owns an iterative destructor now, and a type that
+            // implements `Drop` cannot be moved out of.
+            let mut group = Expression::node(
+                ExpressionForm::Group,
+                Span {
+                    start: start.start(),
+                    end: end.end(),
+                },
+            );
+            group.inner = Some(Box::new(first));
+            return Ok(group);
         }
         self.advance();
         let mut elements = alloc::vec![first];
@@ -2317,16 +2358,15 @@ impl<'source> TokenCursor<'source> {
             return Err(self.error_here(ParseErrorCode::UnexpectedToken));
         }
         let end = self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
-        Ok(Expression {
-            elements,
-            ..Expression::node(
-                ExpressionForm::Tuple,
-                Span {
-                    start: start.start(),
-                    end: end.end(),
-                },
-            )
-        })
+        let mut tuple = Expression::node(
+            ExpressionForm::Tuple,
+            Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        );
+        tuple.elements = elements;
+        Ok(tuple)
     }
 
     fn parse_array(&mut self) -> Result<Expression, ParseError> {
@@ -2336,16 +2376,15 @@ impl<'source> TokenCursor<'source> {
             Self::parse_expression,
         );
         let end = self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
-        Ok(Expression {
-            elements,
-            ..Expression::node(
-                ExpressionForm::Array,
-                Span {
-                    start: start.start(),
-                    end: end.end(),
-                },
-            )
-        })
+        let mut array = Expression::node(
+            ExpressionForm::Array,
+            Span {
+                start: start.start(),
+                end: end.end(),
+            },
+        );
+        array.elements = elements;
+        Ok(array)
     }
 
     fn parse_closure(&mut self) -> Result<Expression, ParseError> {
@@ -2354,15 +2393,14 @@ impl<'source> TokenCursor<'source> {
         let parameters = self.parse_parameters();
         self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
         let body = self.parse_block()?;
-        Ok(Expression {
-            parameters,
-            span: Span {
-                start: start.start(),
-                end: body.span.end(),
-            },
-            body: Some(Box::new(body)),
-            ..Expression::node(ExpressionForm::Closure, start)
-        })
+        let mut closure = Expression::node(ExpressionForm::Closure, start);
+        closure.span = Span {
+            start: start.start(),
+            end: body.span.end(),
+        };
+        closure.parameters = parameters;
+        closure.body = Some(Box::new(body));
+        Ok(closure)
     }
 
     /// Parses `"spawn" ( "async" | "parallel" ) block`.
@@ -2376,15 +2414,14 @@ impl<'source> TokenCursor<'source> {
             _ => return Err(self.error_here(ParseErrorCode::UnexpectedToken)),
         };
         let body = self.parse_block()?;
-        Ok(Expression {
-            operator: Some(mode),
-            span: Span {
-                start: start.start(),
-                end: body.span.end(),
-            },
-            body: Some(Box::new(body)),
-            ..Expression::node(ExpressionForm::Spawn, start)
-        })
+        let mut spawn = Expression::node(ExpressionForm::Spawn, start);
+        spawn.operator = Some(mode);
+        spawn.span = Span {
+            start: start.start(),
+            end: body.span.end(),
+        };
+        spawn.body = Some(Box::new(body));
+        Ok(spawn)
     }
 
     fn parse_primary_expression(&mut self) -> Result<Expression, ParseError> {

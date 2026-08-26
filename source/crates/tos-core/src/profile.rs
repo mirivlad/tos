@@ -112,6 +112,17 @@ fn collect_statement(source: &SourceUnit, statement: &Statement, out: &mut Vec<F
 }
 
 fn collect_expression(source: &SourceUnit, expression: &Expression, out: &mut Vec<Forbidden>) {
+    // Iteratively: a flat operator chain is as deep as it is long.
+    crate::walk::walk_tree(expression, false, |node| {
+        match node {
+            crate::walk::Node::Block(block) => collect_block(source, block, out),
+            crate::walk::Node::Expression(expression) => inspect(source, expression, out),
+        }
+        crate::walk::Descend::Children
+    });
+}
+
+fn inspect(source: &SourceUnit, expression: &Expression, out: &mut Vec<Forbidden>) {
     match expression.form() {
         ExpressionForm::Closure => out.push(Forbidden {
             feature: "closure",
@@ -132,25 +143,5 @@ fn collect_expression(source: &SourceUnit, expression: &Expression, out: &mut Ve
             })
         }
         _ => {}
-    }
-    for child in [
-        expression.left(),
-        expression.right(),
-        expression.inner(),
-        expression.callee(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        collect_expression(source, child, out);
-    }
-    for argument in expression.arguments() {
-        collect_expression(source, argument.value(), out);
-    }
-    for element in expression.elements() {
-        collect_expression(source, element, out);
-    }
-    if let Some(body) = expression.body() {
-        collect_block(source, body, out);
     }
 }

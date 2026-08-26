@@ -72,26 +72,15 @@ fn walk_statement(source: &SourceUnit, statement: &Statement, out: &mut Vec<Diag
 }
 
 fn walk_expression(source: &SourceUnit, expression: &Expression, out: &mut Vec<Diagnostic>) {
-    for child in [
-        expression.left(),
-        expression.right(),
-        expression.inner(),
-        expression.callee(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        walk_expression(source, child, out);
-    }
-    for argument in expression.arguments() {
-        walk_expression(source, argument.value(), out);
-    }
-    for element in expression.elements() {
-        walk_expression(source, element, out);
-    }
-    if let Some(body) = expression.body() {
-        walk_block(source, body, out);
-    }
+    // Iteratively: a flat operator chain is as deep as it is long. This slice
+    // looks at no expression itself — it is here for the defer bodies inside
+    // them.
+    crate::walk::walk_tree(expression, false, |node| {
+        if let crate::walk::Node::Block(block) = node {
+            walk_block(source, block, out);
+        }
+        crate::walk::Descend::Children
+    });
 }
 
 /// Collects the forbidden operations of one defer body.
@@ -152,16 +141,29 @@ fn forbidden_in_expression(
     expression: &Expression,
     out: &mut Vec<(&'static str, Span)>,
 ) {
+    // Iteratively: a flat operator chain is as deep as it is long.
+    crate::walk::walk_tree(expression, false, |node| match node {
+        crate::walk::Node::Block(_) => crate::walk::Descend::Children,
+        crate::walk::Node::Expression(expression) => forbidden_here(source, expression, out),
+    });
+}
+
+/// What one expression forbids, and whether to look inside it.
+fn forbidden_here(
+    source: &SourceUnit,
+    expression: &Expression,
+    out: &mut Vec<(&'static str, Span)>,
+) -> crate::walk::Descend {
     match expression.form() {
         ExpressionForm::Spawn => {
             out.push(("spawn", expression.span()));
             // A spawned body is its own return scope; its contents are not the
             // defer body's diversions.
-            return;
+            return crate::walk::Descend::Skip;
         }
         // A closure body is a separate return scope, so a `return` inside it
         // does not divert out of the cleanup block.
-        ExpressionForm::Closure => return,
+        ExpressionForm::Closure => return crate::walk::Descend::Skip,
         ExpressionForm::Unary => match expression.operator_text(source) {
             Some("await") => out.push(("await", expression.span())),
             Some("join") => out.push(("join", expression.span())),
@@ -169,21 +171,5 @@ fn forbidden_in_expression(
         },
         _ => {}
     }
-    for child in [
-        expression.left(),
-        expression.right(),
-        expression.inner(),
-        expression.callee(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        forbidden_in_expression(source, child, out);
-    }
-    for argument in expression.arguments() {
-        forbidden_in_expression(source, argument.value(), out);
-    }
-    for element in expression.elements() {
-        forbidden_in_expression(source, element, out);
-    }
+    crate::walk::Descend::Children
 }

@@ -436,6 +436,31 @@ impl<'source> Resolver<'source> {
     }
 
     fn visit_expression(&mut self, expression: &'source Expression) {
+        // A left-associative operator chain is as deep as it is long, so its
+        // spine is walked with a list rather than by recursion. The order is the
+        // recursion's: the innermost operand, then each right operand outwards.
+        if expression.form() == ExpressionForm::Binary {
+            let (chain, innermost) =
+                crate::walk::binary_chain(expression, |node| node.form() == ExpressionForm::Binary);
+            if let Some(innermost) = innermost {
+                self.visit_expression(innermost);
+            }
+            for node in chain.iter().rev() {
+                if let Some(right) = node.right() {
+                    self.visit_expression(right);
+                }
+            }
+            return;
+        }
+        // And a run of prefix operators, which nests nothing either.
+        if expression.form() == ExpressionForm::Unary {
+            let (_, innermost) =
+                crate::walk::prefix_chain(expression, |node| node.form() == ExpressionForm::Unary);
+            if let Some(innermost) = innermost {
+                self.visit_expression(innermost);
+            }
+            return;
+        }
         if expression.form() == ExpressionForm::Name {
             self.resolve(expression.span(), Position::Value);
             return;
@@ -784,6 +809,36 @@ fn walk_statement(statement: &Statement, visit: &mut impl FnMut(&Expression)) {
 }
 
 fn walk_expression(expression: &Expression, visit: &mut impl FnMut(&Expression)) {
+    // A left-associative operator chain is as deep as it is long. Its nodes are
+    // visited in the same pre-order the recursion produced — outermost first,
+    // down the spine — and then the right operands from the innermost outwards.
+    if expression.form() == ExpressionForm::Binary {
+        let (chain, innermost) =
+            crate::walk::binary_chain(expression, |node| node.form() == ExpressionForm::Binary);
+        for node in &chain {
+            visit(node);
+        }
+        if let Some(innermost) = innermost {
+            walk_expression(innermost, visit);
+        }
+        for node in chain.iter().rev() {
+            if let Some(right) = node.right() {
+                walk_expression(right, visit);
+            }
+        }
+        return;
+    }
+    if expression.form() == ExpressionForm::Unary {
+        let (chain, innermost) =
+            crate::walk::prefix_chain(expression, |node| node.form() == ExpressionForm::Unary);
+        for node in &chain {
+            visit(node);
+        }
+        if let Some(innermost) = innermost {
+            walk_expression(innermost, visit);
+        }
+        return;
+    }
     visit(expression);
     for child in [
         expression.left(),

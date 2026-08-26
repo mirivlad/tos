@@ -45,12 +45,29 @@ fn check_expression(
                 check_expression(source, schema, inner, out);
             }
         }
+        // A left-associative chain is as deep as it is long, so the spine is
+        // walked with a list. The order is the recursion's: the innermost
+        // operand, then each right operand outwards.
         ExpressionForm::Unary | ExpressionForm::Binary => {
-            for operand in [expression.left(), expression.right()]
-                .into_iter()
-                .flatten()
-            {
-                check_expression(source, schema, operand, out);
+            let (chain, innermost) =
+                crate::walk::binary_chain(expression, |node| node.form() == ExpressionForm::Binary);
+            if let Some(innermost) = innermost {
+                if !core::ptr::eq(innermost, expression) {
+                    check_expression(source, schema, innermost, out);
+                }
+            }
+            for node in chain.iter().rev() {
+                if let Some(right) = node.right() {
+                    check_expression(source, schema, right, out);
+                }
+            }
+            if chain.is_empty() {
+                for operand in [expression.left(), expression.right()]
+                    .into_iter()
+                    .flatten()
+                {
+                    check_expression(source, schema, operand, out);
+                }
             }
         }
         ExpressionForm::Tuple | ExpressionForm::Array => {

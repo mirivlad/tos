@@ -156,26 +156,14 @@ impl<'source> ExhaustivenessChecker<'source> {
     }
 
     fn visit_expression(&mut self, expression: &'source Expression) {
-        if let Some(body) = expression.body() {
-            self.visit_block(body);
-        }
-        for child in [
-            expression.left(),
-            expression.right(),
-            expression.inner(),
-            expression.callee(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            self.visit_expression(child);
-        }
-        for argument in expression.arguments() {
-            self.visit_expression(argument.value());
-        }
-        for element in expression.elements() {
-            self.visit_expression(element);
-        }
+        // Iteratively: a flat operator chain is as deep as it is long. This
+        // slice walked a body before the subexpressions, and still does.
+        crate::walk::walk_tree(expression, true, |node| {
+            if let crate::walk::Node::Block(block) = node {
+                self.visit_block(block);
+            }
+            crate::walk::Descend::Children
+        });
     }
 
     fn check_match(&mut self, statement: &'source Statement) {
