@@ -7,6 +7,14 @@ license = "GPL-3.0-or-later"
 description = "Measurement-only prototype of a compact verified module image (ADR-0070 section 6). Experimental v0; never executed by the engine."
 publish = false
 
+[lib]
+name = "tos_image_prototype"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tos-image-prototype"
+path = "src/main.rs"
+
 [dependencies]
 tos-core = { path = "../../crates/tos-core" }
 tos-ir = { path = "../../crates/tos-ir" }
