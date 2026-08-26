@@ -1303,47 +1303,80 @@ impl<'source> TypeChecker<'source> {
             .collect()
     }
 
+    /// Types a binary operator chain without recursing along it.
+    ///
+    /// `a + b + c + d` is `(((a + b) + c) + d)`, so recursing into `left` would
+    /// recurse once per operand. The chain is collected instead and folded from
+    /// the innermost operand outwards — which is the order the recursion
+    /// evaluated in, so every `type_of` call still happens in the same sequence.
     fn binary_type(&mut self, expression: &'source Expression) -> Type {
-        let operator = expression.operator_text(self.source).unwrap_or_default();
-        let left = expression
-            .left()
-            .map(|operand| self.type_of(operand))
-            .unwrap_or(Type::Unknown);
-        let right = expression
-            .right()
-            .map(|operand| self.type_of(operand))
-            .unwrap_or(Type::Unknown);
-        match operator {
-            "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||" => Type::Bool,
-            // A shift takes its width from the shifted value.
-            "<<" | ">>" => left,
-            _ => {
-                if matches!(left, Type::UnsuffixedInteger) {
-                    right
-                } else {
-                    left
-                }
-            }
+        let (chain, innermost) =
+            crate::walk::binary_chain(expression, |node| node.form() == ExpressionForm::Binary);
+        let mut left = match innermost {
+            Some(operand) => self.type_of(operand),
+            None => Type::Unknown,
+        };
+        for node in chain.iter().rev() {
+            let operator = node.operator_text(self.source).unwrap_or_default();
+            let right = node
+                .right()
+                .map(|operand| self.type_of(operand))
+                .unwrap_or(Type::Unknown);
+            left = binary_result(operator, left, right);
         }
+        left
     }
 
+    /// Types a run of prefix operators without recursing along it.
+    ///
+    /// Same shape as `binary_type`: the run is collected and folded from the
+    /// operand outwards, which is the order the recursion evaluated in.
     fn unary_type(&mut self, expression: &'source Expression) -> Type {
-        let operator = expression.operator_text(self.source).unwrap_or_default();
-        let inner = expression
-            .inner()
-            .map(|operand| self.type_of(operand))
-            .unwrap_or(Type::Unknown);
-        match operator {
-            "!" => Type::Bool,
-            // Consuming a task handle yields its outcome.
-            "await" | "join" => match inner {
-                Type::Constructed(name, arguments) if name == "Task" => Type::Constructed(
-                    String::from("TaskResult"),
-                    alloc::vec![arguments.first().cloned().unwrap_or(Type::Unknown)],
-                ),
-                _ => Type::Unknown,
-            },
-            _ => inner,
+        let (chain, innermost) =
+            crate::walk::prefix_chain(expression, |node| node.form() == ExpressionForm::Unary);
+        let mut inner = match innermost {
+            Some(operand) => self.type_of(operand),
+            None => Type::Unknown,
+        };
+        for node in chain.iter().rev() {
+            let operator = node.operator_text(self.source).unwrap_or_default();
+            inner = unary_result(operator, inner);
+        }
+        inner
+    }
+}
+
+/// One prefix operator's result type, from its operand's.
+fn unary_result(operator: &str, inner: Type) -> Type {
+    match operator {
+        "!" => Type::Bool,
+        // Consuming a task handle yields its outcome.
+        "await" | "join" => match inner {
+            Type::Constructed(name, arguments) if name == "Task" => Type::Constructed(
+                String::from("TaskResult"),
+                alloc::vec![arguments.first().cloned().unwrap_or(Type::Unknown)],
+            ),
+            _ => Type::Unknown,
+        },
+        _ => inner,
+    }
+}
+
+/// One binary operator's result type, from its operands'.
+///
+/// A free function rather than a method because the chain fold in `binary_type`
+/// applies it repeatedly to a type it is carrying, not to an expression.
+fn binary_result(operator: &str, left: Type, right: Type) -> Type {
+    match operator {
+        "==" | "!=" | "<" | "<=" | ">" | ">=" | "&&" | "||" => Type::Bool,
+        // A shift takes its width from the shifted value.
+        "<<" | ">>" => left,
+        _ => {
+            if matches!(left, Type::UnsuffixedInteger) {
+                right
+            } else {
+                left
+            }
         }
     }
 }

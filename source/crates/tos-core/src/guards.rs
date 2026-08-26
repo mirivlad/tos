@@ -255,7 +255,7 @@ impl<'source> GuardChecker<'source> {
         self.types.get(&entry.declared_at)
     }
 
-    fn walk_block(&mut self, block: &Block) {
+    fn walk_block(&mut self, block: &'source Block) {
         self.scopes.push(BTreeMap::new());
         for statement in block.statements() {
             self.walk_statement(statement);
@@ -263,7 +263,7 @@ impl<'source> GuardChecker<'source> {
         self.scopes.pop();
     }
 
-    fn walk_statement(&mut self, statement: &Statement) {
+    fn walk_statement(&mut self, statement: &'source Statement) {
         if let Some(expression) = statement.expression() {
             self.walk_expression(expression);
             if statement.form() == StatementForm::Return {
@@ -317,7 +317,14 @@ impl<'source> GuardChecker<'source> {
         }
     }
 
-    fn walk_expression(&mut self, expression: &Expression) {
+    fn walk_expression(&mut self, expression: &'source Expression) {
+        crate::walk::walk_expression(self, expression);
+    }
+
+    /// What this slice concludes about one expression, with no descent of its
+    /// own. The walk is the worklist in `crate::walk`, because a flat operator
+    /// chain is as deep as it is long.
+    fn inspect(&mut self, expression: &'source Expression) {
         match expression.form() {
             // `await` is a prefix operator (docs/39 section 5), not a form of
             // its own, so it is recognised by the operator it carries.
@@ -348,31 +355,6 @@ impl<'source> GuardChecker<'source> {
                 }
             }
             _ => {}
-        }
-        for child in [
-            expression.left(),
-            expression.right(),
-            expression.inner(),
-            expression.callee(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            self.walk_expression(child);
-        }
-        for argument in expression.arguments() {
-            self.walk_expression(argument.value());
-        }
-        for element in expression.elements() {
-            self.walk_expression(element);
-        }
-        if let Some(body) = expression.body() {
-            if !matches!(
-                expression.form(),
-                ExpressionForm::Spawn | ExpressionForm::Closure
-            ) {
-                self.walk_block(body);
-            }
         }
     }
 
@@ -455,30 +437,43 @@ fn collect_expression_names(
     expression: &Expression,
     out: &mut Vec<(String, Span)>,
 ) {
-    if expression.form() == ExpressionForm::Name {
-        out.push((
-            expression.span().text(source).to_string(),
-            expression.span(),
-        ));
+    // Iteratively: a flat operator chain is as deep as it is long.
+    crate::walk::walk_tree(expression, false, |node| {
+        match node {
+            crate::walk::Node::Block(block) => collect_names(source, block, out),
+            crate::walk::Node::Expression(expression) => {
+                if expression.form() == ExpressionForm::Name {
+                    out.push((
+                        expression.span().text(source).to_string(),
+                        expression.span(),
+                    ));
+                }
+            }
+        }
+        crate::walk::Descend::Children
+    });
+}
+
+impl<'source> crate::walk::ExpressionWalk<'source> for GuardChecker<'source> {
+    fn expression(&mut self, expression: &'source Expression) -> crate::walk::Descend {
+        self.inspect(expression);
+        crate::walk::Descend::Children
     }
-    for child in [
-        expression.left(),
-        expression.right(),
-        expression.inner(),
-        expression.callee(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        collect_expression_names(source, child, out);
+
+    fn block(&mut self, block: &'source Block) {
+        self.walk_block(block);
     }
-    for argument in expression.arguments() {
-        collect_expression_names(source, argument.value(), out);
-    }
-    for element in expression.elements() {
-        collect_expression_names(source, element, out);
-    }
-    if let Some(body) = expression.body() {
-        collect_names(source, body, out);
+
+    /// A spawn or closure body is not walked here: `inspect` already reported
+    /// what escapes across that boundary, and walking in would report the body's
+    /// own uses as escapes from the enclosing scope.
+    fn body_of(&mut self, expression: &'source Expression) -> Option<&'source Block> {
+        if matches!(
+            expression.form(),
+            ExpressionForm::Spawn | ExpressionForm::Closure
+        ) {
+            return None;
+        }
+        expression.body()
     }
 }

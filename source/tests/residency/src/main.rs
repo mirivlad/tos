@@ -839,12 +839,12 @@ fn manifest_bound_mode() {
          pub fn f() -> i32 { return a.v()";
     let _ = head;
     // Call sites are spread across functions rather than packed into one
-    // expression. A single 32 738-term sum is inside every published limit —
-    // 256 KiB of source, delimiter nesting of one — and it **overflows the
-    // reference parser's stack**, which is recorded in the evidence as a defect
-    // against docs/44 §2 rather than worked around silently. The chunk size
-    // here is chosen to stay well clear of it, and it costs almost nothing in
-    // density: 8.4 bytes per call site against a theoretical 9.
+    // expression. That began as a way around a stack overflow — a single
+    // 32 738-term sum, inside every published limit, used to abort the
+    // frontend — and the defect is fixed: `crate::walk` in `tos-core` made
+    // every walk over an operator run iterative. It stays because it is also
+    // the densest packing measured: chunked functions reach 8.4 bytes per call
+    // site, and one enormous expression wastes more on its tail than it saves.
     let chunk = argument("--chunk", 512);
     let mut dense = String::from(
         "module set.d version 1.0 profile bootstrap; import set.a as a; \

@@ -42,6 +42,7 @@ mod returns;
 mod summary;
 mod types;
 mod typing;
+mod walk;
 
 pub use checker::{check_slice, Checker, CHECK_SLICES};
 pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
@@ -1008,6 +1009,168 @@ mod tests {
         assert_eq!(
             module.functions()[0].body().statements()[0].form(),
             StatementForm::Return
+        );
+    }
+
+    #[test]
+    /// A flat operator chain is as long as the source allows and nests nothing.
+    ///
+    /// docs/44 §2 caps a source unit at 256 KiB and delimiter nesting at 256,
+    /// and says the published limits exist to "prevent attacker-controlled
+    /// recursion". A chain of additions nests nothing at all, so no stage of the
+    /// frontend may consume stack in proportion to its length. Before
+    /// `crate::walk`, this input aborted the process with a stack overflow in
+    /// the typing, ownership, mutability and guard slices, in the name
+    /// resolver, in five more checker slices and in lowering — and an abort is
+    /// not a rejection.
+    ///
+    /// The chain here is over fifteen thousand operands, which is past the
+    /// measured threshold at which every one of those stages used to die.
+    fn flat_operator_chain_does_not_consume_stack_per_operand() {
+        let mut text = String::from(
+            "module set.chain version 1.0 profile bootstrap; \
+             resource [fuel: 100000000000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
+             workers: 1, sync: 0, shared: 0B, cleanup: 1, recursion: 1, imports: 0] \
+             pub fn f() -> i32 { return 1i32",
+        );
+        let operands = 15_000;
+        for _ in 1..operands {
+            text.push_str(" + 1i32");
+        }
+        text.push_str("; }");
+        assert!(text.len() < MAX_SOURCE_BYTES, "the fixture must conform");
+
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("a conforming chain parses");
+        let entry = ModuleEntry::new("set/chain.tos", &source, &schema);
+        let diagnostics = entry.check();
+        assert!(
+            !diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity() == Severity::Error),
+            "a conforming chain checks clean: {:?}",
+            diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>()
+        );
+        let context = ModuleContext {
+            source_set: String::from("tos-core-tests"),
+            path: String::from("set/chain.tos"),
+            content_id: String::from("sha256:00"),
+            dependency_digest: String::from("sha256:00"),
+            capability_interface_digest: String::from("sha256:00"),
+        };
+        let module = lower_module_in_set(&source, &schema, &context, &[])
+            .expect("a conforming chain lowers");
+        let instructions: usize = module
+            .functions
+            .iter()
+            .flat_map(|function| function.blocks.iter())
+            .map(|block| block.instructions.len())
+            .sum();
+        assert!(
+            instructions >= operands - 1,
+            "every operand of the chain must have been lowered: {instructions}"
+        );
+    }
+
+    #[test]
+    /// The longest flat expression that fits under the ceiling, and the first
+    /// one that does not.
+    ///
+    /// The second half is the point: a unit past 256 KiB is refused by
+    /// `E1000_SOURCE_LIMIT` at the first excluded byte, which is a structured
+    /// rejection. Nothing about a long expression may turn a rejection into a
+    /// crash, and nothing about this fix introduces an expression-length cap of
+    /// its own — the only limit that stops the chain is the published one.
+    fn the_longest_conforming_expression_is_accepted_and_the_next_is_refused() {
+        let head = "module set.chain version 1.0 profile bootstrap; \
+             resource [fuel: 100000000000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
+             workers: 1, sync: 0, shared: 0B, cleanup: 1, recursion: 1, imports: 0] \
+             pub fn f() -> i32 { return 1i32";
+        let mut text = String::from(head);
+        while text.len() + 7 + 3 <= MAX_SOURCE_BYTES {
+            text.push_str(" + 1i32");
+        }
+        text.push_str("; }");
+        assert!(text.len() <= MAX_SOURCE_BYTES);
+
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("the longest conforming expression parses");
+        let entry = ModuleEntry::new("set/chain.tos", &source, &schema);
+        assert!(
+            !entry
+                .check()
+                .iter()
+                .any(|diagnostic| diagnostic.severity() == Severity::Error),
+            "the longest conforming expression checks clean"
+        );
+
+        // One operand more, and the unit stops conforming. A refusal, not a
+        // crash and not a silent truncation.
+        let mut past = text.clone();
+        past.push_str(" + 1i32");
+        assert!(past.len() > MAX_SOURCE_BYTES);
+        let refused = SourceReader::read(past.as_bytes());
+        assert!(
+            refused.is_err(),
+            "a unit past the published ceiling is refused"
+        );
+    }
+
+    #[test]
+    /// A run of prefix operators is the same defect wearing different syntax.
+    ///
+    /// `!!!!…b` nests nothing a delimiter bounds and costs one byte per
+    /// operator, so a conforming unit holds a quarter of a million of them. It
+    /// used to consume a stack frame each in the parser, the name resolver, the
+    /// typing slice and lowering.
+    fn prefix_operator_run_does_not_consume_stack_per_operator() {
+        let mut text = String::from(
+            "module set.run version 1.0 profile bootstrap; \
+             resource [fuel: 100000000000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
+             workers: 1, sync: 0, shared: 0B, cleanup: 1, recursion: 1, imports: 0] \
+             pub fn f(b: bool) -> bool { return ",
+        );
+        let operators = 100_000;
+        for _ in 0..operators {
+            text.push('!');
+        }
+        text.push_str("b; }");
+        assert!(text.len() < MAX_SOURCE_BYTES, "the fixture must conform");
+
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("a conforming run parses");
+        let entry = ModuleEntry::new("set/run.tos", &source, &schema);
+        assert!(
+            !entry
+                .check()
+                .iter()
+                .any(|diagnostic| diagnostic.severity() == Severity::Error),
+            "a conforming run checks clean"
+        );
+        let context = ModuleContext {
+            source_set: String::from("tos-core-tests"),
+            path: String::from("set/run.tos"),
+            content_id: String::from("sha256:00"),
+            dependency_digest: String::from("sha256:00"),
+            capability_interface_digest: String::from("sha256:00"),
+        };
+        let module =
+            lower_module_in_set(&source, &schema, &context, &[]).expect("a conforming run lowers");
+        let instructions: usize = module
+            .functions
+            .iter()
+            .flat_map(|function| function.blocks.iter())
+            .map(|block| block.instructions.len())
+            .sum();
+        assert!(
+            instructions >= operators,
+            "every operator of the run must have been lowered: {instructions}"
         );
     }
 

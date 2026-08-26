@@ -949,6 +949,50 @@ impl<'source> OwnershipChecker<'source> {
     }
 
     fn walk_expression(&mut self, expression: &Expression, state: &mut State) {
+        // A left-associative operator chain is as deep as it is long, so its
+        // spine is walked with an explicit list rather than by recursion. Every
+        // other form here nests only where the source nests, which the
+        // delimiter-nesting limit already bounds.
+        if expression.form() == ExpressionForm::Binary {
+            let (chain, innermost) =
+                crate::walk::binary_chain(expression, |node| node.form() == ExpressionForm::Binary);
+            if let Some(innermost) = innermost {
+                self.walk_expression(innermost, state);
+            }
+            // Outwards from the innermost operand, which is the order the
+            // recursion evaluated in.
+            for node in chain.iter().rev() {
+                // docs/40 section 4: `&&` does not evaluate its right side
+                // after false and `||` does not after true, so the right side is
+                // a conditional path joined with the one that skipped it.
+                if matches!(node.operator_text(self.source), Some("&&") | Some("||")) {
+                    let mut taken = state.clone();
+                    if let Some(right) = node.right() {
+                        self.walk_expression(right, &mut taken);
+                    }
+                    *state = State::join(state.clone(), taken);
+                } else if let Some(right) = node.right() {
+                    self.walk_expression(right, state);
+                }
+            }
+            return;
+        }
+        // The same for a run of prefix operators, except that a `borrow` takes
+        // its operand rather than descending into it — so the run is walked
+        // outermost inwards and stops at the first one that does.
+        if expression.form() == ExpressionForm::Unary
+            && borrow_of(expression, self.source).is_none()
+        {
+            let mut node = expression;
+            while node.form() == ExpressionForm::Unary && borrow_of(node, self.source).is_none() {
+                match node.inner() {
+                    Some(inner) => node = inner,
+                    None => return,
+                }
+            }
+            self.walk_expression(node, state);
+            return;
+        }
         match expression.form() {
             ExpressionForm::Name | ExpressionForm::Field | ExpressionForm::Index => {
                 self.read_place(expression, state);
@@ -982,25 +1026,6 @@ impl<'source> OwnershipChecker<'source> {
             }
             ExpressionForm::Call => {
                 self.walk_call(expression, state);
-                return;
-            }
-            // docs/40 section 4: `&&` does not evaluate its right side after
-            // false and `||` does not after true, so the right side is a
-            // conditional path joined with the one that skipped it.
-            ExpressionForm::Binary
-                if matches!(
-                    expression.operator_text(self.source),
-                    Some("&&") | Some("||")
-                ) =>
-            {
-                if let Some(left) = expression.left() {
-                    self.walk_expression(left, state);
-                }
-                let mut taken = state.clone();
-                if let Some(right) = expression.right() {
-                    self.walk_expression(right, &mut taken);
-                }
-                *state = State::join(state.clone(), taken);
                 return;
             }
             ExpressionForm::Tuple | ExpressionForm::Array => {

@@ -254,6 +254,22 @@ fn check_expression(
     expression: &Expression,
     out: &mut Vec<Diagnostic>,
 ) {
+    // Iteratively: a flat operator chain is as deep as it is long.
+    crate::walk::walk_tree(expression, false, |node| {
+        match node {
+            crate::walk::Node::Block(block) => check_block(source, sites, block, out),
+            crate::walk::Node::Expression(expression) => inspect(source, sites, expression, out),
+        }
+        crate::walk::Descend::Children
+    });
+}
+
+fn inspect(
+    source: &SourceUnit,
+    sites: &Sites<'_>,
+    expression: &Expression,
+    out: &mut Vec<Diagnostic>,
+) {
     // A call to an operation of an accepted schema: each capability argument
     // must name an import **of the interface that position requires**
     // (ADR-0063). Without this, an operation taking two capabilities accepts
@@ -292,26 +308,6 @@ fn check_expression(
                 }
             }
         }
-    }
-    for child in [
-        expression.left(),
-        expression.right(),
-        expression.inner(),
-        expression.callee(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        check_expression(source, sites, child, out);
-    }
-    for argument in expression.arguments() {
-        check_expression(source, sites, argument.value(), out);
-    }
-    for element in expression.elements() {
-        check_expression(source, sites, element, out);
-    }
-    if let Some(body) = expression.body() {
-        check_block(source, sites, body, out);
     }
 }
 

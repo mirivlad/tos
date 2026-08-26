@@ -1034,13 +1034,23 @@ impl<'source> Lowerer<'source> {
                 Some(self.constant_type(constant))
             }
             ExpressionForm::Group => self.static_expression_type(expression.inner()?),
+            // The chain is walked with a loop rather than by recursing into
+            // `left`: a left-associative run is as deep as it is long. The
+            // answer is the same one the recursion gave — the first comparison
+            // encountered, or the innermost operand's type.
             ExpressionForm::Binary => {
-                let operator = expression.operator_text(self.source)?;
-                let op = binary_op(operator)?;
-                if op.is_comparison() {
-                    return Some(self.intern(TypeDef::Bool));
+                let mut node = expression;
+                loop {
+                    let op = binary_op(node.operator_text(self.source)?)?;
+                    if op.is_comparison() {
+                        return Some(self.intern(TypeDef::Bool));
+                    }
+                    let left = node.left()?;
+                    if left.form() != ExpressionForm::Binary {
+                        return self.static_expression_type(left);
+                    }
+                    node = left;
                 }
-                self.static_expression_type(expression.left()?)
             }
             ExpressionForm::Call => {
                 let callee = expression.callee()?;
@@ -2260,34 +2270,63 @@ impl<'source> Lowerer<'source> {
                 });
                 Ok(Operand::Value(value))
             }
+            // A left-associative run is as deep as it is long, so the chain is
+            // collected and emitted with a loop. The instruction order is the
+            // one the recursion produced: the innermost operand first, then each
+            // right operand and its `Binary` outwards, which is what keeps the
+            // lowered IR — and therefore the module digest — unchanged.
             ExpressionForm::Binary => {
-                let Some(operator) = expression.operator_text(self.source) else {
-                    return Err(self.gap("binary without an operator", expression.span()));
-                };
-                let Some(op) = binary_op(operator) else {
-                    return Err(self.gap("binary operator", expression.span()));
-                };
-                let (Some(left), Some(right)) = (expression.left(), expression.right()) else {
+                let (chain, innermost) = crate::walk::binary_chain(expression, |node| {
+                    node.form() == ExpressionForm::Binary
+                });
+                let Some(innermost) = innermost else {
                     return Err(self.gap("binary without both sides", expression.span()));
                 };
-                let left = self.lower_expression(left, builder)?;
-                let right = self.lower_expression(right, builder)?;
-                let ty = if op.is_comparison() {
-                    self.intern(TypeDef::Bool)
-                } else {
-                    builder.type_of(&left)
-                };
-                let value = builder.define(ty);
-                builder.push(Instruction {
-                    result: Some(value),
-                    ty,
-                    op: Op::Binary { op, left, right },
-                    source: at,
-                    runtime_contract: None,
-                    unsafe_block: builder.in_unsafe,
-                    unsafe_interface: None,
-                });
-                Ok(Operand::Value(value))
+                // Every chain node's span is interned first, outermost inwards.
+                // That is the order the recursion interned them in — each level
+                // mapped its own span on the way down — and the source map's
+                // insertion order is part of the module digest, so a walk that
+                // produced the same instructions in a different interning order
+                // would silently change every module's identity.
+                let mut sites = Vec::with_capacity(chain.len());
+                for node in &chain {
+                    sites.push(self.map(node.span()));
+                }
+                let mut accumulated = self.lower_expression(innermost, builder)?;
+                for (index, node) in chain.iter().enumerate().rev() {
+                    let Some(operator) = node.operator_text(self.source) else {
+                        return Err(self.gap("binary without an operator", node.span()));
+                    };
+                    let Some(op) = binary_op(operator) else {
+                        return Err(self.gap("binary operator", node.span()));
+                    };
+                    let Some(right) = node.right() else {
+                        return Err(self.gap("binary without both sides", node.span()));
+                    };
+                    let right = self.lower_expression(right, builder)?;
+                    let ty = if op.is_comparison() {
+                        self.intern(TypeDef::Bool)
+                    } else {
+                        builder.type_of(&accumulated)
+                    };
+                    let value = builder.define(ty);
+                    let site = sites[index];
+                    builder.push(Instruction {
+                        result: Some(value),
+                        ty,
+                        op: Op::Binary {
+                            op,
+                            left: accumulated,
+                            right,
+                        },
+                        source: site,
+                        runtime_contract: None,
+                        unsafe_block: builder.in_unsafe,
+                        unsafe_interface: None,
+                    });
+                    accumulated = Operand::Value(value);
+                }
+                Ok(accumulated)
             }
             ExpressionForm::Unary => {
                 let Some(operator) = expression.operator_text(self.source) else {
@@ -2337,27 +2376,51 @@ impl<'source> Lowerer<'source> {
                     });
                     return Ok(Operand::Value(value));
                 }
-                let op = match operator {
-                    "-" => UnaryOp::Negate,
-                    "!" => UnaryOp::Not,
-                    _ => return Err(self.gap("unary operator", expression.span())),
+                // A run of `-` or `!` nests nothing a delimiter bounds, so it
+                // is collected and emitted with a loop. The spans are interned
+                // outermost inwards — the order the recursion mapped them in —
+                // so the source map, and with it the module digest, is
+                // unchanged.
+                let source = self.source;
+                let plain = |node: &Expression| {
+                    node.form() == ExpressionForm::Unary
+                        && matches!(node.operator_text(source), Some("-") | Some("!"))
                 };
-                let Some(operand) = expression.inner() else {
+                let (chain, innermost) = crate::walk::prefix_chain(expression, plain);
+                if chain.is_empty() {
+                    return Err(self.gap("unary operator", expression.span()));
+                }
+                let Some(innermost) = innermost else {
                     return Err(self.gap("unary without an operand", expression.span()));
                 };
-                let operand = self.lower_expression(operand, builder)?;
-                let ty = builder.type_of(&operand);
-                let value = builder.define(ty);
-                builder.push(Instruction {
-                    result: Some(value),
-                    ty,
-                    op: Op::Unary { op, operand },
-                    source: at,
-                    runtime_contract: None,
-                    unsafe_block: builder.in_unsafe,
-                    unsafe_interface: None,
-                });
-                Ok(Operand::Value(value))
+                let mut sites = Vec::with_capacity(chain.len());
+                for node in &chain {
+                    sites.push(self.map(node.span()));
+                }
+                let mut accumulated = self.lower_expression(innermost, builder)?;
+                for (index, node) in chain.iter().enumerate().rev() {
+                    let op = match node.operator_text(source) {
+                        Some("-") => UnaryOp::Negate,
+                        Some("!") => UnaryOp::Not,
+                        _ => return Err(self.gap("unary operator", node.span())),
+                    };
+                    let ty = builder.type_of(&accumulated);
+                    let value = builder.define(ty);
+                    builder.push(Instruction {
+                        result: Some(value),
+                        ty,
+                        op: Op::Unary {
+                            op,
+                            operand: accumulated,
+                        },
+                        source: sites[index],
+                        runtime_contract: None,
+                        unsafe_block: builder.in_unsafe,
+                        unsafe_interface: None,
+                    });
+                    accumulated = Operand::Value(value);
+                }
+                Ok(accumulated)
             }
             ExpressionForm::Cast => {
                 let Some(target) = expression.cast_type() else {
@@ -3332,39 +3395,30 @@ fn free_names_in_expression(
     bound: &BTreeSet<String>,
     free: &mut Vec<String>,
 ) {
-    if expression.form() == ExpressionForm::Name {
-        let name = expression.span().text(source).to_string();
-        if !bound.contains(&name) && !free.contains(&name) {
-            free.push(name);
+    // Iteratively: a flat operator chain is as deep as it is long.
+    crate::walk::walk_tree(expression, false, |node| {
+        let crate::walk::Node::Expression(expression) = node else {
+            return crate::walk::Descend::Children;
+        };
+        if expression.form() == ExpressionForm::Name {
+            let name = expression.span().text(source).to_string();
+            if !bound.contains(&name) && !free.contains(&name) {
+                free.push(name);
+            }
+            return crate::walk::Descend::Skip;
         }
-        return;
-    }
-    for child in [
-        expression.left(),
-        expression.right(),
-        expression.inner(),
-        expression.callee(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        free_names_in_expression(source, child, bound, free);
-    }
-    for argument in expression.arguments() {
-        free_names_in_expression(source, argument.value(), bound, free);
-    }
-    for element in expression.elements() {
-        free_names_in_expression(source, element, bound, free);
-    }
-    if let Some(body) = expression.body() {
-        // A nested closure sees this environment plus its own parameters;
-        // whatever it uses freely is also free here.
-        let mut inner = bound.clone();
-        for parameter in expression.parameters() {
-            inner.insert(parameter.name().text(source).to_string());
+        if let Some(body) = expression.body() {
+            // A nested closure sees this environment plus its own parameters;
+            // whatever it uses freely is also free here. Its subexpressions are
+            // still walked, exactly as they were.
+            let mut inner = bound.clone();
+            for parameter in expression.parameters() {
+                inner.insert(parameter.name().text(source).to_string());
+            }
+            collect_free_names(source, body, &mut inner, free);
         }
-        collect_free_names(source, body, &mut inner, free);
-    }
+        crate::walk::Descend::Children
+    });
 }
 
 /// The expression of the first `return` a block performs, if it has one.

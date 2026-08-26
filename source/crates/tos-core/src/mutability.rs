@@ -199,6 +199,15 @@ impl<'source> MutabilityChecker<'source> {
     }
 
     fn visit_expression(&mut self, expression: &'source Expression) {
+        crate::walk::walk_expression(self, expression);
+    }
+}
+
+impl<'source> crate::walk::ExpressionWalk<'source> for MutabilityChecker<'source> {
+    fn expression(&mut self, expression: &'source Expression) -> crate::walk::Descend {
+        // A closure is its own scope, so it is handled whole rather than
+        // descended into: its parameters have to be declared before its body is
+        // walked and undeclared after.
         if expression.form() == ExpressionForm::Closure {
             self.push_scope();
             for parameter in expression.parameters() {
@@ -209,27 +218,12 @@ impl<'source> MutabilityChecker<'source> {
                 self.visit_block(body);
             }
             self.pop_scope();
-            return;
+            return crate::walk::Descend::Skip;
         }
-        for child in [
-            expression.left(),
-            expression.right(),
-            expression.inner(),
-            expression.callee(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            self.visit_expression(child);
-        }
-        for argument in expression.arguments() {
-            self.visit_expression(argument.value());
-        }
-        for element in expression.elements() {
-            self.visit_expression(element);
-        }
-        if let Some(body) = expression.body() {
-            self.visit_block(body);
-        }
+        crate::walk::Descend::Children
+    }
+
+    fn block(&mut self, block: &'source Block) {
+        self.visit_block(block);
     }
 }

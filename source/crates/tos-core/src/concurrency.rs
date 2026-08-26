@@ -188,29 +188,18 @@ impl ConcurrencyChecker<'_> {
     }
 
     fn walk_expression_for_orders(&mut self, expression: &Expression) {
-        if expression.form() == ExpressionForm::Call {
-            self.check_atomic_call(expression);
-        }
-        for child in [
-            expression.left(),
-            expression.right(),
-            expression.inner(),
-            expression.callee(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            self.walk_expression_for_orders(child);
-        }
-        for argument in expression.arguments() {
-            self.walk_expression_for_orders(argument.value());
-        }
-        for element in expression.elements() {
-            self.walk_expression_for_orders(element);
-        }
-        if let Some(body) = expression.body() {
-            self.walk_block_for_orders(body);
-        }
+        // Iteratively: a flat operator chain is as deep as it is long.
+        crate::walk::walk_tree(expression, false, |node| {
+            match node {
+                crate::walk::Node::Block(block) => self.walk_block_for_orders(block),
+                crate::walk::Node::Expression(expression) => {
+                    if expression.form() == ExpressionForm::Call {
+                        self.check_atomic_call(expression);
+                    }
+                }
+            }
+            crate::walk::Descend::Children
+        });
     }
 
     /// Checks an atomic operation's order arguments.
@@ -333,26 +322,14 @@ fn collect_nested_scopes<'ast>(block: &'ast Block, out: &mut Vec<&'ast Block>) {
 }
 
 fn collect_expression_scopes<'ast>(expression: &'ast Expression, out: &mut Vec<&'ast Block>) {
-    if let Some(body) = expression.body() {
-        out.push(body);
-    }
-    for child in [
-        expression.left(),
-        expression.right(),
-        expression.inner(),
-        expression.callee(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        collect_expression_scopes(child, out);
-    }
-    for argument in expression.arguments() {
-        collect_expression_scopes(argument.value(), out);
-    }
-    for element in expression.elements() {
-        collect_expression_scopes(element, out);
-    }
+    // Iteratively: a flat operator chain is as deep as it is long. The bodies
+    // are collected, not entered — the caller walks them.
+    crate::walk::walk_tree(expression, true, |node| {
+        if let crate::walk::Node::Block(block) = node {
+            out.push(block);
+        }
+        crate::walk::Descend::Children
+    });
 }
 
 fn collect_nested_scopes_in_statement<'ast>(
@@ -480,6 +457,18 @@ fn is_spawn(expression: &Expression) -> bool {
 /// Names an expression consumes: the operand of `join` or `await`, and any
 /// name passed to a call or carried by a return, which moves the handle out.
 fn collect_consumption(source: &SourceUnit, expression: &Expression, out: &mut BTreeSet<String>) {
+    // Iteratively: a flat operator chain is as deep as it is long. A nested body
+    // is not this slice's to read, so a block reached from an expression is
+    // ignored exactly as it was before.
+    crate::walk::walk_tree(expression, false, |node| {
+        if let crate::walk::Node::Expression(expression) = node {
+            consumed_by(source, expression, out);
+        }
+        crate::walk::Descend::Children
+    });
+}
+
+fn consumed_by(source: &SourceUnit, expression: &Expression, out: &mut BTreeSet<String>) {
     match expression.form() {
         ExpressionForm::Unary => {
             let operator = expression.operator_text(source);
@@ -495,23 +484,6 @@ fn collect_consumption(source: &SourceUnit, expression: &Expression, out: &mut B
             out.insert(expression.span().text(source).to_string());
         }
         _ => {}
-    }
-    for child in [
-        expression.left(),
-        expression.right(),
-        expression.inner(),
-        expression.callee(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        collect_consumption(source, child, out);
-    }
-    for argument in expression.arguments() {
-        collect_consumption(source, argument.value(), out);
-    }
-    for element in expression.elements() {
-        collect_consumption(source, element, out);
     }
 }
 

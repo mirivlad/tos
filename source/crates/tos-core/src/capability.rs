@@ -179,6 +179,17 @@ impl CapabilityChecker<'_> {
     }
 
     fn walk_expression(&mut self, expression: &Expression) {
+        // Iteratively: a flat operator chain is as deep as it is long.
+        crate::walk::walk_tree(expression, false, |node| {
+            match node {
+                crate::walk::Node::Block(block) => self.walk_block(block),
+                crate::walk::Node::Expression(expression) => self.inspect(expression),
+            }
+            crate::walk::Descend::Children
+        });
+    }
+
+    fn inspect(&mut self, expression: &Expression) {
         match expression.form() {
             ExpressionForm::Name => {
                 self.require_effect(expression.span().text(self.source), expression.span());
@@ -207,26 +218,6 @@ impl CapabilityChecker<'_> {
                 }
             }
             _ => {}
-        }
-        for child in [
-            expression.left(),
-            expression.right(),
-            expression.inner(),
-            expression.callee(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            self.walk_expression(child);
-        }
-        for argument in expression.arguments() {
-            self.walk_expression(argument.value());
-        }
-        for element in expression.elements() {
-            self.walk_expression(element);
-        }
-        if let Some(body) = expression.body() {
-            self.walk_block(body);
         }
     }
 }
