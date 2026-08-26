@@ -14,7 +14,11 @@
   its shape; ADR-0069 (Proposed) — the grant, still provisional pending this;
   ADR-0040 — the whole-machine budget both accounts are spent from
 - Note: this ADR **designs only**. No engine change is proposed for
-  implementation here, and `run_set` is not rebuilt by it
+  implementation here, and `run_set` is not rebuilt by it. Amended 2026-08-26
+  on four points — reload trust (§5), the record/manifest split (§2), the opaque
+  provider key (§3) and what the byte bound counts (§7) — with the architecture
+  approved and the status deliberately left Proposed until this ADR's own
+  evidence gate is met
 
 ## The gap, stated once
 
@@ -55,19 +59,25 @@ Two consequences, both intended:
 - the **peak** cost of launch is one module's working set, not the closure's.
   With the measured figure that is `28.32 MiB` once, rather than `28.32 MiB`
   times the closure size;
-- **verification is complete before execution starts.** No module is entered
-  that has not been verified, and nothing is verified lazily on first call.
-  Lazy verification would make an execution's trusted base depend on which
-  branch it happened to take.
+- **verification is complete before execution starts**, because two things must
+  exist before the first instruction and neither can be built incrementally:
+  the **complete trusted closure manifest** of §2 — which resolves every
+  cross-module link and cannot be assembled from modules that have not been
+  verified yet — and the **exact executable closure and provider authority**,
+  which is fixed at that moment and never widened afterwards. An execution that
+  verified as it went would be deciding, mid-run, what it is allowed to reach.
 
 An execution whose closure cannot be verified in full does not start. There is
 no partial launch, and no "verify the rest when we get there".
 
-### 2. What survives: a small trusted verified-module record
+### 2. What survives: a fixed-shape module record, and a closure manifest beside it
 
-When a module's materialized `Module` is released, what remains is a **trusted
-verified-module record** — small, fixed-shape, held in trusted memory for the
-lifetime of the execution:
+Two structures, and they are separate because one of them is fixed-shape and the
+other cannot be.
+
+**`VerifiedModuleRecord` — fixed shape, one per module.** When a module's
+materialized `Module` is released, this is what remains in trusted memory for
+the lifetime of the execution:
 
 - the **semantic module digest**, as the verifier computed it from the
   reconstructed module;
@@ -75,24 +85,52 @@ lifetime of the execution:
 - the **verifier identity** that produced the receipt;
 - the module's **name, source set, content ID and dependency digest**;
 - the **profile, resource envelope and capability-interface digest**;
-- the **source-map digest**;
-- the **export surface the closure needs** — the function identities other
-  modules of this closure resolve to, and nothing else.
+- the **source-map digest**.
 
-This is deliberately close to the existing `VerifiedModule` receipt, because
-that is already exactly the shape "this module passed this verifier" takes. What
-this ADR adds is a **lifetime**: the record outlives the image and the
-materialized module, and is what everything later compares against.
+**No export surface, and no variable-length field of any kind.** An export list
+grows with the module, so a record carrying one would not be fixed-shape — and
+"fixed-shape" would have been a word rather than a property. Every field above is
+an identity, a digest or a bounded envelope, so the record's size is a constant
+of the design rather than a function of the module. That is what makes the whole
+scheme work: releasing a `Module` must free `12–15 MiB` and retain a known
+handful of bytes.
 
-The record is bounded and its size does not grow with the module's body. That is
-the property that makes the whole design work: releasing a `Module` must free
-`12–15 MiB` and retain kilobytes.
+This is deliberately close to the existing `VerifiedModule` receipt, because that
+is already exactly the shape "this module passed this verifier" takes. What this
+ADR adds is a **lifetime**: the record outlives the image and the materialized
+module, and is what everything later compares against.
 
-**The record lives in trusted memory and is never reloaded from a cache.** It is
-produced by the verifier in this execution's own launch, and there is no path by
-which a stored copy of one can be adopted (§9).
+**`VerifiedClosureManifest` — built once, after the whole closure is verified.**
+It is where the variable part lives, bounded by the closure rather than by any
+module's body. It holds the cross-module links the execution will actually use,
+already resolved:
 
-### 3. The module provider is an explicit argument, constrained to the closure
+```text
+(caller ClosureModuleId, import site) -> (callee ClosureModuleId, function index)
+```
+
+and nothing else. Not an export table, not a name-to-function map, not a lookup
+structure — the resolved links themselves, one per import site the closure
+contains.
+
+It can only be built after every module is verified, which is the other half of
+why §1 is eager: a link may not be resolved against a module whose own
+verification has not happened.
+
+**Once the manifest exists, the export lookup tables are released.** They were
+launch-time scaffolding for resolving links, and after the links are resolved
+nothing needs to ask "what does this module export" again — execution follows
+resolved links, never a name lookup. A lookup table that outlived the manifest
+would be a name-resolution facility sitting inside a running execution, which is
+half of module search kept alive for convenience.
+
+The manifest is also the **only** thing that mints a `ClosureModuleId` (§3).
+
+**Neither structure is ever reloaded from a cache.** Both are produced by this
+execution's own launch, and there is no path by which stored copies can be
+adopted (§10).
+
+### 3. The provider takes an opaque `ClosureModuleId`, so widening is not expressible
 
 The engine is **handed** a provider. It never has one by default, never
 constructs one, and never reaches for one.
@@ -100,18 +138,28 @@ constructs one, and never reaches for one.
 - the provider is an **explicit argument** to the execution — not a global, not
   an ambient default, not a field the engine fills in when the caller left it
   empty;
-- it is **constrained to the exact closure identities** established at launch.
-  A request names a module by an identity in the trusted record set of §2; a
-  request naming anything else is refused by the provider's own construction,
-  not by a check the engine remembers to write;
+- its key is an **opaque `ClosureModuleId`**, **minted only by the trusted
+  closure manifest of §2**. Not a module name, not a path, not a content ID, not
+  a semantic digest — nothing an attacker or a well-meaning caller can construct,
+  parse, guess or derive from text;
 - the provider **cannot enumerate**. There is no "list what you have", because
   a component that can enumerate can be asked what else exists, and what else
   exists is not this execution's business.
 
-The provider's whole authority is: *given an identity this execution already
-verified, return bytes that claim to be that module's image.* It cannot widen a
-closure, and returning a module the resolution did not name is not a bug it
-could have but a request it cannot express.
+**Widening is refused structurally rather than by a check.** A request for a
+module outside the closure is not rejected — it cannot be *written*, because
+there is no `ClosureModuleId` for it and no way to make one. A design that took
+a name and validated it against a list would be one forgotten call site away
+from module search; this one has no failure mode of that shape, because the
+dangerous request has no representation.
+
+The identifier says only "the *n*-th module of this execution's verified
+closure". It carries no meaning outside this execution and grants nothing outside
+it.
+
+What the provider cannot be prevented from doing is returning **wrong bytes** for
+a right identity. That is a real and expected failure, and it is what §5's
+artifact-digest check exists for.
 
 ### 4. No ambient filesystem, network or module search
 
@@ -127,32 +175,47 @@ how a program ends up running code nobody resolved.
 This is stated as its own numbered decision rather than as a note on §3 because
 it is the one a future convenience will try hardest to erode.
 
-### 5. A reloaded image is checked against the trusted record, by artifact digest
+### 5. Reload is byte identity against the trusted record, not re-verification
 
-When the provider returns bytes for a module that was evicted:
+**Full semantic verification happens exactly once, at launch (§1).** The trusted
+record holds the **exact artifact digest** of the image the verifier read. On
+reload:
 
-1. the **artifact digest** of the returned bytes is computed and compared
-   against the artifact digest in the trusted record. A mismatch is refused
-   (§9), before parsing;
-2. the bytes are parsed by the verifier-owned parser as **untrusted input**,
-   exactly as at launch;
-3. the **semantic module digest is recomputed from the reconstructed module**
-   and compared against the record's. A mismatch is refused.
+1. the provider returns an **immutable artifact snapshot** — a byte sequence
+   that cannot change after it is handed over;
+2. **SHA-256 of that exact snapshot** is computed and compared against the
+   trusted artifact digest, **before any parsing**;
+3. a mismatch fails the execution (§9). A match means these are the bytes the
+   verifier already traversed, so they are reused as verified;
+4. the semantic module digest is **not** recomputed and the full verifier does
+   **not** run again. Neither is a source of trust here, because trust was
+   established at launch and is carried by the artifact digest.
 
-Both checks, not one. The artifact digest is cheap and catches the ordinary
-failures — a corrupted, stale or substituted image — before any parsing work is
-done. The semantic digest is the one that matters: it is computed from meaning
-rather than bytes, so it cannot be satisfied by anything that merely looks
-right.
+**Why byte identity is enough, and only here.** The artifact digest is a
+commitment to one exact byte sequence. Second-preimage resistance is precisely
+the property that a matching digest means the same bytes, and the same bytes
+decode to the same module — the round-trip invariant ADR-0070 §6 measured. So
+re-verifying would be re-deriving a conclusion this execution already reached
+about this exact input. This reasoning holds **only** because the record was
+produced by this execution's own verifier at its own launch; it does not extend
+to a record from anywhere else, which is §10.
 
-**Whether the full verifier re-runs on a reload is left open by this ADR**, and
-deliberately. Two positions are defensible — that a matching semantic digest
-plus this execution's own trusted record is exactly what a receipt asserts, or
-that the verifier is cheap enough relative to correctness that it should simply
-run again — and choosing between them without measuring reload frequency would
-be choosing by taste. What is **not** open: the parse always happens as
-untrusted input, and the semantic digest is always recomputed from the
-reconstruction.
+**The snapshot must be immutable, and this is not a detail.** The bytes that are
+hashed and the bytes that are subsequently parsed, viewed and executed **must be
+one immutable snapshot**. A provider that returned a mutable buffer — one it, or
+anything else, could still write to — would create a time-of-check to
+time-of-use window in which verified bytes are hashed and different bytes are
+run. That is not a weakness of the digest; it is the digest being applied to a
+different object than the one that gets used. A provider returning a mutable
+buffer is a provider that does not satisfy this ADR.
+
+**The parser stays total, and fails closed, regardless.** A hash match never
+licenses a faster path through the reader: no bounds check is skipped, no length
+is trusted, nothing is read past a slice. Two reasons, and either alone is
+sufficient. At launch the same parser reads genuinely untrusted input, and a
+reader with two modes would eventually be entered in the wrong one. And a parser
+whose safety depended on the digest having matched would be unsafe in exactly the
+case the digest is there to catch.
 
 ### 6. Eviction is safe because a continuation names identities, not addresses
 
@@ -180,16 +243,37 @@ engine's *execution* representation is a view over the image or a decoded
 structure is an implementation question this ADR does not settle — but either
 way, what crosses a suspension is identities.
 
-### 7. Residency is bounded by count and by bytes, both
+### 7. Residency is bounded by count and by bytes — and the bytes are all module-derived state
 
 An execution declares, or is given, two bounds:
 
-- a **maximum number of simultaneously resident module images**;
-- a **maximum total bytes** of resident module images.
+- a **maximum number of simultaneously resident modules**;
+- a **maximum total bytes** of resident **module-derived state**.
 
 Both, because either alone is defeatable. A count alone lets a few large modules
 exceed any byte budget; a byte budget alone permits an unbounded number of tiny
-ones, and every resident image costs bookkeeping as well as bytes.
+ones, and every resident module costs bookkeeping as well as bytes.
+
+**The byte bound counts everything a resident module keeps alive, not the image.**
+Three components, measured and reported separately:
+
+| Component | What it is |
+|---|---|
+| **image bytes** | the encoded artifact held in memory |
+| **decoded / view / index state** | whatever the engine built from it to execute — a decoded structure, a view with its offset tables, any index or cache derived from the image |
+| **bookkeeping** | the residency table's own per-resident-module cost |
+
+A bound satisfied by the first column alone would be no bound at all. The
+measurement that makes this concrete is already in hand: the image is `0.37 MiB`
+and the materialized module is `12.19 MiB` — so "under the byte bound" while
+retaining a decoded `Module` behind each image would be a factor of thirty-three
+of self-deception. **Whatever the engine keeps alive on behalf of a resident
+module is inside the bound**, and evicting a module means releasing all three
+components, not dropping the image and keeping what was built from it.
+
+Which of the three lands in which ledger is then §8's question, and the three are
+reported separately precisely so that the split can be stated rather than
+assumed.
 
 The bounds are **fixed properties of the execution**, in the sense ADR-0069 §2
 fixes the grant size: not a function of free memory, not adaptive, not a share
@@ -212,6 +296,12 @@ Two accounts, reported separately, spent from one budget:
 - **whole-machine physical residency** — the frames held by module images and
   any cache backing them, wherever they live.
 
+Each of §7's three components is placed in one ledger or the other, explicitly.
+Decoded and view state built inside the process's arena is grant; image bytes
+mapped from a store outside it are machine residency; bookkeeping goes where it
+is actually allocated. The placement is *reported*, never assumed, because it is
+exactly the step at which a saving can be claimed twice.
+
 They have different owners and different lifetimes, so summing them into one
 number would hide which one binds. But both are spent from the **ADR-0040
 whole-machine budget**, so reporting only one is reporting half a ledger — which
@@ -230,17 +320,24 @@ There is one behaviour and it is refusal.
 
 | Condition | Result |
 |---|---|
-| the provider returns nothing for a needed identity | execution fails, naming the identity |
+| the provider returns nothing for a needed `ClosureModuleId` | execution fails, naming the identity |
+| the returned snapshot's SHA-256 does not match the trusted artifact digest | execution fails as **stale, corrupted or substituted**, before parsing |
+| the snapshot is mutable, or is not the object subsequently read | the provider does not satisfy §5; execution fails |
 | the returned bytes fail the frame or parser checks | execution fails, naming the parser refusal |
-| the artifact digest does not match the record | execution fails as **stale or substituted** |
-| the semantic digest does not match the record | execution fails as **wrong module** |
-| the identity requested is not in the closure | the provider cannot express it (§3) |
+| a module outside the closure is wanted | unrepresentable — there is no `ClosureModuleId` for it (§3) |
+| **at launch**, a module's semantic digest or verification fails | execution never starts (§1) |
 
 No retry against another source, because there is no other source (§4). No
 degraded mode, no substitution of a "close enough" module, no continuing without
 the module. A missing module is a failed execution, and failing is the correct
 outcome: the alternative is an execution that continued by finding something
 else, which is the failure mode module search produces.
+
+Note where the two digest failures live. **Semantic** mismatch is a launch-time
+condition, because launch is where semantic verification happens; **artifact**
+mismatch is the reload-time condition, because reload asks only whether these
+are the same bytes (§5). A design that reported semantic mismatch on reload would
+be describing a check it had decided not to perform.
 
 The failure must name **which identity** and **which check**, because a
 residency failure that says only "could not load module" is indistinguishable
@@ -278,8 +375,6 @@ conclusions.**
 - **Not the engine.** This is a design. No implementation is proposed here, and
   `run_set` is not rebuilt by it.
 - **Not the eviction policy** above the one-resident minimum (§7).
-- **Not whether a reload re-runs the full verifier** (§5), which needs reload
-  frequency measured first.
 - **Not the engine's execution representation** — view over an image, or decoded
   structure (§6).
 - **Not the grant size.** ADR-0069 stays Proposed and `54 MiB` stays
@@ -300,9 +395,10 @@ conclusions.**
   **not**. The boundary is where it already was — the verifier — and this ADR
   moves what crosses it rather than where it sits.
 - **Source-to-runtime impact:** the chain gains an eviction and reload step whose
-  every crossing is digest-checked (§5). "Which source, which bytes, which
-  verifier" stays answerable at every point, which is the property that must not
-  be traded for residency.
+  every crossing is artifact-digest-checked against a record this execution's own
+  verifier produced (§5). "Which source, which bytes, which verifier" stays
+  answerable at every point, which is the property that must not be traded for
+  residency.
 - **Recovery and rollback impact:** deleting every image costs speed and no
   functionality — a closure is regenerable from source (AGENTS.md §9). An
   execution in progress whose provider goes away fails (§9); it does not
@@ -310,9 +406,11 @@ conclusions.**
 - **Stage identity gate:** none claimed.
 - **Threat-model impact:** three new surfaces, each answered above — a provider
   that could widen a closure (§3, §4), a substituted or stale image (§5, §9), and
-  a forged receipt from an untrusted cache (§10). The fourth, a parser reading
-  untrusted bytes, is ADR-0070's and unchanged: reload parses as untrusted input
-  every time.
+  a forged receipt from an untrusted cache (§10), and a mutable provider buffer
+  opening a time-of-check to time-of-use window between the hash and the
+  execution (§5). The parser reading untrusted bytes is ADR-0070's and unchanged:
+  it is total and fails closed on every path, and a matching artifact digest
+  never licenses a faster one.
 - **Performance contract:** launch becomes sequential verification of the whole
   closure, which is work that previously happened once per module anyway; what
   changes is that peak memory is one module's rather than the closure's. Reload
@@ -324,26 +422,44 @@ conclusions.**
 
 ## Evidence required before this is accepted
 
-Measured on the ADR-0040 reference profile, on ceiling-sized modules, with both
-accounts of §8 reported:
+Measured on ceiling-sized modules, with §7's three components reported
+separately and §8's two ledgers reported separately:
 
-1. **launch peak** for closures of 2, 4, 8 and 16 modules under sequential
+1. **launch peak** for closures of **2, 4, 8 and 16** modules under sequential
    verification — the claim being that it is flat in the closure size, and the
    measurement being what actually happens;
-2. **trusted record size** per module, and the total for a 256-module closure;
-3. **steady-state residency** during execution at bounds of 1, 2 and 4 resident
-   images, in both accounts;
-4. **reload frequency and cost** on a workload that crosses module boundaries —
-   including a deliberately adversarial one that alternates between two modules
-   at a bound of one, so the worst case is measured rather than avoided;
-5. **eviction under suspension**: a continuation resumed after the module it was
-   suspended in has been evicted and reloaded, proving §6 rather than asserting
+2. **`VerifiedModuleRecord` size** per module and **`VerifiedClosureManifest`
+   size** for the closure, both extrapolated to **256 modules**, reported apart
+   from each other — the record is fixed-shape and the manifest is not, so one
+   number covering both would hide which one grows;
+3. **steady-state residency** during execution at bounds of **1, 2 and 4**
+   resident modules, with image bytes, decoded/view/index state and bookkeeping
+   each shown, and each placed in a ledger;
+4. **reload frequency and cost** on a workload that crosses module boundaries,
+   **including the adversarial A↔B case at bound = 1** — two modules calling each
+   other with room for one, so the worst case is measured rather than avoided;
+5. **eviction under suspension**: a caller suspended inside module A, A evicted,
+   A reloaded, and the call **returned into** — proving §6 rather than asserting
    it;
-6. **negatives**: missing, stale (wrong artifact digest), substituted (wrong
-   semantic digest), truncated and out-of-closure requests, each failing the
-   execution with the identity and the check named;
-7. **the receipt-forgery negative**: a receipt written into the cache alongside a
-   substituted image is not accepted (§10).
+6. **negatives**: a missing snapshot, a stale one, a substituted one, a truncated
+   one, and a mutable-buffer provider, each failing the execution with the
+   identity and the check named;
+7. **the receipt-forgery negative**: a record or receipt written into the cache
+   beside a substituted image is not accepted (§10).
+
+### What the evidence harness may be
+
+The measurements may use a **measurement-only provider and engine harness** over
+the subset `TOSIMGx0` covers. That is a deliberate and bounded concession: what
+is being measured here is residency behaviour — launch shape, working-set peaks,
+eviction, reload, refusal — and none of those depend on which semantic variants
+the payload encoder happens to implement.
+
+It changes nothing about `TOSIMGx0`. It remains an experimental version `0` with
+partial coverage, it is not promoted, and **ADR-0070 §7's implementation gate
+stands**: production engine integration waits on a format that covers 100 % of
+`tos-ir/v1` and closes docs/43 §1 in full. Evidence taken on a subset is evidence
+about residency, never a claim that the format is ready.
 
 No number is claimed in this ADR.
 
@@ -354,10 +470,11 @@ by measurement: `12.52 MiB` of retained lowered IR per module, against a
 whole-machine budget of `256 MiB` shared by four processes. It is not a design;
 it is what happens when residency is never decided.
 
-**Verify lazily, on first entry into a module.** Cheaper at launch and refused:
-it makes an execution's trusted base depend on the path it took, so two runs of
-the same program would have verified different amounts of it. "This program was
-verified" must not be a statement about one input.
+**Verify lazily, on first entry into a module.** Cheaper at launch and refused
+by §1: the closure manifest cannot be built from modules not yet verified, and
+the executable closure and the provider's authority would then be settled
+progressively, by the run, rather than fixed before it starts. An authority that
+grows as a program executes is not a bounded authority.
 
 **Let the provider search a path when it does not have an image.** The
 convenience §4 exists to refuse. A provider that can search is a module search
@@ -371,6 +488,24 @@ becomes a component that runs only when the cache misses.
 **Bound residency by bytes only.** Simpler and insufficient: an unbounded number
 of small images is unbounded bookkeeping. §7 takes both bounds because either
 alone has a defeat.
+
+**Count the byte bound over image bytes alone.** Rejected in §7, and it is the
+easiest mistake in the design to make, because the image is the thing with an
+obvious size. It would let an execution report itself inside a byte bound while
+holding a `12.19 MiB` decoded module behind each `0.37 MiB` image — a bound
+satisfied by measuring the wrong column.
+
+**Re-run the full verifier on every reload.** Considered and not taken (§5). It
+costs a re-derivation of a conclusion this execution already reached about this
+exact byte sequence, which a matching artifact digest already establishes. What
+is *not* traded away for that saving: the parser stays total, the snapshot must
+be immutable, and the reasoning holds only for a record this execution's own
+verifier produced.
+
+**Key the provider by module name or digest.** Refused in §3. Both are
+constructible from text, so a widened request becomes expressible and safety
+reduces to a validation call at every site that ever builds one. An opaque
+identifier minted only by the trusted manifest has no such site.
 
 **Name continuations by pointer into the image.** Faster, and it is the one
 choice that would make eviction unimplementable — correct until the first
