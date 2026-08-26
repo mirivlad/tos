@@ -8,7 +8,8 @@
   the verifier reads and the engine executes. It changes no TOS Core semantics,
   no ABI operation and no invariant
 - Project Architect approval: **not given; this ADR proposes, it does not decide**
-- Evidence: `docs/evidence/STAGE3_PROCESS_GRANT.md`
+- Evidence: `docs/evidence/STAGE3_PROCESS_GRANT.md`,
+  `docs/evidence/STAGE3_COMPACT_IMAGE_P1.md` (the section 6 measurement)
 - Related: ADR-0044 (Proposed) — digest scheme v2, whose stated operational
   reason has now arrived; ADR-0069 (Proposed) — the grant this measurement came
   from; docs/43 §1, whose obligations any persisted form must meet
@@ -107,6 +108,14 @@ encoding — a better encoding is exactly what §3 is for — but it is enough t
 that "make the modules smaller and keep them all" is not an answer to the grant
 question, and this ADR does not offer it as one.
 
+The §6 measurement has since made the point sharper rather than softer. One
+ceiling-sized module encodes to `0.37 MiB`, `14.32x` below its canonical stream —
+and **verifying it still costs `28.32 MiB` of peak memory**, because the reader
+materializes a module before the verifier traverses it. The quantity a residency
+decision must bound is the second number, not the first. A compact artifact is a
+statement about storage and transport; it does not by itself make a closure
+resident, which is why §5 is a requirement and not an alternative.
+
 ### 5. Bounded residency is a required follow-up, not an alternative
 
 A separate ADR must define **bounded verified-module residency**: how many
@@ -138,11 +147,54 @@ switched into the production engine, reporting for a ceiling-sized module:
 4. verifier peak memory while checking the image;
 5. encode, decode and verify time;
 6. the source-map identity contribution after interning;
-7. negatives: malformed, truncated, oversized, unknown-version and wrong-digest
-   inputs, each refused.
+7. negatives: malformed, truncated, oversized, non-canonical-varint,
+   unknown-version and wrong-digest inputs, each refused.
 
 No number is claimed in this ADR. The claim belongs in the evidence, before
 acceptance rather than after it.
+
+**What such a prototype may leave out, and what it may not.**
+
+The prototype **may** cover only the semantic variants the ceiling fixture
+requires. The **exact coverage must be recorded in the evidence** — the
+supported tagged families and the unsupported ones, both listed — and **every
+unsupported semantic tag must fail closed** on both sides: an encoder refuses to
+write what it cannot round-trip, and a parser refuses a tag it does not know.
+Partial coverage is safe only because refusal is the behaviour; a prototype that
+skipped what it did not recognize would be measuring a format nobody could ship.
+
+The **container and its security surface must be complete**: magic, encoding
+version, canonical varints, section and table lengths, bounds checked before any
+allocation sized from them, an artifact digest, fail-closed unknown version and
+unknown tag, and negatives for malformed, truncated, oversized,
+non-canonical-varint and wrong-digest inputs.
+
+The prototype **must not use the production magic or encoding version.** It is
+an explicitly experimental `v0`, and the engine never executes it.
+
+The parser **belongs to the verifier path.** For the prototype it is acceptable
+that this verifier-owned parser materializes an internal `Module` and then runs
+the existing semantic verifier over it — provided the peak memory of that
+materialization is measured honestly and reported as what it is. A production
+zero-copy or bounded-view reader is **not** designed at this stage.
+
+**The invariant the whole measurement rests on:** after `encode` followed by the
+verifier-owned parse, the **semantic module digest must equal the digest of the
+`Module` that was encoded**. Without it every byte figure is a measurement of
+something else.
+
+Canonical varints and module-level source-map identity are used as an
+**experimental candidate** for ADR-0044's digest scheme v2. Measuring them here
+does not advance that ADR's status.
+
+**Such a prototype is evidence for the density and architecture decision. It is
+not a production format, and it does not close the completeness obligations of
+docs/43 §1** — which §2 above states, and which a production encoder must meet
+in full.
+
+Measured: `docs/evidence/STAGE3_COMPACT_IMAGE_P1.md`. The prototype lives in
+`source/tests/image-prototype/` and is built and linted with the workspace so it
+cannot rot unnoticed, while being reachable only by running it.
 
 ## What this ADR does not decide
 
