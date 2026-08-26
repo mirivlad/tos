@@ -35,7 +35,19 @@ use tos_verifier::{Limits, ResolutionSnapshot};
 use closure::{ClosureModuleId, Failure, Provider, Snapshot, VerifiedModuleRecord};
 use engine::ResidentSet;
 
-const ARENA_BYTES: usize = 2048 * 1024 * 1024;
+/// The region every measurement runs in.
+///
+/// With `--features grant` it is **exactly `RUNTIME_GRANT`**, so a launch that
+/// does not fit does not report a number — it fails to allocate. A measured
+/// bound and an enforced one are different claims, and ADR-0069 needs the
+/// second.
+#[cfg(feature = "grant")]
+const ARENA_BYTES: usize = 54 * 1024 * 1024;
+// Without the feature the arena is large on purpose: `--prepare` lowers a whole
+// closure through the frontend at once, which is a build phase and not what any
+// of these measurements is about.
+#[cfg(not(feature = "grant"))]
+const ARENA_BYTES: usize = 8192 * 1024 * 1024;
 
 /// The published ceiling for one normalized source unit (docs/44 §2).
 const SOURCE_CEILING: usize = 256 * 1024;
@@ -406,7 +418,7 @@ fn prepare(dependencies: usize, pattern: &[usize], unit_bytes: usize) -> Prepare
         .iter()
         .map(|module| {
             let (bytes, _) = image::encode(module).expect("the fixture is inside the coverage");
-            Snapshot::from(bytes.into_boxed_slice())
+            Snapshot::new(closure::HostBytes::new(&bytes))
         })
         .collect();
 
@@ -476,7 +488,7 @@ fn read_prepared(directory: &str) -> (Store, usize) {
     let images: Vec<Snapshot> = (0..count)
         .map(|at| {
             let bytes = std::fs::read(format!("{directory}/image.{at:03}")).expect("an image");
-            Snapshot::from(bytes.into_boxed_slice())
+            Snapshot::new(closure::HostBytes::new(&bytes))
         })
         .collect();
     (Store { images }, entry)
@@ -492,19 +504,59 @@ fn read_prepared(directory: &str) -> (Store, usize) {
 fn resolution_slice(directory: &str, position: usize) -> ResolutionSnapshot {
     let text = std::fs::read_to_string(format!("{directory}/resolution.{position:03}"))
         .expect("a resolution slice");
-    let mut declared = tos_verifier::DeclaredResolution::new();
+    // `--pad-exports K` widens every module's declared export surface to K
+    // names, so a launch can be measured against the **worst case** the V1
+    // ceilings admit rather than against whatever the fixture's modules happen
+    // to export. The declared resolution is launch input: a resolver over
+    // denser modules would hand over exactly this, and the real exports are
+    // still in it, so every call still resolves.
+    let pad = argument("--pad-exports", 0);
+    // A reader of a stored resolution knows its size before it starts, so the
+    // snapshot is built without a reallocation.
+    let mut modules = 0usize;
+    let mut exports = 0usize;
+    let mut bytes = 0usize;
     for line in text.lines() {
         let mut parts = line.split(' ');
         match (parts.next(), parts.next(), parts.next()) {
             (Some("module"), Some(name), Some(content_id)) => {
-                declared.module(name, content_id).exports_declared();
+                modules += 1;
+                bytes += name.len() + content_id.len();
+                exports += pad;
+                bytes += pad * 8;
             }
             (Some("export"), Some(_), Some(export)) => {
-                declared.export(export);
+                exports += 1;
+                bytes += export.len();
             }
             _ => {}
         }
     }
+    let mut declared = tos_verifier::DeclaredResolution::new();
+    declared.reserve(modules, exports, bytes);
+    let mut in_module = 0usize;
+    let close = |declared: &mut tos_verifier::DeclaredResolution, count: &mut usize| {
+        while *count < pad {
+            declared.export(&format!("pad{count}"));
+            *count += 1;
+        }
+    };
+    for line in text.lines() {
+        let mut parts = line.split(' ');
+        match (parts.next(), parts.next(), parts.next()) {
+            (Some("module"), Some(name), Some(content_id)) => {
+                close(&mut declared, &mut in_module);
+                in_module = 0;
+                declared.module(name, content_id).exports_declared();
+            }
+            (Some("export"), Some(_), Some(export)) => {
+                declared.export(export);
+                in_module += 1;
+            }
+            _ => {}
+        }
+    }
+    close(&mut declared, &mut in_module);
     declared.build()
 }
 
@@ -614,15 +666,12 @@ fn launch_mode(directory: &str) {
         mib(result.peak)
     );
     println!(
-        "  of which the store            {:>12} B ({:>7.2} MiB)  [machine ledger]",
+        "  the store is not in it        {:>12} B ({:>7.2} MiB)  [machine ledger]",
         store_bytes,
         mib(store_bytes)
     );
-    println!(
-        "  above the store               {:>12} B ({:>7.2} MiB)  [grant ledger]",
-        result.peak.saturating_sub(store_bytes),
-        mib(result.peak.saturating_sub(store_bytes))
-    );
+    println!("  images live on the host allocator, outside the measured arena — in TOS they");
+    println!("  are capsule or cache bytes mapped in, not allocated from the grant (§8).");
     println!(
         "largest single module in flight {:>12} B ({:>7.2} MiB)",
         result.largest_module,
@@ -654,11 +703,10 @@ fn launch_mode(directory: &str) {
     );
     println!();
     println!(
-        "MODULES {} PEAK {} STORE {} ABOVE {} LARGEST {} RECORDS {} MANIFEST {} US {}",
+        "MODULES {} GRANT {} STORE {} LARGEST {} RECORDS {} MANIFEST {} US {}",
         modules,
         result.peak,
         store_bytes,
-        result.peak.saturating_sub(store_bytes),
         result.largest_module,
         result.records.len() * core::mem::size_of::<VerifiedModuleRecord>(),
         result.manifest.heap_bytes(),
@@ -1178,12 +1226,12 @@ fn report_run(
     println!();
     println!("ADR-0071 §8, the two ledgers:");
     println!(
-        "  process grant     {:>12} B ({:>7.2} MiB)  decoded state, records, manifest, frames, bookkeeping",
-        committed().saturating_sub(store_bytes),
-        mib(committed().saturating_sub(store_bytes))
+        "  process grant     {:>12} B ({:>7.2} MiB)  decoded state, records, manifest, frames, indexes",
+        committed(),
+        mib(committed())
     );
     println!(
-        "  machine residency {:>12} B ({:>7.2} MiB)  the store; {} B of it resident and shared, not copied",
+        "  machine residency {:>12} B ({:>7.2} MiB)  the store, on the host allocator; {} B resident and shared",
         store_bytes,
         mib(store_bytes),
         ledger.image_bytes
@@ -1359,7 +1407,7 @@ fn negatives_mode() {
         run_with(&Swapped {
             inner: &prepared.store,
             at: 0,
-            instead: Snapshot::from(stale.into_boxed_slice()),
+            instead: Snapshot::new(closure::HostBytes::new(&stale)),
         }),
         |failure| matches!(failure, Failure::ArtifactDigest { module: 0 }),
     );
@@ -1380,7 +1428,7 @@ fn negatives_mode() {
         run_with(&Swapped {
             inner: &prepared.store,
             at: 0,
-            instead: Snapshot::from(truncated.into_boxed_slice()),
+            instead: Snapshot::new(closure::HostBytes::new(&truncated)),
         }),
         |failure| matches!(failure, Failure::ArtifactDigest { module: 0 }),
     );

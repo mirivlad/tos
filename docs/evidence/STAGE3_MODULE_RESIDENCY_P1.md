@@ -34,10 +34,11 @@ upper bound under the accepted V1 ceilings — a conforming closure may require
 `378 MiB` of links on a `256 MiB` machine, which §9 brings as a Level-2
 question.**
 
-The manifest bound (§9) is **closed**. The launch peak (§8) is **not**, and now
-has two named owners with hard bounds behind them — the digest buffer (§10) and
-the widest import surface (§11) — neither of which is answered by a larger
-grant.
+The manifest bound (§9) is **closed**. The launch peak is closed for every
+conforming closure up to the published 256-module ceiling and **enforced**
+against a hard `54 MiB` arena (§12) — but **not** for one admissible case: a
+module importing 255 maximal exporters needs `56.08 MiB`, and the owner is its
+declared-resolution slice (§13).
 
 ## What was built
 
@@ -672,6 +673,81 @@ rejection. The harness routes around it by spreading call sites across many
 functions — which costs almost nothing in density, `8.4` bytes per site against a
 theoretical `9` — and the defect is recorded here rather than worked around
 silently. It is not fixed in this change.
+
+## 12. Launch, re-measured — and enforced
+
+After §9's manifest, §10's streaming digest and §11's packed declared
+resolution, launch was measured again in fresh processes, and then **run against
+a bounded allocator whose whole arena is exactly `RUNTIME_GRANT = 54 MiB`**. A
+measured bound and an enforced one are different claims; a `--features grant`
+build makes the second, and a launch that does not fit fails to allocate rather
+than reporting a number.
+
+**Image bytes are outside the measured arena**, on the host allocator. That is
+ADR-0071 §8's accounting, not a convenience: in TOS an image is capsule or cache
+storage mapped into the address space, not memory taken from
+`RuntimeMemoryGrantV1`. Leaving them inside would have made a grant bound
+untestable.
+
+| Closure | Grant frontier | Largest module in flight | Records | Manifest | Machine residency (store) | Launch |
+|---:|---:|---:|---:|---:|---:|---:|
+| 2 | 19.79 MiB | 19.21 MiB | 1 184 B | 312 B | 0.86 MiB | 0.22 s |
+| 4 | 19.86 MiB | 19.21 MiB | 2 368 B | 584 B | 1.60 MiB | 0.33 s |
+| 8 | 20.14 MiB | 19.21 MiB | 4 736 B | 1 128 B | 3.08 MiB | 0.57 s |
+| 16 | 20.69 MiB | 19.20 MiB | 9 472 B | 2 216 B | 6.01 MiB | 1.08 s |
+| 32 | 21.78 MiB | 19.17 MiB | 18 944 B | 4 392 B | 11.85 MiB | 2.12 s |
+| 64 | 23.98 MiB | 19.13 MiB | 37 888 B | 8 744 B | 23.54 MiB | 4.16 s |
+| 128 | 28.38 MiB | 19.04 MiB | 75 776 B | 17 448 B | 46.77 MiB | 8.22 s |
+| **256** | **37.16 MiB** | **18.84 MiB** | 151 552 B | 34 856 B | 92.88 MiB | 16.20 s |
+
+**Every one of these launches inside a hard `54 MiB` arena**, at the published
+closure ceiling, with no lower conformance profile and no memory-dependent
+behaviour anywhere: the grant is a constant, evictions are driven by declared
+bounds, and nothing consults free memory.
+
+Against §8's first measurement of the same shape — `52.10 MiB` above the store at
+two modules, `55.76 MiB` at sixteen — the three changes together take a
+16-module launch from `55.76 MiB` to `20.69 MiB`, and buy the whole range from
+32 to 256 modules that could not be measured before.
+
+Launch time is linear at about `64 ms` per ceiling-sized module.
+
+## 13. Where it stops: the worst-case declared resolution
+
+One admissible case does **not** fit, and it is the one §11 bounded.
+
+A module may import 255 others, and each of those may export as much as a
+conforming source unit allows — `6 745` exports. A resolver over such a closure
+hands the launch exactly that, and docs/43 requires the **whole** surface, not
+the part the caller uses. Measured by widening the 256-module fixture's declared
+resolution to that surface:
+
+| | |
+|---|---:|
+| the widest importer's declared resolution slice, live | **38 584 176 B (36.79 MiB)** |
+| the decoded module it is verified against | 12 582 112 B (12.00 MiB) |
+| **grant frontier** | **58 804 784 B (56.08 MiB)** |
+| `RUNTIME_GRANT` | 56 623 104 B (54 MiB) |
+| under the hard-limit build | **fails to allocate** — `memory allocation of 16777216 bytes failed` |
+
+**The exact live owner is the declared-resolution slice of a single module that
+imports 255 maximal exporters.** Not the manifest (34 856 B), not the records
+(151 552 B), not the verifier (nothing above the decoded module since §10), and
+not the images (outside the grant).
+
+`54 MiB` is not raised. Two remedies are visible and neither is taken here:
+
+- **narrow the export index further.** The slice is `1.72 M` export spans at 8
+  bytes plus about `12 MB` of name text. docs/44 §2 caps identifier bytes at
+  128, so a span's length needs two bytes rather than four; with exact
+  reservation that puts the slice near `30 MB` and the launch near `48 MiB`.
+  It is another representation change to an accepted verifier interface, which
+  is the kind of thing this evidence brings rather than decides;
+- **bound the declared resolution the way modules are bounded.** A resolution
+  slice is closure-scaled input; §7 bounds resident module state and says
+  nothing about it.
+
+Which of those, or a third, is a Level-2 decision.
 
 ## 7. What this does not settle
 
