@@ -7,6 +7,11 @@ license = "GPL-3.0-or-later"
 description = "Measurement-only harness for bounded verified-module residency (ADR-0071 evidence). Not a production engine."
 publish = false
 
+[features]
+# Sizes the measured arena at exactly RUNTIME_GRANT, so a launch that does not
+# fit fails to allocate rather than reporting a number.
+grant = []
+
 [dependencies]
 tos-core = { path = "../../crates/tos-core" }
 tos-ir = { path = "../../crates/tos-ir" }

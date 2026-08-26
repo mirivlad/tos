@@ -28,10 +28,80 @@ use tos_verifier::{Limits, ResolutionSnapshot};
 ///
 /// ADR-0071 §5 requires that the bytes which are hashed and the bytes which are
 /// then parsed and executed be **one immutable snapshot**. That is a type here
-/// rather than a rule to remember: an `Arc<[u8]>` cannot be written through
-/// after it is handed over, so the time-of-check to time-of-use window a mutable
+/// rather than a rule to remember: an `Arc` cannot be written through after it
+/// is handed over, so the time-of-check to time-of-use window a mutable
 /// provider buffer would open is not expressible in this interface.
-pub type Snapshot = Arc<[u8]>;
+///
+/// The bytes are held **outside the measured arena**, on the host allocator.
+/// That is not a trick to flatter a number: ADR-0071 §8 accounts image bytes as
+/// whole-machine residency and not as process grant, because in TOS an image is
+/// capsule or cache storage mapped into the address space rather than allocated
+/// from `RuntimeMemoryGrantV1`. Putting them anywhere else would make a grant
+/// bound untestable.
+pub type Snapshot = Arc<HostBytes>;
+
+/// An immutable byte buffer on the host allocator, outside the measured arena.
+pub struct HostBytes {
+    pointer: core::ptr::NonNull<u8>,
+    length: usize,
+}
+
+impl HostBytes {
+    pub fn new(bytes: &[u8]) -> HostBytes {
+        if bytes.is_empty() {
+            return HostBytes {
+                pointer: core::ptr::NonNull::dangling(),
+                length: 0,
+            };
+        }
+        let layout = core::alloc::Layout::from_size_align(bytes.len(), 1)
+            .expect("a byte buffer layout is valid");
+        // SAFETY: the layout is non-zero-sized, and `System` is the host
+        // allocator, unaffected by the measured global allocator.
+        let pointer = unsafe { std::alloc::GlobalAlloc::alloc(&std::alloc::System, layout) };
+        let pointer = core::ptr::NonNull::new(pointer).expect("the host allocator has room");
+        // SAFETY: `pointer` owns `bytes.len()` freshly allocated bytes and the
+        // source slice does not overlap it.
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), pointer.as_ptr(), bytes.len()) };
+        HostBytes {
+            pointer,
+            length: bytes.len(),
+        }
+    }
+}
+
+impl core::ops::Deref for HostBytes {
+    type Target = [u8];
+
+    fn deref(&self) -> &[u8] {
+        if self.length == 0 {
+            return &[];
+        }
+        // SAFETY: `pointer` owns `length` initialized bytes for as long as
+        // `self` lives, and nothing hands out a mutable reference to them.
+        unsafe { core::slice::from_raw_parts(self.pointer.as_ptr(), self.length) }
+    }
+}
+
+impl Drop for HostBytes {
+    fn drop(&mut self) {
+        if self.length == 0 {
+            return;
+        }
+        let layout = core::alloc::Layout::from_size_align(self.length, 1)
+            .expect("the layout it was allocated with");
+        // SAFETY: `pointer` came from `System` with this exact layout and is
+        // released exactly once.
+        unsafe {
+            std::alloc::GlobalAlloc::dealloc(&std::alloc::System, self.pointer.as_ptr(), layout)
+        };
+    }
+}
+
+// SAFETY: the buffer is immutable after construction and owns its allocation.
+unsafe impl Send for HostBytes {}
+// SAFETY: the buffer is immutable after construction.
+unsafe impl Sync for HostBytes {}
 
 /// The provider's only key.
 ///
