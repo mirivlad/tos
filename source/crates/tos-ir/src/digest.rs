@@ -10,6 +10,26 @@
 //! The encoding fed to the hash is length-prefixed at every variable-length
 //! position, so no two distinct modules can produce the same byte stream by
 //! moving a boundary — the ambiguity that makes naive concatenation unsafe.
+//!
+//! **One traversal, two sinks.** The canonical encoding is written once, by the
+//! `write_*` functions below, into whatever [`Sink`] it is handed:
+//!
+//! ```text
+//! canonical traversal
+//!       |-- Bytes   -> canonical_stream()
+//!       '-- Digest  -> module_digest()
+//! ```
+//!
+//! [`module_digest`] therefore feeds sha-256 incrementally instead of building
+//! the whole stream and hashing it afterwards. Measured on a ceiling-sized
+//! module, that buffer was `15.75 MiB` — and the *entire* memory cost of
+//! verification above the decoded module, since all nine of the verifier's own
+//! steps allocate nothing (`STAGE3_MODULE_RESIDENCY_P1.md` §10).
+//!
+//! There is deliberately no second encoder. `canonical_stream` remains, as a
+//! diagnostic, implemented through the same traversal — two implementations of
+//! one canonical form would be two things to keep in agreement forever, and the
+//! digest is the identity every receipt binds to.
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -28,15 +48,21 @@ use crate::{
 /// cost of hashing it. They are different problems with different fixes, and a
 /// combined figure cannot tell them apart.
 pub fn canonical_stream(module: &Module) -> Vec<u8> {
-    let mut writer = Writer::default();
+    let mut writer = Writer {
+        sink: Bytes::default(),
+    };
     write_module(&mut writer, module);
-    writer.bytes
+    writer.sink.bytes
 }
 
 pub fn module_digest(module: &Module) -> String {
-    let mut writer = Writer::default();
+    let mut writer = Writer {
+        sink: Digest {
+            state: tos_hash::Sha256::new(),
+        },
+    };
     write_module(&mut writer, module);
-    let digest = tos_hash::sha256(&writer.bytes);
+    let digest = writer.sink.state.finalize();
     let mut hex = [0u8; 64];
     tos_hash::hex(&digest, &mut hex);
     alloc::format!(
@@ -45,33 +71,63 @@ pub fn module_digest(module: &Module) -> String {
     )
 }
 
+/// Where the canonical traversal's bytes go.
+///
+/// The traversal does not know which one it has, which is the point: there is
+/// one encoding, and a sink cannot change it.
+trait Sink {
+    fn write(&mut self, bytes: &[u8]);
+}
+
+/// Collects the stream, for the diagnostic API.
 #[derive(Default)]
-struct Writer {
+struct Bytes {
     bytes: Vec<u8>,
 }
 
-impl Writer {
+impl Sink for Bytes {
+    fn write(&mut self, bytes: &[u8]) {
+        self.bytes.extend_from_slice(bytes);
+    }
+}
+
+/// Hashes the stream as it is produced, holding none of it.
+struct Digest {
+    state: tos_hash::Sha256,
+}
+
+impl Sink for Digest {
+    fn write(&mut self, bytes: &[u8]) {
+        self.state.update(bytes);
+    }
+}
+
+struct Writer<S> {
+    sink: S,
+}
+
+impl<S: Sink> Writer<S> {
     /// A discriminant, which also separates otherwise adjacent fields.
     fn tag(&mut self, tag: u8) {
-        self.bytes.push(tag);
+        self.sink.write(&[tag]);
     }
 
     fn number(&mut self, value: u128) {
-        self.bytes.extend_from_slice(&value.to_be_bytes());
+        self.sink.write(&value.to_be_bytes());
     }
 
     fn signed(&mut self, value: i128) {
-        self.bytes.extend_from_slice(&value.to_be_bytes());
+        self.sink.write(&value.to_be_bytes());
     }
 
     fn text(&mut self, value: &str) {
         self.number(value.len() as u128);
-        self.bytes.extend_from_slice(value.as_bytes());
+        self.sink.write(value.as_bytes());
     }
 
     fn blob(&mut self, value: &[u8]) {
         self.number(value.len() as u128);
-        self.bytes.extend_from_slice(value);
+        self.sink.write(value);
     }
 
     fn count(&mut self, value: usize) {
@@ -79,11 +135,11 @@ impl Writer {
     }
 
     fn flag(&mut self, value: bool) {
-        self.bytes.push(u8::from(value));
+        self.sink.write(&[u8::from(value)]);
     }
 }
 
-fn write_module(out: &mut Writer, module: &Module) {
+fn write_module<S: Sink>(out: &mut Writer<S>, module: &Module) {
     let header = &module.header;
     out.text(&header.schema_id);
     out.text(&header.language_version);
@@ -145,7 +201,7 @@ fn write_module(out: &mut Writer, module: &Module) {
     }
 }
 
-fn write_type(out: &mut Writer, definition: &TypeDef) {
+fn write_type<S: Sink>(out: &mut Writer<S>, definition: &TypeDef) {
     match definition {
         TypeDef::Unit => out.tag(0),
         TypeDef::Bool => out.tag(1),
@@ -284,7 +340,7 @@ fn write_type(out: &mut Writer, definition: &TypeDef) {
     }
 }
 
-fn write_variant(out: &mut Writer, variant: &Variant) {
+fn write_variant<S: Sink>(out: &mut Writer<S>, variant: &Variant) {
     out.text(&variant.name);
     out.count(variant.payload.len());
     for payload in &variant.payload {
@@ -292,13 +348,13 @@ fn write_variant(out: &mut Writer, variant: &Variant) {
     }
 }
 
-fn write_import(out: &mut Writer, import: &Import) {
+fn write_import<S: Sink>(out: &mut Writer<S>, import: &Import) {
     out.text(&import.module_name);
     out.text(&import.module_content_id);
     out.text(&import.binding);
 }
 
-fn write_signature(out: &mut Writer, signature: &Signature) {
+fn write_signature<S: Sink>(out: &mut Writer<S>, signature: &Signature) {
     out.text(&signature.name);
     out.tag(match signature.visibility {
         crate::Visibility::Private => 0,
@@ -322,7 +378,7 @@ fn write_signature(out: &mut Writer, signature: &Signature) {
     }
 }
 
-fn write_constant(out: &mut Writer, constant: &Constant) {
+fn write_constant<S: Sink>(out: &mut Writer<S>, constant: &Constant) {
     match constant {
         Constant::Unit => out.tag(0),
         Constant::Bool(value) => {
@@ -353,7 +409,7 @@ fn write_constant(out: &mut Writer, constant: &Constant) {
     }
 }
 
-fn write_function(out: &mut Writer, function: &Function) {
+fn write_function<S: Sink>(out: &mut Writer<S>, function: &Function) {
     write_signature(out, &function.signature);
     out.tag(match function.origin {
         crate::FunctionOrigin::Declared => 0,
@@ -373,7 +429,7 @@ fn write_function(out: &mut Writer, function: &Function) {
     }
 }
 
-fn write_block(out: &mut Writer, block: &Block) {
+fn write_block<S: Sink>(out: &mut Writer<S>, block: &Block) {
     out.count(block.parameters.len());
     for parameter in &block.parameters {
         out.count(*parameter);
@@ -386,7 +442,7 @@ fn write_block(out: &mut Writer, block: &Block) {
     out.count(block.source);
 }
 
-fn write_instruction(out: &mut Writer, instruction: &Instruction) {
+fn write_instruction<S: Sink>(out: &mut Writer<S>, instruction: &Instruction) {
     match instruction.result {
         Some(value) => {
             out.tag(1);
@@ -402,7 +458,7 @@ fn write_instruction(out: &mut Writer, instruction: &Instruction) {
     write_optional_text(out, instruction.unsafe_interface.as_deref());
 }
 
-fn write_optional_text(out: &mut Writer, value: Option<&str>) {
+fn write_optional_text<S: Sink>(out: &mut Writer<S>, value: Option<&str>) {
     match value {
         Some(text) => {
             out.tag(1);
@@ -412,7 +468,7 @@ fn write_optional_text(out: &mut Writer, value: Option<&str>) {
     }
 }
 
-fn write_operand(out: &mut Writer, operand: &Operand) {
+fn write_operand<S: Sink>(out: &mut Writer<S>, operand: &Operand) {
     match operand {
         Operand::Value(value) => {
             out.tag(0);
@@ -425,14 +481,14 @@ fn write_operand(out: &mut Writer, operand: &Operand) {
     }
 }
 
-fn write_operands(out: &mut Writer, operands: &[Operand]) {
+fn write_operands<S: Sink>(out: &mut Writer<S>, operands: &[Operand]) {
     out.count(operands.len());
     for operand in operands {
         write_operand(out, operand);
     }
 }
 
-fn write_place(out: &mut Writer, place: &Place) {
+fn write_place<S: Sink>(out: &mut Writer<S>, place: &Place) {
     out.count(place.root);
     out.count(place.path.len());
     for step in &place.path {
@@ -454,7 +510,7 @@ fn write_place(out: &mut Writer, place: &Place) {
     }
 }
 
-fn write_op(out: &mut Writer, op: &Op) {
+fn write_op<S: Sink>(out: &mut Writer<S>, op: &Op) {
     match op {
         Op::Const(constant) => {
             out.tag(0);
@@ -696,7 +752,7 @@ fn resource_tag(kind: ResourceKind) -> u8 {
     }
 }
 
-fn write_terminator(out: &mut Writer, terminator: &Terminator) {
+fn write_terminator<S: Sink>(out: &mut Writer<S>, terminator: &Terminator) {
     match terminator {
         Terminator::Return(value) => {
             out.tag(0);
@@ -748,7 +804,7 @@ fn write_terminator(out: &mut Writer, terminator: &Terminator) {
     }
 }
 
-fn write_source_entry(out: &mut Writer, entry: &SourceMapEntry) {
+fn write_source_entry<S: Sink>(out: &mut Writer<S>, entry: &SourceMapEntry) {
     out.text(&entry.source_set);
     out.text(&entry.path);
     out.text(&entry.content_id);

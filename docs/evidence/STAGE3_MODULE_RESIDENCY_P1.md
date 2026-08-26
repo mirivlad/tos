@@ -500,8 +500,8 @@ that no step inherits another's high-water mark.
 | `ownership_and_profile` | 0 | **0** |
 | `tasks_sync_atomics_unsafe` | 0 | **0** |
 | `source_maps` | 0 | **0** |
-| **`module_digest`** | 128 B | **16 515 360 B (15.75 MiB)** |
-| `source_map_digest` | 128 B | 0 |
+| **`module_digest`** (before the fix below) | 128 B | **16 515 360 B (15.75 MiB)** |
+| `source_map_digest` (before the fix below) | 128 B | 3 809 472 B (3.63 MiB) |
 
 **Nine verification steps out of nine allocate nothing measurable.** The entire
 "verifier workspace" is one line: `tos_ir::module_digest`, which builds the whole
@@ -509,20 +509,44 @@ canonical byte stream in a `Vec` and then hashes it. The stream for this module
 is `5.30 MiB`; the frontier it costs is `15.75 MiB`, because a growing `Vec`
 reallocates.
 
-So there is no cumulative scratch to pool and no reusable verifier arena to
-propose. **The remedy is to hash the canonical stream incrementally instead of
-materializing it** — feed the same bytes to the digest as they are produced, in
-the same order. That is not a semantic shortcut and not an index to be trusted:
-the digest is unchanged byte for byte, every check still runs, and what
-disappears is a buffer, not a traversal. Its scratch would be O(1) rather than
-O(module).
+So there was no cumulative scratch to pool and no reusable verifier arena worth
+proposing. **The remedy was to hash the canonical stream incrementally instead
+of materializing it**, and it is now done.
 
-Two figures for scale on a ceiling-sized module: decode is `11.82 MiB` of live
-`Module`, and everything the verifier adds above it is that one buffer.
+`tos-ir`'s canonical traversal writes into an abstract sink:
 
-**Not implemented here.** It touches `tos-ir`'s digest path, which every module
-identity in the project depends on, and it deserves its own change with its own
-before-and-after digest comparison.
+```text
+canonical traversal
+      |-- Bytes   -> canonical_stream()   (diagnostic, unchanged)
+      '-- Digest  -> module_digest()      (feeds sha-256 as it goes)
+```
+
+`tag`, `number`, `signed`, `text`, `blob`, `count`, `flag` and the order they are
+called in are untouched, and `canonical_stream` goes through the same traversal
+so no second canonical encoder exists. A test hashes the diagnostic stream and
+compares it against the streamed digest, so the two paths cannot drift.
+
+`tos_verifier::source_map_digest` had the same shape and got the same fix. Once
+`module_digest` stopped materializing, that buffer became the whole remaining
+cost — `3.63 MiB` — which is exactly the kind of thing a total hides.
+
+Re-measured on the same fixture:
+
+| | Before | After |
+|---|---:|---:|
+| `module_digest` frontier | 16 515 360 B (15.75 MiB) | **0** |
+| `source_map_digest` frontier | (hidden under the above) | **0** |
+| **cumulative verifier frontier above the decoded module** | **15.75 MiB** | **0 B** |
+| peak over decode + verify | 29 697 360 B (28.32 MiB) | **13 182 000 B (12.57 MiB)** |
+| `module_digest` time | 50.75 ms | 45.34 ms |
+| `source_map_digest` time | 13.44 ms | 15.47 ms |
+| whole verification, nine steps | 2.94 ms | 2.77 ms |
+
+**Verification now costs nothing above the decoded module.** The digest is
+unchanged: the ceiling fixture is still `sha256:83954abd…` and its image is
+byte-identical at `388 329 B`; every test and both negative suites pass. And the
+streaming path is not slower — the earlier expectation that it might be was
+about hashing, and what actually dominated was growing and copying a `Vec`.
 
 ## 11. The widest single-module import surface
 
