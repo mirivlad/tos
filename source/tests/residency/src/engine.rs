@@ -48,6 +48,16 @@ pub struct Resident {
     /// §7 — inside the byte bound, and gone when the module goes.
     exports: BTreeMap<String, usize>,
     index_bytes: usize,
+    /// This module's `import slot -> ClosureModuleId` mapping, resolved against
+    /// the trusted closure membership on first use.
+    ///
+    /// ADR-0071 §2 keeps import slots out of the permanent manifest: an import
+    /// slot is a property of a module, and the module's own verified artifact
+    /// already states what its imports resolved to. So this is resident
+    /// module-derived state under §7 — inside the byte bound, gone when the
+    /// module goes.
+    imports: Vec<ClosureModuleId>,
+    import_bytes: usize,
     used_at: u64,
 }
 
@@ -58,12 +68,18 @@ pub struct Ledger {
     pub decoded_bytes: usize,
     /// The export index of §2 — derived from a resident module, evicted with it.
     pub index_bytes: usize,
+    /// The import-slot mapping of §2, likewise.
+    pub import_bytes: usize,
     pub bookkeeping_bytes: usize,
 }
 
 impl Ledger {
     pub fn total(&self) -> usize {
-        self.image_bytes + self.decoded_bytes + self.index_bytes + self.bookkeeping_bytes
+        self.image_bytes
+            + self.decoded_bytes
+            + self.index_bytes
+            + self.import_bytes
+            + self.bookkeeping_bytes
     }
 }
 
@@ -116,6 +132,7 @@ impl ResidentSet {
             image_bytes: self.live.iter().map(|r| r.image_bytes).sum(),
             decoded_bytes: self.live.iter().map(|r| r.decoded_bytes).sum(),
             index_bytes: self.live.iter().map(|r| r.index_bytes).sum(),
+            import_bytes: self.live.iter().map(|r| r.import_bytes).sum(),
             bookkeeping_bytes: core::mem::size_of::<ResidentSet>()
                 + self.live.capacity() * core::mem::size_of::<Resident>(),
         }
@@ -127,6 +144,32 @@ impl ResidentSet {
 
     pub fn module_of(&self, id: ClosureModuleId) -> Option<&Module> {
         self.find(id).map(|at| &self.live[at].module)
+    }
+
+    /// Which module a resident caller's import slot names.
+    ///
+    /// Resolved against the trusted closure membership, once, when the caller is
+    /// resident. Not module search: the answer can only be a member of the
+    /// closure the manifest already fixed, and a slot naming anything else has
+    /// no answer at all.
+    fn import_of(
+        &mut self,
+        id: ClosureModuleId,
+        slot: usize,
+        manifest: &crate::closure::VerifiedClosureManifest,
+    ) -> Option<ClosureModuleId> {
+        let at = self.find(id)?;
+        if self.live[at].imports.is_empty() && !self.live[at].module.imports.is_empty() {
+            let before = (self.arena_committed)();
+            let mut resolved = Vec::with_capacity(self.live[at].module.imports.len());
+            for declared in &self.live[at].module.imports {
+                let content_id = crate::closure::identity_digest(&declared.module_content_id);
+                resolved.push(manifest.resolve(&declared.module_name, &content_id)?);
+            }
+            self.live[at].imports = resolved;
+            self.live[at].import_bytes = (self.arena_committed)().saturating_sub(before);
+        }
+        self.live[at].imports.get(slot).copied()
     }
 
     /// Which function of a resident module an export name reaches.
@@ -275,6 +318,8 @@ impl ResidentSet {
             decoded_bytes,
             exports: BTreeMap::new(),
             index_bytes: 0,
+            imports: Vec::new(),
+            import_bytes: 0,
             used_at: self.clock,
         })
     }
@@ -298,13 +343,22 @@ pub struct Frame {
 /// caller — and a continuation that held a borrow into an image would not
 /// survive that (§6).
 enum Callee {
+    /// A function of the caller's own module, by index.
     Local(usize),
+    /// An export of whatever module the caller's import slot names. Both halves
+    /// are resolved outside the step, against resident derived state (§2).
+    Import { slot: usize, export: String },
+}
+
+/// A call target after both halves are resolved.
+enum Resolved {
+    Index(usize),
     Export(String),
 }
 
 enum Transfer {
     Call {
-        callee: ClosureModuleId,
+        from: ClosureModuleId,
         target: Callee,
         arguments: Vec<i128>,
         result: Option<usize>,
@@ -323,7 +377,7 @@ pub fn run(
     let (entry, entry_function) = manifest.entry();
     let mut frames = vec![new_frame(
         entry,
-        Callee::Local(entry_function),
+        Resolved::Index(entry_function),
         Vec::new(),
         set,
         provider,
@@ -343,15 +397,27 @@ pub fn run(
             .module_of(id)
             .expect("the module was just made resident");
 
-        let (transfer, ran) = step(module, manifest, &mut frames[top])?;
+        let (transfer, ran) = step(module, &mut frames[top])?;
         set.traffic.instructions += ran;
         match transfer {
             Transfer::Call {
-                callee,
+                from,
                 target,
                 arguments,
                 result,
             } => {
+                // The caller is still resident: nothing has been evicted since
+                // it was stepped. Its import mapping is built or read here.
+                let (callee, resolved) = match target {
+                    Callee::Local(index) => (from, Resolved::Index(index)),
+                    Callee::Import { slot, export } => (
+                        set.import_of(from, slot, manifest)
+                            .ok_or(Failure::Unsupported(
+                                "an import slot the closure membership does not name",
+                            ))?,
+                        Resolved::Export(export),
+                    ),
+                };
                 set.traffic.calls += 1;
                 frames[top].pending_result = result;
                 // Every frame is suspended now, the caller included: it is
@@ -362,7 +428,7 @@ pub fn run(
                 let suspended: Vec<ClosureModuleId> =
                     frames.iter().map(|frame| frame.module).collect();
                 let frame = new_frame(
-                    callee, target, arguments, set, provider, records, limits, &suspended,
+                    callee, resolved, arguments, set, provider, records, limits, &suspended,
                 )?;
                 frames.push(frame);
             }
@@ -393,7 +459,7 @@ pub fn run(
 #[allow(clippy::too_many_arguments)]
 fn new_frame(
     module: ClosureModuleId,
-    target: Callee,
+    target: Resolved,
     arguments: Vec<i128>,
     set: &mut ResidentSet,
     provider: &dyn Provider,
@@ -405,8 +471,8 @@ fn new_frame(
     // The module is already fixed by the manifest; only the function is looked
     // up here, and only inside that module.
     let function = match target {
-        Callee::Local(index) => index,
-        Callee::Export(name) => set.export_of(module, &name).ok_or(Failure::Unsupported(
+        Resolved::Index(index) => index,
+        Resolved::Export(name) => set.export_of(module, &name).ok_or(Failure::Unsupported(
             "an export the callee does not declare",
         ))?,
     };
@@ -435,11 +501,7 @@ fn new_frame(
 }
 
 /// Runs one frame until it transfers control.
-fn step(
-    module: &Module,
-    manifest: &crate::closure::VerifiedClosureManifest,
-    frame: &mut Frame,
-) -> Result<(Transfer, usize), Failure> {
+fn step(module: &Module, frame: &mut Frame) -> Result<(Transfer, usize), Failure> {
     let mut ran = 0usize;
     let function = module
         .functions
@@ -464,25 +526,23 @@ fn step(
                 // Resume past the call, so the frame that comes back does not
                 // run it again.
                 frame.instruction = at + 1;
-                let (callee, callee_target) = match target {
-                    CallTarget::Local(index) => (frame.module, Callee::Local(*index)),
-                    // The manifest fixes the module; the function is resolved
-                    // inside it once it is resident (§2).
-                    CallTarget::Imported { import, name } => (
-                        manifest
-                            .edge(frame.module, *import)
-                            .ok_or(Failure::Unsupported(
-                                "an import slot the manifest does not name",
-                            ))?,
-                        Callee::Export(name.clone()),
-                    ),
+                let callee_target = match target {
+                    CallTarget::Local(index) => Callee::Local(*index),
+                    // Neither half is resolved here: the module comes from the
+                    // caller's resident import mapping and the function from
+                    // the callee's resident export index, and both need the
+                    // resident set (§2, §7).
+                    CallTarget::Imported { import, name } => Callee::Import {
+                        slot: *import,
+                        export: name.clone(),
+                    },
                     CallTarget::Predeclared(_) => {
                         return Err(Failure::Unsupported("Op::Call to a predeclared operation"))
                     }
                 };
                 return Ok((
                     Transfer::Call {
-                        callee,
+                        from: frame.module,
                         target: callee_target,
                         arguments,
                         result: instruction.result,
