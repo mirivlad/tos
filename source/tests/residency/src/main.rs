@@ -623,8 +623,8 @@ fn launch_mode(directory: &str) {
         kib(result.records.len() * core::mem::size_of::<VerifiedModuleRecord>())
     );
     println!(
-        "manifest {} import edges, {} B ({:.2} KiB)",
-        result.manifest.edges(),
+        "manifest {} closure members, {} B ({:.2} KiB)",
+        result.manifest.modules(),
         result.manifest.heap_bytes(),
         kib(result.manifest.heap_bytes())
     );
@@ -931,94 +931,111 @@ fn manifest_bound_mode() {
     let limits = Limits::default();
     println!("== the manifest's upper bound, derived ==");
     println!();
+    println!("The permanent manifest holds the exact verified closure's **membership**:");
+    println!("one resolved-module identity per member, and nothing else. Not import slots,");
+    println!("not call sites — both are properties of a module, and a module's own verified");
+    println!("artifact already states them.");
+    println!();
     println!("accepted V1 ceilings in play (docs/44 §2):");
     println!(
         "  normalized source unit      {} B (256 KiB)",
         tos_core::MAX_SOURCE_BYTES
     );
-    println!("  module dependency closure   {CLOSURE_CEILING} modules");
-    println!("  IR tables/blocks/instructions   bounded by the declared resource envelope");
-    println!("                                  — u128 fields, self-declared, no finite bound");
+    println!("  module dependency closure   {CLOSURE_CEILING} modules   <- the only one that bounds this");
     println!(
-        "  reference profile: imports per module <= {} (checked in verify step 1)",
+        "  reference profile: imports per module <= {} (verify step 1)",
         limits.modules
     );
     println!();
-
-    // How many import declarations a conforming source unit can hold. Measured
-    // rather than assumed, because the shortest text for one decides it.
-    let mut declarations = String::from("module set.d version 1.0 profile bootstrap; ");
-    let mut written = 0usize;
-    loop {
-        let line = format!("import a.m{written} as m{written}; ");
-        if declarations.len() + line.len() + 256 > tos_core::MAX_SOURCE_BYTES {
-            break;
-        }
-        declarations.push_str(&line);
-        written += 1;
-    }
-    println!("source-derived: {written} import declarations fit in one conforming unit");
-
-    // Three bounds meet, and the smallest is the one that holds.
-    let by_closure = CLOSURE_CEILING - 1;
-    let by_profile = limits.modules;
-    let per_module = written.min(by_closure).min(by_profile);
-    println!(
-        "  by the closure ceiling: {by_closure}; by the reference profile: {by_profile}; \
-         by source: {written}"
-    );
-    println!("  binding: {per_module} import slots per module");
-
-    let edge = core::mem::size_of::<closure::Edge>();
-    let stored = core::mem::size_of::<ClosureModuleId>();
-    let total = per_module * CLOSURE_CEILING;
-    let bytes = total * stored + (CLOSURE_CEILING + 1) * core::mem::size_of::<u32>();
+    println!("The identity is the pair the resolver contract uses: a declared module name");
+    println!("and the content identity it resolved to. `V2012_IMPORT` checks an import");
+    println!("against both — the snapshot must provide the name, and the module's claimed");
+    println!("content ID must agree with what that name resolved to — so membership keys on");
+    println!("both. A content ID alone is nowhere promised to be the whole resolved");
+    println!("identity, and nothing here assumes it is.");
     println!();
+
+    let member = core::mem::size_of::<closure::Member>();
+    let record = core::mem::size_of::<VerifiedModuleRecord>();
+    let manifest =
+        core::mem::size_of::<closure::VerifiedClosureManifest>() + CLOSURE_CEILING * member;
     println!("== the bound ==");
-    println!("  import slots in one conforming module              {per_module}");
-    println!("  x {CLOSURE_CEILING} modules                                        {total}");
+    println!("  size_of::<Member>()                                {member} B");
+    println!("  size_of::<VerifiedModuleRecord>()                  {record} B");
     println!(
-        "  stored as one ClosureModuleId per slot ({stored} B) plus       {bytes} B ({:.2} MiB)",
-        mib(bytes)
+        "  manifest at the {CLOSURE_CEILING}-module ceiling                  {} B ({:.1} KiB)",
+        manifest,
+        kib(manifest)
     );
     println!(
-        "  {} offsets                                       ",
-        CLOSURE_CEILING + 1
+        "  records at the same ceiling                        {} B ({:.1} KiB)",
+        CLOSURE_CEILING * record,
+        kib(CLOSURE_CEILING * record)
     );
     println!(
-        "  (an explicit Edge record would be {edge} B each: {} B, {:.2} MiB)",
-        total * edge,
-        mib(total * edge)
+        "  permanent launch state, together                   {} B ({:.1} KiB)",
+        manifest + CLOSURE_CEILING * record,
+        kib(manifest + CLOSURE_CEILING * record)
     );
-    println!();
     println!("  ADR-0040 whole-machine budget                      268435456 B (256 MiB)");
     println!();
-    if bytes > 256 * 1024 * 1024 {
-        println!("  THE BOUND STILL EXCEEDS THE WHOLE MACHINE.");
-    } else {
-        println!(
-            "  It fits, with {:.1}% of the whole-machine budget spent on the manifest at the",
-            100.0 * bytes as f64 / (256.0 * 1024.0 * 1024.0)
-        );
-        println!("  absolute V1 worst case. This is ADR-0071 §2's structural limit and can be");
-        println!("  recorded as one.");
-    }
+    println!("  Bounded by the closure ceiling and by nothing else: not by call sites, not");
+    println!("  by import declarations, not by the size of any module.");
 
+    // Lookup cost, on a membership at the full ceiling.
+    let members: Vec<(String, [u8; 32])> = (0..CLOSURE_CEILING)
+        .map(|at| {
+            (
+                format!("set.m{at:04}"),
+                tos_hash::sha256(format!("content-{at}").as_bytes()),
+            )
+        })
+        .collect();
+    let probe = closure::membership_probe(&members);
+    let rounds = 200_000usize;
+    let started = Instant::now();
+    let mut found = 0usize;
+    for round in 0..rounds {
+        let (name, content_id) = &members[round % members.len()];
+        if probe.resolve(name, content_id).is_some() {
+            found += 1;
+        }
+    }
+    let elapsed = started.elapsed();
+    assert_eq!(found, rounds, "every member must resolve");
+    let per_lookup = elapsed.as_secs_f64() * 1e9 / rounds as f64;
     println!();
-    println!("== against the form this replaces ==");
-    println!("  the per-call-site manifest needed one link per cross-module call, whose");
-    println!("  measured V1 bound was 32 256 sites per module — 8 257 536 links, 378 MiB.");
-    println!(
-        "  import edges are {:.0}x fewer.",
-        8_257_536.0 / total.max(1) as f64
+    println!("== lookup ==");
+    println!("  binary search over {CLOSURE_CEILING} fixed-size members: {per_lookup:.1} ns ({rounds} probes)");
+    assert!(
+        probe
+            .resolve("set.m0000", &tos_hash::sha256(b"not this one"))
+            .is_none(),
+        "a right name with a wrong identity must not resolve"
     );
-    println!("  What moved is not a size: per-call function resolution is reconstructed");
-    println!("  inside the module the manifest already fixed, once it is resident, and is");
-    println!("  evicted with it. The closure and the provider's authority are still fixed");
-    println!("  before the first instruction, which is what the manifest is for.");
+    assert!(
+        probe.resolve("set.absent", &members[0].1).is_none(),
+        "a name outside the closure must not resolve"
+    );
+    println!("  a right name with a wrong content identity does not resolve");
+    println!("  a name outside the closure does not resolve");
+
+    // Resident derived state at the widest importer.
+    let widest = CLOSURE_CEILING - 1;
+    let slot = core::mem::size_of::<ClosureModuleId>();
+    println!();
+    println!("== resident derived state, at the widest importer ==");
+    println!("  import declarations a module may usefully make        {widest}");
+    println!(
+        "  import slot -> ClosureModuleId                        {} B ({:.1} KiB), resident",
+        widest * slot,
+        kib(widest * slot)
+    );
+    println!("  released with the module (§7). Not in the manifest, not permanent.");
     println!();
     println!(
-        "MANIFEST_BOUND SLOTS_PER_MODULE {per_module} TOTAL {total} STORED {stored} BYTES {bytes}"
+        "MANIFEST_BOUND MEMBER {member} RECORD {record} MANIFEST {manifest} RESIDENT_IMPORTS {} NS {per_lookup:.1}",
+        widest * slot
     );
 }
 
@@ -1031,7 +1048,8 @@ fn sizes_mode(modules: usize) {
     let (result, _, _) = launched(&prepared, &limits);
 
     let record = core::mem::size_of::<VerifiedModuleRecord>();
-    let edges = result.manifest.edges();
+    let member = core::mem::size_of::<closure::Member>();
+    let members = result.manifest.modules();
     let manifest = result.manifest.heap_bytes();
 
     println!("== what survives a module, and what survives a closure ==");
@@ -1042,24 +1060,18 @@ fn sizes_mode(modules: usize) {
     println!("  them a list. The size is a constant of the design, not of the module.");
     println!();
     println!(
-        "measured closure of {} modules: {} import edges, manifest {} B",
-        dependencies + 1,
-        edges,
-        manifest
+        "measured closure of {} modules: {members} members, manifest {manifest} B",
+        dependencies + 1
     );
-    println!("  one ClosureModuleId per declared import slot, plus per-module offsets.");
-    println!("  No names and no call-site positions: which *function* a call reaches is");
-    println!("  reconstructed inside the module the manifest already fixed, once it is");
-    println!("  resident, and evicted with it (§2, §7).");
+    println!("  the manifest holds closure **membership** and nothing else: one");
+    println!("  resolved-module identity per member, at {member} B. Not import slots and");
+    println!("  not call sites — a caller's import mapping and a callee's export index");
+    println!("  are resident module-derived state under §7, built when the module is");
+    println!("  resident and released when it is evicted.");
     println!();
     let projected_records = CLOSURE_CEILING * record;
-    // Import edges have a real V1 bound rather than an extrapolation: a module
-    // may import at most the other 255 of the closure. `--manifest-bound`
-    // derives it; this is the same arithmetic at the worst case.
-    let projected_edges = CLOSURE_CEILING * (CLOSURE_CEILING - 1);
-    let projected_manifest = core::mem::size_of::<closure::VerifiedClosureManifest>()
-        + projected_edges * core::mem::size_of::<ClosureModuleId>()
-        + (CLOSURE_CEILING + 1) * core::mem::size_of::<u32>();
+    let projected_manifest =
+        core::mem::size_of::<closure::VerifiedClosureManifest>() + CLOSURE_CEILING * member;
     println!("at the declared {CLOSURE_CEILING}-module ceiling, worst case:");
     println!(
         "  records  {CLOSURE_CEILING} x {record} B = {} B ({:.1} KiB)",
@@ -1067,20 +1079,19 @@ fn sizes_mode(modules: usize) {
         kib(projected_records)
     );
     println!(
-        "  manifest {} edges = {} B ({:.2} MiB)",
-        projected_edges,
+        "  manifest {CLOSURE_CEILING} x {member} B = {} B ({:.1} KiB)",
         projected_manifest,
-        mib(projected_manifest)
+        kib(projected_manifest)
     );
     println!(
-        "  together {} B ({:.2} MiB) against a live closure of {:.1} GiB",
+        "  together {} B ({:.1} KiB) against a live closure of {:.1} GiB",
         projected_records + projected_manifest,
-        mib(projected_records + projected_manifest),
+        kib(projected_records + projected_manifest),
         CLOSURE_CEILING as f64 * 12.52 / 1024.0
     );
     println!();
     println!(
-        "RECORD {record} EDGES {edges} MANIFEST {manifest} PROJ_RECORDS {projected_records} PROJ_MANIFEST {projected_manifest}"
+        "RECORD {record} MEMBER {member} MEMBERS {members} MANIFEST {manifest} PROJ_RECORDS {projected_records} PROJ_MANIFEST {projected_manifest}"
     );
 }
 

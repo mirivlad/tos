@@ -373,7 +373,63 @@ imports everything would not show it. Stated rather than hidden, because the
 fixture is the worst case for this term and a friendlier fixture would have made
 the bound look closed when it is not.
 
-## 9. The manifest's real upper bound — import edges, not call sites
+## 9. The manifest holds closure membership, and nothing else
+
+Two earlier forms of §2 were derived against the accepted V1 ceilings, and both
+are kept below because the bound is the reason for the final shape.
+
+- **One link per cross-module call site**: `32 256` sites in a conforming
+  module, `8 257 536` links at the closure ceiling, **`378 MiB`** on a `256 MiB`
+  machine. Raised as a Level-2 question.
+- **One entry per declared import slot**: `65 280` edges, **`0.50 MiB`**. It
+  fits — but the argument for `255` slots per module leaned on the closure
+  ceiling and on `resource imports`, and docs/41's `imports` bounds *transitive
+  module dependencies* rather than the count of `import` declarations. A bound
+  that needs an argument that thin is not a proved bound.
+
+**Membership needs neither argument.** The permanent manifest holds one **exact
+resolved module identity** per closure member, mapped to its opaque
+`ClosureModuleId`, and the closure ceiling is a published limit.
+
+The identity is the pair the resolver contract uses — a declared module name and
+the content identity it resolved to. `V2012_IMPORT` checks an import against
+both: the snapshot must provide the name, and the module's claimed content ID
+must agree with what that name resolved to. So membership keys on both, and
+nothing here assumes a content ID alone is the whole resolved identity.
+
+**Import slots and call sites are resident derived state.** A caller's verified
+artifact already states what its imports resolved to; its call sites already
+state which import and which export name they reach. So when a caller becomes
+resident its `import slot -> ClosureModuleId` mapping is resolved against
+membership, and when a callee becomes resident its `export name -> function
+index` index is built inside it. Both live under §7 — inside the byte bound —
+and both are released when the module is evicted. Neither is module search:
+membership is fixed before the first instruction, a lookup can only answer with a
+member, and the provider cannot widen it.
+
+| | Measured |
+|---|---:|
+| `size_of::<Member>()` | **136 B** |
+| `size_of::<VerifiedModuleRecord>()` | **592 B** |
+| manifest at the 256-module ceiling | **34 856 B (34.0 KiB)** |
+| records at the same ceiling | 151 552 B (148.0 KiB) |
+| **permanent launch state, together** | **186 408 B (182.0 KiB)** |
+| membership lookup — binary search over 256 fixed records | **134.8 ns** |
+| resident `import slot -> id` at the widest importer (255) | 2 040 B, released with the module |
+
+A right name with a wrong content identity does not resolve; a name outside the
+closure does not resolve. The measured 16-module closure carries **16 members in
+2 216 B**, where the call-site form carried 15 links in 816 B and the edge form
+15 edges in 268 B — and, unlike either, this one does not grow with what the
+modules contain.
+
+**Launch no longer carries anything across a module boundary.** No export table,
+no pending link, no name: each module is verified, reduced to its record, and
+released; membership is assembled from the records afterwards.
+
+## 9b. Retained: the import-edge and call-site bounds
+
+
 
 An earlier version of this section derived the bound for a manifest holding
 **one link per cross-module call site** and found it incompatible with the

@@ -93,6 +93,37 @@ impl BoundedName {
     }
 }
 
+impl BoundedName {
+    /// The stored bytes, without validating them again.
+    ///
+    /// Comparison is byte-wise rather than through `as_str`: UTF-8 orders the
+    /// same way as its bytes, so the order is identical, and a lookup does not
+    /// re-validate two strings that were validated when they were built.
+    fn bytes(&self) -> &[u8] {
+        &self.bytes[..self.length as usize]
+    }
+}
+
+impl PartialEq for BoundedName {
+    fn eq(&self, other: &BoundedName) -> bool {
+        self.bytes() == other.bytes()
+    }
+}
+
+impl Eq for BoundedName {}
+
+impl PartialOrd for BoundedName {
+    fn partial_cmp(&self, other: &BoundedName) -> Option<core::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BoundedName {
+    fn cmp(&self, other: &BoundedName) -> core::cmp::Ordering {
+        self.bytes().cmp(other.bytes())
+    }
+}
+
 impl core::fmt::Debug for BoundedName {
     fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(out, "{:?}", self.as_str())
@@ -185,6 +216,11 @@ fn fixed_digest(text: &str) -> [u8; 32] {
     tos_hash::sha256(text.as_bytes())
 }
 
+/// The same conversion, for identities read out of a module's own artifact.
+pub fn identity_digest(text: &str) -> [u8; 32] {
+    fixed_digest(text)
+}
+
 fn nibble(byte: u8) -> Option<u8> {
     match byte {
         b'0'..=b'9' => Some(byte - b'0'),
@@ -194,39 +230,47 @@ fn nibble(byte: u8) -> Option<u8> {
     }
 }
 
-/// One resolved **import edge** (ADR-0071 §2, revised).
+/// One member of the verified closure (ADR-0071 §2, revised twice).
 ///
-/// The manifest's job is to fix the exact executable closure and the provider's
-/// authority before the first instruction. That needs one entry per *declared
-/// import slot* — which module a caller's import names — and not one per call
-/// site. The earlier per-call-site form was derived and measured, and its V1
-/// upper bound was `8 257 536` links (`378 MiB`), larger than the whole
-/// reference machine. Import edges are bounded by the closure instead: a module
-/// may import at most the other 255 of a 256-module closure.
+/// The **exact resolved-module identity** the resolver contract uses, and no
+/// more: docs/42 resolution maps a declared module name to a content identity,
+/// and `V2012_IMPORT` checks an import against *both* — a name the snapshot
+/// provides, and the content ID that name resolved to. So membership keys on
+/// the pair. A content ID alone is not promised anywhere to be the whole
+/// resolved identity, and this does not assume it is.
 ///
-/// Which *function* of that module a call reaches is reconstructed inside the
-/// callee once it is resident — the module is already fixed, so nothing about
-/// that lookup can widen anything (§3).
+/// Fixed size, and there are at most 256 of them.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Edge {
-    pub caller: ClosureModuleId,
-    pub import: u32,
-    pub callee: ClosureModuleId,
+pub struct Member {
+    pub name: BoundedName,
+    pub content_id: [u8; 32],
+    pub position: u32,
 }
 
-/// The closure's module membership and import topology, built once (§2).
+/// The exact verified closure's membership, built once (§2).
 ///
-/// Bounded by the closure's import edges, holding no strings and no call-site
-/// positions. It can only be built after every module is verified, which is the
-/// other half of why launch is eager: an edge may not be resolved against a
-/// module whose own verification has not happened.
+/// **This is all the permanent manifest holds.** Not import slots, not call
+/// sites: a manifest exists to fix *which modules this execution may reach* and
+/// to be the only thing that mints an identity for one. Both of those are
+/// properties of the closure, so the manifest is bounded by the closure ceiling
+/// — at most 256 members — and by nothing else.
+///
+/// An earlier form held one entry per declared import slot, bounded at
+/// `256 x 255`. That bound was defensible but the structure was not: an import
+/// slot is a property of a *module*, and a module's own artifact already states
+/// what its imports resolved to. Duplicating that into a permanent structure
+/// made the manifest grow with something it does not decide.
+///
+/// A caller's `import slot -> ClosureModuleId` mapping is therefore resolved
+/// when the caller becomes resident, against this membership, and is **resident
+/// module-derived state under §7** — inside the byte bound, gone when the module
+/// goes. So is `export name -> function index` inside the callee. Neither is
+/// module search: membership is fixed before the first instruction and the
+/// provider cannot widen it (§3).
 #[derive(Debug)]
 pub struct VerifiedClosureManifest {
-    modules: usize,
-    /// Where each module's import slots begin in `edges`.
-    offsets: Vec<u32>,
-    /// One `ClosureModuleId` per declared import slot, in slot order.
-    edges: Vec<ClosureModuleId>,
+    /// Sorted by identity, for a bounded lookup.
+    members: Vec<Member>,
     entry: ClosureModuleId,
     entry_function: usize,
 }
@@ -234,7 +278,7 @@ pub struct VerifiedClosureManifest {
 impl VerifiedClosureManifest {
     /// The only place a `ClosureModuleId` comes into existence.
     fn mint(&self, position: usize) -> Option<ClosureModuleId> {
-        (position < self.modules).then_some(ClosureModuleId(position))
+        (position < self.members.len()).then_some(ClosureModuleId(position))
     }
 
     pub fn module(&self, position: usize) -> Option<ClosureModuleId> {
@@ -242,38 +286,66 @@ impl VerifiedClosureManifest {
     }
 
     pub fn modules(&self) -> usize {
-        self.modules
+        self.members.len()
     }
 
     pub fn entry(&self) -> (ClosureModuleId, usize) {
         (self.entry, self.entry_function)
     }
 
-    /// Which module a caller's import slot names.
+    /// Which member of the closure an exact resolved identity names.
     ///
-    /// A lookup by position in a table this execution's own launch built. It
-    /// cannot answer with a module outside the closure, because the table holds
-    /// nothing else and `ClosureModuleId` has no other constructor.
-    pub fn edge(&self, caller: ClosureModuleId, import: usize) -> Option<ClosureModuleId> {
-        let start = *self.offsets.get(caller.position())? as usize;
-        let end = self
-            .offsets
-            .get(caller.position() + 1)
-            .map(|next| *next as usize)
-            .unwrap_or(self.edges.len());
-        self.edges.get(start..end)?.get(import).copied()
+    /// A binary search over at most 256 fixed-size records. It cannot answer
+    /// with anything outside the closure, because the table holds nothing else
+    /// and `ClosureModuleId` has no other constructor.
+    pub fn resolve(&self, name: &str, content_id: &[u8; 32]) -> Option<ClosureModuleId> {
+        let at = self
+            .members
+            .binary_search_by(|member| {
+                member
+                    .name
+                    .bytes()
+                    .cmp(name.as_bytes())
+                    .then_with(|| member.content_id.cmp(content_id))
+            })
+            .ok()?;
+        Some(ClosureModuleId(self.members[at].position as usize))
     }
 
-    pub fn edges(&self) -> usize {
-        self.edges.len()
-    }
-
-    /// Bytes the manifest occupies, heap included. It holds no strings, so this
-    /// is the two vectors and nothing else.
+    /// Bytes the manifest occupies, heap included. Fixed-size records and
+    /// nothing else.
     pub fn heap_bytes(&self) -> usize {
         core::mem::size_of::<VerifiedClosureManifest>()
-            + self.offsets.capacity() * core::mem::size_of::<u32>()
-            + self.edges.capacity() * core::mem::size_of::<ClosureModuleId>()
+            + self.members.capacity() * core::mem::size_of::<Member>()
+    }
+}
+
+/// A membership table built from identities alone, for measuring lookup cost.
+///
+/// The positions it hands out belong to no execution, and no provider will ever
+/// see them. It exists so that resolving against a full-ceiling closure can be
+/// measured without building 256 modules.
+pub fn membership_probe(members: &[(String, [u8; 32])]) -> VerifiedClosureManifest {
+    let mut table: Vec<Member> = members
+        .iter()
+        .enumerate()
+        .filter_map(|(position, (name, content_id))| {
+            Some(Member {
+                name: BoundedName::new(name)?,
+                content_id: *content_id,
+                position: position as u32,
+            })
+        })
+        .collect();
+    table.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.content_id.cmp(&right.content_id))
+    });
+    VerifiedClosureManifest {
+        members: table,
+        entry: ClosureModuleId(0),
+        entry_function: 0,
     }
 }
 
@@ -331,23 +403,6 @@ pub struct Launched {
     pub scaffolding_released: usize,
 }
 
-/// One import edge waiting for its callee, in **fixed size**.
-///
-/// The callee is named by the **content ID the import itself declares**, which
-/// is an exact identity the frontend already put in the IR — not a name, not a
-/// hash of a name, and not a truncation of anything. Resolution is a 32-byte
-/// equality against the callee's own record, so a wrong match is not improbable
-/// but impossible.
-///
-/// One of these exists per declared import slot, so the live set is bounded by
-/// the closure's import edges and shrinks as callees are reached.
-#[derive(Clone, Copy, Debug)]
-struct PendingEdge {
-    caller: u32,
-    import: u32,
-    callee_content_id: [u8; 32],
-}
-
 /// Verifies the exact resolved closure, sequentially, and builds the manifest.
 ///
 /// `images` is in dependency order, `snapshot` is the declared resolution — an
@@ -370,18 +425,13 @@ pub fn launch(
 ) -> Result<Launched, Failure> {
     let count = images.len();
     let mut records: Vec<Option<VerifiedModuleRecord>> = vec![None; count];
-    // The only thing that crosses a module boundary during launch, and it is
-    // fixed size. Every link is *consumed* when its callee is reached, so the
-    // live set shrinks as launch proceeds rather than accumulating.
-    // The only thing that crosses a module boundary during launch, and it is
-    // fixed size and bounded by the closure's import edges.
-    let mut pending: Vec<PendingEdge> = Vec::new();
-    let mut slots: Vec<Vec<Option<ClosureModuleId>>> = vec![Vec::new(); count];
+    // Nothing crosses a module boundary during launch any more. The closure's
+    // membership is built from the records afterwards, and a caller's import
+    // slots are resolved when the caller is resident (§2, §7).
     let mut entry_function: Option<usize> = None;
 
     let mut peak = arena_frontier();
     let mut largest_module = 0usize;
-    let mut widest_pending = 0usize;
     let mut marks: Vec<Mark> = Vec::with_capacity(count * 6 + 4);
     let mark = |label: &'static str, module: Option<usize>, marks: &mut Vec<Mark>| {
         marks.push(Mark {
@@ -393,13 +443,8 @@ pub fn launch(
     };
     mark("base", None, &mut marks);
 
-    // **Reverse dependency order — callers before callees.** The image order is
-    // the topological order resolution produced, so reversing it puts every
-    // caller ahead of everything it calls. By the time a module is reached,
-    // every edge that will ever name it is already pending, so nothing has to
-    // be remembered on the chance that someone later asks.
-    for position in (0..count).rev() {
-        let bytes = &images[position];
+    // Dependency order or its reverse no longer matters: nothing is pending.
+    for (position, bytes) in images.iter().enumerate() {
         let before = arena_committed();
 
         // The declared resolution, one module's slice of it. Read here and
@@ -439,7 +484,7 @@ pub fn launch(
             module: position,
             field: "source_set",
         })?;
-        let record = VerifiedModuleRecord {
+        records[position] = Some(VerifiedModuleRecord {
             semantic_digest: fixed_digest(&receipt.module_digest),
             artifact_digest,
             verifier_identity: fixed_digest(&receipt.verifier_identity),
@@ -451,48 +496,15 @@ pub fn launch(
             source_set,
             profile: receipt.profile,
             envelope: ResourceEnvelope128::from(&receipt.resource_envelope),
-        };
-        let own_content_id = record.content_id;
-        records[position] = Some(record);
+        });
         mark("record", Some(position), &mut marks);
 
-        // This module as a **callee**: every pending edge whose declared
-        // content ID is this module's is resolved here, by 32-byte equality
-        // against an identity the frontend recorded. No name is compared and
-        // nothing is inferred.
-        for at in (0..pending.len()).rev() {
-            if pending[at].callee_content_id != own_content_id {
-                continue;
-            }
-            let edge = pending[at];
-            let slot = slots[edge.caller as usize]
-                .get_mut(edge.import as usize)
-                .ok_or(Failure::WrongModule {
-                    module: edge.caller as usize,
-                })?;
-            *slot = Some(ClosureModuleId(position));
-            pending.swap_remove(at);
-        }
         if position == entry {
             entry_function = module
                 .functions
                 .iter()
                 .position(|function| function.signature.name == entry_function_name);
         }
-        mark("edges resolved", Some(position), &mut marks);
-
-        // This module as a **caller**: one pending edge per declared import
-        // slot, carrying the content ID the import itself states.
-        slots[position] = vec![None; module.imports.len()];
-        for (import, declared) in module.imports.iter().enumerate() {
-            pending.push(PendingEdge {
-                caller: position as u32,
-                import: import as u32,
-                callee_content_id: fixed_digest(&declared.module_content_id),
-            });
-        }
-        widest_pending = widest_pending.max(pending.len());
-        mark("pending edges", Some(position), &mut marks);
 
         // And released. This is the line the whole §1 claim rests on.
         drop(module);
@@ -500,50 +512,49 @@ pub fn launch(
         mark("module released", Some(position), &mut marks);
     }
 
-    if let Some(unresolved) = pending.first() {
-        // An import naming a module the closure does not contain. The closure
-        // was resolved before launch, so this is a malformed input rather than
-        // a lookup that came up empty.
-        return Err(Failure::WrongModule {
-            module: unresolved.caller as usize,
-        });
-    }
+    let records: Vec<VerifiedModuleRecord> = records
+        .into_iter()
+        .map(|record| record.expect("every position was verified"))
+        .collect();
 
-    // Flattened: one `ClosureModuleId` per import slot, with per-module offsets.
-    let mut offsets = Vec::with_capacity(count + 1);
-    let mut edges = Vec::new();
-    for module in &slots {
-        offsets.push(edges.len() as u32);
-        for slot in module {
-            edges.push(slot.ok_or(Failure::WrongModule { module: 0 })?);
+    // Membership, from the identities the verifier itself produced.
+    let mut members: Vec<Member> = records
+        .iter()
+        .enumerate()
+        .map(|(position, record)| Member {
+            name: record.name,
+            content_id: record.content_id,
+            position: position as u32,
+        })
+        .collect();
+    members.sort_by(|left, right| {
+        left.name
+            .cmp(&right.name)
+            .then_with(|| left.content_id.cmp(&right.content_id))
+    });
+    for pair in members.windows(2) {
+        if pair[0].name == pair[1].name && pair[0].content_id == pair[1].content_id {
+            return Err(Failure::WrongModule {
+                module: pair[1].position as usize,
+            });
         }
     }
-    offsets.push(edges.len() as u32);
 
     let manifest = VerifiedClosureManifest {
-        modules: count,
-        offsets,
-        edges,
+        members,
         entry: ClosureModuleId(entry),
         entry_function: entry_function.ok_or(Failure::WrongModule { module: entry })?,
     };
     peak = peak.max(arena_frontier());
     mark("manifest built", None, &mut marks);
-
-    let scaffolding = widest_pending * core::mem::size_of::<PendingEdge>();
-    drop(pending);
-    drop(slots);
     mark("scaffolding released", None, &mut marks);
 
     Ok(Launched {
         marks,
-        records: records
-            .into_iter()
-            .map(|record| record.expect("every position was verified"))
-            .collect(),
+        records,
         manifest,
         peak,
         largest_module,
-        scaffolding_released: scaffolding,
+        scaffolding_released: 0,
     })
 }

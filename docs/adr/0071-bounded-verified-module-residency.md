@@ -105,49 +105,52 @@ ADR adds is a **lifetime**: the record outlives the image and the materialized
 module, and is what everything later compares against.
 
 **`VerifiedClosureManifest` — built once, after the whole closure is verified.**
-It is where the variable part lives, bounded by the closure's **import
-topology** rather than by any module's body or call count. It holds one entry
-per **declared import slot**:
+It holds the closure's **membership** and nothing else: one **exact resolved
+module identity** per member, mapped to its opaque `ClosureModuleId`.
 
-```text
-(caller ClosureModuleId, import slot) -> callee ClosureModuleId
-```
+The identity is the pair the resolver contract uses — a declared module name and
+the content identity that name resolved to. `V2012_IMPORT` checks an import
+against both, so membership keys on both. A content ID alone is nowhere promised
+to be the whole resolved identity, and this decision does not assume it is.
 
-and nothing else. Not an export table, not a name-to-function map, not a call
-site.
+**Import slots and call sites are not in the manifest.** A caller's verified
+artifact already states what its imports resolved to, and its call sites already
+state which import and which export name they reach. Copying either into a
+permanent structure would make the manifest grow with something it does not
+decide. So:
 
-**Which function a call reaches is not in the manifest.** It is reconstructed
-inside the module the manifest already fixed, once that module is resident. That
-is not module search by another name: the callee is already chosen, the provider
-cannot widen it (§3), and the lookup can only fail — it can never select a
-different module. Any `(export name -> function index)` table built for it is
-**resident module-derived state under §7**, inside the byte bound and evicted
-with the module.
+- when a **caller** becomes resident, its `import slot -> ClosureModuleId`
+  mapping is resolved against this membership;
+- when a **callee** becomes resident, its `export name -> function index` index
+  is built inside it.
 
-The reason is a bound. A manifest holding one link per *call site* was derived
-against the accepted V1 ceilings and came to `8 257 536` links — `378 MiB` on a
-`256 MiB` machine. Import edges are bounded by the closure instead: a module may
-import at most the other 255 of a 256-module closure, so **65 280 edges,
-`0.50 MiB`**, `0.2 %` of the whole-machine budget at the absolute worst case.
-That is §2's structural limit and it is recorded as one.
+Both are **resident module-derived state under §7** — inside the byte bound, and
+released when the module is evicted. Neither is module search: membership is
+fixed before the first instruction, a lookup can only answer with a member, and
+the provider cannot widen it (§3).
 
-Resolution of an edge is **exact**: a pending edge carries the content ID the
-import itself declares, and is matched by 32-byte equality against the callee's
-own record. Not a name, not a hash of a name, and not a truncation of one — a
-correctness property is not something to hold with high probability.
+The manifest is therefore bounded by the **closure ceiling and by nothing else**
+— at most 256 members. Measured at that ceiling: `34 856 B` of manifest and
+`151 552 B` of records, `182 KiB` of permanent launch state together, against a
+whole-machine budget of `256 MiB`.
+
+Two earlier forms are recorded because the bound is the reason for the shape.
+One link per **call site** came to `8 257 536` links (`378 MiB`) at the V1
+ceilings — larger than the machine. One entry per **import slot** came to
+`65 280`, which fits, but `resource imports` in docs/41 bounds transitive module
+dependencies rather than the count of `import` declarations, so that bound was
+not proved. Membership needs neither argument: the closure ceiling is a
+published limit and it is the only one in play.
 
 It can only be built after every module is verified, which is the other half of
-why §1 is eager: a link may not be resolved against a module whose own
-verification has not happened.
+why §1 is eager: membership is the set of identities the verifier itself
+produced, and the executable closure is not fixed until the last of them is.
 
-**Once the manifest exists, the export lookup tables are released.** They were
-launch-time scaffolding for resolving links, and after the links are resolved
-nothing needs to ask "what does this module export" again — execution follows
-resolved links, never a name lookup. A lookup table that outlived the manifest
-would be a name-resolution facility sitting inside a running execution, which is
-half of module search kept alive for convenience.
+**Nothing crosses a module boundary during launch.** No export table, no pending
+link, no name: each module is verified, reduced to its fixed-size record, and
+released, and membership is assembled from the records afterwards.
 
-The manifest is also the **only** thing that mints a `ClosureModuleId` (§3).
+The manifest is the **only** thing that mints a `ClosureModuleId` (§3).
 
 **Neither structure is ever reloaded from a cache.** Both are produced by this
 execution's own launch, and there is no path by which stored copies can be
@@ -517,6 +520,18 @@ every other is the closure's whole export surface.
 V1 ceilings do not supply an acceptable one. See below.
 
 ### 2a. The manifest's upper bound, derived
+
+| | Measured |
+|---|---:|
+| `size_of::<Member>()` | 136 B |
+| `size_of::<VerifiedModuleRecord>()` | 592 B |
+| manifest at the 256-module ceiling | **34 856 B (34.0 KiB)** |
+| records at the same ceiling | 151 552 B (148.0 KiB) |
+| **permanent launch state, together** | **186 408 B (182.0 KiB)** |
+| membership lookup, binary search over 256 | 134.8 ns |
+| resident `import slot -> id` at the widest importer | 2 040 B, released with the module |
+
+Bounded by the closure ceiling and by nothing else.
 
 The earlier per-call-site form of §2 was measured against the accepted V1
 ceilings and did not fit the machine; the arithmetic is kept below because §2's
