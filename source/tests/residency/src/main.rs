@@ -522,6 +522,7 @@ fn main() {
         "--launch" => launch_mode(&directory()),
         "--attribute" => attribute_mode(&directory()),
         "--manifest-bound" => manifest_bound_mode(),
+        "--import-surface" => import_surface_mode(),
         "--sizes" => sizes_mode(argument("--modules", 8)),
         "--residency" => residency_mode(argument("--modules", 8), argument("--bound-count", 2)),
         "--adversarial" => adversarial_mode(argument("--repeats", 8)),
@@ -622,8 +623,8 @@ fn launch_mode(directory: &str) {
         kib(result.records.len() * core::mem::size_of::<VerifiedModuleRecord>())
     );
     println!(
-        "manifest {} links, {} B ({:.2} KiB)",
-        result.manifest.links(),
+        "manifest {} import edges, {} B ({:.2} KiB)",
+        result.manifest.edges(),
         result.manifest.heap_bytes(),
         kib(result.manifest.heap_bytes())
     );
@@ -811,7 +812,123 @@ fn attribute_mode(directory: &str) {
 /// resource envelope**, whose fields are `u128` and self-declared, so the IR
 /// side supplies no finite bound of its own. What does bound it is the source
 /// unit: every call site must be written down.
+/// The largest declared-resolution slice a single module can require.
+///
+/// The launch attribution left one closure-scaled term: a module's own import
+/// surface, held while that module is verified. The fixture's entry imports
+/// every dependency, so the term was visible at `0.8 -> 4.4 MiB` — but a
+/// fixture is not a bound. This derives the V1 worst case: a module importing
+/// the other 255 of a closure, each of them exporting as much as a conforming
+/// source unit allows.
+fn import_surface_mode() {
+    let limits = Limits::default();
+    println!("== the widest single-module import surface, derived ==");
+    println!();
+
+    // The densest exporting module the reference frontend accepts.
+    let mut text = String::from(
+        "module set.wide version 1.0 profile bootstrap; \
+         resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 1, recursion: 1, imports: 0] ",
+    );
+    let mut written = 0usize;
+    loop {
+        let body = format!("pub fn e{written}() -> i32 {{ return 1i32; }} ");
+        if text.len() + body.len() > tos_core::MAX_SOURCE_BYTES {
+            break;
+        }
+        text.push_str(&body);
+        written += 1;
+    }
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("the fixture parses");
+    let context = ModuleContext {
+        source_set: "tos-residency-prototype".to_string(),
+        path: "set/wide.tos".to_string(),
+        content_id: tos_pipeline::content_id(source.bytes()),
+        dependency_digest: tos_pipeline::list_digest(&[]),
+        capability_interface_digest: tos_pipeline::list_digest(&[]),
+    };
+    let module = lower_module_in_set(&source, &schema, &context, &[]).expect("it lowers");
+    let exports = module.exports.len();
+    let name_bytes: usize = module.exports.iter().map(|e| e.name.len()).sum();
+    println!(
+        "densest conforming exporter: {} B of source, {exports} exports, {name_bytes} B of names",
+        text.len()
+    );
+    println!(
+        "  reference profile caps a table at {} entries; source caps it at {exports}",
+        limits.table_entries
+    );
+    let per_module_exports = exports.min(limits.table_entries);
+
+    // What one such module costs inside a `ResolutionSnapshot`, measured rather
+    // than estimated: the map entry, the set, and every owned name.
+    let before = committed();
+    let mut slice = ResolutionSnapshot::default();
+    slice.modules.insert(
+        module.header.module_name.clone(),
+        module.header.content_id.clone(),
+    );
+    slice.exports.insert(
+        module.header.module_name.clone(),
+        module.exports.iter().map(|e| e.name.clone()).collect(),
+    );
+    let per_module_bytes = committed().saturating_sub(before);
+    drop(slice);
+    println!(
+        "  one module's entry in a declared resolution: {} B ({:.2} MiB), measured",
+        per_module_bytes,
+        mib(per_module_bytes)
+    );
+
+    let imports = CLOSURE_CEILING - 1;
+    let worst = per_module_bytes * imports;
+    println!();
+    println!("== the bound ==");
+    println!("  a module may import at most                        {imports} others");
+    println!(
+        "  each contributing                                  {} B ({:.2} MiB)",
+        per_module_bytes,
+        mib(per_module_bytes)
+    );
+    println!(
+        "  widest single-module import surface                {} B ({:.2} MiB)",
+        worst,
+        mib(worst)
+    );
+    println!("  ADR-0040 whole-machine budget                      268435456 B (256 MiB)");
+    println!("  provisional RUNTIME_GRANT                          56623104 B (54 MiB)");
+    let content = name_bytes * imports;
+    println!(
+        "  of which export-name text                          {} B ({:.2} MiB)",
+        content,
+        mib(content)
+    );
+    println!(
+        "  representation carrying it                         {:.0}x",
+        worst as f64 / content.max(1) as f64
+    );
+    println!();
+    if worst > 54 * 1024 * 1024 {
+        println!("  THE WIDEST IMPORT SURFACE ALONE EXCEEDS THE PROVISIONAL GRANT.");
+        println!("  A launch that verifies such a module must hold its declared resolution");
+        println!("  while it does, on top of that module's decoded form and the verifier's");
+        println!("  own working set. This is a bound, not a fixture artefact, and it is the");
+        println!("  second thing `54 MiB` has to answer for.");
+    } else {
+        println!("  It fits the provisional grant, alongside one module's scratch.");
+    }
+    println!();
+    println!(
+        "IMPORT_SURFACE EXPORTS {per_module_exports} PER_MODULE {per_module_bytes} IMPORTS {imports} WORST {worst}"
+    );
+}
+
 fn manifest_bound_mode() {
+    let limits = Limits::default();
     println!("== the manifest's upper bound, derived ==");
     println!();
     println!("accepted V1 ceilings in play (docs/44 §2):");
@@ -822,174 +939,87 @@ fn manifest_bound_mode() {
     println!("  module dependency closure   {CLOSURE_CEILING} modules");
     println!("  IR tables/blocks/instructions   bounded by the declared resource envelope");
     println!("                                  — u128 fields, self-declared, no finite bound");
+    println!(
+        "  reference profile: imports per module <= {} (checked in verify step 1)",
+        limits.modules
+    );
     println!();
 
-    // The densest packing of cross-module call sites the reference frontend
-    // accepts inside one conforming source unit. Measured, not assumed: the
-    // shortest text for one call decides the number, and guessing it would be
-    // guessing the answer.
-    let callee = "module set.a version 1.0 profile bootstrap; \
-         resource [fuel: 100, stack: 1KiB, allocation: 1KiB, tasks: 1, workers: 1, \
-         sync: 0, shared: 0B, cleanup: 1, recursion: 1, imports: 0] \
-         pub fn v() -> i32 { return 1i32; } "
-        .to_string();
-    let head = "module set.d version 1.0 profile bootstrap; import set.a as a; \
-         resource [fuel: 100000000000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
-         sync: 0, shared: 0B, cleanup: 1, recursion: 1, imports: 1] \
-         pub fn f() -> i32 { return a.v()";
-    let _ = head;
-    // Call sites are spread across functions rather than packed into one
-    // expression. That began as a way around a stack overflow — a single
-    // 32 738-term sum, inside every published limit, used to abort the
-    // frontend — and the defect is fixed: `crate::walk` in `tos-core` made
-    // every walk over an operator run iterative. It stays because it is also
-    // the densest packing measured: chunked functions reach 8.4 bytes per call
-    // site, and one enormous expression wastes more on its tail than it saves.
-    let chunk = argument("--chunk", 512);
-    let mut dense = String::from(
-        "module set.d version 1.0 profile bootstrap; import set.a as a; \
-         resource [fuel: 100000000000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
-         sync: 0, shared: 0B, cleanup: 1, recursion: 1, imports: 1] ",
-    );
-    let mut sites = 0usize;
-    let mut function = 0usize;
+    // How many import declarations a conforming source unit can hold. Measured
+    // rather than assumed, because the shortest text for one decides it.
+    let mut declarations = String::from("module set.d version 1.0 profile bootstrap; ");
+    let mut written = 0usize;
     loop {
-        let mut body = format!("pub fn f{function}() -> i32 {{ return a.v()");
-        for _ in 1..chunk {
-            body.push_str(" + a.v()");
-        }
-        body.push_str("; } ");
-        if dense.len() + body.len() > tos_core::MAX_SOURCE_BYTES {
+        let line = format!("import a.m{written} as m{written}; ");
+        if declarations.len() + line.len() + 256 > tos_core::MAX_SOURCE_BYTES {
             break;
         }
-        dense.push_str(&body);
-        sites += chunk;
-        function += 1;
+        declarations.push_str(&line);
+        written += 1;
     }
+    println!("source-derived: {written} import declarations fit in one conforming unit");
+
+    // Three bounds meet, and the smallest is the one that holds.
+    let by_closure = CLOSURE_CEILING - 1;
+    let by_profile = limits.modules;
+    let per_module = written.min(by_closure).min(by_profile);
     println!(
-        "densest conforming caller: {} B of source, {} written call sites",
-        dense.len(),
-        sites
+        "  by the closure ceiling: {by_closure}; by the reference profile: {by_profile}; \
+         by source: {written}"
     );
+    println!("  binding: {per_module} import slots per module");
 
-    let callee_source = SourceReader::read(callee.as_bytes()).expect("valid");
-    let dense_source = SourceReader::read(dense.as_bytes()).expect("valid");
-    let callee_schema = Parser::parse_schema(&callee_source)
-        .into_accepted()
-        .expect("the callee parses");
-    let callee_module = lower_module_in_set(
-        &callee_source,
-        &callee_schema,
-        &ModuleContext {
-            source_set: "bound".to_string(),
-            path: "set/a.tos".to_string(),
-            content_id: tos_pipeline::content_id(callee_source.bytes()),
-            dependency_digest: tos_pipeline::list_digest(&[]),
-            capability_interface_digest: tos_pipeline::list_digest(&[]),
-        },
-        &[],
-    )
-    .expect("the callee lowers");
-    let dense_schema = match Parser::parse_schema(&dense_source).into_accepted() {
-        Some(schema) => schema,
-        None => {
-            println!();
-            println!("the frontend refused the densest caller; the bound below is the");
-            println!("source-arithmetic one and is not confirmed by lowering");
-            report_manifest_bound(sites);
-            return;
-        }
-    };
-    let lowered = lower_module_in_set(
-        &dense_source,
-        &dense_schema,
-        &ModuleContext {
-            source_set: "bound".to_string(),
-            path: "set/d.tos".to_string(),
-            content_id: tos_pipeline::content_id(dense_source.bytes()),
-            dependency_digest: tos_pipeline::list_digest(&[]),
-            capability_interface_digest: tos_pipeline::list_digest(&[]),
-        },
-        &[ResolvedImport {
-            name: "set.a",
-            module: &callee_module,
-        }],
-    );
-    match lowered {
-        Ok(module) => {
-            let imported: usize = module
-                .functions
-                .iter()
-                .flat_map(|function| function.blocks.iter())
-                .flat_map(|block| block.instructions.iter())
-                .filter(|instruction| {
-                    matches!(
-                        &instruction.op,
-                        tos_ir::Op::Call {
-                            target: tos_ir::CallTarget::Imported { .. },
-                            ..
-                        }
-                    )
-                })
-                .count();
-            let instructions: usize = module
-                .functions
-                .iter()
-                .flat_map(|function| function.blocks.iter())
-                .map(|block| block.instructions.len())
-                .sum();
-            println!(
-                "lowered: {imported} cross-module call sites, {instructions} instructions, \
-                 {} source-map entries",
-                module.source_map.len()
-            );
-            let published = Limits::default();
-            println!(
-                "reference profile: instructions/block {}, blocks/function {}, source-map entries {}",
-                published.instructions_per_block,
-                published.blocks_per_function,
-                published.source_map_entries
-            );
-            report_manifest_bound(imported);
-        }
-        Err(_) => {
-            println!();
-            println!("the densest caller did not lower under the reference limits; the");
-            println!("source-arithmetic bound below stands as the ceiling either way");
-            report_manifest_bound(sites);
-        }
-    }
-}
-
-fn report_manifest_bound(links_per_module: usize) {
-    let link = core::mem::size_of::<closure::Link>();
-    let total = links_per_module * CLOSURE_CEILING;
-    let bytes = total * link;
+    let edge = core::mem::size_of::<closure::Edge>();
+    let stored = core::mem::size_of::<ClosureModuleId>();
+    let total = per_module * CLOSURE_CEILING;
+    let bytes = total * stored + (CLOSURE_CEILING + 1) * core::mem::size_of::<u32>();
     println!();
     println!("== the bound ==");
-    println!("  cross-module call sites in one conforming module   {links_per_module}");
+    println!("  import slots in one conforming module              {per_module}");
     println!("  x {CLOSURE_CEILING} modules                                        {total}");
     println!(
-        "  x size_of::<Link>() = {link} B                          {bytes} B ({:.0} MiB)",
+        "  stored as one ClosureModuleId per slot ({stored} B) plus       {bytes} B ({:.2} MiB)",
         mib(bytes)
+    );
+    println!(
+        "  {} offsets                                       ",
+        CLOSURE_CEILING + 1
+    );
+    println!(
+        "  (an explicit Edge record would be {edge} B each: {} B, {:.2} MiB)",
+        total * edge,
+        mib(total * edge)
     );
     println!();
     println!("  ADR-0040 whole-machine budget                      268435456 B (256 MiB)");
-    if bytes > 256 * 1024 * 1024 {
-        println!();
-        println!("  THE BOUND EXCEEDS THE WHOLE MACHINE. A conforming closure may require a");
-        println!("  manifest larger than the reference platform's entire memory, so ADR-0071 §2");
-        println!("  cannot be accepted as written without a decision about which contract gives.");
-        println!("  No lower cap is chosen here: docs/44 §2 permits one only in a declared");
-        println!("  conformance profile, and choosing a conformance profile by its memory bill");
-        println!("  is a Level-2 decision, not a measurement.");
-    } else {
-        println!();
-        println!("  The bound fits the budget and can be recorded as ADR-0071 §2's structural");
-        println!("  limit.");
-    }
     println!();
-    println!("MANIFEST_BOUND LINKS_PER_MODULE {links_per_module} TOTAL {total} LINK {link} BYTES {bytes}");
+    if bytes > 256 * 1024 * 1024 {
+        println!("  THE BOUND STILL EXCEEDS THE WHOLE MACHINE.");
+    } else {
+        println!(
+            "  It fits, with {:.1}% of the whole-machine budget spent on the manifest at the",
+            100.0 * bytes as f64 / (256.0 * 1024.0 * 1024.0)
+        );
+        println!("  absolute V1 worst case. This is ADR-0071 §2's structural limit and can be");
+        println!("  recorded as one.");
+    }
+
+    println!();
+    println!("== against the form this replaces ==");
+    println!("  the per-call-site manifest needed one link per cross-module call, whose");
+    println!("  measured V1 bound was 32 256 sites per module — 8 257 536 links, 378 MiB.");
+    println!(
+        "  import edges are {:.0}x fewer.",
+        8_257_536.0 / total.max(1) as f64
+    );
+    println!("  What moved is not a size: per-call function resolution is reconstructed");
+    println!("  inside the module the manifest already fixed, once it is resident, and is");
+    println!("  evicted with it. The closure and the provider's authority are still fixed");
+    println!("  before the first instruction, which is what the manifest is for.");
+    println!();
+    println!(
+        "MANIFEST_BOUND SLOTS_PER_MODULE {per_module} TOTAL {total} STORED {stored} BYTES {bytes}"
+    );
 }
 
 /// **2. Record and manifest size**, reported apart from each other and
@@ -1001,9 +1031,8 @@ fn sizes_mode(modules: usize) {
     let (result, _, _) = launched(&prepared, &limits);
 
     let record = core::mem::size_of::<VerifiedModuleRecord>();
-    let links = result.manifest.links();
+    let edges = result.manifest.edges();
     let manifest = result.manifest.heap_bytes();
-    let per_module_links = links as f64 / (dependencies + 1) as f64;
 
     println!("== what survives a module, and what survives a closure ==");
     println!();
@@ -1013,33 +1042,35 @@ fn sizes_mode(modules: usize) {
     println!("  them a list. The size is a constant of the design, not of the module.");
     println!();
     println!(
-        "measured closure of {} modules: {} links, manifest {} B",
+        "measured closure of {} modules: {} import edges, manifest {} B",
         dependencies + 1,
-        links,
+        edges,
         manifest
     );
-    println!("  links are integers only: (caller, function, block, instruction) ->");
-    println!("  (callee ClosureModuleId, function index). No names, so nothing has to");
-    println!("  stay alive to resolve one.");
+    println!("  one ClosureModuleId per declared import slot, plus per-module offsets.");
+    println!("  No names and no call-site positions: which *function* a call reaches is");
+    println!("  reconstructed inside the module the manifest already fixed, once it is");
+    println!("  resident, and evicted with it (§2, §7).");
     println!();
     let projected_records = CLOSURE_CEILING * record;
-    // The fixture's entry calls every dependency once, so cross-module call
-    // sites scale with the closure. Stated as an extrapolation, which is what
-    // it is.
-    let projected_links = (per_module_links * CLOSURE_CEILING as f64) as usize;
+    // Import edges have a real V1 bound rather than an extrapolation: a module
+    // may import at most the other 255 of the closure. `--manifest-bound`
+    // derives it; this is the same arithmetic at the worst case.
+    let projected_edges = CLOSURE_CEILING * (CLOSURE_CEILING - 1);
     let projected_manifest = core::mem::size_of::<closure::VerifiedClosureManifest>()
-        + projected_links * core::mem::size_of::<closure::Link>();
-    println!("at the declared {CLOSURE_CEILING}-module ceiling, extrapolated:");
+        + projected_edges * core::mem::size_of::<ClosureModuleId>()
+        + (CLOSURE_CEILING + 1) * core::mem::size_of::<u32>();
+    println!("at the declared {CLOSURE_CEILING}-module ceiling, worst case:");
     println!(
         "  records  {CLOSURE_CEILING} x {record} B = {} B ({:.1} KiB)",
         projected_records,
         kib(projected_records)
     );
     println!(
-        "  manifest ~{} links = {} B ({:.1} KiB)",
-        projected_links,
+        "  manifest {} edges = {} B ({:.2} MiB)",
+        projected_edges,
         projected_manifest,
-        kib(projected_manifest)
+        mib(projected_manifest)
     );
     println!(
         "  together {} B ({:.2} MiB) against a live closure of {:.1} GiB",
@@ -1049,7 +1080,7 @@ fn sizes_mode(modules: usize) {
     );
     println!();
     println!(
-        "RECORD {record} LINKS {links} MANIFEST {manifest} PROJ_RECORDS {projected_records} PROJ_MANIFEST {projected_manifest}"
+        "RECORD {record} EDGES {edges} MANIFEST {manifest} PROJ_RECORDS {projected_records} PROJ_MANIFEST {projected_manifest}"
     );
 }
 
@@ -1099,6 +1130,11 @@ fn report_run(
         "  decoded / view / index     {:>12} B ({:>7.2} MiB)",
         ledger.decoded_bytes,
         mib(ledger.decoded_bytes)
+    );
+    println!(
+        "  export index (§2)          {:>12} B ({:>7.2} KiB)",
+        ledger.index_bytes,
+        kib(ledger.index_bytes)
     );
     println!(
         "  bookkeeping                {:>12} B ({:>7.2} KiB)",

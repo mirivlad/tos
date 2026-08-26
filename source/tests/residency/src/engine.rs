@@ -19,6 +19,8 @@
 //!   resident module costs its image, whatever was decoded from it, and its
 //!   bookkeeping, and all three are inside the bound.
 
+use std::collections::BTreeMap;
+
 use tos_image_prototype::image;
 use tos_ir::{BinaryOp, CallTarget, IntKind, Module, Op, Operand, Terminator, UnaryOp};
 use tos_verifier::Limits;
@@ -38,6 +40,14 @@ pub struct Resident {
     pub image_bytes: usize,
     /// Measured, not estimated: the arena's committed delta across the parse.
     pub decoded_bytes: usize,
+    /// The export index, built on first use and evicted with the module.
+    ///
+    /// ADR-0071 §2 keeps function resolution out of the manifest: the manifest
+    /// fixes *which module*, and *which function of it* is reconstructed inside
+    /// that already-fixed module. So this is resident module-derived state under
+    /// §7 — inside the byte bound, and gone when the module goes.
+    exports: BTreeMap<String, usize>,
+    index_bytes: usize,
     used_at: u64,
 }
 
@@ -46,12 +56,14 @@ pub struct Resident {
 pub struct Ledger {
     pub image_bytes: usize,
     pub decoded_bytes: usize,
+    /// The export index of §2 — derived from a resident module, evicted with it.
+    pub index_bytes: usize,
     pub bookkeeping_bytes: usize,
 }
 
 impl Ledger {
     pub fn total(&self) -> usize {
-        self.image_bytes + self.decoded_bytes + self.bookkeeping_bytes
+        self.image_bytes + self.decoded_bytes + self.index_bytes + self.bookkeeping_bytes
     }
 }
 
@@ -103,6 +115,7 @@ impl ResidentSet {
         Ledger {
             image_bytes: self.live.iter().map(|r| r.image_bytes).sum(),
             decoded_bytes: self.live.iter().map(|r| r.decoded_bytes).sum(),
+            index_bytes: self.live.iter().map(|r| r.index_bytes).sum(),
             bookkeeping_bytes: core::mem::size_of::<ResidentSet>()
                 + self.live.capacity() * core::mem::size_of::<Resident>(),
         }
@@ -114,6 +127,27 @@ impl ResidentSet {
 
     pub fn module_of(&self, id: ClosureModuleId) -> Option<&Module> {
         self.find(id).map(|at| &self.live[at].module)
+    }
+
+    /// Which function of a resident module an export name reaches.
+    ///
+    /// Reconstructed inside the module the manifest already fixed, and cached
+    /// as resident state. This is not module search: the module is not being
+    /// chosen here, it was chosen at launch and the provider cannot widen it.
+    fn export_of(&mut self, id: ClosureModuleId, name: &str) -> Option<usize> {
+        let at = self.find(id)?;
+        if self.live[at].exports.is_empty() {
+            let before = (self.arena_committed)();
+            let mut exports = BTreeMap::new();
+            for (index, function) in self.live[at].module.functions.iter().enumerate() {
+                exports
+                    .entry(function.signature.name.clone())
+                    .or_insert(index);
+            }
+            self.live[at].exports = exports;
+            self.live[at].index_bytes = (self.arena_committed)().saturating_sub(before);
+        }
+        self.live[at].exports.get(name).copied()
     }
 
     /// Makes `id` resident, evicting whatever the bounds require.
@@ -239,6 +273,8 @@ impl ResidentSet {
             snapshot,
             module,
             decoded_bytes,
+            exports: BTreeMap::new(),
+            index_bytes: 0,
             used_at: self.clock,
         })
     }
@@ -254,10 +290,22 @@ pub struct Frame {
     pending_result: Option<usize>,
 }
 
+/// Which function a call reaches: an index inside the caller's own module, or
+/// an export name to resolve inside the callee.
+///
+/// The name is **owned**. It is copied out of the caller's module before the
+/// callee is made resident, because making the callee resident may evict the
+/// caller — and a continuation that held a borrow into an image would not
+/// survive that (§6).
+enum Callee {
+    Local(usize),
+    Export(String),
+}
+
 enum Transfer {
     Call {
         callee: ClosureModuleId,
-        function: usize,
+        target: Callee,
         arguments: Vec<i128>,
         result: Option<usize>,
     },
@@ -275,7 +323,7 @@ pub fn run(
     let (entry, entry_function) = manifest.entry();
     let mut frames = vec![new_frame(
         entry,
-        entry_function,
+        Callee::Local(entry_function),
         Vec::new(),
         set,
         provider,
@@ -300,7 +348,7 @@ pub fn run(
         match transfer {
             Transfer::Call {
                 callee,
-                function,
+                target,
                 arguments,
                 result,
             } => {
@@ -314,7 +362,7 @@ pub fn run(
                 let suspended: Vec<ClosureModuleId> =
                     frames.iter().map(|frame| frame.module).collect();
                 let frame = new_frame(
-                    callee, function, arguments, set, provider, records, limits, &suspended,
+                    callee, target, arguments, set, provider, records, limits, &suspended,
                 )?;
                 frames.push(frame);
             }
@@ -345,7 +393,7 @@ pub fn run(
 #[allow(clippy::too_many_arguments)]
 fn new_frame(
     module: ClosureModuleId,
-    function: usize,
+    target: Callee,
     arguments: Vec<i128>,
     set: &mut ResidentSet,
     provider: &dyn Provider,
@@ -354,6 +402,14 @@ fn new_frame(
     suspended: &[ClosureModuleId],
 ) -> Result<Frame, Failure> {
     set.ensure(module, provider, records, limits, suspended)?;
+    // The module is already fixed by the manifest; only the function is looked
+    // up here, and only inside that module.
+    let function = match target {
+        Callee::Local(index) => index,
+        Callee::Export(name) => set.export_of(module, &name).ok_or(Failure::Unsupported(
+            "an export the callee does not declare",
+        ))?,
+    };
     let body = set
         .module_of(module)
         .expect("just ensured")
@@ -408,11 +464,18 @@ fn step(
                 // Resume past the call, so the frame that comes back does not
                 // run it again.
                 frame.instruction = at + 1;
-                let (callee, callee_function) = match target {
-                    CallTarget::Local(index) => (frame.module, *index),
-                    CallTarget::Imported { .. } => manifest
-                        .resolve(frame.module, frame.function, frame.block, at)
-                        .ok_or(Failure::Unsupported("an unresolved cross-module call site"))?,
+                let (callee, callee_target) = match target {
+                    CallTarget::Local(index) => (frame.module, Callee::Local(*index)),
+                    // The manifest fixes the module; the function is resolved
+                    // inside it once it is resident (§2).
+                    CallTarget::Imported { import, name } => (
+                        manifest
+                            .edge(frame.module, *import)
+                            .ok_or(Failure::Unsupported(
+                                "an import slot the manifest does not name",
+                            ))?,
+                        Callee::Export(name.clone()),
+                    ),
                     CallTarget::Predeclared(_) => {
                         return Err(Failure::Unsupported("Op::Call to a predeclared operation"))
                     }
@@ -420,7 +483,7 @@ fn step(
                 return Ok((
                     Transfer::Call {
                         callee,
-                        function: callee_function,
+                        target: callee_target,
                         arguments,
                         result: instruction.result,
                     },

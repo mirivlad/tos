@@ -127,6 +127,10 @@ fn main() {
         "--encode" => encode_mode(&path),
         "--verify" => verify_mode(&path),
         "--negatives" => negatives_mode(&path),
+        "--verify-steps" => verify_steps_mode(&path),
+        "--verify-step" => {
+            verify_one_step_mode(&path, &arguments.get(3).cloned().unwrap_or_default())
+        }
         other => {
             eprintln!("unknown mode: {other}");
             eprintln!("usage: tos-image-prototype [--encode|--verify|--negatives] PATH");
@@ -414,6 +418,172 @@ fn verify_mode(path: &str) {
     println!("  the receipt binds to the module the verifier actually traversed");
     println!();
     println!("PASS: parsed image verifies, digest recorded above");
+}
+
+/// Where the verifier's memory goes, step by step.
+///
+/// The launch measurement found the verifier's own workspace to be the largest
+/// single term in a launch peak — `31.75 MiB` on a ceiling-sized module, against
+/// `20 MiB` of decoded module under it. That is a total, and a total cannot say
+/// whether one step allocates a large structure or nine steps each allocate a
+/// modest one and free it. Those have different fixes, and optimising a
+/// verifier by guess is how a verifier stops verifying.
+///
+/// Two tables, because one cannot answer both questions:
+///
+/// - **sequential**, in this process: what a launch actually pays, with each
+///   step's survivors and the frontier as it accumulates;
+/// - **isolated**, one step per process: each step's own high-water mark,
+///   measured from the same post-decode baseline, so no step inherits another's.
+fn verify_steps_mode(path: &str) {
+    let limits = Limits::default();
+    let bytes = std::fs::read(path).expect("the image exists — run --encode first");
+    let snapshot = ResolutionSnapshot::default();
+
+    let base_frontier = frontier();
+    let base_committed = committed();
+    let module = image::parse(&bytes, &limits).expect("the image parses");
+    let decoded_committed = committed().saturating_sub(base_committed);
+    let decoded_frontier = frontier().saturating_sub(base_frontier);
+
+    println!("== baseline ==");
+    println!(
+        "  image {} B; decoded Module: committed +{} B ({:.2} MiB), frontier +{} B ({:.2} MiB)",
+        bytes.len(),
+        decoded_committed,
+        mib(decoded_committed),
+        decoded_frontier,
+        mib(decoded_frontier)
+    );
+    let after_decode = frontier();
+
+    println!();
+    println!("== sequential, one process — what a launch pays ==");
+    println!(
+        "{:<28} {:>12} {:>12} {:>12} {:>12}",
+        "step", "survivors", "d frontier", "frontier", "ms"
+    );
+    let mut previous = after_decode;
+    for name in tos_verifier::VERIFY_STEPS {
+        let before = committed();
+        let started = Instant::now();
+        let outcome = tos_verifier::verify_step(name, &module, &snapshot, &limits);
+        let elapsed = started.elapsed();
+        assert!(
+            matches!(outcome, Some(Ok(()))),
+            "step {name} must pass on a verified module: {outcome:?}"
+        );
+        let now = frontier();
+        println!(
+            "{name:<28} {:>12} {:>12} {:>12} {:>12.2}",
+            committed() as i64 - before as i64,
+            now as i64 - previous as i64,
+            now,
+            elapsed.as_secs_f64() * 1000.0
+        );
+        previous = now;
+    }
+
+    // The work that is not a step: the digests the receipt binds to.
+    for (label, work) in [("module_digest", 0usize), ("source_map_digest", 1usize)] {
+        let before = committed();
+        let started = Instant::now();
+        let produced = if work == 0 {
+            tos_ir::module_digest(&module)
+        } else {
+            tos_verifier::source_map_digest_of(&module.source_map)
+        };
+        let elapsed = started.elapsed();
+        assert!(!produced.is_empty());
+        let now = frontier();
+        println!(
+            "{label:<28} {:>12} {:>12} {:>12} {:>12.2}",
+            committed() as i64 - before as i64,
+            now as i64 - previous as i64,
+            now,
+            elapsed.as_secs_f64() * 1000.0
+        );
+        previous = now;
+    }
+
+    let cumulative = previous.saturating_sub(after_decode);
+    println!();
+    println!(
+        "  cumulative verifier frontier above the decoded module: {} B ({:.2} MiB)",
+        cumulative,
+        mib(cumulative)
+    );
+    println!(
+        "  peak over decode + verify:                             {} B ({:.2} MiB)",
+        previous,
+        mib(previous)
+    );
+
+    println!();
+    println!("== isolated, one step per process — each step's own high-water ==");
+    println!(
+        "{:<28} {:>14} {:>14}",
+        "step", "own frontier", "own survivors"
+    );
+    let program = std::env::args().next().expect("a program name");
+    let mut largest = ("", 0i64);
+    for name in tos_verifier::VERIFY_STEPS.iter().chain(&["module_digest"]) {
+        let output = std::process::Command::new(&program)
+            .args(["--verify-step", path, name])
+            .output()
+            .expect("the isolated run starts");
+        let text = String::from_utf8_lossy(&output.stdout);
+        let reported = text
+            .lines()
+            .find_map(|line| line.strip_prefix("STEP "))
+            .unwrap_or("0 0");
+        let mut parts = reported.split_whitespace();
+        let own_frontier: i64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        let own_survivors: i64 = parts.next().and_then(|v| v.parse().ok()).unwrap_or(0);
+        println!("{name:<28} {own_frontier:>14} {own_survivors:>14}");
+        if own_frontier > largest.1 {
+            largest = (name, own_frontier);
+        }
+    }
+    println!();
+    println!(
+        "  largest single step: {} at {} B ({:.2} MiB)",
+        largest.0,
+        largest.1,
+        mib(largest.1.max(0) as usize)
+    );
+    println!(
+        "  cumulative sequential frontier: {} B ({:.2} MiB)",
+        cumulative,
+        mib(cumulative)
+    );
+    println!();
+    println!(
+        "VERIFIER DECODED {decoded_committed} CUMULATIVE {cumulative} LARGEST_STEP {} LARGEST {}",
+        largest.0, largest.1
+    );
+}
+
+/// One verification step, alone in a process, from a post-decode baseline.
+fn verify_one_step_mode(path: &str, step: &str) {
+    let limits = Limits::default();
+    let bytes = std::fs::read(path).expect("the image exists");
+    let snapshot = ResolutionSnapshot::default();
+    let module = image::parse(&bytes, &limits).expect("the image parses");
+    let before_frontier = frontier();
+    let before_committed = committed();
+    if step == "module_digest" {
+        let produced = tos_ir::module_digest(&module);
+        assert!(!produced.is_empty());
+    } else {
+        let outcome = tos_verifier::verify_step(step, &module, &snapshot, &limits);
+        assert!(matches!(outcome, Some(Ok(()))), "step {step}: {outcome:?}");
+    }
+    println!(
+        "STEP {} {}",
+        frontier() as i64 - before_frontier as i64,
+        committed() as i64 - before_committed as i64
+    );
 }
 
 /// Every input the parser must refuse, and the sweep that proves it is total.
