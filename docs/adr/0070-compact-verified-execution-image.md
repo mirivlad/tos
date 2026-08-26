@@ -2,17 +2,21 @@
 
 # ADR-0070: A compact verified module image
 
-- Status: **Proposed**
-- Date: 2026-08-25
+- Status: **Accepted**
+- Date: 2026-08-25 (accepted 2026-08-26, after the section 6 measurement)
 - Decision level: 2 — it adds a bounded, versioned encoding of `tos-ir/v1` that
   the verifier reads and the engine executes. It changes no TOS Core semantics,
   no ABI operation and no invariant
-- Project Architect approval: **not given; this ADR proposes, it does not decide**
+- Project Architect approval: **given, 2026-08-26**, after the section 6
+  prototype evidence. Acceptance carries the section 7 implementation gate:
+  it does not authorize production engine integration
 - Evidence: `docs/evidence/STAGE3_PROCESS_GRANT.md`,
   `docs/evidence/STAGE3_COMPACT_IMAGE_P1.md` (the section 6 measurement)
-- Related: ADR-0044 (Proposed) — digest scheme v2, whose stated operational
-  reason has now arrived; ADR-0069 (Proposed) — the grant this measurement came
-  from; docs/43 §1, whose obligations any persisted form must meet
+- Related: ADR-0044 (Proposed) — digest scheme v2, which §3 leaves independently
+  versioned from the storage encoding rather than merged into it; ADR-0071
+  (Proposed) — the bounded residency decision §5 requires; ADR-0069 (Proposed) —
+  the grant this measurement came from; docs/43 §1, whose obligations any
+  persisted form must meet
 
 ## The gap, stated once
 
@@ -20,7 +24,7 @@
 frontend was phased (ADR-0069 §6) that is what remains of the arena's slope:
 `12.52 MiB` per ceiling-sized module.
 
-Measured, that live cost is mostly not the module's meaning:
+Measured, the live form is more than twice the same module's canonical stream:
 
 | | Live `tos_ir::Module` | Canonical stream | Ratio |
 |---|---:|---:|---:|
@@ -32,8 +36,20 @@ per module each own six `String`s of which five name the module: `1.59 MiB` of
 text with **`147` distinct bytes**, the same identity written once per lowered
 operation.
 
-So of `~15 MiB` live, about `6.5 MiB` is semantic payload and about `8.5 MiB` is
-the in-memory representation carrying it.
+An earlier draft read the canonical stream as the module's semantic payload and
+called the difference representation overhead. **The §6 prototype falsified
+that.** The stream is itself a representation with its own costs — sixteen fixed
+bytes for every number, enumerated values spelled as text with a sixteen-byte
+length in front — and it is not a floor. What is measured, and all that is
+claimed here, is this:
+
+> The same semantic module — byte-identical `tos-ir/v1` content, confirmed by an
+> unchanged semantic module digest after encode and verifier-owned parse — is
+> `12 864 160 B` as a live `Module`, `5 561 951 B` as the current canonical
+> stream, and `388 329 B` as the prototype image.
+
+No theoretical minimum is asserted. Three representations of one module were
+measured; a fourth might be smaller, and nothing here says otherwise.
 
 ## Decision
 
@@ -77,29 +93,57 @@ Whatever bytes exist on the wire or on storage carry:
   digest of §3;
 - **parser negative tests** as a condition of acceptance, not as follow-up work.
 
-### 3. One canonical semantic representation, shared with ADR-0044
+### 3. The storage encoding and the semantic digest scheme are versioned independently
 
-ADR-0044 proposes digest scheme v2 — canonical varints, and **module-level
-identity referenced rather than repeated** — and says in as many words that it
-is "waiting on an operational reason, such as receipt or cache persistence,
-boot-time pressure, many modules, or transport over storage or a network". Three
-of those four have now arrived, measured.
+They answer different questions and change for different reasons. **The image is
+not required to be the digest scheme's byte stream.**
 
-**Two encodings must not be invented.** Either the image *is* ADR-0044's v2
-canonical semantic representation inside the frame of §2, or the image's
-verifier independently recomputes the same versioned semantic digest from what
-it read. Anything else leaves two canonical forms that must be proved equivalent
-to each other forever, by every future implementation.
+- the **storage encoding version** says how to read bytes;
+- the **semantic digest scheme version** says how a module's identity is
+  computed from its meaning.
 
-Source-map identity interning belongs to that shared representation. **Logically
+The rule that keeps them from drifting is not that they share a byte layout. It
+is this: **the verifier-owned parser reconstructs semantic `tos-ir/v1` from the
+image and independently computes the versioned semantic digest from the
+reconstructed module** — from the meaning, never from the bytes it was handed and
+never from a value the image carried. The receipt then binds that semantic
+digest to the **exact artifact digest** of the bytes the verifier read.
+
+That is what makes the two versions safe to move apart. A new storage encoding
+changes how the same module is spelled and the semantic digest does not move; a
+new digest scheme changes how identity is computed and every reader recomputes
+it the same way from the same reconstructed module. Neither has to be reissued
+because the other changed, and no equivalence proof between two byte layouts is
+owed to anyone — because identity was never defined by a byte layout.
+
+An image that carried a semantic digest as a field would be asking to be
+believed. The parser is untrusted input, so nothing it says about identity is
+input to identity.
+
+**Interoperation with ADR-0044 stands, at the level of the idea rather than the
+bytes.** Canonical varints and module-level identity referenced rather than
+repeated are what the §6 prototype implemented and measured — `20.9x` on the
+source-map section. That is now evidence available to ADR-0044, which **remains
+Proposed** and is not advanced by this decision. If v2 is later accepted, the
+storage encoding may adopt its spelling or not; what it may never do is take an
+identity it did not compute.
+
+Source-map identity interning is a property of the storage encoding. **Logically
 every source-map entry still carries the docs/43 fields it carries today**;
-physically the five that name the module reference one module-identity record.
-The contract's content does not change; its repetition does.
+physically the ones that name the module reference one module-identity record,
+and the parser restores the full entries before anything computes a digest over
+them. The contract's content does not change; its repetition does.
 
-### 4. This ADR is about the density of one module, and promises nothing about a closure
+### 4. This ADR decides encoded byte density, and promises nothing about a closure
 
-It decides how much memory **one verified module image** costs. It does **not**
-propose that a whole dependency closure be resident.
+It decides the **encoded byte density of one verified module image** — how many
+bytes the module's meaning occupies on storage and in transport. It does **not**
+decide what that module costs to verify, and it does **not** propose that a whole
+dependency closure be resident.
+
+Those are three different quantities and this ADR settles one of them. Saying
+"how much memory an image costs" would have collapsed the first into the second,
+which is precisely the mistake the measurement caught.
 
 The arithmetic that rules that out is already in hand: eight canonical streams
 of ceiling-sized modules are `45.24 MiB`, so extrapolating today's density to
@@ -108,18 +152,26 @@ encoding — a better encoding is exactly what §3 is for — but it is enough t
 that "make the modules smaller and keep them all" is not an answer to the grant
 question, and this ADR does not offer it as one.
 
-The §6 measurement has since made the point sharper rather than softer. One
-ceiling-sized module encodes to `0.37 MiB`, `14.32x` below its canonical stream —
-and **verifying it still costs `28.32 MiB` of peak memory**, because the reader
-materializes a module before the verifier traverses it. The quantity a residency
-decision must bound is the second number, not the first. A compact artifact is a
-statement about storage and transport; it does not by itself make a closure
-resident, which is why §5 is a requirement and not an alternative.
+The §6 measurement has since made the point sharper rather than softer. Both
+figures are recorded here, separately, because they are separately binding:
+
+| Quantity | Measured, one ceiling-sized module |
+|---|---:|
+| **encoded byte density** — what this ADR decides | **388 329 B (0.37 MiB)** |
+| **verifier working-set peak** — what it does not | **29 697 360 B (28.32 MiB)** |
+
+The second is the cost of reading the image and traversing what came out, on the
+prototype's materializing reader: `12.19 MiB` of reconstructed `Module` and the
+verifier's own tables above it. **The quantity a residency decision must bound is
+the working-set peak, not the artifact size.** A compact artifact is a statement
+about storage and transport; it does not by itself make a closure resident, which
+is why §5 is a requirement and not an alternative.
 
 ### 5. Bounded residency is a required follow-up, not an alternative
 
 A separate ADR must define **bounded verified-module residency**: how many
 verified modules an execution may hold at once, and what supplies the rest.
+That decision is now drafted as **ADR-0071 (Proposed)**.
 
 Its shape is constrained here so that the follow-up cannot quietly become an
 ambient authority:
@@ -136,7 +188,7 @@ This is listed as a requirement rather than an alternative because it answers a
 different question. Density and residency multiply; neither substitutes for the
 other.
 
-### 6. What must be measured before this is accepted
+### 6. What was measured before this was accepted
 
 A prototype encoder, parser and verifier path, built for measurement and **not**
 switched into the production engine, reporting for a ceiling-sized module:
@@ -150,8 +202,8 @@ switched into the production engine, reporting for a ceiling-sized module:
 7. negatives: malformed, truncated, oversized, non-canonical-varint,
    unknown-version and wrong-digest inputs, each refused.
 
-No number is claimed in this ADR. The claim belongs in the evidence, before
-acceptance rather than after it.
+The numbers live in the evidence, not here — they were produced before
+acceptance rather than promised after it.
 
 **What such a prototype may leave out, and what it may not.**
 
@@ -196,16 +248,46 @@ Measured: `docs/evidence/STAGE3_COMPACT_IMAGE_P1.md`. The prototype lives in
 `source/tests/image-prototype/` and is built and linted with the workspace so it
 cannot rot unnoticed, while being reachable only by running it.
 
+### 7. The implementation gate
+
+**Accepting this ADR does not authorize production engine integration.** The
+decision is the shape; the permission to build on it is separate, and it opens
+only when both of these hold:
+
+1. the production format **covers 100 % of `tos-ir/v1`** — every tagged family,
+   every variant, with no declared-coverage exception and nothing left to fail
+   closed for want of an implementation;
+2. it **closes the docs/43 §1 parser and conformance requirements in full** —
+   the obligations §2 lists, met and demonstrated, not scheduled.
+
+Until then the engine reads what it reads today, and an image is a measured
+artifact rather than an execution path.
+
+`TOSIMGx0` is **not** a candidate for promotion. It is version `0` of an
+experiment, its coverage is partial by declaration, and a production format
+starts with its own magic and its own version rather than by graduating this
+one. Nothing in this acceptance is an instruction to finish the prototype's
+payload.
+
+The gate exists because a decision and a permission look alike from a distance.
+An accepted ADR that quietly licensed a partial parser into the trusted base
+would be worse than no ADR: it would be this project's own review process
+producing the failure the design was written to prevent.
+
 ## What this ADR does not decide
 
-- **Not the engine.** `run_set` is not rebuilt here, and no integration happens
-  before §6's evidence exists.
+- **Not the engine.** `run_set` is not rebuilt here, and §7 gates any
+  integration on complete coverage and complete conformance. Acceptance is the
+  shape of the decision, never a licence to start.
 - **Not residency.** §5 is a requirement on a later decision, not a design.
 - **Not the grant size.** ADR-0069 stays Proposed and `54 MiB` stays
   provisional; the grant is re-measured once this and residency are settled,
   not re-argued.
-- **Not ADR-0044's acceptance.** That decision remains its own; this ADR states
-  that the two must share one representation, not that either is approved.
+- **Not ADR-0044's acceptance.** That decision remains its own and stays
+  Proposed. §3 makes the storage encoding and the digest scheme independently
+  versioned, so neither waits on the other.
+- **Not a theoretical minimum.** Three representations of one module were
+  measured. Nothing here claims a floor.
 
 ## Architecture impact statement
 
@@ -235,14 +317,28 @@ cannot rot unnoticed, while being reachable only by running it.
 
 **Intern the source-map identity and change nothing else.** The cheap part of
 the win — `13–16 %` of a live module — and it needs no new artifact. It is not a
-substitute: it leaves the `2.3x` in place, and under §3 the interning is part of
-the shared representation anyway rather than a separate change to argue about.
+substitute: it leaves the live representation where it is, and the §6
+measurement puts the whole module at `388 329 B` where interning alone would
+have removed about `1.7 MiB` from a `12.86 MiB` value.
 
 **Keep the current in-memory form and accept the cost.** Understood and
 measured, and it makes the grant question harder every time the closure grows.
 Rejected as a default rather than as a possibility: it is what happens if
 nothing is decided.
 
-**Invent a compact encoding independent of the digest scheme.** Rejected in §3.
-Two canonical forms would have to be proved equivalent by every implementation
-that ever reads either.
+**Make the image byte-for-byte the digest scheme's stream.** Considered and
+**not** taken; §3 says why. It sounds like the safe choice — one byte layout,
+nothing to prove equivalent — but it welds two versions together that change for
+different reasons, so a storage format could not improve without reissuing every
+module's identity. The property actually needed is weaker and stronger at once:
+identity is computed from the *reconstructed meaning*, by the verifier, from
+whatever encoding it read. Two encodings then need no equivalence proof, because
+neither of them defines identity.
+
+**Let the image carry its semantic digest as a field.** Refused. The image is
+untrusted input; a digest it supplied would be a claim about identity made by
+the thing whose identity is in question.
+
+**Accept this ADR and integrate it.** Refused by §7. The decision is the shape,
+not the permission: production integration waits on complete `tos-ir/v1`
+coverage and complete docs/43 §1 conformance.

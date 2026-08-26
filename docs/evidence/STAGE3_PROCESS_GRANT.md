@@ -126,13 +126,18 @@ and normalization baseline — of which five name the *module*, not the operatio
 So `13–16 %` of a live module is one hundred and fifty bytes of text, written
 out once per lowered operation.
 
-**The answer to "how much of a live module is meaning".** Of about `15 MiB`
-live per ceiling-sized module, roughly `6.5 MiB` is canonical semantic stream
-and roughly `8.5 MiB` is this representation carrying it — `Vec` capacity slack,
-per-node struct padding, `String` headers, and the repeated identity text above.
+**Superseded, and the correction matters.** This section originally read the
+canonical stream as the module's semantic payload and the difference as
+representation overhead — "of about `15 MiB` live, roughly `6.5 MiB` is meaning".
+`STAGE3_COMPACT_IMAGE_P1.md` falsified that: the stream is itself a
+representation with its own costs, and the same module — identical `tos-ir/v1`
+content, confirmed by an unchanged semantic digest after a round trip through a
+compact encoding — is `388 329 B`, `14.32x` below the stream. **No figure here is
+a semantic minimum.** The `2.3x` above is one representation against another, and
+that is all it was ever entitled to say.
 
-This is diagnostic. What to do about it is ADR-0070's question, and the engine is
-not touched until that is decided.
+This is diagnostic. What to do about it was ADR-0070's question, and the engine
+is not touched until residency is decided as well.
 
 ## What that says about the declared limit
 

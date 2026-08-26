@@ -9,8 +9,11 @@ runs *through* the heap, so a byte figure is the allocator's own accounting
 rather than a sum of requests.
 
 Scope: this answers the seven questions **ADR-0070 §6** asks before that ADR can
-be accepted. ADR-0070 remains **Proposed**, `RUNTIME_GRANT = 54 MiB` remains
-**provisional**, and nothing here is switched into the production engine.
+be accepted. It is the evidence ADR-0070 was **accepted on (2026-08-26)**, and
+that acceptance carries ADR-0070 §7's implementation gate: no production engine
+integration until a production format covers 100 % of `tos-ir/v1` and closes
+docs/43 §1 in full. `RUNTIME_GRANT = 54 MiB` remains **provisional**, and nothing
+here is switched into the production engine.
 
 Verdict, stated once: **one ceiling-sized module is `388 329 B` as an image —
 `33.13x` smaller than the live `tos_ir::Module` and `14.32x` smaller than the
@@ -74,10 +77,12 @@ Canonical rules, each of them a rule a reader can *check*:
   duplicates;
 - the payload length is exact — trailing bytes after the digest are refused.
 
-The tag space is the digest scheme's tag space. A tag is part of a module's
-identity, so numbering the image's constructors differently would create the
-second canonical form ADR-0070 §3 refuses. What the image changes is how a value
-is *spelled*, not which constructor a number names.
+The tag space is the digest scheme's tag space here — reusing it costs nothing
+and made the encoder easier to review against `digest.rs`. It is **not** a
+requirement: ADR-0070 §3 versions the storage encoding independently of the
+semantic digest scheme, and identity is computed by the verifier from the
+*reconstructed module*, never from the bytes it read or from a tag number the
+image chose.
 
 ## 1. The fixture
 
@@ -326,7 +331,8 @@ assertion.
 - **Not ADR-0044's status.** Canonical varints and module-level source-map
   identity are used here as an **experimental candidate** for digest scheme v2
   and are now measured. That ADR remains Proposed and is not advanced by this
-  document.
+  document. ADR-0070 §3 versions the storage encoding independently of the
+  digest scheme, so neither waits on the other.
 - **Not the grant.** `RUNTIME_GRANT = 54 MiB` stays provisional.
 
 ## Reproduction
