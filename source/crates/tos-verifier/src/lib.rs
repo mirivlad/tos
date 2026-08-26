@@ -28,7 +28,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-use alloc::collections::{BTreeMap, BTreeSet};
+use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -91,19 +91,253 @@ impl Finding {
 /// module-resolution and capability-interface snapshot. The snapshot is
 /// declared input, not something the verifier discovers: it never inspects an
 /// ambient directory, the network or the environment.
+///
+/// **The facts are the same; the representation is bounded.** docs/43 requires
+/// the full declared snapshot — every declared imported module's resolved
+/// identity, its *whole* export surface, and the declared capability
+/// interfaces — but it does not require a particular Rust collection. This held
+/// `BTreeMap<String, BTreeSet<String>>` with an owned `String` per name, which
+/// measured `156.83 MiB` at the V1 worst case: 255 imported modules each
+/// exporting as much as a conforming source unit allows. The names themselves
+/// were `7.93 MiB` of that.
+///
+/// So the names are packed end to end and everything else is a span into them.
+/// Nothing is dropped: this is not "the exports the caller happens to use",
+/// which would make the verifier's answer depend on the question.
 #[derive(Clone, Debug, Default)]
 pub struct ResolutionSnapshot {
-    /// Module names the declared source set provides, with their content IDs.
-    pub modules: BTreeMap<String, String>,
-    /// The functions each of those modules exports, by module name.
+    /// Every name, once, end to end: module names, content identities, export
+    /// names, capability interfaces.
+    text: Vec<u8>,
+    /// Sorted by module name.
+    modules: Vec<ModuleFacts>,
+    /// Export names, grouped by module and sorted within each group.
+    exports: Vec<Span>,
+    /// Sorted declared capability interfaces.
+    capabilities: Vec<Span>,
+}
+
+/// A stretch of [`ResolutionSnapshot::text`].
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct Span {
+    start: u32,
+    length: u32,
+}
+
+/// What the declared resolution says about one module.
+#[derive(Clone, Copy, Debug)]
+struct ModuleFacts {
+    name: Span,
+    content_id: Span,
+    exports_at: u32,
+    exports_len: u32,
+    /// Whether the snapshot states this module's export surface at all.
     ///
-    /// Enough to answer whether a cross-module call names something that
-    /// exists. Not the signature: comparing one would mean comparing types
-    /// across two modules' tables, which is a different and larger question,
-    /// and claiming to have done it here would be worse than not doing it.
-    pub exports: BTreeMap<String, BTreeSet<String>>,
-    /// Capability interfaces the declared contract provides.
-    pub capability_interfaces: BTreeSet<String>,
+    /// "States an empty surface" and "says nothing about the exports" are
+    /// different facts and the import check treats them differently, so a flag
+    /// carries the difference that a missing map entry used to.
+    surface: bool,
+}
+
+impl ResolutionSnapshot {
+    fn slice(&self, span: Span) -> &str {
+        let start = span.start as usize;
+        let end = start + span.length as usize;
+        core::str::from_utf8(&self.text[start..end]).unwrap_or("")
+    }
+
+    fn find(&self, module: &str) -> Option<&ModuleFacts> {
+        let at = self
+            .modules
+            .binary_search_by(|facts| self.slice(facts.name).cmp(module))
+            .ok()?;
+        self.modules.get(at)
+    }
+
+    /// Whether any module resolution was declared at all.
+    ///
+    /// An empty snapshot means "no declared resolution", which the import check
+    /// treats as nothing to compare against. That is the behaviour this
+    /// replaced and it is unchanged.
+    pub fn is_empty(&self) -> bool {
+        self.modules.is_empty()
+    }
+
+    /// How many modules the declared resolution names.
+    pub fn len(&self) -> usize {
+        self.modules.len()
+    }
+
+    /// What identity the declared resolution says a module name resolved to.
+    pub fn resolved_content_id(&self, module: &str) -> Option<&str> {
+        self.find(module).map(|facts| self.slice(facts.content_id))
+    }
+
+    /// The declared export surface of a module, if the snapshot states one.
+    ///
+    /// `None` means the snapshot says nothing about that module's exports —
+    /// distinct from an empty surface, which says it exports nothing.
+    pub fn export_surface(&self, module: &str) -> Option<ExportSurface<'_>> {
+        let facts = self.find(module)?;
+        if !facts.surface {
+            return None;
+        }
+        Some(ExportSurface {
+            snapshot: self,
+            at: facts.exports_at,
+            length: facts.exports_len,
+        })
+    }
+
+    /// Whether any capability contract was declared.
+    pub fn declares_capabilities(&self) -> bool {
+        !self.capabilities.is_empty()
+    }
+
+    /// Whether the declared contract provides an interface.
+    pub fn provides_capability(&self, interface: &str) -> bool {
+        self.capabilities
+            .binary_search_by(|span| self.slice(*span).cmp(interface))
+            .is_ok()
+    }
+
+    /// Bytes this snapshot occupies, heap included. Reported so that a bound on
+    /// it can be measured rather than argued.
+    pub fn heap_bytes(&self) -> usize {
+        core::mem::size_of::<ResolutionSnapshot>()
+            + self.text.capacity()
+            + self.modules.capacity() * core::mem::size_of::<ModuleFacts>()
+            + self.exports.capacity() * core::mem::size_of::<Span>()
+            + self.capabilities.capacity() * core::mem::size_of::<Span>()
+    }
+}
+
+/// One module's declared export surface, whole.
+pub struct ExportSurface<'a> {
+    snapshot: &'a ResolutionSnapshot,
+    at: u32,
+    length: u32,
+}
+
+impl ExportSurface<'_> {
+    /// Whether this exact module declares this exact export.
+    ///
+    /// A binary search over the module's own sorted range. No fast path skips
+    /// it: the surface is complete, so a name that is not in it is a name the
+    /// module does not export.
+    pub fn contains(&self, name: &str) -> bool {
+        let start = self.at as usize;
+        let end = start + self.length as usize;
+        self.snapshot.exports[start..end]
+            .binary_search_by(|span| self.snapshot.slice(*span).cmp(name))
+            .is_ok()
+    }
+
+    pub fn len(&self) -> usize {
+        self.length as usize
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.length == 0
+    }
+}
+
+/// Builds a [`ResolutionSnapshot`] without a `String` per name.
+///
+/// Modules are declared one at a time and a module's exports are added to the
+/// module last declared, so each module's export names land contiguously in the
+/// packed text. `build` sorts and is the only place ordering is established.
+#[derive(Clone, Debug, Default)]
+pub struct DeclaredResolution {
+    text: Vec<u8>,
+    modules: Vec<ModuleFacts>,
+    exports: Vec<Span>,
+    capabilities: Vec<Span>,
+}
+
+impl DeclaredResolution {
+    pub fn new() -> DeclaredResolution {
+        DeclaredResolution::default()
+    }
+
+    fn pack(&mut self, value: &str) -> Span {
+        let span = Span {
+            start: self.text.len() as u32,
+            length: value.len() as u32,
+        };
+        self.text.extend_from_slice(value.as_bytes());
+        span
+    }
+
+    /// Declares a module and what its name resolved to. Exports added after
+    /// this belong to it.
+    pub fn module(&mut self, name: &str, content_id: &str) -> &mut DeclaredResolution {
+        let name = self.pack(name);
+        let content_id = self.pack(content_id);
+        let exports_at = self.exports.len() as u32;
+        self.modules.push(ModuleFacts {
+            name,
+            content_id,
+            exports_at,
+            exports_len: 0,
+            surface: false,
+        });
+        self
+    }
+
+    /// States that the module most recently declared has a known export
+    /// surface, even if it is empty.
+    pub fn exports_declared(&mut self) -> &mut DeclaredResolution {
+        if let Some(facts) = self.modules.last_mut() {
+            facts.surface = true;
+        }
+        self
+    }
+
+    /// Declares one export of the module most recently declared.
+    pub fn export(&mut self, name: &str) -> &mut DeclaredResolution {
+        let span = self.pack(name);
+        self.exports.push(span);
+        if let Some(facts) = self.modules.last_mut() {
+            facts.exports_len += 1;
+            facts.surface = true;
+        }
+        self
+    }
+
+    /// Declares a capability interface the contract provides.
+    pub fn capability(&mut self, interface: &str) -> &mut DeclaredResolution {
+        let span = self.pack(interface);
+        self.capabilities.push(span);
+        self
+    }
+
+    pub fn build(self) -> ResolutionSnapshot {
+        let DeclaredResolution {
+            text,
+            mut modules,
+            mut exports,
+            mut capabilities,
+        } = self;
+        let read = |span: Span| -> &str {
+            let start = span.start as usize;
+            core::str::from_utf8(&text[start..start + span.length as usize]).unwrap_or("")
+        };
+        for facts in &modules {
+            let start = facts.exports_at as usize;
+            let end = start + facts.exports_len as usize;
+            exports[start..end].sort_by(|left, right| read(*left).cmp(read(*right)));
+        }
+        modules.sort_by(|left, right| read(left.name).cmp(read(right.name)));
+        capabilities.sort_by(|left, right| read(*left).cmp(read(*right)));
+        capabilities.dedup_by(|left, right| read(*left) == read(*right));
+        ResolutionSnapshot {
+            text,
+            modules,
+            exports,
+            capabilities,
+        }
+    }
 }
 
 /// Verifies an untrusted module against a declared snapshot.
@@ -429,10 +663,10 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
                 "an import names no module",
             ));
         }
-        if snapshot.modules.is_empty() {
+        if snapshot.is_empty() {
             continue;
         }
-        let Some(resolved) = snapshot.modules.get(&import.module_name) else {
+        let Some(resolved) = snapshot.resolved_content_id(&import.module_name) else {
             return Err(Finding::new(
                 "V2012_IMPORT",
                 alloc::format!("import {index}"),
@@ -447,7 +681,7 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
         // the snapshot does not agree with is claiming a resolution that did
         // not happen, and the verifier is here precisely so the frontend's word
         // is not the last one.
-        if !import.module_content_id.is_empty() && import.module_content_id != *resolved {
+        if !import.module_content_id.is_empty() && import.module_content_id != resolved {
             return Err(Finding::new(
                 "V2012_IMPORT",
                 alloc::format!("import {index}"),
@@ -480,9 +714,7 @@ fn check_types_and_imports(module: &Module, snapshot: &ResolutionSnapshot) -> Re
                 ))
             }
         }
-        if !snapshot.capability_interfaces.is_empty()
-            && !snapshot.capability_interfaces.contains(&import.interface)
-        {
+        if snapshot.declares_capabilities() && !snapshot.provides_capability(&import.interface) {
             return Err(Finding::new(
                 "V2013_CAPABILITY",
                 alloc::format!("capability import {index}"),
@@ -699,7 +931,7 @@ fn check_instruction(
                 // function signature. Whether the imported module has that
                 // export is knowable only from the snapshot, so it is checked
                 // exactly when the snapshot says.
-                if let Some(exports) = snapshot.exports.get(&imported.module_name) {
+                if let Some(exports) = snapshot.export_surface(&imported.module_name) {
                     if !exports.contains(name) {
                         return Err(Finding::new(
                             "V2012_IMPORT",
@@ -1616,5 +1848,74 @@ fn places_of(op: &Op) -> Vec<&tos_ir::Place> {
         | Op::Borrow { place, .. }
         | Op::Drop { place } => alloc::vec![place],
         _ => Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+
+    fn declared() -> ResolutionSnapshot {
+        let mut building = DeclaredResolution::new();
+        building
+            .module("set.b", "sha256:bbb")
+            .exports_declared()
+            .export("zeta")
+            .export("alpha")
+            .export("mid");
+        building.module("set.c", "sha256:ccc");
+        building.module("set.a", "sha256:aaa").exports_declared();
+        building.capability("system.time.Clock");
+        building.capability("system.audit.Logger");
+        building.build()
+    }
+
+    #[test]
+    fn a_module_resolves_to_the_identity_it_was_declared_with() {
+        let snapshot = declared();
+        assert_eq!(snapshot.resolved_content_id("set.b"), Some("sha256:bbb"));
+        assert_eq!(snapshot.resolved_content_id("set.c"), Some("sha256:ccc"));
+        assert_eq!(snapshot.resolved_content_id("set.absent"), None);
+        assert_eq!(snapshot.len(), 3);
+        assert!(!snapshot.is_empty());
+    }
+
+    /// The distinction a missing map entry used to carry, and the one place
+    /// this representation could quietly have changed the verifier's answer.
+    #[test]
+    fn an_unstated_export_surface_is_not_an_empty_one() {
+        let snapshot = declared();
+        assert!(
+            snapshot.export_surface("set.c").is_none(),
+            "a module declared without an export surface states nothing about its exports"
+        );
+        let empty = snapshot
+            .export_surface("set.a")
+            .expect("set.a states an empty surface");
+        assert!(empty.is_empty());
+        assert!(!empty.contains("anything"));
+    }
+
+    #[test]
+    fn an_export_surface_answers_for_the_exact_name() {
+        let snapshot = declared();
+        let surface = snapshot.export_surface("set.b").expect("stated");
+        assert_eq!(surface.len(), 3);
+        for name in ["alpha", "mid", "zeta"] {
+            assert!(surface.contains(name), "{name} was declared");
+        }
+        for name in ["alph", "alphaa", "beta", ""] {
+            assert!(!surface.contains(name), "{name} was not declared");
+        }
+    }
+
+    #[test]
+    fn capability_interfaces_answer_exactly() {
+        let snapshot = declared();
+        assert!(snapshot.declares_capabilities());
+        assert!(snapshot.provides_capability("system.time.Clock"));
+        assert!(snapshot.provides_capability("system.audit.Logger"));
+        assert!(!snapshot.provides_capability("system.time.Clockwork"));
+        assert!(!ResolutionSnapshot::default().declares_capabilities());
     }
 }

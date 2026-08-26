@@ -569,7 +569,35 @@ at `0.8 → 4.4 MiB` — but a fixture is not a bound. Derived at the V1 ceiling
 and 61 % of the whole machine.** A launch verifying such a module holds it on
 top of that module's decoded form and the digest buffer of §10.
 
-Two things follow, and they are different in kind.
+### Re-measured after the representation changed
+
+docs/43 requires the **full** declared snapshot; it does not require a
+particular Rust collection. `ResolutionSnapshot` now packs every name — module
+names, content identities, export names, capability interfaces — end to end and
+holds spans into that text: a sorted module table, a contiguous sorted export
+range per module, sorted capability spans. Nothing was dropped. It is not "the
+exports the caller happens to use", which would make the verifier's answer
+depend on the question asked.
+
+| | Before | After |
+|---|---:|---:|
+| one module's entry in a declared resolution | 644 896 B | **106 240 B** |
+| **widest single-module import surface** | **164 448 480 B (156.83 MiB)** | **27 091 200 B (25.84 MiB)** |
+| export-name text inside it | 7.93 MiB | 7.93 MiB |
+| representation carrying that text | 20x | **3x** |
+| against the provisional `RUNTIME_GRANT` | ~3x over | **fits** |
+
+The verifier answers the same three questions and answers them the same way:
+*what identity did this module name resolve to*, *does this exact module export
+this exact name*, *is this capability interface declared*. `V2012_IMPORT` and
+`V2013_CAPABILITY` are unchanged, and so is the distinction a missing map entry
+used to carry — **a module declared without an export surface states nothing
+about its exports, and a module declared with an empty one states that it
+exports nothing.** That distinction is the single place this change could have
+silently altered a verdict, so it is carried by an explicit flag and has its own
+test.
+
+### The two things this originally showed, retained
 
 The **content** is `7.93 MiB` of export-name text; the `156.83 MiB` is the
 reference `ResolutionSnapshot` — `BTreeMap<String, BTreeSet<String>>` with an
