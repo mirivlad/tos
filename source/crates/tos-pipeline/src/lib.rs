@@ -525,31 +525,23 @@ pub fn execute_set(
 /// request: a snapshot assembled from what a caller asked for would let the
 /// verifier confirm the caller's own assumption.
 fn snapshot_of(lowered: &[(usize, Module)], entry: &Module) -> ResolutionSnapshot {
-    let mut snapshot = ResolutionSnapshot::default();
+    let mut declared = tos_verifier::DeclaredResolution::new();
     for module in lowered
         .iter()
         .map(|(_, module)| module)
         .chain(core::iter::once(entry))
     {
-        snapshot.modules.insert(
-            module.header.module_name.clone(),
-            module.header.content_id.clone(),
-        );
-        snapshot.exports.insert(
-            module.header.module_name.clone(),
-            module
-                .exports
-                .iter()
-                .map(|export| export.name.clone())
-                .collect(),
-        );
+        declared
+            .module(&module.header.module_name, &module.header.content_id)
+            .exports_declared();
+        for export in &module.exports {
+            declared.export(&export.name);
+        }
         for import in &module.capability_imports {
-            snapshot
-                .capability_interfaces
-                .insert(import.interface.clone());
+            declared.capability(&import.interface);
         }
     }
-    snapshot
+    declared.build()
 }
 
 /// A module's dependency closure, dependencies first, deterministically.

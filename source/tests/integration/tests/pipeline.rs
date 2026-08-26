@@ -245,10 +245,9 @@ fn a_capability_outside_the_declared_contract_is_rejected() {
         binding: String::from("clock"),
         ty,
     });
-    let declared = ResolutionSnapshot {
-        capability_interfaces: ["system.audit.Logger".to_string()].into_iter().collect(),
-        ..Default::default()
-    };
+    let mut building = tos_verifier::DeclaredResolution::new();
+    building.capability("system.audit.Logger");
+    let declared = building.build();
     match verify(&module, &declared, &Limits::default()) {
         Ok(_) => panic!("a capability outside the declared contract was accepted"),
         Err(finding) => assert_eq!(finding.code, "V2013_CAPABILITY"),
@@ -621,18 +620,17 @@ fn importing_module(claimed_content_id: &str, called: &str) -> Module {
 }
 
 fn resolution(exports: &[&str]) -> ResolutionSnapshot {
-    let mut declared = ResolutionSnapshot::default();
+    let mut declared = tos_verifier::DeclaredResolution::new();
     declared
-        .modules
-        .insert(String::from(DEPENDENCY), String::from(DEPENDENCY_ID));
-    declared
-        .modules
-        .insert(String::from("app.sample"), String::from("sha256:sample"));
-    declared.exports.insert(
-        String::from(DEPENDENCY),
-        exports.iter().map(|name| String::from(*name)).collect(),
-    );
-    declared
+        .module(DEPENDENCY, DEPENDENCY_ID)
+        .exports_declared();
+    for name in exports {
+        declared.export(name);
+    }
+    // The entry's own export surface is deliberately not stated, which is a
+    // different fact from stating an empty one.
+    declared.module("app.sample", "sha256:sample");
+    declared.build()
 }
 
 #[test]
@@ -664,9 +662,13 @@ fn an_import_claiming_an_identity_the_declared_set_denies_is_rejected() {
 #[test]
 fn an_import_the_declared_set_does_not_provide_is_rejected() {
     let module = importing_module(DEPENDENCY_ID, "origin");
-    let mut declared = resolution(&["origin"]);
-    declared.modules.remove(DEPENDENCY);
-    expect_rejection_against(&module, &declared, "V2012_IMPORT");
+    // A declared resolution that names something, but not the dependency this
+    // module imports.
+    let mut declared = tos_verifier::DeclaredResolution::new();
+    declared
+        .module("app.sample", "sha256:sample")
+        .exports_declared();
+    expect_rejection_against(&module, &declared.build(), "V2012_IMPORT");
 }
 
 /// A call to a name the resolved module does not export is refused here, not

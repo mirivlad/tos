@@ -274,6 +274,10 @@ fn entry_calling(pattern: &[usize], imports: usize, bytes: usize) -> String {
 
 struct Prepared {
     store: Store,
+    /// The same facts as `slices`, kept as text so `--prepare` can write them
+    /// out. A packed snapshot is not a serialization format and this harness
+    /// does not pretend it is one.
+    slice_text: Vec<String>,
     /// The declared resolution, **sliced per module**: what each module's own
     /// verification needs, and no more.
     ///
@@ -346,7 +350,6 @@ fn prepare(dependencies: usize, pattern: &[usize], unit_bytes: usize) -> Prepare
     // module's verification actually consults.
     let mut slices: Vec<ResolutionSnapshot> = Vec::with_capacity(lowered.len());
     for module in &lowered {
-        let mut slice = ResolutionSnapshot::default();
         let wanted: Vec<&str> = core::iter::once(module.header.module_name.as_str())
             .chain(
                 module
@@ -355,24 +358,48 @@ fn prepare(dependencies: usize, pattern: &[usize], unit_bytes: usize) -> Prepare
                     .map(|import| import.module_name.as_str()),
             )
             .collect();
+        let mut declared = tos_verifier::DeclaredResolution::new();
         for other in &lowered {
             if !wanted.contains(&other.header.module_name.as_str()) {
                 continue;
             }
-            slice.modules.insert(
-                other.header.module_name.clone(),
-                other.header.content_id.clone(),
-            );
-            slice.exports.insert(
-                other.header.module_name.clone(),
-                other
-                    .exports
-                    .iter()
-                    .map(|export| export.name.clone())
-                    .collect(),
-            );
+            declared
+                .module(&other.header.module_name, &other.header.content_id)
+                .exports_declared();
+            for export in &other.exports {
+                declared.export(&export.name);
+            }
         }
-        slices.push(slice);
+        slices.push(declared.build());
+    }
+
+    let mut slice_text: Vec<String> = Vec::with_capacity(lowered.len());
+    for module in &lowered {
+        let wanted: Vec<&str> = core::iter::once(module.header.module_name.as_str())
+            .chain(
+                module
+                    .imports
+                    .iter()
+                    .map(|import| import.module_name.as_str()),
+            )
+            .collect();
+        let mut text = String::new();
+        for other in &lowered {
+            if !wanted.contains(&other.header.module_name.as_str()) {
+                continue;
+            }
+            text.push_str(&format!(
+                "module {} {}\n",
+                other.header.module_name, other.header.content_id
+            ));
+            for export in &other.exports {
+                text.push_str(&format!(
+                    "export {} {}\n",
+                    other.header.module_name, export.name
+                ));
+            }
+        }
+        slice_text.push(text);
     }
 
     let images: Vec<Snapshot> = lowered
@@ -389,6 +416,7 @@ fn prepare(dependencies: usize, pattern: &[usize], unit_bytes: usize) -> Prepare
     Prepared {
         store: Store { images },
         slices,
+        slice_text,
         entry: dependencies,
         expected,
     }
@@ -418,16 +446,7 @@ fn prepare_mode(modules: usize, directory: &str) {
     std::fs::write(format!("{directory}/closure.txt"), sidecar).expect("the sidecar is writable");
     // One resolution slice per module, so a launch reads one module's import
     // surface rather than the closure's.
-    for (at, slice) in prepared.slices.iter().enumerate() {
-        let mut text = String::new();
-        for (name, content_id) in &slice.modules {
-            text.push_str(&format!("module {name} {content_id}\n"));
-        }
-        for (name, exports) in &slice.exports {
-            for export in exports {
-                text.push_str(&format!("export {name} {export}\n"));
-            }
-        }
+    for (at, text) in prepared.slice_text.iter().enumerate() {
         std::fs::write(format!("{directory}/resolution.{at:03}"), text)
             .expect("the slice is writable");
     }
@@ -473,26 +492,20 @@ fn read_prepared(directory: &str) -> (Store, usize) {
 fn resolution_slice(directory: &str, position: usize) -> ResolutionSnapshot {
     let text = std::fs::read_to_string(format!("{directory}/resolution.{position:03}"))
         .expect("a resolution slice");
-    let mut slice = ResolutionSnapshot::default();
+    let mut declared = tos_verifier::DeclaredResolution::new();
     for line in text.lines() {
         let mut parts = line.split(' ');
         match (parts.next(), parts.next(), parts.next()) {
             (Some("module"), Some(name), Some(content_id)) => {
-                slice
-                    .modules
-                    .insert(name.to_string(), content_id.to_string());
+                declared.module(name, content_id).exports_declared();
             }
-            (Some("export"), Some(name), Some(export)) => {
-                slice
-                    .exports
-                    .entry(name.to_string())
-                    .or_default()
-                    .insert(export.to_string());
+            (Some("export"), Some(_), Some(export)) => {
+                declared.export(export);
             }
             _ => {}
         }
     }
-    slice
+    declared.build()
 }
 
 fn argument(name: &str, fallback: usize) -> usize {
@@ -867,21 +880,24 @@ fn import_surface_mode() {
     // What one such module costs inside a `ResolutionSnapshot`, measured rather
     // than estimated: the map entry, the set, and every owned name.
     let before = committed();
-    let mut slice = ResolutionSnapshot::default();
-    slice.modules.insert(
-        module.header.module_name.clone(),
-        module.header.content_id.clone(),
-    );
-    slice.exports.insert(
-        module.header.module_name.clone(),
-        module.exports.iter().map(|e| e.name.clone()).collect(),
-    );
+    let mut declared = tos_verifier::DeclaredResolution::new();
+    declared
+        .module(&module.header.module_name, &module.header.content_id)
+        .exports_declared();
+    for export in &module.exports {
+        declared.export(&export.name);
+    }
+    let slice = declared.build();
     let per_module_bytes = committed().saturating_sub(before);
+    let compact_bytes = slice.heap_bytes();
     drop(slice);
     println!(
-        "  one module's entry in a declared resolution: {} B ({:.2} MiB), measured",
+        "  one module's entry in a declared resolution: {} B ({:.2} MiB) of arena, \
+         {} B ({:.2} MiB) reported by the snapshot itself",
         per_module_bytes,
-        mib(per_module_bytes)
+        mib(per_module_bytes),
+        compact_bytes,
+        mib(compact_bytes)
     );
 
     let imports = CLOSURE_CEILING - 1;
