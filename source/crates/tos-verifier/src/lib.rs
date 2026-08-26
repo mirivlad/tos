@@ -1507,8 +1507,16 @@ pub fn source_map_digest_of(entries: &[SourceMapEntry]) -> String {
     source_map_digest(entries)
 }
 
+/// The source-map digest, hashed as it is produced.
+///
+/// The byte sequence and its order are unchanged; what is gone is the buffer
+/// that used to hold all of it first. On a ceiling-sized module that buffer was
+/// `3.63 MiB`, and after `tos_ir::module_digest` stopped materializing its own
+/// stream it was the whole of what verification cost above the decoded module.
+/// A verifier's memory should not be a function of how much source map a module
+/// carries when nothing is looked at twice.
 fn source_map_digest(entries: &[SourceMapEntry]) -> String {
-    let mut bytes: Vec<u8> = Vec::new();
+    let mut state = tos_hash::Sha256::new();
     for entry in entries {
         for text in [
             entry.source_set.as_str(),
@@ -1516,13 +1524,13 @@ fn source_map_digest(entries: &[SourceMapEntry]) -> String {
             entry.content_id.as_str(),
             entry.frontend_identity.as_str(),
         ] {
-            bytes.extend_from_slice(&(text.len() as u64).to_be_bytes());
-            bytes.extend_from_slice(text.as_bytes());
+            state.update(&(text.len() as u64).to_be_bytes());
+            state.update(text.as_bytes());
         }
-        bytes.extend_from_slice(&(entry.byte_start as u64).to_be_bytes());
-        bytes.extend_from_slice(&(entry.byte_end as u64).to_be_bytes());
+        state.update(&(entry.byte_start as u64).to_be_bytes());
+        state.update(&(entry.byte_end as u64).to_be_bytes());
     }
-    let digest = tos_hash::sha256(&bytes);
+    let digest = state.finalize();
     let mut hex = [0u8; 64];
     tos_hash::hex(&digest, &mut hex);
     alloc::format!(

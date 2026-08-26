@@ -796,3 +796,141 @@ impl Module {
 /// A depth bound for type-graph recursion, so a forged cyclic table cannot make
 /// a traversal diverge.
 pub const MAX_TYPE_DEPTH: usize = 64;
+
+#[cfg(test)]
+mod tests {
+    extern crate std;
+
+    use alloc::string::String;
+    use alloc::vec::Vec;
+
+    use crate::*;
+
+    fn module_with(name: &str) -> Module {
+        Module {
+            header: Header {
+                schema_id: String::from(SCHEMA_ID),
+                language_version: String::from(LANGUAGE_VERSION),
+                unicode_normalization_baseline: String::from(UNICODE_BASELINE),
+                profile: Profile::Bootstrap,
+                module_name: String::from(name),
+                source_set: String::from("tos-ir-tests"),
+                path: String::from("set/a.tos"),
+                content_id: String::from("sha256:00"),
+                dependency_digest: String::from("sha256:01"),
+                frontend_identity: String::from("tos-core/0"),
+                source_map_revision: String::from(SOURCE_MAP_REVISION),
+                resource_envelope: ResourceEnvelope {
+                    fuel: 7,
+                    stack: 8,
+                    ..ResourceEnvelope::default()
+                },
+                capability_interface_digest: String::from("sha256:02"),
+            },
+            types: alloc::vec![
+                TypeDef::Unit,
+                TypeDef::Int(IntKind::I32),
+                TypeDef::Tuple(alloc::vec![0, 1]),
+                TypeDef::Nominal {
+                    module_content_id: String::from("sha256:00"),
+                    export_name: String::from("Point"),
+                    kind: NominalKind::Record,
+                    fields: alloc::vec![1, 1],
+                    variants: Vec::new(),
+                },
+            ],
+            imports: alloc::vec![Import {
+                module_name: String::from("set.b"),
+                module_content_id: String::from("sha256:03"),
+                binding: String::from("b"),
+            }],
+            capability_imports: Vec::new(),
+            exports: Vec::new(),
+            constants: alloc::vec![
+                Constant::Int(IntKind::I32, -5),
+                Constant::Bytes(alloc::vec![1, 2, 3]),
+                Constant::Text(String::from("hello")),
+            ],
+            functions: alloc::vec![Function {
+                signature: Signature {
+                    name: String::from("main"),
+                    visibility: Visibility::Public,
+                    is_async: false,
+                    parameters: alloc::vec![Parameter {
+                        name: String::from("x"),
+                        ty: 1,
+                        mode: PassMode::Owned,
+                    }],
+                    result: 1,
+                    effects: alloc::vec![String::from("system.time/v1")],
+                },
+                origin: FunctionOrigin::Declared,
+                source: 0,
+                stack_contribution: 1,
+                fuel_contribution: 2,
+                cleanup_contribution: 0,
+                values: alloc::vec![1, 1],
+                blocks: alloc::vec![Block {
+                    parameters: alloc::vec![1],
+                    instructions: alloc::vec![Instruction {
+                        result: Some(0),
+                        ty: 1,
+                        op: Op::Binary {
+                            op: BinaryOp::Add,
+                            left: Operand::Value(0),
+                            right: Operand::Constant(0),
+                        },
+                        source: 0,
+                        runtime_contract: None,
+                        unsafe_block: false,
+                        unsafe_interface: None,
+                    }],
+                    terminator: Terminator::Return(Some(Operand::Value(0))),
+                    source: 0,
+                }],
+            }],
+            source_map: alloc::vec![SourceMapEntry {
+                source_set: String::from("tos-ir-tests"),
+                path: String::from("set/a.tos"),
+                content_id: String::from("sha256:00"),
+                frontend_identity: String::from("tos-core/0"),
+                language_version: String::from(LANGUAGE_VERSION),
+                profile: Profile::Bootstrap,
+                unicode_normalization_baseline: String::from(UNICODE_BASELINE),
+                byte_start: 0,
+                byte_end: 12,
+                derived_from: None,
+            }],
+        }
+    }
+
+    /// The two sinks must produce the same canonical form.
+    ///
+    /// This is the guard against a second canonical encoder appearing: hashing
+    /// the diagnostic stream and streaming the digest are two paths through one
+    /// traversal, and if they ever diverge every receipt in the project is bound
+    /// to a digest nobody else computes.
+    #[test]
+    fn the_streamed_digest_equals_the_digest_of_the_stream() {
+        for name in ["set.a", "set.b", "a.very.long.module.name.for.contrast"] {
+            let module = module_with(name);
+            let stream = canonical_stream(&module);
+            let hashed = tos_hash::sha256(&stream);
+            let mut hex = [0u8; 64];
+            tos_hash::hex(&hashed, &mut hex);
+            let expected = alloc::format!(
+                "sha256:{}",
+                core::str::from_utf8(&hex).expect("hex output is ASCII")
+            );
+            assert_eq!(module_digest(&module), expected, "module {name}");
+        }
+    }
+
+    /// A change anywhere in the module changes the digest.
+    #[test]
+    fn the_digest_separates_modules() {
+        let one = module_digest(&module_with("set.a"));
+        let other = module_digest(&module_with("set.b"));
+        assert_ne!(one, other);
+    }
+}
