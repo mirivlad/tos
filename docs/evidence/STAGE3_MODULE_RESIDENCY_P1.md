@@ -13,13 +13,22 @@ ADR-0071 remains **Proposed**. `RUNTIME_GRANT = 54 MiB` remains **provisional**.
 engine integration, which waits on an image format covering 100 % of
 `tos-ir/v1` and closing docs/43 §1 in full.
 
-Verdict, stated once: **sequential launch is flat in the closure size — the peak
-is one module's working set (`19.2 MiB`), not the closure's — and what survives
-a 256-module closure is `0.16 MiB` of records and links against a live closure of
-about `3.1 GiB`. Eviction under suspension works, the adversarial case costs
-reloads rather than correctness, and every wrong image is refused. The number
-that binds residency is decoded state, not image bytes: at a bound of one, a
-`0.49 MiB` image carries `19.33 MiB` of decoded module behind it.**
+Verdict, stated once: **sequential launch accumulates nothing — after phasing,
+live state carried across a 16-module closure is `5 616 B` and the frontier does
+not move at all from the first module's release to the last — but the launch
+peak is `52.10 MiB` above the store at two modules and `55.76 MiB` at sixteen,
+because verifying one ceiling-sized module costs about `52 MiB`, of which
+`31.75 MiB` is the verifier's own workspace. `54 MiB` does not hold it. Eviction
+under suspension works, the adversarial case costs reloads rather than
+correctness, and every wrong image is refused. The number that binds residency is
+decoded state, not image bytes: at a bound of one, a `0.49 MiB` image carries
+`19.33 MiB` of decoded module behind it. And the manifest has no acceptable
+upper bound under the accepted V1 ceilings — a conforming closure may require
+`378 MiB` of links on a `256 MiB` machine, which §9 brings as a Level-2
+question.**
+
+Two of the seven gates are **not closed** by this document, and say so: the
+launch peak (§8) and the manifest bound (§9).
 
 ## What was built
 
@@ -67,23 +76,20 @@ Closures of ceiling-sized modules, each measured in a fresh process.
 module is materialized at a time and released before the next is decoded, so the
 peak is a property of the largest module and not of the closure.
 
-The arena peak above the store rises `52.39 → 60.11 MiB` across an eightfold
-closure: `+14.7 %` for `+700 %` of modules. **That residue is arena layout, not
-retention**, and the proof is committed bytes rather than an argument:
+But the arena peak above the store rises `52.39 → 60.11 MiB` across an eightfold
+closure, and **a flat live working set is not a flat launch bound**: ADR-0069
+sizes a grant from the frontier. The first draft of this section explained the
+`+7.72 MiB` as arena layout and offered committed-after-launch as the answer.
+**Both were wrong**, and §8 replaces them: the growth had two named owners, it
+was closure-wide temporary state, and committed-after-launch is not evidence
+about a peak.
 
-```text
-16-module closure, arena after launch:  committed 6 319 088 B
-                          the store is  6 305 109 B
-                                  left     13 979 B  = records (9 472) + manifest (768) + slack
-```
-
-Launch ends holding the store, the records and the manifest, and nothing else.
-A retaining path would have ended holding sixteen materialized modules — about
-`307 MiB` at the measured `19.2 MiB` each.
+**§8 supersedes the table above.** It is kept because the phasing it describes
+only means something against the numbers it changed.
 
 Launch time is linear in the closure, at about `70 ms` per ceiling-sized module
 (decode plus full semantic verification). That is the cost §1 accepts in
-exchange for the flat peak.
+exchange for a peak that does not grow with the closure.
 
 ## 2. What survives: the record and the manifest, apart
 
@@ -103,7 +109,9 @@ The manifest holds resolved links and nothing else —
 index)`, integers throughout. No names survive launch, so nothing has to stay
 alive to resolve one, and execution follows links rather than performing lookups.
 The launch-time export tables and pending links, `1.53 MiB` of them at 16
-modules, are released when the manifest is built.
+modules, were released when the manifest was built — and §8 removes them
+altogether, leaving `816 B` of fixed-size pending links as the only thing that
+crosses a module boundary during launch.
 
 Extrapolated to the declared 256-module ceiling:
 
@@ -114,9 +122,12 @@ Extrapolated to the declared 256-module ceiling:
 | **together** | **163 120 B (0.16 MiB)** |
 
 Against a live closure of about `3.1 GiB` at the measured `12.52 MiB` per
-retained lowered module. The links figure is an extrapolation of this fixture's
-call pattern — one cross-module call per dependency — and is labelled as one; the
-records figure is arithmetic on a fixed size and is not.
+retained lowered module.
+
+**The records figure is arithmetic on a fixed size and stands. The links figure
+does not.** It extrapolates this fixture's one-call-per-dependency shape, which
+is a property of the fixture and not a bound on a conforming closure. §9 derives
+the real one, and it is four hundred thousand times larger.
 
 ## 3. Steady-state residency at a bound
 
@@ -257,6 +268,158 @@ That is the difference ADR-0071 §3 is after. A provider keyed by name or digest
 would have needed a validation at every call site that ever built one, and safety
 would have rested on nobody ever forgetting it. This one has no such site.
 
+## 8. The launch frontier, attributed
+
+The first version of §1 reported a flat *live* working set and a **growing
+frontier**: `52.39 → 60.11 MiB` above the store across 2, 4, 8 and 16 modules.
+ADR-0069 sizes a grant from the frontier, so that was not a closed bound, and
+committed-after-launch was not evidence of a peak. This section takes the same
+launch apart at every phase boundary and says who owned the `+7.72 MiB`.
+
+### It was closure-wide temporary state, not allocator residue
+
+Reading committed **and** frontier at each phase, the growth from 2 to 16
+modules splits exactly two ways:
+
+| Owner | 2 modules | 16 modules | Growth |
+|---|---:|---:|---:|
+| export lookup tables (launch scaffolding) | 0.85 MiB | 4.91 MiB | **+4.06 MiB** |
+| declared resolution snapshot (verifier input) | 0.77 MiB | 4.43 MiB | **+3.66 MiB** |
+| records | 1 184 B | 9 472 B | +8 288 B |
+| pending links | 496 B | 3 248 B | +2 752 B |
+| **sum** | | | **8 106 030 B** |
+| **measured growth above the store** | 52.39 MiB | 60.11 MiB | **8 093 054 B** |
+
+The two agree to `12 976 B` — `0.16 %`. **None of it was allocator residue.** Both
+owners hold export **names**, and both scaled with the closure.
+
+### Both were phased out
+
+**The export lookup tables were the harness's own**, kept so that a caller's
+import could be resolved against a callee verified earlier. They are gone, by
+two changes:
+
+- **verification runs in reverse dependency order — callers before callees.**
+  The image order is the topological order resolution produced, so reversing it
+  puts every caller ahead of everything it calls. By the time a module is
+  reached, every link that will ever name it is already pending, so its export
+  table can be built, read and dropped inside its own turn. Nothing is retained
+  on the chance that someone later asks;
+- **pending links are fixed size.** A module and an export are named by a
+  128-bit truncation of the sha-256 of their text, compared against the same
+  digest computed from the callee's table while the callee is materialized. No
+  string outlives the module it came from. 128 bits rather than 64, because a
+  collision here would resolve a call to the wrong function.
+
+**The declared resolution is now sliced per module.** The verifier consults only
+the modules a module imports, so a closure-wide snapshot was holding the other
+255 for nothing. The shape a launch receives its resolution in is an
+input-format question — `tos_verifier::verify` is unchanged and takes the same
+type — so the harness writes one slice per module and reads one at a time.
+
+### Re-measured, 2 / 4 / 8 / 16
+
+| Closure | Peak frontier | Store | **Above the store** | Live state accumulated across the closure | **Frontier carried across module releases** |
+|---:|---:|---:|---:|---:|---:|
+| 2 | 55 535 376 B | 0.86 MiB | **52.10 MiB** | 208 B | **0** |
+| 4 | 56 868 320 B | 1.60 MiB | **52.63 MiB** | 240 B | **0** |
+| 8 | 59 528 848 B | 3.08 MiB | **53.69 MiB** | 2 928 B | **0** |
+| 16 | 64 780 176 B | 6.01 MiB | **55.76 MiB** | 5 616 B | **0** |
+
+Accumulated live state across the closure fell from `4.85 MiB` to `5 616 B`, and
+**the frontier does not move at all** from the first module's release to the
+last. Launch now carries its high-water mark on the very first module and never
+raises it again.
+
+### What the launch bound is made of
+
+| Term | Measured | Scales with |
+|---|---:|---|
+| one-module scratch — decode | 19.5 – 20.3 MiB | the largest module |
+| one-module scratch — **verifier workspace** | **31.75 MiB**, flat at every closure size | the largest module |
+| largest single module's import surface | 0.8 → 4.4 MiB | the widest *import list*, not the closure |
+| records | 592 B × modules | the closure |
+| pending links | ≤ 48 B × widest pending set | cross-module call sites |
+
+```text
+launch peak  =  one-module scratch  +  widest import surface  +  bounded closure metadata
+```
+
+That is the shape ADR-0071 §1 needs. Two things follow, and neither is
+flattering.
+
+**`54 MiB` does not hold launch, and raising the grant is not the answer.** At
+two ceiling-sized modules the peak above the store is already `52.10 MiB`, and
+at eight it is `53.69 MiB`. But the cause is no longer accumulation — that is
+now provably zero — it is that **verifying one ceiling-sized module costs about
+`52 MiB` in this implementation, of which `31.75 MiB` is the verifier's own
+workspace** sitting on top of a `20 MiB` decoded module. The term to attack is
+the verifier's working set, not the grant.
+
+**The residual closure-scaled term is the widest import surface, not the
+closure.** It is held only while its own module is verified. In this fixture the
+entry imports every dependency, so its slice *is* the closure's export surface
+and the term still grows — `0.8 → 4.4 MiB`. A closure in which no single module
+imports everything would not show it. Stated rather than hidden, because the
+fixture is the worst case for this term and a friendlier fixture would have made
+the bound look closed when it is not.
+
+## 9. The manifest's real upper bound
+
+`~11 KiB at 256 modules` was an extrapolation of this fixture's
+one-link-per-dependency shape. It is not a V1 bound. A conforming closure may
+pack cross-module call sites as densely as its source allows, and the manifest
+holds one link per site.
+
+**The IR side supplies no finite bound.** docs/44 §2 bounds "IR
+tables/blocks/instructions" by the **declared module resource envelope**, whose
+ten fields are `u128` and self-declared. What bounds call sites is the source
+unit: every one of them has to be written down.
+
+Measured — the densest cross-module call packing the reference frontend accepts
+inside one conforming source unit:
+
+```text
+260 134 B of source            32 256 written cross-module call sites
+lowered                        32 256 Op::Call{Imported}, 64 449 instructions,
+                               64 575 source-map entries
+```
+
+| | |
+|---|---:|
+| cross-module call sites in one conforming module | 32 256 |
+| × 256-module closure ceiling | **8 257 536 links** |
+| × `size_of::<Link>()` = 48 B | **396 361 728 B (378 MiB)** |
+| ADR-0040 whole-machine budget | 268 435 456 B (256 MiB) |
+
+**A conforming closure may require a manifest larger than the reference
+platform's entire memory.** Compaction does not rescue it: an all-`u32` link is
+24 bytes and still `189 MiB`, on a machine that must also hold a nucleus and
+four processes. Fitting `8 257 536` links into any plausible budget needs about
+two bytes each, which no encoding of five indices provides.
+
+**This is brought as a Level-2 question and not answered here.** docs/44 §2
+permits a lower cap only in a declared conformance profile, and choosing a
+conformance profile by its memory bill is a decision, not a measurement. The
+options are visibly different in kind — bound call sites per module, bound links
+per closure, make the manifest partially resident under the same discipline as
+module images, or declare a lower profile — and they are not interchangeable.
+
+### A defect found on the way
+
+The first attempt packed all 32 738 call sites into one expression, which is
+inside every published limit: under 256 KiB, delimiter nesting of one,
+identifiers far under 128 bytes. **It aborted the process with a stack
+overflow** in `Parser::parse_schema`. Measured threshold on this host: a chain of
+about 14 000 terms parses, 15 000 does not.
+
+docs/44 §2 says these limits "prevent attacker-controlled recursion" and that
+gross count and depth limits are checked before expensive work. A crash is not a
+rejection. The harness routes around it by spreading call sites across many
+functions — which costs almost nothing in density, `8.4` bytes per site against a
+theoretical `9` — and the defect is recorded here rather than worked around
+silently. It is not fixed in this change.
+
 ## 7. What this does not settle
 
 - **Not production integration.** ADR-0070 §7's gate stands. The images are
@@ -300,4 +463,16 @@ cargo run --release -p tos-residency-prototype -- --eviction
 
 ```sh
 cargo run --release -p tos-residency-prototype -- --negatives
+```
+
+The frontier attribution of §8, per closure size:
+
+```sh
+for n in 2 4 8 16; do cargo run --release -p tos-residency-prototype -- --attribute --dir target/res$n; done
+```
+
+The manifest bound of §9:
+
+```sh
+cargo run --release -p tos-residency-prototype -- --manifest-bound
 ```

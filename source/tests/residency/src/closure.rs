@@ -18,7 +18,6 @@
 //! 4. the manifest is the only thing that mints a [`ClosureModuleId`], which is
 //!    the provider's only key.
 
-use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use tos_image_prototype::image;
@@ -298,30 +297,67 @@ pub enum Failure {
     Unsupported(&'static str),
 }
 
+/// The arena at one named point of launch.
+///
+/// Both numbers, always. `committed` says what is alive; `frontier` says how far
+/// the arena has been carried — and ADR-0069 sizes a grant from the second, so a
+/// launch that reported only the first would be answering a question nobody
+/// asked.
+#[derive(Clone, Copy, Debug)]
+pub struct Mark {
+    pub label: &'static str,
+    pub module: Option<usize>,
+    pub committed: usize,
+    pub frontier: usize,
+}
+
 /// What launch produced.
 pub struct Launched {
+    /// Every phase boundary, in order. Attribution needs the sequence, not a
+    /// total: which owner the bytes belong to is invisible from a peak.
+    pub marks: Vec<Mark>,
     pub records: Vec<VerifiedModuleRecord>,
     pub manifest: VerifiedClosureManifest,
     /// Peak arena over the whole sequential launch.
     pub peak: usize,
     /// The largest single module's materialized cost seen during launch.
     pub largest_module: usize,
-    /// Scaffolding released before launch returned, reported so the claim that
-    /// it was released is a number rather than a promise.
+    /// The widest the pending-link set ever got, in bytes. The only thing that
+    /// crosses a module boundary during launch, and the only closure-scaled
+    /// term left in it.
     pub scaffolding_released: usize,
 }
 
-/// One pending cross-module link, before the callee is known.
+/// One cross-module link waiting for its callee, in **fixed size**.
 ///
-/// Launch-time scaffolding: it holds an export **name**, which is exactly the
-/// variable-length thing the manifest must not keep.
+/// The first version of this held two `String`s, and the attribution measured
+/// what that cost: launch-time export tables and pending names were the whole
+/// of the closure-scaled growth in the launch frontier. Names are gone from it
+/// now. A module and an export are named by a 128-bit truncation of the
+/// sha-256 of their text, which is compared against the same digest computed
+/// from the callee's own table while the callee is materialized — so no string
+/// outlives the module it came from.
+///
+/// 128 bits is chosen rather than 64 because a collision here would resolve a
+/// call to the wrong function. At the V1 ceiling of 256 modules the population
+/// is far too small for that to be a live risk at 128 bits, and far too close
+/// for comfort at 64.
+#[derive(Clone, Copy, Debug)]
 struct PendingLink {
-    caller: usize,
-    function: usize,
-    block: usize,
-    instruction: usize,
-    module_name: String,
-    export_name: String,
+    caller: u32,
+    function: u32,
+    block: u32,
+    instruction: u32,
+    callee_module: [u8; 16],
+    export_name: [u8; 16],
+}
+
+/// The 128-bit name digest pending links and export tables are compared on.
+fn name_digest(text: &str) -> [u8; 16] {
+    let full = tos_hash::sha256(text.as_bytes());
+    let mut short = [0u8; 16];
+    short.copy_from_slice(&full[..16]);
+    short
 }
 
 /// Verifies the exact resolved closure, sequentially, and builds the manifest.
@@ -337,40 +373,72 @@ struct PendingLink {
 #[allow(clippy::too_many_arguments)]
 pub fn launch(
     images: &[Snapshot],
-    snapshot: &ResolutionSnapshot,
+    resolution: &dyn Fn(usize) -> ResolutionSnapshot,
     limits: &Limits,
     entry: usize,
     entry_function_name: &str,
     arena_committed: fn() -> usize,
     arena_frontier: fn() -> usize,
 ) -> Result<Launched, Failure> {
-    let mut records: Vec<VerifiedModuleRecord> = Vec::with_capacity(images.len());
-    // Scaffolding. Both of these hold names, and both are released before this
-    // function returns.
-    let mut exports: Vec<BTreeMap<String, usize>> = Vec::with_capacity(images.len());
-    let mut names: Vec<String> = Vec::with_capacity(images.len());
+    let count = images.len();
+    let mut records: Vec<Option<VerifiedModuleRecord>> = vec![None; count];
+    // The only thing that crosses a module boundary during launch, and it is
+    // fixed size. Every link is *consumed* when its callee is reached, so the
+    // live set shrinks as launch proceeds rather than accumulating.
     let mut pending: Vec<PendingLink> = Vec::new();
+    let mut links: Vec<Link> = Vec::new();
+    let mut entry_function: Option<usize> = None;
 
     let mut peak = arena_frontier();
     let mut largest_module = 0usize;
+    let mut widest_pending = 0usize;
+    let mut marks: Vec<Mark> = Vec::with_capacity(count * 6 + 4);
+    let mark = |label: &'static str, module: Option<usize>, marks: &mut Vec<Mark>| {
+        marks.push(Mark {
+            label,
+            module,
+            committed: arena_committed(),
+            frontier: arena_frontier(),
+        });
+    };
+    mark("base", None, &mut marks);
 
-    for (position, bytes) in images.iter().enumerate() {
+    // **Reverse dependency order — callers before callees.** The image order is
+    // the topological order resolution produced, so reversing it puts every
+    // caller ahead of everything it calls. That is what lets a callee's export
+    // table be built, used and dropped inside the callee's own turn: by the
+    // time a module is reached, every link that will ever name it is already
+    // pending. Nothing has to be remembered on the chance that someone later
+    // asks.
+    for position in (0..count).rev() {
+        let bytes = &images[position];
         let before = arena_committed();
 
-        // §5's ordering, at launch as well: the artifact digest is computed over
-        // the exact snapshot that is then parsed.
+        // The declared resolution, one module's slice of it. Read here and
+        // dropped below, so what is live is one module's import surface rather
+        // than the closure's.
+        let snapshot = resolution(position);
+        mark("resolution slice", Some(position), &mut marks);
+
+        // §5's ordering, at launch as well: the artifact digest is computed
+        // over the exact snapshot that is then parsed.
         let artifact_digest = tos_hash::sha256(bytes);
 
         let module = image::parse(bytes, limits).map_err(|error| Failure::Parser {
             module: position,
             error,
         })?;
-        let receipt = tos_verifier::verify(&module, snapshot, limits).map_err(|finding| {
+        mark("decoded Module", Some(position), &mut marks);
+        let receipt = tos_verifier::verify(&module, &snapshot, limits).map_err(|finding| {
             Failure::Verifier {
                 module: position,
                 code: finding.code,
             }
         })?;
+        // The verifier's workspace is gone by the time it returns, so its cost
+        // is invisible in `committed` and shows only in the frontier.
+        mark("verifier workspace", Some(position), &mut marks);
+        drop(snapshot);
 
         largest_module = largest_module.max(arena_committed().saturating_sub(before));
         peak = peak.max(arena_frontier());
@@ -383,7 +451,7 @@ pub fn launch(
             module: position,
             field: "source_set",
         })?;
-        records.push(VerifiedModuleRecord {
+        records[position] = Some(VerifiedModuleRecord {
             semantic_digest: fixed_digest(&receipt.module_digest),
             artifact_digest,
             verifier_identity: fixed_digest(&receipt.verifier_identity),
@@ -396,82 +464,88 @@ pub fn launch(
             profile: receipt.profile,
             envelope: ResourceEnvelope128::from(&receipt.resource_envelope),
         });
+        mark("record", Some(position), &mut marks);
 
-        // Scaffolding, gathered while the module is materialized because it is
-        // the only moment it can be.
-        names.push(module.header.module_name.clone());
-        exports.push(export_table(&module));
+        // This module as a **callee**: resolve every pending link that names it,
+        // against a table that is built, read and dropped inside this scope.
+        let own = name_digest(&module.header.module_name);
+        let mut resolved = 0usize;
+        for at in (0..pending.len()).rev() {
+            if pending[at].callee_module != own {
+                continue;
+            }
+            let link = pending[at];
+            let target = module
+                .functions
+                .iter()
+                .position(|function| name_digest(&function.signature.name) == link.export_name)
+                .ok_or(Failure::WrongModule {
+                    module: link.caller as usize,
+                })?;
+            links.push(Link {
+                caller: ClosureModuleId(link.caller as usize),
+                function: link.function as usize,
+                block: link.block as usize,
+                instruction: link.instruction as usize,
+                callee: ClosureModuleId(position),
+                callee_function: target,
+            });
+            pending.swap_remove(at);
+            resolved += 1;
+        }
+        let _ = resolved;
+        if position == entry {
+            entry_function = module
+                .functions
+                .iter()
+                .position(|function| function.signature.name == entry_function_name);
+        }
+        mark("links resolved", Some(position), &mut marks);
+
+        // This module as a **caller**: its own outgoing links, as digests.
         collect_pending(&module, position, &mut pending);
+        widest_pending = widest_pending.max(pending.len());
+        mark("pending links", Some(position), &mut marks);
 
         // And released. This is the line the whole §1 claim rests on.
         drop(module);
         peak = peak.max(arena_frontier());
+        mark("module released", Some(position), &mut marks);
     }
 
-    // Every module verified: only now can links be resolved.
-    let position_of: BTreeMap<&str, usize> = names
-        .iter()
-        .enumerate()
-        .map(|(at, name)| (name.as_str(), at))
-        .collect();
-    let mut links = Vec::with_capacity(pending.len());
-    for link in &pending {
-        let callee = *position_of
-            .get(link.module_name.as_str())
-            .ok_or(Failure::WrongModule {
-                module: link.caller,
-            })?;
-        let callee_function =
-            *exports[callee]
-                .get(link.export_name.as_str())
-                .ok_or(Failure::WrongModule {
-                    module: link.caller,
-                })?;
-        links.push(Link {
-            caller: ClosureModuleId(link.caller),
-            function: link.function,
-            block: link.block,
-            instruction: link.instruction,
-            callee: ClosureModuleId(callee),
-            callee_function,
+    if !pending.is_empty() {
+        // A link naming a module the closure does not contain. The closure was
+        // resolved before launch, so this is a malformed input rather than a
+        // lookup that came up empty.
+        return Err(Failure::WrongModule {
+            module: pending[0].caller as usize,
         });
     }
-    let entry_function = *exports[entry]
-        .get(entry_function_name)
-        .ok_or(Failure::WrongModule { module: entry })?;
 
     let manifest = VerifiedClosureManifest {
-        modules: images.len(),
+        modules: count,
         links,
         entry: ClosureModuleId(entry),
-        entry_function,
+        entry_function: entry_function.ok_or(Failure::WrongModule { module: entry })?,
     };
+    peak = peak.max(arena_frontier());
+    mark("manifest built", None, &mut marks);
 
-    // The export tables and the pending links go here, and nothing later can
-    // ask "what does this module export": execution follows resolved links.
-    let scaffolding = scaffolding_bytes(&exports, &names, &pending);
-    drop(position_of);
-    drop(exports);
-    drop(names);
+    let scaffolding = widest_pending * core::mem::size_of::<PendingLink>();
     drop(pending);
+    mark("scaffolding released", None, &mut marks);
 
     Ok(Launched {
-        records,
+        marks,
+        records: records
+            .into_iter()
+            .map(|record| record.expect("every position was verified"))
+            .collect(),
         manifest,
         peak,
         largest_module,
         scaffolding_released: scaffolding,
     })
-}
-
-fn export_table(module: &Module) -> BTreeMap<String, usize> {
-    let mut table = BTreeMap::new();
-    for (at, function) in module.functions.iter().enumerate() {
-        table
-            .entry(function.signature.name.clone())
-            .or_insert_with(|| at);
-    }
-    table
 }
 
 fn collect_pending(module: &Module, position: usize, pending: &mut Vec<PendingLink>) {
@@ -489,35 +563,14 @@ fn collect_pending(module: &Module, position: usize, pending: &mut Vec<PendingLi
                     continue;
                 };
                 pending.push(PendingLink {
-                    caller: position,
-                    function,
-                    block,
-                    instruction,
-                    module_name: declared.module_name.clone(),
-                    export_name: name.clone(),
+                    caller: position as u32,
+                    function: function as u32,
+                    block: block as u32,
+                    instruction: instruction as u32,
+                    callee_module: name_digest(&declared.module_name),
+                    export_name: name_digest(name),
                 });
             }
         }
     }
-}
-
-fn scaffolding_bytes(
-    exports: &[BTreeMap<String, usize>],
-    names: &[String],
-    pending: &[PendingLink],
-) -> usize {
-    let mut total = 0usize;
-    for table in exports {
-        for key in table.keys() {
-            total += key.len() + core::mem::size_of::<String>() + core::mem::size_of::<usize>();
-        }
-    }
-    for name in names {
-        total += name.len() + core::mem::size_of::<String>();
-    }
-    for link in pending {
-        total +=
-            link.module_name.len() + link.export_name.len() + core::mem::size_of::<PendingLink>();
-    }
-    total
 }

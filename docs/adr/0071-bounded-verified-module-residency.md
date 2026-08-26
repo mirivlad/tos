@@ -15,7 +15,10 @@
   its shape; ADR-0069 (Proposed) — the grant, still provisional pending this;
   ADR-0040 — the whole-machine budget both accounts are spent from
 - Note: this ADR **designs only**. No engine change is proposed for
-  implementation here, and `run_set` is not rebuilt by it. Amended 2026-08-26
+  implementation here, and `run_set` is not rebuilt by it. Its evidence gate is
+  **not met**: the launch peak and the manifest bound are open, and the second is
+  a Level-2 question this ADR raises rather than settles (§2a). Amended
+  2026-08-26
   on four points — reload trust (§5), the record/manifest split (§2), the opaque
   provider key (§3) and what the byte bound counts (§7) — with the architecture
   approved and the status deliberately left Proposed until this ADR's own
@@ -383,7 +386,11 @@ conclusions.**
 - **Not cross-boot receipt reuse or a trust anchor for one** (§10).
 - **Not a lower conformance profile.** The declared closure ceiling is not
   lowered here, and choosing a cap so that it fits a budget would be choosing a
-  conformance profile by its memory bill.
+  conformance profile by its memory bill. §2a states the arithmetic that makes
+  the question unavoidable and leaves the answer to a Level-2 decision.
+- **Not the verifier's working set.** The evidence found it to be the dominant
+  term in the launch peak — `31.75 MiB` for one ceiling-sized module. Reducing
+  it is a separate piece of work with its own measurements.
 
 ## Architecture impact statement
 
@@ -465,6 +472,60 @@ about residency, never a claim that the format is ready.
 No number is claimed in this ADR. They are in
 `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md`, measured against this list, and
 the status stays **Proposed** until the Project Architect has read them.
+
+**Five of the seven are closed. Two are not**, and this ADR cannot be accepted
+while they stand:
+
+**The launch peak.** Sequential verification does accumulate nothing — after the
+export tables and the closure-wide resolution snapshot were phased out, live
+state carried across a 16-module closure is `5 616 B` and the frontier does not
+move from the first module's release to the last. But the peak above the image
+store is `52.10 MiB` at two ceiling-sized modules and `55.76 MiB` at sixteen,
+and `54 MiB` does not hold it. The shape is now the right one —
+
+```text
+launch peak = one-module scratch + widest import surface + bounded closure metadata
+```
+
+— and the dominant term is the **verifier's own workspace at `31.75 MiB`**, flat
+at every closure size, sitting on a `20 MiB` decoded module. So the thing to
+reduce is one module's verification working set, not the grant. A residual
+closure-scaled term remains: the **widest single module's import surface**, held
+only while that module is verified, which in a closure where one module imports
+every other is the closure's whole export surface.
+
+**The manifest bound.** §2's structural claim needs a real one, and the accepted
+V1 ceilings do not supply an acceptable one. See below.
+
+### 2a. The manifest's upper bound is a Level-2 question, not a measurement
+
+docs/44 §2 bounds "IR tables/blocks/instructions" by the **declared module
+resource envelope**, whose ten fields are `u128` and self-declared, so the IR
+side gives no finite bound. What bounds cross-module call sites is the source
+unit, because each one has to be written down. Measured, the densest packing the
+reference frontend accepts inside one conforming `256 KiB` unit is **32 256 call
+sites**, so:
+
+| | |
+|---|---:|
+| links in one conforming module | 32 256 |
+| × the 256-module closure ceiling | **8 257 536** |
+| × `size_of::<Link>()` = 48 B | **378 MiB** |
+| ADR-0040 whole-machine budget | **256 MiB** |
+
+**A conforming closure may require a manifest larger than the whole machine.**
+An all-`u32` link is 24 bytes and still `189 MiB`, on a platform that must also
+hold a nucleus and four processes; fitting `8.26 M` links into any plausible
+budget would need about two bytes each, which no encoding of five indices
+provides.
+
+This is brought as a **Level-2 decision and deliberately not answered**. docs/44
+§2 permits a lower cap only in a declared conformance profile, and choosing a
+conformance profile by its memory bill is a decision rather than a measurement.
+The candidates differ in kind — bound call sites per module, bound links per
+closure, make the manifest itself partially resident under this ADR's own
+discipline, or declare a lower profile — and picking one here would be picking it
+by which was easiest to implement.
 
 ## Alternatives considered
 
