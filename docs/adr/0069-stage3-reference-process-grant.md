@@ -68,11 +68,14 @@ profile is measured against the same arena.
 ### 3. `54 MiB` is a candidate, not a ratified size
 
 The implementation carries `RUNTIME_GRANT = 54 MiB` as a **provisional
-candidate**. It stays provisional until two things exist that do not exist yet:
-the compact verified module image of ADR-0070, measured, and the bounded
-verified-module residency that ADR-0070 §5 requires of a further decision. Both
-change what a running closure costs, and a size ratified before them would be a
-size fitted to an implementation this project has already decided to change.
+candidate**. The first of the two things it was waiting on now exists: ADR-0070
+is Accepted and its image is measured. The second is not — bounded
+verified-module residency, drafted as **ADR-0071 (Proposed)** and not yet
+decided — and it is the one that moves the number, because the measurement found
+that a `33x` smaller artifact still costs `28.32 MiB` to verify. So `54 MiB`
+stays provisional until ADR-0071 is settled and re-measured. A size ratified
+before then would be a size fitted to an implementation this project has already
+decided to change.
 
 Section 5 states what the candidate covers, and section 6 what the measurement
 that produced it actually found.
