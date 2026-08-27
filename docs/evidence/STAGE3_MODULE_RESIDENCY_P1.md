@@ -412,7 +412,16 @@ member, and the provider cannot widen it.
 | resident `import slot -> id` at the widest importer (255) | 2 040 B, released with the module |
 
 A right name with a wrong content identity does not resolve; a name outside the
-closure does not resolve. The measured 16-module closure carries **16 members in
+closure does not resolve.
+
+**The production crate commits rather than stores.** The harness held the module
+name in a fixed-width field, which is a ceiling nothing accepted declares —
+docs/44 §2 bounds an *identifier* at 128 bytes and a module name is
+`identifier ("." identifier)*`. `crates/tos-residency` keys membership on a full
+sha-256 of the exact `(module name, content identity)` pair, length-prefixed so
+the boundary between them cannot move, and commits to the source-set identity
+the same way. Its record is `464 B` and its member `36 B`, so the figures in
+this table are the larger ones and every bound here holds with room to spare. The measured 16-module closure carries **16 members in
 2 216 B**, where the call-site form carried 15 links in 816 B and the edge form
 15 edges in 268 B — and, unlike either, this one does not grow with what the
 modules contain.
