@@ -7,7 +7,9 @@
 - Decision level: 2 — it fixes a property of the ADR-0040 reference platform:
   what backs a process's runtime arena, and how its size is decided. It changes
   no invariant, no ABI operation and no TOS Core semantics
-- Project Architect approval: **not given; this ADR proposes, it does not decide**
+- Project Architect approval: **not given; this ADR proposes, it does not
+  decide.** Its evidence is now complete and enforced against a hard arena of
+  the proposed size — **ready for acceptance**
 - Evidence: `docs/evidence/STAGE2_ARENA_BOUND.md`,
   `docs/evidence/STAGE3_PROCESS_GRANT.md`
 - Note: §6 was rewritten on 2026-08-25 after the Project Architect identified
@@ -68,14 +70,33 @@ profile is measured against the same arena.
 ### 3. `54 MiB` is a candidate, not a ratified size
 
 The implementation carries `RUNTIME_GRANT = 54 MiB` as a **provisional
-candidate**. The first of the two things it was waiting on now exists: ADR-0070
-is Accepted and its image is measured. The second is not — bounded
-verified-module residency, drafted as **ADR-0071 (Proposed)** and not yet
-decided — and it is the one that moves the number, because the measurement found
-that a `33x` smaller artifact still costs `28.32 MiB` to verify. So `54 MiB`
-stays provisional until ADR-0071 is settled and re-measured. A size ratified
-before then would be a size fitted to an implementation this project has already
-decided to change.
+candidate**, and both things it was waiting on now exist. ADR-0070 is Accepted
+and its image is measured. Bounded verified-module residency is drafted as
+ADR-0071 and its evidence gate is met.
+
+**`54 MiB` is now a measured candidate rather than a failed one.** It is
+enforced, not estimated: a bounded allocator whose whole arena is exactly this
+size runs a launch of the exact resolved closure at every size up to the
+published 256-module ceiling, and at the worst declared resolution the V1
+ceilings admit.
+
+| Under a hard `54 MiB` arena | Grant frontier |
+|---|---:|
+| closure of 2 ceiling-sized modules | 19.68 MiB |
+| closure of 16 | 20.10 MiB |
+| closure of 64 | 21.57 MiB |
+| **closure of 256 — the published ceiling** | **27.60 MiB** |
+| **256, worst admissible declared resolution** | **42.42 MiB** |
+| steady-state residency at a bound of two modules | 32.03 MiB |
+
+No lower conformance profile was introduced to reach this, no ceiling was
+changed, and nothing in the path consults free memory. The evidence is
+`docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md`.
+
+**Ready for Project Architect acceptance.** The status is left Proposed because
+changing it is not this document's to do, and because the size a launch fits is
+one of two questions — the other is how many modules an execution may hold
+resident at once, which is ADR-0071's.
 
 Section 5 states what the candidate covers, and section 6 what the measurement
 that produced it actually found.

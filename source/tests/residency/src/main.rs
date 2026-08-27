@@ -511,52 +511,63 @@ fn resolution_slice(directory: &str, position: usize) -> ResolutionSnapshot {
     // denser modules would hand over exactly this, and the real exports are
     // still in it, so every call still resolves.
     let pad = argument("--pad-exports", 0);
-    // A reader of a stored resolution knows its size before it starts, so the
-    // snapshot is built without a reallocation.
+
+    // Sizes first, so the snapshot is built without a reallocation. A reader of
+    // a stored declared resolution knows them before it starts.
     let mut modules = 0usize;
     let mut exports = 0usize;
-    let mut bytes = 0usize;
+    let mut names = 0usize;
+    let mut export_names = 0usize;
     for line in text.lines() {
         let mut parts = line.split(' ');
         match (parts.next(), parts.next(), parts.next()) {
             (Some("module"), Some(name), Some(content_id)) => {
                 modules += 1;
-                bytes += name.len() + content_id.len();
+                names += name.len() + content_id.len();
                 exports += pad;
-                bytes += pad * 8;
+                // The densest conforming exporter measured 6 745 exports in
+                // 32 615 B of names — 4.84 bytes each. Five-byte names are that
+                // density, rounded against the fixture rather than for it.
+                export_names += pad * 5;
             }
             (Some("export"), Some(_), Some(export)) => {
                 exports += 1;
-                bytes += export.len();
+                export_names += export.len();
             }
             _ => {}
         }
     }
     let mut declared = tos_verifier::DeclaredResolution::new();
-    declared.reserve(modules, exports, bytes);
-    let mut in_module = 0usize;
-    let close = |declared: &mut tos_verifier::DeclaredResolution, count: &mut usize| {
-        while *count < pad {
-            declared.export(&format!("pad{count}"));
-            *count += 1;
+    declared.reserve(modules, exports, names, export_names);
+
+    // Each module's exports are handed over **sorted**, which is how a stored
+    // resolution would carry them and what lets `build` accept them without
+    // rewriting a worst-case export text. Only one module's names are held at a
+    // time.
+    fn flush(declared: &mut tos_verifier::DeclaredResolution, pending: &mut Vec<&str>, pad: usize) {
+        let padding: Vec<String> = (pending.len()..pad).map(|at| format!("e{at:04}")).collect();
+        let mut merged: Vec<&str> = Vec::with_capacity(pending.len() + padding.len());
+        merged.extend(pending.iter().copied());
+        merged.extend(padding.iter().map(String::as_str));
+        merged.sort_unstable();
+        for name in &merged {
+            declared.export(name);
         }
-    };
+        pending.clear();
+    }
+    let mut pending: Vec<&str> = Vec::new();
     for line in text.lines() {
         let mut parts = line.split(' ');
         match (parts.next(), parts.next(), parts.next()) {
             (Some("module"), Some(name), Some(content_id)) => {
-                close(&mut declared, &mut in_module);
-                in_module = 0;
+                flush(&mut declared, &mut pending, pad);
                 declared.module(name, content_id).exports_declared();
             }
-            (Some("export"), Some(_), Some(export)) => {
-                declared.export(export);
-                in_module += 1;
-            }
+            (Some("export"), Some(_), Some(export)) => pending.push(export),
             _ => {}
         }
     }
-    close(&mut declared, &mut in_module);
+    flush(&mut declared, &mut pending, pad);
     declared.build()
 }
 
@@ -935,9 +946,43 @@ fn import_surface_mode() {
     for export in &module.exports {
         declared.export(&export.name);
     }
+    let started = Instant::now();
     let slice = declared.build();
+    let build_time = started.elapsed();
     let per_module_bytes = committed().saturating_sub(before);
     let compact_bytes = slice.heap_bytes();
+    let (export_text, export_metadata) = slice.export_bytes();
+    let surface = slice
+        .export_surface(&module.header.module_name)
+        .expect("the surface is stated");
+    let probes = 200_000usize;
+    let started = Instant::now();
+    let mut hits = 0usize;
+    for round in 0..probes {
+        let name = &module.exports[round % module.exports.len()].name;
+        if surface.contains(name) {
+            hits += 1;
+        }
+    }
+    let lookup = started.elapsed();
+    assert_eq!(hits, probes, "every declared export must be found");
+    assert!(
+        !surface.contains("no.such.export"),
+        "a name outside the surface must not be found"
+    );
+    println!(
+        "  export names {} B, metadata {} B ({:.2} B per export), heap_bytes {} B",
+        export_text,
+        export_metadata,
+        export_metadata as f64 / exports as f64,
+        compact_bytes
+    );
+    println!(
+        "  build {:.2} ms; lookup {:.1} ns over {} sorted names",
+        build_time.as_secs_f64() * 1000.0,
+        lookup.as_secs_f64() * 1e9 / probes as f64,
+        surface.len()
+    );
     drop(slice);
     println!(
         "  one module's entry in a declared resolution: {} B ({:.2} MiB) of arena, \

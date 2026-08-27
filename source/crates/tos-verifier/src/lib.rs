@@ -106,18 +106,31 @@ impl Finding {
 /// which would make the verifier's answer depend on the question.
 #[derive(Clone, Debug, Default)]
 pub struct ResolutionSnapshot {
-    /// Every name, once, end to end: module names, content identities, export
-    /// names, capability interfaces.
+    /// Module names, content identities and capability interfaces, end to end.
     text: Vec<u8>,
     /// Sorted by module name.
     modules: Vec<ModuleFacts>,
-    /// Export names, grouped by module and sorted within each group.
-    exports: Vec<Span>,
+    /// Export names, module-major and sorted within each module.
+    ///
+    /// Kept apart from `text` so that an export costs **one `u32`** of metadata
+    /// and nothing else: a name runs from its own offset to the next one, so no
+    /// length is stored at all. At the V1 worst case — 255 modules of 6 745
+    /// exports — that is the difference between `6.6 MiB` of metadata and the
+    /// `13.1 MiB` a `{start, length}` pair costs. There is no narrow integer
+    /// here and no packing: `size_of::<u32>()` is four bytes with no padding to
+    /// argue about, which a two-field struct could not promise.
+    export_text: Vec<u8>,
+    /// One offset per export, plus a terminator.
+    export_offsets: Vec<u32>,
     /// Sorted declared capability interfaces.
     capabilities: Vec<Span>,
 }
 
 /// A stretch of [`ResolutionSnapshot::text`].
+///
+/// Used for module names, content identities and capability interfaces, whose
+/// lengths no accepted contract bounds tightly enough to narrow. Export names
+/// do not use it.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct Span {
     start: u32,
@@ -144,6 +157,12 @@ impl ResolutionSnapshot {
         let start = span.start as usize;
         let end = start + span.length as usize;
         core::str::from_utf8(&self.text[start..end]).unwrap_or("")
+    }
+
+    fn export(&self, at: usize) -> &str {
+        let start = self.export_offsets[at] as usize;
+        let end = self.export_offsets[at + 1] as usize;
+        core::str::from_utf8(&self.export_text[start..end]).unwrap_or("")
     }
 
     fn find(&self, module: &str) -> Option<&ModuleFacts> {
@@ -207,8 +226,20 @@ impl ResolutionSnapshot {
         core::mem::size_of::<ResolutionSnapshot>()
             + self.text.capacity()
             + self.modules.capacity() * core::mem::size_of::<ModuleFacts>()
-            + self.exports.capacity() * core::mem::size_of::<Span>()
+            + self.export_text.capacity()
+            + self.export_offsets.capacity() * core::mem::size_of::<u32>()
             + self.capabilities.capacity() * core::mem::size_of::<Span>()
+    }
+
+    /// Export-name bytes, and the metadata carrying them. For measurement.
+    ///
+    /// Content rather than capacity: what is being reported is what the
+    /// representation costs per export, not how a `Vec` happened to grow.
+    pub fn export_bytes(&self) -> (usize, usize) {
+        (
+            self.export_text.len(),
+            self.export_offsets.len() * core::mem::size_of::<u32>(),
+        )
     }
 }
 
@@ -228,9 +259,17 @@ impl ExportSurface<'_> {
     pub fn contains(&self, name: &str) -> bool {
         let start = self.at as usize;
         let end = start + self.length as usize;
-        self.snapshot.exports[start..end]
-            .binary_search_by(|span| self.snapshot.slice(*span).cmp(name))
-            .is_ok()
+        let mut low = start;
+        let mut high = end;
+        while low < high {
+            let middle = low + (high - low) / 2;
+            match self.snapshot.export(middle).cmp(name) {
+                core::cmp::Ordering::Less => low = middle + 1,
+                core::cmp::Ordering::Greater => high = middle,
+                core::cmp::Ordering::Equal => return true,
+            }
+        }
+        false
     }
 
     pub fn len(&self) -> usize {
@@ -246,12 +285,19 @@ impl ExportSurface<'_> {
 ///
 /// Modules are declared one at a time and a module's exports are added to the
 /// module last declared, so each module's export names land contiguously in the
-/// packed text. `build` sorts and is the only place ordering is established.
+/// packed export text. `build` establishes the ordering and is the only place
+/// that does.
+///
+/// **Exports already in order cost nothing to accept.** A reader of a stored
+/// declared resolution has them sorted; `build` checks, and only rewrites the
+/// export text when it has to. That is what keeps the transient peak of
+/// building a worst-case snapshot from doubling it.
 #[derive(Clone, Debug, Default)]
 pub struct DeclaredResolution {
     text: Vec<u8>,
     modules: Vec<ModuleFacts>,
-    exports: Vec<Span>,
+    export_text: Vec<u8>,
+    export_offsets: Vec<u32>,
     capabilities: Vec<Span>,
 }
 
@@ -265,15 +311,17 @@ impl DeclaredResolution {
     /// A caller that already knows how much it is about to declare — a reader
     /// of a stored resolution knows before it starts — builds without a single
     /// reallocation. Measured on the V1 worst case, growing instead cost a
-    /// transient `1.48x` on top of the finished snapshot, which is a peak paid
-    /// for nothing.
-    pub fn reserve(&mut self, modules: usize, exports: usize, text: usize) {
+    /// transient on top of the finished snapshot, which is a peak paid for
+    /// nothing.
+    pub fn reserve(&mut self, modules: usize, exports: usize, text: usize, export_text: usize) {
         self.text
             .reserve_exact(text.saturating_sub(self.text.len()));
         self.modules
             .reserve_exact(modules.saturating_sub(self.modules.len()));
-        self.exports
-            .reserve_exact(exports.saturating_sub(self.exports.len()));
+        self.export_text
+            .reserve_exact(export_text.saturating_sub(self.export_text.len()));
+        self.export_offsets
+            .reserve_exact((exports + 1).saturating_sub(self.export_offsets.len()));
     }
 
     fn pack(&mut self, value: &str) -> Span {
@@ -290,7 +338,7 @@ impl DeclaredResolution {
     pub fn module(&mut self, name: &str, content_id: &str) -> &mut DeclaredResolution {
         let name = self.pack(name);
         let content_id = self.pack(content_id);
-        let exports_at = self.exports.len() as u32;
+        let exports_at = self.export_offsets.len() as u32;
         self.modules.push(ModuleFacts {
             name,
             content_id,
@@ -312,8 +360,8 @@ impl DeclaredResolution {
 
     /// Declares one export of the module most recently declared.
     pub fn export(&mut self, name: &str) -> &mut DeclaredResolution {
-        let span = self.pack(name);
-        self.exports.push(span);
+        self.export_offsets.push(self.export_text.len() as u32);
+        self.export_text.extend_from_slice(name.as_bytes());
         if let Some(facts) = self.modules.last_mut() {
             facts.exports_len += 1;
             facts.surface = true;
@@ -332,25 +380,77 @@ impl DeclaredResolution {
         let DeclaredResolution {
             text,
             mut modules,
-            mut exports,
+            export_text,
+            mut export_offsets,
             mut capabilities,
         } = self;
+        // The terminator, so every name runs to the next offset.
+        export_offsets.push(export_text.len() as u32);
+
+        fn read_export<'body>(offsets: &[u32], body: &'body [u8], at: usize) -> &'body str {
+            let start = offsets[at] as usize;
+            let end = offsets[at + 1] as usize;
+            core::str::from_utf8(&body[start..end]).unwrap_or("")
+        }
+
+        let mut ordered = true;
+        for facts in &modules {
+            let start = facts.exports_at as usize;
+            let end = start + facts.exports_len as usize;
+            for at in start + 1..end {
+                if read_export(&export_offsets, &export_text, at - 1)
+                    > read_export(&export_offsets, &export_text, at)
+                {
+                    ordered = false;
+                    break;
+                }
+            }
+            if !ordered {
+                break;
+            }
+        }
+
+        let (export_text, export_offsets) = if ordered {
+            (export_text, export_offsets)
+        } else {
+            // One rewrite, and only when the caller did not hand them over in
+            // order.
+            let mut order: Vec<u32> = (0..export_offsets.len() as u32 - 1).collect();
+            for facts in &modules {
+                let start = facts.exports_at as usize;
+                let end = start + facts.exports_len as usize;
+                order[start..end].sort_by(|left, right| {
+                    read_export(&export_offsets, &export_text, *left as usize).cmp(read_export(
+                        &export_offsets,
+                        &export_text,
+                        *right as usize,
+                    ))
+                });
+            }
+            let mut packed = Vec::with_capacity(export_text.len());
+            let mut offsets = Vec::with_capacity(export_offsets.len());
+            for at in &order {
+                offsets.push(packed.len() as u32);
+                let start = export_offsets[*at as usize] as usize;
+                let end = export_offsets[*at as usize + 1] as usize;
+                packed.extend_from_slice(&export_text[start..end]);
+            }
+            offsets.push(packed.len() as u32);
+            (packed, offsets)
+        };
+
         let read = |span: Span| -> &str {
             let start = span.start as usize;
             core::str::from_utf8(&text[start..start + span.length as usize]).unwrap_or("")
         };
-        for facts in &modules {
-            let start = facts.exports_at as usize;
-            let end = start + facts.exports_len as usize;
-            exports[start..end].sort_by(|left, right| read(*left).cmp(read(*right)));
-        }
         modules.sort_by(|left, right| read(left.name).cmp(read(right.name)));
         capabilities.sort_by(|left, right| read(*left).cmp(read(*right)));
         capabilities.dedup_by(|left, right| read(*left) == read(*right));
         ResolutionSnapshot {
             text,
             modules,
-            exports,
+            export_text,
+            export_offsets,
             capabilities,
         }
     }
@@ -1923,6 +2023,91 @@ mod snapshot_tests {
         for name in ["alph", "alphaa", "beta", ""] {
             assert!(!surface.contains(name), "{name} was not declared");
         }
+    }
+
+    /// One `u32` per export and nothing else.
+    ///
+    /// A `{start, length}` pair would be eight bytes — `size_of` says so, and a
+    /// narrower second field would not help because alignment would pad it back
+    /// up. Deriving a name's end from the next offset removes the field
+    /// instead of shrinking it, so there is nothing left to pad.
+    #[test]
+    fn an_export_costs_four_bytes_of_metadata() {
+        assert_eq!(core::mem::size_of::<u32>(), 4);
+        assert_eq!(core::mem::size_of::<Span>(), 8);
+
+        let mut building = DeclaredResolution::new();
+        building.module("set.a", "sha256:aaa").exports_declared();
+        let count = 4096;
+        for at in 0..count {
+            building.export(&alloc::format!("e{at:06}"));
+        }
+        let snapshot = building.build();
+        let (text, metadata) = snapshot.export_bytes();
+        assert_eq!(text, count * 7, "seven bytes a name, packed with no gaps");
+        assert_eq!(
+            metadata,
+            (count + 1) * 4,
+            "one offset per export plus a terminator"
+        );
+
+        let surface = snapshot.export_surface("set.a").expect("stated");
+        assert_eq!(surface.len(), count);
+        assert!(surface.contains("e000000"));
+        assert!(surface.contains(&alloc::format!("e{:06}", count - 1)));
+        assert!(!surface.contains("e999999"));
+    }
+
+    /// Unsorted input is accepted and ordered, and sorted input is not rewritten.
+    #[test]
+    fn exports_are_ordered_however_they_arrive() {
+        let mut building = DeclaredResolution::new();
+        building
+            .module("set.a", "sha256:aaa")
+            .exports_declared()
+            .export("zulu")
+            .export("alpha")
+            .export("mike");
+        building
+            .module("set.b", "sha256:bbb")
+            .exports_declared()
+            .export("alpha")
+            .export("mike")
+            .export("zulu");
+        let snapshot = building.build();
+        for module in ["set.a", "set.b"] {
+            let surface = snapshot.export_surface(module).expect("stated");
+            assert_eq!(surface.len(), 3);
+            for name in ["alpha", "mike", "zulu"] {
+                assert!(surface.contains(name), "{module} exports {name}");
+            }
+            for name in ["al", "alphaa", "november"] {
+                assert!(!surface.contains(name), "{module} does not export {name}");
+            }
+        }
+    }
+
+    /// docs/44 §2 caps identifier bytes at 128, and an export name is a source
+    /// identifier — but this representation does not depend on that.
+    ///
+    /// The bound is recorded because it would be load-bearing for any design
+    /// that stored a narrow length. This one stores no length, so a name of any
+    /// size a `u32` offset can address is representable, and the test says so
+    /// rather than leaving a reader to wonder what happens at 129 bytes.
+    #[test]
+    fn an_export_name_longer_than_an_identifier_is_still_exact() {
+        let long = alloc::string::String::from_utf8(alloc::vec![b'x'; 4096]).expect("ascii");
+        let mut building = DeclaredResolution::new();
+        building
+            .module("set.a", "sha256:aaa")
+            .exports_declared()
+            .export("short")
+            .export(&long);
+        let snapshot = building.build();
+        let surface = snapshot.export_surface("set.a").expect("stated");
+        assert!(surface.contains(&long));
+        assert!(surface.contains("short"));
+        assert!(!surface.contains(&long[..4095]));
     }
 
     #[test]
