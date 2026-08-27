@@ -46,6 +46,19 @@ fn attempt(units: &[(&str, &str)], entry_path: &str) -> Result<Run, SetError> {
     )
 }
 
+/// A catalog over units a test already holds: metadata only, as the interface
+/// requires.
+fn catalog_of<'a>(units: &'a [Unit<'a>]) -> Vec<tos_pipeline::SourceCatalogEntry<'a>> {
+    units
+        .iter()
+        .enumerate()
+        .map(|(position, unit)| tos_pipeline::SourceCatalogEntry {
+            id: tos_pipeline::SourceEntryId::at(position),
+            path: unit.path,
+        })
+        .collect()
+}
+
 fn set(units: &[(&str, &str)], entry_path: &str) -> Run {
     attempt(units, entry_path).expect("the set names an entry it contains")
 }
@@ -741,20 +754,27 @@ fn source_that_changed_after_resolution_fails_the_preparation() {
         },
     ];
 
-    /// Resolves against one source set and materializes a different one.
+    /// Answers the resolution pass truthfully and the materialization pass with
+    /// something else — the exact time-of-check to time-of-use window the two
+    /// stages exist to close.
     struct Swapped<'a> {
         units: &'a [Unit<'a>],
         at: usize,
         instead: &'a [u8],
+        seen: core::cell::Cell<usize>,
     }
     impl tos_pipeline::SourceProvider for Swapped<'_> {
-        fn listing(&self) -> &[Unit<'_>] {
-            self.units
+        fn catalog(&self) -> Vec<tos_pipeline::SourceCatalogEntry<'_>> {
+            catalog_of(self.units)
         }
 
-        fn source(&self, id: tos_pipeline::SourceModuleId) -> Option<&[u8]> {
+        fn source(&self, id: tos_pipeline::SourceEntryId) -> Option<&[u8]> {
             if id.position() == self.at {
-                return Some(self.instead);
+                let seen = self.seen.get();
+                self.seen.set(seen + 1);
+                if seen > 0 {
+                    return Some(self.instead);
+                }
             }
             self.units.get(id.position()).map(|unit| unit.bytes)
         }
@@ -764,6 +784,7 @@ fn source_that_changed_after_resolution_fails_the_preparation() {
         units: &units,
         at: 0,
         instead: substituted.as_bytes(),
+        seen: core::cell::Cell::new(0),
     };
     match tos_pipeline::prepare_from_provider(
         &provider,
@@ -806,18 +827,24 @@ fn source_that_vanished_after_resolution_fails_the_preparation() {
         },
     ];
 
+    /// Present when the closure was resolved, gone when it was needed.
     struct Gone<'a> {
         units: &'a [Unit<'a>],
         at: usize,
+        seen: core::cell::Cell<usize>,
     }
     impl tos_pipeline::SourceProvider for Gone<'_> {
-        fn listing(&self) -> &[Unit<'_>] {
-            self.units
+        fn catalog(&self) -> Vec<tos_pipeline::SourceCatalogEntry<'_>> {
+            catalog_of(self.units)
         }
 
-        fn source(&self, id: tos_pipeline::SourceModuleId) -> Option<&[u8]> {
+        fn source(&self, id: tos_pipeline::SourceEntryId) -> Option<&[u8]> {
             if id.position() == self.at {
-                return None;
+                let seen = self.seen.get();
+                self.seen.set(seen + 1);
+                if seen > 0 {
+                    return None;
+                }
             }
             self.units.get(id.position()).map(|unit| unit.bytes)
         }
@@ -826,6 +853,7 @@ fn source_that_vanished_after_resolution_fails_the_preparation() {
     let provider = Gone {
         units: &units,
         at: 0,
+        seen: core::cell::Cell::new(0),
     };
     match tos_pipeline::prepare_from_provider(
         &provider,
@@ -986,4 +1014,77 @@ fn a_prepared_closure_runs_after_its_source_is_dropped() {
         .expect("the span locates against the source it names");
     assert_eq!(site.path, "system/lib/math.tos");
     assert!(site.start.line() >= 1);
+}
+
+/// A catalog entry is not membership (ADR-0072 §6, and 72.3c).
+///
+/// The source set declares three modules: an entry, a dependency it reaches,
+/// and a perfectly valid module nothing imports. The provider knows about all
+/// three — that is what a catalog is. The **closure** is two, and the unrelated
+/// module has no `SourceModuleId` at all: discovery and executable authority are
+/// different things, and only the second is minted.
+#[test]
+fn an_unrelated_catalog_entry_is_not_a_member_of_the_closure() {
+    let dependency = lib(
+        "system.lib.math",
+        "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+    );
+    let unrelated = lib(
+        "system.lib.spectator",
+        "pub fn watch() -> i32 { return 0i32; }",
+    );
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.math as math;",
+        "pub fn main() -> i32 { return math.double(21i32); }",
+    );
+    let texts = [
+        ("system/lib/math.tos", dependency.as_str()),
+        ("system/lib/spectator.tos", unrelated.as_str()),
+        ("system/boot/init.tos", entry.as_str()),
+    ];
+    let units: Vec<Unit<'_>> = texts
+        .iter()
+        .map(|(path, text)| Unit {
+            path,
+            bytes: text.as_bytes(),
+        })
+        .collect();
+
+    // The provider's catalog names all three.
+    let provider = tos_pipeline::SliceSourceProvider::new(&units);
+    assert_eq!(
+        tos_pipeline::SourceProvider::catalog(&provider).len(),
+        3,
+        "the source set declares three modules"
+    );
+
+    let prepared = tos_pipeline::prepare_from_provider(
+        &provider,
+        "tos-module-set-tests",
+        "system/boot/init.tos",
+        "main",
+        &mut Silent,
+        tos_pipeline::HOST_RESIDENCY,
+    )
+    .expect("the set names an entry it contains");
+    let tos_pipeline::Preparation::Ready(mut prepared) = prepared else {
+        panic!("the closure prepares");
+    };
+
+    // The executable closure is two. The spectator is not in it, and there is
+    // no identity under which it could be asked for.
+    assert_eq!(
+        prepared.modules(),
+        2,
+        "the closure holds what the entry reaches, not what the catalog offers"
+    );
+    let run = tos_pipeline::run_prepared(&mut prepared, Vec::new(), &mut Unreachable);
+    let Run::Completed(completion) = run else {
+        panic!("the closure runs: {run:?}");
+    };
+    assert_eq!(
+        completion.value,
+        tos_pipeline::Value::Int(tos_pipeline::IntKind::I32, 42)
+    );
 }
