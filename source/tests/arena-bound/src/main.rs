@@ -46,7 +46,9 @@ use tos_core::{
     lower_module_in_set, LoweringInterface, ModuleContext, ModuleEntry, ModuleSummary, Parser,
     ResolvedImport, Schema, SourceReader, SourceUnit, VerificationSurface,
 };
-use tos_pipeline::{execute, execute_set, Request, Run, SetRequest, Silent, Unit, Unreachable};
+use tos_pipeline::{
+    execute, execute_set, PipelineStage, Request, Run, SetRequest, Silent, Unit, Unreachable,
+};
 use tos_runtime::{GlobalHeap, RuntimeMemoryGrant, GRANT_VERSION};
 
 /// The region the measurement runs in. A nucleus grant is the same shape.
@@ -56,7 +58,39 @@ use tos_runtime::{GlobalHeap, RuntimeMemoryGrant, GRANT_VERSION};
 /// references them, which the small code model cannot address. Where the region
 /// comes from is not part of what is being measured — a base and a length
 /// arrive, which is exactly the shape of a grant.
+#[cfg(not(feature = "grant"))]
 const ARENA_BYTES: usize = 3072 * 1024 * 1024;
+
+/// `RuntimeMemoryGrantV1` exactly (ADR-0069 §3), so a run that does not fit
+/// fails to allocate rather than reporting a number.
+#[cfg(feature = "grant")]
+const ARENA_BYTES: usize = 54 * 1024 * 1024;
+
+/// The capsule's own bytes, outside the measured arena.
+///
+/// In the freestanding reference path a source unit is a window into the
+/// capsule: the loader places the capsule in physical RAM and reserves its
+/// range, and `nucleus/src/process.rs` maps those same frames into the process
+/// at `SOURCE` read-only, computing each unit's address as its offset from the
+/// capsule base. Nothing is copied and nothing comes out of the grant. So the
+/// fixture's source text is allocated straight from the system allocator,
+/// bypassing the measured arena, because that is where it physically is.
+///
+/// It is **not free**: it is physical memory, and the whole-machine ledger
+/// carries it as a platform line.
+fn capsule_bytes(text: &str) -> &'static [u8] {
+    let layout = Layout::from_size_align(text.len().max(1), 1).expect("a valid layout");
+    // SAFETY: a non-zero-sized layout, allocated from the system allocator and
+    // never freed — the fixture's capsule lives for the whole measurement, as a
+    // real capsule lives for the whole boot.
+    let pointer = unsafe { std::alloc::System.alloc(layout) };
+    assert!(!pointer.is_null(), "the capsule fixture did not allocate");
+    // SAFETY: `pointer` addresses `text.len()` writable bytes just obtained.
+    unsafe {
+        core::ptr::copy_nonoverlapping(text.as_ptr(), pointer, text.len());
+        core::slice::from_raw_parts(pointer, text.len())
+    }
+}
 
 static ADOPTED: AtomicBool = AtomicBool::new(false);
 
@@ -172,6 +206,26 @@ fn main() {
             .and_then(|value| value.parse().ok())
             .unwrap_or(2);
         ir_breakdown(modules, SOURCE_CEILING);
+        return;
+    }
+    if std::env::args().any(|argument| argument == "--production") {
+        println!("TOS production path, measured by phase");
+        println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
+        let modules = std::env::args()
+            .skip_while(|argument| argument != "--modules")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2);
+        let shape = std::env::args()
+            .skip_while(|argument| argument != "--shape")
+            .nth(1)
+            .unwrap_or_else(|| String::from("chain"));
+        let shape = match shape.as_str() {
+            "wide" => Shape::WideFanIn,
+            "balanced" => Shape::Balanced,
+            _ => Shape::Chain,
+        };
+        production_path(shape, modules, SOURCE_CEILING);
         return;
     }
     if std::env::args().any(|argument| argument == "--lowering") {
@@ -508,6 +562,128 @@ fn an_executed_closure(sizes: &[usize]) -> Vec<(usize, usize)> {
     measured
 }
 
+/// Watches the production pipeline and records the arena at every stage
+/// boundary, so a phase's peak is the phase's and not a later one's.
+struct PhaseTrace {
+    marks: Vec<(PipelineStage, Arena)>,
+}
+
+impl tos_pipeline::Trace for PhaseTrace {
+    fn entering(&mut self, stage: PipelineStage) {
+        self.marks.push((stage, arena()));
+    }
+}
+
+/// The whole production path, through the production API, measured by phase.
+///
+/// Not a harness reproducing the architecture: this calls `execute_set`, which
+/// is the same entry the freestanding runtime image calls on the boot path.
+///
+/// The corpus is outside the arena on purpose — see `capsule_bytes`. What the
+/// arena measures is what comes out of the process's grant.
+fn production_path(shape: Shape, count: usize, unit_bytes: usize) {
+    println!();
+    println!(
+        "== production path, {} shape, {count} modules of {unit_bytes} bytes ==",
+        shape.named()
+    );
+    let (texts, paths) = shaped_units(shape, count, unit_bytes);
+    let capsule: Vec<&'static [u8]> = texts.iter().map(|text| capsule_bytes(text)).collect();
+    let capsule_bytes_total: usize = capsule.iter().map(|bytes| bytes.len()).sum();
+    // The paths stay in the arena: they are tiny, and in the real path they are
+    // in the launch record rather than the capsule.
+    let units: Vec<Unit<'_>> = paths
+        .iter()
+        .zip(capsule.iter())
+        .map(|(path, bytes)| Unit {
+            path: path.as_str(),
+            bytes,
+        })
+        .collect();
+    let entry_path = paths.last().expect("a fixture has an entry").as_str();
+
+    let before = arena();
+    let mut trace = PhaseTrace { marks: Vec::new() };
+    let run = execute_set(
+        &SetRequest {
+            source_set: "tos-arena-bound",
+            units: &units,
+            entry_path,
+            entry: "main",
+        },
+        Vec::new(),
+        &mut trace,
+        &mut Unreachable,
+    );
+    let after = arena();
+
+    println!(
+        "  capsule source backing (outside the grant) {:>12} B ({:.2} MiB)",
+        capsule_bytes_total,
+        mib(capsule_bytes_total)
+    );
+    println!(
+        "  arena before the run                       {:>12} B committed, frontier {} B",
+        before.committed, before.frontier
+    );
+    println!("  phase boundaries, arena as each was entered:");
+    let mut previous: Option<(PipelineStage, Arena)> = None;
+    for (stage, at) in &trace.marks {
+        if let Some((last, before)) = previous {
+            println!(
+                "    {:<9} committed {:>12} B ({:>7.2} MiB)  frontier {:>12} B ({:>7.2} MiB)  \
+                 rose {:>12} B",
+                last.symbol(),
+                at.committed,
+                mib(at.committed),
+                at.frontier,
+                mib(at.frontier),
+                at.frontier.saturating_sub(before.frontier)
+            );
+        }
+        previous = Some((*stage, *at));
+    }
+    if let Some((last, at)) = previous {
+        println!(
+            "    {:<9} committed {:>12} B ({:>7.2} MiB)  frontier {:>12} B ({:>7.2} MiB)  entered",
+            last.symbol(),
+            at.committed,
+            mib(at.committed),
+            at.frontier,
+            mib(at.frontier)
+        );
+    }
+    println!(
+        "    {:<9} committed {:>12} B ({:>7.2} MiB)  frontier {:>12} B ({:>7.2} MiB)  finished",
+        "done",
+        after.committed,
+        mib(after.committed),
+        after.frontier,
+        mib(after.frontier)
+    );
+    println!(
+        "  whole-run peak inside the grant            {:>12} B ({:.2} MiB)",
+        after.frontier,
+        mib(after.frontier)
+    );
+    println!(
+        "  margin inside RUNTIME_GRANT = 54 MiB       {:>12} B ({:.2} MiB)",
+        (54 * 1024 * 1024usize).saturating_sub(after.frontier),
+        mib((54 * 1024 * 1024usize).saturating_sub(after.frontier))
+    );
+    match &run {
+        Ok(Run::Completed(completion)) => println!(
+            "  outcome: completed {:?}, fuel {} of {}",
+            completion.value, completion.accounting.fuel_used, completion.accounting.fuel_limit
+        ),
+        Ok(other) => println!(
+            "  outcome: DID NOT COMPLETE, failed at {:?}",
+            other.failed_at()
+        ),
+        Err(error) => println!("  outcome: set refused, {}", error.symbol()),
+    }
+}
+
 /// Which graph a lowering measurement is taken over.
 ///
 /// One number for "256 modules" is not a bound, because what is live during
@@ -562,6 +738,12 @@ fn shaped_units(shape: Shape, count: usize, unit_bytes: usize) -> (Vec<String>, 
                     index - 1,
                     index - 1
                 );
+                if index == count - 1 {
+                    text.push_str(&format!(
+                        "pub fn main() -> i32 {{ return prev.value{}(); }} ",
+                        index - 1
+                    ));
+                }
                 fill_to(&mut text, index, unit_bytes);
                 texts.push(text);
                 paths.push(module_path(index));
@@ -628,6 +810,11 @@ fn shaped_units(shape: Shape, count: usize, unit_bytes: usize) -> (Vec<String>, 
                          pub fn total{index}(point: Point{index}) -> i32 {{ \
                          return point.x + point.y; }} "
                     );
+                    if index == count - 1 {
+                        text.push_str(&format!(
+                            "pub fn main() -> i32 {{ return l.value{left}() + r.value{right}(); }} "
+                        ));
+                    }
                     fill_to(&mut text, index, unit_bytes);
                     texts.push(text);
                 }
