@@ -16,9 +16,10 @@
   ADR-0040 — the whole-machine budget both accounts are spent from
 - Note: this ADR **designs only**. No engine change is proposed for
   implementation here, and `run_set` is not rebuilt by it. Its evidence gate is
-  **not met**: the launch peak and the manifest bound are open, and the second is
-  a Level-2 question this ADR raises rather than settles (§2a). Amended
-  2026-08-26
+  now **met** — see the measurements below and
+  `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md`. **Ready for Project Architect
+  acceptance; the status is left Proposed because changing it is not this
+  document's to do.** Amended 2026-08-26
   on four points — reload trust (§5), the record/manifest split (§2), the opaque
   provider key (§3) and what the byte bound counts (§7) — with the architecture
   approved and the status deliberately left Proposed until this ADR's own
@@ -495,6 +496,27 @@ No number is claimed in this ADR. They are in
 `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md`, measured against this list, and
 the status stays **Proposed** until the Project Architect has read them.
 
+**All seven are met, and the launch bound is enforced rather than estimated.**
+A bounded allocator whose whole arena is exactly `RUNTIME_GRANT = 54 MiB` runs
+every conforming closure to the published 256-module ceiling and the worst
+declared resolution the V1 ceilings admit:
+
+| | Grant frontier under a hard `54 MiB` arena |
+|---|---:|
+| closure of 2 ceiling-sized modules | 19.68 MiB |
+| closure of 16 | 20.10 MiB |
+| closure of 64 | 21.57 MiB |
+| **closure of 256 — the published ceiling** | **27.60 MiB** |
+| **256, with the worst declared resolution admissible** | **42.42 MiB** |
+
+Launch accumulates nothing across a closure — `5 616 B` of live state at sixteen
+modules, and a frontier that does not move from the first module's release to the
+last. What survives a 256-module closure is `182 KiB`. Verification costs nothing
+above the module it is verifying.
+
+No lower conformance profile was introduced, no ceiling was changed, and nothing
+in the path consults free memory.
+
 **Five of the seven are closed. Two are not**, and this ADR cannot be accepted
 while they stand:
 
@@ -562,17 +584,16 @@ neither did: the manifest was holding the wrong thing. Which function a call
 reaches is not part of fixing a closure's identity or a provider's authority,
 which is what a manifest is for.
 
-Two open bounds remain, and neither is answered by a larger grant:
-**`module_digest` materializes the canonical stream before hashing it**
-(`15.75 MiB` on a ceiling-sized module, and the whole of the verifier's
-workspace — the other nine verification steps allocate nothing), and **the
-widest single-module declared-resolution surface is `156.83 MiB`**, of which
-`7.93 MiB` is export-name text and the rest is the `ResolutionSnapshot`
-representation carrying it at `20x`. The first is a change to `tos-ir`'s digest
-path; the second is a change to an accepted verifier interface. Both are
-decisions, and both are recorded in
-`docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md` §10 and §11 rather than taken
-here.
+Two bounds were open when that was written and both are now closed, neither by a
+larger grant. `module_digest` materialized the canonical stream before hashing
+it — `15.75 MiB` on a ceiling-sized module, and the whole of the verifier's
+workspace, since the other nine verification steps allocate nothing; it now feeds
+the digest incrementally through the same traversal, with the digest unchanged
+byte for byte. And the widest single-module declared-resolution surface was
+`156.83 MiB`, of which `7.93 MiB` was export-name text; separating the export
+index from the shared string table brought it to `16.03 MiB` without narrowing
+what the snapshot states. Both are recorded in
+`docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md` §10 and §13.
 
 ## Alternatives considered
 

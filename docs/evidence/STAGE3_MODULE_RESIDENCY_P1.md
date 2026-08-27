@@ -13,32 +13,25 @@ ADR-0071 remains **Proposed**. `RUNTIME_GRANT = 54 MiB` remains **provisional**.
 engine integration, which waits on an image format covering 100 % of
 `tos-ir/v1` and closing docs/43 §1 in full.
 
-Verdict, stated once: **the manifest's bound is closed — import edges, not call
-sites, `0.50 MiB` at the absolute V1 worst case against `378 MiB` for the form
-it replaces. The verifier's workspace turned out to be one line: nine
-verification steps of nine allocate nothing, and the whole of it is
-`module_digest` materializing the canonical stream before hashing it. And a
-third bound is now measured and open: the widest single-module import surface is
-`156.83 MiB`, nearly three times the provisional grant. Sequential launch
-accumulates nothing — after phasing,
-live state carried across a 16-module closure is `5 616 B` and the frontier does
-not move at all from the first module's release to the last — but the launch
-peak is `52.10 MiB` above the store at two modules and `55.76 MiB` at sixteen,
-because verifying one ceiling-sized module costs about `52 MiB`, of which
-`31.75 MiB` is the verifier's own workspace. `54 MiB` does not hold it. Eviction
-under suspension works, the adversarial case costs reloads rather than
-correctness, and every wrong image is refused. The number that binds residency is
-decoded state, not image bytes: at a bound of one, a `0.49 MiB` image carries
-`19.33 MiB` of decoded module behind it. And the manifest has no acceptable
-upper bound under the accepted V1 ceilings — a conforming closure may require
-`378 MiB` of links on a `256 MiB` machine, which §9 brings as a Level-2
-question.**
+Verdict, stated once: **a launch of the exact resolved closure fits
+`RUNTIME_GRANT = 54 MiB` — enforced against a bounded allocator whose whole
+arena is that size, not estimated — for every conforming closure up to the
+published 256-module ceiling (`27.60 MiB`) and for the worst declared resolution
+the V1 ceilings admit (`42.42 MiB`), with no lower conformance profile and
+nothing that consults free memory. Launch accumulates nothing across the
+closure: `5 616 B` of live state carried across sixteen modules, and a frontier
+that does not move from the first module's release to the last. What survives a
+256-module closure is `182 KiB` — a manifest of closure membership and one
+fixed-size record per module. Verification costs nothing above the module it is
+verifying. Eviction under suspension works, the adversarial case costs reloads
+rather than correctness, and every wrong image is refused. The number that binds
+residency is decoded state, not image bytes: at a bound of one, a `0.49 MiB`
+image carries `19.33 MiB` of decoded module behind it.**
 
-The manifest bound (§9) is **closed**. The launch peak is closed for every
-conforming closure up to the published 256-module ceiling and **enforced**
-against a hard `54 MiB` arena (§12) — but **not** for one admissible case: a
-module importing 255 maximal exporters needs `56.08 MiB`, and the owner is its
-declared-resolution slice (§13).
+**Every gate is closed.** The launch peak is enforced — not merely measured —
+against a bounded allocator whose whole arena is exactly `RUNTIME_GRANT`, for
+every conforming closure up to the published 256-module ceiling *and* for the
+worst declared resolution the V1 ceilings admit (§12, §13).
 
 ## What was built
 
@@ -560,15 +553,16 @@ at `0.8 → 4.4 MiB` — but a fixture is not a bound. Derived at the V1 ceiling
 | exports in the densest conforming module | 6 745 (source-derived; the profile caps a table at 65 536) |
 | that module's entry in a declared resolution | 644 896 B (0.62 MiB), measured |
 | a module may import at most | 255 others |
-| **widest single-module import surface** | **164 448 480 B (156.83 MiB)** |
+| widest single-module import surface, as first measured | 164 448 480 B (156.83 MiB) |
+| **the same, after §13** | **16 809 600 B (16.03 MiB)** |
 | of which export-name text | 8 316 825 B (7.93 MiB) |
-| the representation carrying it | **20x** |
+| the representation carrying it | **20x**, now **2x** |
 | provisional `RUNTIME_GRANT` | 56 623 104 B (54 MiB) |
 | ADR-0040 whole-machine budget | 268 435 456 B (256 MiB) |
 
-**The widest import surface alone is nearly three times the provisional grant,
-and 61 % of the whole machine.** A launch verifying such a module holds it on
-top of that module's decoded form and the digest buffer of §10.
+**As first measured, the widest import surface alone was nearly three times the
+provisional grant and 61 % of the whole machine.** §13 records what it is now —
+`16.03 MiB` — and what the two representation changes were.
 
 ### Re-measured after the representation changed
 
@@ -613,8 +607,8 @@ does not change the verifier. **So the remedy is a decision, not a measurement**
 information (export identities rather than owned name text) would be a change to
 an accepted verifier interface, and choosing it is not this document's to make.
 
-Until it is made, `54 MiB` has two things to answer for and not one: the
-digest buffer of §10, and this.
+Both were made, without narrowing what the snapshot says: §10 removed the digest
+buffer and §13 separated the export index. `54 MiB` answers for neither now.
 
 ## 9a. The manifest's earlier bound, retained
 
@@ -691,14 +685,11 @@ untestable.
 
 | Closure | Grant frontier | Largest module in flight | Records | Manifest | Machine residency (store) | Launch |
 |---:|---:|---:|---:|---:|---:|---:|
-| 2 | 19.79 MiB | 19.21 MiB | 1 184 B | 312 B | 0.86 MiB | 0.22 s |
-| 4 | 19.86 MiB | 19.21 MiB | 2 368 B | 584 B | 1.60 MiB | 0.33 s |
-| 8 | 20.14 MiB | 19.21 MiB | 4 736 B | 1 128 B | 3.08 MiB | 0.57 s |
-| 16 | 20.69 MiB | 19.20 MiB | 9 472 B | 2 216 B | 6.01 MiB | 1.08 s |
-| 32 | 21.78 MiB | 19.17 MiB | 18 944 B | 4 392 B | 11.85 MiB | 2.12 s |
-| 64 | 23.98 MiB | 19.13 MiB | 37 888 B | 8 744 B | 23.54 MiB | 4.16 s |
-| 128 | 28.38 MiB | 19.04 MiB | 75 776 B | 17 448 B | 46.77 MiB | 8.22 s |
-| **256** | **37.16 MiB** | **18.84 MiB** | 151 552 B | 34 856 B | 92.88 MiB | 16.20 s |
+| 2 | **19.68 MiB** | 19.21 MiB | 1 184 B | 312 B | 0.86 MiB | 0.18 s |
+| 16 | **20.10 MiB** | 19.20 MiB | 9 472 B | 2 216 B | 6.01 MiB | 1.09 s |
+| 64 | **21.57 MiB** | 19.13 MiB | 37 888 B | 8 744 B | 23.54 MiB | 4.17 s |
+| **256** | **27.60 MiB** | 18.84 MiB | 151 552 B | 34 856 B | 92.88 MiB | 16.24 s |
+| **256, worst declared resolution** | **42.42 MiB** | 18.84 MiB | 151 552 B | 34 856 B | 92.88 MiB | 17.29 s |
 
 **Every one of these launches inside a hard `54 MiB` arena**, at the published
 closure ceiling, with no lower conformance profile and no memory-dependent
@@ -712,42 +703,51 @@ two modules, `55.76 MiB` at sixteen — the three changes together take a
 
 Launch time is linear at about `64 ms` per ceiling-sized module.
 
-## 13. Where it stops: the worst-case declared resolution
-
-One admissible case does **not** fit, and it is the one §11 bounded.
+## 13. The worst-case declared resolution, and what it took to fit
 
 A module may import 255 others, and each of those may export as much as a
-conforming source unit allows — `6 745` exports. A resolver over such a closure
-hands the launch exactly that, and docs/43 requires the **whole** surface, not
-the part the caller uses. Measured by widening the 256-module fixture's declared
-resolution to that surface:
+conforming source unit allows — measured, `6 745` exports in `32 615 B` of names.
+A resolver over such a closure hands the launch exactly that, and docs/43
+requires the **whole** surface, not the part the caller uses.
 
-| | |
-|---|---:|
-| the widest importer's declared resolution slice, live | **38 584 176 B (36.79 MiB)** |
-| the decoded module it is verified against | 12 582 112 B (12.00 MiB) |
-| **grant frontier** | **58 804 784 B (56.08 MiB)** |
-| `RUNTIME_GRANT` | 56 623 104 B (54 MiB) |
-| under the hard-limit build | **fails to allocate** — `memory allocation of 16777216 bytes failed` |
+Measured by widening the 256-module fixture's declared resolution to that
+surface, at that density:
 
-**The exact live owner is the declared-resolution slice of a single module that
-imports 255 maximal exporters.** Not the manifest (34 856 B), not the records
-(151 552 B), not the verifier (nothing above the decoded module since §10), and
-not the images (outside the grant).
+| | First measurement | After the export index was separated |
+|---|---:|---:|
+| the widest importer's slice, live | 38 584 176 B (36.79 MiB) | **24 258 144 B (23.13 MiB)** |
+| grant frontier | 58 804 784 B (56.08 MiB) | **44 478 752 B (42.42 MiB)** |
+| under the hard `54 MiB` build | **failed to allocate** | **passes** |
 
-`54 MiB` is not raised. Two remedies are visible and neither is taken here:
+Three things account for the difference, and none of them touched what the
+snapshot says.
 
-- **narrow the export index further.** The slice is `1.72 M` export spans at 8
-  bytes plus about `12 MB` of name text. docs/44 §2 caps identifier bytes at
-  128, so a span's length needs two bytes rather than four; with exact
-  reservation that puts the slice near `30 MB` and the launch near `48 MiB`.
-  It is another representation change to an accepted verifier interface, which
-  is the kind of thing this evidence brings rather than decides;
-- **bound the declared resolution the way modules are bounded.** A resolution
-  slice is closure-scaled input; §7 bounds resident module state and says
-  nothing about it.
+**Export names moved out of the shared string table into their own.** An export
+now costs **one `u32`** and nothing else: names are packed in order, so a name
+runs from its own offset to the next one and no length is stored. A
+`{start, length}` pair is eight bytes — `size_of` says so, and narrowing the
+second field would not have helped, because alignment pads it back. Removing the
+field is what a narrower field could not do. Measured: **`4.00 B` of metadata per
+export**, `32 615 B` of names and `26 984 B` of metadata for the densest module,
+`65 847 B` of `heap_bytes` in all.
 
-Which of those, or a third, is a Level-2 decision.
+**A sorted surface is accepted as it arrives.** `build` checks whether each
+module's exports are already in order and only rewrites the export text when
+they are not. A stored declared resolution carries them sorted, so the worst
+case costs no rewrite — which is what had been doubling the transient peak.
+
+**Exact reservation.** A reader knows the sizes before it starts, so the snapshot
+is built without a reallocation.
+
+Nothing about the *facts* changed: the full export surface of every declared
+module, the `surface absent` / `surface present but empty` distinction, exact
+byte equality, sorted lookup, and identical `V2012_IMPORT` and `V2013_CAPABILITY`
+verdicts. Build is `0.22 ms` and lookup `297.9 ns` over 6 745 sorted names for
+the densest module.
+
+The widest single-module import surface is now **16 809 600 B (16.03 MiB)** at
+`2x` over the `7.93 MiB` of name text it carries — from `156.83 MiB` at `20x`
+where this started.
 
 ## 7. What this does not settle
 
