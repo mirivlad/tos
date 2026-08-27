@@ -12,4 +12,5 @@ tos-hash = { path = "../../crates/tos-hash" }
 tos-core = { path = "../../crates/tos-core" }
 tos-ir = { path = "../../crates/tos-ir" }
 tos-verifier = { path = "../../crates/tos-verifier" }
+tos-image = { path = "../../crates/tos-image" }
 tos-engine = { path = "../../crates/tos-engine" }
