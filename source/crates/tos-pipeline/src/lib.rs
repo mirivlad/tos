@@ -322,6 +322,47 @@ pub fn execute_set(
     trace: &mut dyn Trace,
     system: &mut dyn System,
 ) -> Result<Run, SetError> {
+    match prepare_from_source(request, trace, HOST_RESIDENCY)? {
+        Preparation::Refused(run) => Ok(run),
+        Preparation::Ready(mut prepared) => {
+            trace.entering(PipelineStage::Execute);
+            Ok(run_prepared(&mut prepared, request, arguments, system))
+        }
+    }
+}
+
+/// What a preparation produced.
+///
+/// The executable is boxed because the two answers are not the same size: a
+/// prepared closure carries the resident set's own bookkeeping, and a refusal
+/// carries a sentence about a stage. Boxing keeps a caller's `Result` the size
+/// of the smaller one.
+pub enum Preparation {
+    /// An executable closure: verified, reduced to records and membership, with
+    /// the launch workspace already released.
+    Ready(Box<Prepared>),
+    /// The closure could not be built. The [`Run`] says which stage refused it
+    /// and why; none of them is `Completed`, because nothing executed.
+    Refused(Run),
+}
+
+/// Builds an executable closure from canonical source (ADR-0072 §2).
+///
+/// **This is the launch workspace, and it ends when this returns.** Everything
+/// the build needed — the source snapshots, the parse trees, the summaries, the
+/// closure plan, the lowering views, the verification surfaces and one module's
+/// IR at a time — is transient and is gone by the time a [`Prepared`] is handed
+/// back. What crosses the boundary is exactly what ADR-0071 says survives
+/// verification: the immutable images, one fixed-size record per module, the
+/// closure's membership, the entry receipt and the declared envelope.
+///
+/// A process grant is a different account with a different owner (ADR-0072 §1),
+/// and it holds a running program rather than the machinery that built one.
+pub fn prepare_from_source(
+    request: &SetRequest<'_>,
+    trace: &mut dyn Trace,
+    residency: ResidencyLimits,
+) -> Result<Preparation, SetError> {
     // Checked before the first stage is announced, so a request that cannot run
     // produces no stage events at all. A log that announced `read` and then
     // said the entry was missing would describe a run that never started.
@@ -353,14 +394,14 @@ pub fn execute_set(
         let source = match SourceReader::read(unit.bytes) {
             Ok(source) => source,
             Err(error) => {
-                return Ok(Run::SourceRejected {
+                return Ok(Preparation::Refused(Run::SourceRejected {
                     code: error.code().symbol(),
                     byte_offset: error.byte_offset(),
                     // Which unit is not obvious once there is more than one,
                     // and a transport refusal never reaches a diagnostic that
                     // could carry a module identity.
                     path: unit.path.to_string(),
-                });
+                }));
             }
         };
         if !parsing {
@@ -381,10 +422,10 @@ pub fn execute_set(
         let parsed = Parser::parse_schema(&source);
         let schema_diagnostics = parsed.diagnostics().to_vec();
         let Some(schema) = parsed.into_accepted() else {
-            return Ok(Run::Diagnosed {
+            return Ok(Preparation::Refused(Run::Diagnosed {
                 stage: PipelineStage::Parse,
                 diagnostics: schema_diagnostics,
-            });
+            }));
         };
         if !checking {
             trace.entering(PipelineStage::Check);
@@ -405,19 +446,19 @@ pub fn execute_set(
         trace.entering(PipelineStage::Check);
     }
     if diagnostics.iter().any(is_error) {
-        return Ok(Run::Diagnosed {
+        return Ok(Preparation::Refused(Run::Diagnosed {
             stage: PipelineStage::Check,
             diagnostics,
-        });
+        }));
     }
 
     trace.entering(PipelineStage::Resolve);
     let diagnostics = check_module_summaries(&summaries);
     if diagnostics.iter().any(is_error) {
-        return Ok(Run::Diagnosed {
+        return Ok(Preparation::Refused(Run::Diagnosed {
             stage: PipelineStage::Resolve,
             diagnostics,
-        });
+        }));
     }
     // Ordered and reachable: a module the entry cannot reach is not part of
     // what runs, and ordering it anyway would put it in the dependency digest.
@@ -464,21 +505,21 @@ pub fn execute_set(
         let Ok(source) = SourceReader::read(request.units[index].bytes) else {
             // A unit that read in the read phase and not here would mean the
             // reader is not a function of its input.
-            return Ok(Run::SourceRejected {
+            return Ok(Preparation::Refused(Run::SourceRejected {
                 code: "source-not-reproducible",
                 byte_offset: 0,
                 path: request.units[index].path.to_string(),
-            });
+            }));
         };
         let reparsed = Parser::parse_schema(&source);
         let Some(tree) = reparsed.into_accepted() else {
             // A module that parsed in the check phase and not here would mean
             // the parser is not a function of its input. It is refused rather
             // than worked around.
-            return Ok(Run::Diagnosed {
+            return Ok(Preparation::Refused(Run::Diagnosed {
                 stage: PipelineStage::Parse,
                 diagnostics: Vec::new(),
-            });
+            }));
         };
         let schema = &tree;
         // Each module's own dependency digest, over its own closure: a
@@ -504,7 +545,7 @@ pub fn execute_set(
             .collect();
         let module = match lower_module_in_set(&source, schema, &context, &imports) {
             Ok(module) => module,
-            Err(gap) => return Ok(Run::NotLowered(gap)),
+            Err(gap) => return Ok(Preparation::Refused(Run::NotLowered(gap))),
         };
         drop(imports);
         // Both views are built from the lowered IR, while it is still here, and
@@ -547,13 +588,13 @@ pub fn execute_set(
     // frontend produced both.
     let snapshot = snapshot_of(&surfaces);
 
-    let mut prepared = match Prepared::launch_images(
+    let prepared = match Prepared::launch_images(
         images,
         &snapshot,
         entry_position,
         request.entry,
         envelope,
-        HOST_RESIDENCY,
+        residency,
     ) {
         Ok(prepared) => prepared,
         // Every module verified and the closure is what it claimed to be; what
@@ -561,11 +602,11 @@ pub fn execute_set(
         // to start, so it is announced as one.
         Err(tos_residency::Failure::NoEntryFunction { .. }) => {
             trace.entering(PipelineStage::Execute);
-            return Ok(Run::Refused(Refusal::NoSuchEntry(
+            return Ok(Preparation::Refused(Run::Refused(Refusal::NoSuchEntry(
                 request.entry.to_string(),
-            )));
+            ))));
         }
-        Err(failure) => return Ok(launch_refusal(failure)),
+        Err(failure) => return Ok(Preparation::Refused(launch_refusal(failure))),
     };
 
     // The verification surfaces go here. They were needed until the launch,
@@ -573,8 +614,28 @@ pub fn execute_set(
     // the closure; past it nothing reads one.
     drop(surfaces);
 
-    trace.entering(PipelineStage::Execute);
-    Ok(match prepared.run(arguments, system) {
+    // The launch workspace ends here. What is returned holds images, records,
+    // the membership, the entry receipt and the declared envelope, and nothing
+    // that built them.
+    Ok(Preparation::Ready(Box::new(prepared)))
+}
+
+/// Runs a prepared executable closure.
+///
+/// The other side of ADR-0072 §2: this is the process's account. It reaches the
+/// modules through the bounded resident set and never through anything the
+/// preparation held.
+///
+/// `request` is consulted only to turn a trap's canonical path and byte span
+/// into a line and a column, which is a formatting step and not an input to the
+/// run.
+pub fn run_prepared(
+    prepared: &mut Prepared,
+    request: &SetRequest<'_>,
+    arguments: Vec<Value>,
+    system: &mut dyn System,
+) -> Run {
+    match prepared.run(arguments, system) {
         Err(refusal) => Run::Refused(refusal),
         Ok(Err(trap)) => Run::Trapped {
             code: trap.code,
@@ -584,12 +645,12 @@ pub fn execute_set(
         Ok(Ok(outcome)) => {
             let accounting = prepared.accounting(&outcome);
             Run::Completed(Box::new(Completion {
-                receipt: prepared.into_receipt(),
+                receipt: prepared.receipt().clone(),
                 value: outcome.value,
                 accounting,
             }))
         }
-    })
+    }
 }
 
 /// A verified closure, launched and ready to run.
