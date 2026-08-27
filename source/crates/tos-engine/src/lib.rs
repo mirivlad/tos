@@ -434,13 +434,11 @@ pub fn run_set(
 
     let envelope = &module.header.resource_envelope;
     let mut engine = Engine {
-        set,
         system,
         imports,
         fuel_limit: envelope.fuel,
         recursion_limit: envelope.recursion.max(1),
         fuel_used: 0,
-        depth: 0,
         max_depth: 0,
         task_limit: envelope.tasks,
         tasks_started: 0,
@@ -458,16 +456,13 @@ pub fn run_set(
         cleanups_peak: 0,
         worker_limit: envelope.workers,
         workers_held: 0,
-        frame_allocation: 0,
-        frame_cleanups: 0,
-        frame_sync: 0,
     };
     // docs/41 section 6: a reservation is checked before the thing it pays for
     // happens. A module that declares no worker cannot run one instruction.
     if let Err(trap) = engine.reserve_worker() {
         return Ok(Err(trap));
     }
-    let outcome = engine.call(module, index, arguments);
+    let outcome = engine.execute(set, entry_module, index, arguments);
     engine.release_worker();
     Ok(outcome.map(|value| Outcome {
         value,
@@ -481,9 +476,7 @@ pub fn run_set(
     }))
 }
 
-struct Engine<'module, 'system> {
-    /// Every module this run may reach, each with its own receipt.
-    set: &'module [Verified<'module>],
+struct Engine<'system> {
     /// What this run reaches when it leaves. Its own lifetime, because a host
     /// has no reason to outlive the modules it is running.
     system: &'system mut dyn System,
@@ -495,7 +488,6 @@ struct Engine<'module, 'system> {
     fuel_limit: u128,
     recursion_limit: u128,
     fuel_used: u128,
-    depth: u128,
     max_depth: u128,
     task_limit: u128,
     tasks_started: u128,
@@ -520,11 +512,181 @@ struct Engine<'module, 'system> {
     /// Execution contexts reserved. Bootstrap serializes, so exactly one.
     worker_limit: u128,
     workers_held: u128,
-    /// What the frame currently running has charged, released when it returns.
-    frame_allocation: u128,
-    /// Guards this frame took, released when it returns.
-    frame_sync: u128,
-    frame_cleanups: u128,
+}
+
+/// What one activation has charged, released exactly when it returns.
+///
+/// These used to be engine fields that a call saved, zeroed and restored. That
+/// is the shape of bug this removes rather than fixes: a charge belongs to the
+/// activation that made it, so it lives on the frame and is released when the
+/// frame is popped, whether it returns or traps.
+#[derive(Clone, Copy, Debug, Default)]
+struct Charges {
+    allocation: u128,
+    cleanups: u128,
+    sync: u128,
+}
+
+/// One activation, owning everything it needs.
+///
+/// **Nothing here borrows a module.** Not a `&Module`, not a `&Function`, not a
+/// `&Block`, `&Instruction`, `&Operand` or `&Place`, and no slice into any of
+/// them. What the frame holds is a module identity and three indices, so the
+/// module it names may be released and read again between any two steps
+/// (ADR-0071 §6). Give this type a lifetime parameter and the property is gone.
+struct Frame {
+    /// Which module this activation is running in. An index into the run's set
+    /// today; a `ClosureModuleId` once residency is wired in, with no change to
+    /// the shape of this frame.
+    module: usize,
+    function: usize,
+    block: usize,
+    /// The next instruction of `block` to execute. A resumed frame continues
+    /// here, which is what makes a call a transition rather than a recursion.
+    instruction: usize,
+    values: Vec<Option<Value>>,
+    charges: Charges,
+    /// Block entries in this activation, for the escape guard the old loop kept
+    /// per call.
+    steps: u128,
+    /// Resolve a trap's site against this frame's module while unwinding.
+    /// Set when the frame was entered across a module boundary.
+    resolve_site: bool,
+    /// What this frame is waiting for, when it is suspended in a call.
+    pending: Option<Pending>,
+}
+
+/// What a suspended frame does with the value its callee returns.
+///
+/// Every field is owned. A continuation that held the caller's operands by
+/// reference would be holding a slice into a module across a call, which is
+/// exactly what may not survive a step.
+enum Pending {
+    /// An ordinary call: write back what a `borrow mut` parameter changed, then
+    /// store the result.
+    Call {
+        result: Option<usize>,
+        /// `(callee parameter slot, caller value slot)` for each `borrow mut`
+        /// parameter whose caller operand names a value. Computed before the
+        /// call, from the callee's declared modes and the caller's operands.
+        writeback: Vec<(usize, usize)>,
+        /// Whether this call is inside an ADR-0066 measurement interval.
+        marks: bool,
+    },
+    /// A join or await: the result is the task's outcome, wrapped.
+    Join { result: Option<usize> },
+    /// A scope's cleanups, in order. ADR-0035 makes what one leaves visible to
+    /// the next, so the write-back is applied before the next is entered.
+    Cleanups {
+        plans: Vec<CleanupPlan>,
+        at: usize,
+        writeback: Vec<(usize, usize)>,
+        source: SourceRef,
+    },
+}
+
+/// One deferred cleanup, copied out of the instruction that named it.
+struct CleanupPlan {
+    body: usize,
+    captures: Vec<Operand>,
+}
+
+/// Which function an activation is about to enter.
+///
+/// An imported target carries an owned name and is resolved by the driver,
+/// outside the step, because resolving it is what may change what is resident.
+enum Target {
+    /// A function of the frame's own module.
+    Local(usize),
+    Imported {
+        import: usize,
+        name: String,
+    },
+}
+
+/// What evaluating one instruction produced.
+enum Evaluated {
+    Value(Option<Value>),
+    Enter {
+        target: Target,
+        arguments: Vec<Value>,
+        pending: Pending,
+    },
+}
+
+/// What one frame's step decided.
+enum Transition {
+    Enter {
+        target: Target,
+        arguments: Vec<Value>,
+    },
+    Leave(Value),
+}
+
+/// The invariant this engine is built around, asserted where it can be.
+///
+/// A type that borrows something cannot be `'static`. So requiring `'static` of
+/// the frame and of every continuation is a compile-time statement that none of
+/// them holds a reference into a module — give any of them a lifetime parameter
+/// and this stops compiling. It is not a substitute for reading the types, but
+/// it is a wall that a future edit runs into rather than walks past.
+const _: () = {
+    const fn owns_nothing_borrowed<T: 'static>() {}
+    owns_nothing_borrowed::<Frame>();
+    owns_nothing_borrowed::<Pending>();
+    owns_nothing_borrowed::<CleanupPlan>();
+    owns_nothing_borrowed::<Target>();
+    owns_nothing_borrowed::<Evaluated>();
+    owns_nothing_borrowed::<Transition>();
+    owns_nothing_borrowed::<Charges>();
+    owns_nothing_borrowed::<Value>();
+};
+
+/// Which of a callee's parameters write back into which of the caller's slots.
+///
+/// A `borrow mut` parameter names the caller's place, and the borrow rules
+/// guarantee no other alias is live for the duration of the call, so copying in
+/// and copying out is observationally the same as a reference and needs no
+/// aliasing machinery to be correct. The plan is computed before the call, from
+/// the callee's declared modes and the caller's operands, so the continuation
+/// carries indices rather than a slice into an instruction.
+///
+/// Only `Operand::Value` writes back, which is the semantics this replaces: a
+/// constant operand names no place to write to.
+fn writeback_plan(module: &Module, function: usize, operands: &[Operand]) -> Vec<(usize, usize)> {
+    let Some(body) = module.functions.get(function) else {
+        return Vec::new();
+    };
+    let mut plan = Vec::new();
+    for (position, parameter) in body.signature.parameters.iter().enumerate() {
+        if parameter.mode != tos_ir::PassMode::MutableBorrow {
+            continue;
+        }
+        if let Some(Operand::Value(slot)) = operands.get(position) {
+            plan.push((position, *slot));
+        }
+    }
+    plan
+}
+
+/// Copies a callee's final parameter slots into the caller's places.
+fn write_back(caller: &mut Frame, plan: &[(usize, usize)], callee: &[Option<Value>]) {
+    for (position, slot) in plan {
+        if let (Some(Some(value)), Some(target)) =
+            (callee.get(*position), caller.values.get_mut(*slot))
+        {
+            *target = Some(value.clone());
+        }
+    }
+}
+
+/// Stores a call's result in the caller's slot, when the instruction named one.
+fn store(caller: &mut Frame, result: Option<usize>, value: Value) {
+    if let Some(slot) = result {
+        if slot < caller.values.len() {
+            caller.values[slot] = Some(value);
+        }
+    }
 }
 
 /// The accounted size of one runtime value.
@@ -541,7 +703,7 @@ enum Exit {
     Goto(usize),
 }
 
-impl Engine<'_, '_> {
+impl Engine<'_> {
     /// Charges one unit of fuel, trapping when the declared budget is gone.
     ///
     /// docs/41 section 6 makes fuel the accounting that bounds work. The budget
@@ -673,80 +835,168 @@ impl Engine<'_, '_> {
         self.cleanups_live = self.cleanups_live.saturating_sub(count);
     }
 
-    /// Calls a function and writes back what it changed through a borrow.
+    /// Runs the whole program as an explicit stack of activations.
     ///
-    /// A `borrow mut` parameter names the caller's place, and the borrow rules
-    /// guarantee no other alias is live for the duration of the call, so
-    /// copying in and copying out is observationally the same as a reference
-    /// and needs no aliasing machinery to be correct.
-    fn call_with_writeback(
+    /// One loop, and a module borrowed only for the length of a single step.
+    /// Between steps nothing holds a reference into a module, which is what
+    /// makes a frame survivable across an eviction (ADR-0071 §6): a call is a
+    /// transition on this stack rather than a recursion on the host's, so the
+    /// depth a TOS program may reach is the depth it declares and not the depth
+    /// the host happens to have.
+    fn execute(
         &mut self,
-        module: &Module,
-        index: usize,
+        set: &[Verified<'_>],
+        entry_module: usize,
+        entry_function: usize,
         arguments: Vec<Value>,
-        operands: &[Operand],
-        values: &mut [Option<Value>],
-        source: SourceRef,
     ) -> Result<Value, Trap> {
-        let modes: Vec<tos_ir::PassMode> = module.functions[index]
-            .signature
-            .parameters
-            .iter()
-            .map(|parameter| parameter.mode)
-            .collect();
-        let (result, finals) = self.call_capturing(module, index, arguments)?;
-        for (position, mode) in modes.iter().enumerate() {
-            if *mode != tos_ir::PassMode::MutableBorrow {
-                continue;
-            }
-            let (Some(Operand::Value(slot)), Some(Some(value))) =
-                (operands.get(position), finals.get(position))
-            else {
-                continue;
+        let mut frames: Vec<Frame> = Vec::new();
+        match self.enter(
+            set,
+            &mut frames,
+            entry_module,
+            entry_function,
+            arguments,
+            false,
+        ) {
+            Ok(()) => {}
+            Err(trap) => return Err(self.unwind(set, &mut frames, trap)),
+        }
+
+        loop {
+            let (home, function) = {
+                let frame = frames.last().expect("the loop ends when the stack empties");
+                (frame.module, frame.function)
             };
-            if let Some(target) = values.get_mut(*slot) {
-                *target = Some(value.clone());
+            // The module is borrowed here and released before the stack is
+            // touched. Copying the reference out of the set is what keeps that
+            // borrow off `self`.
+            let module: &Module = set[home].module;
+            let step = {
+                let frame = frames.last_mut().expect("just observed");
+                self.step(module, frame)
+            };
+            let transition = match step {
+                Ok(transition) => transition,
+                Err(trap) => return Err(self.unwind(set, &mut frames, trap)),
+            };
+            let _ = function;
+
+            match transition {
+                Transition::Enter { target, arguments } => {
+                    let entered = match target {
+                        Target::Local(index) => {
+                            self.enter(set, &mut frames, home, index, arguments, false)
+                        }
+                        Target::Imported { import, name } => {
+                            self.enter_imported(set, &mut frames, home, import, &name, arguments)
+                        }
+                    };
+                    if let Err(trap) = entered {
+                        return Err(self.unwind(set, &mut frames, trap));
+                    }
+                }
+                Transition::Leave(value) => {
+                    let frame = frames.pop().expect("a frame was running");
+                    self.release_frame(&frame);
+                    let Some(caller) = frames.last_mut() else {
+                        return Ok(value);
+                    };
+                    let taken = caller.pending.take();
+                    let resumed = match taken {
+                        Some(pending) => {
+                            self.resume(set, &mut frames, pending, frame.values, value)
+                        }
+                        // A frame with no caller continuation is the entry, and
+                        // the entry has no caller.
+                        None => Ok(()),
+                    };
+                    if let Err(trap) = resumed {
+                        return Err(self.unwind(set, &mut frames, trap));
+                    }
+                }
             }
         }
-        let _ = source;
-        Ok(result)
     }
 
-    fn call(
+    /// Pushes an activation, charging depth exactly where the recursive form
+    /// charged it.
+    fn enter(
         &mut self,
-        module: &Module,
-        index: usize,
+        set: &[Verified<'_>],
+        frames: &mut Vec<Frame>,
+        module: usize,
+        function: usize,
         arguments: Vec<Value>,
-    ) -> Result<Value, Trap> {
-        Ok(self.call_capturing(module, index, arguments)?.0)
+        resolve_site: bool,
+    ) -> Result<(), Trap> {
+        let body = &set[module].module.functions[function];
+        let depth = frames.len() as u128 + 1;
+        self.max_depth = self.max_depth.max(depth);
+        if depth > self.recursion_limit {
+            return Err(Trap::new(
+                "RUNTIME_RECURSION_LIMIT",
+                alloc::format!("the declared depth of {} is exceeded", self.recursion_limit),
+                body.source,
+            ));
+        }
+        let mut values: Vec<Option<Value>> = alloc::vec![None; body.values.len()];
+        for (slot, argument) in arguments.into_iter().enumerate() {
+            if slot < values.len() {
+                values[slot] = Some(argument);
+            }
+        }
+        frames.push(Frame {
+            module,
+            function,
+            block: 0,
+            instruction: 0,
+            values,
+            charges: Charges::default(),
+            steps: 1,
+            resolve_site,
+            pending: None,
+        });
+        Ok(())
     }
 
-    /// Calls a function of another module of the set.
+    /// Resolves a cross-module call against the run's set and pushes it.
     ///
-    /// The callee executes with its own module in view and the run's single
-    /// budget: fuel, depth and allocation are the entry's, because docs/41
-    /// section 6 admits a call only when the callee's declared contract already
-    /// fits the caller's envelope. Crossing a module boundary is therefore not
-    /// a way to obtain a second budget.
-    fn call_imported(
+    /// The callee executes with the run's single budget: fuel, depth and
+    /// allocation are the entry's, because docs/41 section 6 admits a call only
+    /// when the callee's declared contract already fits the caller's envelope.
+    /// Crossing a module boundary is not a way to obtain a second budget.
+    fn enter_imported(
         &mut self,
-        module: &Module,
+        set: &[Verified<'_>],
+        frames: &mut Vec<Frame>,
+        home: usize,
         import: usize,
         name: &str,
         arguments: Vec<Value>,
-        source: SourceRef,
-    ) -> Result<Value, Trap> {
-        let Some(declared) = module.imports.get(import) else {
+    ) -> Result<(), Trap> {
+        let source = frames
+            .last()
+            .and_then(|frame| {
+                let module = set[frame.module].module;
+                let block = &module.functions[frame.function].blocks[frame.block];
+                block
+                    .instructions
+                    .get(frame.instruction.saturating_sub(1))
+                    .map(|instruction| instruction.source)
+            })
+            .unwrap_or(0);
+        let caller = set[home].module;
+        let Some(declared) = caller.imports.get(import) else {
             return Err(Trap::new(
                 "RUNTIME_UNRESOLVED_IMPORT",
                 "a call names an import the module does not declare",
                 source,
             ));
         };
-        let Some(callee) = self
-            .set
+        let Some(callee) = set
             .iter()
-            .find(|verified| verified.module.header.module_name == declared.module_name)
+            .position(|verified| verified.module.header.module_name == declared.module_name)
         else {
             return Err(Trap::new(
                 "RUNTIME_UNRESOLVED_IMPORT",
@@ -758,20 +1008,20 @@ impl Engine<'_, '_> {
         // set holding a different revision of the module under the same name is
         // not the module this caller was checked against.
         if !declared.module_content_id.is_empty()
-            && declared.module_content_id != callee.module.header.content_id
+            && declared.module_content_id != set[callee].module.header.content_id
         {
             return Err(Trap::new(
                 "RUNTIME_UNRESOLVED_IMPORT",
                 alloc::format!(
                     "{} in this set is {}, and the caller was lowered against {}",
                     declared.module_name,
-                    callee.module.header.content_id,
+                    set[callee].module.header.content_id,
                     declared.module_content_id
                 ),
                 source,
             ));
         }
-        let Some(index) = callee.module.functions.iter().position(|function| {
+        let Some(index) = set[callee].module.functions.iter().position(|function| {
             function.signature.name == name
                 && function.signature.visibility == tos_ir::Visibility::Public
         }) else {
@@ -781,7 +1031,12 @@ impl Engine<'_, '_> {
                 source,
             ));
         };
-        if callee.module.functions[index].signature.parameters.len() != arguments.len() {
+        if set[callee].module.functions[index]
+            .signature
+            .parameters
+            .len()
+            != arguments.len()
+        {
             return Err(Trap::new(
                 "RUNTIME_UNRESOLVED_IMPORT",
                 alloc::format!(
@@ -791,112 +1046,191 @@ impl Engine<'_, '_> {
                 source,
             ));
         }
+        self.enter(set, frames, callee, index, arguments, true)
+    }
 
-        // The callee's module is passed down rather than swapped into the
-        // engine: what module is executing belongs to the activation, not to
-        // the engine, and a frame that has to be restored on the way out is a
-        // frame that can be restored wrongly.
-        let outcome = self.call(callee.module, index, arguments);
-        outcome.map_err(|mut trap| {
-            if trap.site.is_none() {
-                trap.site = callee
+    /// Applies a caller's continuation to what its callee returned.
+    fn resume(
+        &mut self,
+        set: &[Verified<'_>],
+        frames: &mut Vec<Frame>,
+        pending: Pending,
+        callee_values: Vec<Option<Value>>,
+        value: Value,
+    ) -> Result<(), Trap> {
+        match pending {
+            Pending::Call {
+                result,
+                writeback,
+                marks,
+            } => {
+                let caller = frames.last_mut().expect("a caller was observed");
+                write_back(caller, &writeback, &callee_values);
+                store(caller, result, value);
+                let _ = marks;
+                #[cfg(feature = "measurement-marks")]
+                if marks {
+                    self.system.mark_after_call();
+                }
+                Ok(())
+            }
+            Pending::Join { result } => {
+                let caller = frames.last_mut().expect("a caller was observed");
+                store(
+                    caller,
+                    result,
+                    Value::Variant {
+                        index: 0,
+                        payload: alloc::vec![value],
+                    },
+                );
+                Ok(())
+            }
+            Pending::Cleanups {
+                plans,
+                at,
+                writeback,
+                source,
+            } => {
+                {
+                    let caller = frames.last_mut().expect("a caller was observed");
+                    write_back(caller, &writeback, &callee_values);
+                }
+                self.run_cleanup(set, frames, plans, at + 1, source)
+            }
+        }
+    }
+
+    /// Enters the next cleanup of a scope, or finishes the sequence.
+    ///
+    /// ADR-0035 runs them in the order the instruction gives, and what one
+    /// leaves is what the next observes — which is why the write-back above
+    /// happens before this is called.
+    fn run_cleanup(
+        &mut self,
+        set: &[Verified<'_>],
+        frames: &mut Vec<Frame>,
+        plans: Vec<CleanupPlan>,
+        at: usize,
+        source: SourceRef,
+    ) -> Result<(), Trap> {
+        if at >= plans.len() {
+            return Ok(());
+        }
+        let home = frames.last().expect("a caller was observed").module;
+        let module: &Module = set[home].module;
+        let plan = &plans[at];
+        let mut arguments = Vec::new();
+        {
+            let caller = frames.last().expect("a caller was observed");
+            for capture in &plan.captures {
+                arguments.push(self.operand(module, capture, &caller.values, source)?);
+            }
+        }
+        let writeback = writeback_plan(module, plan.body, &plan.captures);
+        let body = plan.body;
+        {
+            let caller = frames.last_mut().expect("a caller was observed");
+            caller.pending = Some(Pending::Cleanups {
+                plans,
+                at,
+                writeback,
+                source,
+            });
+        }
+        self.enter(set, frames, home, body, arguments, false)
+    }
+
+    /// Releases exactly what one activation charged.
+    fn release_frame(&mut self, frame: &Frame) {
+        self.release_allocation(frame.charges.allocation);
+        self.release_cleanups(frame.charges.cleanups);
+        // A guard cannot outlive the frame that took it (ADR-0036).
+        self.sync_held = self.sync_held.saturating_sub(frame.charges.sync);
+    }
+
+    /// Unwinds the stack for a trap, releasing each frame's charges and
+    /// resolving the site where the recursive form resolved it.
+    fn unwind(&mut self, set: &[Verified<'_>], frames: &mut Vec<Frame>, mut trap: Trap) -> Trap {
+        while let Some(frame) = frames.pop() {
+            self.release_frame(&frame);
+            if frame.resolve_site && trap.site.is_none() {
+                trap.site = set[frame.module]
                     .module
                     .source_map
                     .get(trap.source)
                     .cloned()
                     .map(alloc::boxed::Box::new);
             }
-            trap
-        })
-    }
-
-    /// Calls a function and returns its result with the final state of its
-    /// parameter slots, which is what a borrow writes back.
-    fn call_capturing(
-        &mut self,
-        module: &Module,
-        index: usize,
-        arguments: Vec<Value>,
-    ) -> Result<(Value, Vec<Option<Value>>), Trap> {
-        let function = &module.functions[index];
-        self.depth += 1;
-        self.max_depth = self.max_depth.max(self.depth);
-        if self.depth > self.recursion_limit {
-            let source = function.source;
-            self.depth -= 1;
-            return Err(Trap::new(
-                "RUNTIME_RECURSION_LIMIT",
-                alloc::format!("the declared depth of {} is exceeded", self.recursion_limit),
-                source,
-            ));
-        }
-
-        // A frame's charges are its own: what it allocated and registered is
-        // released when it returns, so a bounded program stays bounded however
-        // many times it calls.
-        let outer_allocation = core::mem::take(&mut self.frame_allocation);
-        let outer_cleanups = core::mem::take(&mut self.frame_cleanups);
-        let outer_sync = core::mem::take(&mut self.frame_sync);
-
-        let mut values: Vec<Option<Value>> = alloc::vec![None; function.values.len()];
-        for (slot, argument) in arguments.into_iter().enumerate() {
-            if slot < values.len() {
-                values[slot] = Some(argument);
+            if let Some(caller) = frames.last_mut() {
+                let pending = caller.pending.take();
+                #[cfg(feature = "measurement-marks")]
+                if let Some(Pending::Call { marks: true, .. }) = pending {
+                    self.system.mark_after_call();
+                }
+                let _ = pending;
             }
         }
-
-        let mut block = 0usize;
-        let mut steps = 0u128;
-        let outcome = loop {
-            steps += 1;
-            if steps > self.fuel_limit.saturating_add(1) {
-                break Err(Trap::new(
-                    "RUNTIME_FUEL_EXHAUSTED",
-                    "control did not leave the function within its budget",
-                    function.blocks[block].source,
-                ));
-            }
-            match self.run_block(module, index, block, &mut values) {
-                Ok(Exit::Return(value)) => break Ok(value),
-                Ok(Exit::Goto(next)) => block = next,
-                Err(trap) => break Err(trap),
-            }
-        };
-        self.depth -= 1;
-        let charged = core::mem::replace(&mut self.frame_allocation, outer_allocation);
-        self.release_allocation(charged);
-        let registered = core::mem::replace(&mut self.frame_cleanups, outer_cleanups);
-        self.release_cleanups(registered);
-        // A guard cannot outlive the frame that took it (ADR-0036), so the
-        // frame's guards are released with the frame.
-        let guards = core::mem::replace(&mut self.frame_sync, outer_sync);
-        self.sync_held = self.sync_held.saturating_sub(guards);
-        outcome.map(|value| (value, values))
+        trap
     }
 
-    fn run_block(
-        &mut self,
-        module: &Module,
-        function_index: usize,
-        block_index: usize,
-        values: &mut [Option<Value>],
-    ) -> Result<Exit, Trap> {
-        // The module is an argument rather than engine state: which module is
-        // executing belongs to the activation. It also makes the borrow
-        // obvious — a reference into the module is not a borrow of `self`, so
-        // it does not conflict with the `&mut self` a nested call needs, and
-        // nothing has to be cloned to work around a borrow that does not exist.
-        let block = &module.functions[function_index].blocks[block_index];
-        for instruction in &block.instructions {
-            self.spend(instruction.source)?;
-            let produced = self.evaluate(module, instruction, values)?;
-            if let (Some(slot), Some(value)) = (instruction.result, produced) {
-                if slot < values.len() {
-                    values[slot] = Some(value);
+    /// Runs one frame until it transfers control.
+    ///
+    /// The module is a parameter and is dropped by the caller before anything
+    /// touches the stack. Everything this reads out of it is copied into owned
+    /// data before the frame suspends.
+    fn step(&mut self, module: &Module, frame: &mut Frame) -> Result<Transition, Trap> {
+        loop {
+            let function = &module.functions[frame.function];
+            let block = &function.blocks[frame.block];
+            while frame.instruction < block.instructions.len() {
+                let at = frame.instruction;
+                let instruction = &block.instructions[at];
+                self.spend(instruction.source)?;
+                match self.evaluate(
+                    module,
+                    frame.module,
+                    instruction,
+                    &mut frame.values,
+                    &mut frame.charges,
+                )? {
+                    Evaluated::Value(produced) => {
+                        if let (Some(slot), Some(value)) = (instruction.result, produced) {
+                            if slot < frame.values.len() {
+                                frame.values[slot] = Some(value);
+                            }
+                        }
+                        frame.instruction = at + 1;
+                    }
+                    Evaluated::Enter {
+                        target,
+                        arguments,
+                        pending,
+                    } => {
+                        // Resume past the call, so the frame that comes back
+                        // does not run it again.
+                        frame.instruction = at + 1;
+                        frame.pending = Some(pending);
+                        return Ok(Transition::Enter { target, arguments });
+                    }
+                }
+            }
+            match self.terminate(module, &block.terminator, &mut frame.values, block.source)? {
+                Exit::Return(value) => return Ok(Transition::Leave(value)),
+                Exit::Goto(next) => {
+                    frame.block = next;
+                    frame.instruction = 0;
+                    frame.steps += 1;
+                    if frame.steps > self.fuel_limit.saturating_add(1) {
+                        return Err(Trap::new(
+                            "RUNTIME_FUEL_EXHAUSTED",
+                            "control did not leave the function within its budget",
+                            function.blocks[next].source,
+                        ));
+                    }
                 }
             }
         }
-        self.terminate(module, &block.terminator, values, block.source)
     }
 
     fn terminate(
@@ -990,11 +1324,14 @@ impl Engine<'_, '_> {
     fn evaluate(
         &mut self,
         module: &Module,
+        home: usize,
         instruction: &Instruction,
         values: &mut [Option<Value>],
-    ) -> Result<Option<Value>, Trap> {
+        charges: &mut Charges,
+    ) -> Result<Evaluated, Trap> {
         let op = &instruction.op;
         let source = instruction.source;
+        let _ = home;
         let produced = match op {
             Op::Const(constant) => Some(self.constant(module, *constant, source)?),
             Op::Aggregate { operands, .. } => {
@@ -1002,7 +1339,7 @@ impl Engine<'_, '_> {
                 // reservation before the thing it pays for happens, so a value
                 // that would not fit is never constructed at all.
                 let charged = self.reserve_allocation(operands.len(), source)?;
-                self.frame_allocation += charged;
+                charges.allocation += charged;
                 let mut elements = Vec::new();
                 for operand in operands {
                     elements.push(self.operand(module, operand, values, source)?);
@@ -1013,7 +1350,7 @@ impl Engine<'_, '_> {
                 index, operands, ..
             } => {
                 let charged = self.reserve_allocation(operands.len(), source)?;
-                self.frame_allocation += charged;
+                charges.allocation += charged;
                 let mut payload = Vec::new();
                 for operand in operands {
                     payload.push(self.operand(module, operand, values, source)?);
@@ -1059,34 +1396,52 @@ impl Engine<'_, '_> {
                 match target {
                     // ADR-0066 milestone 6b puts its marks here, and the
                     // boundary is exactly this expression. Between them:
-                    // reading the 64-byte argument from the caller's slot,
-                    // collecting the callee's parameter modes, `call_capturing`
-                    // — the depth increment and its recursion check, the frame's
-                    // allocation, cleanup and synchronization charges being set
-                    // aside, the callee's value slots being made and the
-                    // arguments moved in, the fuel-counted block loop that runs
-                    // the body, the depth decrement and the release of what the
-                    // frame charged — and the mutable-borrow writeback. That is
-                    // a call and its inevitable accounting: what `IPC_V1` §8
-                    // names, without anything a run does once.
-                    //
+                    // reading the arguments from the caller's slots, the
+                    // depth increment and its recursion check, the callee's
+                    // value slots being made and the arguments moved in, the
+                    // fuel-counted body, the release of what the frame charged
+                    // — and the mutable-borrow writeback. That is a call and
+                    // its inevitable accounting: what `IPC_V1` §8 names,
+                    // without anything a run does once. The interval is
+                    // unchanged by the frame machine: `mark_before_call` still
+                    // fires before the arguments are read, and
+                    // `mark_after_call` fires when the continuation completes,
+                    // which is after the writeback and on the trap path too.
                     CallTarget::Local(index) => {
                         #[cfg(feature = "measurement-marks")]
                         self.system.mark_before_call();
-                        let called = self.arguments(module, operands, values, source).and_then(
-                            |arguments| {
-                                self.call_with_writeback(
-                                    module, *index, arguments, operands, values, source,
-                                )
+                        let arguments = match self.arguments(module, operands, values, source) {
+                            Ok(arguments) => arguments,
+                            Err(trap) => {
+                                #[cfg(feature = "measurement-marks")]
+                                self.system.mark_after_call();
+                                return Err(trap);
+                            }
+                        };
+                        return Ok(Evaluated::Enter {
+                            target: Target::Local(*index),
+                            arguments,
+                            pending: Pending::Call {
+                                result: instruction.result,
+                                writeback: writeback_plan(module, *index, operands),
+                                marks: true,
                             },
-                        );
-                        #[cfg(feature = "measurement-marks")]
-                        self.system.mark_after_call();
-                        Some(called?)
+                        });
                     }
                     CallTarget::Imported { import, name } => {
                         let arguments = self.arguments(module, operands, values, source)?;
-                        Some(self.call_imported(module, *import, name, arguments, source)?)
+                        return Ok(Evaluated::Enter {
+                            target: Target::Imported {
+                                import: *import,
+                                name: name.clone(),
+                            },
+                            arguments,
+                            pending: Pending::Call {
+                                result: instruction.result,
+                                writeback: Vec::new(),
+                                marks: false,
+                            },
+                        });
                     }
                     // Two different things share this target, and the
                     // instruction says which. A predeclared name is a
@@ -1131,7 +1486,15 @@ impl Engine<'_, '_> {
                     arguments.push(self.operand(module, operand, values, source)?);
                 }
                 arguments.extend(captures);
-                Some(self.call(module, body, arguments)?)
+                return Ok(Evaluated::Enter {
+                    target: Target::Local(body),
+                    arguments,
+                    pending: Pending::Call {
+                        result: instruction.result,
+                        writeback: Vec::new(),
+                        marks: false,
+                    },
+                });
             }
             Op::Spawn { body, captures } => {
                 let mut held = Vec::new();
@@ -1168,17 +1531,22 @@ impl Engine<'_, '_> {
                 };
                 // `Cancelled` and `Completed` are the two outcomes docs/41
                 // section 2 defines, and joining consumes the handle either way.
-                Some(if cancelled {
-                    Value::Variant {
+                if cancelled {
+                    Some(Value::Variant {
                         index: 1,
                         payload: Vec::new(),
-                    }
+                    })
                 } else {
-                    Value::Variant {
-                        index: 0,
-                        payload: alloc::vec![self.call(module, body, captures)?],
-                    }
-                })
+                    // A task that was not cancelled runs here, serialized, and
+                    // its result is wrapped by the continuation.
+                    return Ok(Evaluated::Enter {
+                        target: Target::Local(body),
+                        arguments: captures,
+                        pending: Pending::Join {
+                            result: instruction.result,
+                        },
+                    });
+                }
             }
             // Bootstrap serializes (docs/43 section 7), so a lock cannot block
             // and there is no contention to model. What the engine can prove
@@ -1191,7 +1559,7 @@ impl Engine<'_, '_> {
             Op::Lock { object, .. } => {
                 let value = self.operand(module, object, values, source)?;
                 self.reserve_sync(source)?;
-                self.frame_sync += 1;
+                charges.sync += 1;
                 Some(value)
             }
             // `share` consumes its argument and produces the same value behind
@@ -1220,27 +1588,43 @@ impl Engine<'_, '_> {
                 // that a live count, so it is charged here and released where
                 // the cleanups run.
                 self.reserve_cleanup(source)?;
-                self.frame_cleanups += 1;
+                charges.cleanups += 1;
                 None
             }
             Op::RunCleanups { calls } => {
-                for call in calls {
+                // ADR-0035: a cleanup acts on the scope it runs in, so what it
+                // leaves is what the next one and the scope observe. The list
+                // is copied out of the instruction — a continuation holding
+                // `&CleanupCall` would be holding a slice into a module across
+                // a call.
+                if calls.is_empty() {
+                    None
+                } else {
+                    let plans: Vec<CleanupPlan> = calls
+                        .iter()
+                        .map(|call| CleanupPlan {
+                            body: call.body,
+                            captures: call.captures.clone(),
+                        })
+                        .collect();
+                    let first = &plans[0];
                     let mut arguments = Vec::new();
-                    for capture in &call.captures {
+                    for capture in &first.captures {
                         arguments.push(self.operand(module, capture, values, source)?);
                     }
-                    // ADR-0035: a cleanup acts on the scope it runs in, so what
-                    // it leaves is what the next one and the scope observe.
-                    self.call_with_writeback(
-                        module,
-                        call.body,
+                    let writeback = writeback_plan(module, first.body, &first.captures);
+                    let body = first.body;
+                    return Ok(Evaluated::Enter {
+                        target: Target::Local(body),
                         arguments,
-                        &call.captures,
-                        values,
-                        source,
-                    )?;
+                        pending: Pending::Cleanups {
+                            plans,
+                            at: 0,
+                            writeback,
+                            source,
+                        },
+                    });
                 }
-                None
             }
             // An operation of an accepted interface schema, performed on the
             // capability an import was bound to (ADR-0060, ADR-0061).
@@ -1310,7 +1694,7 @@ impl Engine<'_, '_> {
                 ))
             }
         };
-        Ok(produced)
+        Ok(Evaluated::Value(produced))
     }
 
     fn constant(&self, module: &Module, index: usize, source: SourceRef) -> Result<Value, Trap> {
