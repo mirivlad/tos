@@ -538,3 +538,82 @@ fn every_module_of_a_set_is_verified_against_the_resolved_snapshot() {
         tos_verifier::VERIFIER_IDENTITY
     );
 }
+
+/// A `borrow mut` argument written by an imported function is observed by the
+/// caller after the call returns.
+///
+/// This is a **language** statement, made through the reference path over
+/// canonical source, and it is here because the engine used to get it wrong.
+/// The write-back plan is built from the callee's declared parameter modes; a
+/// cross-module call was building it against the *caller's* module, where the
+/// callee is not, so the plan came out empty every time and the write was
+/// dropped in silence. Nothing about the source said so, and no test asked.
+///
+/// The test names no engine type. What it asserts is what a program can see.
+#[test]
+fn an_imported_function_writes_back_through_a_mutable_borrow() {
+    let dependency = lib(
+        "system.lib.bump",
+        "pub fn bump(borrow mut cell: i32) -> i32 { cell = cell + 10i32; return 1i32; }",
+    );
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.bump as lib;",
+        "pub fn main() -> i32 { let mut cell = 5i32; let flag = lib.bump(cell); \
+         return cell + flag; }",
+    );
+    let run = set(
+        &[
+            ("system/lib/bump.tos", &dependency),
+            ("system/boot/init.tos", &entry),
+        ],
+        "system/boot/init.tos",
+    );
+    let Run::Completed(completion) = run else {
+        panic!("the set runs: {run:?}");
+    };
+    assert_eq!(
+        completion.value,
+        tos_pipeline::Value::Int(tos_pipeline::IntKind::I32, 16),
+        "the callee's write must be visible to the caller: 5 + 10, plus the 1 it returned"
+    );
+}
+
+/// The same, across two module boundaries.
+///
+/// `init` lends to `mid`, `mid` lends the same binding on to `leaf`, and `leaf`
+/// writes. The value has to come back through both returns.
+#[test]
+fn a_mutable_borrow_writes_back_across_two_module_boundaries() {
+    let leaf = lib(
+        "system.lib.leaf",
+        "pub fn write(borrow mut cell: i32) -> i32 { cell = cell + 100i32; return 2i32; }",
+    );
+    let mid = module(
+        "system.lib.mid",
+        "import system.lib.leaf as leaf;",
+        "pub fn relay(borrow mut cell: i32) -> i32 { return leaf.write(cell); }",
+    );
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.mid as mid;",
+        "pub fn main() -> i32 { let mut cell = 7i32; let flag = mid.relay(cell); \
+         return cell + flag; }",
+    );
+    let run = set(
+        &[
+            ("system/lib/leaf.tos", &leaf),
+            ("system/lib/mid.tos", &mid),
+            ("system/boot/init.tos", &entry),
+        ],
+        "system/boot/init.tos",
+    );
+    let Run::Completed(completion) = run else {
+        panic!("the set runs: {run:?}");
+    };
+    assert_eq!(
+        completion.value,
+        tos_pipeline::Value::Int(tos_pipeline::IntKind::I32, 109),
+        "7 + 100 written two boundaries down, plus the 2 it returned"
+    );
+}
