@@ -24,7 +24,7 @@ use tos_image::ParseLimits;
 use tos_ir::Module;
 
 use crate::{
-    fixed_digest, ClosureModuleId, Failure, ImageSnapshot, ModuleProvider, VerifiedClosureManifest,
+    ClosureModuleId, Failure, ImageSnapshot, ModuleProvider, VerifiedClosureManifest,
     VerifiedModuleRecord,
 };
 
@@ -279,8 +279,11 @@ impl Residency {
         if self.live[at].imports.is_empty() && !self.live[at].module.imports.is_empty() {
             let mut resolved = Vec::with_capacity(self.live[at].module.imports.len());
             for declared in &self.live[at].module.imports {
-                let content_id = fixed_digest(&declared.module_content_id);
-                resolved.push(manifest.resolve(&declared.module_name, &content_id)?);
+                // The exact pair the caller's verified artifact states, hashed
+                // canonically and looked up in the trusted membership. No
+                // ambient lookup appears: the answer can only be a member.
+                resolved
+                    .push(manifest.resolve(&declared.module_name, &declared.module_content_id)?);
             }
             self.live[at].index_bytes +=
                 resolved.capacity() * core::mem::size_of::<ClosureModuleId>();

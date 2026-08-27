@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `10a827d14365e4c96ba6fe5e9e4edb86bf0debd272221e83d923d25f3e8acdea`\
+Source-manifest SHA-256: `df9b2dd565d781f500145c61d54e99aad3d98e228595fcf5542e7323749974bb`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -22221,6 +22221,17 @@ and are kept because a bound is only meaningful against what it improved on.
 | resident `import slot -> id` at the widest importer | 2 040 B, released with the module |
 
 Bounded by the closure ceiling and by nothing else.
+
+**A note on the sizes above.** They are the measurement harness's, which stored
+the module name in a fixed-width field. The production crate
+(`crates/tos-residency`) commits to a **full sha-256 of the exact
+(module name, content identity) pair** instead of storing either, because a
+fixed-width name field is a ceiling nothing accepted declares: docs/44 §2 bounds
+an *identifier* at 128 bytes, and a module name is
+`identifier ("." identifier)*`. A conforming module must never be refused by a
+record's layout. The record is `464 B` and a member `36 B` there — smaller than
+the figures above, so no bound in this ADR regresses, and every measured number
+holds with room to spare.
 
 #### Superseded: the import-edge form
 

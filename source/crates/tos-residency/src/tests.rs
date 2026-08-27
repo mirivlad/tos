@@ -191,7 +191,12 @@ fn a_launch_verifies_the_closure_and_keeps_only_records_and_membership() {
     assert_eq!(function, 0);
 
     // The record is fixed size, so releasing a module retains a constant.
-    assert_eq!(core::mem::size_of::<VerifiedModuleRecord>(), 592);
+    assert_eq!(
+        core::mem::size_of::<VerifiedModuleRecord>(),
+        464,
+        "the record is fixed size and holds no text"
+    );
+    assert_eq!(core::mem::size_of::<Member>(), 36);
     assert_eq!(
         result.records[0].artifact_digest,
         tos_hash::sha256(&store.images[0]),
@@ -207,21 +212,18 @@ fn membership_resolves_on_the_exact_pair() {
     let result = launched(&store);
     let manifest = &result.manifest;
 
-    let dependency = fixed_digest("sha256:dep");
     assert_eq!(
         manifest
-            .resolve("set.dependency", &dependency)
+            .resolve("set.dependency", "sha256:dep")
             .map(|id| id.position()),
         Some(0)
     );
     assert!(
-        manifest
-            .resolve("set.dependency", &fixed_digest("sha256:other"))
-            .is_none(),
+        manifest.resolve("set.dependency", "sha256:other").is_none(),
         "a right name with a wrong identity does not resolve"
     );
     assert!(
-        manifest.resolve("set.absent", &dependency).is_none(),
+        manifest.resolve("set.absent", "sha256:dep").is_none(),
         "a name outside the closure does not resolve"
     );
     assert!(
@@ -406,4 +408,95 @@ fn a_semantically_invalid_module_fails_the_launch() {
         Err(Failure::Verifier { module: 0, .. }) => {}
         other => panic!("an invalid module did not fail the launch: {other:?}"),
     }
+}
+
+/// A module name has no 128-byte ceiling, and a record must not invent one.
+///
+/// docs/44 §2 bounds an **identifier** at 128 bytes. A module name is
+/// `identifier ("." identifier)*`, so a conforming name is bounded by the
+/// source unit and by nothing smaller. The record commits to it rather than
+/// storing it, so none of these is refused for its length.
+#[test]
+fn long_conforming_identities_are_representable() {
+    let identifier = "i".repeat(128);
+    let dotted = alloc::vec![identifier.as_str(); 12].join(".");
+    assert!(dotted.len() > 1500, "well past any identifier ceiling");
+
+    let cases = [
+        ("a", "sha256:short"),
+        (identifier.as_str(), "sha256:exactly128"),
+        (dotted.as_str(), "sha256:dotted"),
+    ];
+    let mut seen = alloc::collections::BTreeSet::new();
+    for (name, content) in cases {
+        let identity = resolved_module_identity(name, content);
+        assert!(seen.insert(identity), "{name} is its own identity");
+    }
+
+    // And a detached source-set identity of any length commits without a cap.
+    let long_source_set = "detached-source-set/".repeat(64);
+    assert!(long_source_set.len() > 1200);
+    assert_ne!(
+        source_set_identity(&long_source_set),
+        source_set_identity("tos-residency-tests")
+    );
+}
+
+/// The commitment separates the pair, and the length prefixes are why.
+///
+/// Without them `("ab", "c")` and `("a", "bc")` would hash the same bytes, and
+/// two different resolutions would share one identity.
+#[test]
+fn different_pairs_have_different_identities() {
+    let corpus = [
+        ("set.a", "sha256:one"),
+        ("set.a", "sha256:two"),
+        ("set.b", "sha256:one"),
+        ("ab", "c"),
+        ("a", "bc"),
+        ("", "sha256:one"),
+        ("set.a", ""),
+    ];
+    let mut seen = alloc::collections::BTreeSet::new();
+    for (name, content) in corpus {
+        assert!(
+            seen.insert(resolved_module_identity(name, content)),
+            "({name:?}, {content:?}) collides with another pair"
+        );
+    }
+    assert_eq!(seen.len(), corpus.len());
+}
+
+/// A launch of a module whose name is far past any identifier ceiling still
+/// verifies, records and resolves.
+#[test]
+fn a_module_with_a_very_long_name_launches_and_resolves() {
+    let segment = "s".repeat(120);
+    let name = alloc::format!("{segment}.{segment}.{segment}");
+    assert!(name.len() > 128);
+    let long = module(&name, "sha256:long", &[]);
+    let (bytes, _) = tos_image::encode(&long);
+    let store = Store {
+        images: alloc::vec![ImageSnapshot::from(bytes.into_boxed_slice())],
+        resolutions: alloc::vec![ResolutionSnapshot::default()],
+    };
+    let result = launch(
+        &store,
+        &|position| store.resolutions[position].clone(),
+        &Limits::default(),
+        0,
+        "answer",
+    )
+    .expect("a long module name is not a reason to refuse a conforming module");
+    assert_eq!(
+        result
+            .manifest
+            .resolve(&name, "sha256:long")
+            .map(|id| id.position()),
+        Some(0)
+    );
+    assert_eq!(
+        result.records[0].resolved_identity,
+        resolved_module_identity(&name, "sha256:long")
+    );
 }

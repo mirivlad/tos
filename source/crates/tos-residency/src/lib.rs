@@ -112,66 +112,55 @@ pub trait ModuleProvider {
     fn image(&self, id: ClosureModuleId) -> Option<ImageSnapshot>;
 }
 
-/// A bounded name. Fixed storage, so a record containing one is still fixed
-/// size.
-#[derive(Clone, Copy)]
-pub struct BoundedName {
-    bytes: [u8; 96],
-    length: u8,
+/// The **exact resolved-module identity**, as a full sha-256.
+///
+/// docs/42 resolution maps a declared module name to a content identity, and
+/// `V2012_IMPORT` checks an import against both, so the control identity is the
+/// pair. It is committed to rather than stored:
+///
+/// ```text
+/// sha256( u64_be(len(module_name)) || module_name
+///      || u64_be(len(content_id))  || content_id )
+/// ```
+///
+/// The lengths are what make it a commitment rather than a concatenation: two
+/// different pairs cannot produce the same bytes by moving the boundary between
+/// them.
+///
+/// **Full sha-256, never truncated.** TOS already uses whole sha-256 for
+/// content, artifact and semantic identity, and a residency table that keyed on
+/// 64 or 128 bits would be holding a correctness property with high probability
+/// — which is not holding it.
+///
+/// This replaces a fixed-width name field that capped a module name at 96
+/// bytes. That was a cap nothing accepted declares: docs/44 §2 bounds an
+/// *identifier* at 128 bytes, and a module name is `identifier ("." identifier)*`,
+/// so a conforming name is bounded by the source unit and not by 128 — let alone
+/// by 96. A conforming module must never be refused by a record's layout.
+pub type ResolvedModuleIdentity = [u8; 32];
+
+/// The canonical commitment to one resolved-module identity.
+pub fn resolved_module_identity(module_name: &str, content_id: &str) -> ResolvedModuleIdentity {
+    let mut state = tos_hash::Sha256::new();
+    state.update(&(module_name.len() as u64).to_be_bytes());
+    state.update(module_name.as_bytes());
+    state.update(&(content_id.len() as u64).to_be_bytes());
+    state.update(content_id.as_bytes());
+    state.finalize()
 }
 
-impl BoundedName {
-    pub fn new(text: &str) -> Option<BoundedName> {
-        let source = text.as_bytes();
-        if source.len() > 96 {
-            return None;
-        }
-        let mut bytes = [0u8; 96];
-        bytes[..source.len()].copy_from_slice(source);
-        Some(BoundedName {
-            bytes,
-            length: source.len() as u8,
-        })
-    }
-
-    /// The stored bytes, without validating them again.
-    ///
-    /// Comparison is byte-wise rather than through `as_str`: UTF-8 orders the
-    /// same way as its bytes, so the order is identical, and a lookup does not
-    /// re-validate two strings that were validated when they were built.
-    fn bytes(&self) -> &[u8] {
-        &self.bytes[..self.length as usize]
-    }
-
-    pub fn as_str(&self) -> &str {
-        core::str::from_utf8(self.bytes()).unwrap_or("")
-    }
-}
-
-impl PartialEq for BoundedName {
-    fn eq(&self, other: &BoundedName) -> bool {
-        self.bytes() == other.bytes()
-    }
-}
-
-impl Eq for BoundedName {}
-
-impl PartialOrd for BoundedName {
-    fn partial_cmp(&self, other: &BoundedName) -> Option<core::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
-impl Ord for BoundedName {
-    fn cmp(&self, other: &BoundedName) -> core::cmp::Ordering {
-        self.bytes().cmp(other.bytes())
-    }
-}
-
-impl core::fmt::Debug for BoundedName {
-    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(out, "{:?}", self.as_str())
-    }
+/// A commitment to a source-set identity, with no ceiling of its own.
+///
+/// Nothing after launch reads the source set's text — it is a fact about where
+/// a module came from, carried so that a record can be compared and reported,
+/// not something execution resolves against. So the record commits to it
+/// instead of storing it, and no accepted contract has to supply a bound that
+/// does not exist.
+pub fn source_set_identity(source_set: &str) -> [u8; 32] {
+    let mut state = tos_hash::Sha256::new();
+    state.update(&(source_set.len() as u64).to_be_bytes());
+    state.update(source_set.as_bytes());
+    state.finalize()
 }
 
 /// The ten declared limits, as fixed numbers.
@@ -214,6 +203,9 @@ impl Envelope {
 /// could not be called fixed size.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct VerifiedModuleRecord {
+    /// The control identity: what the manifest keys on and what an import
+    /// resolves to. A commitment to the exact (name, content identity) pair.
+    pub resolved_identity: ResolvedModuleIdentity,
     pub semantic_digest: [u8; 32],
     pub artifact_digest: [u8; 32],
     pub verifier_identity: [u8; 32],
@@ -221,8 +213,8 @@ pub struct VerifiedModuleRecord {
     pub dependency_digest: [u8; 32],
     pub capability_interface_digest: [u8; 32],
     pub source_map_digest: [u8; 32],
-    pub name: BoundedName,
-    pub source_set: BoundedName,
+    /// A commitment to the source-set identity, not its text.
+    pub source_set_identity: [u8; 32],
     pub profile: tos_ir::Profile,
     pub envelope: Envelope,
 }
@@ -269,8 +261,7 @@ fn nibble(byte: u8) -> Option<u8> {
 /// identity, and this does not assume it is.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Member {
-    pub name: BoundedName,
-    pub content_id: [u8; 32],
+    pub identity: ResolvedModuleIdentity,
     pub position: u32,
 }
 
@@ -299,16 +290,15 @@ impl VerifiedClosureManifest {
     /// A binary search over at most 256 fixed-size records. It cannot answer
     /// with anything outside the closure, because the table holds nothing else
     /// and `ClosureModuleId` has no other constructor.
-    pub fn resolve(&self, name: &str, content_id: &[u8; 32]) -> Option<ClosureModuleId> {
+    pub fn resolve(&self, module_name: &str, content_id: &str) -> Option<ClosureModuleId> {
+        self.resolve_identity(&resolved_module_identity(module_name, content_id))
+    }
+
+    /// The same lookup, for a caller that already holds the commitment.
+    pub fn resolve_identity(&self, identity: &ResolvedModuleIdentity) -> Option<ClosureModuleId> {
         let at = self
             .members
-            .binary_search_by(|member| {
-                member
-                    .name
-                    .bytes()
-                    .cmp(name.as_bytes())
-                    .then_with(|| member.content_id.cmp(content_id))
-            })
+            .binary_search_by(|member| member.identity.cmp(identity))
             .ok()?;
         Some(ClosureModuleId(self.members[at].position as usize))
     }
@@ -345,8 +335,6 @@ pub enum Failure {
     /// An import named a module the closure does not contain, or a closure
     /// contained the same identity twice.
     WrongModule { module: usize },
-    /// A record field outside its bound — a name too long for the fixed record.
-    Unrepresentable { module: usize, field: &'static str },
     /// A module needs more resident state than the declared bound allows, even
     /// alone. An execution must be able to make progress with one resident
     /// module; if it cannot, that is a refusal and not an eviction.
@@ -373,12 +361,9 @@ pub type Resolution<'a> = &'a dyn Fn(usize) -> ResolutionSnapshot;
 /// The declared limits a launch verifies under.
 pub type VerifierLimits = Limits;
 
-/// The module a record describes, for callers that want to compare identities.
-pub fn module_identity(module: &Module) -> ([u8; 32], Option<BoundedName>) {
-    (
-        fixed_digest(&module.header.content_id),
-        BoundedName::new(&module.header.module_name),
-    )
+/// The control identity of a module, from its own header.
+pub fn module_identity(module: &Module) -> ResolvedModuleIdentity {
+    resolved_module_identity(&module.header.module_name, &module.header.content_id)
 }
 
 #[cfg(test)]

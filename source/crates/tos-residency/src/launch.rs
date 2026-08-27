@@ -18,8 +18,9 @@ use alloc::vec::Vec;
 use tos_verifier::verify_image;
 
 use crate::{
-    fixed_digest, BoundedName, ClosureModuleId, Envelope, Failure, ImageSnapshot, Member,
-    Resolution, VerifiedClosureManifest, VerifiedModuleRecord, VerifierLimits,
+    fixed_digest, resolved_module_identity, source_set_identity, ClosureModuleId, Envelope,
+    Failure, ImageSnapshot, Member, Resolution, VerifiedClosureManifest, VerifiedModuleRecord,
+    VerifierLimits,
 };
 
 /// The exact resolved closure a launch is handed.
@@ -71,18 +72,13 @@ pub fn launch(
         let verified = verify_image(&image, &resolution(position), limits)
             .map_err(|refusal| Failure::from_refusal(position, refusal))?;
 
-        let name =
-            BoundedName::new(&verified.receipt().module_name).ok_or(Failure::Unrepresentable {
-                module: position,
-                field: "module_name",
-            })?;
-        let source_set =
-            BoundedName::new(&verified.receipt().source_set).ok_or(Failure::Unrepresentable {
-                module: position,
-                field: "source_set",
-            })?;
         let receipt = verified.receipt();
+        // The control identity is a commitment to the exact pair, so a module
+        // name of any conforming length — and a module name is
+        // `identifier ("." identifier)*`, so it has no 128-byte ceiling —
+        // becomes thirty-two bytes here rather than being refused for its size.
         *slot = Some(VerifiedModuleRecord {
+            resolved_identity: resolved_module_identity(&receipt.module_name, &receipt.content_id),
             semantic_digest: fixed_digest(&receipt.module_digest),
             artifact_digest: *verified.artifact_digest(),
             verifier_identity: fixed_digest(&receipt.verifier_identity),
@@ -90,8 +86,7 @@ pub fn launch(
             dependency_digest: fixed_digest(&receipt.dependency_digest),
             capability_interface_digest: fixed_digest(&receipt.capability_interface_digest),
             source_map_digest: fixed_digest(&receipt.source_map_digest),
-            name,
-            source_set,
+            source_set_identity: source_set_identity(&receipt.source_set),
             profile: receipt.profile,
             envelope: Envelope::of(&receipt.resource_envelope),
         });
@@ -119,18 +114,13 @@ pub fn launch(
         .iter()
         .enumerate()
         .map(|(position, record)| Member {
-            name: record.name,
-            content_id: record.content_id,
+            identity: record.resolved_identity,
             position: position as u32,
         })
         .collect();
-    members.sort_by(|left, right| {
-        left.name
-            .cmp(&right.name)
-            .then_with(|| left.content_id.cmp(&right.content_id))
-    });
+    members.sort_by_key(|member| member.identity);
     for pair in members.windows(2) {
-        if pair[0].name == pair[1].name && pair[0].content_id == pair[1].content_id {
+        if pair[0].identity == pair[1].identity {
             return Err(Failure::WrongModule {
                 module: pair[1].position as usize,
             });
