@@ -63,6 +63,13 @@ pub use tos_core::{Diagnostic, Position, Severity};
 /// The accepted interface schemas, for the host that answers a module's
 /// capability requests and performs its operations (ADR-0060, ADR-0061).
 pub use tos_core::interfaces;
+
+pub mod source;
+
+pub use source::{
+    SliceSourceProvider, SourceClosureManifest, SourceMember, SourceModuleId, SourceProvider,
+    SourceRefusal,
+};
 use tos_engine::{run_closure, Accounting, Closure, Refusal};
 pub use tos_engine::{
     Handle, Reach, Request as CapabilityRequest, System, Trap, Unreachable, Value,
@@ -235,6 +242,13 @@ pub enum Run {
         stage: PipelineStage,
         diagnostics: Vec<Diagnostic>,
     },
+    /// The provider could not supply a member of the resolved closure, or
+    /// supplied something other than what resolution saw (ADR-0072 §6).
+    ///
+    /// Its own outcome, and not a transport refusal: the bytes were readable
+    /// when the closure was resolved, and what changed is the source behind an
+    /// identity rather than the identity's own validity.
+    SourceRefused(SourceRefusal),
     /// The source is valid and checked, and this lowerer cannot represent one
     /// of its constructs. Not a defect in the program.
     NotLowered(Gap),
@@ -267,7 +281,9 @@ impl Run {
         match self {
             Run::SourceRejected { .. } => Some(PipelineStage::Read),
             Run::Diagnosed { stage, .. } => Some(*stage),
-            Run::NotLowered(_) => Some(PipelineStage::Lower),
+            // The source was resolved and then would not materialize, which is
+            // discovered where it is needed: in the lowering pass.
+            Run::SourceRefused(_) | Run::NotLowered(_) => Some(PipelineStage::Lower),
             Run::Unverified(_) => Some(PipelineStage::Verify),
             Run::Refused(_) | Run::Trapped { .. } => Some(PipelineStage::Execute),
             Run::Completed(_) => None,
@@ -363,6 +379,39 @@ pub fn prepare_from_source(
     trace: &mut dyn Trace,
     residency: ResidencyLimits,
 ) -> Result<Preparation, SetError> {
+    let provider = SliceSourceProvider::new(request.units);
+    prepare_from_provider(
+        &provider,
+        request.source_set,
+        request.entry_path,
+        request.entry,
+        trace,
+        residency,
+    )
+}
+
+/// The same, from an explicit closure-bounded provider (ADR-0072 §6).
+///
+/// **The production shape.** Resolution reads the provider's listing once and
+/// mints a closed membership; from then on the frontend asks for a member by
+/// the identity that membership produced, and every answer is checked against
+/// what resolution saw. A module outside the closure has no identifier, so the
+/// provider cannot be asked for one.
+pub fn prepare_from_provider(
+    provider: &dyn SourceProvider,
+    source_set: &str,
+    entry_path: &str,
+    entry: &str,
+    trace: &mut dyn Trace,
+    residency: ResidencyLimits,
+) -> Result<Preparation, SetError> {
+    let units = provider.listing();
+    let request = &SetRequest {
+        source_set,
+        units,
+        entry_path,
+        entry,
+    };
     // Checked before the first stage is announced, so a request that cannot run
     // produces no stage events at all. A log that announced `read` and then
     // said the entry was missing would describe a run that never started.
@@ -466,6 +515,21 @@ pub fn prepare_from_source(
     // imports and can be given their computed identities.
     let closure = closure_of_summaries(&summaries, entry_index);
 
+    // The membership is minted here and nowhere else: from identities this
+    // resolution computed, over the units this listing offered. Past this line
+    // the frontend asks the provider for a member, and a module outside the
+    // closure has no identifier to ask under.
+    let members: Vec<SourceMember> = request
+        .units
+        .iter()
+        .map(|unit| SourceMember {
+            path: unit.path.to_string(),
+            // Every unit read in the read phase, so every one has an identity.
+            content_id: source::identity_of(unit.bytes).unwrap_or_default(),
+        })
+        .collect();
+    let source_closure = SourceClosureManifest::of(members);
+
     trace.entering(PipelineStage::Lower);
     let names: Vec<String> = summaries
         .iter()
@@ -502,7 +566,18 @@ pub fn prepare_from_source(
         // same source and the same tree the check phase saw, not a cheaper
         // substitute for either. Nothing skips the frontend and nothing skips
         // the checker — what is not done twice is *holding* the result.
-        let Ok(source) = SourceReader::read(request.units[index].bytes) else {
+        // The provider is asked for this member by the identity resolution
+        // minted, and what comes back is checked against what resolution saw.
+        // Source that vanished or changed between the two stages fails the
+        // preparation; nothing looks for an alternative.
+        let member = source_closure
+            .module(index)
+            .expect("every unit is a member of the closure it was resolved in");
+        let bytes = match source::materialize(provider, &source_closure, member) {
+            Ok(bytes) => bytes,
+            Err(refusal) => return Ok(Preparation::Refused(Run::SourceRefused(refusal))),
+        };
+        let Ok(source) = SourceReader::read(bytes) else {
             // A unit that read in the read phase and not here would mean the
             // reader is not a function of its input.
             return Ok(Preparation::Refused(Run::SourceRejected {

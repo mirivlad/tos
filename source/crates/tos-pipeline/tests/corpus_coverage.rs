@@ -87,6 +87,9 @@ fn the_accepted_corpus_lowering_boundary_is_measured_not_implied() {
                 verified += 1;
                 "executed"
             }
+            Run::SourceRefused(refusal) => {
+                panic!("the corpus source did not materialize: {refusal:?}")
+            }
             Run::NotLowered(gap) => {
                 *gaps.entry(gap.construct.to_string()).or_default() += 1;
                 "not-lowered"

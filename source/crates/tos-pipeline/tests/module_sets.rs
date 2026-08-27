@@ -708,3 +708,200 @@ fn a_closure_that_does_not_build_never_becomes_a_prepared_executable() {
         Err(error) => panic!("the request itself was rejected: {error:?}"),
     }
 }
+
+/// A provider that answers a member with something other than what resolution
+/// saw fails the preparation (ADR-0072 §6).
+///
+/// Materialization is a separate stage from resolution precisely so that this
+/// is catchable: the identity is recomputed from the bytes that came back, not
+/// remembered about them. Nothing looks for an alternative.
+#[test]
+fn source_that_changed_after_resolution_fails_the_preparation() {
+    let dependency = lib(
+        "system.lib.math",
+        "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+    );
+    let substituted = lib(
+        "system.lib.math",
+        "pub fn double(value: i32) -> i32 { return value * 3i32; }",
+    );
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.math as math;",
+        "pub fn main() -> i32 { return math.double(21i32); }",
+    );
+    let units = [
+        Unit {
+            path: "system/lib/math.tos",
+            bytes: dependency.as_bytes(),
+        },
+        Unit {
+            path: "system/boot/init.tos",
+            bytes: entry.as_bytes(),
+        },
+    ];
+
+    /// Resolves against one source set and materializes a different one.
+    struct Swapped<'a> {
+        units: &'a [Unit<'a>],
+        at: usize,
+        instead: &'a [u8],
+    }
+    impl tos_pipeline::SourceProvider for Swapped<'_> {
+        fn listing(&self) -> &[Unit<'_>] {
+            self.units
+        }
+
+        fn source(&self, id: tos_pipeline::SourceModuleId) -> Option<&[u8]> {
+            if id.position() == self.at {
+                return Some(self.instead);
+            }
+            self.units.get(id.position()).map(|unit| unit.bytes)
+        }
+    }
+
+    let provider = Swapped {
+        units: &units,
+        at: 0,
+        instead: substituted.as_bytes(),
+    };
+    match tos_pipeline::prepare_from_provider(
+        &provider,
+        "tos-module-set-tests",
+        "system/boot/init.tos",
+        "main",
+        &mut Silent,
+        tos_pipeline::HOST_RESIDENCY,
+    ) {
+        Ok(tos_pipeline::Preparation::Refused(Run::SourceRefused(refusal))) => {
+            assert_eq!(refusal.symbol(), "source-changed");
+            assert_eq!(refusal.path(), "system/lib/math.tos");
+        }
+        Ok(_) => panic!("substituted source produced an executable"),
+        Err(error) => panic!("the request itself was rejected: {error:?}"),
+    }
+}
+
+/// A provider that has nothing for a member of its own resolved closure fails
+/// the preparation rather than running without it.
+#[test]
+fn source_that_vanished_after_resolution_fails_the_preparation() {
+    let dependency = lib(
+        "system.lib.math",
+        "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+    );
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.math as math;",
+        "pub fn main() -> i32 { return math.double(21i32); }",
+    );
+    let units = [
+        Unit {
+            path: "system/lib/math.tos",
+            bytes: dependency.as_bytes(),
+        },
+        Unit {
+            path: "system/boot/init.tos",
+            bytes: entry.as_bytes(),
+        },
+    ];
+
+    struct Gone<'a> {
+        units: &'a [Unit<'a>],
+        at: usize,
+    }
+    impl tos_pipeline::SourceProvider for Gone<'_> {
+        fn listing(&self) -> &[Unit<'_>] {
+            self.units
+        }
+
+        fn source(&self, id: tos_pipeline::SourceModuleId) -> Option<&[u8]> {
+            if id.position() == self.at {
+                return None;
+            }
+            self.units.get(id.position()).map(|unit| unit.bytes)
+        }
+    }
+
+    let provider = Gone {
+        units: &units,
+        at: 0,
+    };
+    match tos_pipeline::prepare_from_provider(
+        &provider,
+        "tos-module-set-tests",
+        "system/boot/init.tos",
+        "main",
+        &mut Silent,
+        tos_pipeline::HOST_RESIDENCY,
+    ) {
+        Ok(tos_pipeline::Preparation::Refused(Run::SourceRefused(refusal))) => {
+            assert_eq!(refusal.symbol(), "source-absent");
+            assert_eq!(refusal.path(), "system/lib/math.tos");
+        }
+        Ok(_) => panic!("a missing member produced an executable"),
+        Err(error) => panic!("the request itself was rejected: {error:?}"),
+    }
+}
+
+/// Deleting every derived image costs a machine nothing it cannot rebuild.
+///
+/// ADR-0002's recovery property, and ADR-0072 §5: the image is a disposable
+/// artifact, the source is canonical, and a preparation that starts from source
+/// with no image at all reaches the same executable state. Two independent
+/// preparations over the same canonical source produce the same receipt, which
+/// is the same statement about the same bytes.
+#[test]
+fn a_closure_regenerates_from_canonical_source_with_no_image_at_all() {
+    let dependency = lib(
+        "system.lib.math",
+        "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+    );
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.math as math;",
+        "pub fn main() -> i32 { return math.double(21i32); }",
+    );
+    let texts = [
+        ("system/lib/math.tos", dependency.as_str()),
+        ("system/boot/init.tos", entry.as_str()),
+    ];
+    let units: Vec<Unit<'_>> = texts
+        .iter()
+        .map(|(path, text)| Unit {
+            path,
+            bytes: text.as_bytes(),
+        })
+        .collect();
+    let request = SetRequest {
+        source_set: "tos-module-set-tests",
+        units: &units,
+        entry_path: "system/boot/init.tos",
+        entry: "main",
+    };
+
+    let mut receipts = Vec::new();
+    for _ in 0..2 {
+        // Nothing is carried between these two: no image, no record, no
+        // manifest. Each starts from the canonical source and nothing else.
+        let prepared =
+            tos_pipeline::prepare_from_source(&request, &mut Silent, tos_pipeline::HOST_RESIDENCY)
+                .expect("the set names an entry it contains");
+        let tos_pipeline::Preparation::Ready(mut prepared) = prepared else {
+            panic!("the closure prepares");
+        };
+        let run = tos_pipeline::run_prepared(&mut prepared, &request, Vec::new(), &mut Unreachable);
+        let Run::Completed(completion) = run else {
+            panic!("the regenerated closure runs: {run:?}");
+        };
+        assert_eq!(
+            completion.value,
+            tos_pipeline::Value::Int(tos_pipeline::IntKind::I32, 42)
+        );
+        receipts.push(completion.receipt.module_digest.clone());
+    }
+    assert_eq!(
+        receipts[0], receipts[1],
+        "regeneration from canonical source reaches the same verified module"
+    );
+}
