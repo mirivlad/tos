@@ -16,7 +16,7 @@ use alloc::string::String;
 use tos_core::Diagnostic;
 use tos_engine::Value;
 
-use crate::{Completion, Run, Site};
+use crate::{Completion, Run, Site, TrapLocation};
 
 /// A diagnostic in one line: code, severity, stage, span, then its fields.
 ///
@@ -101,6 +101,19 @@ fn int_kind(kind: tos_ir::IntKind) -> &'static str {
         tos_ir::IntKind::U32 => "u32",
         tos_ir::IntKind::U64 => "u64",
     }
+}
+
+/// A trap location as `path:byte_start..byte_end`.
+///
+/// What a process can say without the source: the canonical path and the exact
+/// span. A boot log is written by a process that has already released the
+/// build, so this is the form that always exists; [`site`] is the richer one for
+/// a reader that still has the text.
+pub fn location(location: &TrapLocation) -> String {
+    format!(
+        "{}:{}..{}",
+        location.path, location.byte_start, location.byte_end
+    )
 }
 
 /// A source site as `path:line:column-line:column`.
@@ -208,7 +221,7 @@ pub fn events(run: &Run) -> alloc::vec::Vec<String> {
         Run::Trapped { code, detail, at } => {
             let where_at = at
                 .as_ref()
-                .map(site)
+                .map(location)
                 .unwrap_or_else(|| String::from("<unmapped>"));
             out.push(format!(
                 "TOS.RUN.TRAP code={code} at={where_at} detail={}",
