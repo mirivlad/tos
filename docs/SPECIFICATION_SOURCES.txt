@@ -138,3 +138,4 @@ docs/adr/0068-what-the-two-stage3-latency-budgets-measure.md
 docs/adr/0069-stage3-reference-process-grant.md
 docs/adr/0070-compact-verified-execution-image.md
 docs/adr/0071-bounded-verified-module-residency.md
+docs/adr/0072-source-backed-launch-workspace.md

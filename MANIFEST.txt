@@ -40,7 +40,7 @@ Composition (derived, not hand-maintained)
 ------------------------------------------
 - files in the release package: 429
 - active system invariants: 21
-- architecture decision records: 71 (40 accepted)
+- architecture decision records: 72 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -115,6 +115,7 @@ Architecture decision records
 - docs/adr/0069-stage3-reference-process-grant.md — ADR-0069: The Stage 3 reference process grant [**Accepted**]
 - docs/adr/0070-compact-verified-execution-image.md — ADR-0070: A compact verified module image [**Accepted**]
 - docs/adr/0071-bounded-verified-module-residency.md — ADR-0071: Bounded verified-module residency and the module provider [**Accepted**]
+- docs/adr/0072-source-backed-launch-workspace.md — ADR-0072: The launch workspace, and what a process grant is for [**Accepted**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
