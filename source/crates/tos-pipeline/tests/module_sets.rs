@@ -617,3 +617,94 @@ fn a_mutable_borrow_writes_back_across_two_module_boundaries() {
         "7 + 100 written two boundaries down, plus the 2 it returned"
     );
 }
+
+/// Preparation and execution are two accounts with two lifetimes (ADR-0072 §2).
+///
+/// What `prepare_from_source` returns is an executable closure: images, one
+/// fixed-size record per module, the membership, the entry receipt and the
+/// declared envelope. Everything the build needed to produce them is gone by
+/// then, and the run reaches its modules through the resident set rather than
+/// through anything the preparation held.
+#[test]
+fn a_prepared_closure_outlives_the_workspace_that_built_it() {
+    let dependency = lib(
+        "system.lib.math",
+        "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+    );
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.math as math;",
+        "pub fn main() -> i32 { return math.double(21i32); }",
+    );
+    let texts = [
+        ("system/lib/math.tos", dependency.as_str()),
+        ("system/boot/init.tos", entry.as_str()),
+    ];
+    let units: Vec<Unit<'_>> = texts
+        .iter()
+        .map(|(path, text)| Unit {
+            path,
+            bytes: text.as_bytes(),
+        })
+        .collect();
+    let request = SetRequest {
+        source_set: "tos-module-set-tests",
+        units: &units,
+        entry_path: "system/boot/init.tos",
+        entry: "main",
+    };
+
+    let prepared =
+        tos_pipeline::prepare_from_source(&request, &mut Silent, tos_pipeline::HOST_RESIDENCY)
+            .expect("the set names an entry it contains");
+    let tos_pipeline::Preparation::Ready(mut prepared) = prepared else {
+        panic!("the closure prepares");
+    };
+    assert_eq!(prepared.modules(), 2, "both modules are in the membership");
+
+    // The same closure runs twice from one preparation. Nothing about the build
+    // is consulted again: if any of it had been needed, it could not be here.
+    for _ in 0..2 {
+        let run = tos_pipeline::run_prepared(&mut prepared, &request, Vec::new(), &mut Unreachable);
+        let Run::Completed(completion) = run else {
+            panic!("the prepared closure runs: {run:?}");
+        };
+        assert_eq!(
+            completion.value,
+            tos_pipeline::Value::Int(tos_pipeline::IntKind::I32, 42)
+        );
+    }
+    assert!(
+        prepared.traffic().loads >= 2,
+        "the run reached its modules through the resident set: {:?}",
+        prepared.traffic()
+    );
+}
+
+/// A closure that cannot be built is refused by the preparation, and nothing
+/// executes.
+#[test]
+fn a_closure_that_does_not_build_never_becomes_a_prepared_executable() {
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.absent as absent;",
+        "pub fn main() -> i32 { return absent.value(); }",
+    );
+    let units = [Unit {
+        path: "system/boot/init.tos",
+        bytes: entry.as_bytes(),
+    }];
+    let request = SetRequest {
+        source_set: "tos-module-set-tests",
+        units: &units,
+        entry_path: "system/boot/init.tos",
+        entry: "main",
+    };
+    match tos_pipeline::prepare_from_source(&request, &mut Silent, tos_pipeline::HOST_RESIDENCY) {
+        Ok(tos_pipeline::Preparation::Refused(run)) => {
+            assert_eq!(run.failed_at(), Some(PipelineStage::Resolve));
+        }
+        Ok(_) => panic!("an unresolvable import produced an executable"),
+        Err(error) => panic!("the request itself was rejected: {error:?}"),
+    }
+}
