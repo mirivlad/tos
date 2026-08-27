@@ -872,3 +872,88 @@ fn an_array_is_indexed_by_a_value_the_run_computes() {
         "RUNTIME_INDEX_OUT_OF_RANGE"
     );
 }
+
+/// The depth a TOS program may reach is the depth it declares, not the depth
+/// the host stack happens to have.
+///
+/// Every TOS call used to be a Rust recursion, so a program's declared
+/// recursion limit was silently capped by the host's stack — and the cap was
+/// invisible, machine-dependent, and reached as an abort rather than as a trap.
+/// This descends far past where that would have died, inside a declared limit,
+/// and expects an ordinary answer.
+#[test]
+fn a_deep_call_chain_is_bounded_by_the_declaration_and_not_by_the_host_stack() {
+    let depth = 20_000i64;
+    let text = format!(
+        "module app.deep version 1.0 profile bootstrap; \
+         resource [fuel: 100000000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: {}, imports: 0] \
+         pub fn down(n: i64) -> i64 {{ \
+             if (n <= 0i64) {{ return 0i64; }} \
+             return down(n - 1i64) + 1i64; }} \
+         pub fn main() -> i64 {{ return down({depth}i64); }}",
+        depth + 8
+    );
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("the fixture parses");
+    let diagnostics = Checker::check(&source, &schema);
+    assert!(
+        !diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.severity() == tos_core::Severity::Error),
+        "the fixture checks clean: {:?}",
+        diagnostics.iter().map(|d| d.code()).collect::<Vec<_>>()
+    );
+    let context = ModuleContext {
+        source_set: "tos-tests-integration".to_string(),
+        path: "app/deep.tos".to_string(),
+        content_id: content_id(source.bytes()),
+        dependency_digest: content_id(b""),
+        capability_interface_digest: content_id(b""),
+    };
+    let module = tos_core::lower_module(&source, &schema, &context).expect("the fixture lowers");
+    let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect("the fixture verifies");
+    let outcome = run(&module, &receipt, "main", vec![], &mut Unreachable)
+        .expect("the entry exists")
+        .expect("no trap");
+    assert_eq!(outcome.value, Value::Int(IntKind::I64, depth as i128));
+    assert!(
+        outcome.max_call_depth as i64 > depth,
+        "the run really did descend that far: {}",
+        outcome.max_call_depth
+    );
+}
+
+/// The declared recursion limit is still what stops a runaway, and it stops it
+/// as a trap.
+#[test]
+fn the_declared_recursion_limit_still_traps_below_the_host_stack() {
+    let text = "module app.deep version 1.0 profile bootstrap; \
+         resource [fuel: 100000000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 64, imports: 0] \
+         pub fn down(n: i64) -> i64 { \
+             if (n <= 0i64) { return 0i64; } \
+             return down(n - 1i64) + 1i64; } \
+         pub fn main() -> i64 { return down(10000i64); }";
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("the fixture parses");
+    let context = ModuleContext {
+        source_set: "tos-tests-integration".to_string(),
+        path: "app/deep.tos".to_string(),
+        content_id: content_id(source.bytes()),
+        dependency_digest: content_id(b""),
+        capability_interface_digest: content_id(b""),
+    };
+    let module = tos_core::lower_module(&source, &schema, &context).expect("the fixture lowers");
+    let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect("the fixture verifies");
+    let trap = run(&module, &receipt, "main", vec![], &mut Unreachable)
+        .expect("the entry exists")
+        .expect_err("the declared depth is exceeded");
+    assert_eq!(trap.code, "RUNTIME_RECURSION_LIMIT");
+}
