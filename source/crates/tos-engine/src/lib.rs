@@ -434,7 +434,6 @@ pub fn run_set(
 
     let envelope = &module.header.resource_envelope;
     let mut engine = Engine {
-        module,
         set,
         system,
         imports,
@@ -468,7 +467,7 @@ pub fn run_set(
     if let Err(trap) = engine.reserve_worker() {
         return Ok(Err(trap));
     }
-    let outcome = engine.call(index, arguments);
+    let outcome = engine.call(module, index, arguments);
     engine.release_worker();
     Ok(outcome.map(|value| Outcome {
         value,
@@ -483,9 +482,6 @@ pub fn run_set(
 }
 
 struct Engine<'module, 'system> {
-    /// The module whose function is executing. It changes for the duration of a
-    /// cross-module call and is restored when that call returns.
-    module: &'module Module,
     /// Every module this run may reach, each with its own receipt.
     set: &'module [Verified<'module>],
     /// What this run reaches when it leaves. Its own lifetime, because a host
@@ -685,19 +681,20 @@ impl Engine<'_, '_> {
     /// and needs no aliasing machinery to be correct.
     fn call_with_writeback(
         &mut self,
+        module: &Module,
         index: usize,
         arguments: Vec<Value>,
         operands: &[Operand],
         values: &mut [Option<Value>],
         source: SourceRef,
     ) -> Result<Value, Trap> {
-        let modes: Vec<tos_ir::PassMode> = self.module.functions[index]
+        let modes: Vec<tos_ir::PassMode> = module.functions[index]
             .signature
             .parameters
             .iter()
             .map(|parameter| parameter.mode)
             .collect();
-        let (result, finals) = self.call_capturing(index, arguments)?;
+        let (result, finals) = self.call_capturing(module, index, arguments)?;
         for (position, mode) in modes.iter().enumerate() {
             if *mode != tos_ir::PassMode::MutableBorrow {
                 continue;
@@ -715,8 +712,13 @@ impl Engine<'_, '_> {
         Ok(result)
     }
 
-    fn call(&mut self, index: usize, arguments: Vec<Value>) -> Result<Value, Trap> {
-        Ok(self.call_capturing(index, arguments)?.0)
+    fn call(
+        &mut self,
+        module: &Module,
+        index: usize,
+        arguments: Vec<Value>,
+    ) -> Result<Value, Trap> {
+        Ok(self.call_capturing(module, index, arguments)?.0)
     }
 
     /// Calls a function of another module of the set.
@@ -728,12 +730,13 @@ impl Engine<'_, '_> {
     /// a way to obtain a second budget.
     fn call_imported(
         &mut self,
+        module: &Module,
         import: usize,
         name: &str,
         arguments: Vec<Value>,
         source: SourceRef,
     ) -> Result<Value, Trap> {
-        let Some(declared) = self.module.imports.get(import) else {
+        let Some(declared) = module.imports.get(import) else {
             return Err(Trap::new(
                 "RUNTIME_UNRESOLVED_IMPORT",
                 "a call names an import the module does not declare",
@@ -789,9 +792,11 @@ impl Engine<'_, '_> {
             ));
         }
 
-        let caller = core::mem::replace(&mut self.module, callee.module);
-        let outcome = self.call(index, arguments);
-        self.module = caller;
+        // The callee's module is passed down rather than swapped into the
+        // engine: what module is executing belongs to the activation, not to
+        // the engine, and a frame that has to be restored on the way out is a
+        // frame that can be restored wrongly.
+        let outcome = self.call(callee.module, index, arguments);
         outcome.map_err(|mut trap| {
             if trap.site.is_none() {
                 trap.site = callee
@@ -809,10 +814,11 @@ impl Engine<'_, '_> {
     /// parameter slots, which is what a borrow writes back.
     fn call_capturing(
         &mut self,
+        module: &Module,
         index: usize,
         arguments: Vec<Value>,
     ) -> Result<(Value, Vec<Option<Value>>), Trap> {
-        let function = &self.module.functions[index];
+        let function = &module.functions[index];
         self.depth += 1;
         self.max_depth = self.max_depth.max(self.depth);
         if self.depth > self.recursion_limit {
@@ -850,7 +856,7 @@ impl Engine<'_, '_> {
                     function.blocks[block].source,
                 ));
             }
-            match self.run_block(index, block, &mut values) {
+            match self.run_block(module, index, block, &mut values) {
                 Ok(Exit::Return(value)) => break Ok(value),
                 Ok(Exit::Goto(next)) => block = next,
                 Err(trap) => break Err(trap),
@@ -870,35 +876,32 @@ impl Engine<'_, '_> {
 
     fn run_block(
         &mut self,
+        module: &Module,
         function_index: usize,
         block_index: usize,
         values: &mut [Option<Value>],
     ) -> Result<Exit, Trap> {
-        // The module outlives the engine, so a reference into it is not a
-        // borrow of `self` and does not conflict with the `&mut self` a nested
-        // call needs. Copying the reference out is what makes that visible to
-        // the borrow checker.
-        //
-        // This used to clone each instruction and the terminator. The clone was
-        // never needed — it was a way around a borrow that does not exist — and
-        // it copied an `Instruction` for every instruction executed, which is
-        // the single hottest thing an interpreter does.
-        let module = self.module;
+        // The module is an argument rather than engine state: which module is
+        // executing belongs to the activation. It also makes the borrow
+        // obvious — a reference into the module is not a borrow of `self`, so
+        // it does not conflict with the `&mut self` a nested call needs, and
+        // nothing has to be cloned to work around a borrow that does not exist.
         let block = &module.functions[function_index].blocks[block_index];
         for instruction in &block.instructions {
             self.spend(instruction.source)?;
-            let produced = self.evaluate(instruction, values)?;
+            let produced = self.evaluate(module, instruction, values)?;
             if let (Some(slot), Some(value)) = (instruction.result, produced) {
                 if slot < values.len() {
                     values[slot] = Some(value);
                 }
             }
         }
-        self.terminate(&block.terminator, values, block.source)
+        self.terminate(module, &block.terminator, values, block.source)
     }
 
     fn terminate(
         &mut self,
+        module: &Module,
         terminator: &Terminator,
         values: &mut [Option<Value>],
         source: SourceRef,
@@ -909,7 +912,7 @@ impl Engine<'_, '_> {
                 // the accounting for work done, and leaving a scope is work.
                 self.spend(source)?;
                 let value = match operand {
-                    Some(operand) => self.operand(operand, values, source)?,
+                    Some(operand) => self.operand(module, operand, values, source)?,
                     None => Value::Unit,
                 };
                 Ok(Exit::Return(value))
@@ -926,7 +929,7 @@ impl Engine<'_, '_> {
                 ..
             } => {
                 self.spend(source)?;
-                let Value::Bool(taken) = self.operand(condition, values, source)? else {
+                let Value::Bool(taken) = self.operand(module, condition, values, source)? else {
                     return Err(Trap::new(
                         "RUNTIME_TYPE_CONFUSION",
                         "a branch condition is not a bool",
@@ -937,7 +940,7 @@ impl Engine<'_, '_> {
             }
             Terminator::MatchEnum { subject, arms } => {
                 self.spend(source)?;
-                let value = self.operand(subject, values, source)?;
+                let value = self.operand(module, subject, values, source)?;
                 let Value::Variant { index, .. } = value else {
                     return Err(Trap::new(
                         "RUNTIME_TYPE_CONFUSION",
@@ -958,7 +961,7 @@ impl Engine<'_, '_> {
             }
             Terminator::PropagateError { result, ok_target } => {
                 self.spend(source)?;
-                let value = self.operand(result, values, source)?;
+                let value = self.operand(module, result, values, source)?;
                 let Value::Variant { index, payload } = &value else {
                     return Err(Trap::new(
                         "RUNTIME_TYPE_CONFUSION",
@@ -986,13 +989,14 @@ impl Engine<'_, '_> {
 
     fn evaluate(
         &mut self,
+        module: &Module,
         instruction: &Instruction,
         values: &mut [Option<Value>],
     ) -> Result<Option<Value>, Trap> {
         let op = &instruction.op;
         let source = instruction.source;
         let produced = match op {
-            Op::Const(constant) => Some(self.constant(*constant, source)?),
+            Op::Const(constant) => Some(self.constant(module, *constant, source)?),
             Op::Aggregate { operands, .. } => {
                 // Reserve before building: docs/41 section 6 checks a
                 // reservation before the thing it pays for happens, so a value
@@ -1001,7 +1005,7 @@ impl Engine<'_, '_> {
                 self.frame_allocation += charged;
                 let mut elements = Vec::new();
                 for operand in operands {
-                    elements.push(self.operand(operand, values, source)?);
+                    elements.push(self.operand(module, operand, values, source)?);
                 }
                 Some(Value::Aggregate(elements))
             }
@@ -1012,7 +1016,7 @@ impl Engine<'_, '_> {
                 self.frame_allocation += charged;
                 let mut payload = Vec::new();
                 for operand in operands {
-                    payload.push(self.operand(operand, values, source)?);
+                    payload.push(self.operand(module, operand, values, source)?);
                 }
                 Some(Value::Variant {
                     index: *index,
@@ -1026,22 +1030,22 @@ impl Engine<'_, '_> {
                 Some(self.read_place(place, values, source)?)
             }
             Op::Write { place, value } => {
-                let value = self.operand(value, values, source)?;
+                let value = self.operand(module, value, values, source)?;
                 self.write_place(place, value, values, source)?;
                 None
             }
             Op::Drop { .. } => None,
             Op::Binary { op, left, right } => {
-                let left = self.operand(left, values, source)?;
-                let right = self.operand(right, values, source)?;
+                let left = self.operand(module, left, values, source)?;
+                let right = self.operand(module, right, values, source)?;
                 Some(binary(*op, left, right, source)?)
             }
             Op::Unary { op, operand } => {
-                let operand = self.operand(operand, values, source)?;
+                let operand = self.operand(module, operand, values, source)?;
                 Some(unary(*op, operand, source)?)
             }
             Op::Widen { operand, to } => {
-                let operand = self.operand(operand, values, source)?;
+                let operand = self.operand(module, operand, values, source)?;
                 let Value::Int(_, magnitude) = operand else {
                     return Err(Trap::new(
                         "RUNTIME_TYPE_CONFUSION",
@@ -1069,20 +1073,20 @@ impl Engine<'_, '_> {
                     CallTarget::Local(index) => {
                         #[cfg(feature = "measurement-marks")]
                         self.system.mark_before_call();
-                        let called =
-                            self.arguments(operands, values, source)
-                                .and_then(|arguments| {
-                                    self.call_with_writeback(
-                                        *index, arguments, operands, values, source,
-                                    )
-                                });
+                        let called = self.arguments(module, operands, values, source).and_then(
+                            |arguments| {
+                                self.call_with_writeback(
+                                    module, *index, arguments, operands, values, source,
+                                )
+                            },
+                        );
                         #[cfg(feature = "measurement-marks")]
                         self.system.mark_after_call();
                         Some(called?)
                     }
                     CallTarget::Imported { import, name } => {
-                        let arguments = self.arguments(operands, values, source)?;
-                        Some(self.call_imported(*import, name, arguments, source)?)
+                        let arguments = self.arguments(module, operands, values, source)?;
+                        Some(self.call_imported(module, *import, name, arguments, source)?)
                     }
                     // Two different things share this target, and the
                     // instruction says which. A predeclared name is a
@@ -1091,7 +1095,7 @@ impl Engine<'_, '_> {
                     // language does not perform at all, and the difference is
                     // exactly the field the verifier checked.
                     CallTarget::Predeclared(name) => {
-                        let arguments = self.arguments(operands, values, source)?;
+                        let arguments = self.arguments(module, operands, values, source)?;
                         match &instruction.unsafe_interface {
                             None => Some(self.predeclared(name, arguments, source)?),
                             Some(interface) => {
@@ -1104,7 +1108,7 @@ impl Engine<'_, '_> {
             Op::Closure { body, captures } => {
                 let mut held = Vec::new();
                 for capture in captures {
-                    held.push(self.operand(capture, values, source)?);
+                    held.push(self.operand(module, capture, values, source)?);
                 }
                 Some(Value::Closure {
                     body: *body,
@@ -1112,7 +1116,7 @@ impl Engine<'_, '_> {
                 })
             }
             Op::CallValue { callee, operands } => {
-                let callee = self.operand(callee, values, source)?;
+                let callee = self.operand(module, callee, values, source)?;
                 let Value::Closure { body, captures } = callee else {
                     return Err(Trap::new(
                         "RUNTIME_TYPE_CONFUSION",
@@ -1124,15 +1128,15 @@ impl Engine<'_, '_> {
                 // captures, which is the order the lowerer built it in.
                 let mut arguments = Vec::new();
                 for operand in operands {
-                    arguments.push(self.operand(operand, values, source)?);
+                    arguments.push(self.operand(module, operand, values, source)?);
                 }
                 arguments.extend(captures);
-                Some(self.call(body, arguments)?)
+                Some(self.call(module, body, arguments)?)
             }
             Op::Spawn { body, captures } => {
                 let mut held = Vec::new();
                 for capture in captures {
-                    held.push(self.operand(capture, values, source)?);
+                    held.push(self.operand(module, capture, values, source)?);
                 }
                 self.tasks_started += 1;
                 if self.tasks_started > self.task_limit {
@@ -1149,7 +1153,7 @@ impl Engine<'_, '_> {
                 })
             }
             Op::Join { task } | Op::Await { task } => {
-                let handle = self.operand(task, values, source)?;
+                let handle = self.operand(module, task, values, source)?;
                 let Value::Task {
                     body,
                     captures,
@@ -1172,7 +1176,7 @@ impl Engine<'_, '_> {
                 } else {
                     Value::Variant {
                         index: 0,
-                        payload: alloc::vec![self.call(body, captures)?],
+                        payload: alloc::vec![self.call(module, body, captures)?],
                     }
                 })
             }
@@ -1185,7 +1189,7 @@ impl Engine<'_, '_> {
             // Charging at acquisition and releasing when that frame returns is
             // therefore exact at frame granularity rather than an estimate.
             Op::Lock { object, .. } => {
-                let value = self.operand(object, values, source)?;
+                let value = self.operand(module, object, values, source)?;
                 self.reserve_sync(source)?;
                 self.frame_sync += 1;
                 Some(value)
@@ -1196,7 +1200,7 @@ impl Engine<'_, '_> {
             // engine can prove here is that the module stayed inside the
             // `shared` budget it declared.
             Op::Share { operand } => {
-                let value = self.operand(operand, values, source)?;
+                let value = self.operand(module, operand, values, source)?;
                 self.reserve_shared(value_cells(&value), source)?;
                 Some(value)
             }
@@ -1223,11 +1227,18 @@ impl Engine<'_, '_> {
                 for call in calls {
                     let mut arguments = Vec::new();
                     for capture in &call.captures {
-                        arguments.push(self.operand(capture, values, source)?);
+                        arguments.push(self.operand(module, capture, values, source)?);
                     }
                     // ADR-0035: a cleanup acts on the scope it runs in, so what
                     // it leaves is what the next one and the scope observe.
-                    self.call_with_writeback(call.body, arguments, &call.captures, values, source)?;
+                    self.call_with_writeback(
+                        module,
+                        call.body,
+                        arguments,
+                        &call.captures,
+                        values,
+                        source,
+                    )?;
                 }
                 None
             }
@@ -1247,8 +1258,7 @@ impl Engine<'_, '_> {
                 right,
                 operands,
             } => {
-                let Some(interface) = self
-                    .module
+                let Some(interface) = module
                     .capability_imports
                     .get(*import)
                     .map(|import| import.interface.as_str())
@@ -1288,7 +1298,7 @@ impl Engine<'_, '_> {
                     arguments.push(also);
                 }
                 for operand in operands {
-                    arguments.push(self.operand(operand, values, source)?);
+                    arguments.push(self.operand(module, operand, values, source)?);
                 }
                 Some(self.reach(interface, right, arguments, source)?)
             }
@@ -1303,8 +1313,8 @@ impl Engine<'_, '_> {
         Ok(produced)
     }
 
-    fn constant(&self, index: usize, source: SourceRef) -> Result<Value, Trap> {
-        let Some(constant) = self.module.constants.get(index) else {
+    fn constant(&self, module: &Module, index: usize, source: SourceRef) -> Result<Value, Trap> {
+        let Some(constant) = module.constants.get(index) else {
             return Err(Trap::new(
                 "RUNTIME_TYPE_CONFUSION",
                 "a constant index is outside the table",
@@ -1324,18 +1334,20 @@ impl Engine<'_, '_> {
 
     fn arguments(
         &self,
+        module: &Module,
         operands: &[Operand],
         values: &[Option<Value>],
         source: SourceRef,
     ) -> Result<Vec<Value>, Trap> {
         operands
             .iter()
-            .map(|operand| self.operand(operand, values, source))
+            .map(|operand| self.operand(module, operand, values, source))
             .collect()
     }
 
     fn operand(
         &self,
+        module: &Module,
         operand: &Operand,
         values: &[Option<Value>],
         source: SourceRef,
@@ -1349,7 +1361,7 @@ impl Engine<'_, '_> {
                     source,
                 )),
             },
-            Operand::Constant(index) => self.constant(*index, source),
+            Operand::Constant(index) => self.constant(module, *index, source),
         }
     }
 
