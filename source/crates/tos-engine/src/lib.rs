@@ -703,10 +703,21 @@ struct CleanupPlan {
 enum Target {
     /// A function of the frame's own module.
     Local(usize),
-    Imported {
-        import: usize,
-        name: String,
-    },
+    Imported(ImportedCall),
+}
+
+/// A cross-module call, as the driver receives it.
+///
+/// One owned value rather than three parameters, because the three belong
+/// together: the slot names the import, the name names the export, and the
+/// operands are there because a cross-module write-back plan cannot be computed
+/// where the call is written. It needs the **callee's** declared parameter
+/// modes, and those are in a module the caller does not hold — so the operands
+/// travel to where the callee is resolved.
+struct ImportedCall {
+    slot: usize,
+    name: String,
+    operands: Vec<Operand>,
 }
 
 /// What evaluating one instruction produced.
@@ -741,6 +752,7 @@ const _: () = {
     owns_nothing_borrowed::<Pending>();
     owns_nothing_borrowed::<CleanupPlan>();
     owns_nothing_borrowed::<Target>();
+    owns_nothing_borrowed::<ImportedCall>();
     owns_nothing_borrowed::<Evaluated>();
     owns_nothing_borrowed::<Transition>();
     owns_nothing_borrowed::<Charges>();
@@ -999,14 +1011,9 @@ impl Engine<'_> {
                         Target::Local(index) => {
                             self.enter(closure, &mut frames, home, index, arguments)
                         }
-                        Target::Imported { import, name } => self.enter_imported(
-                            closure,
-                            &mut frames,
-                            home,
-                            import,
-                            &name,
-                            arguments,
-                        ),
+                        Target::Imported(call) => {
+                            self.enter_imported(closure, &mut frames, home, &call, arguments)
+                        }
                     };
                     if let Err(trap) = entered {
                         return Err(self.unwind(closure, &mut frames, trap));
@@ -1144,10 +1151,14 @@ impl Engine<'_> {
         closure: &mut Closure<'_>,
         frames: &mut Vec<Frame>,
         home: ClosureModuleId,
-        import: usize,
-        name: &str,
+        call: &ImportedCall,
         arguments: Vec<Value>,
     ) -> Result<(), Trap> {
+        let ImportedCall {
+            slot,
+            name,
+            operands,
+        } = call;
         // The call site, out of the caller, before anything can evict it.
         if let Err(failure) = closure.ensure(home) {
             return Err(residency_trap(&failure, 0));
@@ -1168,7 +1179,7 @@ impl Engine<'_> {
             })
             .unwrap_or(0);
 
-        let Some(callee) = closure.import_of(home, import) else {
+        let Some(callee) = closure.import_of(home, *slot) else {
             return Err(Trap::new(
                 "RUNTIME_UNRESOLVED_IMPORT",
                 "a call names an import the module does not declare",
@@ -1180,13 +1191,26 @@ impl Engine<'_> {
         if let Err(failure) = closure.ensure(callee) {
             return Err(residency_trap(&failure, source));
         }
-        let Some(index) = closure.export_of(callee, name) else {
+        let Some(index) = closure.export_of(callee, name.as_str()) else {
             return Err(Trap::new(
                 "RUNTIME_UNRESOLVED_IMPORT",
                 alloc::format!("closure module {} exports no {name}", callee.position()),
                 source,
             ));
         };
+        // The write-back plan, now that the callee's declared modes are in reach.
+        // It is index pairs and nothing else, so it survives both modules being
+        // evicted before the callee returns.
+        let plan = closure
+            .module_of(callee)
+            .map(|module| writeback_plan(module, index, operands))
+            .unwrap_or_default();
+        if let Some(caller) = frames.last_mut() {
+            if let Some(Pending::Call { writeback, .. }) = &mut caller.pending {
+                *writeback = plan;
+            }
+        }
+
         let arity = closure
             .module_of(callee)
             .and_then(|module| module.functions.get(index))
@@ -1612,10 +1636,11 @@ impl Engine<'_> {
                     CallTarget::Imported { import, name } => {
                         let arguments = self.arguments(module, operands, values, source)?;
                         return Ok(Evaluated::Enter {
-                            target: Target::Imported {
-                                import: *import,
+                            target: Target::Imported(ImportedCall {
+                                slot: *import,
                                 name: name.clone(),
-                            },
+                                operands: operands.clone(),
+                            }),
                             arguments,
                             pending: Pending::Call {
                                 result: instruction.result,
