@@ -14,7 +14,7 @@
 //! a test could pass because no eviction happened at all.
 
 use tos_core::{
-    lower_module_in_set, Checker, LoweredInterface, ModuleContext, Parser, ResolvedImport,
+    lower_module_in_set, Checker, LoweringInterface, ModuleContext, Parser, ResolvedImport,
     SourceReader,
 };
 use tos_engine::{run_closure, Closure, Refusal, Trap, Unreachable, Value};
@@ -54,7 +54,7 @@ fn lowered(
     path: &str,
     profile: &str,
     body: &str,
-    imports: &[(&str, &LoweredInterface)],
+    imports: &[(&str, &LoweringInterface)],
 ) -> Module {
     let text = format!("module {name} version 1.0 profile {profile}; {body}");
     let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
@@ -154,14 +154,14 @@ fn chain_in(profile: &str, leaf_body: &str, mid_body: &str, init_body: &str) -> 
         "set/mid.tos",
         profile,
         &format!("import set.leaf as leaf; {ENVELOPE} {mid_body}"),
-        &[("set.leaf", &LoweredInterface::of(&leaf))],
+        &[("set.leaf", &LoweringInterface::of(&leaf))],
     );
     let init = lowered(
         "set.init",
         "set/init.tos",
         profile,
         &format!("import set.mid as mid; {ENVELOPE} {init_body}"),
-        &[("set.mid", &LoweredInterface::of(&mid))],
+        &[("set.mid", &LoweringInterface::of(&mid))],
     );
     let store = Store::of(&[&leaf, &mid, &init]);
     let launched = launch(

@@ -35,7 +35,7 @@ use tos_ir::{
     UnaryOp, ValueId, Variant, Visibility,
 };
 
-use crate::interface::{LoweredInterface, ResolvedImport};
+use crate::interface::{LoweringInterface, ResolvedImport};
 use crate::parser::{
     Expression, ExpressionForm, Pattern, PatternForm, Schema, Span, Statement, StatementForm,
     TypeSyntax,
@@ -710,11 +710,10 @@ impl<'source> Lowerer<'source> {
             // empty content id above says the same thing about the same import.
             return Ok(self.unit_type());
         };
-        let Some(signature) = resolved.interface.export(operation) else {
+        let Some(result) = resolved.interface.result_of(operation) else {
             return Err(self.gap("call to a name the imported module does not export", at));
         };
-        let result = signature.result;
-        Ok(self.adopt_type(resolved.interface, result))
+        Ok(self.adopt_type(resolved.interface, result as TypeId))
     }
 
     /// Re-interns a type from another module's table into this one.
@@ -724,11 +723,11 @@ impl<'source> Lowerer<'source> {
     /// carries the content id of the module that declared it: the same type
     /// from the same module interns to one entry here however many imports
     /// reach it.
-    fn adopt_type(&mut self, from: &LoweredInterface, ty: TypeId) -> TypeId {
-        let Some(definition) = from.types().get(ty) else {
+    fn adopt_type(&mut self, from: &LoweringInterface, ty: TypeId) -> TypeId {
+        let Some(definition) = from.type_at(ty) else {
             return self.unit_type();
         };
-        let rebuilt = match definition.clone() {
+        let rebuilt = match definition {
             TypeDef::Option(inner) => TypeDef::Option(self.adopt_type(from, inner)),
             TypeDef::Task(inner) => TypeDef::Task(self.adopt_type(from, inner)),
             TypeDef::TaskResult(inner) => TypeDef::TaskResult(self.adopt_type(from, inner)),

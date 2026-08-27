@@ -27,7 +27,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use tos_core::{
-    lower_module_in_set, LoweredInterface, ModuleContext, Parser, ResolvedImport, SourceReader,
+    lower_module_in_set, LoweringInterface, ModuleContext, Parser, ResolvedImport, SourceReader,
 };
 use tos_image_prototype::image;
 use tos_ir::Module;
@@ -344,12 +344,12 @@ fn prepare(dependencies: usize, pattern: &[usize], unit_bytes: usize) -> Prepare
             dependency_digest: tos_pipeline::list_digest(&[]),
             capability_interface_digest: tos_pipeline::list_digest(&[]),
         };
-        let interfaces: Vec<(String, LoweredInterface)> = lowered
+        let interfaces: Vec<(String, LoweringInterface)> = lowered
             .iter()
             .map(|module| {
                 (
                     module.header.module_name.clone(),
-                    LoweredInterface::of(module),
+                    LoweringInterface::of(module),
                 )
             })
             .collect();

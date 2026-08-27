@@ -1,115 +1,393 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! What a lowered dependency contributes to the modules that import it.
+//! What survives a dependency's lowering turn.
 //!
 //! Lowering a set is ordered so that a module's dependencies are lowered first.
-//! Handing the next module a whole `Module` for each of them means every
-//! dependency's bodies, blocks, instructions and source map stay alive until the
-//! last module of the closure is lowered — `N` decoded modules before the first
-//! instruction, which is the retained-IR slope ADR-0071 removed from execution
-//! and which has no more right to exist in lowering.
+//! Holding a whole `Module` for each of them means every dependency's bodies,
+//! blocks, instructions and source map stay alive until the last module of the
+//! closure is lowered. Holding a general-purpose `Vec<TypeDef>` and a full
+//! `Signature` for each of them is the same mistake one size down: measured over
+//! 128 ceiling-sized modules, that shape cost `117 MiB`, two thirds of it type
+//! tables at `104` bytes an entry with the defining module's `sha256:` string
+//! repeated once per nominal type.
 //!
-//! So a dependency is reduced, the moment it is lowered, to the only three
-//! things the lowerer ever reads from it:
+//! So a dependency is reduced to **exactly what is read from it**, and the two
+//! readers want different things:
 //!
-//! - its **computed** content identity, for an import's `module_content_id`;
-//! - its **public exported signatures**, to find the one a call names;
-//! - the **type graph reachable from those signatures**, so a type carried
-//!   across the boundary is rebuilt from what the dependency actually declared.
+//! - the **lowerer** resolves an import's content identity, finds the result
+//!   type of an exported function a call names, and rebuilds that type in its
+//!   own table. It never reads a parameter, a mode, an effect, a visibility or
+//!   an async flag. [`LoweringInterface`] carries that and nothing else;
+//! - the **verifier** is handed a declared resolution, and docs/43 requires the
+//!   complete surface: every public export name of every resolved module, and
+//!   the capability interfaces it imports. [`VerificationSurface`] carries all
+//!   of it, unabridged.
 //!
-//! ## What this is not
+//! Both are **derived implementation data**. Not authority, not a cache, not a
+//! receipt: they are built from IR this process just lowered, used by this
+//! process, and dropped when their last consumer is done. The verifier never
+//! sees one; nothing is admitted on the strength of one.
 //!
-//! **Not authority.** It is a derived implementation representation, built from
-//! a `Module` this process just lowered, used by the same process, and gone when
-//! lowering ends. It is not a cache object, not a trust object, nothing is
-//! admitted on the strength of it, and no receipt binds to it. The verifier
-//! never sees one.
+//! ## Nominal identity is not narrowed
 //!
-//! **Not a summary.** It is built from lowered IR, never from the frontend's
-//! view of a module. A content identity taken from a declaration rather than
-//! from what was lowered would be a claim the source never made.
-//!
-//! **Not a narrowing.** Nominal identity is carried through exactly as the type
-//! table states it — defining module content id, export name, kind, fields and
-//! variants — because a nominal type is not its shape. Two records with the same
-//! fields from two modules are two types, and an interface that dropped the
-//! defining identity would silently make them one.
+//! A nominal type is not its shape. Two records with the same fields declared by
+//! two modules are two types, so the defining module's content identity, the
+//! export name, the kind, the fields and the variants are all carried. What
+//! changes is that the identity string is **interned**: stored once per distinct
+//! identity, referenced by index, at full length. A `sha256:<hex>` is never
+//! truncated and never hashed again — it is the exact bytes the type table held.
 
 use alloc::collections::BTreeMap;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-use tos_ir::{Module, Parameter, Signature, TypeDef, TypeId, Variant};
+use tos_ir::{IntKind, Module, NominalKind, TypeDef, TypeId, Variant};
 
-/// One lowered dependency, reduced to what its importers read.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct LoweredInterface {
-    module_name: String,
-    content_id: String,
-    /// The exported signatures, with their type ids rewritten into [`types`].
-    ///
-    /// [`types`]: LoweredInterface::types
-    exports: Vec<Signature>,
-    /// The type graph reachable from the exports' parameter and result types,
-    /// interned, in the order it was reached.
-    types: Vec<TypeDef>,
-    /// The capability interfaces this module imports, for the declared
-    /// resolution a verifier is handed.
-    capabilities: Vec<String>,
+/// A position in a compact type table.
+///
+/// `u32` because a module's type table is bounded by the accepted table-entry
+/// ceiling (docs/44 §2, `65 536`) and by the source-unit ceiling above it, both
+/// far under `u32::MAX`. The one place a wider value could arrive — a table
+/// longer than `u32::MAX` — cannot be built from a conforming module, and the
+/// builder checks rather than assuming.
+pub type CompactTypeId = u32;
+
+/// The widest table this representation indexes.
+const INDEX_CEILING: usize = u32::MAX as usize;
+
+/// Packed text, interned.
+///
+/// One buffer and one offset table rather than a `String` per entry: a name is a
+/// range of the buffer, so an entry costs four bytes of offset and its own
+/// bytes, and a repeated identity costs four bytes.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct TextStore {
+    bytes: Vec<u8>,
+    /// `n + 1` offsets for `n` entries: an entry runs from its own offset to the
+    /// next. No length is stored, because the next offset is the length.
+    offsets: Vec<u32>,
 }
 
-impl LoweredInterface {
-    /// Reduces a module that has just been lowered.
-    ///
-    /// Called while the module is alive and immediately before it is released.
-    /// Everything below is read out of the lowered IR: nothing is taken from the
-    /// source, the schema or a summary.
-    pub fn of(module: &Module) -> LoweredInterface {
-        let mut compact = Compaction {
-            source: module,
-            types: Vec::new(),
-            seen: BTreeMap::new(),
-        };
-        // Parameters as well as results. Only a result crosses the boundary in
-        // V1, but a signature is not honestly carried if the types its
-        // parameters name are missing, and a reference lowerer that begins to
-        // check an argument must find them here rather than discover that the
-        // interface was built for exactly one use.
-        let exports = module
-            .exports
-            .iter()
-            .map(|signature| Signature {
-                name: signature.name.clone(),
-                visibility: signature.visibility,
-                is_async: signature.is_async,
-                parameters: signature
-                    .parameters
-                    .iter()
-                    .map(|parameter| Parameter {
-                        name: parameter.name.clone(),
-                        ty: compact.carry(parameter.ty),
-                        mode: parameter.mode,
-                    })
-                    .collect(),
-                result: compact.carry(signature.result),
-                effects: signature.effects.clone(),
-            })
-            .collect();
-        LoweredInterface {
-            module_name: module.header.module_name.clone(),
-            content_id: module.header.content_id.clone(),
-            exports,
-            types: compact.types,
-            capabilities: module
-                .capability_imports
-                .iter()
-                .map(|import| import.interface.clone())
-                .collect(),
+impl TextStore {
+    fn new() -> TextStore {
+        TextStore {
+            bytes: Vec::new(),
+            offsets: alloc::vec![0],
         }
     }
 
-    /// The dotted module name this interface was lowered under.
-    pub fn module_name(&self) -> &str {
-        &self.module_name
+    fn push(&mut self, text: &str) -> u32 {
+        let at = self.offsets.len() as u32 - 1;
+        self.bytes.extend_from_slice(text.as_bytes());
+        self.offsets.push(self.bytes.len() as u32);
+        at
+    }
+
+    fn get(&self, at: u32) -> &str {
+        let start = self.offsets[at as usize] as usize;
+        let end = self.offsets[at as usize + 1] as usize;
+        // The buffer is only ever written through `push`, which appends whole
+        // `&str` values, so every range is a character boundary.
+        core::str::from_utf8(&self.bytes[start..end]).unwrap_or("")
+    }
+
+    fn len(&self) -> usize {
+        self.offsets.len() - 1
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.bytes.capacity() + self.offsets.capacity() * core::mem::size_of::<u32>()
+    }
+}
+
+/// Interns text while a store is being built, and is dropped with the builder.
+struct Interner {
+    store: TextStore,
+    seen: BTreeMap<String, u32>,
+}
+
+impl Interner {
+    fn new() -> Interner {
+        Interner {
+            store: TextStore::new(),
+            seen: BTreeMap::new(),
+        }
+    }
+
+    fn intern(&mut self, text: &str) -> u32 {
+        if let Some(at) = self.seen.get(text) {
+            return *at;
+        }
+        let at = self.store.push(text);
+        self.seen.insert(text.to_string(), at);
+        at
+    }
+}
+
+/// Which constructor a compact entry is.
+///
+/// Internal to this representation. It is not an encoding, nothing outside this
+/// module reads it, and no artifact carries it — the format the verifier reads
+/// is `tos-image`, and this is a shape held in memory for the length of one
+/// lowering pass.
+mod tag {
+    pub const UNIT: u8 = 0;
+    pub const BOOL: u8 = 1;
+    pub const INT: u8 = 2;
+    pub const SIZE: u8 = 3;
+    pub const DURATION: u8 = 4;
+    pub const TEXT: u8 = 5;
+    pub const BYTES: u8 = 6;
+    pub const CONVERSION_ERROR: u8 = 7;
+    pub const EVENT: u8 = 8;
+    pub const SEMAPHORE: u8 = 9;
+    pub const BARRIER: u8 = 10;
+    pub const LATCH: u8 = 11;
+    pub const ATOMIC_BOOL: u8 = 12;
+    pub const ATOMIC_U32: u8 = 13;
+    pub const ATOMIC_U64: u8 = 14;
+    pub const OPTION: u8 = 15;
+    pub const TASK: u8 = 16;
+    pub const TASK_RESULT: u8 = 17;
+    pub const SHARED: u8 = 18;
+    pub const REGION: u8 = 19;
+    pub const DMA_REGION: u8 = 20;
+    pub const REGION_MUT: u8 = 21;
+    pub const DMA_REGION_MUT: u8 = 22;
+    pub const MUTEX: u8 = 23;
+    pub const RW_LOCK: u8 = 24;
+    pub const MUTEX_GUARD: u8 = 25;
+    pub const READ_GUARD: u8 = 26;
+    pub const WRITE_GUARD: u8 = 27;
+    pub const CHANNEL: u8 = 28;
+    pub const SLICE: u8 = 29;
+    pub const RESULT: u8 = 30;
+    pub const ARRAY: u8 = 31;
+    pub const TUPLE: u8 = 32;
+    pub const FUNCTION: u8 = 33;
+    pub const CAPABILITY: u8 = 34;
+    pub const NOMINAL: u8 = 35;
+}
+
+/// One type, as twenty bytes with no heap of its own.
+///
+/// Every field is a plain integer and the record is `Copy`. What each of `a`,
+/// `b`, `c`, `d` means depends on the tag, and every use is written down in
+/// [`CompactTypes::rebuild`] beside the tag that reads it. Nothing here is
+/// `repr(packed)` and nothing is read unaligned.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CompactType {
+    tag: u8,
+    /// `IntKind` for `INT`, `NominalKind` for `NOMINAL`, otherwise unused.
+    kind: u8,
+    a: u32,
+    b: u32,
+    c: u32,
+    d: u32,
+}
+
+/// One enum variant, as a name reference and a payload range.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct CompactVariant {
+    name: u32,
+    payload_start: u32,
+    payload_end: u32,
+}
+
+/// A type graph, packed.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct CompactTypes {
+    entries: Vec<CompactType>,
+    /// Child type ids: tuple elements, function parameters, nominal fields and
+    /// variant payloads, each a contiguous range.
+    refs: Vec<CompactTypeId>,
+    variants: Vec<CompactVariant>,
+    /// Array lengths, which are the only `u64` a type carries.
+    lengths: Vec<u64>,
+    /// Names and interned nominal identities.
+    text: TextStore,
+}
+
+impl CompactTypes {
+    /// Rebuilds one entry as a `TypeDef` whose child ids are **compact** ids.
+    ///
+    /// The lowerer's adoption walk recurses on those ids and rebuilds the type
+    /// in its own table, exactly as it did when the child ids were positions in
+    /// a dependency's `Vec<TypeDef>`. The structure it sees is identical, so the
+    /// order in which it interns is identical, so the IR it emits is identical.
+    fn rebuild(&self, id: CompactTypeId) -> Option<TypeDef> {
+        let entry = *self.entries.get(id as usize)?;
+        let refs = |start: u32, end: u32| -> Vec<TypeId> {
+            self.refs[start as usize..end as usize]
+                .iter()
+                .map(|at| *at as TypeId)
+                .collect()
+        };
+        Some(match entry.tag {
+            tag::UNIT => TypeDef::Unit,
+            tag::BOOL => TypeDef::Bool,
+            tag::INT => TypeDef::Int(int_kind(entry.kind)),
+            tag::SIZE => TypeDef::Size,
+            tag::DURATION => TypeDef::Duration,
+            tag::TEXT => TypeDef::Text,
+            tag::BYTES => TypeDef::Bytes,
+            tag::CONVERSION_ERROR => TypeDef::ConversionError,
+            tag::EVENT => TypeDef::Event,
+            tag::SEMAPHORE => TypeDef::Semaphore,
+            tag::BARRIER => TypeDef::Barrier,
+            tag::LATCH => TypeDef::Latch,
+            tag::ATOMIC_BOOL => TypeDef::AtomicBool,
+            tag::ATOMIC_U32 => TypeDef::AtomicU32,
+            tag::ATOMIC_U64 => TypeDef::AtomicU64,
+            // `a` is the wrapped type.
+            tag::OPTION => TypeDef::Option(entry.a as TypeId),
+            tag::TASK => TypeDef::Task(entry.a as TypeId),
+            tag::TASK_RESULT => TypeDef::TaskResult(entry.a as TypeId),
+            tag::SHARED => TypeDef::Shared(entry.a as TypeId),
+            tag::REGION => TypeDef::Region(entry.a as TypeId),
+            tag::DMA_REGION => TypeDef::DmaRegion(entry.a as TypeId),
+            tag::REGION_MUT => TypeDef::RegionMut(entry.a as TypeId),
+            tag::DMA_REGION_MUT => TypeDef::DmaRegionMut(entry.a as TypeId),
+            tag::MUTEX => TypeDef::Mutex(entry.a as TypeId),
+            tag::RW_LOCK => TypeDef::RwLock(entry.a as TypeId),
+            tag::MUTEX_GUARD => TypeDef::MutexGuard(entry.a as TypeId),
+            tag::READ_GUARD => TypeDef::ReadGuard(entry.a as TypeId),
+            tag::WRITE_GUARD => TypeDef::WriteGuard(entry.a as TypeId),
+            tag::CHANNEL => TypeDef::Channel(entry.a as TypeId),
+            tag::SLICE => TypeDef::Slice(entry.a as TypeId),
+            // `a` is the ok type, `b` the error type.
+            tag::RESULT => TypeDef::Result(entry.a as TypeId, entry.b as TypeId),
+            // `a` is the element, `c` indexes the length table.
+            tag::ARRAY => TypeDef::Array(
+                entry.a as TypeId,
+                *self.lengths.get(entry.c as usize).unwrap_or(&0),
+            ),
+            // `a..b` is the element range.
+            tag::TUPLE => TypeDef::Tuple(refs(entry.a, entry.b)),
+            // `a..b` is the parameter range, `c` the result.
+            tag::FUNCTION => TypeDef::Function(refs(entry.a, entry.b), entry.c as TypeId),
+            // `a` is the interface name.
+            tag::CAPABILITY => TypeDef::Capability(self.text.get(entry.a).to_string()),
+            // `a` is the interned defining identity, `b` the export name,
+            // `kind` the nominal kind, `c..d` the field range, and the variant
+            // range is carried in the entry that follows the fields: variants
+            // are stored in their own table, keyed by the same `c..d` when the
+            // kind is an enum.
+            tag::NOMINAL => {
+                let is_enum = matches!(nominal_kind(entry.kind), NominalKind::Enum);
+                let fields = if is_enum {
+                    Vec::new()
+                } else {
+                    refs(entry.c, entry.d)
+                };
+                let variants = if is_enum {
+                    self.variants[entry.c as usize..entry.d as usize]
+                        .iter()
+                        .map(|variant| Variant {
+                            name: self.text.get(variant.name).to_string(),
+                            payload: refs(variant.payload_start, variant.payload_end),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                TypeDef::Nominal {
+                    module_content_id: self.text.get(entry.a).to_string(),
+                    export_name: self.text.get(entry.b).to_string(),
+                    kind: nominal_kind(entry.kind),
+                    fields,
+                    variants,
+                }
+            }
+            _ => TypeDef::Unit,
+        })
+    }
+
+    fn retained_bytes(&self) -> usize {
+        self.entries.capacity() * core::mem::size_of::<CompactType>()
+            + self.refs.capacity() * core::mem::size_of::<CompactTypeId>()
+            + self.variants.capacity() * core::mem::size_of::<CompactVariant>()
+            + self.lengths.capacity() * core::mem::size_of::<u64>()
+            + self.text.retained_bytes()
+    }
+}
+
+fn int_kind(code: u8) -> IntKind {
+    match code {
+        0 => IntKind::I8,
+        1 => IntKind::I16,
+        2 => IntKind::I32,
+        3 => IntKind::I64,
+        4 => IntKind::U8,
+        5 => IntKind::U16,
+        6 => IntKind::U32,
+        _ => IntKind::U64,
+    }
+}
+
+fn int_code(kind: IntKind) -> u8 {
+    match kind {
+        IntKind::I8 => 0,
+        IntKind::I16 => 1,
+        IntKind::I32 => 2,
+        IntKind::I64 => 3,
+        IntKind::U8 => 4,
+        IntKind::U16 => 5,
+        IntKind::U32 => 6,
+        IntKind::U64 => 7,
+    }
+}
+
+fn nominal_kind(code: u8) -> NominalKind {
+    match code {
+        0 => NominalKind::Record,
+        _ => NominalKind::Enum,
+    }
+}
+
+fn nominal_code(kind: NominalKind) -> u8 {
+    match kind {
+        NominalKind::Record => 0,
+        NominalKind::Enum => 1,
+    }
+}
+
+/// What the lowerer reads from a dependency, and nothing else.
+///
+/// Audited against the production lowerer: it resolves an import's content
+/// identity, looks up the result type of an exported name a call reaches, and
+/// rebuilds that type. Parameters, modes, effects, visibility and the async flag
+/// are not read anywhere, so they are not carried anywhere — a field kept "for
+/// later" is a field that is measured now.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LoweringInterface {
+    content_id: String,
+    /// Export names, packed, in the module's own order.
+    names: TextStore,
+    /// The result type of each export, by the same index.
+    results: Vec<CompactTypeId>,
+    types: CompactTypes,
+}
+
+impl LoweringInterface {
+    /// Reduces a module that has just been lowered.
+    ///
+    /// Built from lowered IR while it is still here, and never from the source,
+    /// the schema or a summary: an identity taken from a declaration rather than
+    /// from what was lowered would be a claim the source never made.
+    pub fn of(module: &Module) -> LoweringInterface {
+        let mut builder = Builder::new(module);
+        let mut names = TextStore::new();
+        let mut results = Vec::with_capacity(module.exports.len());
+        for signature in &module.exports {
+            names.push(&signature.name);
+            results.push(builder.carry(signature.result));
+        }
+        LoweringInterface {
+            content_id: module.header.content_id.clone(),
+            names,
+            results,
+            types: builder.finish(),
+        }
     }
 
     /// The identity computed from the module's own normalized source.
@@ -117,243 +395,334 @@ impl LoweredInterface {
         &self.content_id
     }
 
-    /// The exported signatures, ordered as the module orders them.
-    pub fn exports(&self) -> &[Signature] {
-        &self.exports
+    /// The result type of an exported name, as a compact id.
+    pub fn result_of(&self, name: &str) -> Option<CompactTypeId> {
+        (0..self.names.len())
+            .find(|at| self.names.get(*at as u32) == name)
+            .map(|at| self.results[at])
     }
 
-    /// The signature an exported name reaches, if the module exports it.
-    pub fn export(&self, name: &str) -> Option<&Signature> {
-        self.exports.iter().find(|export| export.name == name)
+    /// One entry of the type graph, as a `TypeDef` over compact child ids.
+    pub fn type_at(&self, id: TypeId) -> Option<TypeDef> {
+        let id = u32::try_from(id).ok()?;
+        self.types.rebuild(id)
     }
 
-    /// The compact type table the exported signatures index.
-    pub fn types(&self) -> &[TypeDef] {
-        &self.types
+    /// How many exports it indexes.
+    pub fn export_count(&self) -> usize {
+        self.names.len()
     }
 
-    /// The capability interfaces the module imports.
-    pub fn capabilities(&self) -> &[String] {
-        &self.capabilities
+    /// How many type entries it carries.
+    pub fn type_count(&self) -> usize {
+        self.types.entries.len()
     }
 
-    /// What the figure below is made of, so an owner can be named rather than
-    /// guessed: `(exports, export names, parameters, effects, types, other)`.
+    /// Every byte this view owns.
+    pub fn retained_bytes(&self) -> usize {
+        core::mem::size_of::<LoweringInterface>()
+            + self.content_id.capacity()
+            + self.names.retained_bytes()
+            + self.results.capacity() * core::mem::size_of::<CompactTypeId>()
+            + self.types.retained_bytes()
+    }
+
+    /// `(entries, entry bytes, refs bytes, variant bytes, text bytes, names)`,
+    /// so an owner can be named rather than guessed.
     pub fn retained_breakdown(&self) -> [usize; 6] {
-        let mut parts = [0usize; 6];
-        parts[0] = self.exports.capacity() * core::mem::size_of::<Signature>();
-        for signature in &self.exports {
-            parts[1] += signature.name.capacity();
-            parts[2] += signature.parameters.capacity() * core::mem::size_of::<Parameter>();
-            for parameter in &signature.parameters {
-                parts[2] += parameter.name.capacity();
-            }
-            parts[3] += signature.effects.capacity() * core::mem::size_of::<String>();
-            for effect in &signature.effects {
-                parts[3] += effect.capacity();
-            }
+        [
+            self.types.entries.len(),
+            self.types.entries.capacity() * core::mem::size_of::<CompactType>(),
+            self.types.refs.capacity() * core::mem::size_of::<CompactTypeId>(),
+            self.types.variants.capacity() * core::mem::size_of::<CompactVariant>(),
+            self.types.text.retained_bytes(),
+            self.names.retained_bytes(),
+        ]
+    }
+}
+
+/// The complete declared surface of one module, for the verifier.
+///
+/// docs/43 §5 makes the declared resolution an input to verification and
+/// requires the **whole** surface, not the part a caller happens to use. Nothing
+/// is abridged here: every public export name and every imported capability
+/// interface, exactly as the module states them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VerificationSurface {
+    module_name: String,
+    content_id: String,
+    exports: TextStore,
+    capabilities: TextStore,
+}
+
+impl VerificationSurface {
+    pub fn of(module: &Module) -> VerificationSurface {
+        let mut exports = TextStore::new();
+        for signature in &module.exports {
+            exports.push(&signature.name);
         }
-        parts[4] = self.types.capacity() * core::mem::size_of::<TypeDef>();
-        for definition in &self.types {
-            parts[4] += tos_ir::footprint::type_definition_bytes(definition);
+        let mut capabilities = TextStore::new();
+        for import in &module.capability_imports {
+            capabilities.push(&import.interface);
         }
-        parts[5] = core::mem::size_of::<LoweredInterface>()
+        VerificationSurface {
+            module_name: module.header.module_name.clone(),
+            content_id: module.header.content_id.clone(),
+            exports,
+            capabilities,
+        }
+    }
+
+    pub fn module_name(&self) -> &str {
+        &self.module_name
+    }
+
+    pub fn content_id(&self) -> &str {
+        &self.content_id
+    }
+
+    /// Every public export name, in the module's own order.
+    pub fn exports(&self) -> impl Iterator<Item = &str> {
+        (0..self.exports.len()).map(|at| self.exports.get(at as u32))
+    }
+
+    /// Every capability interface the module imports, in order.
+    pub fn capabilities(&self) -> impl Iterator<Item = &str> {
+        (0..self.capabilities.len()).map(|at| self.capabilities.get(at as u32))
+    }
+
+    pub fn retained_bytes(&self) -> usize {
+        core::mem::size_of::<VerificationSurface>()
             + self.module_name.capacity()
             + self.content_id.capacity()
-            + self.capabilities.capacity() * core::mem::size_of::<String>()
-            + self
-                .capabilities
-                .iter()
-                .map(|capability| capability.capacity())
-                .sum::<usize>();
-        parts
-    }
-
-    /// What the type table is made of: `(entries, inline bytes, nominal count,
-    /// nominal identity text, other heap)`.
-    pub fn type_table_breakdown(&self) -> [usize; 5] {
-        let mut parts = [0usize; 5];
-        parts[0] = self.types.len();
-        parts[1] = self.types.capacity() * core::mem::size_of::<TypeDef>();
-        for definition in &self.types {
-            if let TypeDef::Nominal {
-                module_content_id,
-                export_name,
-                ..
-            } = definition
-            {
-                parts[2] += 1;
-                parts[3] += module_content_id.capacity() + export_name.capacity();
-                parts[4] += tos_ir::footprint::type_definition_bytes(definition)
-                    - module_content_id.capacity()
-                    - export_name.capacity();
-            } else {
-                parts[4] += tos_ir::footprint::type_definition_bytes(definition);
-            }
-        }
-        parts
-    }
-
-    /// How many exported signatures this interface carries.
-    pub fn export_count(&self) -> usize {
-        self.exports.len()
-    }
-
-    /// How many type-table entries it carries.
-    pub fn type_count(&self) -> usize {
-        self.types.len()
-    }
-
-    /// Every byte this interface owns, for a caller bounding what it accumulates.
-    ///
-    /// The same rule as `tos_ir::retained_bytes`: capacities, not lengths, and
-    /// no allocator metadata.
-    pub fn retained_bytes(&self) -> usize {
-        let mut bytes = core::mem::size_of::<LoweredInterface>();
-        bytes += self.module_name.capacity() + self.content_id.capacity();
-        bytes += self.exports.capacity() * core::mem::size_of::<Signature>();
-        for signature in &self.exports {
-            bytes += signature.name.capacity();
-            bytes += signature.parameters.capacity() * core::mem::size_of::<Parameter>();
-            for parameter in &signature.parameters {
-                bytes += parameter.name.capacity();
-            }
-            bytes += signature.effects.capacity() * core::mem::size_of::<String>();
-            for effect in &signature.effects {
-                bytes += effect.capacity();
-            }
-        }
-        bytes += self.types.capacity() * core::mem::size_of::<TypeDef>();
-        for definition in &self.types {
-            bytes += tos_ir::footprint::type_definition_bytes(definition);
-        }
-        bytes += self.capabilities.capacity() * core::mem::size_of::<String>();
-        for capability in &self.capabilities {
-            bytes += capability.capacity();
-        }
-        bytes
+            + self.exports.retained_bytes()
+            + self.capabilities.retained_bytes()
     }
 }
 
-/// Rebuilds a reachable type graph into a table of its own.
-struct Compaction<'a> {
+/// Packs a module's reachable type graph.
+struct Builder<'a> {
     source: &'a Module,
-    types: Vec<TypeDef>,
-    /// Source type id to compact type id. Memoized so a type reached twice is
-    /// carried once, which is also what keeps sharing in a DAG from becoming a
-    /// re-traversal.
-    seen: BTreeMap<TypeId, TypeId>,
+    types: CompactTypes,
+    identities: Interner,
+    /// Source type id to compact id, so a type reached twice is carried once.
+    seen: BTreeMap<TypeId, CompactTypeId>,
 }
 
-impl Compaction<'_> {
-    /// Carries one type across, with everything it names beneath it.
-    ///
-    /// The structure is preserved exactly. Only the indices change, and they
-    /// change because they are per-table positions rather than identities —
-    /// which is the same reason the lowerer re-interns a type it adopts.
-    fn carry(&mut self, ty: TypeId) -> TypeId {
+impl<'a> Builder<'a> {
+    fn new(source: &'a Module) -> Builder<'a> {
+        Builder {
+            source,
+            types: CompactTypes {
+                entries: Vec::new(),
+                refs: Vec::new(),
+                variants: Vec::new(),
+                lengths: Vec::new(),
+                text: TextStore::new(),
+            },
+            identities: Interner::new(),
+            seen: BTreeMap::new(),
+        }
+    }
+
+    fn finish(mut self) -> CompactTypes {
+        self.types.text = self.identities.store;
+        self.types
+    }
+
+    fn text(&mut self, value: &str) -> u32 {
+        self.identities.intern(value)
+    }
+
+    fn push(&mut self, entry: CompactType) -> CompactTypeId {
+        // A table this long cannot be built from a conforming module, and a
+        // silent wrap would be a correctness bug rather than a size problem.
+        assert!(
+            self.types.entries.len() < INDEX_CEILING,
+            "a compact type table past u32::MAX"
+        );
+        self.types.entries.push(entry);
+        self.types.entries.len() as CompactTypeId - 1
+    }
+
+    fn carry(&mut self, ty: TypeId) -> CompactTypeId {
         if let Some(already) = self.seen.get(&ty) {
             return *already;
         }
         let Some(definition) = self.source.types.get(ty) else {
-            // The lowerer answers an out-of-range type with `unit`, and an
-            // interface that answered differently would move a decision out of
-            // the lowerer and into this file.
-            return self.intern(TypeDef::Unit);
+            // The lowerer answers an out-of-range type with `unit`, and a view
+            // that answered differently would move a decision out of it.
+            return self.push(CompactType {
+                tag: tag::UNIT,
+                ..CompactType::default()
+            });
         };
-        let rebuilt = match definition.clone() {
-            TypeDef::Option(inner) => TypeDef::Option(self.carry(inner)),
-            TypeDef::Task(inner) => TypeDef::Task(self.carry(inner)),
-            TypeDef::TaskResult(inner) => TypeDef::TaskResult(self.carry(inner)),
-            TypeDef::Shared(inner) => TypeDef::Shared(self.carry(inner)),
-            TypeDef::Region(inner) => TypeDef::Region(self.carry(inner)),
-            TypeDef::RegionMut(inner) => TypeDef::RegionMut(self.carry(inner)),
-            TypeDef::DmaRegion(inner) => TypeDef::DmaRegion(self.carry(inner)),
-            TypeDef::DmaRegionMut(inner) => TypeDef::DmaRegionMut(self.carry(inner)),
-            TypeDef::Mutex(inner) => TypeDef::Mutex(self.carry(inner)),
-            TypeDef::RwLock(inner) => TypeDef::RwLock(self.carry(inner)),
-            TypeDef::MutexGuard(inner) => TypeDef::MutexGuard(self.carry(inner)),
-            TypeDef::ReadGuard(inner) => TypeDef::ReadGuard(self.carry(inner)),
-            TypeDef::WriteGuard(inner) => TypeDef::WriteGuard(self.carry(inner)),
-            TypeDef::Channel(inner) => TypeDef::Channel(self.carry(inner)),
-            TypeDef::Slice(inner) => TypeDef::Slice(self.carry(inner)),
+        let entry = match definition.clone() {
+            TypeDef::Unit => simple(tag::UNIT),
+            TypeDef::Bool => simple(tag::BOOL),
+            TypeDef::Int(kind) => CompactType {
+                tag: tag::INT,
+                kind: int_code(kind),
+                ..CompactType::default()
+            },
+            TypeDef::Size => simple(tag::SIZE),
+            TypeDef::Duration => simple(tag::DURATION),
+            TypeDef::Text => simple(tag::TEXT),
+            TypeDef::Bytes => simple(tag::BYTES),
+            TypeDef::ConversionError => simple(tag::CONVERSION_ERROR),
+            TypeDef::Event => simple(tag::EVENT),
+            TypeDef::Semaphore => simple(tag::SEMAPHORE),
+            TypeDef::Barrier => simple(tag::BARRIER),
+            TypeDef::Latch => simple(tag::LATCH),
+            TypeDef::AtomicBool => simple(tag::ATOMIC_BOOL),
+            TypeDef::AtomicU32 => simple(tag::ATOMIC_U32),
+            TypeDef::AtomicU64 => simple(tag::ATOMIC_U64),
+            TypeDef::Option(inner) => self.wrapper(tag::OPTION, inner),
+            TypeDef::Task(inner) => self.wrapper(tag::TASK, inner),
+            TypeDef::TaskResult(inner) => self.wrapper(tag::TASK_RESULT, inner),
+            TypeDef::Shared(inner) => self.wrapper(tag::SHARED, inner),
+            TypeDef::Region(inner) => self.wrapper(tag::REGION, inner),
+            TypeDef::DmaRegion(inner) => self.wrapper(tag::DMA_REGION, inner),
+            TypeDef::RegionMut(inner) => self.wrapper(tag::REGION_MUT, inner),
+            TypeDef::DmaRegionMut(inner) => self.wrapper(tag::DMA_REGION_MUT, inner),
+            TypeDef::Mutex(inner) => self.wrapper(tag::MUTEX, inner),
+            TypeDef::RwLock(inner) => self.wrapper(tag::RW_LOCK, inner),
+            TypeDef::MutexGuard(inner) => self.wrapper(tag::MUTEX_GUARD, inner),
+            TypeDef::ReadGuard(inner) => self.wrapper(tag::READ_GUARD, inner),
+            TypeDef::WriteGuard(inner) => self.wrapper(tag::WRITE_GUARD, inner),
+            TypeDef::Channel(inner) => self.wrapper(tag::CHANNEL, inner),
+            TypeDef::Slice(inner) => self.wrapper(tag::SLICE, inner),
             TypeDef::Result(ok, error) => {
                 let ok = self.carry(ok);
                 let error = self.carry(error);
-                TypeDef::Result(ok, error)
+                CompactType {
+                    tag: tag::RESULT,
+                    a: ok,
+                    b: error,
+                    ..CompactType::default()
+                }
             }
             TypeDef::Array(element, length) => {
                 let element = self.carry(element);
-                TypeDef::Array(element, length)
+                let at = self.types.lengths.len() as u32;
+                self.types.lengths.push(length);
+                CompactType {
+                    tag: tag::ARRAY,
+                    a: element,
+                    c: at,
+                    ..CompactType::default()
+                }
             }
             TypeDef::Tuple(elements) => {
-                TypeDef::Tuple(elements.into_iter().map(|at| self.carry(at)).collect())
+                let (start, end) = self.range(&elements);
+                CompactType {
+                    tag: tag::TUPLE,
+                    a: start,
+                    b: end,
+                    ..CompactType::default()
+                }
             }
             TypeDef::Function(parameters, result) => {
-                let parameters = parameters.into_iter().map(|at| self.carry(at)).collect();
+                let (start, end) = self.range(&parameters);
                 let result = self.carry(result);
-                TypeDef::Function(parameters, result)
+                CompactType {
+                    tag: tag::FUNCTION,
+                    a: start,
+                    b: end,
+                    c: result,
+                    ..CompactType::default()
+                }
             }
-            // Nominal identity is carried whole: the defining module's content
-            // id, the export name, the kind, the fields and the variants.
-            // Dropping any of them would make two types one.
+            TypeDef::Capability(name) => {
+                let at = self.text(&name);
+                CompactType {
+                    tag: tag::CAPABILITY,
+                    a: at,
+                    ..CompactType::default()
+                }
+            }
             TypeDef::Nominal {
                 module_content_id,
                 export_name,
                 kind,
                 fields,
                 variants,
-            } => TypeDef::Nominal {
-                module_content_id,
-                export_name,
-                kind,
-                fields: fields.into_iter().map(|at| self.carry(at)).collect(),
-                variants: variants
-                    .into_iter()
-                    .map(|variant| Variant {
-                        name: variant.name,
-                        payload: variant
-                            .payload
-                            .into_iter()
-                            .map(|at| self.carry(at))
-                            .collect(),
-                    })
-                    .collect(),
-            },
-            scalar => scalar,
+            } => {
+                // The identity string is interned: one copy per distinct
+                // identity, at full length, however many nominal types the
+                // module defines.
+                let identity = self.text(&module_content_id);
+                let name = self.text(&export_name);
+                let (start, end) = match kind {
+                    NominalKind::Record => self.range(&fields),
+                    NominalKind::Enum => {
+                        let mut packed = Vec::with_capacity(variants.len());
+                        for variant in &variants {
+                            let payload = self.range(&variant.payload);
+                            let at = self.text(&variant.name);
+                            packed.push(CompactVariant {
+                                name: at,
+                                payload_start: payload.0,
+                                payload_end: payload.1,
+                            });
+                        }
+                        let start = self.types.variants.len() as u32;
+                        self.types.variants.extend(packed);
+                        (start, self.types.variants.len() as u32)
+                    }
+                };
+                CompactType {
+                    tag: tag::NOMINAL,
+                    kind: nominal_code(kind),
+                    a: identity,
+                    b: name,
+                    c: start,
+                    d: end,
+                }
+            }
         };
-        let at = self.intern(rebuilt);
+        let at = self.push(entry);
         self.seen.insert(ty, at);
         at
     }
 
-    /// One entry per distinct definition, as the module's own table does.
-    fn intern(&mut self, definition: TypeDef) -> TypeId {
-        if let Some(at) = self.types.iter().position(|held| *held == definition) {
-            return at;
+    fn wrapper(&mut self, tag: u8, inner: TypeId) -> CompactType {
+        let inner = self.carry(inner);
+        CompactType {
+            tag,
+            a: inner,
+            ..CompactType::default()
         }
-        self.types.push(definition);
-        self.types.len() - 1
+    }
+
+    /// Carries a list of child types and returns the range it occupies.
+    fn range(&mut self, children: &[TypeId]) -> (u32, u32) {
+        let mut carried = Vec::with_capacity(children.len());
+        for child in children {
+            carried.push(self.carry(*child));
+        }
+        let start = self.types.refs.len() as u32;
+        self.types.refs.extend(carried);
+        (start, self.types.refs.len() as u32)
+    }
+}
+
+fn simple(tag: u8) -> CompactType {
+    CompactType {
+        tag,
+        ..CompactType::default()
     }
 }
 
 /// A module this one imports, already lowered and already released.
 ///
-/// What a dependency contributes is its *computed* identity and its exported
-/// surface — never a declaration about itself that this module took on trust,
-/// and no longer the whole of it.
+/// What a dependency contributes is its *computed* identity and the result types
+/// of what it exports — never a declaration about itself that this module took
+/// on trust, and no longer the whole of it.
 #[derive(Clone, Copy, Debug)]
 pub struct ResolvedImport<'a> {
     /// The dotted module name, as the importing module writes it.
     pub name: &'a str,
     /// What survived the dependency's lowering.
-    pub interface: &'a LoweredInterface,
-}
-
-impl<'a> ResolvedImport<'a> {
-    /// The interface of an already-lowered module, under the name that reaches
-    /// it.
-    pub fn new(name: &'a str, interface: &'a LoweredInterface) -> ResolvedImport<'a> {
-        ResolvedImport { name, interface }
-    }
+    pub interface: &'a LoweringInterface,
 }

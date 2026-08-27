@@ -765,7 +765,7 @@ fn calling_pair() -> ((Module, VerifiedModule), (Module, VerifiedModule)) {
         &context,
         &[tos_core::ResolvedImport {
             name: "system.lib.math",
-            interface: &tos_core::LoweredInterface::of(&dependency.0),
+            interface: &tos_core::LoweringInterface::of(&dependency.0),
         }],
     )
     .expect("entry lowers");
