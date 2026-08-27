@@ -11,6 +11,7 @@
 
 use tos_capsule::parse;
 use tos_core::{lower_module, Checker, ModuleContext, Parser, SourceReader};
+use tos_image::{encode, reseal};
 use tos_ir::Module;
 use tos_verifier::{verify, Limits, ResolutionSnapshot};
 
@@ -63,6 +64,7 @@ fn main() {
 
     fuzz_tos_core(&mut rng, rounds);
     fuzz_forged_ir(&mut rng, rounds);
+    fuzz_module_image(&mut rng, rounds);
 
     // A mutated input must never parse. The only Ok case allowed would be a
     // zero-flip mutation, which cannot occur (flips >= 1), and pure garbage is
@@ -117,6 +119,68 @@ fn fuzz_tos_core(rng: &mut Rng, rounds: usize) {
             std::process::exit(1);
         }
     }
+}
+
+/// Drives the module-image parser over mutated and random bytes.
+///
+/// The parser sits in the verifier path and reads untrusted input, so the same
+/// property applies as to every other parser here: total over arbitrary bytes,
+/// bounded in what it allocates, structured errors rather than panics.
+///
+/// Two kinds of input, and the second is the one that matters. Bytes that are
+/// merely corrupted fail the artifact digest and never reach the payload
+/// reader. Bytes that are corrupted **and resealed** do reach it — which is the
+/// real case, because an attacker who can write the bytes can write the digest.
+fn fuzz_module_image(rng: &mut Rng, rounds: usize) {
+    let module = image_base();
+    let (base, _) = encode(&module);
+    let limits = Limits::default();
+    let mut accepted = 0usize;
+    for _ in 0..rounds {
+        let len = (rng.next() as usize) % (base.len() + 1);
+        let mut buf = vec![0u8; len];
+        let seeded = len > 0 && len <= base.len() && rng.next() & 1 == 0;
+        if seeded {
+            buf.copy_from_slice(&base[..len]);
+            let flips = 1 + (rng.next() % 8) as usize;
+            for _ in 0..flips {
+                let at = (rng.next() as usize) % len.max(1);
+                buf[at] = (rng.next() & 0xff) as u8;
+            }
+            // Half of the seeded rounds are resealed, so the payload reader is
+            // reached rather than short-circuited by the digest.
+            if rng.next() & 1 == 0 {
+                reseal(&mut buf);
+            }
+        } else {
+            for b in buf.iter_mut() {
+                *b = (rng.next() & 0xff) as u8;
+            }
+        }
+        if tos_image::parse(&buf, &limits).is_ok() {
+            accepted += 1;
+        }
+    }
+    // Accepting is allowed: a resealed mutation can be a well-formed image of a
+    // different module, and deciding whether that module is admissible is the
+    // verifier's job. What is being asserted is that every round returned.
+    println!("  image fuzz: {rounds} rounds, {accepted} parsed to some module, no panics");
+}
+
+/// A real lowered module for the image rounds to start from.
+fn image_base() -> Module {
+    let source = SourceReader::read(IR_BASE.as_bytes()).expect("the base parses");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("the base parses");
+    let context = ModuleContext {
+        source_set: String::from("tos-tests-fuzz"),
+        path: String::from("app/fuzz.tos"),
+        content_id: String::from("sha256:00"),
+        dependency_digest: String::from("sha256:00"),
+        capability_interface_digest: String::from("sha256:00"),
+    };
+    lower_module(&source, &schema, &context).expect("the base lowers")
 }
 
 /// Source the forged-IR rounds start from, so mutations begin from real IR.

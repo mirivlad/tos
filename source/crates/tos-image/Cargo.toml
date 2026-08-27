@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-image"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "The bounded, versioned encoding of a tos-ir/v1 module that the verifier reads (ADR-0070)."
+publish = false
+
+[dependencies]
+tos-ir = { path = "../tos-ir" }
+tos-verifier = { path = "../tos-verifier" }
+tos-hash = { path = "../tos-hash" }

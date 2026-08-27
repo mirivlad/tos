@@ -82,6 +82,15 @@ name = "tos-hash"
 version = "0.1.0"
 
 [[package]]
+name = "tos-image"
+version = "0.1.0"
+dependencies = [
+ "tos-hash",
+ "tos-ir",
+ "tos-verifier",
+]
+
+[[package]]
 name = "tos-image-prototype"
 version = "0.1.0"
 dependencies = [
@@ -178,6 +187,7 @@ dependencies = [
  "tos-core",
  "tos-engine",
  "tos-hash",
+ "tos-image",
  "tos-ir",
  "tos-verifier",
 ]
@@ -192,6 +202,7 @@ dependencies = [
  "tos-core",
  "tos-engine",
  "tos-hash",
+ "tos-image",
  "tos-ir",
  "tos-pipeline",
  "tos-verifier",

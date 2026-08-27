@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `d99d8e93f5f00e1dd4f0632e0f70519f2e85a50929f2d0b5eae563b117b79e8a`\
+Source-manifest SHA-256: `91bdf17a7131ac99519537771b5f015f4381acc70b9956388164d3e1f7917148`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -21575,11 +21575,40 @@ only when both of these hold:
 Until then the engine reads what it reads today, and an image is a measured
 artifact rather than an execution path.
 
-`TOSIMGx0` is **not** a candidate for promotion. It is version `0` of an
-experiment, its coverage is partial by declaration, and a production format
-starts with its own magic and its own version rather than by graduating this
-one. Nothing in this acceptance is an instruction to finish the prototype's
-payload.
+**Both conditions are now met by `tos-image`** (`crates/tos-image`, magic
+`TOSIMAGE`, encoding version 1, schema version 1):
+
+- **100 % coverage**, counted rather than claimed: a fixture names every tagged
+  variant — 36 `TypeDef`, 25 `Op`, 6 `Terminator`, 7 `Constant`, and every closed
+  family — and a test asserts those counts against the fixture, so a variant
+  added to `tos-ir` and forgotten here fails a test before it reaches a format
+  that cannot write it;
+- **docs/43 §1 in full**: magic, an encoding version independent of the semantic
+  schema, a schema version, canonical varints, explicit section and table bounds
+  checked before any allocation sized from them, canonical ordering of the string
+  and identity tables, fail-closed unknown version and unknown tag, an artifact
+  digest distinct from the semantic one, and a parser total over arbitrary bytes;
+- **proved**: round trip of every variant with the semantic digest unchanged;
+  encode → parse → verify producing the *same receipt* as verifying the module
+  directly, across a corpus the production frontend lowered; reproducible bytes
+  and a re-encoded parse as a fixed point; a deletable, regenerable cache; every
+  proper prefix refused; resealed mutation sweeps in the crate's tests and in the
+  repository fuzz gate, under `panic = "abort"`; and the frame and payload
+  negatives, each refused for its own reason.
+
+`TOSIMGx0` is **not** promoted and is not a candidate. It remains in
+`source/tests/image-prototype/` as the historical fixture the §6 measurements and
+ADR-0071's evidence were taken on — a measurement whose fixture has been replaced
+is not reproducible — and the engine never executes it.
+
+**What the gate still holds back.** Production engine integration also depends on
+ADR-0071 and ADR-0069, which are Level-2 and Proposed. The format being ready is
+one of the conditions, not all of them.
+
+`TOSIMGx0` was **not** a candidate for promotion. It is version `0` of an
+experiment with partial coverage, and the production format started with its own
+magic and its own version rather than by graduating it — which is what
+`tos-image` did.
 
 The gate exists because a decision and a permission look alike from a distance.
 An accepted ADR that quietly licensed a partial parser into the trusted base
