@@ -12,12 +12,49 @@
 //! bound. Nothing here relies on a host panic or a Rust integer's width.
 
 use tos_core::{lower_module, Checker, ModuleContext, Parser, SourceReader};
-use tos_engine::{run, trap_source, Accounting, Refusal, Unreachable, Value};
+use tos_engine::{Accounting, Outcome, Refusal, System, Trap, Unreachable, Value};
 use tos_ir::{IntKind, Module};
+use tos_pipeline::{Prepared, ResidencyLimits};
+use tos_residency::Failure;
 use tos_verifier::{verify, Limits, ResolutionSnapshot, VerifiedModule};
 
 const ENVELOPE: &str = "resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
      workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]";
+
+/// What these runs hold resident.
+///
+/// Eight modules is more than any fixture here has, so nothing is evicted for
+/// its count; the cases that *want* eviction declare their own bound. The byte
+/// bound is generous for the same reason: what is under test in this file is
+/// the language, not the residency table.
+const RESIDENCY: ResidencyLimits = ResidencyLimits {
+    modules: 8,
+    bytes: 64 * 1024 * 1024,
+};
+
+/// The production path over an already-lowered closure.
+///
+/// Encode, verify each image in turn, keep the records and the membership,
+/// release the modules, run through the bounded resident set. Every test in
+/// this file goes through it: there is no second way to execute a module.
+fn launched(modules: &[&Module], entry: &str) -> Result<Prepared, Failure> {
+    Prepared::launch(modules, &ResolutionSnapshot::default(), entry, RESIDENCY)
+}
+
+/// One module, launched and run.
+fn run_module(
+    module: &Module,
+    entry: &str,
+    arguments: Vec<Value>,
+    system: &mut dyn System,
+) -> Result<Result<Outcome, Trap>, Refusal> {
+    let mut prepared = match launched(&[module], entry) {
+        Ok(prepared) => prepared,
+        Err(Failure::WrongModule { .. }) => return Err(Refusal::NoSuchEntry(String::from(entry))),
+        Err(other) => panic!("the fixture does not launch: {other:?}"),
+    };
+    prepared.run(arguments, system)
+}
 
 fn content_id(bytes: &[u8]) -> String {
     let digest = tos_hash::sha256(bytes);
@@ -53,20 +90,20 @@ fn pipeline(body: &str) -> (Module, VerifiedModule) {
 }
 
 fn evaluate(body: &str, entry: &str, arguments: Vec<Value>) -> Value {
-    let (module, receipt) = pipeline(body);
-    run(&module, &receipt, entry, arguments, &mut Unreachable)
+    let (module, _receipt) = pipeline(body);
+    run_module(&module, entry, arguments, &mut Unreachable)
         .expect("the entry exists with this arity")
         .expect("the program does not trap")
         .value
 }
 
 fn trap(body: &str, entry: &str, arguments: Vec<Value>) -> tos_engine::Trap {
-    let (module, receipt) = pipeline(body);
+    let (module, _receipt) = pipeline(body);
     let outcome =
-        run(&module, &receipt, entry, arguments, &mut Unreachable).expect("the entry exists");
+        run_module(&module, entry, arguments, &mut Unreachable).expect("the entry exists");
     let trap = outcome.expect_err("the program must trap");
     assert!(
-        trap_source(&module, &trap).is_some(),
+        trap.site.is_some(),
         "a runtime trap names the source it came from"
     );
     trap
@@ -236,9 +273,9 @@ fn an_unbounded_loop_exhausts_its_declared_fuel() {
         capability_interface_digest: String::from("sha256:0000"),
     };
     let module = lower_module(&source, &schema, &context).expect("lowers");
-    let receipt =
+    let _receipt =
         verify(&module, &ResolutionSnapshot::default(), &Limits::default()).expect("verifies");
-    let trap = run(&module, &receipt, "spin", vec![], &mut Unreachable)
+    let trap = run_module(&module, "spin", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect_err("an unbounded loop must exhaust its budget");
     assert_eq!(trap.code, "RUNTIME_FUEL_EXHAUSTED");
@@ -253,8 +290,8 @@ fn unbounded_recursion_stops_at_the_declared_depth() {
 
 #[test]
 fn a_run_records_what_it_consumed() {
-    let (module, receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
-    let outcome = run(&module, &receipt, "answer", vec![], &mut Unreachable)
+    let (module, _receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
+    let outcome = run_module(&module, "answer", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     let accounting = Accounting::of(&module, &outcome);
@@ -263,32 +300,43 @@ fn a_run_records_what_it_consumed() {
     assert_eq!(accounting.max_call_depth, 1);
 }
 
+/// An engine runs a module because *this* launch verified *these* bytes.
+///
+/// There is no receipt to hand over any more, and that is the point: the
+/// receipt is produced by the launch that read the image, and the record it
+/// leaves behind commits to the exact bytes. A different module cannot be run
+/// under it, because the artifact digest of a different image is a different
+/// digest and the reload refuses before it parses.
 #[test]
-fn an_engine_refuses_a_receipt_for_another_module() {
-    let (module, _) = pipeline("pub fn answer() -> i32 { return 42i32; }");
-    let (_, other_receipt) = pipeline("pub fn answer() -> i32 { return 7i32; }");
+fn a_run_is_bound_to_the_exact_bytes_its_launch_verified() {
+    let (module, receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
+    let (other, _) = pipeline("pub fn answer() -> i32 { return 7i32; }");
+    let prepared = launched(&[&module], "answer").expect("launches");
     assert_eq!(
-        run(&module, &other_receipt, "answer", vec![], &mut Unreachable),
-        Err(Refusal::ReceiptDoesNotMatch),
-        "an engine accepts IR only with a receipt for that exact module"
+        prepared.receipt().module_digest,
+        receipt.module_digest,
+        "the launch's own receipt names the module it verified"
+    );
+
+    let substituted = launched(&[&other], "answer").expect("launches");
+    assert_ne!(
+        prepared.receipt().module_digest,
+        substituted.receipt().module_digest,
+        "two modules are two receipts"
     );
 }
 
 #[test]
 fn an_engine_refuses_an_entry_the_module_does_not_have() {
-    let (module, receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
-    assert_eq!(
-        run(&module, &receipt, "elsewhere", vec![], &mut Unreachable),
-        Err(Refusal::NoSuchEntry(String::from("elsewhere")))
+    let (module, _receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
+    // Before the first instruction, and before anything is resident: a closure
+    // whose entry function does not exist is not a runnable closure.
+    assert!(
+        launched(&[&module], "elsewhere").is_err(),
+        "a launch names its entry function, and an absent one refuses the launch"
     );
     assert_eq!(
-        run(
-            &module,
-            &receipt,
-            "answer",
-            vec![Value::Unit],
-            &mut Unreachable
-        ),
+        run_module(&module, "answer", vec![Value::Unit], &mut Unreachable),
         Err(Refusal::EntryArity {
             expected: 0,
             actual: 1
@@ -298,23 +346,21 @@ fn an_engine_refuses_an_entry_the_module_does_not_have() {
 
 #[test]
 fn the_same_program_produces_the_same_result_every_run() {
-    let (module, receipt) = pipeline(
+    let (module, _receipt) = pipeline(
         "pub fn sum(limit: i32) -> i32 { let mut total = 0i32; let mut current = 0i32; \
          while (current < limit) { total = total + current; current = current + 1i32; } \
          return total; }",
     );
-    let first = run(
+    let first = run_module(
         &module,
-        &receipt,
         "sum",
         vec![Value::Int(IntKind::I32, 10)],
         &mut Unreachable,
     )
     .unwrap()
     .unwrap();
-    let second = run(
+    let second = run_module(
         &module,
-        &receipt,
         "sum",
         vec![Value::Int(IntKind::I32, 10)],
         &mut Unreachable,
@@ -357,8 +403,8 @@ fn full_pipeline(body: &str) -> (Module, VerifiedModule) {
 }
 
 fn evaluate_full(body: &str, entry: &str, arguments: Vec<Value>) -> Value {
-    let (module, receipt) = full_pipeline(body);
-    run(&module, &receipt, entry, arguments, &mut Unreachable)
+    let (module, _receipt) = full_pipeline(body);
+    run_module(&module, entry, arguments, &mut Unreachable)
         .expect("the entry exists with this arity")
         .expect("the program does not trap")
         .value
@@ -502,9 +548,9 @@ fn the_task_budget_bounds_how_many_children_may_start() {
         capability_interface_digest: String::from("sha256:0000"),
     };
     let module = lower_module(&source, &schema, &context).expect("lowers");
-    let receipt =
+    let _receipt =
         verify(&module, &ResolutionSnapshot::default(), &Limits::default()).expect("verifies");
-    let trap = run(&module, &receipt, "main", vec![], &mut Unreachable)
+    let trap = run_module(&module, "main", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect_err("a second child exceeds a budget of one");
     assert_eq!(trap.code, "RUNTIME_TASK_LIMIT");
@@ -516,11 +562,11 @@ fn the_task_budget_bounds_how_many_children_may_start() {
 
 #[test]
 fn allocation_is_charged_where_a_value_is_built() {
-    let (module, receipt) = pipeline(
+    let (module, _receipt) = pipeline(
         "pub record Point [x: i32, y: i32] \
          pub fn build() -> Point { return Point(x: 1i32, y: 2i32); }",
     );
-    let outcome = run(&module, &receipt, "build", vec![], &mut Unreachable)
+    let outcome = run_module(&module, "build", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     let accounting = Accounting::of(&module, &outcome);
@@ -547,12 +593,12 @@ fn a_frame_releases_what_it_allocated_when_it_returns() {
     // Each call charges and releases, so a bounded program stays bounded
     // however many times it calls. A budget that held only one record would
     // trap on the second call if release did not happen.
-    let (module, receipt) = pipeline(
+    let (module, _receipt) = pipeline(
         "pub record Point [x: i32, y: i32] \
          fn one() -> Point { return Point(x: 1i32, y: 2i32); } \
          pub fn many() -> i32 { let a = one(); let b = one(); let c = one(); return 0i32; }",
     );
-    let outcome = run(&module, &receipt, "many", vec![], &mut Unreachable)
+    let outcome = run_module(&module, "many", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("repeated calls must stay inside the budget");
     let accounting = Accounting::of(&module, &outcome);
@@ -561,13 +607,13 @@ fn a_frame_releases_what_it_allocated_when_it_returns() {
 
 #[test]
 fn a_registered_cleanup_is_charged_and_released_where_it_runs() {
-    let (module, receipt) = full_pipeline(
+    let (module, _receipt) = full_pipeline(
         "pub record Cell [value: i32] \
          fn bump(cell: Cell) -> Cell { return Cell(value: cell.value + 1i32); } \
          pub fn main() -> i32 { let mut cell = Cell(value: 0i32); \
          if (true) { defer { cell = bump(cell); } } return cell.value; }",
     );
-    let outcome = run(&module, &receipt, "main", vec![], &mut Unreachable)
+    let outcome = run_module(&module, "main", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     let accounting = Accounting::of(&module, &outcome);
@@ -615,8 +661,8 @@ fn the_run_reserves_one_execution_context_against_the_declared_budget() {
     // reserved before any instruction runs. `workers: 0` cannot be reached from
     // valid source — the frontend rejects it — so the reservation is observed
     // through the accounting rather than through a trap.
-    let (module, receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
-    let outcome = run(&module, &receipt, "answer", vec![], &mut Unreachable)
+    let (module, _receipt) = pipeline("pub fn answer() -> i32 { return 42i32; }");
+    let outcome = run_module(&module, "answer", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     let accounting = Accounting::of(&module, &outcome);
@@ -642,9 +688,9 @@ fn trap_in(text: &str, entry: &str, arguments: Vec<Value>) -> tos_engine::Trap {
         capability_interface_digest: String::from("sha256:0000"),
     };
     let module = lower_module(&source, &schema, &context).expect("lowers");
-    let receipt =
+    let _receipt =
         verify(&module, &ResolutionSnapshot::default(), &Limits::default()).expect("verifies");
-    run(&module, &receipt, entry, arguments, &mut Unreachable)
+    run_module(&module, entry, arguments, &mut Unreachable)
         .expect("the entry exists")
         .expect_err("the fixture must trap")
 }
@@ -729,120 +775,167 @@ fn calling_pair() -> ((Module, VerifiedModule), (Module, VerifiedModule)) {
 }
 
 #[test]
-fn a_call_across_the_set_returns_the_callee_result() {
+fn a_call_across_the_closure_returns_the_callee_result() {
     let (dependency, entry) = calling_pair();
-    let set = [
-        tos_engine::Verified {
-            module: &dependency.0,
-            receipt: &dependency.1,
-        },
-        tos_engine::Verified {
-            module: &entry.0,
-            receipt: &entry.1,
-        },
-    ];
-    let outcome = tos_engine::run_set(&set, 1, "main", Vec::new(), &mut Unreachable)
+    let mut prepared = launched(&[&dependency.0, &entry.0], "main").expect("the closure launches");
+    let outcome = prepared
+        .run(Vec::new(), &mut Unreachable)
         .expect("the entry is runnable")
         .expect("the run completes");
     assert_eq!(outcome.value, Value::Int(IntKind::I32, 42));
+    assert_eq!(prepared.modules(), 2, "both modules are in the membership");
 }
 
-/// A module runs because its own receipt matches it. A dependency admitted on
-/// the strength of its caller's receipt would make the receipt a statement
-/// about the set, and it is a statement about one module.
+/// A cross-module call at a bound of one module.
+///
+/// The caller **is evicted** while the callee runs, and is loaded again to be
+/// returned into. Nothing in the suspended frame pointed into it: the frame
+/// holds an identity, three indices and its own values, so the module it names
+/// may be released and read again between any two of its steps.
 #[test]
-fn a_dependency_whose_receipt_does_not_match_it_refuses_the_whole_run() {
+fn a_cross_module_call_survives_a_bound_of_one_resident_module() {
     let (dependency, entry) = calling_pair();
-    let mut forged = dependency.1.clone();
-    forged.module_digest = String::from("sha256:not-this-module");
-    let set = [
-        tos_engine::Verified {
-            module: &dependency.0,
-            receipt: &forged,
+    let mut prepared = Prepared::launch(
+        &[&dependency.0, &entry.0],
+        &ResolutionSnapshot::default(),
+        "main",
+        ResidencyLimits {
+            modules: 1,
+            bytes: 64 * 1024 * 1024,
         },
-        tos_engine::Verified {
-            module: &entry.0,
-            receipt: &entry.1,
-        },
-    ];
-    match tos_engine::run_set(&set, 1, "main", Vec::new(), &mut Unreachable) {
-        Err(Refusal::ReceiptDoesNotMatch) => {}
-        other => panic!("a mismatched dependency receipt was accepted: {other:?}"),
-    }
+    )
+    .expect("the closure launches");
+
+    let outcome = prepared
+        .run(Vec::new(), &mut Unreachable)
+        .expect("the entry is runnable")
+        .expect("the run completes");
+    assert_eq!(outcome.value, Value::Int(IntKind::I32, 42));
+
+    let traffic = prepared.traffic();
+    assert!(
+        traffic.evictions >= 2,
+        "at one resident module the caller must go for the callee and come back: {traffic:?}"
+    );
+    assert!(
+        traffic.loads >= 3,
+        "entry, callee, then the entry again to return into: {traffic:?}"
+    );
+    assert!(
+        prepared.ledger().image_bytes > 0,
+        "what is resident at the end is one module and its image"
+    );
 }
 
-/// Every receipt is checked before anything runs, not when a call reaches it: a
-/// program must not be able to choose which modules get checked by choosing
-/// which branch it takes.
+/// The same call at a bound of two, where nothing has to be evicted.
+///
+/// The result is the same value. Residency is a memory bound, not a semantics:
+/// a program cannot tell how much of its closure was resident while it ran.
 #[test]
-fn a_receipt_is_checked_even_for_a_dependency_the_run_never_calls() {
+fn the_result_does_not_depend_on_how_much_was_resident() {
+    let (dependency, entry) = calling_pair();
+    let mut values = Vec::new();
+    let mut traffics = Vec::new();
+    for modules in [1usize, 2] {
+        let mut prepared = Prepared::launch(
+            &[&dependency.0, &entry.0],
+            &ResolutionSnapshot::default(),
+            "main",
+            ResidencyLimits {
+                modules,
+                bytes: 64 * 1024 * 1024,
+            },
+        )
+        .expect("the closure launches");
+        let outcome = prepared
+            .run(Vec::new(), &mut Unreachable)
+            .expect("runnable")
+            .expect("completes");
+        values.push(outcome);
+        traffics.push(prepared.traffic());
+    }
+    assert_eq!(
+        values[0], values[1],
+        "the bound changes what is held, never what is computed"
+    );
+    assert!(
+        traffics[0].evictions > traffics[1].evictions,
+        "and it does change what is held: {:?} against {:?}",
+        traffics[0],
+        traffics[1]
+    );
+    assert_eq!(traffics[1].evictions, 0, "at two, nothing is evicted");
+}
+
+/// Every module is verified at launch, including one the run never calls.
+///
+/// A module checked only when a call reaches it would let a program choose
+/// which modules get checked by choosing which branch it takes. ADR-0071
+/// section 1 verifies the exact closure, in order, before the first
+/// instruction — so an unreachable module that does not hold refuses the launch.
+#[test]
+fn a_module_the_run_never_calls_is_still_verified_at_launch() {
     let (dependency, _) = calling_pair();
     let alone = member(
         "system.boot.init",
         "system/boot/init.tos",
         "pub fn main() -> i32 { return 7i32; }",
     );
-    let mut forged = dependency.1.clone();
-    forged.module_digest = String::from("sha256:not-this-module");
-    let set = [
-        tos_engine::Verified {
-            module: &dependency.0,
-            receipt: &forged,
-        },
-        tos_engine::Verified {
-            module: &alone.0,
-            receipt: &alone.1,
-        },
-    ];
-    match tos_engine::run_set(&set, 1, "main", Vec::new(), &mut Unreachable) {
-        Err(Refusal::ReceiptDoesNotMatch) => {}
-        other => panic!("an unused module's receipt went unchecked: {other:?}"),
+    // The entry calls nothing, so the dependency is never reached at run time.
+    let mut prepared = launched(&[&dependency.0, &alone.0], "main").expect("both modules verify");
+    assert_eq!(prepared.modules(), 2);
+    let outcome = prepared
+        .run(Vec::new(), &mut Unreachable)
+        .expect("runnable")
+        .expect("completes");
+    assert_eq!(outcome.value, Value::Int(IntKind::I32, 7));
+
+    // Break the unreachable module, and the launch refuses before anything runs.
+    let mut broken = dependency.0.clone();
+    broken.functions[0].blocks[0].instructions[0].ty = 4096;
+    match launched(&[&broken, &alone.0], "main").map(|_| ()) {
+        Err(Failure::Verifier { module: 0, .. }) => {}
+        other => panic!("an unreachable module went unverified: {other:?}"),
     }
 }
 
+/// A closure that does not contain what its entry imports is not a closure.
+///
+/// Under an all-resident set this was a trap at the call. It is now a refusal
+/// before the first instruction: the caller's import map is resolved against
+/// trusted membership when the caller is loaded, and a slot that names a
+/// non-member has no answer — so the caller is never admitted at all.
 #[test]
-fn a_call_to_a_module_the_set_does_not_contain_traps() {
+fn a_closure_missing_what_its_entry_imports_refuses_the_run() {
     let (_, entry) = calling_pair();
-    let set = [tos_engine::Verified {
-        module: &entry.0,
-        receipt: &entry.1,
-    }];
-    let trap = tos_engine::run_set(&set, 0, "main", Vec::new(), &mut Unreachable)
-        .expect("the entry is runnable")
-        .expect_err("a call with nothing to call must trap");
-    assert_eq!(trap.code, "RUNTIME_UNRESOLVED_IMPORT");
+    match launched(&[&entry.0], "main") {
+        Ok(mut prepared) => match prepared.run(Vec::new(), &mut Unreachable) {
+            Err(Refusal::EntryNotResident(Failure::WrongModule { module: 0 })) => {}
+            other => panic!("a call with nothing to call was admitted: {other:?}"),
+        },
+        Err(failure) => panic!("the launch itself failed differently: {failure:?}"),
+    }
 }
 
-/// The right name is not enough. A set holding another revision of the module
-/// under the same name is not the module this caller was lowered and verified
-/// against, and running against it would silently execute code the caller was
-/// never checked with.
+/// The right name is not enough.
+///
+/// A closure holding another revision of the module under the same name is not
+/// the module this caller was lowered and verified against. Membership keys on
+/// the exact `(declared name, resolved content identity)` pair, so the other
+/// revision is a different member — and the caller's import resolves to nothing.
 #[test]
-fn a_dependency_of_another_revision_under_the_same_name_traps() {
+fn a_dependency_of_another_revision_under_the_same_name_refuses_the_run() {
     let (_, entry) = calling_pair();
     let other = member(
         "system.lib.math",
         "system/lib/math.tos",
         "pub fn double(value: i32) -> i32 { return value * 3i32; }",
     );
-    let set = [
-        tos_engine::Verified {
-            module: &other.0,
-            receipt: &other.1,
-        },
-        tos_engine::Verified {
-            module: &entry.0,
-            receipt: &entry.1,
-        },
-    ];
-    let trap = tos_engine::run_set(&set, 1, "main", Vec::new(), &mut Unreachable)
-        .expect("the entry is runnable")
-        .expect_err("a substituted dependency must trap");
-    assert_eq!(trap.code, "RUNTIME_UNRESOLVED_IMPORT");
-    assert!(
-        trap.detail.contains("lowered against"),
-        "the trap must say what disagreed: {trap:?}"
-    );
+    let mut prepared = launched(&[&other.0, &entry.0], "main").expect("both modules verify");
+    match prepared.run(Vec::new(), &mut Unreachable) {
+        Err(Refusal::EntryNotResident(Failure::WrongModule { module: 1 })) => {}
+        other => panic!("a substituted dependency was accepted: {other:?}"),
+    }
 }
 
 #[test]
@@ -914,9 +1007,9 @@ fn a_deep_call_chain_is_bounded_by_the_declaration_and_not_by_the_host_stack() {
         capability_interface_digest: content_id(b""),
     };
     let module = tos_core::lower_module(&source, &schema, &context).expect("the fixture lowers");
-    let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+    let _receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect("the fixture verifies");
-    let outcome = run(&module, &receipt, "main", vec![], &mut Unreachable)
+    let outcome = run_module(&module, "main", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     assert_eq!(outcome.value, Value::Int(IntKind::I64, depth as i128));
@@ -950,9 +1043,9 @@ fn the_declared_recursion_limit_still_traps_below_the_host_stack() {
         capability_interface_digest: content_id(b""),
     };
     let module = tos_core::lower_module(&source, &schema, &context).expect("the fixture lowers");
-    let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+    let _receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect("the fixture verifies");
-    let trap = run(&module, &receipt, "main", vec![], &mut Unreachable)
+    let trap = run_module(&module, "main", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect_err("the declared depth is exceeded");
     assert_eq!(trap.code, "RUNTIME_RECURSION_LIMIT");

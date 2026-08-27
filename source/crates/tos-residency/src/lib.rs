@@ -335,6 +335,12 @@ pub enum Failure {
     /// An import named a module the closure does not contain, or a closure
     /// contained the same identity twice.
     WrongModule { module: usize },
+    /// The entry module exports no function by the name the launch was given.
+    ///
+    /// Its own refusal and not a `WrongModule`: every module verified, the
+    /// closure is exactly what it claimed to be, and what is wrong is the name
+    /// the caller asked to run.
+    NoEntryFunction { module: usize },
     /// A module needs more resident state than the declared bound allows, even
     /// alone. An execution must be able to make progress with one resident
     /// module; if it cannot, that is a refusal and not an eviction.

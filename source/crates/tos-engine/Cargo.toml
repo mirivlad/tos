@@ -22,3 +22,4 @@ measurement-marks = []
 [dependencies]
 tos-ir = { path = "../tos-ir" }
 tos-verifier = { path = "../tos-verifier" }
+tos-residency = { path = "../tos-residency" }

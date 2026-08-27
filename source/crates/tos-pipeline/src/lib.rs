@@ -63,14 +63,20 @@ pub use tos_core::{Diagnostic, Position, Severity};
 /// The accepted interface schemas, for the host that answers a module's
 /// capability requests and performs its operations (ADR-0060, ADR-0061).
 pub use tos_core::interfaces;
-use tos_engine::{run_set, Accounting, Refusal, Verified};
+use tos_engine::{run_closure, Accounting, Closure, Refusal};
 pub use tos_engine::{
     Handle, Reach, Request as CapabilityRequest, System, Trap, Unreachable, Value,
 };
 /// The integer widths a value carries, for a host building one.
 pub use tos_ir::IntKind;
 use tos_ir::Module;
-use tos_verifier::{verify, Finding, Limits, ResolutionSnapshot, VerifiedModule};
+/// The declared bounds a run holds resident (ADR-0071 section 7).
+pub use tos_residency::ResidencyLimits;
+use tos_residency::{
+    launch, ClosureModuleId, ClosureSource, ImageSnapshot, ModuleProvider, Residency,
+    VerifiedClosureManifest, VerifiedModuleRecord,
+};
+use tos_verifier::{Finding, Limits, ResolutionSnapshot, VerifiedModule};
 
 /// What the pipeline is asked to run.
 ///
@@ -469,54 +475,243 @@ pub fn execute_set(
     // identity the set disagrees with, is refused here even though the same
     // frontend produced both.
     let snapshot = snapshot_of(&lowered, &module);
-    // Every module, not only the entry. A dependency whose IR the verifier
-    // never saw would be executing on its caller's receipt, and a receipt is a
-    // statement about one module.
-    let mut receipts = Vec::with_capacity(lowered.len());
-    for (_, dependency) in &lowered {
-        match verify(dependency, &snapshot, &Limits::default()) {
-            Ok(receipt) => receipts.push(receipt),
-            Err(finding) => return Ok(Run::Unverified(finding)),
-        }
-    }
-    let receipt = match verify(&module, &snapshot, &Limits::default()) {
-        Ok(receipt) => receipt,
-        Err(finding) => return Ok(Run::Unverified(finding)),
-    };
+
+    // The entry last, so it is the closure's final position — which is where
+    // `closure_of` already put it.
+    let mut closure_modules: Vec<&Module> = lowered.iter().map(|(_, module)| module).collect();
+    closure_modules.push(&module);
+    let mut prepared =
+        match Prepared::launch(&closure_modules, &snapshot, request.entry, HOST_RESIDENCY) {
+            Ok(prepared) => prepared,
+            // Every module verified and the closure is what it claimed to be; what
+            // is absent is the function the caller named. That is the run failing
+            // to start, so it is announced as one.
+            Err(tos_residency::Failure::NoEntryFunction { .. }) => {
+                trace.entering(PipelineStage::Execute);
+                return Ok(Run::Refused(Refusal::NoSuchEntry(
+                    request.entry.to_string(),
+                )));
+            }
+            Err(failure) => return Ok(launch_refusal(failure)),
+        };
+
+    // The lowered closure goes here, before the first instruction. This is the
+    // line the whole design rests on: what runs is reached through the resident
+    // set, and a `Vec<Module>` kept alive beside it would be the all-resident
+    // closure the bounded one replaces.
+    drop(closure_modules);
+    drop(lowered);
+    drop(module);
 
     trace.entering(PipelineStage::Execute);
-    // Each module paired with its own receipt, the entry last. The engine
-    // rechecks every pairing before it runs anything: the verifier's word is
-    // carried, not taken.
-    let mut set: Vec<Verified<'_>> = lowered
-        .iter()
-        .map(|(_, dependency)| dependency)
-        .zip(receipts.iter())
-        .map(|(module, receipt)| Verified { module, receipt })
-        .collect();
-    set.push(Verified {
-        module: &module,
-        receipt: &receipt,
-    });
-    let entry_position = set.len() - 1;
-    Ok(
-        match run_set(&set, entry_position, request.entry, arguments, system) {
-            Err(refusal) => Run::Refused(refusal),
-            Ok(Err(trap)) => Run::Trapped {
-                code: trap.code,
-                detail: trap.detail.clone(),
-                at: site_of_in_set(&module, &sources, &summaries, source, &trap),
-            },
-            Ok(Ok(outcome)) => {
-                let accounting = Accounting::of(&module, &outcome);
-                Run::Completed(Box::new(Completion {
-                    receipt,
-                    value: outcome.value,
-                    accounting,
-                }))
-            }
+    Ok(match prepared.run(arguments, system) {
+        Err(refusal) => Run::Refused(refusal),
+        Ok(Err(trap)) => Run::Trapped {
+            code: trap.code,
+            detail: trap.detail.clone(),
+            at: site_of_in_set(&sources, &summaries, source, &trap),
         },
-    )
+        Ok(Ok(outcome)) => {
+            let accounting = prepared.accounting(&outcome);
+            Run::Completed(Box::new(Completion {
+                receipt: prepared.into_receipt(),
+                value: outcome.value,
+                accounting,
+            }))
+        }
+    })
+}
+
+/// A verified closure, launched and ready to run.
+///
+/// The production path, in one object:
+///
+/// ```text
+/// modules -> TOSIMAGE/v1 -> sequential verify_image -> records + membership
+///         -> the modules are released
+///         -> bounded resident set + explicit provider
+/// ```
+///
+/// **What it holds is images, records and membership.** No `Vec<Module>`: the
+/// decoded form of every module the launch saw was released as the launch went,
+/// and what a run decodes again is bounded by the declared residency limits.
+///
+/// It is separate from the frontend on purpose. A caller that already has
+/// verified IR — a measurement harness, a boot path — prepares once and runs
+/// many times, and the preparation is not inside anything it measures.
+pub struct Prepared {
+    store: ImageStore,
+    records: Vec<VerifiedModuleRecord>,
+    manifest: VerifiedClosureManifest,
+    receipt: VerifiedModule,
+    /// The entry module's declared envelope, copied out before the module was
+    /// released. One run has one budget, and this is it.
+    envelope: tos_ir::ResourceEnvelope,
+    residency: Residency,
+}
+
+impl Prepared {
+    /// Encodes a closure, verifies it one module at a time, and binds a bounded
+    /// resident set to what the launch established.
+    ///
+    /// `modules` is the **exact resolved closure**, dependencies first and the
+    /// entry last, and `resolution` is what the resolver declared it provides.
+    /// Nothing is discovered here: what is verified is what was handed over.
+    pub fn launch(
+        modules: &[&Module],
+        resolution: &ResolutionSnapshot,
+        entry: &str,
+        limits: ResidencyLimits,
+    ) -> Result<Prepared, tos_residency::Failure> {
+        let envelope = modules
+            .last()
+            .map(|module| module.header.resource_envelope.clone())
+            .unwrap_or_default();
+        let store = ImageStore {
+            images: modules.iter().map(|module| image_of(module)).collect(),
+        };
+        let entry_position = store.images.len().saturating_sub(1);
+        let launched = launch(
+            &store,
+            &|_| resolution.clone(),
+            &Limits::default(),
+            entry_position,
+            entry,
+        )?;
+        let residency = Residency::new(limits, parse_limits()).map_err(|_| {
+            tos_residency::Failure::OverResidencyBound {
+                module: entry_position,
+                bytes: 0,
+            }
+        })?;
+        Ok(Prepared {
+            store,
+            records: launched.records,
+            manifest: launched.manifest,
+            receipt: launched.entry_receipt,
+            envelope,
+            residency,
+        })
+    }
+
+    /// The receipt the launch's own verifier issued for the entry module.
+    pub fn receipt(&self) -> &VerifiedModule {
+        &self.receipt
+    }
+
+    /// The same receipt, for a caller that is finished with the closure.
+    pub fn into_receipt(self) -> VerifiedModule {
+        self.receipt
+    }
+
+    /// Runs the entry function.
+    ///
+    /// Repeatable: the resident set carries over between runs, which is what a
+    /// warm cache is, and every reload still checks the trusted artifact digest.
+    pub fn run(
+        &mut self,
+        arguments: Vec<Value>,
+        system: &mut dyn System,
+    ) -> Result<Result<tos_engine::Outcome, Trap>, Refusal> {
+        let mut closure = Closure::new(
+            &mut self.residency,
+            &self.store,
+            &self.records,
+            &self.manifest,
+        );
+        run_closure(&mut closure, arguments, system)
+    }
+
+    /// What a run cost, against the entry module's declared envelope.
+    pub fn accounting(&self, outcome: &tos_engine::Outcome) -> Accounting {
+        Accounting::under(&self.envelope, outcome)
+    }
+
+    /// What the resident set did.
+    pub fn traffic(&self) -> tos_residency::Traffic {
+        self.residency.traffic()
+    }
+
+    /// What is resident now, by component.
+    pub fn ledger(&self) -> tos_residency::Ledger {
+        self.residency.ledger()
+    }
+
+    /// How many modules the verified closure contains.
+    pub fn modules(&self) -> usize {
+        self.manifest.modules()
+    }
+}
+
+/// What this host holds resident while a run executes.
+///
+/// A **declaration**, not a measurement: ADR-0071 section 7 bounds residency by
+/// count and by module-derived bytes, and the numbers are the configuration's to
+/// state. These are the host facade's own, for runs on a host allocator; the
+/// freestanding runtime declares its own against `RUNTIME_GRANT`.
+pub const HOST_RESIDENCY: ResidencyLimits = ResidencyLimits {
+    // docs/44 section 2's closure ceiling: a run may reach every module of its
+    // closure, and none of them more than once.
+    modules: 256,
+    bytes: 64 * 1024 * 1024,
+};
+
+/// The accepted ceilings as the reload parser's bounds.
+fn parse_limits() -> tos_image::ParseLimits {
+    let limits = Limits::default();
+    tos_image::ParseLimits {
+        table_entries: limits.table_entries,
+        modules: limits.modules,
+        fields: limits.fields,
+        parameters: limits.parameters,
+        blocks_per_function: limits.blocks_per_function,
+        instructions_per_block: limits.instructions_per_block,
+        source_map_entries: limits.source_map_entries,
+    }
+}
+
+/// One module, as the immutable image the verifier and the engine both read.
+fn image_of(module: &Module) -> ImageSnapshot {
+    let (bytes, _) = tos_image::encode(module);
+    ImageSnapshot::from(bytes.into_boxed_slice())
+}
+
+/// The closure's images, in position order.
+///
+/// The launch's `ClosureSource` and the run's `ModuleProvider` are the same
+/// store, which is what a cache is: it supplies bytes. It cannot enumerate for
+/// the provider and it never returns a conclusion — what the bytes mean is
+/// decided by the artifact digest in the trusted record.
+struct ImageStore {
+    images: Vec<ImageSnapshot>,
+}
+
+impl ClosureSource for ImageStore {
+    fn count(&self) -> usize {
+        self.images.len()
+    }
+
+    fn image(&self, position: usize) -> Option<ImageSnapshot> {
+        self.images.get(position).cloned()
+    }
+}
+
+impl ModuleProvider for ImageStore {
+    fn image(&self, id: ClosureModuleId) -> Option<ImageSnapshot> {
+        self.images.get(id.position()).cloned()
+    }
+}
+
+/// A launch that refused, as the pipeline's own outcome.
+///
+/// A semantic refusal is `Unverified` — the verifier looked at a module and said
+/// no — and everything else is a failure of the closure the pipeline itself
+/// assembled, which is a refusal of the run rather than a verdict on the source.
+fn launch_refusal(failure: tos_residency::Failure) -> Run {
+    match failure {
+        tos_residency::Failure::Verifier { finding, .. } => Run::Unverified(finding),
+        other => Run::Refused(Refusal::EntryNotResident(other)),
+    }
 }
 
 /// What the resolved set provides, as the verifier is told it.
@@ -638,13 +833,15 @@ fn is_error(diagnostic: &Diagnostic) -> bool {
 /// Computing it against the entry's text would produce a line and column that
 /// exist and are wrong, which is worse than none at all.
 fn site_of_in_set(
-    module: &Module,
     sources: &[SourceUnit],
     summaries: &[ModuleSummary],
     entry_source: &SourceUnit,
     trap: &tos_engine::Trap,
 ) -> Option<Site> {
-    let mapped = tos_engine::trap_source(module, trap)?;
+    // The trap carries its own span. It has to: the modules were released
+    // before the first instruction, so an index into a source map nobody holds
+    // would name nothing.
+    let mapped = trap.site.as_deref()?;
     let source = summaries
         .iter()
         .position(|summary| summary.path == mapped.path)

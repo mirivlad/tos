@@ -15,7 +15,7 @@
 
 use alloc::vec::Vec;
 
-use tos_verifier::verify_image;
+use tos_verifier::{verify_image, VerifiedModule};
 
 use crate::{
     fixed_digest, resolved_module_identity, source_set_identity, ClosureModuleId, Envelope,
@@ -43,6 +43,15 @@ pub struct Launched {
     pub records: Vec<VerifiedModuleRecord>,
     /// The closure's membership, and the only minter of a `ClosureModuleId`.
     pub manifest: VerifiedClosureManifest,
+    /// The receipt this launch's own verifier issued for the entry module.
+    ///
+    /// One receipt, for the module the run is reported under. It is returned
+    /// rather than recomputed because the launch already held it while the entry
+    /// was materialized, and a caller that had to verify the entry a second time
+    /// to describe what it ran would be running the verifier twice over the same
+    /// bytes. It is **not** a per-module table: the other modules leave behind
+    /// their fixed-size records and nothing else.
+    pub entry_receipt: VerifiedModule,
 }
 
 /// Verifies the exact resolved closure, sequentially, and builds the manifest.
@@ -62,6 +71,7 @@ pub fn launch(
     let mut records: Vec<Option<VerifiedModuleRecord>> = Vec::with_capacity(count);
     records.resize(count, None);
     let mut entry_index: Option<usize> = None;
+    let mut entry_receipt: Option<VerifiedModule> = None;
 
     for (position, slot) in records.iter_mut().enumerate() {
         let image = source.image(position).ok_or(Failure::Missing(position))?;
@@ -97,6 +107,7 @@ pub fn launch(
                 .functions
                 .iter()
                 .position(|function| function.signature.name == entry_function);
+            entry_receipt = Some(verified.receipt().clone());
         }
 
         // The materialized module is released here, and this is the line the
@@ -127,7 +138,8 @@ pub fn launch(
         }
     }
 
-    let entry_function = entry_index.ok_or(Failure::WrongModule { module: entry })?;
+    let entry_function = entry_index.ok_or(Failure::NoEntryFunction { module: entry })?;
+    let entry_receipt = entry_receipt.ok_or(Failure::WrongModule { module: entry })?;
     if entry >= count {
         return Err(Failure::WrongModule { module: entry });
     }
@@ -138,5 +150,6 @@ pub fn launch(
             entry: ClosureModuleId(entry),
             entry_function,
         },
+        entry_receipt,
     })
 }

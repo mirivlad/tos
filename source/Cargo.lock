@@ -59,6 +59,7 @@ dependencies = [
  "tos-engine",
  "tos-hash",
  "tos-ir",
+ "tos-pipeline",
  "tos-verifier",
 ]
 
@@ -67,6 +68,7 @@ name = "tos-engine"
 version = "0.1.0"
 dependencies = [
  "tos-ir",
+ "tos-residency",
  "tos-verifier",
 ]
 
@@ -132,7 +134,9 @@ dependencies = [
  "tos-core",
  "tos-engine",
  "tos-hash",
+ "tos-image",
  "tos-ir",
+ "tos-residency",
  "tos-verifier",
 ]
 
