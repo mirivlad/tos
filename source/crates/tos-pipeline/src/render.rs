@@ -180,6 +180,14 @@ pub fn events(run: &Run) -> alloc::vec::Vec<String> {
                 diagnostics.len()
             ));
         }
+        // The provider and the check that refused it, as separate fields: a
+        // preparation that could not obtain its own resolved source has to say
+        // which unit and why, and a reader has to be able to search for either.
+        Run::SourceRefused(refusal) => out.push(format!(
+            "TOS.RUN.REFUSED stage=lower reason={} path={}",
+            refusal.symbol(),
+            field(refusal.path())
+        )),
         Run::NotLowered(gap) => out.push(format!(
             "TOS.RUN.REFUSED stage=lower construct={} bytes={}..{}",
             gap.construct, gap.byte_start, gap.byte_end
