@@ -214,6 +214,7 @@ dependencies = [
  "tos-image",
  "tos-ir",
  "tos-pipeline",
+ "tos-residency",
  "tos-verifier",
 ]
 

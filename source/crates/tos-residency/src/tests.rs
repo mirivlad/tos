@@ -243,10 +243,11 @@ fn a_reload_checks_the_artifact_digest_before_parsing() {
             bytes: 64 * 1024 * 1024,
         },
         parse_limits(),
-    );
+    )
+    .expect("admissible bounds");
     let entry = result.manifest.module(1).expect("in the closure");
     residency
-        .ensure(entry, &store, &result.records)
+        .ensure(entry, &store, &result.records, &result.manifest)
         .expect("the entry loads");
     assert!(residency.module_of(entry).is_some());
 
@@ -270,14 +271,15 @@ fn a_reload_checks_the_artifact_digest_before_parsing() {
             bytes: 64 * 1024 * 1024,
         },
         parse_limits(),
-    );
+    )
+    .expect("admissible bounds");
     let swapped = Swapped {
         inner: &store,
         at: 1,
         instead: store.images[0].clone(),
     };
     assert_eq!(
-        residency.ensure(entry, &swapped, &result.records),
+        residency.ensure(entry, &swapped, &result.records, &result.manifest),
         Err(Failure::ArtifactDigest { module: 1 })
     );
 
@@ -289,13 +291,14 @@ fn a_reload_checks_the_artifact_digest_before_parsing() {
         }
     }
     assert_eq!(
-        residency.ensure(entry, &Absent, &result.records),
+        residency.ensure(entry, &Absent, &result.records, &result.manifest),
         Err(Failure::Missing(1))
     );
 }
 
 /// Import slots and export indexes are resident derived state: built inside the
-/// module the manifest fixed, and gone when it is evicted.
+/// module the manifest fixed, complete before it is admitted, and gone when it
+/// is evicted.
 #[test]
 fn derived_indexes_are_resident_and_die_with_the_module() {
     let store = closure();
@@ -306,24 +309,31 @@ fn derived_indexes_are_resident_and_die_with_the_module() {
             bytes: 64 * 1024 * 1024,
         },
         parse_limits(),
-    );
+    )
+    .expect("admissible bounds");
     let entry = result.manifest.module(1).expect("in the closure");
     residency
-        .ensure(entry, &store, &result.records)
+        .ensure(entry, &store, &result.records, &result.manifest)
         .expect("loads");
-    let before = residency.ledger().index_bytes;
+    assert!(
+        residency.ledger().index_bytes > 0,
+        "the derived indexes are in the ledger the moment the module is admitted"
+    );
+
+    let settled = residency.ledger();
     let callee = residency
-        .import_of(entry, 0, &result.manifest)
+        .import_of(entry, 0)
         .expect("the import slot resolves");
     assert_eq!(callee.position(), 0);
-    assert!(
-        residency.ledger().index_bytes > before,
-        "the import map is counted in the resident ledger"
+    assert_eq!(
+        residency.ledger(),
+        settled,
+        "reading derived state allocates nothing and moves no bound"
     );
 
     // At a bound of one, reaching the callee evicts the caller and its indexes.
     residency
-        .ensure(callee, &store, &result.records)
+        .ensure(callee, &store, &result.records, &result.manifest)
         .expect("loads");
     assert_eq!(residency.resident(), 1);
     assert!(
@@ -339,6 +349,142 @@ fn derived_indexes_are_resident_and_die_with_the_module() {
     assert!(residency.traffic().evictions >= 1);
 }
 
+/// The derived index is inside the bound at admission, not after it.
+///
+/// A byte bound that a module fits only while its indexes are still unbuilt is
+/// not a bound: the load would be admitted and the ledger would grow past the
+/// limit on first use, with no admission decision left to make. So the same
+/// module is offered two bounds — one that covers everything except the index,
+/// and one that covers everything — and only the second admits it.
+#[test]
+fn the_derived_index_counts_before_admission() {
+    let store = closure();
+    let result = launched(&store);
+    let entry = result.manifest.module(1).expect("in the closure");
+
+    let mut generous = Residency::new(
+        ResidencyLimits {
+            modules: 2,
+            bytes: 64 * 1024 * 1024,
+        },
+        parse_limits(),
+    )
+    .expect("admissible bounds");
+    generous
+        .ensure(entry, &store, &result.records, &result.manifest)
+        .expect("loads");
+    let complete = generous.ledger();
+    assert!(
+        complete.index_bytes > 0,
+        "the entry derives an import map and an export index"
+    );
+
+    let mut tight = Residency::new(
+        ResidencyLimits {
+            modules: 2,
+            bytes: complete.total() - complete.index_bytes,
+        },
+        parse_limits(),
+    )
+    .expect("admissible bounds");
+    match tight.ensure(entry, &store, &result.records, &result.manifest) {
+        Err(Failure::OverResidencyBound { module: 1, .. }) => {}
+        other => panic!("the index was admitted outside the byte bound: {other:?}"),
+    }
+    assert_eq!(tight.resident(), 0, "a refused load leaves nothing behind");
+
+    let mut exact = Residency::new(
+        ResidencyLimits {
+            modules: 2,
+            bytes: complete.total(),
+        },
+        parse_limits(),
+    )
+    .expect("admissible bounds");
+    exact
+        .ensure(entry, &store, &result.records, &result.manifest)
+        .expect("the complete cost fits a bound set to the complete cost");
+}
+
+/// A private function is not in the export index at all.
+///
+/// Not hidden by a visibility check at the lookup — absent. This is the rule the
+/// engine's imported call already enforced, moved into the shape of the index so
+/// there is no second place it could be forgotten.
+#[test]
+fn the_export_index_holds_public_functions_only() {
+    let mut mixed = module("set.mixed", "sha256:mixed", &[]);
+    let mut hidden = mixed.functions[0].clone();
+    hidden.signature.name = String::from("hidden");
+    hidden.signature.visibility = Visibility::Private;
+    // docs/43 §2 orders functions by name, and "answer" precedes "hidden".
+    mixed.functions.push(hidden);
+
+    let (bytes, _) = tos_image::encode(&mixed);
+    let store = Store {
+        images: vec![ImageSnapshot::from(bytes.into_boxed_slice())],
+        resolutions: vec![ResolutionSnapshot::default()],
+    };
+    let result = launch(
+        &store,
+        &|position| store.resolutions[position].clone(),
+        &Limits::default(),
+        0,
+        "answer",
+    )
+    .expect("the module verifies");
+
+    let mut residency = Residency::new(
+        ResidencyLimits {
+            modules: 1,
+            bytes: 64 * 1024 * 1024,
+        },
+        parse_limits(),
+    )
+    .expect("admissible bounds");
+    let id = result.manifest.module(0).expect("in the closure");
+    residency
+        .ensure(id, &store, &result.records, &result.manifest)
+        .expect("loads");
+
+    assert_eq!(residency.export_of(id, "answer"), Some(0));
+    assert_eq!(
+        residency.export_of(id, "hidden"),
+        None,
+        "a private function has no entry to find"
+    );
+    assert_eq!(
+        residency.public_exports_of(id),
+        Some(1),
+        "the index holds one entry, not two"
+    );
+}
+
+/// A configuration that describes no possible execution is refused, not fixed.
+#[test]
+fn a_residency_of_no_modules_is_refused() {
+    assert_eq!(
+        Residency::new(
+            ResidencyLimits {
+                modules: 0,
+                bytes: 64 * 1024 * 1024,
+            },
+            parse_limits(),
+        )
+        .err(),
+        Some(ConfigurationError::NoResidentModules),
+        "zero resident modules is inadmissible, and not silently one"
+    );
+    assert!(Residency::new(
+        ResidencyLimits {
+            modules: 1,
+            bytes: 64 * 1024 * 1024,
+        },
+        parse_limits(),
+    )
+    .is_ok());
+}
+
 /// Eviction is deterministic and driven by the declared bounds alone.
 #[test]
 fn eviction_is_least_recently_used_and_bounded_by_count() {
@@ -350,16 +496,17 @@ fn eviction_is_least_recently_used_and_bounded_by_count() {
             bytes: 64 * 1024 * 1024,
         },
         parse_limits(),
-    );
+    )
+    .expect("admissible bounds");
     let first = result.manifest.module(0).expect("in the closure");
     let second = result.manifest.module(1).expect("in the closure");
     for _ in 0..4 {
         residency
-            .ensure(first, &store, &result.records)
+            .ensure(first, &store, &result.records, &result.manifest)
             .expect("loads");
         assert_eq!(residency.resident(), 1);
         residency
-            .ensure(second, &store, &result.records)
+            .ensure(second, &store, &result.records, &result.manifest)
             .expect("loads");
         assert_eq!(residency.resident(), 1);
     }
@@ -379,9 +526,10 @@ fn a_bound_below_one_module_refuses() {
             bytes: 16,
         },
         parse_limits(),
-    );
+    )
+    .expect("admissible bounds");
     let entry = result.manifest.module(1).expect("in the closure");
-    match residency.ensure(entry, &store, &result.records) {
+    match residency.ensure(entry, &store, &result.records, &result.manifest) {
         Err(Failure::OverResidencyBound { module: 1, .. }) => {}
         other => panic!("a bound below one module did not refuse: {other:?}"),
     }

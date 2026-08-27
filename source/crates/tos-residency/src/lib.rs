@@ -63,7 +63,7 @@ mod launch;
 mod resident;
 
 pub use launch::{launch, ClosureSource, Launched};
-pub use resident::{Ledger, Residency, ResidencyLimits, Traffic};
+pub use resident::{ConfigurationError, Ledger, Residency, ResidencyLimits, Traffic};
 
 /// An immutable image snapshot.
 ///

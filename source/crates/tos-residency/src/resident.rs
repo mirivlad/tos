@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The bounded resident set (ADR-0071 §5–§7).
+//! The bounded resident set (ADR-0071 sections 5 to 7).
 //!
 //! A module is resident when its image, its decoded form and the indexes
 //! derived from it are in memory. All of that is inside the byte bound, and all
@@ -15,13 +15,18 @@
 //! buffer would put the digest on a different object than the one that runs;
 //! and the parser stays total on every path, because a reader whose safety
 //! depended on the hash having matched would be unsafe exactly when it did not.
+//!
+//! **Admission sees the whole cost.** A load builds everything the module will
+//! ever derive — the import mapping and the public export index — before it is
+//! admitted, and the bound is checked against that complete figure. A resident
+//! module has no lazy allocation left to make, so nothing can grow the ledger
+//! between one admission and the next. An index built after admission would be
+//! a byte bound decided on a figure that was already out of date.
 
-use alloc::collections::BTreeMap;
-use alloc::string::String;
 use alloc::vec::Vec;
 
 use tos_image::ParseLimits;
-use tos_ir::Module;
+use tos_ir::{Module, Visibility};
 
 use crate::{
     ClosureModuleId, Failure, ImageSnapshot, ModuleProvider, VerifiedClosureManifest,
@@ -46,7 +51,20 @@ pub struct ResidencyLimits {
     pub bytes: usize,
 }
 
-/// The three components of §7, and the bookkeeping beside them.
+/// A declared configuration that does not describe a possible execution.
+///
+/// Refused rather than repaired. The accepted minimum of one resident module
+/// means *fewer is inadmissible*, not *round it up for the caller*: a run
+/// configured to hold no module at all is a mistake in what was declared, and
+/// silently substituting the smallest working value would hide it and report
+/// success for bounds nobody asked for.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfigurationError {
+    /// `modules` was zero.
+    NoResidentModules,
+}
+
+/// The three components of section 7, and the bookkeeping beside them.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct Ledger {
     pub image_bytes: usize,
@@ -72,6 +90,10 @@ pub struct Traffic {
 }
 
 /// One resident module and everything it keeps alive.
+///
+/// Complete on arrival. Every field below is filled by the load that produced
+/// it, so what a resident costs is known before it is admitted and does not
+/// change while it is resident.
 struct Resident {
     id: ClosureModuleId,
     /// The immutable snapshot that was hashed and then parsed. Held for its
@@ -82,12 +104,21 @@ struct Resident {
     snapshot: ImageSnapshot,
     module: Module,
     /// This module's `import slot -> ClosureModuleId` mapping, resolved against
-    /// the trusted membership on first use. Resident derived state: the
-    /// manifest does not hold it, and it dies with the module.
+    /// the trusted membership at load. Resident derived state: the manifest
+    /// does not hold it, and it dies with the module.
     imports: Vec<ClosureModuleId>,
-    /// `export name -> function index`, built inside the module the manifest
-    /// already fixed, on first use. Also resident derived state.
-    exports: BTreeMap<String, usize>,
+    /// Indices of this module's **public** functions, ordered by name.
+    ///
+    /// Indices and not names: the names are already inside the resident module,
+    /// and a second copy of them would be a second thing to bound. A lookup
+    /// binary-searches this table and compares against the name in the module
+    /// itself, so the index costs exactly `capacity * size_of::<usize>()` and
+    /// the accounting for it is a multiplication rather than a survey.
+    ///
+    /// A private function is not in here at all. Visibility is not enforced at
+    /// the lookup by a check someone could omit; what is not exported has no
+    /// entry to find.
+    public_exports: Vec<usize>,
     image_bytes: usize,
     decoded_bytes: usize,
     index_bytes: usize,
@@ -95,8 +126,9 @@ struct Resident {
 }
 
 impl Resident {
-    fn cost(&self) -> usize {
-        self.image_bytes + self.decoded_bytes + self.index_bytes + core::mem::size_of::<Resident>()
+    /// Everything this resident holds that came from the module.
+    fn module_derived(&self) -> usize {
+        self.image_bytes + self.decoded_bytes + self.index_bytes
     }
 }
 
@@ -110,21 +142,28 @@ pub struct Residency {
 }
 
 impl Residency {
-    /// A resident set under declared bounds.
+    /// A resident set under declared bounds, or a refusal of the bounds.
     ///
     /// `parse_limits` are the accepted ceilings the reload parser checks table
     /// counts against, handed down as data.
-    pub fn new(limits: ResidencyLimits, parse_limits: ParseLimits) -> Residency {
-        Residency {
-            limits: ResidencyLimits {
-                modules: limits.modules.max(1),
-                bytes: limits.bytes,
-            },
+    pub fn new(
+        limits: ResidencyLimits,
+        parse_limits: ParseLimits,
+    ) -> Result<Residency, ConfigurationError> {
+        if limits.modules == 0 {
+            return Err(ConfigurationError::NoResidentModules);
+        }
+        Ok(Residency {
+            limits,
             parse_limits,
             live: Vec::new(),
             clock: 0,
             traffic: Traffic::default(),
-        }
+        })
+    }
+
+    pub fn limits(&self) -> ResidencyLimits {
+        self.limits
     }
 
     pub fn traffic(&self) -> Traffic {
@@ -165,11 +204,18 @@ impl Residency {
     /// execution must be able to make progress with one resident module, so a
     /// bound too small for a single module fails the run rather than evicting
     /// what it is about to use.
+    ///
+    /// The manifest is required because the resident state a load builds
+    /// includes the import mapping, and that is resolved against trusted
+    /// membership. It is the same manifest throughout an execution; passing it
+    /// per call rather than storing it keeps the resident set from owning a
+    /// second reference to the closure's authority.
     pub fn ensure(
         &mut self,
         id: ClosureModuleId,
         provider: &dyn ModuleProvider,
         records: &[VerifiedModuleRecord],
+        manifest: &VerifiedClosureManifest,
     ) -> Result<(), Failure> {
         self.clock += 1;
         if let Some(at) = self.find(id) {
@@ -182,11 +228,11 @@ impl Residency {
             self.evict_least_recent(None);
         }
 
-        let resident = self.load(id, provider, records)?;
-        let cost = resident.cost();
+        let resident = self.load(id, provider, records, manifest)?;
+        let alone = resident.module_derived() + core::mem::size_of::<Resident>();
         self.live.push(resident);
 
-        // Then room by bytes.
+        // Then room by bytes, against the complete cost of everything resident.
         while self.ledger().total() > self.limits.bytes && self.live.len() > 1 {
             self.evict_least_recent(Some(id));
         }
@@ -194,7 +240,7 @@ impl Residency {
             self.live.pop();
             return Err(Failure::OverResidencyBound {
                 module: id.position(),
-                bytes: cost,
+                bytes: alone,
             });
         }
 
@@ -222,12 +268,14 @@ impl Residency {
     }
 
     /// One load: obtain the immutable snapshot, hash **that exact snapshot**,
-    /// compare against the trusted artifact digest, and only then parse it.
+    /// compare against the trusted artifact digest, parse it, and derive
+    /// everything the module will ever derive.
     fn load(
         &mut self,
         id: ClosureModuleId,
         provider: &dyn ModuleProvider,
         records: &[VerifiedModuleRecord],
+        manifest: &VerifiedClosureManifest,
     ) -> Result<Resident, Failure> {
         let position = id.position();
         let record = records.get(position).ok_or(Failure::Missing(position))?;
@@ -247,110 +295,96 @@ impl Residency {
                 module: position,
                 error,
             })?;
-        let decoded_bytes = decoded_cost(&module);
+
+        // The import mapping, against trusted membership. Not module search:
+        // the answer can only be a member of the closure the manifest already
+        // fixed, and a slot naming anything else has no answer at all — which
+        // is a refusal here, at load, rather than a `None` discovered mid-call.
+        let mut imports = Vec::with_capacity(module.imports.len());
+        for declared in &module.imports {
+            let resolved = manifest
+                .resolve(&declared.module_name, &declared.module_content_id)
+                .ok_or(Failure::WrongModule { module: position })?;
+            imports.push(resolved);
+        }
+
+        let public_exports = public_export_index(&module);
+
+        let index_bytes = imports.capacity() * core::mem::size_of::<ClosureModuleId>()
+            + public_exports.capacity() * core::mem::size_of::<usize>();
 
         self.traffic.loads += 1;
         Ok(Resident {
             id,
-            image_bytes: snapshot.len(),
+            // The `Arc<[u8]>` allocation is its two-word header and the bytes.
+            image_bytes: snapshot.len() + 2 * core::mem::size_of::<usize>(),
             snapshot,
+            decoded_bytes: tos_ir::retained_bytes(&module),
             module,
-            imports: Vec::new(),
-            exports: BTreeMap::new(),
-            index_bytes: 0,
-            decoded_bytes,
+            imports,
+            public_exports,
+            index_bytes,
             used_at: self.clock,
         })
     }
 
     /// Which module a resident caller's import slot names.
     ///
-    /// Resolved against the trusted membership, once, when the caller is
-    /// resident. Not module search: the answer can only be a member of the
-    /// closure the manifest already fixed, and a slot naming anything else has
-    /// no answer at all.
-    pub fn import_of(
-        &mut self,
-        id: ClosureModuleId,
-        slot: usize,
-        manifest: &VerifiedClosureManifest,
-    ) -> Option<ClosureModuleId> {
+    /// A read of state the load already built. It takes `&self` on purpose:
+    /// resolving an import cannot allocate, cannot evict and cannot move the
+    /// ledger, so there is no admission decision hiding behind it.
+    pub fn import_of(&self, id: ClosureModuleId, slot: usize) -> Option<ClosureModuleId> {
         let at = self.find(id)?;
-        if self.live[at].imports.is_empty() && !self.live[at].module.imports.is_empty() {
-            let mut resolved = Vec::with_capacity(self.live[at].module.imports.len());
-            for declared in &self.live[at].module.imports {
-                // The exact pair the caller's verified artifact states, hashed
-                // canonically and looked up in the trusted membership. No
-                // ambient lookup appears: the answer can only be a member.
-                resolved
-                    .push(manifest.resolve(&declared.module_name, &declared.module_content_id)?);
-            }
-            self.live[at].index_bytes +=
-                resolved.capacity() * core::mem::size_of::<ClosureModuleId>();
-            self.live[at].imports = resolved;
-        }
         self.live[at].imports.get(slot).copied()
     }
 
     /// Which function of a resident module an export name reaches.
     ///
-    /// Reconstructed inside the module the manifest already fixed, and cached
-    /// as resident state. This is not module search: the module is not being
-    /// chosen here, it was chosen at launch and the provider cannot widen it.
-    pub fn export_of(&mut self, id: ClosureModuleId, name: &str) -> Option<usize> {
+    /// **Public functions only.** The index holds nothing else, so a private
+    /// function is not hidden by a check here; it is absent.
+    ///
+    /// This is not module search: the module is not being chosen, it was chosen
+    /// at launch and the provider cannot widen it. The name is compared against
+    /// the name inside the resident module, so no copy of the export strings
+    /// exists anywhere.
+    pub fn export_of(&self, id: ClosureModuleId, name: &str) -> Option<usize> {
         let at = self.find(id)?;
-        if self.live[at].exports.is_empty() {
-            let mut exports = BTreeMap::new();
-            let mut bytes = 0usize;
-            for (index, function) in self.live[at].module.functions.iter().enumerate() {
-                bytes += function.signature.name.len()
-                    + core::mem::size_of::<String>()
-                    + core::mem::size_of::<usize>()
-                    + 32;
-                exports
-                    .entry(function.signature.name.clone())
-                    .or_insert(index);
-            }
-            self.live[at].exports = exports;
-            self.live[at].index_bytes += bytes;
-        }
-        self.live[at].exports.get(name).copied()
+        let resident = &self.live[at];
+        let functions = &resident.module.functions;
+        let found = resident
+            .public_exports
+            .binary_search_by(|index| functions[*index].signature.name.as_str().cmp(name))
+            .ok()?;
+        Some(resident.public_exports[found])
+    }
+
+    /// How many public exports a resident module has, for evidence.
+    pub fn public_exports_of(&self, id: ClosureModuleId) -> Option<usize> {
+        self.find(id).map(|at| self.live[at].public_exports.len())
     }
 }
 
-/// What a decoded module costs, near enough to bound it.
+/// The public functions of a module, ordered by name.
 ///
-/// Counted from the module's own tables rather than measured through an
-/// allocator, because a bound has to hold wherever the allocator is. It is a
-/// lower bound on the true footprint by construction — every term below is a
-/// thing that exists — so a residency limit set against it is conservative in
-/// the direction that matters.
-fn decoded_cost(module: &Module) -> usize {
-    let mut bytes = core::mem::size_of::<Module>();
-    bytes += module.types.capacity() * core::mem::size_of::<tos_ir::TypeDef>();
-    bytes += module.imports.capacity() * core::mem::size_of::<tos_ir::Import>();
-    bytes +=
-        module.capability_imports.capacity() * core::mem::size_of::<tos_ir::CapabilityImport>();
-    bytes += module.exports.capacity() * core::mem::size_of::<tos_ir::Signature>();
-    bytes += module.constants.capacity() * core::mem::size_of::<tos_ir::Constant>();
-    bytes += module.functions.capacity() * core::mem::size_of::<tos_ir::Function>();
-    bytes += module.source_map.capacity() * core::mem::size_of::<tos_ir::SourceMapEntry>();
-    for entry in &module.source_map {
-        bytes += entry.source_set.len()
-            + entry.path.len()
-            + entry.content_id.len()
-            + entry.frontend_identity.len()
-            + entry.language_version.len()
-            + entry.unicode_normalization_baseline.len();
-    }
-    for function in &module.functions {
-        bytes += function.signature.name.len();
-        bytes += function.values.capacity() * core::mem::size_of::<usize>();
-        bytes += function.blocks.capacity() * core::mem::size_of::<tos_ir::Block>();
-        for block in &function.blocks {
-            bytes += block.parameters.capacity() * core::mem::size_of::<usize>();
-            bytes += block.instructions.capacity() * core::mem::size_of::<tos_ir::Instruction>();
-        }
-    }
-    bytes
+/// The sort is stable and duplicates collapse to the first, so a name that two
+/// public functions somehow share resolves to the lower function index — the
+/// same answer a linear scan in function order gives.
+fn public_export_index(module: &Module) -> Vec<usize> {
+    let mut public: Vec<usize> = module
+        .functions
+        .iter()
+        .enumerate()
+        .filter(|(_, function)| function.signature.visibility == Visibility::Public)
+        .map(|(index, _)| index)
+        .collect();
+    public.sort_by(|left, right| {
+        module.functions[*left]
+            .signature
+            .name
+            .cmp(&module.functions[*right].signature.name)
+    });
+    public.dedup_by(|left, right| {
+        module.functions[*left].signature.name == module.functions[*right].signature.name
+    });
+    public
 }
