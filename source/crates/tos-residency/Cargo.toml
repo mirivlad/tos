@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-residency"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Bounded verified-module residency: launch, trusted records, closure membership and the module provider (ADR-0071)."
+publish = false
+
+[dependencies]
+tos-ir = { path = "../tos-ir" }
+tos-image = { path = "../tos-image" }
+tos-verifier = { path = "../tos-verifier" }
+tos-hash = { path = "../tos-hash" }

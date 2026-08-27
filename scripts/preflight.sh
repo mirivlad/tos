@@ -148,7 +148,8 @@ freestanding_runtime_source() {
 # source gate above only proves no module names a host facility.
 build_freestanding_runtime() {
     (cd "$ROOT/source" && cargo build --release --target x86_64-unknown-none \
-        -p tos-core -p tos-ir -p tos-verifier -p tos-image -p tos-engine -p tos-cache)
+        -p tos-core -p tos-ir -p tos-verifier -p tos-image -p tos-residency \
+        -p tos-engine -p tos-cache)
 }
 release_manifest() { python3 "$ROOT/tools/build-release-manifest.py" --check; }
 spdx() { sh "$ROOT/scripts/check-spdx.sh"; }
