@@ -19,7 +19,7 @@
 
 use std::collections::BTreeMap;
 
-use tos_engine::{run, Handle, Reach, Refusal, Request, System, Trap, Unreachable, Value};
+use tos_engine::{Handle, Reach, Refusal, Request, System, Trap, Unreachable, Value};
 use tos_ir::{IntKind, Op};
 use tos_verifier::{verify, Limits, ResolutionSnapshot};
 
@@ -160,9 +160,9 @@ fn started(
     system: &mut dyn System,
 ) -> Result<Result<tos_engine::Outcome, Trap>, Refusal> {
     let module = lower(text);
-    let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+    let _receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect("a module reaching an interface it imported and declared verifies");
-    run(&module, &receipt, "main", Vec::new(), system)
+    run_module(&module, "main", Vec::new(), system)
 }
 
 fn outcome(text: &str, system: &mut dyn System) -> Result<tos_engine::Outcome, Trap> {
@@ -437,4 +437,28 @@ fn a_capability_does_not_appear_in_anything_a_reader_gets() {
         !format!("{held:?}").contains("beef"),
         "a capability's handle reached a diagnostic: {held:?}"
     );
+}
+
+/// The production path over one already-lowered module.
+///
+/// Encode, verify the image, keep the record and the membership, release the
+/// module, run through a bounded resident set. There is no other way to
+/// execute a module: `run_set` and its all-resident closure are gone.
+fn run_module(
+    module: &tos_ir::Module,
+    entry: &str,
+    arguments: Vec<Value>,
+    system: &mut dyn tos_engine::System,
+) -> Result<Result<tos_engine::Outcome, tos_engine::Trap>, Refusal> {
+    let mut prepared = tos_pipeline::Prepared::launch(
+        core::slice::from_ref(&module),
+        &tos_verifier::ResolutionSnapshot::default(),
+        entry,
+        tos_pipeline::ResidencyLimits {
+            modules: 1,
+            bytes: 64 * 1024 * 1024,
+        },
+    )
+    .expect("the fixture launches");
+    prepared.run(arguments, system)
 }

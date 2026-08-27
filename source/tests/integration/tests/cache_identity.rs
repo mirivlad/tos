@@ -15,7 +15,7 @@
 
 use tos_cache::{Cache, CacheIdentity, Rejection, RunningIdentity};
 use tos_core::{lower_module, Checker, ModuleContext, Parser, SourceReader};
-use tos_engine::{run, Unreachable, Value};
+use tos_engine::{Unreachable, Value};
 use tos_ir::Module;
 use tos_verifier::{verify, Limits, ResolutionSnapshot, VerifiedModule};
 
@@ -83,7 +83,7 @@ fn the_identity_chain_reaches_from_canonical_source_to_a_running_component() {
     assert!(running.source_map_digest.starts_with("sha256:"));
 
     // And the thing it identifies actually runs.
-    let outcome = run(&module, &receipt, "answer", vec![], &mut Unreachable)
+    let outcome = run_module(&module, "answer", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     assert_eq!(outcome.value, Value::Int(tos_ir::IntKind::I32, 42));
@@ -278,8 +278,32 @@ fn removing_every_object_leaves_the_source_able_to_regenerate() {
     let again_identity = identity_of(&again, &again_receipt);
     assert_eq!(again_identity.key(), identity.key());
     assert_eq!(again_receipt.module_digest, receipt.module_digest);
-    let outcome = run(&again, &again_receipt, "answer", vec![], &mut Unreachable)
+    let outcome = run_module(&again, "answer", vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("no trap");
     assert_eq!(outcome.value, Value::Int(tos_ir::IntKind::I32, 42));
+}
+
+/// The production path over one already-lowered module.
+///
+/// Encode, verify the image, keep the record and the membership, release the
+/// module, run through a bounded resident set. There is no other way to
+/// execute a module: `run_set` and its all-resident closure are gone.
+fn run_module(
+    module: &tos_ir::Module,
+    entry: &str,
+    arguments: Vec<Value>,
+    system: &mut dyn tos_engine::System,
+) -> Result<Result<tos_engine::Outcome, tos_engine::Trap>, tos_engine::Refusal> {
+    let mut prepared = tos_pipeline::Prepared::launch(
+        core::slice::from_ref(&module),
+        &tos_verifier::ResolutionSnapshot::default(),
+        entry,
+        tos_pipeline::ResidencyLimits {
+            modules: 1,
+            bytes: 64 * 1024 * 1024,
+        },
+    )
+    .expect("the fixture launches");
+    prepared.run(arguments, system)
 }

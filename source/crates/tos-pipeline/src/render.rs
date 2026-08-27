@@ -251,7 +251,7 @@ fn field(text: &str) -> String {
 /// searched for by name.
 fn refusal_reason(refusal: &tos_engine::Refusal) -> &'static str {
     match refusal {
-        tos_engine::Refusal::ReceiptDoesNotMatch => "receipt-does-not-match",
+        tos_engine::Refusal::EntryNotResident(_) => "entry-not-resident",
         tos_engine::Refusal::NoSuchEntry(_) => "no-such-entry",
         tos_engine::Refusal::EntryArity { .. } => "entry-arity",
         tos_engine::Refusal::CapabilityDenied { .. } => "capability-denied",
@@ -261,7 +261,16 @@ fn refusal_reason(refusal: &tos_engine::Refusal) -> &'static str {
 /// What that reason is about, appended after it as ordinary fields.
 fn refusal_fields(refusal: &tos_engine::Refusal) -> String {
     match refusal {
-        tos_engine::Refusal::ReceiptDoesNotMatch => String::new(),
+        // The identity and the check that refused it, as separate fields: a
+        // run that could not reach its own entry module has to say which module
+        // and why, and a reader has to be able to search for either.
+        tos_engine::Refusal::EntryNotResident(failure) => {
+            format!(
+                " module={} check={}",
+                residency_module(failure),
+                residency_check(failure)
+            )
+        }
         tos_engine::Refusal::NoSuchEntry(name) => format!(" entry={}", field(name)),
         tos_engine::Refusal::EntryArity { expected, actual } => {
             format!(" expected={expected} actual={actual}")
@@ -273,5 +282,31 @@ fn refusal_fields(refusal: &tos_engine::Refusal) -> String {
         tos_engine::Refusal::CapabilityDenied { binding, interface } => {
             format!(" binding={} interface={}", field(binding), field(interface))
         }
+    }
+}
+
+/// Which closure module a residency failure is about.
+fn residency_module(failure: &tos_residency::Failure) -> usize {
+    match failure {
+        tos_residency::Failure::Missing(module) => *module,
+        tos_residency::Failure::ArtifactDigest { module }
+        | tos_residency::Failure::Parser { module, .. }
+        | tos_residency::Failure::Verifier { module, .. }
+        | tos_residency::Failure::WrongModule { module }
+        | tos_residency::Failure::NoEntryFunction { module }
+        | tos_residency::Failure::OverResidencyBound { module, .. } => *module,
+    }
+}
+
+/// Which check refused it, as a stable token.
+fn residency_check(failure: &tos_residency::Failure) -> &'static str {
+    match failure {
+        tos_residency::Failure::Missing(_) => "provider-has-no-image",
+        tos_residency::Failure::ArtifactDigest { .. } => "artifact-digest",
+        tos_residency::Failure::Parser { .. } => "image-parser",
+        tos_residency::Failure::Verifier { .. } => "verifier",
+        tos_residency::Failure::WrongModule { .. } => "not-in-closure",
+        tos_residency::Failure::NoEntryFunction { .. } => "no-entry-function",
+        tos_residency::Failure::OverResidencyBound { .. } => "residency-bound",
     }
 }

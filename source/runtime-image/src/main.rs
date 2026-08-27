@@ -1234,8 +1234,9 @@ impl Work {
 /// `Op::Call` the marks bracket.
 #[cfg(feature = "test-measurement-call")]
 struct Work {
-    module: tos_ir::Module,
-    receipt: tos_verifier::VerifiedModule,
+    /// The benchmark's verified closure: images, records and membership, with a
+    /// bounded resident set beside them. Prepared once, outside every sample.
+    prepared: tos_pipeline::Prepared,
     argument: tos_engine::Value,
     system: Marked,
     performed: u32,
@@ -1286,6 +1287,12 @@ const BENCH_PATH: &str = "system/bench/call.tos";
 const BENCH_ENTRY: &str = "bench";
 #[cfg(feature = "test-measurement-call")]
 const BENCH_FIELDS: usize = 8;
+/// One module resident, which is the whole of this closure.
+#[cfg(feature = "test-measurement-call")]
+const BENCH_RESIDENCY: tos_pipeline::ResidencyLimits = tos_pipeline::ResidencyLimits {
+    modules: 1,
+    bytes: 32 * 1024 * 1024,
+};
 
 #[cfg(feature = "test-measurement-call")]
 impl Work {
@@ -1320,14 +1327,19 @@ impl Work {
             report.line("TOS.RUN.MEASURE.UNSTARTABLE reason=benchmark-not-lowered");
             exit(EXIT_UNSTARTABLE)
         };
-        let Ok(receipt) = tos_verifier::verify(
-            &module,
+        // Encode, verify the image, keep the record and the membership, release
+        // the module. The preparation is here, outside every sample, so that
+        // what the marks bracket is one `Op::Call` and nothing around it.
+        let Ok(prepared) = tos_pipeline::Prepared::launch(
+            &[&module],
             &tos_verifier::ResolutionSnapshot::default(),
-            &tos_verifier::Limits::default(),
+            BENCH_ENTRY,
+            BENCH_RESIDENCY,
         ) else {
             report.line("TOS.RUN.MEASURE.UNSTARTABLE reason=benchmark-not-verified");
             exit(EXIT_UNSTARTABLE)
         };
+        drop(module);
         // Sixty-four bytes as the record declares them: eight `i64` in order.
         let argument = tos_engine::Value::Aggregate(
             (0..BENCH_FIELDS)
@@ -1335,8 +1347,7 @@ impl Work {
                 .collect(),
         );
         Work {
-            module,
-            receipt,
+            prepared,
             argument,
             system: Marked { sequence: 0 },
             performed: 0,
@@ -1363,13 +1374,10 @@ impl Work {
             self.system.mark_after_call();
             return;
         }
-        match tos_engine::run(
-            &self.module,
-            &self.receipt,
-            BENCH_ENTRY,
-            alloc::vec![self.argument.clone()],
-            &mut self.system,
-        ) {
+        match self
+            .prepared
+            .run(alloc::vec![self.argument.clone()], &mut self.system)
+        {
             Ok(Ok(_)) => self.performed += 1,
             _ => self.refused += 1,
         }

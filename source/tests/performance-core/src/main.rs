@@ -28,8 +28,9 @@
 use std::time::Instant;
 
 use tos_core::{lower_module, Checker, ModuleContext, Parser, SourceReader};
-use tos_engine::{run, Unreachable, Value};
+use tos_engine::{Unreachable, Value};
 use tos_ir::IntKind;
+use tos_pipeline::{Prepared, ResidencyLimits};
 use tos_verifier::{verify, Limits, ResolutionSnapshot};
 
 const WARMUPS: usize = 3;
@@ -439,13 +440,30 @@ fn run_benchmark(text: &str) -> Value {
         capability_interface_digest: String::from("sha256:0000"),
     };
     let module = lower_module(&source, &schema, &context).expect("benchmark lowers");
-    let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
-        .expect("benchmark verifies");
-    run(&module, &receipt, "main", vec![], &mut Unreachable)
+    // The production path: encode, verify the image, keep the record and the
+    // membership, release the module, run through the bounded resident set.
+    // A benchmark that ran anything else would be measuring an engine that does
+    // not ship.
+    let mut prepared = Prepared::launch(
+        &[&module],
+        &ResolutionSnapshot::default(),
+        "main",
+        BENCHMARK_RESIDENCY,
+    )
+    .expect("benchmark verifies");
+    drop(module);
+    prepared
+        .run(vec![], &mut Unreachable)
         .expect("the entry exists")
         .expect("the benchmark does not trap")
         .value
 }
+
+/// One module resident, which is all a one-module closure can need.
+const BENCHMARK_RESIDENCY: ResidencyLimits = ResidencyLimits {
+    modules: 1,
+    bytes: 256 * 1024 * 1024,
+};
 
 /// A canonical module of about `bytes` bytes, built from ordinary declarations.
 fn canonical_module(bytes: usize) -> String {

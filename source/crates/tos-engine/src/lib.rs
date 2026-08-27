@@ -9,11 +9,19 @@
 //!
 //! Two rules shape it.
 //!
-//! **It executes verified IR only.** [`run`] takes a [`VerifiedModule`] receipt
-//! and checks that the receipt names the digest of the module it was handed. A
-//! receipt for a different module is not a receipt for this one, and a module
-//! without one is not executable. There is no path that runs IR the verifier
-//! has not seen.
+//! **It executes verified IR only, and it never holds it all.** [`run_closure`]
+//! is handed a [`Closure`] whose launch verified every module of the exact
+//! resolved closure, one at a time, before the first instruction, and reduced
+//! each to a fixed-size record committing to the exact bytes. What a frame
+//! carries is a [`ClosureModuleId`] and three indices: the module it names is
+//! made resident for one step and released again, so it may be evicted and
+//! reloaded between any two steps of the same frame without the frame noticing
+//! (ADR-0071 section 6). A reload is byte identity against the trusted record,
+//! never a second run of the verifier.
+//!
+//! There is no set of everything and no way to reach a module except through
+//! the closure's own membership, so a call that names something outside it has
+//! no identifier to be found under.
 //!
 //! **Correctness never rests on the host.** Nothing here depends on Rust panics
 //! or unwinding, host exceptions, an ambient filesystem or network, libc
@@ -43,7 +51,13 @@ use tos_ir::{
     BinaryOp, CallTarget, Constant, Instruction, IntKind, Module, Op, Operand, Place, PlaceStep,
     SourceRef, Terminator, UnaryOp,
 };
-use tos_verifier::VerifiedModule;
+use tos_residency::{
+    Failure, ModuleProvider, Residency, VerifiedClosureManifest, VerifiedModuleRecord,
+};
+
+/// The identity a running frame carries, minted only by the verified closure's
+/// own manifest.
+pub use tos_residency::ClosureModuleId;
 
 /// A runtime value.
 ///
@@ -185,8 +199,9 @@ pub struct Outcome {
 /// Why a module could not be run at all, before any instruction executed.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Refusal {
-    /// The receipt names a different module than the one supplied.
-    ReceiptDoesNotMatch,
+    /// The closure's entry module could not be made resident before the first
+    /// instruction. Carries the residency's own account of why.
+    EntryNotResident(Failure),
     /// The named entry function is not exported by this module.
     NoSuchEntry(String),
     /// The entry function's arity does not match the arguments supplied.
@@ -330,39 +345,123 @@ impl System for Unreachable {
     }
 }
 
-/// Runs an entry function of a verified module.
+/// The verified closure a run executes inside.
 ///
-/// The receipt is checked against the module's own digest first: an engine
-/// accepts executable IR only with a receipt for that exact module (docs/43
-/// section 5).
-/// One module of a set, with the receipt the verifier issued for it.
+/// **The engine's only way to reach a module.** There is no set to index, no
+/// table of everything, and no second path: a frame names a
+/// [`ClosureModuleId`], and the module behind it is fetched here, for one step,
+/// and released again. Between two steps of the same frame the module it is
+/// running in may have been evicted and reloaded, and nothing in the frame
+/// notices — which is the property ADR-0071 section 6 states and this shape
+/// makes unavoidable rather than remembered.
 ///
-/// Paired rather than parallel, because the pairing is the property: a module
-/// runs because its **own** receipt matches it, and no module is ever admitted
-/// on the strength of the one that calls it.
-#[derive(Clone, Copy, Debug)]
-pub struct Verified<'a> {
-    pub module: &'a Module,
-    pub receipt: &'a VerifiedModule,
+/// Everything it holds is authority the launch already established: the trusted
+/// records, the closure's membership, and a provider that answers with bytes and
+/// nothing else. A module the manifest does not contain has no identifier, so
+/// asking for one is not refused here — it cannot be spelled.
+pub struct Closure<'a> {
+    residency: &'a mut Residency,
+    provider: &'a dyn ModuleProvider,
+    records: &'a [VerifiedModuleRecord],
+    manifest: &'a VerifiedClosureManifest,
 }
 
-/// Runs an entry function of one verified module.
-pub fn run(
-    module: &Module,
-    receipt: &VerifiedModule,
-    entry: &str,
-    arguments: Vec<Value>,
-    system: &mut dyn System,
-) -> Result<Result<Outcome, Trap>, Refusal> {
-    run_set(&[Verified { module, receipt }], 0, entry, arguments, system)
+impl<'a> Closure<'a> {
+    /// Binds a bounded resident set to the closure its launch verified.
+    pub fn new(
+        residency: &'a mut Residency,
+        provider: &'a dyn ModuleProvider,
+        records: &'a [VerifiedModuleRecord],
+        manifest: &'a VerifiedClosureManifest,
+    ) -> Closure<'a> {
+        Closure {
+            residency,
+            provider,
+            records,
+            manifest,
+        }
+    }
+
+    /// Where the run starts: the entry module and the index of its entry
+    /// function, both fixed at launch.
+    pub fn entry(&self) -> (ClosureModuleId, usize) {
+        self.manifest.entry()
+    }
+
+    /// Makes a module resident, evicting whatever the declared bounds require.
+    ///
+    /// A reload is byte identity against the trusted record — the semantic
+    /// verifier does not run a second time — and everything the module derives
+    /// is rebuilt before it is admitted.
+    fn ensure(&mut self, id: ClosureModuleId) -> Result<(), Failure> {
+        self.residency
+            .ensure(id, self.provider, self.records, self.manifest)
+    }
+
+    /// The resident module. Only ever called immediately after [`Closure::ensure`],
+    /// and the borrow it returns ends before the frame stack is touched.
+    fn module_of(&self, id: ClosureModuleId) -> Option<&Module> {
+        self.residency.module_of(id)
+    }
+
+    /// Which module a resident caller's import slot names.
+    fn import_of(&self, id: ClosureModuleId, slot: usize) -> Option<ClosureModuleId> {
+        self.residency.import_of(id, slot)
+    }
+
+    /// Which **public** function of a resident module an export name reaches.
+    fn export_of(&self, id: ClosureModuleId, name: &str) -> Option<usize> {
+        self.residency.export_of(id, name)
+    }
+
+    /// What the run cost the resident set.
+    pub fn traffic(&self) -> tos_residency::Traffic {
+        self.residency.traffic()
+    }
+
+    /// What is resident now, by component.
+    pub fn ledger(&self) -> tos_residency::Ledger {
+        self.residency.ledger()
+    }
 }
 
-/// Runs an entry function of one module of a verified set.
+/// A residency failure, as the trap a running program sees.
 ///
-/// A cross-module call is resolved against this set and nothing else: the
-/// engine never loads, searches for or fabricates a module, so a call that
-/// names something the set does not contain refuses rather than finding
-/// something else.
+/// A frame that cannot reach its own module is not a program error the module
+/// could have avoided, so it traps with the identity and the check that refused
+/// rather than being silently retried or resolved some other way.
+fn residency_trap(failure: &Failure, source: SourceRef) -> Trap {
+    let detail = match failure {
+        Failure::Missing(module) => {
+            alloc::format!("the provider has no image for closure module {module}")
+        }
+        Failure::ArtifactDigest { module } => alloc::format!(
+            "the image for closure module {module} is not the one this launch verified"
+        ),
+        Failure::Parser { module, error } => {
+            alloc::format!("the image for closure module {module} did not parse: {error:?}")
+        }
+        Failure::Verifier { module, .. } => {
+            alloc::format!("closure module {module} was refused by the verifier")
+        }
+        Failure::WrongModule { module } => alloc::format!(
+            "closure module {module} declares an import the verified closure does not contain"
+        ),
+        Failure::NoEntryFunction { module } => {
+            alloc::format!("closure module {module} exports no such entry function")
+        }
+        Failure::OverResidencyBound { module, bytes } => alloc::format!(
+            "closure module {module} needs {bytes} resident bytes, past the declared bound"
+        ),
+    };
+    Trap::new("RUNTIME_MODULE_UNAVAILABLE", detail, source)
+}
+
+/// Runs the entry function of a verified closure.
+///
+/// A cross-module call is resolved against the closure's own membership and
+/// nothing else: the engine never loads, searches for or fabricates a module,
+/// and a name that is not a member has no identifier to be found under.
 ///
 /// **The run is governed by the entry module's declared envelope.** docs/41
 /// section 6 fixes that: a call is permitted only when the callee's declared
@@ -375,35 +474,42 @@ pub fn run(
 /// used" is answered by the call site rather than by an ambient environment the
 /// engine went looking for. A caller with nothing to offer says so by handing
 /// over [`Unreachable`].
-pub fn run_set(
-    set: &[Verified<'_>],
-    entry_module: usize,
-    entry: &str,
+pub fn run_closure(
+    closure: &mut Closure<'_>,
     arguments: Vec<Value>,
     system: &mut dyn System,
 ) -> Result<Result<Outcome, Trap>, Refusal> {
-    // Every module of the set, before any of them runs: a receipt checked only
-    // when a call reaches it would let a program choose which modules get
-    // checked by choosing which branch it takes.
-    for verified in set {
-        if verified.receipt.module_digest != tos_ir::module_digest(verified.module) {
-            return Err(Refusal::ReceiptDoesNotMatch);
-        }
+    let (entry_module, index) = closure.entry();
+
+    // The entry module before anything else, because everything below is read
+    // out of it. Nothing else is made resident here: the closure was verified
+    // at launch, one module at a time, and a run that touched every module
+    // before its first instruction would be holding the whole closure again.
+    if let Err(failure) = closure.ensure(entry_module) {
+        return Err(Refusal::EntryNotResident(failure));
     }
-    let Some(entry_verified) = set.get(entry_module) else {
-        return Err(Refusal::NoSuchEntry(entry.to_string()));
+
+    // One borrow, and everything the run needs from the entry module is copied
+    // out of it before the borrow ends: the arity, the envelope, and the
+    // capability requests. From here the module may be evicted like any other.
+    let (expected, envelope, requests) = {
+        let module = closure
+            .module_of(entry_module)
+            .expect("the entry module was just made resident");
+        let Some(function) = module.functions.get(index) else {
+            return Err(Refusal::NoSuchEntry(alloc::format!("function {index}")));
+        };
+        let requests: Vec<(String, String)> = module
+            .capability_imports
+            .iter()
+            .map(|request| (request.interface.clone(), request.binding.clone()))
+            .collect();
+        (
+            function.signature.parameters.len(),
+            module.header.resource_envelope.clone(),
+            requests,
+        )
     };
-    let module = entry_verified.module;
-    let receipt = entry_verified.receipt;
-    let _ = receipt;
-    let Some(index) = module
-        .functions
-        .iter()
-        .position(|function| function.signature.name == entry)
-    else {
-        return Err(Refusal::NoSuchEntry(entry.to_string()));
-    };
-    let expected = module.functions[index].signature.parameters.len();
     if expected != arguments.len() {
         return Err(Refusal::EntryArity {
             expected,
@@ -414,25 +520,25 @@ pub fn run_set(
     // Every request answered before the first instruction, or none of them run.
     // A module that got as far as a call before discovering it holds nothing
     // would have already done work under an assumption that was false.
-    let mut imports = Vec::with_capacity(module.capability_imports.len());
-    for (position, request) in module.capability_imports.iter().enumerate() {
+    let mut imports = Vec::with_capacity(requests.len());
+    for (position, (interface, binding)) in requests.iter().enumerate() {
         let held = system.granted(Request {
-            interface: &request.interface,
-            binding: &request.binding,
+            interface,
+            binding,
             position,
         });
         match held {
             Some(handle) => imports.push(Value::Capability(handle)),
             None => {
                 return Err(Refusal::CapabilityDenied {
-                    binding: request.binding.clone(),
-                    interface: request.interface.clone(),
+                    binding: binding.clone(),
+                    interface: interface.clone(),
                 })
             }
         }
     }
 
-    let envelope = &module.header.resource_envelope;
+    let envelope = &envelope;
     let mut engine = Engine {
         system,
         imports,
@@ -462,7 +568,7 @@ pub fn run_set(
     if let Err(trap) = engine.reserve_worker() {
         return Ok(Err(trap));
     }
-    let outcome = engine.execute(set, entry_module, index, arguments);
+    let outcome = engine.execute(closure, entry_module, index, arguments);
     engine.release_worker();
     Ok(outcome.map(|value| Outcome {
         value,
@@ -535,10 +641,12 @@ struct Charges {
 /// module it names may be released and read again between any two steps
 /// (ADR-0071 §6). Give this type a lifetime parameter and the property is gone.
 struct Frame {
-    /// Which module this activation is running in. An index into the run's set
-    /// today; a `ClosureModuleId` once residency is wired in, with no change to
-    /// the shape of this frame.
-    module: usize,
+    /// Which module this activation is running in. A **stable identity**, not a
+    /// pointer and not a position in anything that could be reordered: the
+    /// module it names may be evicted and reloaded between any two steps of this
+    /// frame, and the identity still resolves to the same verified module
+    /// afterwards.
+    module: ClosureModuleId,
     function: usize,
     block: usize,
     /// The next instruction of `block` to execute. A resumed frame continues
@@ -549,9 +657,6 @@ struct Frame {
     /// Block entries in this activation, for the escape guard the old loop kept
     /// per call.
     steps: u128,
-    /// Resolve a trap's site against this frame's module while unwinding.
-    /// Set when the frame was entered across a module boundary.
-    resolve_site: bool,
     /// What this frame is waiting for, when it is suspended in a call.
     pending: Option<Pending>,
 }
@@ -845,55 +950,66 @@ impl Engine<'_> {
     /// the host happens to have.
     fn execute(
         &mut self,
-        set: &[Verified<'_>],
-        entry_module: usize,
+        closure: &mut Closure<'_>,
+        entry_module: ClosureModuleId,
         entry_function: usize,
         arguments: Vec<Value>,
     ) -> Result<Value, Trap> {
         let mut frames: Vec<Frame> = Vec::new();
         match self.enter(
-            set,
+            closure,
             &mut frames,
             entry_module,
             entry_function,
             arguments,
-            false,
         ) {
             Ok(()) => {}
-            Err(trap) => return Err(self.unwind(set, &mut frames, trap)),
+            Err(trap) => return Err(self.unwind(closure, &mut frames, trap)),
         }
 
         loop {
-            let (home, function) = {
-                let frame = frames.last().expect("the loop ends when the stack empties");
-                (frame.module, frame.function)
-            };
-            // The module is borrowed here and released before the stack is
-            // touched. Copying the reference out of the set is what keeps that
-            // borrow off `self`.
-            let module: &Module = set[home].module;
-            let step = {
+            let home = frames
+                .last()
+                .expect("the loop ends when the stack empties")
+                .module;
+
+            // The step's module is made resident, borrowed, stepped, and the
+            // borrow released — in that order, every time round. It is the last
+            // one that matters: nothing below this block holds a reference into
+            // a module, so what happens next is free to evict it.
+            let transition = {
+                if let Err(failure) = closure.ensure(home) {
+                    let trap = residency_trap(&failure, self.site_of(closure, &frames));
+                    return Err(self.unwind(closure, &mut frames, trap));
+                }
+                let module: &Module = closure
+                    .module_of(home)
+                    .expect("the frame's module was just made resident");
                 let frame = frames.last_mut().expect("just observed");
                 self.step(module, frame)
             };
-            let transition = match step {
+            let transition = match transition {
                 Ok(transition) => transition,
-                Err(trap) => return Err(self.unwind(set, &mut frames, trap)),
+                Err(trap) => return Err(self.unwind(closure, &mut frames, trap)),
             };
-            let _ = function;
 
             match transition {
                 Transition::Enter { target, arguments } => {
                     let entered = match target {
                         Target::Local(index) => {
-                            self.enter(set, &mut frames, home, index, arguments, false)
+                            self.enter(closure, &mut frames, home, index, arguments)
                         }
-                        Target::Imported { import, name } => {
-                            self.enter_imported(set, &mut frames, home, import, &name, arguments)
-                        }
+                        Target::Imported { import, name } => self.enter_imported(
+                            closure,
+                            &mut frames,
+                            home,
+                            import,
+                            &name,
+                            arguments,
+                        ),
                     };
                     if let Err(trap) = entered {
-                        return Err(self.unwind(set, &mut frames, trap));
+                        return Err(self.unwind(closure, &mut frames, trap));
                     }
                 }
                 Transition::Leave(value) => {
@@ -905,42 +1021,85 @@ impl Engine<'_> {
                     let taken = caller.pending.take();
                     let resumed = match taken {
                         Some(pending) => {
-                            self.resume(set, &mut frames, pending, frame.values, value)
+                            self.resume(closure, &mut frames, pending, frame.values, value)
                         }
                         // A frame with no caller continuation is the entry, and
                         // the entry has no caller.
                         None => Ok(()),
                     };
                     if let Err(trap) = resumed {
-                        return Err(self.unwind(set, &mut frames, trap));
+                        return Err(self.unwind(closure, &mut frames, trap));
                     }
                 }
             }
         }
     }
 
+    /// The source span of the instruction the innermost frame is at.
+    ///
+    /// Used only to give a residency refusal a place in the program. It makes
+    /// the frame's module resident to read it, which is allowed: the frame holds
+    /// a stable identity, and reading a span through it is the same operation as
+    /// running an instruction through it. If even that fails there is no span to
+    /// report and the trap carries the module's own identity instead.
+    fn site_of(&self, closure: &mut Closure<'_>, frames: &[Frame]) -> SourceRef {
+        let Some(frame) = frames.last() else {
+            return 0;
+        };
+        if closure.ensure(frame.module).is_err() {
+            return 0;
+        }
+        closure
+            .module_of(frame.module)
+            .and_then(|module| module.functions.get(frame.function))
+            .and_then(|function| function.blocks.get(frame.block))
+            .map(|block| block.source)
+            .unwrap_or(0)
+    }
+
     /// Pushes an activation, charging depth exactly where the recursive form
     /// charged it.
     fn enter(
         &mut self,
-        set: &[Verified<'_>],
+        closure: &mut Closure<'_>,
         frames: &mut Vec<Frame>,
-        module: usize,
+        module: ClosureModuleId,
         function: usize,
         arguments: Vec<Value>,
-        resolve_site: bool,
     ) -> Result<(), Trap> {
-        let body = &set[module].module.functions[function];
+        // Two numbers out of the callee, and then the borrow is done: how many
+        // value slots the activation needs and where its declaration is. The
+        // frame that gets pushed below holds neither the module nor anything
+        // reached through it.
+        let (slots, source) = {
+            if let Err(failure) = closure.ensure(module) {
+                let site = self.site_of(closure, frames);
+                return Err(residency_trap(&failure, site));
+            }
+            let body = closure
+                .module_of(module)
+                .expect("the callee was just made resident")
+                .functions
+                .get(function)
+                .ok_or_else(|| {
+                    Trap::new(
+                        "RUNTIME_UNRESOLVED_IMPORT",
+                        "a call names a function the module does not define",
+                        0,
+                    )
+                })?;
+            (body.values.len(), body.source)
+        };
         let depth = frames.len() as u128 + 1;
         self.max_depth = self.max_depth.max(depth);
         if depth > self.recursion_limit {
             return Err(Trap::new(
                 "RUNTIME_RECURSION_LIMIT",
                 alloc::format!("the declared depth of {} is exceeded", self.recursion_limit),
-                body.source,
+                source,
             ));
         }
-        let mut values: Vec<Option<Value>> = alloc::vec![None; body.values.len()];
+        let mut values: Vec<Option<Value>> = alloc::vec![None; slots];
         for (slot, argument) in arguments.into_iter().enumerate() {
             if slot < values.len() {
                 values[slot] = Some(argument);
@@ -954,13 +1113,27 @@ impl Engine<'_> {
             values,
             charges: Charges::default(),
             steps: 1,
-            resolve_site,
             pending: None,
         });
         Ok(())
     }
 
-    /// Resolves a cross-module call against the run's set and pushes it.
+    /// Resolves a cross-module call against the verified closure and pushes it.
+    ///
+    /// The whole path, and nothing beside it:
+    ///
+    /// ```text
+    /// caller identity -> resident import slot -> callee identity
+    ///                 -> make the callee resident
+    ///                 -> its public export index -> function index
+    /// ```
+    ///
+    /// There is no search over the closure at any step. The import slot is
+    /// resident state the caller's own verified artifact produced, resolved
+    /// against trusted membership when the caller was loaded; the export index
+    /// holds public functions only, so a private one is not refused here but
+    /// absent. Making the callee resident may evict the caller, and that is
+    /// expected: nothing below holds a reference into it.
     ///
     /// The callee executes with the run's single budget: fuel, depth and
     /// allocation are the entry's, because docs/41 section 6 admits a call only
@@ -968,91 +1141,73 @@ impl Engine<'_> {
     /// Crossing a module boundary is not a way to obtain a second budget.
     fn enter_imported(
         &mut self,
-        set: &[Verified<'_>],
+        closure: &mut Closure<'_>,
         frames: &mut Vec<Frame>,
-        home: usize,
+        home: ClosureModuleId,
         import: usize,
         name: &str,
         arguments: Vec<Value>,
     ) -> Result<(), Trap> {
+        // The call site, out of the caller, before anything can evict it.
+        if let Err(failure) = closure.ensure(home) {
+            return Err(residency_trap(&failure, 0));
+        }
         let source = frames
             .last()
             .and_then(|frame| {
-                let module = set[frame.module].module;
-                let block = &module.functions[frame.function].blocks[frame.block];
+                let module = closure.module_of(frame.module)?;
+                let block = module
+                    .functions
+                    .get(frame.function)?
+                    .blocks
+                    .get(frame.block)?;
                 block
                     .instructions
                     .get(frame.instruction.saturating_sub(1))
                     .map(|instruction| instruction.source)
             })
             .unwrap_or(0);
-        let caller = set[home].module;
-        let Some(declared) = caller.imports.get(import) else {
+
+        let Some(callee) = closure.import_of(home, import) else {
             return Err(Trap::new(
                 "RUNTIME_UNRESOLVED_IMPORT",
                 "a call names an import the module does not declare",
                 source,
             ));
         };
-        let Some(callee) = set
-            .iter()
-            .position(|verified| verified.module.header.module_name == declared.module_name)
-        else {
+
+        // From here the caller may go. What survives is `home`, an identity.
+        if let Err(failure) = closure.ensure(callee) {
+            return Err(residency_trap(&failure, source));
+        }
+        let Some(index) = closure.export_of(callee, name) else {
             return Err(Trap::new(
                 "RUNTIME_UNRESOLVED_IMPORT",
-                alloc::format!("{} is not in this run's module set", declared.module_name),
+                alloc::format!("closure module {} exports no {name}", callee.position()),
                 source,
             ));
         };
-        // The identity the caller was lowered against, not merely the name: a
-        // set holding a different revision of the module under the same name is
-        // not the module this caller was checked against.
-        if !declared.module_content_id.is_empty()
-            && declared.module_content_id != set[callee].module.header.content_id
-        {
+        let arity = closure
+            .module_of(callee)
+            .and_then(|module| module.functions.get(index))
+            .map(|function| function.signature.parameters.len());
+        if arity != Some(arguments.len()) {
             return Err(Trap::new(
                 "RUNTIME_UNRESOLVED_IMPORT",
                 alloc::format!(
-                    "{} in this set is {}, and the caller was lowered against {}",
-                    declared.module_name,
-                    set[callee].module.header.content_id,
-                    declared.module_content_id
+                    "closure module {}.{name} takes a different number of arguments",
+                    callee.position()
                 ),
                 source,
             ));
         }
-        let Some(index) = set[callee].module.functions.iter().position(|function| {
-            function.signature.name == name
-                && function.signature.visibility == tos_ir::Visibility::Public
-        }) else {
-            return Err(Trap::new(
-                "RUNTIME_UNRESOLVED_IMPORT",
-                alloc::format!("{} exports no {name}", declared.module_name),
-                source,
-            ));
-        };
-        if set[callee].module.functions[index]
-            .signature
-            .parameters
-            .len()
-            != arguments.len()
-        {
-            return Err(Trap::new(
-                "RUNTIME_UNRESOLVED_IMPORT",
-                alloc::format!(
-                    "{}.{name} takes a different number of arguments",
-                    declared.module_name
-                ),
-                source,
-            ));
-        }
-        self.enter(set, frames, callee, index, arguments, true)
+        self.enter(closure, frames, callee, index, arguments)
     }
 
     /// Applies a caller's continuation to what its callee returned.
     fn resume(
         &mut self,
-        set: &[Verified<'_>],
+        closure: &mut Closure<'_>,
         frames: &mut Vec<Frame>,
         pending: Pending,
         callee_values: Vec<Option<Value>>,
@@ -1096,7 +1251,7 @@ impl Engine<'_> {
                     let caller = frames.last_mut().expect("a caller was observed");
                     write_back(caller, &writeback, &callee_values);
                 }
-                self.run_cleanup(set, frames, plans, at + 1, source)
+                self.run_cleanup(closure, frames, plans, at + 1, source)
             }
         }
     }
@@ -1108,7 +1263,7 @@ impl Engine<'_> {
     /// happens before this is called.
     fn run_cleanup(
         &mut self,
-        set: &[Verified<'_>],
+        closure: &mut Closure<'_>,
         frames: &mut Vec<Frame>,
         plans: Vec<CleanupPlan>,
         at: usize,
@@ -1118,17 +1273,25 @@ impl Engine<'_> {
             return Ok(());
         }
         let home = frames.last().expect("a caller was observed").module;
-        let module: &Module = set[home].module;
-        let plan = &plans[at];
-        let mut arguments = Vec::new();
-        {
+        // The scope's module, again by identity: a cleanup chain crosses as many
+        // eviction points as it has bodies, and each one starts by asking for
+        // the module rather than by keeping it.
+        if let Err(failure) = closure.ensure(home) {
+            return Err(residency_trap(&failure, source));
+        }
+        let body = plans[at].body;
+        let (arguments, writeback) = {
+            let module: &Module = closure
+                .module_of(home)
+                .expect("the scope's module was just made resident");
+            let plan = &plans[at];
             let caller = frames.last().expect("a caller was observed");
+            let mut arguments = Vec::new();
             for capture in &plan.captures {
                 arguments.push(self.operand(module, capture, &caller.values, source)?);
             }
-        }
-        let writeback = writeback_plan(module, plan.body, &plan.captures);
-        let body = plan.body;
+            (arguments, writeback_plan(module, body, &plan.captures))
+        };
         {
             let caller = frames.last_mut().expect("a caller was observed");
             caller.pending = Some(Pending::Cleanups {
@@ -1138,7 +1301,7 @@ impl Engine<'_> {
                 source,
             });
         }
-        self.enter(set, frames, home, body, arguments, false)
+        self.enter(closure, frames, home, body, arguments)
     }
 
     /// Releases exactly what one activation charged.
@@ -1151,16 +1314,34 @@ impl Engine<'_> {
 
     /// Unwinds the stack for a trap, releasing each frame's charges and
     /// resolving the site where the recursive form resolved it.
-    fn unwind(&mut self, set: &[Verified<'_>], frames: &mut Vec<Frame>, mut trap: Trap) -> Trap {
+    fn unwind(
+        &mut self,
+        closure: &mut Closure<'_>,
+        frames: &mut Vec<Frame>,
+        mut trap: Trap,
+    ) -> Trap {
         while let Some(frame) = frames.pop() {
             self.release_frame(&frame);
-            if frame.resolve_site && trap.site.is_none() {
-                trap.site = set[frame.module]
-                    .module
-                    .source_map
-                    .get(trap.source)
-                    .cloned()
-                    .map(alloc::boxed::Box::new);
+            if trap.site.is_none() {
+                // **Every** trap resolves its own site, at the innermost frame
+                // that still has one. It has to: nothing downstream holds the
+                // module any more, so a trap that left the engine carrying only
+                // an index into a source map nobody can reach would be a trap
+                // with no place in the program.
+                //
+                // The frame's module may have been evicted long ago. It is asked
+                // for again here, by the identity the frame still holds — an
+                // unwind cannot assume anything is resident, and a source map is
+                // read through the same door as everything else. A module that
+                // cannot be reached leaves the trap without a site rather than
+                // turning a trap into a second failure.
+                if closure.ensure(frame.module).is_ok() {
+                    trap.site = closure
+                        .module_of(frame.module)
+                        .and_then(|module| module.source_map.get(trap.source))
+                        .cloned()
+                        .map(alloc::boxed::Box::new);
+                }
             }
             if let Some(caller) = frames.last_mut() {
                 let pending = caller.pending.take();
@@ -1324,7 +1505,7 @@ impl Engine<'_> {
     fn evaluate(
         &mut self,
         module: &Module,
-        home: usize,
+        home: ClosureModuleId,
         instruction: &Instruction,
         values: &mut [Option<Value>],
         charges: &mut Charges,
@@ -2307,24 +2488,33 @@ pub struct Accounting {
 
 impl Accounting {
     pub fn of(module: &Module, outcome: &Outcome) -> Accounting {
+        Accounting::under(&module.header.resource_envelope, outcome)
+    }
+
+    /// The same, from the declared envelope alone.
+    ///
+    /// A bounded run releases the module it started in — the envelope is copied
+    /// out before the first instruction and the module may be evicted at any
+    /// point after — so the accounting has to be expressible without it.
+    pub fn under(envelope: &tos_ir::ResourceEnvelope, outcome: &Outcome) -> Accounting {
         Accounting {
             fuel_used: outcome.fuel_used,
-            fuel_limit: module.header.resource_envelope.fuel,
+            fuel_limit: envelope.fuel,
             max_call_depth: outcome.max_call_depth,
-            recursion_limit: module.header.resource_envelope.recursion,
+            recursion_limit: envelope.recursion,
             tasks_started: outcome.tasks_started,
-            task_limit: module.header.resource_envelope.tasks,
+            task_limit: envelope.tasks,
             allocation_peak: outcome.allocation_peak,
-            allocation_limit: module.header.resource_envelope.allocation,
+            allocation_limit: envelope.allocation,
             cleanups_peak: outcome.cleanups_peak,
-            cleanup_limit: module.header.resource_envelope.cleanup,
+            cleanup_limit: envelope.cleanup,
             // Bootstrap serializes, so one context is reserved for the run.
             workers_reserved: 1,
-            worker_limit: module.header.resource_envelope.workers,
+            worker_limit: envelope.workers,
             shared_peak: outcome.shared_peak,
-            shared_limit: module.header.resource_envelope.shared,
+            shared_limit: envelope.shared,
             sync_peak: outcome.sync_peak,
-            sync_limit: module.header.resource_envelope.sync,
+            sync_limit: envelope.sync,
         }
     }
 }
