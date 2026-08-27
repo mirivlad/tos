@@ -34,6 +34,43 @@ use alloc::vec::Vec;
 
 use crate::Unit;
 
+/// One entry of a provider's declared source set.
+///
+/// **Provider-local, and not executable authority.** A catalog entry exists
+/// before any closure has been resolved: it names something the source set
+/// declares it has, which is what resolution needs in order to decide what the
+/// closure *is*. It is opaque so that it cannot be confused with an identity
+/// the resolution produced, and it is a different type from
+/// [`SourceModuleId`] for exactly that reason.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct SourceEntryId(usize);
+
+impl SourceEntryId {
+    /// Mints an entry identity. A provider names its own entries; nothing else
+    /// does.
+    pub fn at(position: usize) -> SourceEntryId {
+        SourceEntryId(position)
+    }
+
+    pub fn position(self) -> usize {
+        self.0
+    }
+}
+
+/// What a provider says it has, without saying what is in it.
+///
+/// **Metadata only.** No bytes: a catalog that carried source would make
+/// enumerating the set cost the set, which is the residency ADR-0072 §6 exists
+/// to avoid. A provider that keeps its corpus resident anyway — Capsule v1 does,
+/// because that is its contract — may do so; the interface does not require it
+/// of any other backend.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceCatalogEntry<'a> {
+    pub id: SourceEntryId,
+    /// Canonical repository path, module-root relative.
+    pub path: &'a str,
+}
+
 /// One module of an exact resolved source closure.
 ///
 /// Opaque, and **minted only by [`SourceClosureManifest`]**. Not a path, not a
@@ -55,6 +92,9 @@ impl SourceModuleId {
 /// One member of a resolved source closure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceMember {
+    /// Which catalog entry this member came from. The only bridge from a
+    /// resolved identity back to something a provider will answer.
+    pub entry: SourceEntryId,
     /// The canonical repository path the unit is stored at.
     pub path: String,
     /// The identity resolution computed from the unit's normalized bytes.
@@ -63,8 +103,12 @@ pub struct SourceMember {
 
 /// The exact resolved source closure's membership, built once.
 ///
-/// Bounded by the closure ceiling and by nothing else, and closed: a provider
-/// can be asked for a member and for nothing else.
+/// Bounded by the closure ceiling and by nothing else, and closed. It holds the
+/// modules the entry can actually reach — **not** every entry the catalog
+/// offered. A source set may declare a hundred modules and a closure contain
+/// three; the other ninety-seven have a catalog entry and no `SourceModuleId`,
+/// which is the difference between what a provider knows about and what an
+/// execution is.
 #[derive(Clone, Debug)]
 pub struct SourceClosureManifest {
     members: Vec<SourceMember>,
@@ -133,18 +177,20 @@ impl SourceRefusal {
 /// lookup after it, no fallback to a filesystem, a network or an environment,
 /// and no way to return anything but bytes.
 pub trait SourceProvider {
-    /// What this source set offers, for **resolution only**.
+    /// What this source set declares it has, as metadata.
     ///
-    /// Read before a membership exists. What a module resolves to is decided
-    /// from this and then fixed.
-    fn listing(&self) -> &[Unit<'_>];
+    /// Read before a membership exists, because resolution cannot decide what
+    /// the closure is without knowing what the set offers. It carries no source:
+    /// enumerating a set must not cost the set.
+    fn catalog(&self) -> Vec<SourceCatalogEntry<'_>>;
 
-    /// The canonical bytes of a module of the resolved closure.
+    /// The canonical bytes of one catalog entry.
     ///
-    /// The identity was minted by the manifest, so this cannot be asked for
-    /// anything outside it. Returning `None` fails the preparation; it does not
-    /// start a search.
-    fn source(&self, id: SourceModuleId) -> Option<&[u8]>;
+    /// Immutable, and the same bytes on every call — a provider that answered
+    /// differently the second time is caught by the identity check in
+    /// [`materialize`]. Returning `None` fails whatever asked; it does not start
+    /// a search.
+    fn source(&self, id: SourceEntryId) -> Option<&[u8]>;
 }
 
 /// A provider over units a caller already holds.
@@ -164,11 +210,18 @@ impl<'a> SliceSourceProvider<'a> {
 }
 
 impl SourceProvider for SliceSourceProvider<'_> {
-    fn listing(&self) -> &[Unit<'_>] {
+    fn catalog(&self) -> Vec<SourceCatalogEntry<'_>> {
         self.units
+            .iter()
+            .enumerate()
+            .map(|(position, unit)| SourceCatalogEntry {
+                id: SourceEntryId::at(position),
+                path: unit.path,
+            })
+            .collect()
     }
 
-    fn source(&self, id: SourceModuleId) -> Option<&[u8]> {
+    fn source(&self, id: SourceEntryId) -> Option<&[u8]> {
         self.units.get(id.position()).map(|unit| unit.bytes)
     }
 }
@@ -192,7 +245,7 @@ pub(crate) fn materialize<'a>(
             path: String::new(),
         });
     };
-    let Some(bytes) = provider.source(id) else {
+    let Some(bytes) = provider.source(member.entry) else {
         return Err(SourceRefusal::Absent {
             path: member.path.clone(),
         });

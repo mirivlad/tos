@@ -67,8 +67,8 @@ pub use tos_core::interfaces;
 pub mod source;
 
 pub use source::{
-    SliceSourceProvider, SourceClosureManifest, SourceMember, SourceModuleId, SourceProvider,
-    SourceRefusal,
+    SliceSourceProvider, SourceCatalogEntry, SourceClosureManifest, SourceEntryId, SourceMember,
+    SourceModuleId, SourceProvider, SourceRefusal,
 };
 use tos_engine::{run_closure, Accounting, Closure, Refusal};
 pub use tos_engine::{
@@ -461,26 +461,17 @@ pub fn prepare_from_provider(
     trace: &mut dyn Trace,
     residency: ResidencyLimits,
 ) -> Result<Preparation, SetError> {
-    let units = provider.listing();
-    let request = &SetRequest {
-        source_set,
-        units,
-        entry_path,
-        entry,
-    };
+    // Metadata only. What the set offers, not what is in it.
+    let catalog = provider.catalog();
     // Checked before the first stage is announced, so a request that cannot run
     // produces no stage events at all. A log that announced `read` and then
     // said the entry was missing would describe a run that never started.
-    if request.units.is_empty() {
+    if catalog.is_empty() {
         return Err(SetError::NoUnits);
     }
-    let Some(entry_index) = request
-        .units
-        .iter()
-        .position(|unit| unit.path == request.entry_path)
-    else {
+    let Some(entry_index) = catalog.iter().position(|item| item.path == entry_path) else {
         return Err(SetError::EntryModuleAbsent {
-            path: request.entry_path.to_string(),
+            path: entry_path.to_string(),
         });
     };
 
@@ -492,11 +483,19 @@ pub fn prepare_from_provider(
     // caller already owns the bytes; what this pass produces is owned summaries,
     // and each source and each tree dies at the end of its own turn.
     let mut checking = false;
-    let mut summaries: Vec<ModuleSummary> = Vec::with_capacity(request.units.len());
+    let mut summaries: Vec<ModuleSummary> = Vec::with_capacity(catalog.len());
+    let mut identities: Vec<String> = Vec::with_capacity(catalog.len());
     let mut diagnostics = Vec::new();
     let mut parsing = false;
-    for unit in request.units {
-        let source = match SourceReader::read(unit.bytes) {
+    for item in &catalog {
+        let Some(bytes) = provider.source(item.id) else {
+            return Ok(Preparation::Refused(Run::SourceRefused(
+                SourceRefusal::Absent {
+                    path: item.path.to_string(),
+                },
+            )));
+        };
+        let source = match SourceReader::read(bytes) {
             Ok(source) => source,
             Err(error) => {
                 return Ok(Preparation::Refused(Run::SourceRejected {
@@ -505,7 +504,7 @@ pub fn prepare_from_provider(
                     // Which unit is not obvious once there is more than one,
                     // and a transport refusal never reaches a diagnostic that
                     // could carry a module identity.
-                    path: unit.path.to_string(),
+                    path: item.path.to_string(),
                 }));
             }
         };
@@ -536,7 +535,10 @@ pub fn prepare_from_provider(
             trace.entering(PipelineStage::Check);
             checking = true;
         }
-        let entry = ModuleEntry::new(unit.path, &source, &schema);
+        // The identity resolution will hold this member to, computed here from
+        // the bytes this turn actually read.
+        identities.push(content_id(source.bytes()));
+        let entry = ModuleEntry::new(item.path, &source, &schema);
         diagnostics.extend(entry.check());
         summaries.push(entry.summarize());
         // The tree and the normalized source both go here, at the end of this
@@ -571,17 +573,19 @@ pub fn prepare_from_provider(
     // imports and can be given their computed identities.
     let closure = closure_of_summaries(&summaries, entry_index);
 
-    // The membership is minted here and nowhere else: from identities this
-    // resolution computed, over the units this listing offered. Past this line
-    // the frontend asks the provider for a member, and a module outside the
-    // closure has no identifier to ask under.
-    let members: Vec<SourceMember> = request
-        .units
+    // The membership is minted here and nowhere else, **over the closure and not
+    // over the catalog**: from identities this resolution computed, for the
+    // modules the entry can actually reach. A source set may declare a hundred
+    // modules and a closure contain three; the other ninety-seven keep their
+    // catalog entry and never get a `SourceModuleId`. Past this line the
+    // frontend asks for a member, and a module outside the closure has no
+    // identifier to ask under.
+    let members: Vec<SourceMember> = closure
         .iter()
-        .map(|unit| SourceMember {
-            path: unit.path.to_string(),
-            // Every unit read in the read phase, so every one has an identity.
-            content_id: source::identity_of(unit.bytes).unwrap_or_default(),
+        .map(|&index| SourceMember {
+            entry: catalog[index].id,
+            path: catalog[index].path.to_string(),
+            content_id: identities[index].clone(),
         })
         .collect();
     let source_closure = SourceClosureManifest::of(members);
@@ -609,8 +613,7 @@ pub fn prepare_from_provider(
     // graph requires is the lowering view. ADR-0040 bounds the whole machine,
     // not the execution phase, so holding the closure's IR until execution
     // starts would be the same retained-IR slope one stage earlier.
-    let mut interfaces: Vec<Option<LoweringInterface>> =
-        (0..request.units.len()).map(|_| None).collect();
+    let mut interfaces: Vec<Option<LoweringInterface>> = (0..catalog.len()).map(|_| None).collect();
     let mut surfaces: Vec<(usize, VerificationSurface)> = Vec::with_capacity(closure.len());
     let mut images: Vec<ImageSnapshot> = Vec::with_capacity(closure.len());
     let mut envelope = tos_ir::ResourceEnvelope::default();
@@ -623,12 +626,14 @@ pub fn prepare_from_provider(
         // substitute for either. Nothing skips the frontend and nothing skips
         // the checker — what is not done twice is *holding* the result.
         // The provider is asked for this member by the identity resolution
-        // minted, and what comes back is checked against what resolution saw.
-        // Source that vanished or changed between the two stages fails the
-        // preparation; nothing looks for an alternative.
+        // minted — position in the **closure**, not in the catalog — and what
+        // comes back is checked against what resolution saw. Source that
+        // vanished or changed between the two stages fails the preparation;
+        // nothing looks for an alternative, and no path or module name is a
+        // lookup key here.
         let member = source_closure
-            .module(index)
-            .expect("every unit is a member of the closure it was resolved in");
+            .module(position)
+            .expect("the lowering order walks this closure's own membership");
         let bytes = match source::materialize(provider, &source_closure, member) {
             Ok(bytes) => bytes,
             Err(refusal) => return Ok(Preparation::Refused(Run::SourceRefused(refusal))),
@@ -639,7 +644,7 @@ pub fn prepare_from_provider(
             return Ok(Preparation::Refused(Run::SourceRejected {
                 code: "source-not-reproducible",
                 byte_offset: 0,
-                path: request.units[index].path.to_string(),
+                path: catalog[index].path.to_string(),
             }));
         };
         let reparsed = Parser::parse_schema(&source);
@@ -658,7 +663,7 @@ pub fn prepare_from_provider(
         // depend on different things would claim the same one.
         let own_closure = closure_of_summaries(&summaries, index);
         let context = ModuleContext {
-            source_set: request.source_set.to_string(),
+            source_set: source_set.to_string(),
             path: summaries[index].path.clone(),
             content_id: content_id(source.bytes()),
             dependency_digest: closure_digest_of_summaries(&summaries, &own_closure, index),
@@ -723,7 +728,7 @@ pub fn prepare_from_provider(
         images,
         &snapshot,
         entry_position,
-        request.entry,
+        entry,
         envelope,
         residency,
     ) {
@@ -734,7 +739,7 @@ pub fn prepare_from_provider(
         Err(tos_residency::Failure::NoEntryFunction { .. }) => {
             trace.entering(PipelineStage::Execute);
             return Ok(Preparation::Refused(Run::Refused(Refusal::NoSuchEntry(
-                request.entry.to_string(),
+                entry.to_string(),
             ))));
         }
         Err(failure) => return Ok(Preparation::Refused(launch_refusal(failure))),
