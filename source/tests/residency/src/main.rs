@@ -26,7 +26,9 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
-use tos_core::{lower_module_in_set, ModuleContext, Parser, ResolvedImport, SourceReader};
+use tos_core::{
+    lower_module_in_set, LoweredInterface, ModuleContext, Parser, ResolvedImport, SourceReader,
+};
 use tos_image_prototype::image;
 use tos_ir::Module;
 use tos_runtime::{GlobalHeap, RuntimeMemoryGrant, GRANT_VERSION};
@@ -342,11 +344,20 @@ fn prepare(dependencies: usize, pattern: &[usize], unit_bytes: usize) -> Prepare
             dependency_digest: tos_pipeline::list_digest(&[]),
             capability_interface_digest: tos_pipeline::list_digest(&[]),
         };
-        let imports: Vec<ResolvedImport<'_>> = lowered
+        let interfaces: Vec<(String, LoweredInterface)> = lowered
             .iter()
-            .map(|module| ResolvedImport {
-                name: module.header.module_name.as_str(),
-                module,
+            .map(|module| {
+                (
+                    module.header.module_name.clone(),
+                    LoweredInterface::of(module),
+                )
+            })
+            .collect();
+        let imports: Vec<ResolvedImport<'_>> = interfaces
+            .iter()
+            .map(|(name, interface)| ResolvedImport {
+                name: name.as_str(),
+                interface,
             })
             .collect();
         let schema = Parser::parse_schema(source)

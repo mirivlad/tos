@@ -46,8 +46,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_core::{
-    check_module_summaries, lower_module_in_set, Gap, ModuleContext, ModuleEntry, ModuleSummary,
-    Parser, ResolvedImport, SourceReader, SourceUnit,
+    check_module_summaries, lower_module_in_set, Gap, LoweredInterface, ModuleContext, ModuleEntry,
+    ModuleSummary, Parser, ResolvedImport, SourceReader, SourceUnit,
 };
 
 /// The frontend types this crate's own results are made of.
@@ -417,7 +417,15 @@ pub fn execute_set(
         .iter()
         .map(|summary| summary.name.clone())
         .collect();
-    let mut lowered: Vec<(usize, Module)> = Vec::with_capacity(closure.len());
+    // **One module's IR at a time.** Each is lowered, reduced to the compact
+    // interface its importers read, encoded as the image the verifier will
+    // read, and released. What accumulates is images and interfaces; what does
+    // not accumulate is `Module`. ADR-0040 bounds the whole machine, not the
+    // execution phase, so holding the closure's IR until execution starts would
+    // be the same retained-IR slope one stage earlier.
+    let mut interfaces: Vec<(usize, LoweredInterface)> = Vec::with_capacity(closure.len());
+    let mut images: Vec<ImageSnapshot> = Vec::with_capacity(closure.len());
+    let mut envelope = tos_ir::ResourceEnvelope::default();
     for &index in &closure {
         let source = &sources[index];
         // The tree is built again, for this module alone, and dropped when the
@@ -449,23 +457,34 @@ pub fn execute_set(
             dependency_digest: closure_digest_of_summaries(&summaries, &own_closure, index),
             capability_interface_digest: list_digest(&[]),
         };
-        let imports: Vec<ResolvedImport<'_>> = lowered
+        let imports: Vec<ResolvedImport<'_>> = interfaces
             .iter()
-            .map(|(at, module)| ResolvedImport {
+            .map(|(at, interface)| ResolvedImport {
                 name: names[*at].as_str(),
-                module,
+                interface,
             })
             .collect();
-        match lower_module_in_set(source, schema, &context, &imports) {
-            Ok(module) => lowered.push((index, module)),
+        let module = match lower_module_in_set(source, schema, &context, &imports) {
+            Ok(module) => module,
             Err(gap) => return Ok(Run::NotLowered(gap)),
+        };
+        // Built from the lowered IR, while it is still here, and never from the
+        // source or a summary.
+        let interface = LoweredInterface::of(&module);
+        images.push(image_of(&module));
+        if index == entry_index {
+            envelope = module.header.resource_envelope.clone();
         }
+        // This is the line the phase rests on. Past it, this module's bodies,
+        // blocks, instructions and source map are gone; what is left of it is
+        // an image and an interface.
+        drop(module);
+        interfaces.push((index, interface));
     }
     let source = &sources[entry_index];
-    // The entry is the last lowered: `closure_of` puts dependencies first.
-    let module = lowered
-        .pop()
-        .map(|(_, module)| module)
+    let entry_position = closure
+        .iter()
+        .position(|index| *index == entry_index)
         .expect("the closure always contains the entry");
 
     trace.entering(PipelineStage::Verify);
@@ -474,34 +493,33 @@ pub fn execute_set(
     // an import that names a module the set does not provide, or claims an
     // identity the set disagrees with, is refused here even though the same
     // frontend produced both.
-    let snapshot = snapshot_of(&lowered, &module);
+    let snapshot = snapshot_of(&interfaces);
 
-    // The entry last, so it is the closure's final position — which is where
-    // `closure_of` already put it.
-    let mut closure_modules: Vec<&Module> = lowered.iter().map(|(_, module)| module).collect();
-    closure_modules.push(&module);
-    let mut prepared =
-        match Prepared::launch(&closure_modules, &snapshot, request.entry, HOST_RESIDENCY) {
-            Ok(prepared) => prepared,
-            // Every module verified and the closure is what it claimed to be; what
-            // is absent is the function the caller named. That is the run failing
-            // to start, so it is announced as one.
-            Err(tos_residency::Failure::NoEntryFunction { .. }) => {
-                trace.entering(PipelineStage::Execute);
-                return Ok(Run::Refused(Refusal::NoSuchEntry(
-                    request.entry.to_string(),
-                )));
-            }
-            Err(failure) => return Ok(launch_refusal(failure)),
-        };
+    let mut prepared = match Prepared::launch_images(
+        images,
+        &snapshot,
+        entry_position,
+        request.entry,
+        envelope,
+        HOST_RESIDENCY,
+    ) {
+        Ok(prepared) => prepared,
+        // Every module verified and the closure is what it claimed to be; what
+        // is absent is the function the caller named. That is the run failing
+        // to start, so it is announced as one.
+        Err(tos_residency::Failure::NoEntryFunction { .. }) => {
+            trace.entering(PipelineStage::Execute);
+            return Ok(Run::Refused(Refusal::NoSuchEntry(
+                request.entry.to_string(),
+            )));
+        }
+        Err(failure) => return Ok(launch_refusal(failure)),
+    };
 
-    // The lowered closure goes here, before the first instruction. This is the
-    // line the whole design rests on: what runs is reached through the resident
-    // set, and a `Vec<Module>` kept alive beside it would be the all-resident
-    // closure the bounded one replaces.
-    drop(closure_modules);
-    drop(lowered);
-    drop(module);
+    // The interfaces go here. Execution reaches a module through the resident
+    // set and nothing else, so nothing downstream reads one — and an interface
+    // that outlived lowering would be an accumulated term with no use.
+    drop(interfaces);
 
     trace.entering(PipelineStage::Execute);
     Ok(match prepared.run(arguments, system) {
@@ -551,26 +569,24 @@ pub struct Prepared {
 }
 
 impl Prepared {
-    /// Encodes a closure, verifies it one module at a time, and binds a bounded
-    /// resident set to what the launch established.
+    /// Encodes nothing and decodes nothing: verifies an ordered image closure,
+    /// one module at a time, and binds a bounded resident set to what the launch
+    /// established.
     ///
-    /// `modules` is the **exact resolved closure**, dependencies first and the
-    /// entry last, and `resolution` is what the resolver declared it provides.
-    /// Nothing is discovered here: what is verified is what was handed over.
-    pub fn launch(
-        modules: &[&Module],
+    /// **The production entry.** `images` is the **exact resolved closure** in
+    /// position order, `entry_position` names the entry within it, and
+    /// `envelope` is the entry module's declared budget, copied out while it was
+    /// lowered. Nothing here needs a decoded module, which is what lets the
+    /// caller release each one as it is produced.
+    pub fn launch_images(
+        images: Vec<ImageSnapshot>,
         resolution: &ResolutionSnapshot,
+        entry_position: usize,
         entry: &str,
+        envelope: tos_ir::ResourceEnvelope,
         limits: ResidencyLimits,
     ) -> Result<Prepared, tos_residency::Failure> {
-        let envelope = modules
-            .last()
-            .map(|module| module.header.resource_envelope.clone())
-            .unwrap_or_default();
-        let store = ImageStore {
-            images: modules.iter().map(|module| image_of(module)).collect(),
-        };
-        let entry_position = store.images.len().saturating_sub(1);
+        let store = ImageStore { images };
         let launched = launch(
             &store,
             &|_| resolution.clone(),
@@ -592,6 +608,30 @@ impl Prepared {
             envelope,
             residency,
         })
+    }
+
+    /// The same, from decoded modules a caller already holds.
+    ///
+    /// **A test and helper facade.** It requires the caller to hold every module
+    /// of the closure at once, which is exactly what `execute_set` no longer
+    /// does. Production goes through [`Prepared::launch_images`].
+    ///
+    /// `modules` is the exact resolved closure, dependencies first and the entry
+    /// last. Nothing is discovered here: what is verified is what was handed
+    /// over.
+    pub fn launch(
+        modules: &[&Module],
+        resolution: &ResolutionSnapshot,
+        entry: &str,
+        limits: ResidencyLimits,
+    ) -> Result<Prepared, tos_residency::Failure> {
+        let envelope = modules
+            .last()
+            .map(|module| module.header.resource_envelope.clone())
+            .unwrap_or_default();
+        let images: Vec<ImageSnapshot> = modules.iter().map(|module| image_of(module)).collect();
+        let entry_position = images.len().saturating_sub(1);
+        Prepared::launch_images(images, resolution, entry_position, entry, envelope, limits)
     }
 
     /// The receipt the launch's own verifier issued for the entry module.
@@ -719,21 +759,17 @@ fn launch_refusal(failure: tos_residency::Failure) -> Run {
 /// Built from the modules that were actually lowered rather than from the
 /// request: a snapshot assembled from what a caller asked for would let the
 /// verifier confirm the caller's own assumption.
-fn snapshot_of(lowered: &[(usize, Module)], entry: &Module) -> ResolutionSnapshot {
+fn snapshot_of(interfaces: &[(usize, LoweredInterface)]) -> ResolutionSnapshot {
     let mut declared = tos_verifier::DeclaredResolution::new();
-    for module in lowered
-        .iter()
-        .map(|(_, module)| module)
-        .chain(core::iter::once(entry))
-    {
+    for (_, interface) in interfaces {
         declared
-            .module(&module.header.module_name, &module.header.content_id)
+            .module(interface.module_name(), interface.content_id())
             .exports_declared();
-        for export in &module.exports {
+        for export in interface.exports() {
             declared.export(&export.name);
         }
-        for import in &module.capability_imports {
-            declared.capability(&import.interface);
+        for capability in interface.capabilities() {
+            declared.capability(capability);
         }
     }
     declared.build()

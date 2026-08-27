@@ -10,6 +10,7 @@ publish = false
 [dependencies]
 tos-core = { path = "../../crates/tos-core" }
 tos-ir = { path = "../../crates/tos-ir" }
+tos-image = { path = "../../crates/tos-image" }
 tos-verifier = { path = "../../crates/tos-verifier" }
 tos-engine = { path = "../../crates/tos-engine" }
 tos-runtime = { path = "../../crates/tos-runtime" }
