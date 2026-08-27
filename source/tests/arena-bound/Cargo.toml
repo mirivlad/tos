@@ -7,6 +7,11 @@ license = "GPL-3.0-or-later"
 description = "Measures the implementation arena the Stage 2 pipeline needs, through the real bounded heap."
 publish = false
 
+[features]
+# Sizes the measured arena at exactly RUNTIME_GRANT, so a run that does not fit
+# fails to allocate rather than reporting a number.
+grant = []
+
 [dependencies]
 tos-core = { path = "../../crates/tos-core" }
 tos-ir = { path = "../../crates/tos-ir" }
