@@ -46,8 +46,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_core::{
-    check_module_summaries, lower_module_in_set, Gap, LoweredInterface, ModuleContext, ModuleEntry,
-    ModuleSummary, Parser, ResolvedImport, SourceReader, SourceUnit,
+    check_module_summaries, lower_module_in_set, Gap, LoweringInterface, ModuleContext,
+    ModuleEntry, ModuleSummary, Parser, ResolvedImport, SourceReader, VerificationSurface,
 };
 
 /// The frontend types this crate's own results are made of.
@@ -339,10 +339,19 @@ pub fn execute_set(
     };
 
     trace.entering(PipelineStage::Read);
-    let mut sources = Vec::with_capacity(request.units.len());
+    // **One source at a time, and nothing kept.** A `SourceUnit` is the
+    // normalized copy of a unit's bytes, so a `Vec<SourceUnit>` over the closure
+    // is the whole source set held twice — measured at 32 MiB for 128
+    // ceiling-sized modules, before a single module has been lowered. The
+    // caller already owns the bytes; what this pass produces is owned summaries,
+    // and each source and each tree dies at the end of its own turn.
+    let mut checking = false;
+    let mut summaries: Vec<ModuleSummary> = Vec::with_capacity(request.units.len());
+    let mut diagnostics = Vec::new();
+    let mut parsing = false;
     for unit in request.units {
-        match SourceReader::read(unit.bytes) {
-            Ok(source) => sources.push(source),
+        let source = match SourceReader::read(unit.bytes) {
+            Ok(source) => source,
             Err(error) => {
                 return Ok(Run::SourceRejected {
                     code: error.code().symbol(),
@@ -353,26 +362,23 @@ pub fn execute_set(
                     path: unit.path.to_string(),
                 });
             }
+        };
+        if !parsing {
+            trace.entering(PipelineStage::Parse);
+            parsing = true;
         }
-    }
-
-    trace.entering(PipelineStage::Parse);
-    // Parse, check and summarize **one module at a time**, keeping only what is
-    // owned. `ModuleEntry::summarize` returns an owned summary precisely so the
-    // tree can go, and `check_module_summaries` exists so set-wide resolution
-    // never needs one — `docs/evidence/STAGE2_ARENA_BOUND.md` measures why: a
-    // ceiling-sized module's parse tree costs about 14 MiB and its summary
-    // about 0.2 MiB, and holding every tree made the arena linear in the
-    // closure at seventy times the necessary slope.
-    // The two stages now interleave, one module at a time, so `Check` is
-    // announced when it is first entered rather than before the first parse —
-    // a trace that named it earlier would name a stage that a run failing in
-    // the parser never reached.
-    let mut checking = false;
-    let mut summaries: Vec<ModuleSummary> = Vec::with_capacity(sources.len());
-    let mut diagnostics = Vec::new();
-    for (unit, source) in request.units.iter().zip(sources.iter()) {
-        let parsed = Parser::parse_schema(source);
+        // Parse, check and summarize, keeping only what is owned.
+        // `ModuleEntry::summarize` returns an owned summary precisely so the
+        // tree can go, and `check_module_summaries` exists so set-wide
+        // resolution never needs one — `docs/evidence/STAGE2_ARENA_BOUND.md`
+        // measures why: a ceiling-sized module's parse tree costs about 14 MiB
+        // and its summary about 0.2 MiB, and holding every tree made the arena
+        // linear in the closure at seventy times the necessary slope.
+        //
+        // `Check` is announced when it is first entered rather than before the
+        // first parse — a trace that named it earlier would name a stage that a
+        // run failing in the parser never reached.
+        let parsed = Parser::parse_schema(&source);
         let schema_diagnostics = parsed.diagnostics().to_vec();
         let Some(schema) = parsed.into_accepted() else {
             return Ok(Run::Diagnosed {
@@ -384,12 +390,19 @@ pub fn execute_set(
             trace.entering(PipelineStage::Check);
             checking = true;
         }
-        let entry = ModuleEntry::new(unit.path, source, &schema);
+        let entry = ModuleEntry::new(unit.path, &source, &schema);
         diagnostics.extend(entry.check());
         summaries.push(entry.summarize());
-        // The tree goes here, at the end of this module's turn. Everything
-        // after this point reads the summary.
+        // The tree and the normalized source both go here, at the end of this
+        // module's turn. Everything after this point reads the summary.
         drop(schema);
+        drop(source);
+    }
+    if !parsing {
+        trace.entering(PipelineStage::Parse);
+    }
+    if !checking {
+        trace.entering(PipelineStage::Check);
     }
     if diagnostics.iter().any(is_error) {
         return Ok(Run::Diagnosed {
@@ -417,26 +430,48 @@ pub fn execute_set(
         .iter()
         .map(|summary| summary.name.clone())
         .collect();
-    // **One module's IR at a time.** Each is lowered, reduced to the compact
-    // interface its importers read, encoded as the image the verifier will
-    // read, and released. What accumulates is images and interfaces; what does
-    // not accumulate is `Module`. ADR-0040 bounds the whole machine, not the
-    // execution phase, so holding the closure's IR until execution starts would
-    // be the same retained-IR slope one stage earlier.
-    let mut interfaces: Vec<(usize, LoweredInterface)> = Vec::with_capacity(closure.len());
+
+    // **Deterministic liveness, not a cache.** The closure DAG is fully known
+    // the moment resolution finishes, so when a dependency's lowering view stops
+    // being needed is a fact, not a guess: it is the last position of the
+    // lowering order that imports it. No eviction policy, no recency, nothing
+    // consulted at run time — the view is dropped the instant its last consumer
+    // is done with it, so what is live is the graph's frontier and not the
+    // closure. A chain of 256 holds one; a wide fan-in holds its fan, which is
+    // a real property of the graph and is measured rather than hidden.
+    let last_consumer = last_consumers(&summaries, &closure, &names);
+
+    // **One module's IR at a time.** Each is lowered, reduced to the two views
+    // its readers actually read, encoded as the image the verifier will read,
+    // and released. What accumulates is images and surfaces; what does not
+    // accumulate is `Module`, and what does not accumulate for longer than the
+    // graph requires is the lowering view. ADR-0040 bounds the whole machine,
+    // not the execution phase, so holding the closure's IR until execution
+    // starts would be the same retained-IR slope one stage earlier.
+    let mut interfaces: Vec<Option<LoweringInterface>> =
+        (0..request.units.len()).map(|_| None).collect();
+    let mut surfaces: Vec<(usize, VerificationSurface)> = Vec::with_capacity(closure.len());
     let mut images: Vec<ImageSnapshot> = Vec::with_capacity(closure.len());
     let mut envelope = tos_ir::ResourceEnvelope::default();
-    for &index in &closure {
-        let source = &sources[index];
-        // The tree is built again, for this module alone, and dropped when the
-        // module is lowered. A second pass over the same canonical source is a
-        // second run of the same total function: `SourceUnit` is normalized
-        // bytes and `Parser::parse_schema` is deterministic over them, so this
-        // is the same tree the check phase saw, not a cheaper substitute for
-        // it. Nothing skips the frontend and nothing skips the checker — what
-        // is not done twice is *holding* the result.
-        let reparsed = Parser::parse_schema(source);
-        let Some(schema) = reparsed.into_accepted() else {
+    for (position, &index) in closure.iter().enumerate() {
+        // The source is normalized again, for this module alone, and dropped
+        // when the module is lowered. A second pass over the same canonical
+        // bytes is a second run of the same total function: `SourceReader` and
+        // `Parser::parse_schema` are deterministic over them, so this is the
+        // same source and the same tree the check phase saw, not a cheaper
+        // substitute for either. Nothing skips the frontend and nothing skips
+        // the checker — what is not done twice is *holding* the result.
+        let Ok(source) = SourceReader::read(request.units[index].bytes) else {
+            // A unit that read in the read phase and not here would mean the
+            // reader is not a function of its input.
+            return Ok(Run::SourceRejected {
+                code: "source-not-reproducible",
+                byte_offset: 0,
+                path: request.units[index].path.to_string(),
+            });
+        };
+        let reparsed = Parser::parse_schema(&source);
+        let Some(tree) = reparsed.into_accepted() else {
             // A module that parsed in the check phase and not here would mean
             // the parser is not a function of its input. It is refused rather
             // than worked around.
@@ -445,7 +480,7 @@ pub fn execute_set(
                 diagnostics: Vec::new(),
             });
         };
-        let schema = &schema;
+        let schema = &tree;
         // Each module's own dependency digest, over its own closure: a
         // dependency's identity cannot be the entry's, or two modules that
         // depend on different things would claim the same one.
@@ -459,29 +494,46 @@ pub fn execute_set(
         };
         let imports: Vec<ResolvedImport<'_>> = interfaces
             .iter()
-            .map(|(at, interface)| ResolvedImport {
-                name: names[*at].as_str(),
-                interface,
+            .enumerate()
+            .filter_map(|(at, held)| {
+                held.as_ref().map(|interface| ResolvedImport {
+                    name: names[at].as_str(),
+                    interface,
+                })
             })
             .collect();
-        let module = match lower_module_in_set(source, schema, &context, &imports) {
+        let module = match lower_module_in_set(&source, schema, &context, &imports) {
             Ok(module) => module,
             Err(gap) => return Ok(Run::NotLowered(gap)),
         };
-        // Built from the lowered IR, while it is still here, and never from the
-        // source or a summary.
-        let interface = LoweredInterface::of(&module);
+        drop(imports);
+        // Both views are built from the lowered IR, while it is still here, and
+        // never from the source or a summary.
+        interfaces[index] = Some(LoweringInterface::of(&module));
+        surfaces.push((index, VerificationSurface::of(&module)));
         images.push(image_of(&module));
         if index == entry_index {
             envelope = module.header.resource_envelope.clone();
         }
         // This is the line the phase rests on. Past it, this module's bodies,
         // blocks, instructions and source map are gone; what is left of it is
-        // an image and an interface.
+        // an image and two narrow views.
         drop(module);
-        interfaces.push((index, interface));
+        drop(tree);
+        drop(source);
+
+        // And this is the line the frontier rests on: every view whose last
+        // consumer was this position goes now.
+        for (at, held) in interfaces.iter_mut().enumerate() {
+            if held.is_some() && last_consumer[at] == Some(position) {
+                *held = None;
+            }
+        }
     }
-    let source = &sources[entry_index];
+    // The lowering views are done: the last module of the closure has been
+    // lowered, so nothing will read one again.
+    drop(interfaces);
+
     let entry_position = closure
         .iter()
         .position(|index| *index == entry_index)
@@ -493,7 +545,7 @@ pub fn execute_set(
     // an import that names a module the set does not provide, or claims an
     // identity the set disagrees with, is refused here even though the same
     // frontend produced both.
-    let snapshot = snapshot_of(&interfaces);
+    let snapshot = snapshot_of(&surfaces);
 
     let mut prepared = match Prepared::launch_images(
         images,
@@ -516,10 +568,10 @@ pub fn execute_set(
         Err(failure) => return Ok(launch_refusal(failure)),
     };
 
-    // The interfaces go here. Execution reaches a module through the resident
-    // set and nothing else, so nothing downstream reads one — and an interface
-    // that outlived lowering would be an accumulated term with no use.
-    drop(interfaces);
+    // The verification surfaces go here. They were needed until the launch,
+    // because the declared resolution is an input to verifying every module of
+    // the closure; past it nothing reads one.
+    drop(surfaces);
 
     trace.entering(PipelineStage::Execute);
     Ok(match prepared.run(arguments, system) {
@@ -527,7 +579,7 @@ pub fn execute_set(
         Ok(Err(trap)) => Run::Trapped {
             code: trap.code,
             detail: trap.detail.clone(),
-            at: site_of_in_set(&sources, &summaries, source, &trap),
+            at: site_of_in_set(request.units, &trap),
         },
         Ok(Ok(outcome)) => {
             let accounting = prepared.accounting(&outcome);
@@ -759,20 +811,42 @@ fn launch_refusal(failure: tos_residency::Failure) -> Run {
 /// Built from the modules that were actually lowered rather than from the
 /// request: a snapshot assembled from what a caller asked for would let the
 /// verifier confirm the caller's own assumption.
-fn snapshot_of(interfaces: &[(usize, LoweredInterface)]) -> ResolutionSnapshot {
+fn snapshot_of(surfaces: &[(usize, VerificationSurface)]) -> ResolutionSnapshot {
     let mut declared = tos_verifier::DeclaredResolution::new();
-    for (_, interface) in interfaces {
+    for (_, surface) in surfaces {
         declared
-            .module(interface.module_name(), interface.content_id())
+            .module(surface.module_name(), surface.content_id())
             .exports_declared();
-        for export in interface.exports() {
-            declared.export(&export.name);
+        for export in surface.exports() {
+            declared.export(export);
         }
-        for capability in interface.capabilities() {
+        for capability in surface.capabilities() {
             declared.capability(capability);
         }
     }
     declared.build()
+}
+
+/// The last position of the lowering order that reads each module's lowering
+/// view.
+///
+/// Computed from the resolved graph, once, before any module is lowered.
+/// `None` means no later module imports it — its view dies at the end of its
+/// own turn.
+fn last_consumers(
+    summaries: &[ModuleSummary],
+    closure: &[usize],
+    names: &[String],
+) -> Vec<Option<usize>> {
+    let mut last: Vec<Option<usize>> = (0..summaries.len()).map(|_| None).collect();
+    for (position, &index) in closure.iter().enumerate() {
+        for import in &summaries[index].imports {
+            if let Some(at) = names.iter().position(|name| *name == import.target) {
+                last[at] = Some(position);
+            }
+        }
+    }
+    last
 }
 
 /// A module's dependency closure, dependencies first, deterministically.
@@ -868,25 +942,21 @@ fn is_error(diagnostic: &Diagnostic) -> bool {
 /// the position is computed against the unit the source-map entry names.
 /// Computing it against the entry's text would produce a line and column that
 /// exist and are wrong, which is worse than none at all.
-fn site_of_in_set(
-    sources: &[SourceUnit],
-    summaries: &[ModuleSummary],
-    entry_source: &SourceUnit,
-    trap: &tos_engine::Trap,
-) -> Option<Site> {
-    // The trap carries its own span. It has to: the modules were released
-    // before the first instruction, so an index into a source map nobody holds
-    // would name nothing.
+fn site_of_in_set(units: &[Unit<'_>], trap: &tos_engine::Trap) -> Option<Site> {
+    // The trap carries its own span, and its own canonical path. It has to: the
+    // modules were released before the first instruction, so an index into a
+    // source map nobody holds would name nothing.
     let mapped = trap.site.as_deref()?;
-    let source = summaries
-        .iter()
-        .position(|summary| summary.path == mapped.path)
-        .and_then(|index| sources.get(index))
-        .unwrap_or(entry_source);
+    // One unit is normalized again, here, to turn a byte offset into a line and
+    // a column. Holding every normalized source through the whole run so that a
+    // trap that may never happen can be printed would be tens of megabytes of
+    // storage kept for a formatting step.
+    let unit = units.iter().find(|unit| unit.path == mapped.path)?;
+    let source = SourceReader::read(unit.bytes).ok()?;
     Some(Site {
         path: mapped.path.clone(),
-        start: Position::at(source, mapped.byte_start),
-        end: Position::at(source, mapped.byte_end),
+        start: Position::at(&source, mapped.byte_start),
+        end: Position::at(&source, mapped.byte_end),
     })
 }
 

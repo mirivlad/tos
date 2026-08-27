@@ -47,7 +47,7 @@ mod walk;
 
 pub use checker::{check_slice, Checker, CHECK_SLICES};
 pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
-pub use interface::{LoweredInterface, ResolvedImport};
+pub use interface::{CompactTypeId, LoweringInterface, ResolvedImport, VerificationSurface};
 pub use lower::{lower_module, lower_module_in_set, Gap, ModuleContext, FRONTEND_IDENTITY};
 pub use modules::{check_module_set, check_module_summaries, check_source_set, ModuleEntry};
 pub use parser::{

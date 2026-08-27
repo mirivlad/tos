@@ -8,7 +8,7 @@
 //! the frontend telling the verifier something untrue.
 
 use tos_core::{
-    lower_module, lower_module_in_set, Checker, LoweredInterface, ModuleContext, Parser,
+    lower_module, lower_module_in_set, Checker, LoweringInterface, ModuleContext, Parser,
     ResolvedImport, SourceReader,
 };
 use tos_ir::{CallTarget, Module, Op, TypeDef};
@@ -66,7 +66,7 @@ fn lower_pair(dependency: &str, entry: &str) -> (Module, Module) {
         &context("system/boot/init.tos", "sha256:entry"),
         &[ResolvedImport {
             name: "system.lib.math",
-            interface: &LoweredInterface::of(&dependency_module),
+            interface: &LoweringInterface::of(&dependency_module),
         }],
     )
     .expect("entry lowers");
