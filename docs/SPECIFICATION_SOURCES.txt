@@ -137,3 +137,4 @@ docs/adr/0067-how-a-supervisor-learns-a-service-ended.md
 docs/adr/0068-what-the-two-stage3-latency-budgets-measure.md
 docs/adr/0069-stage3-reference-process-grant.md
 docs/adr/0070-compact-verified-execution-image.md
+docs/adr/0071-bounded-verified-module-residency.md

@@ -2,28 +2,23 @@
 
 # ADR-0071: Bounded verified-module residency and the module provider
 
-- Status: **Proposed**
-- Date: 2026-08-26
+- Status: **Accepted**
+- Date: 2026-08-26 (accepted 2026-08-27)
 - Decision level: 2 — it fixes how many verified modules an execution may hold
   at once, what supplies the rest, and what survives a module image being
   released. It changes no TOS Core semantics, no ABI operation and no invariant
-- Project Architect approval: **not given; this ADR proposes, it does not decide**
+- Project Architect approval: **given, 2026-08-27**
 - Evidence: `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md` (this ADR's own
   evidence gate, measured), `docs/evidence/STAGE3_COMPACT_IMAGE_P1.md`,
   `docs/evidence/STAGE3_PROCESS_GRANT.md`, `docs/evidence/STAGE2_ARENA_BOUND.md`
 - Related: ADR-0070 (Accepted) §5, which requires this decision and constrains
-  its shape; ADR-0069 (Proposed) — the grant, still provisional pending this;
+  its shape; ADR-0069 (Accepted) — the `54 MiB` grant this is measured against;
   ADR-0040 — the whole-machine budget both accounts are spent from
-- Note: this ADR **designs only**. No engine change is proposed for
-  implementation here, and `run_set` is not rebuilt by it. Its evidence gate is
-  now **met** — see the measurements below and
-  `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md`. **Ready for Project Architect
-  acceptance; the status is left Proposed because changing it is not this
-  document's to do.** Amended 2026-08-26
-  on four points — reload trust (§5), the record/manifest split (§2), the opaque
-  provider key (§3) and what the byte bound counts (§7) — with the architecture
-  approved and the status deliberately left Proposed until this ADR's own
-  evidence gate is met
+- Note: amended four times before acceptance — reload trust (§5), the
+  record/manifest split (§2), the opaque provider key (§3), what the byte bound
+  counts (§7), and finally the manifest's reduction to closure membership. The
+  amendment history is kept in §2a and §11 because each shape was replaced for a
+  measured reason, not a stylistic one
 
 ## The gap, stated once
 
@@ -66,10 +61,10 @@ Two consequences, both intended:
   times the closure size;
 - **verification is complete before execution starts**, because two things must
   exist before the first instruction and neither can be built incrementally:
-  the **complete trusted closure manifest** of §2 — which resolves every
-  cross-module link and cannot be assembled from modules that have not been
-  verified yet — and the **exact executable closure and provider authority**,
-  which is fixed at that moment and never widened afterwards. An execution that
+  the **complete trusted closure manifest** of §2 — the membership of the exact
+  resolved closure, which is not membership until the last module of it has been
+  verified — and the **exact executable closure and provider authority**, which
+  is fixed at that moment and never widened afterwards. An execution that
   verified as it went would be deciding, mid-run, what it is allowed to reach.
 
 An execution whose closure cannot be verified in full does not start. There is
@@ -411,9 +406,9 @@ conclusions.**
   lowered here, and choosing a cap so that it fits a budget would be choosing a
   conformance profile by its memory bill. §2a states the arithmetic that makes
   the question unavoidable and leaves the answer to a Level-2 decision.
-- **Not the verifier's working set.** The evidence found it to be the dominant
-  term in the launch peak — `31.75 MiB` for one ceiling-sized module. Reducing
-  it is a separate piece of work with its own measurements.
+- **Not the verifier's working set**, which is no longer a term at all: the
+  nine verification steps allocate nothing above the module they check, and the
+  digest buffer that used to dominate the launch peak is gone (§2c).
 
 ## Architecture impact statement
 
@@ -517,31 +512,16 @@ above the module it is verifying.
 No lower conformance profile was introduced, no ceiling was changed, and nothing
 in the path consults free memory.
 
-**Five of the seven are closed. Two are not**, and this ADR cannot be accepted
-while they stand:
+All seven are closed, and the launch bound is enforced rather than estimated:
+the table above is a bounded allocator whose whole arena is exactly the grant,
+not a measurement taken beside one.
 
-**The launch peak.** Sequential verification does accumulate nothing — after the
-export tables and the closure-wide resolution snapshot were phased out, live
-state carried across a 16-module closure is `5 616 B` and the frontier does not
-move from the first module's release to the last. But the peak above the image
-store is `52.10 MiB` at two ceiling-sized modules and `55.76 MiB` at sixteen,
-and `54 MiB` does not hold it. The shape is now the right one —
+### 2a. The manifest's upper bound, derived, and the two shapes it replaced
 
-```text
-launch peak = one-module scratch + widest import surface + bounded closure metadata
-```
+**Historical.** The bound below is current; the two forms after it were replaced
+and are kept because a bound is only meaningful against what it improved on.
 
-— and the dominant term is the **verifier's own workspace at `31.75 MiB`**, flat
-at every closure size, sitting on a `20 MiB` decoded module. So the thing to
-reduce is one module's verification working set, not the grant. A residual
-closure-scaled term remains: the **widest single module's import surface**, held
-only while that module is verified, which in a closure where one module imports
-every other is the closure's whole export surface.
 
-**The manifest bound.** §2's structural claim needs a real one, and the accepted
-V1 ceilings do not supply an acceptable one. See below.
-
-### 2a. The manifest's upper bound, derived
 
 | | Measured |
 |---|---:|
@@ -555,13 +535,15 @@ V1 ceilings do not supply an acceptable one. See below.
 
 Bounded by the closure ceiling and by nothing else.
 
-The earlier per-call-site form of §2 was measured against the accepted V1
-ceilings and did not fit the machine; the arithmetic is kept below because §2's
-change of shape only means something against it. **The import-edge form fits:
-65 280 edges, `0.50 MiB`.** No conformance profile was lowered and no ceiling was
-touched.
+#### Superseded: the import-edge form
 
-### 2b. What the call-site form would have cost
+One entry per declared import slot came to `65 280` edges, `0.50 MiB`. It fit,
+but the argument for 255 slots per module leaned on docs/41's `resource imports`,
+which bounds transitive module dependencies rather than the count of `import`
+declarations. Membership needs no such argument: the closure ceiling is a
+published limit and is the only one in play.
+
+#### Superseded: the call-site form
 
 docs/44 §2 bounds "IR tables/blocks/instructions" by the **declared module
 resource envelope**, whose ten fields are `u128` and self-declared, so the IR
@@ -584,16 +566,17 @@ neither did: the manifest was holding the wrong thing. Which function a call
 reaches is not part of fixing a closure's identity or a provider's authority,
 which is what a manifest is for.
 
-Two bounds were open when that was written and both are now closed, neither by a
-larger grant. `module_digest` materialized the canonical stream before hashing
-it — `15.75 MiB` on a ceiling-sized module, and the whole of the verifier's
-workspace, since the other nine verification steps allocate nothing; it now feeds
-the digest incrementally through the same traversal, with the digest unchanged
-byte for byte. And the widest single-module declared-resolution surface was
-`156.83 MiB`, of which `7.93 MiB` was export-name text; separating the export
-index from the shared string table brought it to `16.03 MiB` without narrowing
-what the snapshot states. Both are recorded in
-`docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md` §10 and §13.
+### 2c. Two launch-memory owners, both closed
+
+Also historical, and recorded because each was a real bound before it was one no
+longer. `module_digest` materialized the canonical stream before hashing it —
+`15.75 MiB` on a ceiling-sized module, and the whole of the verifier's workspace,
+since the other nine verification steps allocate nothing; it now feeds the digest
+incrementally through the same traversal, with the digest unchanged byte for
+byte. And the widest single-module declared-resolution surface was `156.83 MiB`,
+of which `7.93 MiB` was export-name text; separating the export index from the
+shared string table brought it to `16.03 MiB` without narrowing what the snapshot
+states. Both are in `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md` §10 and §13.
 
 ## Alternatives considered
 
