@@ -665,7 +665,7 @@ fn a_prepared_closure_outlives_the_workspace_that_built_it() {
     // The same closure runs twice from one preparation. Nothing about the build
     // is consulted again: if any of it had been needed, it could not be here.
     for _ in 0..2 {
-        let run = tos_pipeline::run_prepared(&mut prepared, &request, Vec::new(), &mut Unreachable);
+        let run = tos_pipeline::run_prepared(&mut prepared, Vec::new(), &mut Unreachable);
         let Run::Completed(completion) = run else {
             panic!("the prepared closure runs: {run:?}");
         };
@@ -890,7 +890,7 @@ fn a_closure_regenerates_from_canonical_source_with_no_image_at_all() {
         let tos_pipeline::Preparation::Ready(mut prepared) = prepared else {
             panic!("the closure prepares");
         };
-        let run = tos_pipeline::run_prepared(&mut prepared, &request, Vec::new(), &mut Unreachable);
+        let run = tos_pipeline::run_prepared(&mut prepared, Vec::new(), &mut Unreachable);
         let Run::Completed(completion) = run else {
             panic!("the regenerated closure runs: {run:?}");
         };
@@ -904,4 +904,86 @@ fn a_closure_regenerates_from_canonical_source_with_no_image_at_all() {
         receipts[0], receipts[1],
         "regeneration from canonical source reaches the same verified module"
     );
+}
+
+/// A prepared closure runs after the source is gone (ADR-0072 §2, §1).
+///
+/// The provider, the request and the canonical text are all dropped between the
+/// preparation and the run. What the process holds is images, records, the
+/// membership and the entry receipt; it reaches its modules through the resident
+/// set, and it names where it trapped with a canonical path and a byte span it
+/// carried out of the run itself.
+///
+/// The line and the column come afterwards, from a reader that still has the
+/// source. That reader is not the process.
+#[test]
+fn a_prepared_closure_runs_after_its_source_is_dropped() {
+    let dependency = lib(
+        "system.lib.math",
+        "pub fn halve(value: i32) -> i32 { return value / 0i32; }",
+    );
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.math as math;",
+        "pub fn main() -> i32 { return math.halve(4i32); }",
+    );
+
+    // Everything about the source lives inside this block and nothing escapes
+    // it but the prepared closure.
+    let prepared = {
+        let texts = [
+            ("system/lib/math.tos", dependency.clone()),
+            ("system/boot/init.tos", entry.clone()),
+        ];
+        let units: Vec<Unit<'_>> = texts
+            .iter()
+            .map(|(path, text)| Unit {
+                path,
+                bytes: text.as_bytes(),
+            })
+            .collect();
+        let request = SetRequest {
+            source_set: "tos-module-set-tests",
+            units: &units,
+            entry_path: "system/boot/init.tos",
+            entry: "main",
+        };
+        let prepared =
+            tos_pipeline::prepare_from_source(&request, &mut Silent, tos_pipeline::HOST_RESIDENCY)
+                .expect("the set names an entry it contains");
+        let tos_pipeline::Preparation::Ready(prepared) = prepared else {
+            panic!("the closure prepares");
+        };
+        prepared
+    };
+    let mut prepared = prepared;
+
+    let run = tos_pipeline::run_prepared(&mut prepared, Vec::new(), &mut Unreachable);
+    let Run::Trapped { code, at, .. } = &run else {
+        panic!("expected a trap, got {run:?}");
+    };
+    assert_eq!(*code, "RUNTIME_DIVISION_BY_ZERO");
+    let location = at.as_ref().expect("the trap names where it came from");
+    assert_eq!(
+        location.path, "system/lib/math.tos",
+        "the canonical path came out of the run, not out of a source table"
+    );
+    assert!(location.byte_end > location.byte_start);
+
+    // A boot log is written by a process in exactly this position, so the
+    // rendered form must exist without source too.
+    let rendered = tos_pipeline::render::events(&run);
+    assert!(
+        rendered
+            .iter()
+            .any(|line| line.contains("TOS.RUN.TRAP ") && line.contains("system/lib/math.tos")),
+        "{rendered:?}"
+    );
+
+    // And only now, by a reader that kept the text, does it become a line and a
+    // column.
+    let site = tos_pipeline::locate(location, dependency.as_bytes())
+        .expect("the span locates against the source it names");
+    assert_eq!(site.path, "system/lib/math.tos");
+    assert!(site.start.line() >= 1);
 }

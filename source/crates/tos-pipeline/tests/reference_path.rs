@@ -250,8 +250,12 @@ fn a_trap_names_the_source_it_came_from() {
         panic!("expected a trap, got {run:?}");
     };
     assert_eq!(*code, "RUNTIME_DIVISION_BY_ZERO");
-    let site = at.as_ref().expect("a trap must name its source");
-    assert_eq!(site.path, PATH);
+    let location = at.as_ref().expect("a trap must name its source");
+    assert_eq!(location.path, PATH);
+    assert!(location.byte_end >= location.byte_start);
+    // The line and the column are a reporting step over source a reader still
+    // has, not something the run carried.
+    let site = tos_pipeline::locate(location, text.as_bytes()).expect("the span locates");
     assert!(site.start.line() >= 1);
     // The rendered form is what a boot log carries, so it is checked too.
     let rendered = render::events(&run);

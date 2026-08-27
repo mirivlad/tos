@@ -204,6 +204,58 @@ pub struct Site {
     pub end: Position,
 }
 
+/// Where a trap came from, in the terms the process itself carries.
+///
+/// **No source anywhere in it.** A canonical path and a byte span, both of them
+/// facts the trap brought out of the run: ADR-0072 §2 makes execution an account
+/// that holds a running program, and a process that needed the source text in
+/// order to *report* where it trapped would be holding the build in order to
+/// describe the run.
+///
+/// A line and a column are a different thing — a rendering of this against
+/// source that some later reader happens to have. [`locate`] does that, after
+/// the fact, and a run that nobody ever locates still says exactly which bytes
+/// of which unit it stopped at.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TrapLocation {
+    pub path: String,
+    pub byte_start: usize,
+    pub byte_end: usize,
+}
+
+/// Turns a canonical span into a line and a column.
+///
+/// A **reporting** step, run after execution by whoever has the source. It is
+/// not part of the run and nothing about the run depends on it happening.
+pub fn locate(location: &TrapLocation, source_bytes: &[u8]) -> Option<Site> {
+    let source = SourceReader::read(source_bytes).ok()?;
+    Some(Site {
+        path: location.path.clone(),
+        start: Position::at(&source, location.byte_start),
+        end: Position::at(&source, location.byte_end),
+    })
+}
+
+/// The same, through the provider and membership a preparation produced.
+///
+/// The source is asked for by the identity the resolution minted, and the bytes
+/// are checked against what resolution saw — the same discipline materialization
+/// uses, because a location rendered against different source would name a
+/// different place.
+pub fn locate_in(
+    location: &TrapLocation,
+    provider: &dyn SourceProvider,
+    closure: &SourceClosureManifest,
+) -> Option<Site> {
+    let position = closure
+        .members()
+        .iter()
+        .position(|member| member.path == location.path)?;
+    let id = closure.module(position)?;
+    let bytes = source::materialize(provider, closure, id).ok()?;
+    locate(location, bytes)
+}
+
 /// A completed run and everything that proves it was a real one.
 #[derive(Clone, Debug)]
 pub struct Completion {
@@ -256,11 +308,15 @@ pub enum Run {
     Unverified(Finding),
     /// The engine refused to start: wrong receipt, no such entry, wrong arity.
     Refused(Refusal),
-    /// A trap ended the run, named by the source it came from.
+    /// A trap ended the run, named by the canonical span it came from.
+    ///
+    /// A location and not a site: the process carries a path and a byte range
+    /// out of the run, and turning those into a line and a column is a
+    /// reporting step for whoever still has the source ([`locate`]).
     Trapped {
         code: &'static str,
         detail: String,
-        at: Option<Site>,
+        at: Option<TrapLocation>,
     },
     /// The program ran to completion.
     ///
@@ -342,7 +398,7 @@ pub fn execute_set(
         Preparation::Refused(run) => Ok(run),
         Preparation::Ready(mut prepared) => {
             trace.entering(PipelineStage::Execute);
-            Ok(run_prepared(&mut prepared, request, arguments, system))
+            Ok(run_prepared(&mut prepared, arguments, system))
         }
     }
 }
@@ -701,12 +757,11 @@ pub fn prepare_from_provider(
 /// modules through the bounded resident set and never through anything the
 /// preparation held.
 ///
-/// `request` is consulted only to turn a trap's canonical path and byte span
-/// into a line and a column, which is a formatting step and not an input to the
-/// run.
+/// **It takes no source and no provider.** After a preparation returns, the
+/// canonical source, the request and the provider may all be dropped, and the
+/// run produces the same value, the same trap and the same trap location.
 pub fn run_prepared(
     prepared: &mut Prepared,
-    request: &SetRequest<'_>,
     arguments: Vec<Value>,
     system: &mut dyn System,
 ) -> Run {
@@ -715,7 +770,7 @@ pub fn run_prepared(
         Ok(Err(trap)) => Run::Trapped {
             code: trap.code,
             detail: trap.detail.clone(),
-            at: site_of_in_set(request.units, &trap),
+            at: location_of(&trap),
         },
         Ok(Ok(outcome)) => {
             let accounting = prepared.accounting(&outcome);
@@ -1078,21 +1133,16 @@ fn is_error(diagnostic: &Diagnostic) -> bool {
 /// the position is computed against the unit the source-map entry names.
 /// Computing it against the entry's text would produce a line and column that
 /// exist and are wrong, which is worse than none at all.
-fn site_of_in_set(units: &[Unit<'_>], trap: &tos_engine::Trap) -> Option<Site> {
-    // The trap carries its own span, and its own canonical path. It has to: the
+fn location_of(trap: &tos_engine::Trap) -> Option<TrapLocation> {
+    // The trap carries its own span and its own canonical path. It has to: the
     // modules were released before the first instruction, so an index into a
-    // source map nobody holds would name nothing.
+    // source map nobody holds would name nothing — and now so is the source
+    // itself gone by the time a process runs.
     let mapped = trap.site.as_deref()?;
-    // One unit is normalized again, here, to turn a byte offset into a line and
-    // a column. Holding every normalized source through the whole run so that a
-    // trap that may never happen can be printed would be tens of megabytes of
-    // storage kept for a formatting step.
-    let unit = units.iter().find(|unit| unit.path == mapped.path)?;
-    let source = SourceReader::read(unit.bytes).ok()?;
-    Some(Site {
+    Some(TrapLocation {
         path: mapped.path.clone(),
-        start: Position::at(&source, mapped.byte_start),
-        end: Position::at(&source, mapped.byte_end),
+        byte_start: mapped.byte_start,
+        byte_end: mapped.byte_end,
     })
 }
 
