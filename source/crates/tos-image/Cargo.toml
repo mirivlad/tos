@@ -9,5 +9,4 @@ publish = false
 
 [dependencies]
 tos-ir = { path = "../tos-ir" }
-tos-verifier = { path = "../tos-verifier" }
 tos-hash = { path = "../tos-hash" }

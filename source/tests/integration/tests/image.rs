@@ -9,7 +9,22 @@
 use tos_core::{lower_module, Checker, ModuleContext, Parser, SourceReader};
 use tos_image::{artifact_digest, encode, parse, reseal, ImageError};
 use tos_ir::Module;
-use tos_verifier::{verify, Limits, ResolutionSnapshot};
+use tos_verifier::{verify, verify_image, ImageRefusal, Limits, ResolutionSnapshot};
+
+/// The accepted ceilings as the parser's bounds — the same conversion the
+/// verifier's own trusted path performs.
+fn parse_limits() -> tos_image::ParseLimits {
+    let limits = Limits::default();
+    tos_image::ParseLimits {
+        table_entries: limits.table_entries,
+        modules: limits.modules,
+        fields: limits.fields,
+        parameters: limits.parameters,
+        blocks_per_function: limits.blocks_per_function,
+        instructions_per_block: limits.instructions_per_block,
+        source_map_entries: limits.source_map_entries,
+    }
+}
 
 const ENVELOPE: &str = "resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
      workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]";
@@ -73,7 +88,7 @@ fn corpus() -> Vec<Module> {
 fn every_module_of_the_corpus_survives_the_image_exactly() {
     for module in corpus() {
         let (image, _) = encode(&module);
-        let parsed = parse(&image, &Limits::default()).expect("its own image parses");
+        let parsed = parse(&image, &parse_limits()).expect("its own image parses");
         assert_eq!(parsed, module, "{}", module.header.module_name);
         assert_eq!(
             tos_ir::module_digest(&parsed),
@@ -93,11 +108,40 @@ fn encode_parse_verify_agrees_with_verifying_the_module_directly() {
     for module in corpus() {
         let direct = verify(&module, &snapshot, &limits).expect("the fixture verifies");
         let (image, _) = encode(&module);
-        let parsed = parse(&image, &limits).expect("its own image parses");
-        let through_image =
-            verify(&parsed, &snapshot, &limits).expect("the parsed module verifies");
-        assert_eq!(direct, through_image, "the receipts are the same receipt");
-        assert!(!artifact_digest(&image).is_empty());
+        // The one production entry: bytes in, receipt and artifact digest out.
+        let verified = verify_image(&image, &snapshot, &limits).expect("the image verifies");
+        assert_eq!(
+            verified.receipt(),
+            &direct,
+            "the receipts are the same receipt"
+        );
+        assert_eq!(verified.module(), &module, "the module is reconstructed");
+        assert_eq!(
+            verified.artifact_digest(),
+            &tos_hash::sha256(&image),
+            "the digest is over the bytes that were parsed"
+        );
+        assert_eq!(
+            verified.artifact_digest_text(),
+            artifact_digest(&image),
+            "and it is the same digest the format reports"
+        );
+    }
+}
+
+/// A well-formed image of a module that does not hold is refused by the
+/// verifier, not by the parser — the two stages stay distinguishable.
+#[test]
+fn a_semantically_invalid_image_of_a_real_module_is_refused_by_the_verifier() {
+    let mut module = corpus().remove(0);
+    module.functions[0].blocks[0].terminator = tos_ir::Terminator::Branch {
+        target: 9999,
+        arguments: Vec::new(),
+    };
+    let (image, _) = encode(&module);
+    match verify_image(&image, &ResolutionSnapshot::default(), &Limits::default()) {
+        Err(ImageRefusal::Verifier(finding)) => assert!(finding.code.starts_with('V')),
+        other => panic!("an invalid module was not a verifier refusal: {other:?}"),
     }
 }
 
@@ -108,7 +152,7 @@ fn the_corpus_encodes_reproducibly() {
         let (first, _) = encode(&module);
         let (second, _) = encode(&module);
         assert_eq!(first, second);
-        let parsed = parse(&first, &Limits::default()).expect("parses");
+        let parsed = parse(&first, &parse_limits()).expect("parses");
         let (again, _) = encode(&parsed);
         assert_eq!(first, again, "re-encoding a parsed module is a fixed point");
     }
@@ -117,7 +161,7 @@ fn the_corpus_encodes_reproducibly() {
 /// Every prefix of a real image is refused, and resealed mutations return.
 #[test]
 fn the_parser_is_total_over_real_images() {
-    let limits = Limits::default();
+    let limits = parse_limits();
     for module in corpus() {
         let (image, _) = encode(&module);
         for length in 0..image.len() {
@@ -146,7 +190,7 @@ fn the_parser_is_total_over_real_images() {
 /// refused before any of it is believed.
 #[test]
 fn a_real_image_still_refuses_the_frame_negatives() {
-    let limits = Limits::default();
+    let limits = parse_limits();
     let module = &corpus()[1];
     let (good, _) = encode(module);
 

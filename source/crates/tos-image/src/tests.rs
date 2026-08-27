@@ -4,6 +4,20 @@
 use super::*;
 use alloc::vec;
 
+/// The accepted V1 ceilings, restated here so the tests do not reach for the
+/// verifier either.
+fn limits() -> ParseLimits {
+    ParseLimits {
+        table_entries: 65_536,
+        modules: 256,
+        fields: 1024,
+        parameters: 128,
+        blocks_per_function: 4096,
+        instructions_per_block: 65_536,
+        source_map_entries: 262_144,
+    }
+}
+
 /// A module that uses **every** tagged variant `tos-ir/v1` has.
 ///
 /// Not a plausible program — it is not meant to verify — but a complete one in
@@ -591,7 +605,7 @@ fn the_fixture_uses_every_tagged_variant() {
 fn a_module_survives_encode_and_parse_exactly() {
     let module = every_variant();
     let (image, _) = encode(&module);
-    let parsed = parse(&image, &Limits::default()).expect("its own image parses");
+    let parsed = parse(&image, &limits()).expect("its own image parses");
     assert_eq!(parsed, module, "the module is reconstructed exactly");
     assert_eq!(
         tos_ir::module_digest(&parsed),
@@ -610,7 +624,7 @@ fn encoding_is_reproducible() {
     assert_eq!(first, second, "the same module encodes to the same bytes");
     assert_eq!(layout, again);
 
-    let parsed = parse(&first, &Limits::default()).expect("parses");
+    let parsed = parse(&first, &limits()).expect("parses");
     let (third, _) = encode(&parsed);
     assert_eq!(first, third, "re-encoding a parsed module is a fixed point");
     assert_eq!(artifact_digest(&first), artifact_digest(&third));
@@ -628,7 +642,7 @@ fn an_image_regenerates_identically() {
 
     let (regenerated, _) = encode(&module);
     assert_eq!(artifact_digest(&regenerated), digest);
-    let parsed = parse(&regenerated, &Limits::default()).expect("parses");
+    let parsed = parse(&regenerated, &limits()).expect("parses");
     assert_eq!(tos_ir::module_digest(&parsed), semantic);
 }
 
@@ -636,7 +650,7 @@ fn an_image_regenerates_identically() {
 #[test]
 fn the_frame_refuses_what_it_should() {
     let (good, _) = encode(&every_variant());
-    let limits = Limits::default();
+    let limits = limits();
 
     let mut bad = good.clone();
     bad[0] ^= 0xff;
@@ -700,7 +714,7 @@ fn the_frame_refuses_what_it_should() {
 /// integrity and never authenticity: the payload parser has to stand on its own.
 #[test]
 fn the_payload_refuses_what_it_should() {
-    let limits = Limits::default();
+    let limits = limits();
     type Case = (&'static str, Vec<u8>, fn(&ImageError) -> bool);
     let cases: &[Case] = &[
         ("repeated string", vec![0x02, 0x01, b'a', 0x01, b'a'], |e| {
@@ -752,7 +766,7 @@ fn the_payload_refuses_what_it_should() {
 /// An unknown tag fails closed, in every family that has one.
 #[test]
 fn an_unknown_tag_fails_closed() {
-    let limits = Limits::default();
+    let limits = limits();
     let module = every_variant();
     let (image, layout) = encode(&module);
     let payload = &image[FRAME_HEADER..FRAME_HEADER + layout.payload];
@@ -777,7 +791,7 @@ fn an_unknown_tag_fails_closed() {
 /// Totality: the parser returns for every input, and every prefix is refused.
 #[test]
 fn the_parser_is_total() {
-    let limits = Limits::default();
+    let limits = limits();
     let (good, _) = encode(&every_variant());
 
     for length in 0..good.len() {
@@ -821,7 +835,7 @@ fn the_parser_is_total() {
 /// A count is bounded before anything is allocated from it.
 #[test]
 fn a_forged_count_allocates_nothing() {
-    let limits = Limits::default();
+    let limits = limits();
     // A string-table count of nearly four million with two bytes behind it.
     let payload = vec![0xff, 0xff, 0xff, 0x01, 0x00];
     match parse(&frame(&payload), &limits) {
