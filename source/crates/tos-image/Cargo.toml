@@ -10,3 +10,6 @@ publish = false
 [dependencies]
 tos-ir = { path = "../tos-ir" }
 tos-hash = { path = "../tos-hash" }
+
+[dev-dependencies]
+tos-ir = { path = "../tos-ir", features = ["fixtures"] }

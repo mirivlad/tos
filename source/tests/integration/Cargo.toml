@@ -12,9 +12,10 @@ tos-hash = { path = "../../crates/tos-hash" }
 tos-boot-protocol = { path = "../../crates/boot-protocol" }
 [dev-dependencies]
 tos-core = { path = "../../crates/tos-core" }
-tos-ir = { path = "../../crates/tos-ir" }
+tos-ir = { path = "../../crates/tos-ir", features = ["fixtures"] }
 tos-verifier = { path = "../../crates/tos-verifier" }
 tos-image = { path = "../../crates/tos-image" }
 tos-engine = { path = "../../crates/tos-engine" }
 tos-cache = { path = "../../crates/tos-cache" }
 tos-pipeline = { path = "../../crates/tos-pipeline" }
+tos-residency = { path = "../../crates/tos-residency" }

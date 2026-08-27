@@ -10,5 +10,10 @@ publish = false
 [lib]
 name = "tos_ir"
 
+[features]
+# The all-variants module. Data only, and off in every production build:
+# a fixture that ships with the schema is one fixture, not one per consumer.
+fixtures = []
+
 [dependencies]
 tos-hash = { path = "../tos-hash" }

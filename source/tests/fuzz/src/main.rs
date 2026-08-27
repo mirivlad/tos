@@ -17,6 +17,24 @@ use tos_verifier::{verify, Limits, ResolutionSnapshot};
 
 const BASE: &[u8] = include_bytes!("../../vectors/capsule-v1/valid-001.bin");
 
+/// The accepted V1 ceilings, as the image parser's bounds.
+///
+/// The same conversion the verifier's own trusted path performs: the parser
+/// takes its limits as data, so the fuzz target hands it exactly what
+/// production hands it rather than bounds of its own choosing.
+fn parse_limits() -> tos_image::ParseLimits {
+    let limits = Limits::default();
+    tos_image::ParseLimits {
+        table_entries: limits.table_entries,
+        modules: limits.modules,
+        fields: limits.fields,
+        parameters: limits.parameters,
+        blocks_per_function: limits.blocks_per_function,
+        instructions_per_block: limits.instructions_per_block,
+        source_map_entries: limits.source_map_entries,
+    }
+}
+
 /// xorshift64* PRNG, fixed seed.
 struct Rng(u64);
 
@@ -135,6 +153,7 @@ fn fuzz_module_image(rng: &mut Rng, rounds: usize) {
     let module = image_base();
     let (base, _) = encode(&module);
     let limits = parse_limits();
+
     let mut accepted = 0usize;
     for _ in 0..rounds {
         let len = (rng.next() as usize) % (base.len() + 1);
@@ -209,7 +228,7 @@ fn fuzz_forged_ir(rng: &mut Rng, rounds: usize) {
         std::process::exit(1);
     };
     let snapshot = ResolutionSnapshot::default();
-    let limits = parse_limits();
+    let limits = Limits::default();
     // The unmutated module must verify, or every later round measures nothing.
     if verify(&base, &snapshot, &limits).is_err() {
         eprintln!("FUZZ FAIL: the forged-IR base module does not verify");

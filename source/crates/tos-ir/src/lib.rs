@@ -28,8 +28,12 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 pub mod digest;
+#[cfg(any(test, feature = "fixtures"))]
+pub mod fixtures;
+pub mod footprint;
 
 pub use digest::{canonical_stream, module_digest};
+pub use footprint::retained_bytes;
 
 /// The schema every V1 module declares.
 pub const SCHEMA_ID: &str = "tos-ir/v1";
