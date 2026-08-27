@@ -14,8 +14,8 @@
   `docs/evidence/STAGE3_COMPACT_IMAGE_P1.md` (the section 6 measurement)
 - Related: ADR-0044 (Proposed) — digest scheme v2, which §3 leaves independently
   versioned from the storage encoding rather than merged into it; ADR-0071
-  (Proposed) — the bounded residency decision §5 requires; ADR-0069 (Proposed) —
-  the grant this measurement came from; docs/43 §1, whose obligations any
+  (Accepted 2026-08-27) — the bounded residency decision §5 required; ADR-0069
+  (Accepted 2026-08-27) — the `54 MiB` grant; docs/43 §1, whose obligations any
   persisted form must meet
 
 ## The gap, stated once
@@ -171,7 +171,7 @@ is why §5 is a requirement and not an alternative.
 
 A separate ADR must define **bounded verified-module residency**: how many
 verified modules an execution may hold at once, and what supplies the rest.
-That decision is now drafted as **ADR-0071 (Proposed)**.
+That decision is **ADR-0071, Accepted 2026-08-27**.
 
 Its shape is constrained here so that the follow-up cannot quietly become an
 ambient authority:
@@ -289,9 +289,9 @@ artifact rather than an execution path.
 ADR-0071's evidence were taken on — a measurement whose fixture has been replaced
 is not reproducible — and the engine never executes it.
 
-**What the gate still holds back.** Production engine integration also depends on
-ADR-0071 and ADR-0069, which are Level-2 and Proposed. The format being ready is
-one of the conditions, not all of them.
+**The gate is open.** Both format conditions are met, and ADR-0071 and ADR-0069
+were accepted on 2026-08-27, so production engine integration is authorized —
+under their terms, not as a licence to ignore them.
 
 `TOSIMGx0` was **not** a candidate for promotion. It is version `0` of an
 experiment with partial coverage, and the production format started with its own
@@ -309,9 +309,8 @@ producing the failure the design was written to prevent.
   integration on complete coverage and complete conformance. Acceptance is the
   shape of the decision, never a licence to start.
 - **Not residency.** §5 is a requirement on a later decision, not a design.
-- **Not the grant size.** ADR-0069 stays Proposed and `54 MiB` stays
-  provisional; the grant is re-measured once this and residency are settled,
-  not re-argued.
+- **Not the grant size.** That is ADR-0069's, and it ratified `54 MiB` on
+  2026-08-27 once this and residency were settled.
 - **Not ADR-0044's acceptance.** That decision remains its own and stays
   Proposed. §3 makes the storage encoding and the digest scheme independently
   versioned, so neither waits on the other.

@@ -7,11 +7,11 @@ heap every arena figure in this project is taken through
 (`STAGE2_ARENA_BOUND.md`, `STAGE3_PROCESS_GRANT.md`,
 `STAGE3_COMPACT_IMAGE_P1.md`).
 
-Scope: the seven measurements **ADR-0071** requires before it can be accepted.
-ADR-0071 remains **Proposed**. `RUNTIME_GRANT = 54 MiB` remains **provisional**.
-**ADR-0070 §7's implementation gate stands**: nothing here authorizes production
-engine integration, which waits on an image format covering 100 % of
-`tos-ir/v1` and closing docs/43 §1 in full.
+Scope: the seven measurements **ADR-0071** required before acceptance. **ADR-0071
+and ADR-0069 were accepted on 2026-08-27** on this evidence, and
+`RUNTIME_GRANT = 54 MiB` is ratified.
+ADR-0070 §7's format condition is met by `tos-image`, so production engine
+integration is authorized under the terms these three ADRs fix.
 
 Verdict, stated once: **a launch of the exact resolved closure fits
 `RUNTIME_GRANT = 54 MiB` — enforced against a bounded allocator whose whole

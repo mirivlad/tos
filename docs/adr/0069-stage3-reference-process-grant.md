@@ -2,14 +2,12 @@
 
 # ADR-0069: The Stage 3 reference process grant
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-08-25
 - Decision level: 2 — it fixes a property of the ADR-0040 reference platform:
   what backs a process's runtime arena, and how its size is decided. It changes
   no invariant, no ABI operation and no TOS Core semantics
-- Project Architect approval: **not given; this ADR proposes, it does not
-  decide.** Its evidence is now complete and enforced against a hard arena of
-  the proposed size — **ready for acceptance**
+- Project Architect approval: **given, 2026-08-27**
 - Evidence: `docs/evidence/STAGE2_ARENA_BOUND.md`,
   `docs/evidence/STAGE3_PROCESS_GRANT.md`
 - Note: §6 was rewritten on 2026-08-25 after the Project Architect identified
@@ -67,18 +65,13 @@ This is the half that makes a measurement mean anything: an arena bound is a
 statement about a program, and it can only be that if every process of the
 profile is measured against the same arena.
 
-### 3. `54 MiB` is a candidate, not a ratified size
+### 3. `RUNTIME_GRANT` is `54 MiB`
 
-The implementation carries `RUNTIME_GRANT = 54 MiB` as a **provisional
-candidate**, and both things it was waiting on now exist. ADR-0070 is Accepted
-and its image is measured. Bounded verified-module residency is drafted as
-ADR-0071 and its evidence gate is met.
-
-**`54 MiB` is now a measured candidate rather than a failed one.** It is
-enforced, not estimated: a bounded allocator whose whole arena is exactly this
-size runs a launch of the exact resolved closure at every size up to the
-published 256-module ceiling, and at the worst declared resolution the V1
-ceilings admit.
+`RUNTIME_GRANT = 54 MiB` is the Stage 3 reference profile's grant. **Ratified,
+not provisional**: it is enforced rather than estimated — a bounded allocator
+whose whole arena is exactly this size runs a launch of the exact resolved
+closure at every size up to the published 256-module ceiling, and at the worst
+declared resolution the V1 ceilings admit.
 
 | Under a hard `54 MiB` arena | Grant frontier |
 |---|---:|
@@ -88,18 +81,17 @@ ceilings admit.
 | **closure of 256 — the published ceiling** | **27.60 MiB** |
 | **256, worst admissible declared resolution** | **42.42 MiB** |
 | steady-state residency at a bound of two modules | 32.03 MiB |
+| permanent closure state at 256 modules | 182 KiB |
 
 No lower conformance profile was introduced to reach this, no ceiling was
 changed, and nothing in the path consults free memory. The evidence is
 `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md`.
 
-**Ready for Project Architect acceptance.** The status is left Proposed because
-changing it is not this document's to do, and because the size a launch fits is
-one of two questions — the other is how many modules an execution may hold
-resident at once, which is ADR-0071's.
-
-Section 5 states what the candidate covers, and section 6 what the measurement
-that produced it actually found.
+Sections 5 and 6 are the history of how the number was arrived at, and are
+**superseded as residency evidence** by the table above: they measured a path
+that held every lowered module of a set alive at once, which ADR-0071 replaced.
+They are kept because §6 is where the defect was found, and a correction is
+worth more than the number it corrected.
 
 ### 4. `MAX_GRANT` stays a ceiling
 
@@ -136,9 +128,11 @@ needed *above* them:
 That is `25.03 MiB` per module above a base of `59.94 MiB`, linear across the
 measured range.
 
-**So the candidate covers one ceiling-sized module and no closure of them.** Two
-already need twice it. This is stated rather than smoothed over: the size was
-not chosen to fit a workload, and the workload does not fit it.
+**Superseded.** That was the retaining path, before ADR-0071: it held every
+lowered module of a set alive at once, so a closure cost the sum of its modules.
+Under sequential launch a closure of 256 ceiling-sized modules is verified inside
+`27.60 MiB`, because one module is materialized at a time and nothing but a
+fixed-size record survives it (§3).
 
 ## 6. What the closure measurement actually found
 
@@ -185,11 +179,11 @@ The phased path extrapolates to about `3.2 GiB` at 256 modules — still far pas
 this platform, and still an extrapolation of an implementation that keeps every
 lowered module alive because `run_set` is handed the whole set at once.
 
-Whether that last component is reducible is the open question, and it is left
-open here rather than answered by rebuilding the engine as a side effect of a
-memory measurement. **No lower conformance cap is introduced.** One becomes a
-question only if a bounded, phased implementation still shows an irreducible
-requirement incompatible with ADR-0040, and nothing measured so far shows that.
+Whether that last component was reducible was the open question when this was
+written. **It was**, and ADR-0071 answered it: a closure is verified one module
+at a time and nothing but a fixed-size record survives each one, so the question
+of what "every lowered module at once" costs no longer arises. **No lower
+conformance cap was introduced.**
 
 ## 7. Four processes, and what binds next
 
@@ -223,9 +217,10 @@ only the arena would be reporting half a ledger.
 
 ## What this ADR does not decide
 
-It does not set the conformance profile's closure cap (§6), does not change
-`MAX_PROCESSES`, does not change `MIN_GRANT` or `MAX_GRANT`, and does not
-introduce any adaptive sizing. A policy of the form "give a process what is
+It does not set the conformance profile's closure cap — none is declared, and
+the published 256-module ceiling stands — does not change `MAX_PROCESSES`, does
+not change `MIN_GRANT` or `MAX_GRANT`, and does not introduce any adaptive
+sizing. A policy of the form "give a process what is
 left" is refused by §2 and is not an alternative this ADR keeps open.
 
 ## Architecture impact statement
@@ -265,8 +260,9 @@ unusable, and it bought a contiguity nothing asked for.
 **Size the grant from what is left.** Rejected in §2: it makes a program's
 success depend on how many processes preceded it.
 
-**Raise the grant until the declared ceiling fits.** Rejected, but no longer on
-the ground the first draft gave. "A factor of twenty-five" was an extrapolation
+**Raise the grant until the declared ceiling fits.** Rejected, and in the end
+unnecessary: the ceiling fits at `54 MiB`. Not on the ground the first draft
+gave, either. "A factor of twenty-five" was an extrapolation
 of the retaining implementation path, and §6 withdrew it as a statement about
 what TOS Core V1 costs. What remains true is narrower and enough: the grant is
 bounded by the whole-machine budget shared with three other processes (§7), and

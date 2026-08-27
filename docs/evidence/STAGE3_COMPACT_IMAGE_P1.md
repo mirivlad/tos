@@ -9,11 +9,10 @@ runs *through* the heap, so a byte figure is the allocator's own accounting
 rather than a sum of requests.
 
 Scope: this answers the seven questions **ADR-0070 §6** asks before that ADR can
-be accepted. It is the evidence ADR-0070 was **accepted on (2026-08-26)**, and
-that acceptance carries ADR-0070 §7's implementation gate: no production engine
-integration until a production format covers 100 % of `tos-ir/v1` and closes
-docs/43 §1 in full. `RUNTIME_GRANT = 54 MiB` remains **provisional**, and nothing
-here is switched into the production engine.
+be accepted. It is the evidence ADR-0070 was **accepted on (2026-08-26)**. Its
+§7 implementation gate was met later by `crates/tos-image`, the production
+format; this document's fixture is `TOSIMGx0`, which was never promoted and is
+kept because a measurement whose fixture has been replaced is not reproducible.
 
 Verdict, stated once: **one ceiling-sized module is `388 329 B` as an image —
 `33.13x` smaller than the live `tos_ir::Module` and `14.32x` smaller than the
