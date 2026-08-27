@@ -134,7 +134,7 @@ fn fuzz_tos_core(rng: &mut Rng, rounds: usize) {
 fn fuzz_module_image(rng: &mut Rng, rounds: usize) {
     let module = image_base();
     let (base, _) = encode(&module);
-    let limits = Limits::default();
+    let limits = parse_limits();
     let mut accepted = 0usize;
     for _ in 0..rounds {
         let len = (rng.next() as usize) % (base.len() + 1);
@@ -209,7 +209,7 @@ fn fuzz_forged_ir(rng: &mut Rng, rounds: usize) {
         std::process::exit(1);
     };
     let snapshot = ResolutionSnapshot::default();
-    let limits = Limits::default();
+    let limits = parse_limits();
     // The unmutated module must verify, or every later round measures nothing.
     if verify(&base, &snapshot, &limits).is_err() {
         eprintln!("FUZZ FAIL: the forged-IR base module does not verify");

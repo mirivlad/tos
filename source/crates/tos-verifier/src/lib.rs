@@ -37,8 +37,10 @@ use tos_ir::{
     Profile, SourceMapEntry, Terminator, TypeDef, TypeId,
 };
 
+mod image;
 mod limits;
 
+pub use image::{verify_image, ImageRefusal, VerifiedImage};
 pub use limits::Limits;
 
 /// Which verifier produced a receipt.

@@ -16,7 +16,7 @@
 use super::*;
 
 /// Reads untrusted bytes into a module value the semantic verifier can check.
-pub fn parse(image: &[u8], limits: &Limits) -> Result<Module, ImageError> {
+pub fn parse(image: &[u8], limits: &ParseLimits) -> Result<Module, ImageError> {
     let payload = unframe(image)?;
     let mut input = In {
         bytes: payload,
@@ -34,7 +34,7 @@ pub fn parse(image: &[u8], limits: &Limits) -> Result<Module, ImageError> {
 struct In<'a> {
     bytes: &'a [u8],
     at: usize,
-    limits: Limits,
+    limits: ParseLimits,
     strings: Vec<String>,
 }
 

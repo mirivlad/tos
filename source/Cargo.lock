@@ -87,7 +87,6 @@ version = "0.1.0"
 dependencies = [
  "tos-hash",
  "tos-ir",
- "tos-verifier",
 ]
 
 [[package]]
@@ -223,5 +222,6 @@ name = "tos-verifier"
 version = "0.1.0"
 dependencies = [
  "tos-hash",
+ "tos-image",
  "tos-ir",
 ]

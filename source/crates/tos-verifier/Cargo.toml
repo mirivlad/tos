@@ -12,4 +12,5 @@ name = "tos_verifier"
 
 [dependencies]
 tos-ir = { path = "../tos-ir" }
+tos-image = { path = "../tos-image" }
 tos-hash = { path = "../tos-hash" }

@@ -73,7 +73,6 @@ use tos_ir::{
     NominalKind, Op, Operand, Parameter, PassMode, Place, PlaceStep, Profile, ResourceEnvelope,
     ResourceKind, Signature, SourceMapEntry, Terminator, TypeDef, UnaryOp, Variant, Visibility,
 };
-use tos_verifier::Limits;
 
 mod parse;
 mod write;
@@ -112,6 +111,35 @@ pub const MAX_OPERANDS: usize = 65_536;
 
 /// 128 bits at seven bits a byte.
 pub const MAX_VARINT_BYTES: usize = 19;
+
+/// The bounds the parser checks a table count against, before allocating.
+///
+/// **Data, not a dependency.** The numbers are the verifier's — docs/44 §2
+/// publishes them and `tos_verifier::Limits` is where they are declared — but a
+/// format that reads untrusted bytes has no business depending on the verifier
+/// that will read what it produces. The verifier hands these down; this crate
+/// never reaches up for them.
+///
+/// There is deliberately no `Default`. A caller that has not said what its
+/// limits are has not said what it will accept, and a parser that guessed would
+/// be publishing a ceiling nobody declared.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParseLimits {
+    /// Entries in any one table of the module.
+    pub table_entries: usize,
+    /// Modules in the dependency closure.
+    pub modules: usize,
+    /// Fields or variants a nominal type may declare.
+    pub fields: usize,
+    /// Parameters a function may declare.
+    pub parameters: usize,
+    /// Basic blocks in one function.
+    pub blocks_per_function: usize,
+    /// Instructions in one basic block.
+    pub instructions_per_block: usize,
+    /// Source-map entries in a module.
+    pub source_map_entries: usize,
+}
 
 /// Why an image was refused, or why one could not be written.
 ///
