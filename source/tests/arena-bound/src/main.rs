@@ -43,8 +43,8 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use tos_core::{
-    lower_module_in_set, ModuleContext, ModuleEntry, ModuleSummary, Parser, ResolvedImport, Schema,
-    SourceReader, SourceUnit,
+    lower_module_in_set, LoweredInterface, ModuleContext, ModuleEntry, ModuleSummary, Parser,
+    ResolvedImport, Schema, SourceReader, SourceUnit,
 };
 use tos_pipeline::{execute, execute_set, Request, Run, SetRequest, Silent, Unit, Unreachable};
 use tos_runtime::{GlobalHeap, RuntimeMemoryGrant, GRANT_VERSION};
@@ -172,6 +172,17 @@ fn main() {
             .and_then(|value| value.parse().ok())
             .unwrap_or(2);
         ir_breakdown(modules, SOURCE_CEILING);
+        return;
+    }
+    if std::env::args().any(|argument| argument == "--lowering") {
+        println!("TOS implementation-arena bound: phased lowering to images");
+        println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
+        let modules = std::env::args()
+            .skip_while(|argument| argument != "--modules")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2);
+        phased_lowering(modules, SOURCE_CEILING);
         return;
     }
     if std::env::args().any(|argument| argument == "--phases") {
@@ -488,6 +499,206 @@ fn an_executed_closure(sizes: &[usize]) -> Vec<(usize, usize)> {
     measured
 }
 
+/// The production lowering path, measured term by term.
+///
+/// ADR-0040 bounds the whole machine, not the execution phase, so the shape
+/// that matters is not what survives to the first instruction but what is alive
+/// at the worst moment of lowering. The old path held `N x Module`; this one
+/// holds one module's scratch at a time and accumulates only interfaces and
+/// images.
+fn phased_lowering(count: usize, unit_bytes: usize) {
+    println!();
+    println!("== phased lowering, {count} modules of {unit_bytes} bytes ==");
+    let dependencies: Vec<String> = (1..count)
+        .map(|index| canonical_module_calling(index, unit_bytes))
+        .collect();
+    let entry = entry_summing(count.max(2) - 1, unit_bytes);
+    let paths: Vec<String> = (1..count).map(module_path).collect();
+    let mut units = vec![Unit {
+        path: "set/entry.tos",
+        bytes: entry.as_bytes(),
+    }];
+    for (index, text) in dependencies.iter().enumerate() {
+        units.push(Unit {
+            path: &paths[index],
+            bytes: text.as_bytes(),
+        });
+    }
+    let mut sources = Vec::with_capacity(units.len());
+    for unit in &units {
+        sources.push(SourceReader::read(unit.bytes).expect("the fixture is valid"));
+    }
+    let summaries: Vec<ModuleSummary> = sources
+        .iter()
+        .zip(units.iter())
+        .map(|(source, unit)| {
+            let parsed = Parser::parse_schema(source);
+            let schema = parsed.into_accepted().expect("the fixture parses");
+            ModuleEntry::new(unit.path, source, &schema).summarize()
+        })
+        .collect();
+    let names: Vec<String> = summaries.iter().map(|s| s.name.clone()).collect();
+    let after_sources = arena();
+
+    let mut interfaces: Vec<(usize, LoweredInterface)> = Vec::with_capacity(units.len());
+    let mut images: Vec<usize> = Vec::with_capacity(units.len());
+    let mut image_bytes = 0usize;
+    let mut worst_scratch = 0usize;
+    let mut worst_frontier = 0usize;
+    let order: Vec<usize> = (1..units.len()).chain(core::iter::once(0)).collect();
+    for &index in &order {
+        let context = ModuleContext {
+            source_set: "tos-arena-bound".to_string(),
+            path: summaries[index].path.clone(),
+            content_id: tos_pipeline::content_id(sources[index].bytes()),
+            dependency_digest: tos_pipeline::list_digest(&[]),
+            capability_interface_digest: tos_pipeline::list_digest(&[]),
+        };
+        let imports: Vec<ResolvedImport<'_>> = interfaces
+            .iter()
+            .map(|(at, interface)| ResolvedImport {
+                name: names[*at].as_str(),
+                interface,
+            })
+            .collect();
+        let before = arena();
+        let reparsed = Parser::parse_schema(&sources[index]);
+        let schema = reparsed.into_accepted().expect("the fixture parses");
+        let module = lower_module_in_set(&sources[index], &schema, &context, &imports)
+            .expect("the fixture lowers");
+        drop(schema);
+        let peak = arena();
+        // One module's scratch: what this turn added over what was already held.
+        worst_scratch = worst_scratch.max(peak.committed.saturating_sub(before.committed));
+        worst_frontier = worst_frontier.max(peak.frontier);
+
+        let interface = LoweredInterface::of(&module);
+        let (image, _) = tos_image::encode(&module);
+        image_bytes += image.len();
+        images.push(image.len());
+        drop(image);
+        // The line the phase rests on.
+        drop(module);
+        interfaces.push((index, interface));
+    }
+    let settled = arena();
+    let accumulated: usize = interfaces
+        .iter()
+        .map(|(_, interface)| interface.retained_bytes())
+        .sum();
+    // Summaries and the normalized source they were read from: the storage the
+    // pipeline keeps for the whole run, independent of lowering.
+    let summary_bytes: usize = summaries
+        .iter()
+        .map(|summary| {
+            summary.name.capacity()
+                + summary.path.capacity()
+                + core::mem::size_of::<ModuleSummary>()
+        })
+        .sum::<usize>()
+        + sources
+            .iter()
+            .map(|source| source.bytes().len())
+            .sum::<usize>();
+
+    println!(
+        "  one-module lowering scratch, worst turn {:>12} B ({:.2} MiB)",
+        worst_scratch,
+        mib(worst_scratch)
+    );
+    println!(
+        "  accumulated LoweredInterfaces           {:>12} B ({:.2} MiB) over {} modules",
+        accumulated,
+        mib(accumulated),
+        interfaces.len()
+    );
+    println!(
+        "  accumulated image bytes                 {:>12} B ({:.2} MiB)",
+        image_bytes,
+        mib(image_bytes)
+    );
+    println!(
+        "  summaries and source storage            {:>12} B ({:.2} MiB)",
+        summary_bytes,
+        mib(summary_bytes)
+    );
+    println!(
+        "  arena after sources                     {:>12} B ({:.2} MiB) committed",
+        after_sources.committed,
+        mib(after_sources.committed)
+    );
+    println!(
+        "  arena settled after lowering            {:>12} B ({:.2} MiB) committed",
+        settled.committed,
+        mib(settled.committed)
+    );
+    println!(
+        "  process frontier                        {:>12} B ({:.2} MiB)",
+        worst_frontier.max(settled.frontier),
+        mib(worst_frontier.max(settled.frontier))
+    );
+    println!(
+        "  per-module interface mean               {:>12} B",
+        accumulated / interfaces.len().max(1)
+    );
+    let mut parts = [0usize; 6];
+    let mut exports = 0usize;
+    let mut types = 0usize;
+    for (_, interface) in &interfaces {
+        let breakdown = interface.retained_breakdown();
+        for (at, part) in breakdown.iter().enumerate() {
+            parts[at] += part;
+        }
+        exports += interface.export_count();
+        types += interface.type_count();
+    }
+    println!("  where the interface bytes are:");
+    for (label, part) in [
+        ("Signature records", parts[0]),
+        ("export names", parts[1]),
+        ("parameters", parts[2]),
+        ("effects", parts[3]),
+        ("type tables", parts[4]),
+        ("everything else", parts[5]),
+    ] {
+        println!(
+            "    {label:<20} {:>12} B ({:.2} MiB)  {:>5.1}%",
+            part,
+            mib(part),
+            100.0 * part as f64 / accumulated.max(1) as f64
+        );
+    }
+    println!(
+        "  {exports} exports, {types} type entries: {:.1} B per export",
+        accumulated as f64 / exports.max(1) as f64
+    );
+    let mut table = [0usize; 5];
+    for (_, interface) in &interfaces {
+        for (at, part) in interface.type_table_breakdown().iter().enumerate() {
+            table[at] += part;
+        }
+    }
+    println!("  where the type-table bytes are:");
+    println!("    {:>10} entries, {} of them nominal", table[0], table[2]);
+    println!(
+        "    TypeDef inline       {:>12} B ({:.2} MiB) at {} B each",
+        table[1],
+        mib(table[1]),
+        core::mem::size_of::<tos_ir::TypeDef>()
+    );
+    println!(
+        "    nominal identity text{:>12} B ({:.2} MiB)  {:>5.1} B per nominal",
+        table[3],
+        mib(table[3]),
+        table[3] as f64 / table[2].max(1) as f64
+    );
+    println!(
+        "    fields and variants  {:>12} B ({:.2} MiB)",
+        table[4],
+        mib(table[4])
+    );
+}
+
 /// What a lowered module is made of: semantic payload against representation.
 ///
 /// Diagnostic. `canonical_stream` is used here **only** as a density estimate
@@ -540,11 +751,19 @@ fn ir_breakdown(count: usize, unit_bytes: usize) {
             dependency_digest: tos_pipeline::list_digest(&[]),
             capability_interface_digest: tos_pipeline::list_digest(&[]),
         };
-        let imports: Vec<ResolvedImport<'_>> = lowered
+        // This harness measures the all-resident lowering slope on purpose, so
+        // it keeps every module. The interfaces are derived per turn from what
+        // it holds, which is what the production path derives once and keeps
+        // instead of the module.
+        let interfaces: Vec<(usize, LoweredInterface)> = lowered
             .iter()
-            .map(|(at, module)| ResolvedImport {
+            .map(|(at, module)| (*at, LoweredInterface::of(module)))
+            .collect();
+        let imports: Vec<ResolvedImport<'_>> = interfaces
+            .iter()
+            .map(|(at, interface)| ResolvedImport {
                 name: names[*at].as_str(),
-                module,
+                interface,
             })
             .collect();
         let before = arena();
@@ -733,11 +952,19 @@ fn phase_breakdown(count: usize, unit_bytes: usize) {
             dependency_digest: tos_pipeline::list_digest(&[]),
             capability_interface_digest: tos_pipeline::list_digest(&[]),
         };
-        let imports: Vec<ResolvedImport<'_>> = lowered
+        // This harness measures the all-resident lowering slope on purpose, so
+        // it keeps every module. The interfaces are derived per turn from what
+        // it holds, which is what the production path derives once and keeps
+        // instead of the module.
+        let interfaces: Vec<(usize, LoweredInterface)> = lowered
             .iter()
-            .map(|(at, module)| ResolvedImport {
+            .map(|(at, module)| (*at, LoweredInterface::of(module)))
+            .collect();
+        let imports: Vec<ResolvedImport<'_>> = interfaces
+            .iter()
+            .map(|(at, interface)| ResolvedImport {
                 name: names[*at].as_str(),
-                module,
+                interface,
             })
             .collect();
         let module = lower_module_in_set(&sources[index], &schemas[index], &context, &imports)

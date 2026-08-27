@@ -29,6 +29,7 @@ mod guards;
 /// binds a process's grants to a module's capability requests has to know which
 /// kind of object each interface names (ADR-0061), and that is a host, in
 /// another crate, holding the same document this table mirrors.
+pub mod interface;
 pub mod interfaces;
 mod lower;
 mod metering;
@@ -46,9 +47,8 @@ mod walk;
 
 pub use checker::{check_slice, Checker, CHECK_SLICES};
 pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
-pub use lower::{
-    lower_module, lower_module_in_set, Gap, ModuleContext, ResolvedImport, FRONTEND_IDENTITY,
-};
+pub use interface::{LoweredInterface, ResolvedImport};
+pub use lower::{lower_module, lower_module_in_set, Gap, ModuleContext, FRONTEND_IDENTITY};
 pub use modules::{check_module_set, check_module_summaries, check_source_set, ModuleEntry};
 pub use parser::{
     Block, BorrowMode, CallArgument, ConstDeclaration, EnumDeclaration, EnumVariant,

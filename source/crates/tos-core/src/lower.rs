@@ -35,6 +35,7 @@ use tos_ir::{
     UnaryOp, ValueId, Variant, Visibility,
 };
 
+use crate::interface::{LoweredInterface, ResolvedImport};
 use crate::parser::{
     Expression, ExpressionForm, Pattern, PatternForm, Schema, Span, Statement, StatementForm,
     TypeSyntax,
@@ -64,20 +65,6 @@ pub struct ModuleContext {
     pub content_id: String,
     pub dependency_digest: String,
     pub capability_interface_digest: String,
-}
-
-/// A module this one imports, already lowered.
-///
-/// Lowering a set is ordered so that a module's dependencies are lowered before
-/// it. What a dependency contributes is its *computed* identity and its
-/// exported signatures — never a declaration about itself that this module took
-/// on trust.
-#[derive(Clone, Copy, Debug)]
-pub struct ResolvedImport<'a> {
-    /// The dotted module name, as the importing module writes it.
-    pub name: &'a str,
-    /// The lowered dependency.
-    pub module: &'a Module,
 }
 
 /// Lowers one checked module that imports nothing this lowering must resolve.
@@ -172,7 +159,7 @@ pub fn lower_module_in_set(
                 // "resolved to that".
                 let module_content_id = lowerer
                     .resolved_import(&path)
-                    .map(|import| import.module.header.content_id.clone())
+                    .map(|import| import.interface.content_id().to_string())
                     .unwrap_or_default();
                 imports.push(tos_ir::Import {
                     module_name: path,
@@ -723,15 +710,11 @@ impl<'source> Lowerer<'source> {
             // empty content id above says the same thing about the same import.
             return Ok(self.unit_type());
         };
-        let Some(signature) = resolved
-            .module
-            .exports
-            .iter()
-            .find(|export| export.name == operation)
-        else {
+        let Some(signature) = resolved.interface.export(operation) else {
             return Err(self.gap("call to a name the imported module does not export", at));
         };
-        Ok(self.adopt_type(resolved.module, signature.result))
+        let result = signature.result;
+        Ok(self.adopt_type(resolved.interface, result))
     }
 
     /// Re-interns a type from another module's table into this one.
@@ -741,8 +724,8 @@ impl<'source> Lowerer<'source> {
     /// carries the content id of the module that declared it: the same type
     /// from the same module interns to one entry here however many imports
     /// reach it.
-    fn adopt_type(&mut self, from: &Module, ty: TypeId) -> TypeId {
-        let Some(definition) = from.types.get(ty) else {
+    fn adopt_type(&mut self, from: &LoweredInterface, ty: TypeId) -> TypeId {
+        let Some(definition) = from.types().get(ty) else {
             return self.unit_type();
         };
         let rebuilt = match definition.clone() {

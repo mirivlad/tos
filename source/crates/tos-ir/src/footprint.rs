@@ -135,6 +135,11 @@ fn header_bytes(header: &Header) -> usize {
         + text_bytes(capability_interface_digest)
 }
 
+/// What one type-table entry owns, for a caller accounting a table of its own.
+pub fn type_definition_bytes(definition: &TypeDef) -> usize {
+    type_bytes(definition)
+}
+
 fn type_bytes(definition: &TypeDef) -> usize {
     match definition {
         // Every constructor whose payload owns no allocation.
