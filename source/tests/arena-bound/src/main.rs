@@ -228,6 +228,31 @@ fn main() {
         production_path(shape, modules, SOURCE_CEILING);
         return;
     }
+    if std::env::args().any(|argument| argument == "--build") {
+        println!("TOS build workspace, measured apart from what it hands over");
+        println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
+        let modules = std::env::args()
+            .skip_while(|argument| argument != "--modules")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2);
+        let unit_bytes = std::env::args()
+            .skip_while(|argument| argument != "--unit-bytes")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(SOURCE_CEILING);
+        let shape = std::env::args()
+            .skip_while(|argument| argument != "--shape")
+            .nth(1)
+            .unwrap_or_else(|| String::from("chain"));
+        let shape = match shape.as_str() {
+            "wide" => Shape::WideFanIn,
+            "balanced" => Shape::Balanced,
+            _ => Shape::Chain,
+        };
+        build_workspace(shape, modules, unit_bytes);
+        return;
+    }
     if std::env::args().any(|argument| argument == "--lowering") {
         println!("TOS implementation-arena bound: phased lowering to images");
         println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
@@ -681,6 +706,157 @@ fn production_path(shape: Shape, count: usize, unit_bytes: usize) {
             other.failed_at()
         ),
         Err(error) => println!("  outcome: set refused, {}", error.symbol()),
+    }
+}
+
+/// What a build workspace costs, apart from what it hands over (ADR-0073 §7).
+///
+/// **Two accounts, measured where they part.** `build_from_provider` is the
+/// build side and ends when it returns; `admit` is the target side and is the
+/// first thing that verifies anything. The frontier at the boundary is what the
+/// build needed; `image_bytes` is the part of it that must survive the
+/// workspace, because it is what the admission is handed.
+///
+/// The two are reported separately because they answer different questions. How
+/// large a build workspace must be depends on whether the images accumulate
+/// inside it or are written somewhere that outlives it — and that is exactly
+/// what has not been decided. `frontier - images` is the transient part: what
+/// the workspace holds that nothing downstream ever sees.
+///
+/// One count per process. The arena's frontier never falls, so a second
+/// measurement in the same process would report the first one's high-water mark.
+fn build_workspace(shape: Shape, count: usize, unit_bytes: usize) {
+    println!();
+    println!(
+        "== build workspace, {} shape, {count} modules of {unit_bytes} bytes ==",
+        shape.named()
+    );
+    let (texts, paths) = shaped_units(shape, count, unit_bytes);
+    // Outside the arena, where a capsule's source physically is.
+    let capsule: Vec<&'static [u8]> = texts.iter().map(|text| capsule_bytes(text)).collect();
+    let source_backing: usize = capsule.iter().map(|bytes| bytes.len()).sum();
+    // **The fixture's own copy goes here, before anything is measured.** The
+    // generator builds its text through the global allocator, which is the
+    // arena; leaving it there would put the whole corpus inside an account that
+    // is supposed to be reading source from outside one, and every number below
+    // would carry it. The bytes the build actually reads are the capsule copies.
+    drop(texts);
+    let units: Vec<Unit<'_>> = paths
+        .iter()
+        .zip(capsule.iter())
+        .map(|(path, bytes)| Unit {
+            path: path.as_str(),
+            bytes,
+        })
+        .collect();
+    let entry_path = paths.last().expect("a fixture has an entry").as_str();
+    let provider = tos_pipeline::SliceSourceProvider::new(&units);
+
+    let before = arena();
+    let built =
+        tos_pipeline::build_from_provider(&provider, "tos-arena-bound", entry_path, &mut Silent)
+            .expect("the fixture names an entry it contains");
+    let boundary = arena();
+    let tos_pipeline::Build::Ready(built) = built else {
+        panic!("the fixture builds");
+    };
+    let images = built.image_bytes();
+    let modules = built.modules();
+
+    println!(
+        "  source backing, outside both accounts   {:>12} B ({:>7.2} MiB)",
+        source_backing,
+        mib(source_backing)
+    );
+    println!(
+        "  arena before the build                  {:>12} B committed, frontier {} B",
+        before.committed, before.frontier
+    );
+    println!(
+        "  build frontier, workspace and products  {:>12} B ({:>7.2} MiB)",
+        boundary.frontier,
+        mib(boundary.frontier)
+    );
+    println!(
+        "  committed at the boundary               {:>12} B ({:>7.2} MiB)",
+        boundary.committed,
+        mib(boundary.committed)
+    );
+    println!(
+        "  images handed to the admission          {:>12} B ({:>7.2} MiB) over {modules} modules",
+        images,
+        mib(images)
+    );
+    // **What is live at the boundary is the product, not the workspace.** The
+    // summaries, the plan, the surfaces and the lowering views are locals of the
+    // build and are gone the instant it returns, so what `committed` still shows
+    // is what a `BuiltClosure` holds: the images, and the declaration the
+    // verifier will be held to. The workspace's own composition is not visible
+    // from here — `--lowering` walks the same phases and reads the arena between
+    // them, and that is where it is attributed.
+    println!(
+        "  declaration handed with them            {:>12} B ({:>7.2} MiB)",
+        boundary.committed.saturating_sub(images),
+        mib(boundary.committed.saturating_sub(images))
+    );
+    println!(
+        "  what survives the workspace, in total   {:>12} B ({:>7.2} MiB)",
+        boundary.committed,
+        mib(boundary.committed)
+    );
+    println!(
+        "  frontier above what survives            {:>12} B ({:>7.2} MiB)",
+        boundary.frontier.saturating_sub(boundary.committed),
+        mib(boundary.frontier.saturating_sub(boundary.committed))
+    );
+    println!(
+        "  per module: image {:>9.2} KiB   declaration {:>9.2} KiB",
+        images as f64 / modules as f64 / 1024.0,
+        boundary.committed.saturating_sub(images) as f64 / modules as f64 / 1024.0
+    );
+
+    // The target side, from here on. It is measured in the same process because
+    // that is the only way to see whether it needs anything *above* the build's
+    // high-water mark — but its own bound is not this number: what a process
+    // grant must hold is measured under the grant itself, in
+    // `tests/residency --launch`.
+    let admitted = tos_pipeline::admit(*built, "main", &mut Silent, tos_pipeline::HOST_RESIDENCY);
+    let after_admission = arena();
+    let tos_pipeline::Preparation::Ready(mut prepared) = admitted else {
+        panic!("the built closure is admitted");
+    };
+    let run = tos_pipeline::run_prepared(&mut prepared, Vec::new(), &mut Unreachable);
+    let after_run = arena();
+    println!(
+        "  admission, above the build's frontier   {:>12} B ({:>7.2} MiB)",
+        after_admission.frontier.saturating_sub(boundary.frontier),
+        mib(after_admission.frontier.saturating_sub(boundary.frontier))
+    );
+    println!(
+        "  run, above the admission's frontier     {:>12} B ({:>7.2} MiB)",
+        after_run.frontier.saturating_sub(after_admission.frontier),
+        mib(after_run.frontier.saturating_sub(after_admission.frontier))
+    );
+    println!(
+        "  whole-process frontier                  {:>12} B ({:>7.2} MiB)",
+        after_run.frontier,
+        mib(after_run.frontier)
+    );
+    // What the run did is reported exactly, because the two ways it can end
+    // short are not the same news. A trap is the fixture meeting a limit it
+    // declared — the chain fixture declares `recursion: 8`, so a closure deeper
+    // than that traps by its own envelope and the build is not what failed. A
+    // refusal before the first instruction is.
+    match &run {
+        Run::Completed(completion) => println!(
+            "  outcome: completed {:?}, fuel {} of {}",
+            completion.value, completion.accounting.fuel_used, completion.accounting.fuel_limit
+        ),
+        Run::Trapped { code, detail, .. } => println!(
+            "  outcome: verified and executed, then trapped {code} ({detail}) — \
+             the fixture's own declared bound"
+        ),
+        other => println!("  outcome: DID NOT RUN: {other:?}"),
     }
 }
 
