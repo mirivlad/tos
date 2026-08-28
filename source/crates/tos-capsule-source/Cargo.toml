@@ -1,0 +1,18 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-capsule-source"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "Canonical source for a build, backed by a Capsule v1 payload: a closure-bounded SourceProvider that copies nothing."
+publish = false
+
+[dependencies]
+tos-capsule = { path = "../capsule" }
+tos-pipeline = { path = "../tos-pipeline" }
+
+[dev-dependencies]
+tos-capsule = { path = "../capsule", features = ["host"] }
+
+[lib]
+name = "tos_capsule_source"

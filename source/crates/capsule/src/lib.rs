@@ -440,6 +440,20 @@ impl<'a> Capsule<'a> {
         FileIter { cap: *self, idx: 0 }
     }
 
+    /// The file at a position of the path table, or `None` past its end.
+    ///
+    /// Path-table order is the capsule's own: it is sorted by path bytes and
+    /// fixed at build time, so a position names the same file for as long as
+    /// the capsule exists. That is what lets a reader address one file without
+    /// walking the table for it — a lookup by name is `find`.
+    pub fn file_at(&self, index: usize) -> Option<File<'a>> {
+        if index >= self.header.path_table_count as usize {
+            return None;
+        }
+        let pe = self.path_entry_at(index);
+        self.file_for(&pe)
+    }
+
     // --- internal decoding helpers ---
 
     fn path_entry_at(&self, i: usize) -> PathEntry {
@@ -479,12 +493,9 @@ pub struct FileIter<'a> {
 impl<'a> Iterator for FileIter<'a> {
     type Item = File<'a>;
     fn next(&mut self) -> Option<File<'a>> {
-        if self.idx >= self.cap.path_table_count() as usize {
-            return None;
-        }
-        let pe = self.cap.path_entry_at(self.idx);
+        let file = self.cap.file_at(self.idx)?;
         self.idx += 1;
-        self.cap.file_for(&pe)
+        Some(file)
     }
 }
 
