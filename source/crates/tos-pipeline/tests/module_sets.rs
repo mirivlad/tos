@@ -694,6 +694,69 @@ fn a_prepared_closure_outlives_the_workspace_that_built_it() {
     );
 }
 
+/// The build produces images; which function to run is the admission's input
+/// (ADR-0073 §1, §4).
+///
+/// The build side resolves a closure from the module the program starts in and
+/// encodes it. It is never told which function will be called, so a name no
+/// module exports cannot make it refuse: the images are the same bytes either
+/// way, and the run fails to start where the entry is actually looked for — in
+/// the process that verified them.
+#[test]
+fn a_build_does_not_know_which_function_a_run_will_start_at() {
+    let dependency = lib(
+        "system.lib.math",
+        "pub fn double(value: i32) -> i32 { return value * 2i32; }",
+    );
+    let entry = module(
+        "system.boot.init",
+        "import system.lib.math as math;",
+        "pub fn main() -> i32 { return math.double(21i32); }",
+    );
+    let texts = [
+        ("system/lib/math.tos", dependency.as_str()),
+        ("system/boot/init.tos", entry.as_str()),
+    ];
+    let units: Vec<Unit<'_>> = texts
+        .iter()
+        .map(|(path, text)| Unit {
+            path,
+            bytes: text.as_bytes(),
+        })
+        .collect();
+    let provider = tos_pipeline::SliceSourceProvider::new(&units);
+
+    let built = tos_pipeline::build_from_provider(
+        &provider,
+        "tos-module-set-tests",
+        "system/boot/init.tos",
+        &mut Silent,
+    )
+    .expect("the set names an entry it contains");
+    let tos_pipeline::Build::Ready(built) = built else {
+        panic!("the closure builds");
+    };
+    assert_eq!(built.modules(), 2, "both modules were encoded");
+    assert!(built.image_bytes() > 0, "the build produced image bytes");
+
+    // Admitted under a function no module exports: the closure verifies and the
+    // run does not start.
+    let refused = tos_pipeline::admit(
+        *built,
+        "not_exported",
+        &mut Silent,
+        tos_pipeline::HOST_RESIDENCY,
+    );
+    let tos_pipeline::Preparation::Refused(run) = refused else {
+        panic!("a function that is not there cannot become an executable closure");
+    };
+    assert_eq!(
+        run.failed_at(),
+        Some(tos_pipeline::PipelineStage::Execute),
+        "the closure was admitted; the run is what failed to start: {run:?}"
+    );
+}
+
 /// A closure that cannot be built is refused by the preparation, and nothing
 /// executes.
 #[test]

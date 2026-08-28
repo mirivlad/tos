@@ -411,22 +411,20 @@ pub fn execute_set(
 /// of the smaller one.
 pub enum Preparation {
     /// An executable closure: verified, reduced to records and membership, with
-    /// the launch workspace already released.
+    /// the build workspace already released.
     Ready(Box<Prepared>),
     /// The closure could not be built. The [`Run`] says which stage refused it
     /// and why; none of them is `Completed`, because nothing executed.
     Refused(Run),
 }
 
-/// Builds an executable closure from canonical source (ADR-0072 §2).
+/// Builds an executable closure from canonical source and admits it
+/// (ADR-0072 §2, ADR-0073 §1).
 ///
-/// **This is the launch workspace, and it ends when this returns.** Everything
-/// the build needed — the source snapshots, the parse trees, the summaries, the
-/// closure plan, the lowering views, the verification surfaces and one module's
-/// IR at a time — is transient and is gone by the time a [`Prepared`] is handed
-/// back. What crosses the boundary is exactly what ADR-0071 says survives
-/// verification: the immutable images, one fixed-size record per module, the
-/// closure's membership, the entry receipt and the declared envelope.
+/// Both sides of the boundary, one after the other, in one account: the build
+/// workspace of [`build_from_provider`] and then the admission of [`admit`].
+/// A caller that wants them apart — because they have different owners, or
+/// because it is measuring one of them — calls the two functions instead.
 ///
 /// A process grant is a different account with a different owner (ADR-0072 §1),
 /// and it holds a running program rather than the machinery that built one.
@@ -461,6 +459,89 @@ pub fn prepare_from_provider(
     trace: &mut dyn Trace,
     residency: ResidencyLimits,
 ) -> Result<Preparation, SetError> {
+    match build_from_provider(provider, source_set, entry_path, trace)? {
+        Build::Refused(run) => Ok(Preparation::Refused(run)),
+        Build::Ready(built) => Ok(admit(*built, entry, trace, residency)),
+    }
+}
+
+/// What a build produced.
+///
+/// Boxed for the same reason a [`Preparation`] is: an image closure and a
+/// sentence about a stage are not the same size.
+pub enum Build {
+    /// The images of the exact resolved closure, and what an admission is told
+    /// about them.
+    Ready(Box<BuiltClosure>),
+    /// No closure was produced. The [`Run`] says which stage refused it; none of
+    /// them is past `Lower`, because no verifier has seen anything yet.
+    Refused(Run),
+}
+
+/// An encoded image closure, as the build side leaves it (ADR-0073 §1).
+///
+/// **Hostile bytes and a declaration about them.** Nothing here is a verdict:
+/// no receipt, no record, no membership, no decoded module. The resolution
+/// snapshot is what the *build* says the set provides, and it is an input the
+/// verifier holds every image to rather than a conclusion it inherits — a
+/// snapshot that disagrees with the images refuses the launch.
+///
+/// This is what would cross a process boundary if the build ran somewhere else.
+/// Whether it does, in what shape, and who owns the memory it lives in are not
+/// decided here: this type is a value in one address space, and it says nothing
+/// about a region, a lifetime or an owner.
+pub struct BuiltClosure {
+    images: Vec<ImageSnapshot>,
+    /// What the build says the set provides, for the verifier to check against.
+    resolution: ResolutionSnapshot,
+    /// Which position of the closure the program starts in.
+    entry_position: usize,
+}
+
+impl BuiltClosure {
+    /// How many images the closure has.
+    pub fn modules(&self) -> usize {
+        self.images.len()
+    }
+
+    /// What the images weigh, in total.
+    ///
+    /// The payload an admission is handed, and the one line of a build's cost
+    /// that is **not** transient: everything else the workspace held is gone by
+    /// the time this value exists.
+    pub fn image_bytes(&self) -> usize {
+        self.images.iter().map(|image| image.len()).sum()
+    }
+
+    /// Which position of the closure the program starts in.
+    pub fn entry_position(&self) -> usize {
+        self.entry_position
+    }
+}
+
+/// Builds an image closure from canonical source (ADR-0073 §1).
+///
+/// **This is the build workspace, and it ends when this returns.** Everything
+/// the build needed — the source snapshots, the parse trees, the summaries, the
+/// closure plan, the lowering views, the verification surfaces and one module's
+/// IR at a time — is transient and is gone by the time a [`BuiltClosure`] is
+/// handed back. What is left is images and what a verifier will be told about
+/// them.
+///
+/// **No verifier runs here and no receipt is produced.** The build side is not
+/// a semantic authority: what it returns is bytes, and a target that executed
+/// them because a build produced them would be trusting the wrong component.
+///
+/// The function the run starts at is not an argument. Which module is the
+/// program decides what the closure *is*, so `entry_path` is a build input;
+/// which of its functions to call is a declared input of a run, and it is the
+/// admission that is told it.
+pub fn build_from_provider(
+    provider: &dyn SourceProvider,
+    source_set: &str,
+    entry_path: &str,
+    trace: &mut dyn Trace,
+) -> Result<Build, SetError> {
     // Metadata only. What the set offers, not what is in it.
     let catalog = provider.catalog();
     // Checked before the first stage is announced, so a request that cannot run
@@ -489,16 +570,14 @@ pub fn prepare_from_provider(
     let mut parsing = false;
     for item in &catalog {
         let Some(snapshot) = provider.source(item.id) else {
-            return Ok(Preparation::Refused(Run::SourceRefused(
-                SourceRefusal::Absent {
-                    path: item.path.to_string(),
-                },
-            )));
+            return Ok(Build::Refused(Run::SourceRefused(SourceRefusal::Absent {
+                path: item.path.to_string(),
+            })));
         };
         let source = match SourceReader::read(snapshot.bytes()) {
             Ok(source) => source,
             Err(error) => {
-                return Ok(Preparation::Refused(Run::SourceRejected {
+                return Ok(Build::Refused(Run::SourceRejected {
                     code: error.code().symbol(),
                     byte_offset: error.byte_offset(),
                     // Which unit is not obvious once there is more than one,
@@ -526,7 +605,7 @@ pub fn prepare_from_provider(
         let parsed = Parser::parse_schema(&source);
         let schema_diagnostics = parsed.diagnostics().to_vec();
         let Some(schema) = parsed.into_accepted() else {
-            return Ok(Preparation::Refused(Run::Diagnosed {
+            return Ok(Build::Refused(Run::Diagnosed {
                 stage: PipelineStage::Parse,
                 diagnostics: schema_diagnostics,
             }));
@@ -553,7 +632,7 @@ pub fn prepare_from_provider(
         trace.entering(PipelineStage::Check);
     }
     if diagnostics.iter().any(is_error) {
-        return Ok(Preparation::Refused(Run::Diagnosed {
+        return Ok(Build::Refused(Run::Diagnosed {
             stage: PipelineStage::Check,
             diagnostics,
         }));
@@ -562,7 +641,7 @@ pub fn prepare_from_provider(
     trace.entering(PipelineStage::Resolve);
     let diagnostics = check_module_summaries(&summaries);
     if diagnostics.iter().any(is_error) {
-        return Ok(Preparation::Refused(Run::Diagnosed {
+        return Ok(Build::Refused(Run::Diagnosed {
             stage: PipelineStage::Resolve,
             diagnostics,
         }));
@@ -635,12 +714,12 @@ pub fn prepare_from_provider(
             .expect("the lowering order walks this closure's own membership");
         let snapshot = match source::materialize(provider, &source_closure, member) {
             Ok(snapshot) => snapshot,
-            Err(refusal) => return Ok(Preparation::Refused(Run::SourceRefused(refusal))),
+            Err(refusal) => return Ok(Build::Refused(Run::SourceRefused(refusal))),
         };
         let Ok(source) = SourceReader::read(snapshot.bytes()) else {
             // A unit that read in the read phase and not here would mean the
             // reader is not a function of its input.
-            return Ok(Preparation::Refused(Run::SourceRejected {
+            return Ok(Build::Refused(Run::SourceRejected {
                 code: "source-not-reproducible",
                 byte_offset: 0,
                 path: catalog[index].path.to_string(),
@@ -651,7 +730,7 @@ pub fn prepare_from_provider(
             // A module that parsed in the check phase and not here would mean
             // the parser is not a function of its input. It is refused rather
             // than worked around.
-            return Ok(Preparation::Refused(Run::Diagnosed {
+            return Ok(Build::Refused(Run::Diagnosed {
                 stage: PipelineStage::Parse,
                 diagnostics: Vec::new(),
             }));
@@ -680,7 +759,7 @@ pub fn prepare_from_provider(
             .collect();
         let module = match lower_module_in_set(&source, schema, &context, &imports) {
             Ok(module) => module,
-            Err(gap) => return Ok(Preparation::Refused(Run::NotLowered(gap))),
+            Err(gap) => return Ok(Build::Refused(Run::NotLowered(gap))),
         };
         drop(imports);
         // Both views are built from the lowered IR, while it is still here, and
@@ -712,38 +791,61 @@ pub fn prepare_from_provider(
         .position(|index| *index == entry_index)
         .expect("the closure always contains the entry");
 
-    trace.entering(PipelineStage::Verify);
     // What the source set actually provides, computed from what was lowered.
-    // The verifier is handed this and the IR, never the frontend's verdict:
-    // an import that names a module the set does not provide, or claims an
-    // identity the set disagrees with, is refused here even though the same
-    // frontend produced both.
-    let snapshot = snapshot_of(&surfaces);
-
-    let prepared =
-        match Prepared::launch_images(images, &snapshot, entry_position, entry, residency) {
-            Ok(prepared) => prepared,
-            // Every module verified and the closure is what it claimed to be; what
-            // is absent is the function the caller named. That is the run failing
-            // to start, so it is announced as one.
-            Err(tos_residency::Failure::NoEntryFunction { .. }) => {
-                trace.entering(PipelineStage::Execute);
-                return Ok(Preparation::Refused(Run::Refused(Refusal::NoSuchEntry(
-                    entry.to_string(),
-                ))));
-            }
-            Err(failure) => return Ok(Preparation::Refused(launch_refusal(failure))),
-        };
-
-    // The verification surfaces go here. They were needed until the launch,
-    // because the declared resolution is an input to verifying every module of
-    // the closure; past it nothing reads one.
+    // The verifier will be handed this and the images, never the frontend's
+    // verdict: an import that names a module the set does not provide, or claims
+    // an identity the set disagrees with, is refused at admission even though
+    // the same frontend produced both.
+    let resolution = snapshot_of(&surfaces);
+    // The verification surfaces go here. They were needed until the declaration
+    // was assembled; past it nothing reads one.
     drop(surfaces);
 
-    // The launch workspace ends here. What is returned holds images, records,
-    // the membership, the entry receipt and the declared envelope, and nothing
-    // that built them.
-    Ok(Preparation::Ready(Box::new(prepared)))
+    // The build workspace ends here. What is returned is images and a
+    // declaration about them — no receipt, no record, no membership, and
+    // nothing that built any of it.
+    Ok(Build::Ready(Box::new(BuiltClosure {
+        images,
+        resolution,
+        entry_position,
+    })))
+}
+
+/// Admits a built closure into a process (ADR-0073 §2).
+///
+/// **The target side, and the only semantic authority over these bytes.** Every
+/// image is verified in turn, against the declaration that arrived with them and
+/// against the accepted limits, and what survives is what ADR-0071 says
+/// survives: one fixed-size record per module, the closure's membership and the
+/// entry receipt. Nothing here trusts the side that produced the images, and
+/// nothing about how they were obtained shortens the work.
+///
+/// `entry` is a declared input of the run rather than a property of the closure:
+/// the same built closure admitted twice under two function names is two runs of
+/// the same verified program.
+pub fn admit(
+    built: BuiltClosure,
+    entry: &str,
+    trace: &mut dyn Trace,
+    residency: ResidencyLimits,
+) -> Preparation {
+    trace.entering(PipelineStage::Verify);
+    let BuiltClosure {
+        images,
+        resolution,
+        entry_position,
+    } = built;
+    match Prepared::launch_images(images, &resolution, entry_position, entry, residency) {
+        Ok(prepared) => Preparation::Ready(Box::new(prepared)),
+        // Every module verified and the closure is what it claimed to be; what
+        // is absent is the function the caller named. That is the run failing
+        // to start, so it is announced as one.
+        Err(tos_residency::Failure::NoEntryFunction { .. }) => {
+            trace.entering(PipelineStage::Execute);
+            Preparation::Refused(Run::Refused(Refusal::NoSuchEntry(entry.to_string())))
+        }
+        Err(failure) => Preparation::Refused(launch_refusal(failure)),
+    }
 }
 
 /// Runs a prepared executable closure.
