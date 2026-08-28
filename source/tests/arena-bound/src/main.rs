@@ -1207,6 +1207,17 @@ fn phased_lowering(shape: Shape, count: usize, unit_bytes: usize) {
     let plan_bytes = after_summaries
         .committed
         .saturating_sub(before_summaries.committed);
+    // And what the same set costs once the set-wide check is done with it. The
+    // plans are built beside the summaries rather than out of them, so what is
+    // measured is the reduced form's own size; the build itself consumes the
+    // summaries and never holds both.
+    let plans: Vec<tos_core::ModulePlan> = summaries
+        .iter()
+        .cloned()
+        .map(tos_core::ModuleSummary::into_plan)
+        .collect();
+    let reduced_bytes = arena().committed.saturating_sub(after_summaries.committed);
+    drop(plans);
 
     // The lowering order: the entry last.
     let entry_index = units.len() - 1;
@@ -1298,6 +1309,11 @@ fn phased_lowering(shape: Shape, count: usize, unit_bytes: usize) {
         "  closure plan (summaries)                {:>12} B ({:.2} MiB)",
         plan_bytes,
         mib(plan_bytes)
+    );
+    println!(
+        "  the same, reduced to ModulePlan         {:>12} B ({:.2} MiB)",
+        reduced_bytes,
+        mib(reduced_bytes)
     );
     println!("  live lowering interfaces, maximum       {:>12} B ({:.2} MiB) over {max_live_count} modules", max_live_bytes, mib(max_live_bytes));
     println!(

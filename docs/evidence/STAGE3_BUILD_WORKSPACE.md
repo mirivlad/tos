@@ -16,15 +16,25 @@ the target account is a return, not an estimate.
 
 Verdict, at the docs/44 closure ceiling of **256 ceiling-sized modules**:
 
-- the build account's high-water mark is **`204.37` (chain), `219.23` (wide
-  fan-in) and `202.30 MiB` (balanced)**;
+- the build account's high-water mark is **`172.15` (chain), `170.25` (wide
+  fan-in) and `176.86 MiB` (balanced)**;
 - **`104.9 MiB` of that survives the workspace**: the image closure
   (`92.5–92.9 MiB`) and the declaration handed with it (`12.11 MiB`);
-- the workspace's own transient state is **`90–105 MiB`**, of which the largest
-  owner is the closure plan at **`52.1 MiB`** — `208 KiB` per module — followed
-  by one turn's scratch at `25.21 MiB`;
-- the remaining `19–22 MiB` is the allocator's high-water mark above the live
-  bytes, and it grows with the number of images retained beside the churn.
+- the workspace's own transient state is one turn's scratch at `25.21 MiB`, the
+  verification surfaces at `12.6 MiB`, the live lowering views (`0.06` to
+  `14.78 MiB`, by shape) and the closure plan at `0.14 MiB`;
+- the rest is the allocator's high-water mark above the live bytes, and it grows
+  with the number of images retained beside the churn.
+
+**These figures postdate a change this evidence caused.** The tables below were
+measured at `4204f32`, when the build kept a `ModuleSummary` per module for the
+whole build and the closure plan was `52.1 MiB` — its largest transient owner.
+The set-wide check is the last reader of a summary's type surface, so the build
+now consumes summaries into `ModulePlan` when that check returns, and the plan
+costs `0.14 MiB` instead. The measured effect at the ceiling is a build account
+`32.22`, `48.98` and `25.44 MiB` smaller for the three shapes. Everything below
+is the earlier measurement, kept because the slopes and the attribution are what
+the reduction was derived from; the last section reports the current numbers.
 
 Nothing here chooses a `BuildWorkspace` size, a region, an owner or a lifetime.
 Those are open decisions; this is the measurement they were waiting for.
@@ -66,7 +76,8 @@ arena's state before the build, so this is visible rather than asserted.
 
 ## The measurement, by shape
 
-Ceiling-sized modules (`256 KiB`, docs/44 §2), one process per row.
+Ceiling-sized modules (`256 KiB`, docs/44 §2), one process per row, measured at
+`4204f32` — before the plan reduction the last section reports.
 
 **A — a chain, one import per module**
 
@@ -162,19 +173,20 @@ recommended here.
 
 | If the build's output … | The workspace must hold | At 256 ceiling-sized modules |
 |---|---|---|
-| accumulates inside the workspace | everything measured | **`204–219 MiB`** |
-| is written out as it is produced | plan, scratch, views, surfaces, headroom | **`110–127 MiB`** |
+| accumulates inside the workspace | everything measured | **`170–177 MiB`** after the plan reduction; `204–219 MiB` before it |
+| is written out as it is produced | plan, scratch, views, surfaces, headroom | **`78–84 MiB`**, from `frontier - images` after the reduction |
 
-The second row is `frontier - images` from the tables, and it is an *upper*
+The second row is `frontier - images` after the reduction, and it is an *upper*
 bound on that arrangement: part of the allocator headroom exists because the
-images are there. Its lower bound is the live sum without images —
-`90.03 MiB` (chain), `104.49` (wide), `90.15` (balanced) — plus whatever
-headroom remains. Neither end is a measurement of a build that writes its images
-somewhere else, because no such code path exists: where they would go has not
-been decided.
+images are there. Its lower bound is the live sum without images — one turn's
+scratch, the surfaces, the views and the plan, so `38.0 MiB` (chain),
+`52.7 MiB` (wide) and `38.1 MiB` (balanced) — plus whatever headroom remains.
+Neither end is a measurement of a build that writes its images somewhere else,
+because no such code path exists: where they would go has not been decided.
 
-For smaller closures the same tables read directly: `41 MiB` at 8 modules,
-`55 MiB` at 32, `75 MiB` at 64, `118 MiB` at 128, with the products inside.
+For smaller closures the pre-reduction tables read directly and are now upper
+bounds: `41 MiB` at 8 modules, `55 MiB` at 32, `75 MiB` at 64, `118 MiB` at 128,
+with the products inside.
 
 ## Over a capsule-backed source set
 
@@ -242,6 +254,40 @@ their runs verify, execute and then trap on their own declared bound. The wide
 fan-in completes at every count, reaching `Int(I32, 32385)` at 256 on `1 022`
 fuel of `10 000 000`. Every row's closure was verified image by image before
 anything ran.
+
+## What the plan costs after the set has been checked
+
+The attribution above put the closure plan at `52.1 MiB` — `208 KiB` a module,
+larger than one turn's scratch and larger than every image the build had encoded
+by the halfway mark. What is in it is mostly one thing: every type name a module
+declares, kept so that another module's qualified use can be resolved against it
+(`check_qualified_types`). That question is asked once, by
+`check_module_summaries`, and never again.
+
+So the build now consumes its summaries into `ModulePlan` — path, name, content
+id, imported module names — the moment the set-wide check returns. Measured on
+the same fixture, beside the summaries rather than instead of them, so that what
+is reported is the reduced form's own size:
+
+| Modules | As summaries | As plans | |
+|---:|---:|---:|---|
+| 32 | 6 983 936 B (6.66 MiB) | 17 952 B (0.02 MiB) | `389x` |
+| 256 | 54 635 392 B (52.10 MiB) | 144 832 B (0.14 MiB) | `377x` |
+
+And the build account at the closure ceiling, before and after:
+
+| Shape | Build frontier at `4204f32` | After the reduction | Difference |
+|---|---:|---:|---:|
+| A chain | 204.37 MiB | **172.15 MiB** | `-32.22` |
+| B wide fan-in | 219.23 MiB | **170.25 MiB** | `-48.98` |
+| C balanced | 202.30 MiB | **176.86 MiB** | `-25.44` |
+
+The drop is smaller than the `52.1 MiB` the plan used to be, and that is the
+fragmentation effect again: what the allocator no longer has to carry is not
+only what is no longer live. The images, the declaration and every outcome are
+byte-identical across the change — the wide fan-in still completes with
+`Int(I32, 32385)` on `1 022` fuel, the chain and balanced fixtures still trap on
+their own `recursion: 8`.
 
 ## What this is not
 
