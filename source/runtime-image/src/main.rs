@@ -36,8 +36,9 @@ use core::panic::PanicInfo;
 
 use tos_launch::{Launch, LaunchCapability, LaunchUnit, ReportHeader, LAUNCH_VERSION};
 use tos_pipeline::{
-    execute_set, interfaces, render, CapabilityRequest, Handle, IntKind, PipelineStage, Reach,
-    SetError, SetRequest, System, Trace, Trap, Unit, Value,
+    interfaces, prepare_from_source, render, run_prepared, CapabilityRequest, Handle, IntKind,
+    PipelineStage, Preparation, Reach, ResidencyLimits, SetError, SetRequest, System, Trace, Trap,
+    Unit, Value,
 };
 use tos_runtime::{stack, GlobalHeap};
 
@@ -297,6 +298,31 @@ impl Report {
 }
 
 /// Announces each stage as it is entered, before it runs.
+/// What this process holds resident while it runs (ADR-0071 §7).
+///
+/// **Declared against the grant this process was given**, and not inherited
+/// from a host facade. `tos_pipeline::HOST_RESIDENCY` is a host's declaration —
+/// `64 MiB`, above `RuntimeMemoryGrantV1` — and a byte bound larger than the
+/// arena is a bound that can never bind: a run that reached it would have failed
+/// to allocate long before, which is an allocation failure where an eviction
+/// belonged.
+///
+/// The numbers come from `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md`, measured
+/// against this exact grant:
+///
+/// - `modules` is the docs/44 §2 closure ceiling, because a run may reach every
+///   module of its closure and the byte bound is what actually binds;
+/// - `bytes` admits **two** ceiling-sized modules of decoded state — measured at
+///   `32.03 MiB` resident — which that evidence calls the smallest bound that
+///   does not thrash, since the working set of a call is caller plus callee. A
+///   bound of four measured `56.42 MiB` and does not fit the grant at all. The
+///   remaining `22 MiB` of `54 MiB` holds the trusted records, the membership,
+///   the frames, the values and what the program allocates.
+const RESIDENCY: ResidencyLimits = ResidencyLimits {
+    modules: 256,
+    bytes: 32 * 1024 * 1024,
+};
+
 struct ReportTrace {
     /// By value, for the reason [`Report`] gives: the region is the state, and
     /// two writers of one region do not need one borrow between them.
@@ -433,8 +459,12 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
         arguments: launch.arguments_base,
         report,
     };
-    let run = match execute_set(&request, alloc::vec::Vec::new(), &mut trace, &mut endowment) {
-        Ok(run) => run,
+    let run = match prepare_from_source(&request, &mut trace, RESIDENCY) {
+        Ok(Preparation::Ready(mut prepared)) => {
+            trace.entering(PipelineStage::Execute);
+            run_prepared(&mut prepared, alloc::vec::Vec::new(), &mut endowment)
+        }
+        Ok(Preparation::Refused(run)) => run,
         Err(SetError::EntryModuleAbsent { .. } | SetError::NoUnits) => {
             report.line("TOS.RUN.UNSTARTABLE reason=no-boot-module");
             exit(EXIT_UNSTARTABLE);
