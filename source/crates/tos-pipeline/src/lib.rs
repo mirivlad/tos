@@ -47,7 +47,8 @@ use alloc::vec::Vec;
 
 use tos_core::{
     check_module_summaries, lower_module_in_set, Gap, LoweringInterface, ModuleContext,
-    ModuleEntry, ModuleSummary, Parser, ResolvedImport, SourceReader, VerificationSurface,
+    ModuleEntry, ModulePlan, ModuleSummary, Parser, ResolvedImport, SourceReader,
+    VerificationSurface,
 };
 
 /// The frontend types this crate's own results are made of.
@@ -646,11 +647,25 @@ pub fn build_from_provider(
             diagnostics,
         }));
     }
+    // **The set-wide check was the last reader of a type surface.** A summary
+    // carries every type name its module declares so that another module's
+    // qualified use can be resolved against it, and at the source ceiling that
+    // is about `208 KiB` a module — measured as the build workspace's largest
+    // owner at `52.1 MiB` over a closure of 256
+    // (`docs/evidence/STAGE3_BUILD_WORKSPACE.md`). Past this line nothing asks
+    // a type question again: what the rest of the build reads is which modules
+    // the entry reaches, in what order, under which identities. So the
+    // summaries are consumed into plans here and the surface goes with them.
+    let plans: Vec<ModulePlan> = summaries
+        .into_iter()
+        .map(ModuleSummary::into_plan)
+        .collect();
+
     // Ordered and reachable: a module the entry cannot reach is not part of
     // what runs, and ordering it anyway would put it in the dependency digest.
     // Dependencies come first, so each module is lowered after everything it
     // imports and can be given their computed identities.
-    let closure = closure_of_summaries(&summaries, entry_index);
+    let closure = closure_of_plans(&plans, entry_index);
 
     // The membership is minted here and nowhere else, **over the closure and not
     // over the catalog**: from identities this resolution computed, for the
@@ -670,10 +685,7 @@ pub fn build_from_provider(
     let source_closure = SourceClosureManifest::of(members);
 
     trace.entering(PipelineStage::Lower);
-    let names: Vec<String> = summaries
-        .iter()
-        .map(|summary| summary.name.clone())
-        .collect();
+    let names: Vec<String> = plans.iter().map(|plan| plan.name.clone()).collect();
 
     // **Deterministic liveness, not a cache.** The closure DAG is fully known
     // the moment resolution finishes, so when a dependency's lowering view stops
@@ -683,7 +695,7 @@ pub fn build_from_provider(
     // is done with it, so what is live is the graph's frontier and not the
     // closure. A chain of 256 holds one; a wide fan-in holds its fan, which is
     // a real property of the graph and is measured rather than hidden.
-    let last_consumer = last_consumers(&summaries, &closure, &names);
+    let last_consumer = last_consumers(&plans, &closure);
 
     // **One module's IR at a time.** Each is lowered, reduced to the two views
     // its readers actually read, encoded as the image the verifier will read,
@@ -739,12 +751,12 @@ pub fn build_from_provider(
         // Each module's own dependency digest, over its own closure: a
         // dependency's identity cannot be the entry's, or two modules that
         // depend on different things would claim the same one.
-        let own_closure = closure_of_summaries(&summaries, index);
+        let own_closure = closure_of_plans(&plans, index);
         let context = ModuleContext {
             source_set: source_set.to_string(),
-            path: summaries[index].path.clone(),
+            path: plans[index].path.clone(),
             content_id: content_id(source.bytes()),
-            dependency_digest: closure_digest_of_summaries(&summaries, &own_closure, index),
+            dependency_digest: closure_digest_of_plans(&plans, &own_closure, index),
             capability_interface_digest: list_digest(&[]),
         };
         let imports: Vec<ResolvedImport<'_>> = interfaces
@@ -1121,20 +1133,26 @@ fn snapshot_of(surfaces: &[(usize, VerificationSurface)]) -> ResolutionSnapshot 
 /// Computed from the resolved graph, once, before any module is lowered.
 /// `None` means no later module imports it — its view dies at the end of its
 /// own turn.
-fn last_consumers(
-    summaries: &[ModuleSummary],
-    closure: &[usize],
-    names: &[String],
-) -> Vec<Option<usize>> {
-    let mut last: Vec<Option<usize>> = (0..summaries.len()).map(|_| None).collect();
+fn last_consumers(plans: &[ModulePlan], closure: &[usize]) -> Vec<Option<usize>> {
+    let by_name = by_name(plans);
+    let mut last: Vec<Option<usize>> = (0..plans.len()).map(|_| None).collect();
     for (position, &index) in closure.iter().enumerate() {
-        for import in &summaries[index].imports {
-            if let Some(at) = names.iter().position(|name| *name == import.target) {
+        for import in &plans[index].imports {
+            if let Some(&at) = by_name.get(import.as_str()) {
                 last[at] = Some(position);
             }
         }
     }
     last
+}
+
+/// Where each declared module name sits in the plan.
+fn by_name(plans: &[ModulePlan]) -> alloc::collections::BTreeMap<&str, usize> {
+    plans
+        .iter()
+        .enumerate()
+        .map(|(index, plan)| (plan.name.as_str(), index))
+        .collect()
 }
 
 /// A module's dependency closure, dependencies first, deterministically.
@@ -1148,36 +1166,22 @@ fn last_consumers(
 /// walk cannot loop and cannot be asked for a module that is not there. It
 /// still guards, because a total function is cheaper than a proof that no
 /// caller ever reaches it in another order.
-/// The closure's order, over summaries.
 ///
-/// This is the shape the accepted memory architecture asks for: a summary is
-/// owned and a parse tree is not needed to order a closure — which is what lets
-/// the trees be dropped one module at a time
-/// (`docs/evidence/STAGE2_ARENA_BOUND.md`).
-fn closure_of_summaries(summaries: &[ModuleSummary], entry: usize) -> Vec<usize> {
-    let by_name: alloc::collections::BTreeMap<&str, usize> = summaries
-        .iter()
-        .enumerate()
-        .map(|(index, summary)| (summary.name.as_str(), index))
-        .collect();
-
+/// It walks the **plan**: a closure is ordered from names and imports, and the
+/// type surface a summary also carries answers a question that was settled
+/// before this is called (`ModulePlan`).
+fn closure_of_plans(plans: &[ModulePlan], entry: usize) -> Vec<usize> {
+    let by_name = by_name(plans);
     let mut order = Vec::new();
     let mut settled = alloc::collections::BTreeSet::new();
     let mut open = alloc::collections::BTreeSet::new();
-    visit(
-        entry,
-        summaries,
-        &by_name,
-        &mut settled,
-        &mut open,
-        &mut order,
-    );
+    visit(entry, plans, &by_name, &mut settled, &mut open, &mut order);
     order
 }
 
 fn visit(
     index: usize,
-    summaries: &[tos_core::ModuleSummary],
+    plans: &[ModulePlan],
     by_name: &alloc::collections::BTreeMap<&str, usize>,
     settled: &mut alloc::collections::BTreeSet<usize>,
     open: &mut alloc::collections::BTreeSet<usize>,
@@ -1186,9 +1190,9 @@ fn visit(
     if settled.contains(&index) || !open.insert(index) {
         return;
     }
-    for import in &summaries[index].imports {
-        if let Some(&target) = by_name.get(import.target.as_str()) {
-            visit(target, summaries, by_name, settled, open, order);
+    for import in &plans[index].imports {
+        if let Some(&target) = by_name.get(import.as_str()) {
+            visit(target, plans, by_name, settled, open, order);
         }
     }
     open.remove(&index);
@@ -1201,19 +1205,14 @@ fn visit(
 /// The entry is excluded: a module's dependency digest describes what it
 /// depends on, and including itself would make the digest change for a reason
 /// that is already the content id.
-/// The dependency digest of one module's own closure, over summaries.
-fn closure_digest_of_summaries(
-    summaries: &[ModuleSummary],
-    closure: &[usize],
-    entry: usize,
-) -> String {
+fn closure_digest_of_plans(plans: &[ModulePlan], closure: &[usize], entry: usize) -> String {
     let pairs: Vec<(&str, &str)> = closure
         .iter()
         .filter(|index| **index != entry)
         .map(|index| {
             (
-                summaries[*index].name.as_str(),
-                summaries[*index].content_id.as_str(),
+                plans[*index].name.as_str(),
+                plans[*index].content_id.as_str(),
             )
         })
         .collect();

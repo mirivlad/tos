@@ -197,6 +197,60 @@ impl ModuleSummary {
             .iter()
             .filter(|import| import.kind != ImportKind::Capability)
     }
+
+    /// Reduces a checked summary to what building a closure still reads.
+    ///
+    /// Consuming, and that is the point: a build that could hold both would
+    /// hold both.
+    pub fn into_plan(self) -> ModulePlan {
+        let imports = self
+            .imports
+            .into_iter()
+            .filter(|import| import.kind != ImportKind::Capability)
+            .map(|import| import.target)
+            .collect();
+        ModulePlan {
+            path: self.path,
+            name: self.name,
+            content_id: self.content_id,
+            imports,
+        }
+    }
+}
+
+/// What a build still reads about a module once the set has been checked.
+///
+/// **A summary answers set-wide questions, and they are asked once.** Whether
+/// every import resolves, whether a qualified type name exists in the module its
+/// binding names, whether the path is the one the name derives — all of that is
+/// [`check_module_summaries`](crate::check_module_summaries), and nothing asks
+/// again. What the rest of a build needs is narrower: which modules the entry
+/// reaches, in what order, under which identities.
+///
+/// The difference is not small. At the docs/44 source ceiling a summary is about
+/// `208 KiB` — a module declaring thousands of types carries every one of those
+/// names so that another module's qualified use can be resolved against it — and
+/// a plan is a few hundred bytes. At the closure ceiling that made the summaries
+/// the build workspace's largest single owner at `52.1 MiB`
+/// (`docs/evidence/STAGE3_BUILD_WORKSPACE.md`).
+///
+/// This is a type rather than a convention because a convention would be
+/// followed until it wasn't: a plan **cannot** carry a type surface, since it has
+/// no field for one.
+#[derive(Clone, Debug)]
+pub struct ModulePlan {
+    /// Canonical repository path, relative to the declared module root.
+    pub path: String,
+    /// The module name its header declares, dot-separated.
+    pub name: String,
+    /// `sha256:<hex>` of the normalized source this was derived from.
+    pub content_id: String,
+    /// The modules this one imports, in source order, by declared name.
+    ///
+    /// Module imports only: a capability import names an interface rather than
+    /// a member of the closure, and a closure walk that followed one would be
+    /// looking for a module nobody wrote.
+    pub imports: Vec<String>,
 }
 
 /// `sha256:<hex>` over the normalized source bytes.
