@@ -13,6 +13,9 @@
 - Evidence: `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md`,
   `docs/evidence/STAGE3_PROCESS_GRANT.md`, `docs/evidence/STAGE2_ARENA_BOUND.md`,
   `docs/evidence/STAGE3_COMPACT_IMAGE_P1.md`
+- Amended by: **ADR-0073 (Accepted, 2026-08-28)**, which moves the build side
+  out of the target process and keeps the verifier in it. §2 below is amended
+  accordingly; see "Where the build runs" at the end
 - Related: ADR-0069 (Accepted) — the `54 MiB` grant this ADR says what is *for*;
   ADR-0071 (Accepted) — the bounded residency the grant holds; ADR-0070
   (Accepted) — the compact image this ADR keeps disposable; ADR-0040 — the
@@ -283,6 +286,40 @@ never depend on it being present.
 - ADR-0069's `54 MiB` grant is unchanged;
 - Capsule v1 is unchanged;
 - TOS Core semantics, the ABI and the verifier's trust model are unchanged.
+
+## Where the build runs — amended by ADR-0073
+
+This ADR gave the build its own account and its own lifetime and left one thing
+unsaid: **where** it runs. The implementation answered by running the whole
+pipeline — frontend, checker, resolver, lowerer, encoder *and* verifier — inside
+the target runtime process, under its `54 MiB` grant, which is how §2's
+"launch workspace" was first built.
+
+ADR-0073 replaces that placement. The build side moves outside the target
+process and produces untrusted `TOSIMAGE/v1`; the **verifier stays in the target
+process**, where it turns that untrusted closure into trusted records and
+membership before the first instruction. So §2's diagram reads, after ADR-0073:
+
+```text
+BuildWorkspace          transient, outside the target process
+  source, frontend, check, resolve, lower, image encoding
+
+RuntimeMemoryGrantV1    the target process
+  image verification, trusted records and membership,
+  bounded decoded residency, execution
+```
+
+The original shape is recorded rather than erased, because it was replaced for a
+measured reason and not a stylistic one. The real freestanding lifecycle showed
+the verifier belongs to target-process admission: any other placement costs
+either a cross-process receipt trust, a language stack back in ring 0, or a
+change to ADR-0071's sequential verification model. Keeping it in the target
+process avoids all three at once.
+
+Everything else in this ADR stands: the two accounts, the declared workspace
+bound, the closure-bounded `SourceProvider`, source canonical and image
+disposable, whole-machine accounting, Capsule v1 unchanged, and no decision
+about a persistent source backend.
 
 ## What this ADR is answerable for
 
