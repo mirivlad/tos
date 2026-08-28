@@ -616,7 +616,6 @@ pub fn prepare_from_provider(
     let mut interfaces: Vec<Option<LoweringInterface>> = (0..catalog.len()).map(|_| None).collect();
     let mut surfaces: Vec<(usize, VerificationSurface)> = Vec::with_capacity(closure.len());
     let mut images: Vec<ImageSnapshot> = Vec::with_capacity(closure.len());
-    let mut envelope = tos_ir::ResourceEnvelope::default();
     for (position, &index) in closure.iter().enumerate() {
         // The source is normalized again, for this module alone, and dropped
         // when the module is lowered. A second pass over the same canonical
@@ -689,9 +688,6 @@ pub fn prepare_from_provider(
         interfaces[index] = Some(LoweringInterface::of(&module));
         surfaces.push((index, VerificationSurface::of(&module)));
         images.push(image_of(&module));
-        if index == entry_index {
-            envelope = module.header.resource_envelope.clone();
-        }
         // This is the line the phase rests on. Past it, this module's bodies,
         // blocks, instructions and source map are gone; what is left of it is
         // an image and two narrow views.
@@ -724,26 +720,20 @@ pub fn prepare_from_provider(
     // frontend produced both.
     let snapshot = snapshot_of(&surfaces);
 
-    let prepared = match Prepared::launch_images(
-        images,
-        &snapshot,
-        entry_position,
-        entry,
-        envelope,
-        residency,
-    ) {
-        Ok(prepared) => prepared,
-        // Every module verified and the closure is what it claimed to be; what
-        // is absent is the function the caller named. That is the run failing
-        // to start, so it is announced as one.
-        Err(tos_residency::Failure::NoEntryFunction { .. }) => {
-            trace.entering(PipelineStage::Execute);
-            return Ok(Preparation::Refused(Run::Refused(Refusal::NoSuchEntry(
-                entry.to_string(),
-            ))));
-        }
-        Err(failure) => return Ok(Preparation::Refused(launch_refusal(failure))),
-    };
+    let prepared =
+        match Prepared::launch_images(images, &snapshot, entry_position, entry, residency) {
+            Ok(prepared) => prepared,
+            // Every module verified and the closure is what it claimed to be; what
+            // is absent is the function the caller named. That is the run failing
+            // to start, so it is announced as one.
+            Err(tos_residency::Failure::NoEntryFunction { .. }) => {
+                trace.entering(PipelineStage::Execute);
+                return Ok(Preparation::Refused(Run::Refused(Refusal::NoSuchEntry(
+                    entry.to_string(),
+                ))));
+            }
+            Err(failure) => return Ok(Preparation::Refused(launch_refusal(failure))),
+        };
 
     // The verification surfaces go here. They were needed until the launch,
     // because the declared resolution is an input to verifying every module of
@@ -810,9 +800,6 @@ pub struct Prepared {
     records: Vec<VerifiedModuleRecord>,
     manifest: VerifiedClosureManifest,
     receipt: VerifiedModule,
-    /// The entry module's declared envelope, copied out before the module was
-    /// released. One run has one budget, and this is it.
-    envelope: tos_ir::ResourceEnvelope,
     residency: Residency,
 }
 
@@ -822,16 +809,20 @@ impl Prepared {
     /// established.
     ///
     /// **The production entry.** `images` is the **exact resolved closure** in
-    /// position order, `entry_position` names the entry within it, and
-    /// `envelope` is the entry module's declared budget, copied out while it was
-    /// lowered. Nothing here needs a decoded module, which is what lets the
-    /// caller release each one as it is produced.
+    /// position order and `entry_position` names the entry within it. Nothing
+    /// here needs a decoded module, which is what lets the caller release each
+    /// one as it is produced.
+    ///
+    /// **No budget arrives with the images.** The run's envelope is read out of
+    /// the receipt this launch's own verifier issued, so what bounds a run is
+    /// what the target verified rather than what the side that encoded the
+    /// images said about it. A build that inflated a header is refused by the
+    /// verifier or believed by nobody.
     pub fn launch_images(
         images: Vec<ImageSnapshot>,
         resolution: &ResolutionSnapshot,
         entry_position: usize,
         entry: &str,
-        envelope: tos_ir::ResourceEnvelope,
         limits: ResidencyLimits,
     ) -> Result<Prepared, tos_residency::Failure> {
         let store = ImageStore { images };
@@ -853,7 +844,6 @@ impl Prepared {
             records: launched.records,
             manifest: launched.manifest,
             receipt: launched.entry_receipt,
-            envelope,
             residency,
         })
     }
@@ -873,13 +863,9 @@ impl Prepared {
         entry: &str,
         limits: ResidencyLimits,
     ) -> Result<Prepared, tos_residency::Failure> {
-        let envelope = modules
-            .last()
-            .map(|module| module.header.resource_envelope.clone())
-            .unwrap_or_default();
         let images: Vec<ImageSnapshot> = modules.iter().map(|module| image_of(module)).collect();
         let entry_position = images.len().saturating_sub(1);
-        Prepared::launch_images(images, resolution, entry_position, entry, envelope, limits)
+        Prepared::launch_images(images, resolution, entry_position, entry, limits)
     }
 
     /// The receipt the launch's own verifier issued for the entry module.
@@ -911,8 +897,12 @@ impl Prepared {
     }
 
     /// What a run cost, against the entry module's declared envelope.
+    ///
+    /// The envelope is the one in this launch's own receipt: the budget a run is
+    /// held to is a fact the verifier established about the image, not a number
+    /// that travelled beside it.
     pub fn accounting(&self, outcome: &tos_engine::Outcome) -> Accounting {
-        Accounting::under(&self.envelope, outcome)
+        Accounting::under(&self.receipt.resource_envelope, outcome)
     }
 
     /// What the resident set did.

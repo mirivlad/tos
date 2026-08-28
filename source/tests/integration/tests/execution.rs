@@ -707,9 +707,17 @@ fn trap_in(text: &str, entry: &str, arguments: Vec<Value>) -> tos_engine::Trap {
 
 /// Lowers and verifies one module of a set, under a name and path of its own.
 fn member(name: &str, path: &str, body: &str) -> (Module, VerifiedModule) {
+    member_with_fuel(name, path, 10_000, body)
+}
+
+/// The same, with the module's own declared fuel.
+///
+/// A budget is per module, so a fixture that wants to tell one module's
+/// envelope from another's has to be able to say two different numbers.
+fn member_with_fuel(name: &str, path: &str, fuel: u128, body: &str) -> (Module, VerifiedModule) {
     let text = format!(
         "module {name} version 1.0 profile bootstrap; \
-         resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         resource [fuel: {fuel}, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
          sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 4] {body}"
     );
     let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
@@ -737,9 +745,17 @@ fn member(name: &str, path: &str, body: &str) -> (Module, VerifiedModule) {
 /// The dependency, and an entry that calls it. Built with the dependency's real
 /// identity bound into the entry's import, exactly as the pipeline does.
 fn calling_pair() -> ((Module, VerifiedModule), (Module, VerifiedModule)) {
-    let dependency = member(
+    calling_pair_with_dependency_fuel(10_000)
+}
+
+/// The same pair, with the dependency declaring a budget of its own.
+fn calling_pair_with_dependency_fuel(
+    fuel: u128,
+) -> ((Module, VerifiedModule), (Module, VerifiedModule)) {
+    let dependency = member_with_fuel(
         "system.lib.math",
         "system/lib/math.tos",
+        fuel,
         "pub fn double(value: i32) -> i32 { return value * 2i32; }",
     );
     let text = "module system.boot.init version 1.0 profile bootstrap; \
@@ -772,6 +788,37 @@ fn calling_pair() -> ((Module, VerifiedModule), (Module, VerifiedModule)) {
     let receipt = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect("entry verifies");
     (dependency, (module, receipt))
+}
+
+/// The budget a run is held to is the entry's, read out of what was verified.
+///
+/// The closure is handed over entry-first, and the module at the end of it
+/// declares a hundred times the entry's fuel. A launch that took the run's
+/// envelope from the last image it was given — or from anything the side that
+/// encoded the images said beside them — would report that number. What bounds
+/// this run is the receipt the target's own verifier issued for the entry.
+#[test]
+fn the_run_is_bounded_by_the_entry_envelope_the_target_verified() {
+    let (dependency, entry) = calling_pair_with_dependency_fuel(1_000_000);
+    let images: Vec<tos_residency::ImageSnapshot> = [&entry.0, &dependency.0]
+        .iter()
+        .map(|module| tos_image::encode(module).0.into_boxed_slice().into())
+        .collect();
+
+    let mut prepared =
+        Prepared::launch_images(images, &ResolutionSnapshot::default(), 0, "main", RESIDENCY)
+            .expect("the closure launches");
+    let outcome = prepared
+        .run(Vec::new(), &mut Unreachable)
+        .expect("the entry is runnable")
+        .expect("the run completes");
+
+    assert_eq!(outcome.value, Value::Int(IntKind::I32, 42));
+    assert_eq!(
+        prepared.accounting(&outcome).fuel_limit,
+        10_000,
+        "the entry's declared fuel bounds the run, not the closure's other module"
+    );
 }
 
 #[test]
