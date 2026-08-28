@@ -47,7 +47,8 @@ use tos_core::{
     ResolvedImport, Schema, SourceReader, SourceUnit, VerificationSurface,
 };
 use tos_pipeline::{
-    execute, execute_set, PipelineStage, Request, Run, SetRequest, Silent, Unit, Unreachable,
+    execute, execute_set, PipelineStage, Request, Run, SetRequest, Silent, SourceProvider, Unit,
+    Unreachable,
 };
 use tos_runtime::{GlobalHeap, RuntimeMemoryGrant, GRANT_VERSION};
 
@@ -79,6 +80,11 @@ const ARENA_BYTES: usize = 54 * 1024 * 1024;
 /// It is **not free**: it is physical memory, and the whole-machine ledger
 /// carries it as a platform line.
 fn capsule_bytes(text: &str) -> &'static [u8] {
+    outside_the_arena(text.as_bytes())
+}
+
+/// The same, for bytes that are not text: a whole capsule, for instance.
+fn outside_the_arena(text: &[u8]) -> &'static [u8] {
     let layout = Layout::from_size_align(text.len().max(1), 1).expect("a valid layout");
     // SAFETY: a non-zero-sized layout, allocated from the system allocator and
     // never freed — the fixture's capsule lives for the whole measurement, as a
@@ -251,6 +257,21 @@ fn main() {
             _ => Shape::Chain,
         };
         build_workspace(shape, modules, unit_bytes);
+        return;
+    }
+    if std::env::args().any(|argument| argument == "--capsule") {
+        println!("TOS build workspace, over a capsule-backed source set");
+        println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
+        let unit_bytes = std::env::args()
+            .skip_while(|argument| argument != "--unit-bytes")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(SOURCE_CEILING);
+        let modules = std::env::args()
+            .skip_while(|argument| argument != "--modules")
+            .nth(1)
+            .and_then(|value| value.parse().ok());
+        capsule_source(unit_bytes, modules);
         return;
     }
     if std::env::args().any(|argument| argument == "--lowering") {
@@ -751,10 +772,19 @@ fn build_workspace(shape: Shape, count: usize, unit_bytes: usize) {
         .collect();
     let entry_path = paths.last().expect("a fixture has an entry").as_str();
     let provider = tos_pipeline::SliceSourceProvider::new(&units);
+    measure_build(&provider, entry_path, source_backing);
+}
 
+/// Builds through one provider, reports both accounts, and runs the entry.
+///
+/// Everything measurable happens between the two `arena()` calls, and what is
+/// between them is the production pair: `build_from_provider`, then `admit`.
+/// `source_backing` is what the caller's source costs outside both accounts,
+/// reported so a reader can see it is not in either.
+fn measure_build(provider: &dyn tos_pipeline::SourceProvider, entry_path: &str, backing: usize) {
     let before = arena();
     let built =
-        tos_pipeline::build_from_provider(&provider, "tos-arena-bound", entry_path, &mut Silent)
+        tos_pipeline::build_from_provider(provider, "tos-arena-bound", entry_path, &mut Silent)
             .expect("the fixture names an entry it contains");
     let boundary = arena();
     let tos_pipeline::Build::Ready(built) = built else {
@@ -765,8 +795,8 @@ fn build_workspace(shape: Shape, count: usize, unit_bytes: usize) {
 
     println!(
         "  source backing, outside both accounts   {:>12} B ({:>7.2} MiB)",
-        source_backing,
-        mib(source_backing)
+        backing,
+        mib(backing)
     );
     println!(
         "  arena before the build                  {:>12} B committed, frontier {} B",
@@ -858,6 +888,119 @@ fn build_workspace(shape: Shape, count: usize, unit_bytes: usize) {
         ),
         other => println!("  outcome: DID NOT RUN: {other:?}"),
     }
+}
+
+/// What a Capsule v1 can carry, and what building from it costs (ADR-0073, B).
+///
+/// **The provider is the real one.** `CapsuleSourceProvider` reads the capsule's
+/// own path table and hands out windows into its mapped payload, so what is
+/// measured is a build over a boot's actual source backend rather than over
+/// units a caller already held.
+///
+/// How many modules fit is **derived, not assumed**: the fixture is built at a
+/// count estimated from the ceiling and then reduced until the builder produces
+/// a capsule that is within `MAX_CAPSULE_BYTES` and parses. A capsule that was
+/// merely close to the ceiling would not answer the question.
+///
+/// This establishes the provider and the algorithm. It does not establish that
+/// a build worker can hand its output to another process, and it is not a claim
+/// about source larger than a capsule (ADR-0073's claim C).
+fn capsule_source(unit_bytes: usize, requested: Option<usize>) {
+    println!();
+    println!("== capsule-backed build, units of {unit_bytes} bytes ==");
+    // Per file the capsule spends a path entry, a file entry and a name; the
+    // estimate only has to be close, because it is corrected by building.
+    let per_file = unit_bytes + 128;
+    let mut count = requested.unwrap_or(tos_capsule::MAX_CAPSULE_BYTES / per_file);
+    let (bytes, carried) = loop {
+        assert!(
+            count >= 2,
+            "a chain fixture needs an entry and a dependency"
+        );
+        let (texts, paths) = capsule_chain(count, unit_bytes);
+        let carried: usize = texts.iter().map(|text| text.len()).sum();
+        let mut builder = tos_capsule::build::Builder::new();
+        for (path, text) in paths.iter().zip(texts.iter()) {
+            builder.add(tos_capsule::build::FileSpec::new(path, text.as_bytes()));
+        }
+        // Not source, and the provider will not offer it: a capsule carries more
+        // than modules, and a set that included the version marker would ask the
+        // frontend to parse a file that never claimed to be one.
+        builder.add(tos_capsule::build::FileSpec::new(
+            "/system/version",
+            b"0.2.1\n",
+        ));
+        builder.set_licence_notice(b"NOTICES\n".to_vec());
+        match builder.build() {
+            Ok(bytes) if bytes.len() <= tos_capsule::MAX_CAPSULE_BYTES => break (bytes, carried),
+            _ => count -= 1,
+        }
+    };
+
+    // Outside the arena, where a mapped capsule physically is. The builder's own
+    // copy goes with the fixture's, before anything is measured.
+    let capsule_length = bytes.len();
+    let mapped = outside_the_arena(&bytes);
+    drop(bytes);
+    let capsule = tos_capsule::parse(mapped).expect("the fixture capsule parses");
+    let provider = tos_capsule_source::CapsuleSourceProvider::over(capsule);
+    let offered = provider.catalog().len();
+
+    println!(
+        "  capsule                                 {:>12} B of {} B ceiling, {} B spare",
+        capsule_length,
+        tos_capsule::MAX_CAPSULE_BYTES,
+        tos_capsule::MAX_CAPSULE_BYTES - capsule_length
+    );
+    println!(
+        "  source carried                          {:>12} B ({:>7.2} MiB) in {count} units",
+        carried,
+        mib(carried)
+    );
+    println!("  offered as a set by the provider        {offered:>12} units");
+    measure_build(&provider, "system/boot/init.tos", capsule_length);
+}
+
+/// A chain of source units with capsule paths, the entry at the boot path.
+///
+/// A capsule's boot file is `/system/boot/init.tos` by contract, so the entry is
+/// stored there and the dependencies under `/system/lib/`. The declared
+/// recursion covers the chain's own depth: a fixture that trapped on its own
+/// envelope halfway down would leave the run unproven, and what is being
+/// measured is what a capsule can carry rather than how deep a call may go.
+fn capsule_chain(count: usize, unit_bytes: usize) -> (Vec<String>, Vec<String>) {
+    let envelope = "resource [fuel: 100000000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
+         workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 1000, imports: 8] ";
+    let mut texts = Vec::with_capacity(count);
+    let mut paths = Vec::with_capacity(count);
+    for index in 0..count - 1 {
+        let mut text = if index == 0 {
+            format!(
+                "module system.lib.m0 version 1.0 profile bootstrap; {envelope} \
+                 pub fn value0() -> i32 {{ return 1i32; }} "
+            )
+        } else {
+            format!(
+                "module system.lib.m{index} version 1.0 profile bootstrap; \
+                 import system.lib.m{prev} as prev; {envelope} \
+                 pub fn value{index}() -> i32 {{ return prev.value{prev}(); }} ",
+                prev = index - 1
+            )
+        };
+        fill_to(&mut text, index, unit_bytes);
+        texts.push(text);
+        paths.push(format!("/system/lib/m{index}.tos"));
+    }
+    let last = count - 2;
+    let mut entry = format!(
+        "module system.boot.init version 1.0 profile bootstrap; \
+         import system.lib.m{last} as prev; {envelope} \
+         pub fn main() -> i32 {{ return prev.value{last}(); }} "
+    );
+    fill_to(&mut entry, count, unit_bytes);
+    texts.push(entry);
+    paths.push(String::from("/system/boot/init.tos"));
+    (texts, paths)
 }
 
 /// Which graph a lowering measurement is taken over.
