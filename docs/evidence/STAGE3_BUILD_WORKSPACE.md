@@ -8,7 +8,8 @@ production path runs *through* `tos_runtime`'s bounded heap, so every figure is
 the allocator's own accounting rather than a sum of requests.
 
 Producer: `source/tests/arena-bound --build --modules N --shape S`, one count
-per process, with `--lowering --modules 256 --shape S` for the attribution. The
+per process, with `--lowering --modules 256 --shape S` for the attribution and
+`--capsule` for the same measurement over a real capsule-backed source set. The
 first calls `tos_pipeline::build_from_provider` and then `tos_pipeline::admit` —
 the two calls ADR-0073 §1 separates — so the line between the build account and
 the target account is a return, not an estimate.
@@ -175,6 +176,49 @@ been decided.
 For smaller closures the same tables read directly: `41 MiB` at 8 modules,
 `55 MiB` at 32, `75 MiB` at 64, `118 MiB` at 128, with the products inside.
 
+## Over a capsule-backed source set
+
+`--capsule` repeats the measurement over the source backend a boot actually
+has: `tos_capsule_source::CapsuleSourceProvider` reading a Capsule v1's own path
+table and handing out windows into its payload. How many units fit is derived
+rather than assumed — the fixture is built at a count estimated from
+`MAX_CAPSULE_BYTES` and reduced until the builder produces a capsule that is
+within the ceiling and parses.
+
+| Unit size | Units carried | Capsule | Spare | Build frontier | Images | Declaration | Run |
+|---:|---:|---:|---:|---:|---:|---:|---|
+| 256 KiB | **127** | 33 294 052 B | 260 380 B | 115.76 MiB | 46.58 MiB | 6.04 MiB | `Int(I32, 1)`, 253 fuel |
+| 128 KiB | **255** | 33 433 738 B | 120 694 B | 102.02 MiB | 46.59 MiB | 6.07 MiB | `Int(I32, 1)`, 509 fuel |
+| 64 KiB | **256** | 16 786 942 B | 16 767 490 B | 51.43 MiB | 23.22 MiB | 3.07 MiB | `Int(I32, 1)`, 511 fuel |
+
+Each row is a chain that deep: the entry at `/system/boot/init.tos` calling
+through every dependency under `/system/lib/`, so no module is carried without
+being reached, and the answer is checked.
+
+**Which ceiling binds is a function of the unit size.** At the source ceiling a
+capsule holds `127` modules — half of the docs/44 closure ceiling — and the
+`32 MiB` capsule limit is what stops it. At `128 KiB` the two nearly meet:
+`255` modules with `120 694 B` of capsule left. At `64 KiB` the closure ceiling
+binds first and `16.7 MiB` of capsule goes unused.
+
+So a capsule can carry a conforming closure at the docs/44 ceiling only if the
+average unit is at or below about `128 KiB`. That is a statement about Capsule
+v1's `32 MiB`, not about the language: **claim B's provider and algorithm hold**
+— a real capsule-backed set builds, verifies and runs at every size measured —
+and a source tree whose modules are ceiling-sized needs a backend a capsule is
+not, which is claim C and stays open.
+
+The build accounts agree with the ones measured through the slice provider: the
+`127`-module capsule build peaks at `115.76 MiB` against `117.56 MiB` for a
+`128`-module chain. The provider changes where source comes from and not what a
+build costs.
+
+**Caveat.** These runs build the capsule in the measured arena before dropping
+it, so the arena's frontier is already at about `100 MiB` when the build starts;
+each run prints that line. The build's own high-water is still the reported
+figure — it exceeded the fixture's — but the small-closure end of this table
+would be dominated by the fixture and is not reported here for that reason.
+
 ## The target account, in the same process
 
 Each run continues past the boundary: it admits the built closure and runs the
@@ -204,8 +248,10 @@ anything ran.
 - **Not a freestanding measurement.** A host process with a bounded heap. No
   process boundary was crossed, no region was transferred, and no build worker
   exists.
-- **Not evidence for claim C.** The source came from a `SliceSourceProvider`
-  over host allocations. An interface is not a backend (ADR-0072 §9).
+- **Not evidence for claim C.** The shape tables came from a
+  `SliceSourceProvider` over host allocations, and the capsule table from a
+  capsule, which is a backend for what fits in `32 MiB` and for nothing above it
+  (ADR-0072 §9).
 - **Not a decision.** Where a build workspace comes from, how large it is, what
   its output is, whether that output is one region or several, when it becomes
   read-only, who reclaims it and when a target maps it all remain open.
