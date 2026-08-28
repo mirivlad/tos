@@ -30,9 +30,51 @@
 //! verifier, and by nothing the provider says.
 
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use crate::Unit;
+
+/// One unit's canonical bytes, for as long as they are being used.
+///
+/// **Immutable, and the same bytes throughout.** The identity is computed from
+/// a snapshot and the frontend reads that same snapshot, so there is no window
+/// in which the two could differ — a provider handing back a buffer it could
+/// rewrite would reopen exactly the time-of-check to time-of-use gap the two
+/// stages exist to close.
+///
+/// Two shapes, because two backings are real and neither should pay for the
+/// other:
+///
+/// - **Borrowed** is a window into memory the provider already has. Capsule v1
+///   maps its whole source payload by contract, so its provider hands out
+///   slices and copies nothing;
+/// - **Owned** is one unit a provider materialized on request — read from a
+///   store, generated, decompressed — and shares immutably. It lives as long as
+///   the snapshot does and no longer, so a provider is never required to hold a
+///   corpus.
+pub enum SourceSnapshot<'a> {
+    Borrowed(&'a [u8]),
+    Owned(Arc<[u8]>),
+}
+
+impl SourceSnapshot<'_> {
+    /// The bytes. The same ones every time this snapshot is asked.
+    pub fn bytes(&self) -> &[u8] {
+        match self {
+            SourceSnapshot::Borrowed(bytes) => bytes,
+            SourceSnapshot::Owned(bytes) => bytes,
+        }
+    }
+
+    pub fn len(&self) -> usize {
+        self.bytes().len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.bytes().is_empty()
+    }
+}
 
 /// One entry of a provider's declared source set.
 ///
@@ -184,13 +226,14 @@ pub trait SourceProvider {
     /// enumerating a set must not cost the set.
     fn catalog(&self) -> Vec<SourceCatalogEntry<'_>>;
 
-    /// The canonical bytes of one catalog entry.
+    /// The canonical bytes of one catalog entry, as an immutable snapshot.
     ///
-    /// Immutable, and the same bytes on every call — a provider that answered
-    /// differently the second time is caught by the identity check in
-    /// [`materialize`]. Returning `None` fails whatever asked; it does not start
-    /// a search.
-    fn source(&self, id: SourceEntryId) -> Option<&[u8]>;
+    /// The snapshot lives as long as the caller needs this unit and no longer,
+    /// which is what lets a provider materialize one entry at a time instead of
+    /// holding a corpus. A provider that answers differently the second time is
+    /// caught by the identity check in [`materialize`]; returning `None` fails
+    /// whatever asked, and does not start a search.
+    fn source(&self, id: SourceEntryId) -> Option<SourceSnapshot<'_>>;
 }
 
 /// A provider over units a caller already holds.
@@ -221,8 +264,10 @@ impl SourceProvider for SliceSourceProvider<'_> {
             .collect()
     }
 
-    fn source(&self, id: SourceEntryId) -> Option<&[u8]> {
-        self.units.get(id.position()).map(|unit| unit.bytes)
+    fn source(&self, id: SourceEntryId) -> Option<SourceSnapshot<'_>> {
+        self.units
+            .get(id.position())
+            .map(|unit| SourceSnapshot::Borrowed(unit.bytes))
     }
 }
 
@@ -236,7 +281,7 @@ pub(crate) fn materialize<'a>(
     provider: &'a dyn SourceProvider,
     manifest: &SourceClosureManifest,
     id: SourceModuleId,
-) -> Result<&'a [u8], SourceRefusal> {
+) -> Result<SourceSnapshot<'a>, SourceRefusal> {
     let Some(member) = manifest.member(id) else {
         // Unreachable through the public interface: an id is minted by this
         // manifest and by nothing else. Answered rather than asserted, because
@@ -245,12 +290,12 @@ pub(crate) fn materialize<'a>(
             path: String::new(),
         });
     };
-    let Some(bytes) = provider.source(member.entry) else {
+    let Some(snapshot) = provider.source(member.entry) else {
         return Err(SourceRefusal::Absent {
             path: member.path.clone(),
         });
     };
-    let Some(found) = identity_of(bytes) else {
+    let Some(found) = identity_of(snapshot.bytes()) else {
         return Err(SourceRefusal::Changed {
             path: member.path.clone(),
             resolved: member.content_id.clone(),
@@ -264,7 +309,7 @@ pub(crate) fn materialize<'a>(
             found,
         });
     }
-    Ok(bytes)
+    Ok(snapshot)
 }
 
 /// The identity of a unit's bytes, as resolution computes it.
