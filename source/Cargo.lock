@@ -37,6 +37,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "tos-capsule-source"
+version = "0.1.0"
+dependencies = [
+ "tos-capsule",
+ "tos-pipeline",
+]
+
+[[package]]
 name = "tos-capsule-tool"
 version = "0.1.0"
 dependencies = [
