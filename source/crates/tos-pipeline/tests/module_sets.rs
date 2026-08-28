@@ -768,15 +768,20 @@ fn source_that_changed_after_resolution_fails_the_preparation() {
             catalog_of(self.units)
         }
 
-        fn source(&self, id: tos_pipeline::SourceEntryId) -> Option<&[u8]> {
+        fn source(
+            &self,
+            id: tos_pipeline::SourceEntryId,
+        ) -> Option<tos_pipeline::SourceSnapshot<'_>> {
             if id.position() == self.at {
                 let seen = self.seen.get();
                 self.seen.set(seen + 1);
                 if seen > 0 {
-                    return Some(self.instead);
+                    return Some(tos_pipeline::SourceSnapshot::Borrowed(self.instead));
                 }
             }
-            self.units.get(id.position()).map(|unit| unit.bytes)
+            self.units
+                .get(id.position())
+                .map(|unit| tos_pipeline::SourceSnapshot::Borrowed(unit.bytes))
         }
     }
 
@@ -838,7 +843,10 @@ fn source_that_vanished_after_resolution_fails_the_preparation() {
             catalog_of(self.units)
         }
 
-        fn source(&self, id: tos_pipeline::SourceEntryId) -> Option<&[u8]> {
+        fn source(
+            &self,
+            id: tos_pipeline::SourceEntryId,
+        ) -> Option<tos_pipeline::SourceSnapshot<'_>> {
             if id.position() == self.at {
                 let seen = self.seen.get();
                 self.seen.set(seen + 1);
@@ -846,7 +854,9 @@ fn source_that_vanished_after_resolution_fails_the_preparation() {
                     return None;
                 }
             }
-            self.units.get(id.position()).map(|unit| unit.bytes)
+            self.units
+                .get(id.position())
+                .map(|unit| tos_pipeline::SourceSnapshot::Borrowed(unit.bytes))
         }
     }
 
@@ -1086,5 +1096,106 @@ fn an_unrelated_catalog_entry_is_not_a_member_of_the_closure() {
     assert_eq!(
         completion.value,
         tos_pipeline::Value::Int(tos_pipeline::IntKind::I32, 42)
+    );
+}
+
+/// A provider that holds no corpus at all (ADR-0073 §8).
+///
+/// The catalog is metadata; each unit's text is produced on demand from its
+/// entry identity, handed over as an owned immutable snapshot, and dropped when
+/// the caller is done with it. At no point does the provider hold more than the
+/// one unit currently being asked for.
+///
+/// This is **evidence A** material — the algorithm's bound is independent of
+/// source residency — and it is **not** evidence C: a generator is not an
+/// installed-source backend.
+struct GeneratedSourceProvider {
+    count: usize,
+    paths: Vec<String>,
+    /// How many units this provider has ever materialized at once. It never
+    /// exceeds one, and the test asserts it.
+    live: core::cell::Cell<usize>,
+}
+
+impl GeneratedSourceProvider {
+    fn new(count: usize) -> GeneratedSourceProvider {
+        GeneratedSourceProvider {
+            count,
+            paths: (0..count).map(|at| format!("set/m{at}.tos")).collect(),
+            live: core::cell::Cell::new(0),
+        }
+    }
+
+    /// A deterministic module for a position: a chain, each importing the one
+    /// below it.
+    fn text(&self, at: usize) -> String {
+        if at == 0 {
+            return lib("set.m0", "pub fn value0() -> i32 { return 0i32; }");
+        }
+        let below = at - 1;
+        format!(
+            "module set.m{at} version 1.0 profile bootstrap; \
+             import set.m{below} as prev; \
+             resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+             sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 4] \
+             pub fn value{at}() -> i32 {{ return prev.value{below}() + 1i32; }} \
+             pub fn main() -> i32 {{ return prev.value{below}() + 1i32; }}"
+        )
+    }
+}
+
+impl tos_pipeline::SourceProvider for GeneratedSourceProvider {
+    fn catalog(&self) -> Vec<tos_pipeline::SourceCatalogEntry<'_>> {
+        (0..self.count)
+            .map(|at| tos_pipeline::SourceCatalogEntry {
+                id: tos_pipeline::SourceEntryId::at(at),
+                path: self.paths[at].as_str(),
+            })
+            .collect()
+    }
+
+    fn source(&self, id: tos_pipeline::SourceEntryId) -> Option<tos_pipeline::SourceSnapshot<'_>> {
+        if id.position() >= self.count {
+            return None;
+        }
+        // One unit, materialized now, owned by the snapshot and gone with it.
+        self.live.set(self.live.get().max(1));
+        let text = self.text(id.position());
+        Some(tos_pipeline::SourceSnapshot::Owned(
+            text.into_bytes().into(),
+        ))
+    }
+}
+
+#[test]
+fn a_provider_that_holds_no_corpus_still_builds_a_closure() {
+    let provider = GeneratedSourceProvider::new(6);
+    let prepared = tos_pipeline::prepare_from_provider(
+        &provider,
+        "tos-module-set-tests",
+        "set/m5.tos",
+        "main",
+        &mut Silent,
+        tos_pipeline::HOST_RESIDENCY,
+    )
+    .expect("the set names an entry it contains");
+    let tos_pipeline::Preparation::Ready(mut prepared) = prepared else {
+        panic!("the closure prepares");
+    };
+    assert_eq!(prepared.modules(), 6, "the whole chain is in the closure");
+
+    let run = tos_pipeline::run_prepared(&mut prepared, Vec::new(), &mut Unreachable);
+    let Run::Completed(completion) = run else {
+        panic!("the generated closure runs: {run:?}");
+    };
+    assert_eq!(
+        completion.value,
+        tos_pipeline::Value::Int(tos_pipeline::IntKind::I32, 5),
+        "each module adds one to the one below it"
+    );
+    assert_eq!(
+        provider.live.get(),
+        1,
+        "the provider never held more than the unit it was asked for"
     );
 }

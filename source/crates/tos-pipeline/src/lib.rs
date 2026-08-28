@@ -68,7 +68,7 @@ pub mod source;
 
 pub use source::{
     SliceSourceProvider, SourceCatalogEntry, SourceClosureManifest, SourceEntryId, SourceMember,
-    SourceModuleId, SourceProvider, SourceRefusal,
+    SourceModuleId, SourceProvider, SourceRefusal, SourceSnapshot,
 };
 use tos_engine::{run_closure, Accounting, Closure, Refusal};
 pub use tos_engine::{
@@ -252,8 +252,8 @@ pub fn locate_in(
         .iter()
         .position(|member| member.path == location.path)?;
     let id = closure.module(position)?;
-    let bytes = source::materialize(provider, closure, id).ok()?;
-    locate(location, bytes)
+    let snapshot = source::materialize(provider, closure, id).ok()?;
+    locate(location, snapshot.bytes())
 }
 
 /// A completed run and everything that proves it was a real one.
@@ -488,14 +488,14 @@ pub fn prepare_from_provider(
     let mut diagnostics = Vec::new();
     let mut parsing = false;
     for item in &catalog {
-        let Some(bytes) = provider.source(item.id) else {
+        let Some(snapshot) = provider.source(item.id) else {
             return Ok(Preparation::Refused(Run::SourceRefused(
                 SourceRefusal::Absent {
                     path: item.path.to_string(),
                 },
             )));
         };
-        let source = match SourceReader::read(bytes) {
+        let source = match SourceReader::read(snapshot.bytes()) {
             Ok(source) => source,
             Err(error) => {
                 return Ok(Preparation::Refused(Run::SourceRejected {
@@ -634,11 +634,11 @@ pub fn prepare_from_provider(
         let member = source_closure
             .module(position)
             .expect("the lowering order walks this closure's own membership");
-        let bytes = match source::materialize(provider, &source_closure, member) {
-            Ok(bytes) => bytes,
+        let snapshot = match source::materialize(provider, &source_closure, member) {
+            Ok(snapshot) => snapshot,
             Err(refusal) => return Ok(Preparation::Refused(Run::SourceRefused(refusal))),
         };
-        let Ok(source) = SourceReader::read(bytes) else {
+        let Ok(source) = SourceReader::read(snapshot.bytes()) else {
             // A unit that read in the read phase and not here would mean the
             // reader is not a function of its input.
             return Ok(Preparation::Refused(Run::SourceRejected {
