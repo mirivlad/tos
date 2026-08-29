@@ -410,10 +410,10 @@ pub fn execute_set(
 /// prepared closure carries the resident set's own bookkeeping, and a refusal
 /// carries a sentence about a stage. Boxing keeps a caller's `Result` the size
 /// of the smaller one.
-pub enum Preparation {
+pub enum Preparation<'a> {
     /// An executable closure: verified, reduced to records and membership, with
     /// the build workspace already released.
-    Ready(Box<Prepared>),
+    Ready(Box<Prepared<'a>>),
     /// The closure could not be built. The [`Run`] says which stage refused it
     /// and why; none of them is `Completed`, because nothing executed.
     Refused(Run),
@@ -433,7 +433,7 @@ pub fn prepare_from_source(
     request: &SetRequest<'_>,
     trace: &mut dyn Trace,
     residency: ResidencyLimits,
-) -> Result<Preparation, SetError> {
+) -> Result<Preparation<'static>, SetError> {
     let provider = SliceSourceProvider::new(request.units);
     prepare_from_provider(
         &provider,
@@ -459,7 +459,7 @@ pub fn prepare_from_provider(
     entry: &str,
     trace: &mut dyn Trace,
     residency: ResidencyLimits,
-) -> Result<Preparation, SetError> {
+) -> Result<Preparation<'static>, SetError> {
     match build_from_provider(provider, source_set, entry_path, trace)? {
         Build::Refused(run) => Ok(Preparation::Refused(run)),
         Build::Ready(built) => Ok(admit(*built, entry, trace, residency)),
@@ -520,6 +520,76 @@ impl BuiltClosure {
     }
 }
 
+/// Where a build's products go as it makes them.
+///
+/// **One module at a time, and the build never looks back at one.** The images
+/// and the declarations are handed over as they are produced, so whether they
+/// accumulate in the build's own account or are written into a backing it does
+/// not own is the caller's arrangement and not the algorithm's.
+trait BuildOutput {
+    /// Takes one module: what the build says it is, and the bytes that have to
+    /// justify that.
+    fn module(
+        &mut self,
+        surface: &VerificationSurface,
+        image: Vec<u8>,
+    ) -> Result<(), tos_bundle::BackingFull>;
+}
+
+/// How a build ended.
+enum Produced {
+    /// Every module of the closure was produced and handed to the output.
+    Done { entry_position: usize },
+    /// A stage refused before the closure was complete.
+    Refused(Run),
+    /// The output would not take what was produced.
+    OutOfRoom(tos_bundle::BackingFull),
+}
+
+/// The output that keeps everything, for a caller that will admit in place.
+#[derive(Default)]
+struct Collected {
+    images: Vec<ImageSnapshot>,
+    surfaces: Vec<VerificationSurface>,
+}
+
+impl BuildOutput for Collected {
+    fn module(
+        &mut self,
+        surface: &VerificationSurface,
+        image: Vec<u8>,
+    ) -> Result<(), tos_bundle::BackingFull> {
+        self.images
+            .push(ImageSnapshot::from(image.into_boxed_slice()));
+        self.surfaces.push(surface.clone());
+        Ok(())
+    }
+}
+
+/// The output that writes a `TOSBUNDLE/v1` into a backing this build does not
+/// own.
+struct Streamed<'a> {
+    writer: tos_bundle::BundleWriter<'a>,
+}
+
+impl BuildOutput for Streamed<'_> {
+    fn module(
+        &mut self,
+        surface: &VerificationSurface,
+        image: Vec<u8>,
+    ) -> Result<(), tos_bundle::BackingFull> {
+        let claim = tos_bundle::ModuleClaim {
+            name: surface.module_name(),
+            content_id: surface.content_id(),
+            exports: surface.exports().collect(),
+            capabilities: surface.capabilities().collect(),
+        };
+        self.writer.module(&claim, &image)
+        // `image` dies here, and it is the last copy: the bytes that survive
+        // are the ones now inside the backing.
+    }
+}
+
 /// Builds an image closure from canonical source (ADR-0073 §1).
 ///
 /// **This is the build workspace, and it ends when this returns.** Everything
@@ -543,6 +613,86 @@ pub fn build_from_provider(
     entry_path: &str,
     trace: &mut dyn Trace,
 ) -> Result<Build, SetError> {
+    let mut collected = Collected::default();
+    match build_with(provider, source_set, entry_path, trace, &mut collected)? {
+        Produced::Refused(run) => Ok(Build::Refused(run)),
+        // A backing that cannot be full is one this arm cannot reach: what
+        // `Collected` refuses is an allocation, and an allocation that fails
+        // does not return.
+        Produced::OutOfRoom(_) => unreachable!("an in-memory output has no capacity to exhaust"),
+        Produced::Done { entry_position } => {
+            // What the source set actually provides, computed from what was
+            // lowered. The verifier is handed this and the images, never the
+            // frontend's verdict: an import that names a module the set does not
+            // provide, or claims an identity the set disagrees with, is refused
+            // at admission even though the same frontend produced both.
+            let resolution = snapshot_of(&collected.surfaces);
+            Ok(Build::Ready(Box::new(BuiltClosure {
+                images: collected.images,
+                resolution,
+                entry_position,
+            })))
+        }
+    }
+}
+
+/// The same build, writing its products into a backing it does not own.
+///
+/// **The products leave the workspace as they are made** (ADR-0073 §7). Each
+/// module's declaration and image go straight into a `TOSBUNDLE/v1` in `backing`
+/// and are dropped from the build's account in the same step, so what the build
+/// holds is never the closure it has produced so far. One bundle, one exact
+/// closure: a launch is admitted whole or not at all.
+///
+/// **The backing is bounded and cannot grow.** A build that would exceed it ends
+/// as [`BuildIntoBundle::OutOfRoom`] with what the write needed, and the bundle
+/// that was being written is not a launchable artifact: nothing completes its
+/// header, so a reader would refuse the bytes rather than find a shorter
+/// closure than the one that was asked for.
+///
+/// This says nothing about *where* the backing comes from. A slice, a
+/// transaction's reservation and a region are all the same to this function,
+/// which is why the arrangement can be measured before it is decided.
+pub fn build_into_bundle(
+    provider: &dyn SourceProvider,
+    source_set: &str,
+    entry_path: &str,
+    backing: &mut dyn tos_bundle::BundleBacking,
+    trace: &mut dyn Trace,
+) -> Result<BuildIntoBundle, SetError> {
+    let mut streamed = Streamed {
+        writer: tos_bundle::BundleWriter::new(backing),
+    };
+    match build_with(provider, source_set, entry_path, trace, &mut streamed)? {
+        Produced::Refused(run) => Ok(BuildIntoBundle::Refused(run)),
+        Produced::OutOfRoom(full) => Ok(BuildIntoBundle::OutOfRoom(full)),
+        Produced::Done { entry_position } => {
+            let modules = streamed.writer.modules();
+            match streamed.writer.finish(entry_position, entry_path) {
+                Ok(bytes) => Ok(BuildIntoBundle::Written { bytes, modules }),
+                Err(full) => Ok(BuildIntoBundle::OutOfRoom(full)),
+            }
+        }
+    }
+}
+
+/// What writing a bundle produced.
+pub enum BuildIntoBundle {
+    /// A complete bundle occupying `bytes` of the backing.
+    Written { bytes: usize, modules: usize },
+    /// A stage refused before the closure was complete.
+    Refused(Run),
+    /// The backing was too small. Nothing launchable was left behind.
+    OutOfRoom(tos_bundle::BackingFull),
+}
+
+fn build_with(
+    provider: &dyn SourceProvider,
+    source_set: &str,
+    entry_path: &str,
+    trace: &mut dyn Trace,
+    output: &mut dyn BuildOutput,
+) -> Result<Produced, SetError> {
     // Metadata only. What the set offers, not what is in it.
     let catalog = provider.catalog();
     // Checked before the first stage is announced, so a request that cannot run
@@ -571,14 +721,16 @@ pub fn build_from_provider(
     let mut parsing = false;
     for item in &catalog {
         let Some(snapshot) = provider.source(item.id) else {
-            return Ok(Build::Refused(Run::SourceRefused(SourceRefusal::Absent {
-                path: item.path.to_string(),
-            })));
+            return Ok(Produced::Refused(Run::SourceRefused(
+                SourceRefusal::Absent {
+                    path: item.path.to_string(),
+                },
+            )));
         };
         let source = match SourceReader::read(snapshot.bytes()) {
             Ok(source) => source,
             Err(error) => {
-                return Ok(Build::Refused(Run::SourceRejected {
+                return Ok(Produced::Refused(Run::SourceRejected {
                     code: error.code().symbol(),
                     byte_offset: error.byte_offset(),
                     // Which unit is not obvious once there is more than one,
@@ -606,7 +758,7 @@ pub fn build_from_provider(
         let parsed = Parser::parse_schema(&source);
         let schema_diagnostics = parsed.diagnostics().to_vec();
         let Some(schema) = parsed.into_accepted() else {
-            return Ok(Build::Refused(Run::Diagnosed {
+            return Ok(Produced::Refused(Run::Diagnosed {
                 stage: PipelineStage::Parse,
                 diagnostics: schema_diagnostics,
             }));
@@ -633,7 +785,7 @@ pub fn build_from_provider(
         trace.entering(PipelineStage::Check);
     }
     if diagnostics.iter().any(is_error) {
-        return Ok(Build::Refused(Run::Diagnosed {
+        return Ok(Produced::Refused(Run::Diagnosed {
             stage: PipelineStage::Check,
             diagnostics,
         }));
@@ -642,7 +794,7 @@ pub fn build_from_provider(
     trace.entering(PipelineStage::Resolve);
     let diagnostics = check_module_summaries(&summaries);
     if diagnostics.iter().any(is_error) {
-        return Ok(Build::Refused(Run::Diagnosed {
+        return Ok(Produced::Refused(Run::Diagnosed {
             stage: PipelineStage::Resolve,
             diagnostics,
         }));
@@ -705,8 +857,6 @@ pub fn build_from_provider(
     // not the execution phase, so holding the closure's IR until execution
     // starts would be the same retained-IR slope one stage earlier.
     let mut interfaces: Vec<Option<LoweringInterface>> = (0..catalog.len()).map(|_| None).collect();
-    let mut surfaces: Vec<(usize, VerificationSurface)> = Vec::with_capacity(closure.len());
-    let mut images: Vec<ImageSnapshot> = Vec::with_capacity(closure.len());
     for (position, &index) in closure.iter().enumerate() {
         // The source is normalized again, for this module alone, and dropped
         // when the module is lowered. A second pass over the same canonical
@@ -726,12 +876,12 @@ pub fn build_from_provider(
             .expect("the lowering order walks this closure's own membership");
         let snapshot = match source::materialize(provider, &source_closure, member) {
             Ok(snapshot) => snapshot,
-            Err(refusal) => return Ok(Build::Refused(Run::SourceRefused(refusal))),
+            Err(refusal) => return Ok(Produced::Refused(Run::SourceRefused(refusal))),
         };
         let Ok(source) = SourceReader::read(snapshot.bytes()) else {
             // A unit that read in the read phase and not here would mean the
             // reader is not a function of its input.
-            return Ok(Build::Refused(Run::SourceRejected {
+            return Ok(Produced::Refused(Run::SourceRejected {
                 code: "source-not-reproducible",
                 byte_offset: 0,
                 path: catalog[index].path.to_string(),
@@ -742,7 +892,7 @@ pub fn build_from_provider(
             // A module that parsed in the check phase and not here would mean
             // the parser is not a function of its input. It is refused rather
             // than worked around.
-            return Ok(Build::Refused(Run::Diagnosed {
+            return Ok(Produced::Refused(Run::Diagnosed {
                 stage: PipelineStage::Parse,
                 diagnostics: Vec::new(),
             }));
@@ -771,14 +921,22 @@ pub fn build_from_provider(
             .collect();
         let module = match lower_module_in_set(&source, schema, &context, &imports) {
             Ok(module) => module,
-            Err(gap) => return Ok(Build::Refused(Run::NotLowered(gap))),
+            Err(gap) => return Ok(Produced::Refused(Run::NotLowered(gap))),
         };
         drop(imports);
         // Both views are built from the lowered IR, while it is still here, and
         // never from the source or a summary.
         interfaces[index] = Some(LoweringInterface::of(&module));
-        surfaces.push((index, VerificationSurface::of(&module)));
-        images.push(image_of(&module));
+        // **The product leaves here, not at the end.** What the output does
+        // with a module's image and declaration — hold it, or write it into a
+        // backing this build does not own — is the caller's arrangement, and
+        // the build's own account is the same either way.
+        let surface = VerificationSurface::of(&module);
+        let (image, _) = tos_image::encode(&module);
+        if let Err(full) = output.module(&surface, image) {
+            return Ok(Produced::OutOfRoom(full));
+        }
+        drop(surface);
         // This is the line the phase rests on. Past it, this module's bodies,
         // blocks, instructions and source map are gone; what is left of it is
         // an image and two narrow views.
@@ -803,24 +961,10 @@ pub fn build_from_provider(
         .position(|index| *index == entry_index)
         .expect("the closure always contains the entry");
 
-    // What the source set actually provides, computed from what was lowered.
-    // The verifier will be handed this and the images, never the frontend's
-    // verdict: an import that names a module the set does not provide, or claims
-    // an identity the set disagrees with, is refused at admission even though
-    // the same frontend produced both.
-    let resolution = snapshot_of(&surfaces);
-    // The verification surfaces go here. They were needed until the declaration
-    // was assembled; past it nothing reads one.
-    drop(surfaces);
-
-    // The build workspace ends here. What is returned is images and a
+    // The build workspace ends here. What the output holds is images and a
     // declaration about them — no receipt, no record, no membership, and
     // nothing that built any of it.
-    Ok(Build::Ready(Box::new(BuiltClosure {
-        images,
-        resolution,
-        entry_position,
-    })))
+    Ok(Produced::Done { entry_position })
 }
 
 /// Admits a built closure into a process (ADR-0073 §2).
@@ -840,14 +984,37 @@ pub fn admit(
     entry: &str,
     trace: &mut dyn Trace,
     residency: ResidencyLimits,
-) -> Preparation {
+) -> Preparation<'static> {
     trace.entering(PipelineStage::Verify);
     let BuiltClosure {
         images,
         resolution,
         entry_position,
     } = built;
-    match Prepared::launch_images(images, &resolution, entry_position, entry, residency) {
+    launched(
+        Images::Owned(ImageStore { images }),
+        &resolution,
+        entry_position,
+        entry,
+        trace,
+        residency,
+    )
+}
+
+/// Verifies a closure from wherever its images are, and binds a resident set.
+///
+/// The one place a launch happens, so the two admissions cannot drift: an
+/// arrangement that verified differently depending on where the bytes were
+/// would make the storage a semantic input.
+fn launched<'a>(
+    store: Images<'a>,
+    resolution: &ResolutionSnapshot,
+    entry_position: usize,
+    entry: &str,
+    trace: &mut dyn Trace,
+    limits: ResidencyLimits,
+) -> Preparation<'a> {
+    match Prepared::launched(store, resolution, entry_position, entry, limits) {
         Ok(prepared) => Preparation::Ready(Box::new(prepared)),
         // Every module verified and the closure is what it claimed to be; what
         // is absent is the function the caller named. That is the run failing
@@ -858,6 +1025,60 @@ pub fn admit(
         }
         Err(failure) => Preparation::Refused(launch_refusal(failure)),
     }
+}
+
+/// Admits an exact closure a build left in a bundle (ADR-0073 §2).
+///
+/// **The same admission, over bytes this process did not write.** The bundle is
+/// parsed by a total parser first — framing only, and a bundle that does not
+/// describe itself is refused before a verifier is asked anything — and then
+/// every image is verified in turn against the declaration the bundle carries
+/// about it.
+///
+/// The declaration is rebuilt here, in this process, from what the bundle says.
+/// It is not a receipt and it does not shorten any work: it is the resolution
+/// the verifier holds every image to, and an image that does not match what its
+/// own bundle claims is refused by the component that read both.
+///
+/// Nothing about the bundle's origin is evidence. That it parsed, that a build
+/// wrote it, that it arrived read-only — none of that admits a single
+/// instruction.
+pub fn admit_bundle<'a>(
+    bundle: &tos_bundle::Bundle<'a>,
+    entry: &str,
+    trace: &mut dyn Trace,
+    residency: ResidencyLimits,
+) -> Preparation<'a> {
+    trace.entering(PipelineStage::Verify);
+    let mut declared = tos_verifier::DeclaredResolution::new();
+    for position in 0..bundle.modules() {
+        let Some(declaration) = bundle.declaration(position) else {
+            // Unreachable through a parsed bundle: every declaration was decoded
+            // before this returned one. Answered rather than asserted.
+            return Preparation::Refused(Run::Refused(Refusal::EntryNotResident(
+                tos_residency::Failure::Missing(position),
+            )));
+        };
+        declared
+            .module(declaration.name, declaration.content_id)
+            .exports_declared();
+        for export in declaration.exports() {
+            declared.export(export);
+        }
+        for capability in declaration.capabilities() {
+            declared.capability(capability);
+        }
+    }
+    let resolution = declared.build();
+    let store = Images::Bundle(BundleStore { bundle: *bundle });
+    launched(
+        store,
+        &resolution,
+        bundle.entry_position(),
+        entry,
+        trace,
+        residency,
+    )
 }
 
 /// Runs a prepared executable closure.
@@ -909,15 +1130,15 @@ pub fn run_prepared(
 /// It is separate from the frontend on purpose. A caller that already has
 /// verified IR — a measurement harness, a boot path — prepares once and runs
 /// many times, and the preparation is not inside anything it measures.
-pub struct Prepared {
-    store: ImageStore,
+pub struct Prepared<'a> {
+    store: Images<'a>,
     records: Vec<VerifiedModuleRecord>,
     manifest: VerifiedClosureManifest,
     receipt: VerifiedModule,
     residency: Residency,
 }
 
-impl Prepared {
+impl<'a> Prepared<'a> {
     /// Encodes nothing and decodes nothing: verifies an ordered image closure,
     /// one module at a time, and binds a bounded resident set to what the launch
     /// established.
@@ -938,8 +1159,24 @@ impl Prepared {
         entry_position: usize,
         entry: &str,
         limits: ResidencyLimits,
-    ) -> Result<Prepared, tos_residency::Failure> {
-        let store = ImageStore { images };
+    ) -> Result<Prepared<'static>, tos_residency::Failure> {
+        Prepared::launched(
+            Images::Owned(ImageStore { images }),
+            resolution,
+            entry_position,
+            entry,
+            limits,
+        )
+    }
+
+    /// The same, over images that may live outside this process's own memory.
+    fn launched(
+        store: Images<'a>,
+        resolution: &ResolutionSnapshot,
+        entry_position: usize,
+        entry: &str,
+        limits: ResidencyLimits,
+    ) -> Result<Prepared<'a>, tos_residency::Failure> {
         let launched = launch(
             &store,
             &|_| resolution.clone(),
@@ -976,7 +1213,7 @@ impl Prepared {
         resolution: &ResolutionSnapshot,
         entry: &str,
         limits: ResidencyLimits,
-    ) -> Result<Prepared, tos_residency::Failure> {
+    ) -> Result<Prepared<'static>, tos_residency::Failure> {
         let images: Vec<ImageSnapshot> = modules.iter().map(|module| image_of(module)).collect();
         let entry_position = images.len().saturating_sub(1);
         Prepared::launch_images(images, resolution, entry_position, entry, limits)
@@ -1068,6 +1305,70 @@ fn image_of(module: &Module) -> ImageSnapshot {
     ImageSnapshot::from(bytes.into_boxed_slice())
 }
 
+/// Where a launch and a run reach their images.
+///
+/// Two backings, one interface. A closure the caller handed over as values is
+/// owned by this process; a closure it was pointed at lives in a bundle that
+/// outlives the workspace which wrote it and is never written by anything here.
+/// Which one a `Prepared` holds changes nothing about verification, membership
+/// or execution — it changes only where the bytes were before they were read.
+enum Images<'a> {
+    Owned(ImageStore),
+    Bundle(BundleStore<'a>),
+}
+
+impl ClosureSource for Images<'_> {
+    fn count(&self) -> usize {
+        match self {
+            Images::Owned(store) => store.count(),
+            Images::Bundle(store) => store.count(),
+        }
+    }
+
+    fn image(&self, position: usize) -> Option<ImageSnapshot> {
+        match self {
+            Images::Owned(store) => ClosureSource::image(store, position),
+            Images::Bundle(store) => ClosureSource::image(store, position),
+        }
+    }
+}
+
+impl ModuleProvider for Images<'_> {
+    fn image(&self, id: ClosureModuleId) -> Option<ImageSnapshot> {
+        ClosureSource::image(self, id.position())
+    }
+}
+
+/// The images of a bundle, as the launch and the run reach them.
+///
+/// A bundle is read-only bytes this process was pointed at; what a launch and a
+/// resident set ask for is one module's image at a time. Each request copies
+/// that one image out of the bundle, which is bounded by the residency
+/// declaration and never by the closure — in a system with a real region the
+/// same call is a mapping and not a copy, and nothing above this line can tell
+/// the difference.
+struct BundleStore<'a> {
+    bundle: tos_bundle::Bundle<'a>,
+}
+
+impl ClosureSource for BundleStore<'_> {
+    fn count(&self) -> usize {
+        self.bundle.modules()
+    }
+
+    fn image(&self, position: usize) -> Option<ImageSnapshot> {
+        self.bundle
+            .image(position)
+            .map(|bytes| ImageSnapshot::from(Vec::from(bytes).into_boxed_slice()))
+    }
+}
+
+impl ModuleProvider for BundleStore<'_> {
+    fn image(&self, id: ClosureModuleId) -> Option<ImageSnapshot> {
+        ClosureSource::image(self, id.position())
+    }
+}
+
 /// The closure's images, in position order.
 ///
 /// The launch's `ClosureSource` and the run's `ModuleProvider` are the same
@@ -1111,9 +1412,9 @@ fn launch_refusal(failure: tos_residency::Failure) -> Run {
 /// Built from the modules that were actually lowered rather than from the
 /// request: a snapshot assembled from what a caller asked for would let the
 /// verifier confirm the caller's own assumption.
-fn snapshot_of(surfaces: &[(usize, VerificationSurface)]) -> ResolutionSnapshot {
+fn snapshot_of(surfaces: &[VerificationSurface]) -> ResolutionSnapshot {
     let mut declared = tos_verifier::DeclaredResolution::new();
-    for (_, surface) in surfaces {
+    for surface in surfaces {
         declared
             .module(surface.module_name(), surface.content_id())
             .exports_declared();

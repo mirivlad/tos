@@ -37,7 +37,7 @@ const RESIDENCY: ResidencyLimits = ResidencyLimits {
 /// Encode, verify each image in turn, keep the records and the membership,
 /// release the modules, run through the bounded resident set. Every test in
 /// this file goes through it: there is no second way to execute a module.
-fn launched(modules: &[&Module], entry: &str) -> Result<Prepared, Failure> {
+fn launched(modules: &[&Module], entry: &str) -> Result<Prepared<'static>, Failure> {
     Prepared::launch(modules, &ResolutionSnapshot::default(), entry, RESIDENCY)
 }
 

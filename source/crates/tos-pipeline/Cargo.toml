@@ -15,8 +15,11 @@ tos-engine = { path = "../tos-engine" }
 tos-image = { path = "../tos-image" }
 tos-residency = { path = "../tos-residency" }
 tos-hash = { path = "../tos-hash" }
+tos-bundle = { path = "../tos-bundle" }
 
 [dev-dependencies]
 tos-verifier = { path = "../tos-verifier" }
+tos-image = { path = "../tos-image" }
+tos-bundle = { path = "../tos-bundle" }
 tos-engine = { path = "../tos-engine" }
 tos-ir = { path = "../tos-ir" }
