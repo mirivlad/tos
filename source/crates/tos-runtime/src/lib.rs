@@ -543,11 +543,23 @@ impl BoundedHeap {
     /// returns the arena to its starting state, so it is observable rather than
     /// assumed.
     pub fn block_census(&self) -> (usize, usize) {
+        let (blocks, free, _) = self.free_census();
+        (blocks, free)
+    }
+
+    /// The same, plus the **largest free block** the region currently holds.
+    ///
+    /// A count of free blocks says how broken up the arena is; the largest hole
+    /// says what it can still answer. Those are different facts, and an
+    /// allocation that fails while megabytes are free fails because of the
+    /// second one.
+    pub fn free_census(&self) -> (usize, usize, usize) {
         if !self.ready {
-            return (0, 0);
+            return (0, 0, 0);
         }
         let mut blocks = 0;
         let mut free = 0;
+        let mut largest = 0;
         let mut cursor = self.base;
         let end = self.base + self.length;
         while cursor + OVERHEAD <= end {
@@ -559,10 +571,11 @@ impl BoundedHeap {
             blocks += 1;
             if tag.free {
                 free += 1;
+                largest = largest.max(tag.size);
             }
             cursor += tag.size + OVERHEAD;
         }
-        (blocks, free)
+        (blocks, free, largest)
     }
 }
 
@@ -702,6 +715,13 @@ impl GlobalHeap {
         (heap.committed(), heap.peak_extent())
     }
 
+    pub fn free_census(&self) -> (usize, usize, usize) {
+        // SAFETY: the heap is initialised and this borrow is not held across
+        // an allocation.
+        unsafe { (*self.heap.get()).free_census() }
+    }
+
+    /// How many blocks the arena holds and how many are free.
     pub fn block_census(&self) -> (usize, usize) {
         // SAFETY: single-context use; see the type's note.
         unsafe { (*self.heap.get()).block_census() }

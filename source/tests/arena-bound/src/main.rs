@@ -190,16 +190,20 @@ static CAP: AtomicUsize = AtomicUsize::new(usize::MAX);
 struct Arena {
     committed: usize,
     frontier: usize,
+    /// The largest free block, which is what an allocation can still be
+    /// answered from however much is free in total.
+    largest_hole: usize,
     blocks: usize,
     free: usize,
 }
 
 fn arena() -> Arena {
     let (committed, frontier) = HEAP.heap.usage();
-    let (blocks, free) = HEAP.heap.block_census();
+    let (blocks, free, largest_hole) = HEAP.heap.free_census();
     Arena {
         committed,
         frontier,
+        largest_hole,
         blocks,
         free,
     }
@@ -313,7 +317,11 @@ fn main() {
         if let Some(cap) = cap {
             println!("declared workspace cap: {cap} B ({:.2} MiB)", mib(cap));
         }
-        build_into_bundle_mode(shape, modules, unit_bytes, room, cap);
+        let generative = std::env::args().any(|argument| argument == "--generative");
+        if generative {
+            println!("provider: generative, one unit at a time, no corpus resident");
+        }
+        build_into_bundle_mode(shape, modules, unit_bytes, room, cap, generative);
         return;
     }
     if std::env::args().any(|argument| argument == "--capsule") {
@@ -328,7 +336,26 @@ fn main() {
             .skip_while(|argument| argument != "--modules")
             .nth(1)
             .and_then(|value| value.parse().ok());
-        capsule_source(unit_bytes, modules);
+        let out = std::env::args()
+            .skip_while(|argument| argument != "--out")
+            .nth(1);
+        let from = std::env::args()
+            .skip_while(|argument| argument != "--in")
+            .nth(1);
+        if let Some(path) = from {
+            let room = std::env::args()
+                .skip_while(|argument| argument != "--bundle-bytes")
+                .nth(1)
+                .and_then(|value| value.parse().ok())
+                .unwrap_or(256 * 1024 * 1024);
+            let cap: Option<usize> = std::env::args()
+                .skip_while(|argument| argument != "--workspace-cap")
+                .nth(1)
+                .and_then(|value| value.parse().ok());
+            capsule_external(&path, room, cap);
+            return;
+        }
+        capsule_source(unit_bytes, modules, out);
         return;
     }
     if std::env::args().any(|argument| argument == "--lowering") {
@@ -947,6 +974,109 @@ fn measure_build(provider: &dyn tos_pipeline::SourceProvider, entry_path: &str, 
     }
 }
 
+/// A source set nobody holds: each unit is made when it is asked for.
+///
+/// **The residency-independent shape claim A is about.** The catalog is
+/// metadata — paths and nothing else — and a unit's bytes exist only between
+/// the request that made them and the drop that ends them. No corpus is
+/// resident anywhere: not in the measured account, and not outside it either,
+/// which is what a `SliceSourceProvider` over host allocations cannot say.
+///
+/// It answers the same identity with the same bytes because [`unit_text`] is a
+/// function of the index. A generator that drifted would be caught by the
+/// pipeline's own materialization check rather than by this comment.
+struct GenerativeProvider {
+    shape: Shape,
+    count: usize,
+    unit_bytes: usize,
+    /// The catalog's own text, which a provider must be able to offer without
+    /// materializing anything.
+    paths: Vec<String>,
+    /// Every snapshot handed out that has not been dropped yet.
+    live: std::cell::RefCell<Vec<std::sync::Weak<[u8]>>>,
+    peak_live: std::cell::Cell<usize>,
+    peak_bytes: std::cell::Cell<usize>,
+    requests: std::cell::Cell<usize>,
+}
+
+impl GenerativeProvider {
+    fn new(shape: Shape, count: usize, unit_bytes: usize) -> GenerativeProvider {
+        GenerativeProvider {
+            shape,
+            count,
+            unit_bytes,
+            paths: (0..count)
+                .map(|index| unit_path(shape, index, count))
+                .collect(),
+            live: std::cell::RefCell::new(Vec::new()),
+            peak_live: std::cell::Cell::new(0),
+            peak_bytes: std::cell::Cell::new(0),
+            requests: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Releases what the instrument itself is holding.
+    ///
+    /// A `Weak` keeps the allocation it watches alive even after the last
+    /// strong reference is gone, so the measurement would otherwise leave one
+    /// unit's buffer in the account it is measuring. Called before the boundary
+    /// is read, so what is reported is the build's and not the instrument's.
+    fn settle(&self) {
+        self.live.borrow_mut().clear();
+    }
+
+    /// How much source was materialized at once, at the worst moment.
+    ///
+    /// Measured rather than argued: every snapshot handed out is watched
+    /// weakly, so what is counted is what the caller had **not yet dropped**.
+    fn peak(&self) -> (usize, usize, usize) {
+        (
+            self.peak_live.get(),
+            self.peak_bytes.get(),
+            self.requests.get(),
+        )
+    }
+
+    fn watch(&self, snapshot: &std::sync::Arc<[u8]>) {
+        let mut live = self.live.borrow_mut();
+        live.retain(|weak| weak.strong_count() > 0);
+        live.push(std::sync::Arc::downgrade(snapshot));
+        let bytes: usize = live
+            .iter()
+            .filter_map(|weak| weak.upgrade())
+            .map(|held| held.len())
+            .sum();
+        self.peak_live.set(self.peak_live.get().max(live.len()));
+        self.peak_bytes.set(self.peak_bytes.get().max(bytes));
+        self.requests.set(self.requests.get() + 1);
+    }
+}
+
+impl tos_pipeline::SourceProvider for GenerativeProvider {
+    fn catalog(&self) -> Vec<tos_pipeline::SourceCatalogEntry<'_>> {
+        self.paths
+            .iter()
+            .enumerate()
+            .map(|(position, path)| tos_pipeline::SourceCatalogEntry {
+                id: tos_pipeline::SourceEntryId::at(position),
+                path: path.as_str(),
+            })
+            .collect()
+    }
+
+    fn source(&self, id: tos_pipeline::SourceEntryId) -> Option<tos_pipeline::SourceSnapshot<'_>> {
+        let index = id.position();
+        if index >= self.count {
+            return None;
+        }
+        let text = unit_text(self.shape, index, self.count, self.unit_bytes);
+        let bytes: std::sync::Arc<[u8]> =
+            std::sync::Arc::from(text.into_bytes().into_boxed_slice());
+        self.watch(&bytes);
+        Some(tos_pipeline::SourceSnapshot::Owned(bytes))
+    }
+}
+
 /// The build account when its products leave it as they are made.
 ///
 /// **The measurement the workspace size is chosen from.** The bundle's backing
@@ -968,12 +1098,56 @@ fn build_into_bundle_mode(
     unit_bytes: usize,
     room: usize,
     cap: Option<usize>,
+    generative: bool,
 ) {
     println!();
     println!(
         "== build into an external bundle, {} shape, {count} modules of {unit_bytes} bytes ==",
         shape.named()
     );
+    if generative {
+        // **Claim A's provider: no corpus anywhere.** The units are not built
+        // in advance at all, inside the account or outside it — each exists
+        // between the request that made it and the drop that ends it.
+        let provider = GenerativeProvider::new(shape, count, unit_bytes);
+        let backing = outside_the_arena_mut(room);
+        let mut slice = tos_bundle::SliceBacking::new(backing);
+        let entry_path = unit_path(shape, count - 1, count);
+        let before = arena();
+        if let Some(cap) = cap {
+            CAP.store(cap, Ordering::SeqCst);
+        }
+        let written = tos_pipeline::build_into_bundle(
+            &provider,
+            "tos-arena-bound",
+            &entry_path,
+            &mut slice,
+            &mut Silent,
+        )
+        .expect("the fixture names an entry it contains");
+        provider.settle();
+        let boundary = arena();
+        CAP.store(usize::MAX, Ordering::SeqCst);
+        let (live, live_bytes, requests) = provider.peak();
+        println!(
+            "  source resident before the build                    0 B (a generator holds none)"
+        );
+        println!(
+            "  bundle backing offered                  {:>12} B ({:>7.2} MiB)",
+            room,
+            mib(room)
+        );
+        println!(
+            "  arena before the build                  {:>12} B committed, frontier {} B",
+            before.committed, before.frontier
+        );
+        report_external(before, boundary, written, &mut slice);
+        println!(
+            "  source materialized at once, maximum    {:>12} B over {live} snapshot(s), {requests} requests",
+            live_bytes
+        );
+        return;
+    }
     // **One unit at a time, and each leaves the arena before the next is made.**
     // The fixture is not the workspace, and a corpus generated inside the
     // account being measured would put its own high-water mark under every
@@ -1032,6 +1206,17 @@ fn build_into_bundle_mode(
         "  arena before the build                  {:>12} B committed, frontier {} B",
         before.committed, before.frontier
     );
+    report_external(before, boundary, written, &mut slice);
+}
+
+/// Reports one external-output build: the two accounts, and what the target
+/// makes of what was written.
+fn report_external(
+    _before: Arena,
+    boundary: Arena,
+    written: tos_pipeline::BuildIntoBundle,
+    slice: &mut tos_bundle::SliceBacking<'_>,
+) {
     match written {
         tos_pipeline::BuildIntoBundle::Written { bytes, modules } => {
             println!(
@@ -1058,6 +1243,14 @@ fn build_into_bundle_mode(
                 "  allocator headroom over live bytes      {:>12} B ({:>7.2} MiB)",
                 boundary.frontier.saturating_sub(boundary.committed),
                 mib(boundary.frontier.saturating_sub(boundary.committed))
+            );
+            println!(
+                "  fragmentation at the boundary           {blocks} blocks, {free} free, \
+                 largest hole {:>12} B ({:>7.2} MiB)",
+                boundary.largest_hole,
+                mib(boundary.largest_hole),
+                blocks = boundary.blocks,
+                free = boundary.free
             );
             println!(
                 "  per module: bundle {:>9.2} KiB   workspace frontier {:>9.2} KiB",
@@ -1115,6 +1308,82 @@ fn build_into_bundle_mode(
     }
 }
 
+/// The ledger for a real Capsule v1: build from a mapped capsule into a bundle.
+///
+/// The capsule arrives as bytes on disk written by `--capsule --out`, read into
+/// memory **outside** the measured arena, exactly as a boot maps a capsule the
+/// loader placed. What the arena then holds is the build workspace and nothing
+/// else: no corpus, no capsule, no products.
+fn capsule_external(path: &str, room: usize, cap: Option<usize>) {
+    let mapped = read_outside_the_arena(path);
+    let capsule = tos_capsule::parse(mapped).expect("the capsule fixture parses");
+    let provider = tos_capsule_source::CapsuleSourceProvider::over(capsule);
+    let offered = provider.catalog().len();
+    let backing = outside_the_arena_mut(room);
+    let mut slice = tos_bundle::SliceBacking::new(backing);
+
+    println!();
+    println!("== capsule-backed build into an external bundle ==");
+    println!(
+        "  capsule mapped, outside both accounts   {:>12} B ({:>7.2} MiB), {offered} units offered",
+        mapped.len(),
+        mib(mapped.len())
+    );
+    println!(
+        "  bundle backing offered                  {:>12} B ({:>7.2} MiB)",
+        room,
+        mib(room)
+    );
+    let before = arena();
+    if let Some(cap) = cap {
+        CAP.store(cap, Ordering::SeqCst);
+    }
+    let written = tos_pipeline::build_into_bundle(
+        &provider,
+        "tos-arena-bound",
+        "system/boot/init.tos",
+        &mut slice,
+        &mut Silent,
+    )
+    .expect("the capsule contains the entry");
+    let boundary = arena();
+    CAP.store(usize::MAX, Ordering::SeqCst);
+    println!(
+        "  arena before the build                  {:>12} B committed, frontier {} B",
+        before.committed, before.frontier
+    );
+    report_external(before, boundary, written, &mut slice);
+    println!(
+        "  physical peak, capsule + workspace + bundle {:>8.2} MiB",
+        mib(mapped.len() + boundary.frontier + bundle_bytes(&slice))
+    );
+}
+
+/// How much of a backing a finished bundle occupies, read back from its header.
+fn bundle_bytes(slice: &tos_bundle::SliceBacking<'_>) -> usize {
+    tos_bundle::Bundle::parse(slice.bytes())
+        .map(|bundle| bundle.bytes().len())
+        .unwrap_or_else(|_| {
+            let bytes = slice.bytes();
+            let mut length = [0u8; 8];
+            length.copy_from_slice(&bytes[16..24]);
+            u64::from_le_bytes(length) as usize
+        })
+}
+
+/// Reads a file into memory the measured arena never sees.
+fn read_outside_the_arena(path: &str) -> &'static [u8] {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).expect("the capsule fixture is there");
+    let length = file
+        .metadata()
+        .expect("the capsule fixture has a size")
+        .len() as usize;
+    let buffer = outside_the_arena_mut(length);
+    file.read_exact(buffer).expect("the capsule fixture reads");
+    buffer
+}
+
 /// A writable buffer outside the measured arena, for a bundle to be written to.
 fn outside_the_arena_mut(bytes: usize) -> &'static mut [u8] {
     let layout = Layout::from_size_align(bytes.max(1), 4096).expect("a valid layout");
@@ -1143,7 +1412,7 @@ fn outside_the_arena_mut(bytes: usize) -> &'static mut [u8] {
 /// This establishes the provider and the algorithm. It does not establish that
 /// a build worker can hand its output to another process, and it is not a claim
 /// about source larger than a capsule (ADR-0073's claim C).
-fn capsule_source(unit_bytes: usize, requested: Option<usize>) {
+fn capsule_source(unit_bytes: usize, requested: Option<usize>, out: Option<String>) {
     println!();
     println!("== capsule-backed build, units of {unit_bytes} bytes ==");
     // Per file the capsule spends a path entry, a file entry and a name; the
@@ -1175,6 +1444,29 @@ fn capsule_source(unit_bytes: usize, requested: Option<usize>) {
         }
     };
 
+    if let Some(path) = out {
+        // **Written out, because assembling a capsule is not free and its cost
+        // is not the build's.** The builder works through the global allocator,
+        // which is the measured arena, so a capsule assembled in the same
+        // process leaves its own high-water mark under every figure after it.
+        // A second process reads these bytes into memory outside the arena and
+        // measures a build that starts from a mapped capsule, which is what a
+        // boot does.
+        std::fs::write(&path, &bytes).expect("the capsule fixture is written");
+        println!(
+            "  capsule                                 {:>12} B of {} B ceiling, {} B spare",
+            bytes.len(),
+            tos_capsule::MAX_CAPSULE_BYTES,
+            tos_capsule::MAX_CAPSULE_BYTES - bytes.len()
+        );
+        println!(
+            "  source carried                          {:>12} B ({:>7.2} MiB) in {count} units",
+            carried,
+            mib(carried)
+        );
+        println!("  written to                              {path}");
+        return;
+    }
     // Outside the arena, where a mapped capsule physically is. The builder's own
     // copy goes with the fixture's, before anything is measured.
     let capsule_length = bytes.len();
@@ -1299,38 +1591,60 @@ fn for_each_unit(
     unit_bytes: usize,
     emit: &mut dyn FnMut(String, String),
 ) {
+    for index in 0..count {
+        emit(
+            unit_path(shape, index, count),
+            unit_text(shape, index, count, unit_bytes),
+        );
+    }
+}
+
+/// Where one unit of a shaped fixture is stored.
+fn unit_path(shape: Shape, index: usize, count: usize) -> String {
+    if shape == Shape::WideFanIn && index == count - 1 {
+        return String::from("set/entry.tos");
+    }
+    module_path(index)
+}
+
+/// One unit of a shaped fixture, generated from its index alone.
+///
+/// **A total function of the index**, which is what lets a provider materialize
+/// one unit at a time: the same identity asked for twice produces the same
+/// bytes, so a build that resolves over the catalog and then reads each member
+/// again sees exactly what it resolved. A generator that could not promise that
+/// would be caught by the identity check in the pipeline's materialization,
+/// which is the point of that check.
+fn unit_text(shape: Shape, index: usize, count: usize, unit_bytes: usize) -> String {
     match shape {
         Shape::Chain => {
-            emit(module_path(0), canonical_module_calling(0, unit_bytes));
-            for index in 1..count {
-                let mut text = format!(
-                    "module set.m{index} version 1.0 profile bootstrap; \
-                     import set.m{} as prev; \
-                     resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
-                     workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 8] \
-                     pub record Point{index} [x: i32, y: i32] \
-                     pub fn value{index}() -> i32 {{ return prev.value{}(); }} \
-                     pub fn total{index}(point: Point{index}) -> i32 {{ \
-                     return point.x + point.y; }} ",
-                    index - 1,
-                    index - 1
-                );
-                if index == count - 1 {
-                    text.push_str(&format!(
-                        "pub fn main() -> i32 {{ return prev.value{}(); }} ",
-                        index - 1
-                    ));
-                }
-                fill_to(&mut text, index, unit_bytes);
-                emit(module_path(index), text);
+            if index == 0 {
+                return canonical_module_calling(0, unit_bytes);
             }
+            let mut text = format!(
+                "module set.m{index} version 1.0 profile bootstrap; \
+                 import set.m{} as prev; \
+                 resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
+                 workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 8] \
+                 pub record Point{index} [x: i32, y: i32] \
+                 pub fn value{index}() -> i32 {{ return prev.value{}(); }} \
+                 pub fn total{index}(point: Point{index}) -> i32 {{ \
+                 return point.x + point.y; }} ",
+                index - 1,
+                index - 1
+            );
+            if index == count - 1 {
+                text.push_str(&format!(
+                    "pub fn main() -> i32 {{ return prev.value{}(); }} ",
+                    index - 1
+                ));
+            }
+            fill_to(&mut text, index, unit_bytes);
+            text
         }
         Shape::WideFanIn => {
-            for index in 0..count.saturating_sub(1) {
-                emit(
-                    module_path(index),
-                    canonical_module_calling(index, unit_bytes),
-                );
+            if index < count - 1 {
+                return canonical_module_calling(index, unit_bytes);
             }
             // Derived, not assumed: append one import and one use at a time
             // until the next pair would cross the ceiling.
@@ -1340,10 +1654,9 @@ fn for_each_unit(
                  imports: 255] ";
             let mut imports = String::new();
             let mut body = String::from("pub fn main() -> i32 { let mut total = 0i32; ");
-            let mut fan = 0usize;
-            for index in 0..count.saturating_sub(1) {
-                let line = format!("import set.m{index} as m{index}; ");
-                let use_site = format!("total = total + m{index}.value{index}(); ");
+            for at in 0..count.saturating_sub(1) {
+                let line = format!("import set.m{at} as m{at}; ");
+                let use_site = format!("total = total + m{at}.value{at}(); ");
                 let projected = head.len()
                     + imports.len()
                     + line.len()
@@ -1356,49 +1669,36 @@ fn for_each_unit(
                 }
                 imports.push_str(&line);
                 body.push_str(&use_site);
-                fan += 1;
             }
             body.push_str("return total; }");
             let entry = format!("{head}{imports}{envelope}{body}");
             assert!(entry.len() <= unit_bytes, "the entry is derived to fit");
-            println!(
-                "  entry fan-in derived from source accounting: {fan} of {} dependencies, \
-                 entry {} B of {unit_bytes} B",
-                count.saturating_sub(1),
-                entry.len()
-            );
-            emit(String::from("set/entry.tos"), entry);
+            entry
         }
         Shape::Balanced => {
-            for index in 0..count {
-                if index < 2 {
-                    emit(
-                        module_path(index),
-                        canonical_module_calling(index, unit_bytes),
-                    );
-                } else {
-                    let (left, right) = (index - 1, index - 2);
-                    let mut text = format!(
-                        "module set.m{index} version 1.0 profile bootstrap; \
-                         import set.m{left} as l; import set.m{right} as r; \
-                         resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
-                         workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, \
-                         imports: 8] \
-                         pub record Point{index} [x: i32, y: i32] \
-                         pub fn value{index}() -> i32 {{ \
-                         return l.value{left}() + r.value{right}(); }} \
-                         pub fn total{index}(point: Point{index}) -> i32 {{ \
-                         return point.x + point.y; }} "
-                    );
-                    if index == count - 1 {
-                        text.push_str(&format!(
-                            "pub fn main() -> i32 {{ return l.value{left}() + r.value{right}(); }} "
-                        ));
-                    }
-                    fill_to(&mut text, index, unit_bytes);
-                    emit(module_path(index), text);
-                }
+            if index < 2 {
+                return canonical_module_calling(index, unit_bytes);
             }
+            let (left, right) = (index - 1, index - 2);
+            let mut text = format!(
+                "module set.m{index} version 1.0 profile bootstrap; \
+                 import set.m{left} as l; import set.m{right} as r; \
+                 resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
+                 workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, \
+                 imports: 8] \
+                 pub record Point{index} [x: i32, y: i32] \
+                 pub fn value{index}() -> i32 {{ \
+                 return l.value{left}() + r.value{right}(); }} \
+                 pub fn total{index}(point: Point{index}) -> i32 {{ \
+                 return point.x + point.y; }} "
+            );
+            if index == count - 1 {
+                text.push_str(&format!(
+                    "pub fn main() -> i32 {{ return l.value{left}() + r.value{right}(); }} "
+                ));
+            }
+            fill_to(&mut text, index, unit_bytes);
+            text
         }
     }
 }

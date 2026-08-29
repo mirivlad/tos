@@ -367,6 +367,71 @@ same receipt from the target's own verifier, the same value, the same fuel used
 and the same declared limit. A storage arrangement that changed a result would
 be a semantic input, and a build's output has no business being one.
 
+## The three claims have three accounts
+
+**A ledger that mixes them describes no possible system.** An earlier revision of
+this file's companion ADR added a `32 MiB` capsule to a build of
+`256 x 256 KiB`; the capsule measurement above says a Capsule v1 carries at most
+`127` units at that size, so the two lines cannot be about the same build. What
+follows keeps them apart.
+
+### A — the reference algorithm, with no corpus resident anywhere
+
+Measured through a **generative provider**: the catalog is paths, each unit is
+made when it is asked for and dropped when the caller is done with it, and no
+corpus exists inside the measured account or outside it. Every snapshot handed
+out is watched weakly, so what is reported is what the caller had not yet
+dropped.
+
+| Shape | Build workspace | Source at once | Bundle | Workspace + bundle |
+|---|---:|---:|---:|---:|
+| A chain | 74.61 MiB | 262 116 B | 100.87 MiB | 175.47 MiB |
+| B wide fan-in | 70.71 MiB | 262 116 B | 100.47 MiB | 171.18 MiB |
+| C balanced DAG | **76.45 MiB** | 262 142 B | 100.90 MiB | 177.35 MiB |
+
+**One unit, ever**, over `512` requests for a closure of 256 — two per module,
+one for the check pass and one for lowering. That is claim A's residency
+independence, measured rather than asserted.
+
+Enforced hard minimum on the worst shape: the build completes in a declared
+workspace of **`80 281 600 B`** and fails to allocate at `79 298 560 B`.
+
+On the ADR-0040 machine, worst shape, with no margin on the workspace:
+
+| Line | |
+|---|---:|
+| BuildWorkspace, measured worst | 76.45 MiB |
+| launch bundle | 100.90 MiB |
+| build-worker process overhead beyond its grant | 2.08 MiB |
+| page tables for both mappings, `4 KiB` pages | ~0.4 MiB |
+| **peak during the build** | **~179.8 MiB** |
+| pool after the nucleus | ~229.8 MiB |
+| **spare** | **~50 MiB** |
+
+### B — a real Capsule v1
+
+The three configurations a capsule can hold, through `CapsuleSourceProvider` into
+an external bundle. The capsule is assembled by a separate process and read into
+memory outside the measured arena, as a boot maps one the loader placed — a
+capsule assembled in the same process leaves its own high-water mark under every
+figure after it.
+
+| Configuration | Capsule | Workspace | Hard minimum | Bundle | Physical peak |
+|---|---:|---:|---:|---:|---:|
+| 127 × 256 KiB | 31.75 MiB | 43.46 MiB | 45 875 200 B | 50.49 MiB | ~128.1 MiB |
+| 255 × 128 KiB | 31.88 MiB | 37.39 MiB | 39 321 600 B | 50.52 MiB | ~122.2 MiB |
+| 256 × 64 KiB | 16.01 MiB | 19.84 MiB | 20 971 520 B | 25.19 MiB | ~63.4 MiB |
+
+Every one runs to its answer (`Int(I32, 1)`), and the physical peak includes the
+capsule, the workspace, the bundle and the worker's overhead. Against a pool of
+`229.8 MiB` the worst leaves about `100 MiB` spare.
+
+### C — an installed-source backend
+
+**Open.** No residency is attributed to it here: not a corpus, not a capsule's
+`32 MiB`, nothing. What its contract has to permit is what A measures — one unit
+materialized at a time — which `SourceSnapshot::Owned` already allows.
+
 ## What this is not
 
 - **Not a freestanding measurement.** A host process with a bounded heap. No
