@@ -14,7 +14,15 @@ first calls `tos_pipeline::build_from_provider` and then `tos_pipeline::admit` �
 the two calls ADR-0073 §1 separates — so the line between the build account and
 the target account is a return, not an estimate.
 
-Verdict, at the docs/44 closure ceiling of **256 ceiling-sized modules**:
+**The current figure is the one measured with the products written outside the
+workspace**, which is the arrangement ADR-0074 §1 records as decided:
+`77.14 MiB` for the worst measured shape, against a bundle of `100.87 MiB`. The
+sections up to "With the products written outside the workspace" measure the
+earlier arrangement, in which the products accumulated inside the build's own
+allocator; they are kept because the decision was taken from them.
+
+Verdict for that earlier arrangement, at the docs/44 closure ceiling of
+**256 ceiling-sized modules**:
 
 - the build account's high-water mark is **`172.15` (chain), `170.25` (wide
   fan-in) and `176.86 MiB` (balanced)**;
@@ -288,6 +296,76 @@ only what is no longer live. The images, the declaration and every outcome are
 byte-identical across the change — the wide fan-in still completes with
 `Int(I32, 32385)` on `1 022` fuel, the chain and balanced fixtures still trap on
 their own `recursion: 8`.
+
+## With the products written outside the workspace
+
+The section above inferred what a workspace would cost if its products lived
+somewhere else. It no longer has to: `build_into_bundle` writes each module's
+declaration and image into a backing the build does not own, in the same step
+that produces them, and `--external` measures the workspace with that backing
+allocated outside the instrumented arena.
+
+The fixture is streamed too — each unit is generated and copied out before the
+next is made — because a corpus built inside the account being measured leaves
+its own high-water mark under every figure after it. Until that was fixed, the
+chain and balanced numbers below were the *generator's* peak and not the
+build's.
+
+**At the docs/44 closure ceiling, 256 ceiling-sized modules:**
+
+| Shape | Build workspace | Live when it returns | Bundle | Both at once |
+|---|---:|---:|---:|---:|
+| A chain | **77.14 MiB** | 0.04 MiB | 100.87 MiB | 178.01 MiB |
+| B wide fan-in | **69.54 MiB** | 0.04 MiB | 100.47 MiB | 170.01 MiB |
+| C balanced DAG | **75.96 MiB** | 0.04 MiB | 100.90 MiB | 176.86 MiB |
+
+Two things change with the products gone, and both matter:
+
+- the workspace is **`93–100 MiB` smaller** than the same build with its
+  products inside (`170–177 MiB`), which is more than the products weigh;
+- what it holds when it returns is `40 KB`. The whole of a build's memory is
+  transient, and the account can be released whole.
+
+**The workspace against the closure size** (chain, the worst measured shape):
+
+| Modules | Build workspace | Bundle | Both at once |
+|---:|---:|---:|---:|
+| 8 | 36.43 MiB | 3.20 MiB | 39.63 MiB |
+| 32 | 36.46 | 12.71 | 49.17 |
+| 64 | 36.51 | 25.38 | 61.90 |
+| 128 | 42.98 | 50.63 | 93.61 |
+| 256 | 77.14 | 100.87 | 178.01 |
+
+The workspace is **flat to three digits from 8 to 64 modules** — `36.4` to
+`36.5 MiB`, one turn's scratch and nothing else — and then climbs. Nothing
+semantic accumulates to explain it: what is live at the boundary is `40 KB` at
+every count. It is the allocator's high-water mark under 256 turns of churn, so
+it is a property of this bounded heap and not of the build algorithm, and it is
+the first thing to look at if the workspace ever needs to be smaller.
+
+The bundle grows at `0.39 MiB` a module and is the same to within `0.5 MiB`
+across the three shapes, which it should be: it holds the same images.
+
+**The smallest workspace the build fits in, enforced.** With `--workspace-cap N`
+the measured allocator refuses past `N` bytes, so the question is answered by
+running the build rather than by arithmetic. Bisected on the chain at 256:
+
+| | |
+|---|---:|
+| smallest declared workspace that completes | **81 100 800 B** (77.34 MiB) |
+| largest that does not | **81 059 840 B** (77.30 MiB) |
+
+Below the line the build **fails closed**: the allocation is refused, the build
+does not finish, and the partial bundle is not launchable — its header is
+written last, so a reader is refused rather than handed a shorter closure than
+the one that was asked for.
+
+**The two paths agree.** `crates/tos-pipeline/tests/bundle_path.rs` runs the
+same source through `build_from_provider -> admit` and through
+`build_into_bundle -> admit_bundle` and compares what a run can observe: the
+same receipt from the target's own verifier, the same value, the same fuel used
+and the same declared limit. A storage arrangement that changed a result would
+be a semantic input, and a build's output has no business being one.
 
 ## What this is not
 

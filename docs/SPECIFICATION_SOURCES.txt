@@ -140,3 +140,4 @@ docs/adr/0070-compact-verified-execution-image.md
 docs/adr/0071-bounded-verified-module-residency.md
 docs/adr/0072-source-backed-launch-workspace.md
 docs/adr/0073-build-to-image-launch.md
+docs/adr/0074-build-workspace-and-launch-bundle.md
