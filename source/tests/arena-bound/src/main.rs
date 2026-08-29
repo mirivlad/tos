@@ -41,6 +41,7 @@
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::Instant;
 
 use tos_core::{
     lower_module_in_set, LoweringInterface, ModuleContext, ModuleEntry, ModuleSummary, Parser,
@@ -394,6 +395,28 @@ fn main() {
             _ => Shape::Chain,
         };
         build_workspace(shape, modules, unit_bytes);
+        return;
+    }
+    if std::env::args().any(|argument| argument == "--summary") {
+        println!("TOS ModuleSummary decomposition: payload against representation");
+        println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
+        let body = Body::of(
+            &std::env::args()
+                .skip_while(|argument| argument != "--body")
+                .nth(1)
+                .unwrap_or_default(),
+        );
+        body.select();
+        let modules = std::env::args()
+            .skip_while(|argument| argument != "--modules")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(CLOSURE_CEILING);
+        if std::env::args().any(|argument| argument == "--index") {
+            type_index_prototypes(modules, SOURCE_CEILING);
+            return;
+        }
+        summary_decomposition(modules, SOURCE_CEILING);
         return;
     }
     if std::env::args().any(|argument| argument == "--external") {
@@ -1096,6 +1119,348 @@ fn measure_build(provider: &dyn tos_pipeline::SourceProvider, entry_path: &str, 
         ),
         other => println!("  outcome: DID NOT RUN: {other:?}"),
     }
+}
+
+/// Four ways to hold a closure's declared type names, measured against each
+/// other.
+///
+/// The set-wide check asks one question of this data — *does module M declare
+/// the name N* — and asks it once per qualified use. Everything else about the
+/// representation is cost. All four answer identically, which is checked here
+/// rather than assumed: a membership structure that is smaller and wrong is not
+/// smaller.
+fn type_index_prototypes(modules: usize, unit_bytes: usize) {
+    println!();
+    println!(
+        "== type-name index, {} body, {modules} modules of {unit_bytes} B ==",
+        Body::current().named()
+    );
+    // The same names every representation is built from, produced once, outside
+    // the arena's account for the comparison: what is compared is the index.
+    let mut names: Vec<Vec<String>> = Vec::with_capacity(modules);
+    for index in 0..modules {
+        let text = capsule_bytes(&unit_text(Shape::Chain, index, modules, unit_bytes));
+        let source = SourceReader::read(text).expect("the fixture reads");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("the fixture parses");
+        // Through the production summary, so the names are exactly the ones the
+        // set-wide check would be asked about.
+        let summary = ModuleEntry::new(&module_path(index), &source, &schema).summarize();
+        names.push(summary.declared_types.iter().cloned().collect());
+    }
+    let total: usize = names.iter().map(|set| set.len()).sum();
+    let payload: usize = names
+        .iter()
+        .flat_map(|set| set.iter())
+        .map(|name| name.len())
+        .sum();
+    println!("  names in the closure                    {total:>12}");
+    println!("  their UTF-8 payload                     {payload:>12} B");
+
+    // The probes: every tenth name, plus a miss for each, so hits and misses are
+    // equally represented and no representation is measured on hits alone.
+    let mut probes: Vec<(usize, String, bool)> = Vec::new();
+    for (module, set) in names.iter().enumerate() {
+        for name in set.iter().step_by(10) {
+            probes.push((module, name.clone(), true));
+            probes.push((module, format!("{name}_absent"), false));
+        }
+    }
+    println!(
+        "  membership probes                       {:>12}",
+        probes.len()
+    );
+
+    let mut answers: Vec<Vec<bool>> = Vec::new();
+
+    // A — one BTreeSet<String> per module, which is what a ModuleSummary holds.
+    let before = arena();
+    let built = Instant::now();
+    let a: Vec<std::collections::BTreeSet<String>> = names
+        .iter()
+        .map(|set| set.iter().cloned().collect())
+        .collect();
+    let a_built = built.elapsed();
+    let a_bytes = arena().committed.saturating_sub(before.committed);
+    let asked = Instant::now();
+    answers.push(
+        probes
+            .iter()
+            .map(|(module, name, _)| a[*module].contains(name))
+            .collect(),
+    );
+    let a_asked = asked.elapsed();
+    drop(a);
+
+    // B — a sorted Vec<String> per module, binary searched.
+    let before = arena();
+    let built = Instant::now();
+    let b: Vec<Vec<String>> = names
+        .iter()
+        .map(|set| {
+            let mut sorted: Vec<String> = set.clone();
+            sorted.sort();
+            sorted
+        })
+        .collect();
+    let b_built = built.elapsed();
+    let b_bytes = arena().committed.saturating_sub(before.committed);
+    let asked = Instant::now();
+    answers.push(
+        probes
+            .iter()
+            .map(|(module, name, _)| b[*module].binary_search(name).is_ok())
+            .collect(),
+    );
+    let b_asked = asked.elapsed();
+    drop(b);
+
+    // C — one byte slab per module and a sorted offset table over it.
+    let before = arena();
+    let built = Instant::now();
+    let c: Vec<(Vec<u8>, Vec<u32>)> = names
+        .iter()
+        .map(|set| {
+            let mut sorted: Vec<&str> = set.iter().map(|name| name.as_str()).collect();
+            sorted.sort_unstable();
+            let mut slab: Vec<u8> = Vec::new();
+            let mut offsets: Vec<u32> = Vec::with_capacity(sorted.len() + 1);
+            for name in sorted {
+                offsets.push(slab.len() as u32);
+                slab.extend_from_slice(name.as_bytes());
+            }
+            offsets.push(slab.len() as u32);
+            (slab, offsets)
+        })
+        .collect();
+    let c_built = built.elapsed();
+    let c_bytes = arena().committed.saturating_sub(before.committed);
+    let asked = Instant::now();
+    answers.push(
+        probes
+            .iter()
+            .map(|(module, name, _)| slab_contains(&c[*module], name))
+            .collect(),
+    );
+    let c_asked = asked.elapsed();
+    drop(c);
+
+    // D — one slab for the whole closure, interned, with each module holding
+    // sorted symbol ids into it.
+    let before = arena();
+    let built = Instant::now();
+    let mut slab: Vec<u8> = Vec::new();
+    let mut offsets: Vec<u32> = vec![0];
+    let mut interned: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    let d: Vec<Vec<u32>> = names
+        .iter()
+        .map(|set| {
+            let mut ids: Vec<u32> = set
+                .iter()
+                .map(|name| match interned.get(name) {
+                    Some(id) => *id,
+                    None => {
+                        let id = (offsets.len() - 1) as u32;
+                        slab.extend_from_slice(name.as_bytes());
+                        offsets.push(slab.len() as u32);
+                        interned.insert(name.clone(), id);
+                        id
+                    }
+                })
+                .collect();
+            ids.sort_unstable();
+            ids
+        })
+        .collect();
+    let d_built = built.elapsed();
+    let d_bytes = arena().committed.saturating_sub(before.committed);
+    let asked = Instant::now();
+    answers.push(
+        probes
+            .iter()
+            .map(|(module, name, _)| match interned.get(name) {
+                // The intern table answers "is this a name anyone declares";
+                // the module's sorted ids answer "does this module declare it".
+                Some(id) => d[*module].binary_search(id).is_ok(),
+                None => false,
+            })
+            .collect(),
+    );
+    let d_asked = asked.elapsed();
+    let d_index: usize = d.iter().map(|ids| ids.len() * 4).sum();
+    drop(d);
+
+    for (name, bytes, built, asked) in [
+        ("A  BTreeSet<String> per module", a_bytes, a_built, a_asked),
+        (
+            "B  sorted Vec<String> per module",
+            b_bytes,
+            b_built,
+            b_asked,
+        ),
+        ("C  byte slab + sorted offsets", c_bytes, c_built, c_asked),
+        ("D  closure-wide interning + ids", d_bytes, d_built, d_asked),
+    ] {
+        println!(
+            "  {name:<34} {:>12} B ({:>7.2} MiB)  build {:>8.1} ms  {} probes {:>8.2} ms",
+            bytes,
+            mib(bytes),
+            built.as_secs_f64() * 1000.0,
+            probes.len(),
+            asked.as_secs_f64() * 1000.0
+        );
+    }
+    println!(
+        "  D's per-module id tables alone          {d_index:>12} B, one slab of {} B for {} distinct names",
+        slab.len(),
+        interned.len()
+    );
+    let agreed = answers.windows(2).all(|pair| pair[0] == pair[1]);
+    let correct = answers[0]
+        .iter()
+        .zip(probes.iter())
+        .all(|(answer, (_, _, expected))| answer == expected);
+    println!("  every representation agrees             {agreed}");
+    println!("  and agrees with the fixture             {correct}");
+}
+
+/// Membership in a byte slab addressed by a sorted offset table.
+fn slab_contains(index: &(Vec<u8>, Vec<u32>), name: &str) -> bool {
+    let (slab, offsets) = index;
+    let count = offsets.len().saturating_sub(1);
+    let mut low = 0usize;
+    let mut high = count;
+    while low < high {
+        let middle = (low + high) / 2;
+        let at = offsets[middle] as usize;
+        let end = offsets[middle + 1] as usize;
+        match slab[at..end].cmp(name.as_bytes()) {
+            core::cmp::Ordering::Less => low = middle + 1,
+            core::cmp::Ordering::Greater => high = middle,
+            core::cmp::Ordering::Equal => return true,
+        }
+    }
+    false
+}
+
+/// What one `ModuleSummary` is made of, and how much of it is meaning.
+///
+/// **Payload against representation.** The payload is the bytes a summary is
+/// *about*: the UTF-8 of every name, identity and path it carries. The
+/// representation is what holding those bytes actually costs — `String`
+/// capacities, `Vec` and `BTreeSet` nodes, `Located` spans, and the struct
+/// itself. The ratio is the number that says whether the check phase's peak is
+/// information or bookkeeping.
+///
+/// The total is **measured**, not summed: the arena's committed bytes before
+/// and after one summary is derived. A sum over the fields this code happens to
+/// know about would miss whatever it does not.
+fn summary_decomposition(count: usize, unit_bytes: usize) {
+    println!();
+    println!(
+        "== ModuleSummary payload against representation, {} body, {count} modules of {unit_bytes} B ==",
+        Body::current().named()
+    );
+    // One module's summary, measured on its own, with the source outside the
+    // arena so only the summary is in the delta.
+    let text = capsule_bytes(&unit_text(Shape::Chain, 1, count.max(2), unit_bytes));
+    let before = arena();
+    let source = SourceReader::read(text).expect("the fixture reads");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("the fixture parses");
+    let after_tree = arena();
+    let summary = ModuleEntry::new("set/m1.tos", &source, &schema).summarize();
+    let after_summary = arena();
+    drop(schema);
+    drop(source);
+    let settled = arena();
+
+    let names: usize = summary.declared_types.iter().map(|name| name.len()).sum();
+    let name_capacity: usize = summary
+        .declared_types
+        .iter()
+        .map(|name| name.capacity())
+        .sum();
+    let uses: usize = summary
+        .qualified_uses
+        .iter()
+        .map(|use_site| use_site.binding.len() + use_site.name.len() + use_site.spelled.len())
+        .sum();
+    let use_capacity: usize = summary
+        .qualified_uses
+        .iter()
+        .map(|use_site| {
+            use_site.binding.capacity() + use_site.name.capacity() + use_site.spelled.capacity()
+        })
+        .sum();
+    let imports: usize = summary
+        .imports
+        .iter()
+        .map(|import| import.target.len() + import.binding.len())
+        .sum();
+    let import_capacity: usize = summary
+        .imports
+        .iter()
+        .map(|import| import.target.capacity() + import.binding.capacity())
+        .sum();
+    let identity = summary.path.len() + summary.name.len() + summary.content_id.len();
+    let identity_capacity =
+        summary.path.capacity() + summary.name.capacity() + summary.content_id.capacity();
+
+    let payload = names + uses + imports + identity;
+    let capacities = name_capacity + use_capacity + import_capacity + identity_capacity;
+    let measured = after_summary.committed.saturating_sub(after_tree.committed);
+    let containers = measured.saturating_sub(capacities);
+
+    println!(
+        "  source unit                             {:>12} B",
+        text.len()
+    );
+    println!(
+        "  parse tree, for scale                   {:>12} B ({:>7.2} MiB)",
+        after_tree.committed.saturating_sub(before.committed),
+        mib(after_tree.committed.saturating_sub(before.committed))
+    );
+    println!(
+        "  declared types                          {:>12}",
+        summary.declared_types.len()
+    );
+    println!(
+        "  qualified uses                          {:>12}",
+        summary.qualified_uses.len()
+    );
+    println!(
+        "  imports                                 {:>12}",
+        summary.imports.len()
+    );
+    println!();
+    println!("  type-name UTF-8 payload                 {names:>12} B");
+    println!("  type-name String capacities             {name_capacity:>12} B");
+    println!("  qualified-use payload / capacities      {uses:>12} B / {use_capacity} B");
+    println!("  import payload / capacities             {imports:>12} B / {import_capacity} B");
+    println!("  identity payload / capacities           {identity:>12} B / {identity_capacity} B");
+    println!();
+    println!("  SEMANTIC payload, all of it             {payload:>12} B");
+    println!("  String capacities, all of them          {capacities:>12} B");
+    println!("  container and node overhead             {containers:>12} B");
+    println!(
+        "  MEASURED total for one summary          {measured:>12} B  ratio {:.2}x",
+        measured as f64 / payload.max(1) as f64
+    );
+    println!(
+        "  at {count} modules                          {:>12} B ({:>7.2} MiB) of representation \
+         over {:>7.2} MiB of payload",
+        measured * count,
+        mib(measured * count),
+        mib(payload * count)
+    );
+    println!(
+        "  arena after the tree is dropped         {:>12} B committed",
+        settled.committed
+    );
+    drop(summary);
 }
 
 /// A source set nobody holds: each unit is made when it is asked for.

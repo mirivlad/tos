@@ -500,6 +500,67 @@ summaries the peak, and it is a data-structure question rather than an allocator
 one. Nothing here proposes changing it: a semantics-preserving alternative would
 have to be designed, measured and differentially checked first.
 
+## What the check phase's peak is made of
+
+The adversarial bodies put the workspace's peak in the check phase, holding 256
+owned summaries at once. Decomposed per summary, with the source outside the
+arena so only the summary is in the delta, and the total **measured** as the
+arena's committed delta rather than summed over the fields this harness happens
+to know about:
+
+| Body | Declared types | Semantic payload | Measured summary | Ratio | At 256 modules |
+|---|---:|---:|---:|---:|---|
+| maximum small declarations | 9 390 | 64 716 B | 912 816 B | **14.10x** | 222.86 MiB over 15.80 MiB of payload |
+| type-heavy | 6 413 | 75 937 B | 623 856 B | 8.22x | 152.31 MiB over 18.54 MiB |
+| nested types | 5 003 | 49 013 B | 486 768 B | 9.93x | 118.84 MiB over 11.97 MiB |
+| mixed | 2 266 | 26 173 B | 221 440 B | 8.46x | 54.06 MiB over 6.39 MiB |
+| statement-heavy | 1 | 103 B | 960 B | 9.32x | 0.23 MiB over 0.03 MiB |
+
+**Eight to fourteen times the payload.** The `String` capacities are exactly the
+payload — no slack — so all of the difference is container and node overhead:
+about `90 B` per declared type name, against a name that averages under
+`7 B`. What the check phase peaks at is not information; it is the shape it is
+held in.
+
+## Four ways to hold the same question
+
+The set-wide check asks one thing of that data — *does module M declare name N* —
+once per qualified use. Four representations, built from the production
+summaries' own names, measured in the same arena. Every one is checked against
+the others and against the fixture on `hits` and equal-sized `misses`, so a
+smaller structure that answered differently would not count as smaller.
+
+**256 modules, maximum small declarations — 2 269 744 names, `19 165 116 B` of
+payload:**
+
+| Representation | Size | Build | 454 240 probes |
+|---|---:|---:|---:|
+| A — `BTreeSet<String>` per module (today) | 206.45 MiB | 242.4 ms | 100.3 ms |
+| B — sorted `Vec<String>` per module | 190.50 MiB | 114.5 ms | 145.6 ms |
+| **C — byte slab + sorted offsets** | **40.04 MiB** | **36.6 ms** | **79.4 ms** |
+| D — closure-wide interning + ids | 338.56 MiB | 1 592.0 ms | 157.2 ms |
+
+The same ordering holds for the type-heavy body (143.51 / 132.38 / **27.79** /
+243.58 MiB) and the mixed one (50.94 / 46.84 / **12.74** / 84.07 MiB).
+
+**C wins on every axis measured**: `5.2x` smaller than what the build holds
+today, `6.6x` faster to build, and faster to probe — a binary search over a
+contiguous slab touches fewer cache lines than one over scattered `String`s. It
+compares bytes exactly, so there is no collision question to answer.
+
+**D is worth a second look despite its number.** Its steady state — one slab of
+`19 165 116 B` and per-module id tables of `9 078 976 B` — is `28.25 MiB`,
+*smaller* than C. What ruins it as written is the intern table: a
+`BTreeMap<String, u32>` that holds every distinct name a second time while the
+index is being built, which is the `338 MiB` peak and the `1.6 s`. An interning
+pass whose own table is a slab rather than a map would plausibly land under C,
+and that has not been measured.
+
+Neither is implemented in production. What this establishes is the size of the
+lever: replacing the representation, with no change to what the check computes,
+would take the worst adversarial body's check-phase peak from `206 MiB` to about
+`40 MiB`.
+
 ## What this is not
 
 - **Not a freestanding measurement.** A host process with a bounded heap. No
