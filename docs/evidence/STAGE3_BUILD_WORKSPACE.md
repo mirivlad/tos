@@ -432,6 +432,74 @@ capsule, the workspace, the bundle and the worker's overhead. Against a pool of
 `32 MiB`, nothing. What its contract has to permit is what A measures — one unit
 materialized at a time — which `SourceSnapshot::Owned` already allows.
 
+## Adversarial source shapes, and what they overturn
+
+Every figure above varies the **graph** — chain, fan-in, DAG — and holds the
+module body constant. A module body is what the frontend actually walks, so a
+bound measured over graphs alone is a bound over one body. Seven bodies, each
+filling the same `256 KiB` unit to the same ceiling, 256 modules, chain graph,
+generative provider, products written outside:
+
+| Body | Workspace frontier | Peak committed | Bundle | Workspace + bundle |
+|---|---:|---:|---:|---:|
+| mixed — records and functions | 74.61 MiB | 67.74 MiB | 100.87 MiB | 175.48 MiB |
+| function-heavy | 82.59 | 56.25 | 107.58 | 190.17 |
+| export-heavy | 43.30 | 43.14 | 107.79 | 151.09 |
+| statement-heavy (source maps) | 90.76 | 90.76 | **179.41** | **270.17** |
+| nested types | 120.55 | 114.83 | 27.71 | 148.26 |
+| type-heavy | 155.79 | 153.78 | 40.22 | 196.01 |
+| **maximum small declarations** | **221.04** | **218.92** | 42.63 | **263.67** |
+
+Enforced hard minimums, bisected on the two worst bodies:
+
+| Body | Smallest declared workspace that completes | Largest that fails |
+|---|---:|---:|
+| maximum small declarations | **231 997 440 B** (221.25 MiB) | 231 342 080 B |
+| type-heavy | **163 840 000 B** (156.25 MiB) | 163 184 640 B |
+
+Each is within `0.3 MiB` of that body's measured frontier, which is what a build
+holding its peak rather than fragmenting looks like from the other side.
+
+**The graph shapes were not the worst case, and not by a little.** The worst
+body needs `221.04 MiB` of workspace against `77.14 MiB` for the worst graph —
+`2.9x` — and a statement-heavy body produces a bundle of `179.41 MiB` against
+`100.9 MiB`. Any workspace size derived from the graph tables alone would have
+been wrong by a factor of three.
+
+**Peak committed is the finding.** For every adversarial body the live peak is
+within `2 MiB` of the frontier — `218.92` against `221.04`, `153.78` against
+`155.79`, `90.76` against `90.76`. The build is not fragmenting an arena; it is
+**holding that much at once**. Two consequences:
+
+- the growth from `36 MiB` at 64 modules to `77 MiB` at 256 in the mixed body is
+  mostly live data too (`67.74 MiB` peak committed), not allocator churn as the
+  earlier section supposed;
+- **a per-turn scratch arena would not help.** What is live at the peak is not
+  one module's turn; it is the check phase's owned summaries, all 256 of them,
+  and their largest field is the set of type names a module declares — which is
+  exactly what the type-heavy and small-declaration bodies maximize.
+
+The first crossing of `RuntimeMemoryGrantV1` tells the same story from the other
+side. For the small-declaration body the arena passes `54 MiB` on a `3 145 728 B`
+allocation with `50 789 216 B` already live, `511 865` blocks and a largest hole
+of `1 048 720 B`: there was no hole to reuse because nothing had been freed.
+
+### Can a build fit an ordinary process grant?
+
+**No, and not for a reason an allocator change can fix.** Live bytes alone —
+peak committed, with every product already outside the account — are
+`43.14 MiB` for the friendliest body and `218.92 MiB` for the worst, against
+`RuntimeMemoryGrantV1 = 54 MiB`. Even the friendliest leaves nothing for the
+rest of the run.
+
+What the measurement does identify is the single lever: the set-wide type check
+(`check_module_summaries` → `check_qualified_types`) requires every module's
+declared type names to be resident at the same time, because a qualified name in
+one module is resolved against another module's set. That is what makes the
+summaries the peak, and it is a data-structure question rather than an allocator
+one. Nothing here proposes changing it: a semantics-preserving alternative would
+have to be designed, measured and differentially checked first.
+
 ## What this is not
 
 - **Not a freestanding measurement.** A host process with a bounded heap. No

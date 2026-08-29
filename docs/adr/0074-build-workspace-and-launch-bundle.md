@@ -142,6 +142,20 @@ is held inside the measured account or outside it.
 Enforced, on the worst of the three: the build completes in a declared workspace
 of **`80 281 600 B`** (76.56 MiB) and fails to allocate at `79 298 560 B`.
 
+**These three vary the graph and hold the module body constant, and the body is
+the larger term.** Seven bodies at the same ceiling
+(`docs/evidence/STAGE3_BUILD_WORKSPACE.md`) put the workspace between
+`43.30 MiB` and `221.04 MiB`, and the bundle between `27.71 MiB` and
+`179.41 MiB`. The worst pair a single configuration produces is a
+statement-heavy body — `90.76 MiB` of workspace beside a `179.41 MiB` bundle,
+`270 MiB` together — and a small-declaration body at `221.04 + 42.63`. Both
+exceed the pool, so **claim A at the docs/44 ceiling with adversarial source
+does not fit the reference platform with this implementation**, and the reason
+is live data rather than fragmentation: peak committed is within `2 MiB` of the
+frontier in every adversarial body. That is a statement about the check phase's
+data structures, not about the ceiling or the machine, and §5a says what it
+blocks.
+
 The source figure is measured rather than argued: every snapshot handed out is
 watched weakly, and the most that was ever alive at once is **one unit**, over
 `512` requests for a closure of 256. Residency-independence is a property of
@@ -199,21 +213,21 @@ in — claim A, balanced, 256 ceiling-sized modules — enforced by refusing pas
 it. It is a measurement of
 today's allocator behaviour and not yet a bound:
 
-- the workspace is flat at `36.4-36.5 MiB` from 8 to 64 modules and then climbs
-  to `77 MiB` at 256 while what is **live** stays under `40 KB`, so the climb is
-  allocator churn rather than anything the build holds;
-- the shapes measured so far vary the *graph*, not the *source*. A
-  function-heavy, type-heavy, deeply nested, export-heavy or source-map-heavy
-  module at the same `256 KiB` would exercise the frontend differently and has
-  not been measured;
-- committed against frontier, the free-block census and the largest hole at the
-  point of failure are what would show whether the growth is fragmentation, and
-  they are only now being recorded.
+- **peak committed is within `2 MiB` of the frontier** for every adversarial
+  body, so the account is holding that much at once rather than fragmenting.
+  An allocator change, a per-turn scratch arena or any other churn remedy would
+  move almost nothing;
+- what is live at the peak is the check phase: 256 owned summaries, whose
+  largest field is the set of type names each module declares, because the
+  set-wide qualified-type check resolves a name in one module against another
+  module's set;
+- so the size question is downstream of a data-structure question, and fixing
+  the size first would fix the wrong number. A semantics-preserving alternative
+  to holding every type surface at once has to be designed, measured and
+  differentially checked before a `BuildWorkspaceV1` is worth naming.
 
-Until those exist, any margin is engineering judgement wearing a number. The
-account in §5 leaves about `50 MiB` spare at the ceiling, so there is no pressure
-to make the eventual grant tight: a proved bound with honest headroom is worth
-more than a small one.
+Until then any margin is engineering judgement wearing a number, and the honest
+statement is that the bound is **not yet known**.
 
 ## 5b. Region authority: what the accepted contracts already say, and what they do not
 
@@ -285,6 +299,17 @@ backing must arrive as an endowment or as an attenuation of one.
    immutable from here" is **not currently provable**, and an ADR must not claim
    it.
 
+**Superseded in part by ADR-0075 (Draft).** Two corrections belong here rather
+than only there: G1 and G2 are **not** free decisions — ADR-0037 revision 3 is
+Accepted and already fixes the access modes, the shareability and the
+transferability of a region at the type level, so the system contract must
+implement that table rather than choose another (ADR-0075 §1). And the sentence
+above that `region_create` is "already ruled out" by ADR-0055 is too strong:
+ADR-0055 rejects *ambient* creation and explicitly leaves its Option B — a
+bounded, self-only creation — as a later decision (ADR-0075 §2). What ADR-0075
+recommends instead is narrower still: a region authority whose scope is a frame
+range, carved by the attenuation operation that already exists.
+
 **STOP — the normative gaps, exactly.** None of these can be closed by
 implementation; each needs an accepted contract change:
 
@@ -296,6 +321,7 @@ implementation; each needs an accepted contract change:
 | G4 | No rule for what happens to an existing **mapping** when the capability that authorized it is released, revoked or invalidated by generation | `IPC_V1` §5 |
 | G5 | No accepted origin for a region object over pool memory that is not a process grant, and ADR-0055 forbids creating one with an operation | a new ADR + `CAPABILITY_V1` §2 |
 | G6 | No reclamation contract for a region object independent of the death of a process | a new ADR |
+| G7 | **No mutable-to-immutable transition exists at all.** `Region<mut T>` and `Region<T>` are both accepted types and nothing in the corpus turns the first into the second; `share` presupposes immutability rather than producing it | ADR-0075 §3 |
 
 Until G1–G6 are closed there is no Region contract to implement, and §6's ABI
 shape cannot be fixed: it would have to name a right (`read-only map`) that no

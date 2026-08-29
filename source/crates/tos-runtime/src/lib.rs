@@ -547,12 +547,13 @@ impl BoundedHeap {
         (blocks, free)
     }
 
-    /// The same, plus the **largest free block** the region currently holds.
+    /// The same, plus the **largest free block between allocations**.
     ///
     /// A count of free blocks says how broken up the arena is; the largest hole
-    /// says what it can still answer. Those are different facts, and an
-    /// allocation that fails while megabytes are free fails because of the
-    /// second one.
+    /// says what it can still answer without moving the frontier. The region's
+    /// unused tail is deliberately excluded: it is not a hole, it is the part
+    /// of the region nothing has reached yet, and counting it would report a
+    /// fragmented arena as a roomy one.
     pub fn free_census(&self) -> (usize, usize, usize) {
         if !self.ready {
             return (0, 0, 0);
@@ -571,7 +572,13 @@ impl BoundedHeap {
             blocks += 1;
             if tag.free {
                 free += 1;
-                largest = largest.max(tag.size);
+                // The region's unused tail is not a hole — it is the part
+                // nothing has reached yet — so it is counted as free and
+                // excluded from the largest hole. Counting it there would
+                // report a fragmented arena as a roomy one.
+                if cursor + tag.size + OVERHEAD < end {
+                    largest = largest.max(tag.size);
+                }
             }
             cursor += tag.size + OVERHEAD;
         }
