@@ -150,6 +150,20 @@ unsafe impl GlobalAlloc for MeasuredHeap {
         self.ensure_adopted();
         // SAFETY: the heap has adopted its region.
         let pointer = unsafe { self.heap.alloc(layout) };
+        if !pointer.is_null() {
+            let (committed, frontier) = self.heap.usage();
+            PEAK_COMMITTED.fetch_max(committed, Ordering::Relaxed);
+            // The census is O(blocks), so it is taken once: at the instant the
+            // watched line is first crossed, and never again.
+            if frontier > WATCH.load(Ordering::Relaxed) && !CROSSED.swap(true, Ordering::SeqCst) {
+                let (blocks, free, hole) = self.heap.free_census();
+                CROSSED_BY.store(layout.size(), Ordering::SeqCst);
+                CROSSED_LIVE.store(committed, Ordering::SeqCst);
+                CROSSED_HOLE.store(hole, Ordering::SeqCst);
+                CROSSED_BLOCKS.store(blocks, Ordering::SeqCst);
+                CROSSED_FREE.store(free, Ordering::SeqCst);
+            }
+        }
         // **A declared workspace, enforced.** `--workspace-cap` names how large
         // the build's account is allowed to be; past it this allocator refuses,
         // which is the same answer a grant of that size would give. The default
@@ -175,11 +189,113 @@ static HEAP: MeasuredHeap = MeasuredHeap {
     heap: GlobalHeap::new(),
 };
 
+/// Which filler a module's body is made of.
+///
+/// A **static** because it is set once, in `main`, before any fixture is built:
+/// threading it through the generator would put the same value in six
+/// signatures to say something the whole run agrees on. The harness is
+/// single-threaded and this is read-only after start-up.
+static BODY: AtomicUsize = AtomicUsize::new(0);
+
+/// What a module is padded with, once its own graph edges are written.
+///
+/// The graph shapes vary what a **closure** looks like; these vary what a
+/// **module** looks like, which is what the frontend actually walks. A build
+/// bound measured only over graphs is a bound over one body.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Body {
+    /// Records and functions in equal measure — the original fixture.
+    Mixed,
+    /// Many small private functions: function-count heavy.
+    Functions,
+    /// Many small record types and nothing else: type-table heavy.
+    Types,
+    /// Records whose fields are the records before them: nesting heavy.
+    Nested,
+    /// Everything exported: export-surface heavy, which is what a bundle's
+    /// declaration and the verifier's resolution snapshot grow with.
+    Exports,
+    /// One function with as many statements as fit: source-map heavy.
+    Statements,
+    /// The largest number of the smallest declarations that fit.
+    SmallObjects,
+}
+
+impl Body {
+    fn of(name: &str) -> Body {
+        match name {
+            "functions" => Body::Functions,
+            "types" => Body::Types,
+            "nested" => Body::Nested,
+            "exports" => Body::Exports,
+            "statements" => Body::Statements,
+            "small" => Body::SmallObjects,
+            _ => Body::Mixed,
+        }
+    }
+
+    fn named(self) -> &'static str {
+        match self {
+            Body::Mixed => "mixed",
+            Body::Functions => "functions",
+            Body::Types => "types",
+            Body::Nested => "nested",
+            Body::Exports => "exports",
+            Body::Statements => "statements",
+            Body::SmallObjects => "small",
+        }
+    }
+
+    fn current() -> Body {
+        match BODY.load(Ordering::Relaxed) {
+            1 => Body::Functions,
+            2 => Body::Types,
+            3 => Body::Nested,
+            4 => Body::Exports,
+            5 => Body::Statements,
+            6 => Body::SmallObjects,
+            _ => Body::Mixed,
+        }
+    }
+
+    fn select(self) {
+        BODY.store(
+            match self {
+                Body::Mixed => 0,
+                Body::Functions => 1,
+                Body::Types => 2,
+                Body::Nested => 3,
+                Body::Exports => 4,
+                Body::Statements => 5,
+                Body::SmallObjects => 6,
+            },
+            Ordering::SeqCst,
+        );
+    }
+}
+
 /// The declared ceiling on the measured account, in bytes.
 ///
 /// `usize::MAX` until a mode sets it, so a measurement that does not ask for a
 /// bound is measured exactly as it was before this existed.
 static CAP: AtomicUsize = AtomicUsize::new(usize::MAX);
+
+/// The line whose first crossing is recorded, and what was true when it was
+/// crossed.
+///
+/// `RuntimeMemoryGrantV1` by default: the question is whether a build with its
+/// products outside it could live in an ordinary process grant, and the useful
+/// answer is not only "no" but *what* pushed it over.
+static WATCH: AtomicUsize = AtomicUsize::new(54 * 1024 * 1024);
+static CROSSED: AtomicBool = AtomicBool::new(false);
+static CROSSED_BY: AtomicUsize = AtomicUsize::new(0);
+static CROSSED_LIVE: AtomicUsize = AtomicUsize::new(0);
+static CROSSED_HOLE: AtomicUsize = AtomicUsize::new(0);
+static CROSSED_BLOCKS: AtomicUsize = AtomicUsize::new(0);
+static CROSSED_FREE: AtomicUsize = AtomicUsize::new(0);
+/// The largest live total the arena ever held, which is what a build would need
+/// if nothing it freed were ever unusable.
+static PEAK_COMMITTED: AtomicUsize = AtomicUsize::new(0);
 
 /// Everything observable about the arena at one instant.
 ///
@@ -317,6 +433,14 @@ fn main() {
         if let Some(cap) = cap {
             println!("declared workspace cap: {cap} B ({:.2} MiB)", mib(cap));
         }
+        let body = Body::of(
+            &std::env::args()
+                .skip_while(|argument| argument != "--body")
+                .nth(1)
+                .unwrap_or_default(),
+        );
+        body.select();
+        println!("module body: {}", body.named());
         let generative = std::env::args().any(|argument| argument == "--generative");
         if generative {
             println!("provider: generative, one unit at a time, no corpus resident");
@@ -1245,6 +1369,28 @@ fn report_external(
                 mib(boundary.frontier.saturating_sub(boundary.committed))
             );
             println!(
+                "  PEAK COMMITTED (live at the worst instant){:>11} B ({:>7.2} MiB)",
+                PEAK_COMMITTED.load(Ordering::SeqCst),
+                mib(PEAK_COMMITTED.load(Ordering::SeqCst))
+            );
+            if CROSSED.load(Ordering::SeqCst) {
+                println!(
+                    "  first crossing of {:>10} B: by an allocation of {} B, with {} B live, \
+                     {} blocks / {} free, largest hole {} B",
+                    WATCH.load(Ordering::SeqCst),
+                    CROSSED_BY.load(Ordering::SeqCst),
+                    CROSSED_LIVE.load(Ordering::SeqCst),
+                    CROSSED_BLOCKS.load(Ordering::SeqCst),
+                    CROSSED_FREE.load(Ordering::SeqCst),
+                    CROSSED_HOLE.load(Ordering::SeqCst)
+                );
+            } else {
+                println!(
+                    "  the watched line of {} B was never crossed",
+                    WATCH.load(Ordering::SeqCst)
+                );
+            }
+            println!(
                 "  fragmentation at the boundary           {blocks} blocks, {free} free, \
                  largest hole {:>12} B ({:>7.2} MiB)",
                 boundary.largest_hole,
@@ -1705,13 +1851,56 @@ fn unit_text(shape: Shape, index: usize, count: usize, unit_bytes: usize) -> Str
 
 /// Pads a module towards the source ceiling with ordinary declarations.
 fn fill_to(text: &mut String, index: usize, bytes: usize) {
+    let body = Body::current();
     let mut filler = 0usize;
+    // The source-map-heavy body is one function with as many statements as fit,
+    // so it is written as a whole rather than as repeated declarations: a
+    // statement outside a function is not source.
+    if body == Body::Statements {
+        let head = format!("pub fn walk{index}() -> i32 {{ let mut total = 0i32; ");
+        let tail = "return total; }} ";
+        if text.len() + head.len() + tail.len() > bytes {
+            return;
+        }
+        text.push_str(&head);
+        loop {
+            let statement = "total = total + 1i32; ";
+            if text.len() + statement.len() + tail.len() > bytes {
+                break;
+            }
+            text.push_str(statement);
+        }
+        text.push_str("return total; } ");
+        return;
+    }
     loop {
-        let chunk = format!(
-            "pub record Filler{index}_{filler} [x: i32, y: i32] \
-             pub fn fill{index}_{filler}(point: Filler{index}_{filler}) -> i32 \
-             {{ return point.x + point.y; }} "
-        );
+        let chunk = match body {
+            Body::Mixed => format!(
+                "pub record Filler{index}_{filler} [x: i32, y: i32] \
+                 pub fn fill{index}_{filler}(point: Filler{index}_{filler}) -> i32 \
+                 {{ return point.x + point.y; }} "
+            ),
+            Body::Functions => format!(
+                "fn fill{index}_{filler}(value: i32) -> i32 {{ return value + {filler}i32; }} "
+            ),
+            Body::Types => format!("pub record Filler{index}_{filler} [x: i32, y: i32] "),
+            Body::Nested => {
+                if filler == 0 {
+                    format!("pub record Nest{index}_0 [x: i32] ")
+                } else {
+                    format!(
+                        "pub record Nest{index}_{filler} [a: Nest{index}_{}, b: Nest{index}_{}] ",
+                        filler - 1,
+                        filler - 1
+                    )
+                }
+            }
+            Body::Exports => {
+                format!("pub fn export{index}_{filler}(value: i32) -> i32 {{ return value; }} ")
+            }
+            Body::SmallObjects => format!("pub record S{index}_{filler} [x: i32] "),
+            Body::Statements => unreachable!("handled above"),
+        };
         if text.len() + chunk.len() > bytes {
             break;
         }
