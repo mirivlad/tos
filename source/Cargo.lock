@@ -6,6 +6,7 @@ version = 4
 name = "tos-arena-bound"
 version = "0.1.0"
 dependencies = [
+ "tos-bundle",
  "tos-capsule",
  "tos-capsule-source",
  "tos-core",
@@ -20,6 +21,10 @@ dependencies = [
 
 [[package]]
 name = "tos-boot-protocol"
+version = "0.1.0"
+
+[[package]]
+name = "tos-bundle"
 version = "0.1.0"
 
 [[package]]
@@ -142,6 +147,7 @@ dependencies = [
 name = "tos-pipeline"
 version = "0.1.0"
 dependencies = [
+ "tos-bundle",
  "tos-core",
  "tos-engine",
  "tos-hash",

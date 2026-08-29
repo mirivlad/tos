@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-bundle"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "TOSBUNDLE/v1: one immutable launch bundle over an exact image closure — total bounded parser and a streaming writer."
+publish = false
+
+[lib]
+name = "tos_bundle"
