@@ -203,6 +203,34 @@ impl ModuleSummary {
         source: &SourceUnit,
         schema: &Schema,
     ) -> ModuleSummary {
+        ModuleSummary::derived(path, root, dependency_set, source, schema, true)
+    }
+
+    /// The same, without the qualified uses.
+    ///
+    /// For a first pass that will read them again: a module's uses are read by
+    /// exactly one check, and a caller that intends to enumerate them in a
+    /// second pass should not be paying to hold them in between. What is left
+    /// is what a set is resolved *from* — the name, the path, the identity, the
+    /// imports and the type surface.
+    pub fn derive_membership(
+        path: &str,
+        root: usize,
+        dependency_set: Option<&str>,
+        source: &SourceUnit,
+        schema: &Schema,
+    ) -> ModuleSummary {
+        ModuleSummary::derived(path, root, dependency_set, source, schema, false)
+    }
+
+    fn derived(
+        path: &str,
+        root: usize,
+        dependency_set: Option<&str>,
+        source: &SourceUnit,
+        schema: &Schema,
+        with_uses: bool,
+    ) -> ModuleSummary {
         let prefix = schema.outline().prefix();
         let header = prefix.header();
         let name = header
@@ -230,15 +258,19 @@ impl ModuleSummary {
 
         let declared_types = TypeNames::of(crate::types::declared_type_names(source, schema));
 
-        let qualified_uses = crate::types::qualified_type_uses(source, schema)
-            .into_iter()
-            .map(|(binding, name, span)| QualifiedUse {
-                binding: binding.to_string(),
-                name: name.to_string(),
-                spelled: span.text(source).to_string(),
-                at: Located::of(source, span),
-            })
-            .collect();
+        let qualified_uses = if with_uses {
+            crate::types::qualified_type_uses(source, schema)
+                .into_iter()
+                .map(|(binding, name, span)| QualifiedUse {
+                    binding: binding.to_string(),
+                    name: name.to_string(),
+                    spelled: span.text(source).to_string(),
+                    at: Located::of(source, span),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
 
         ModuleSummary {
             path: path.to_string(),

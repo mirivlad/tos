@@ -792,6 +792,16 @@ fn build_with(
     }
 
     trace.entering(PipelineStage::Resolve);
+    // **One pass, on the evidence.** The two-pass split — keep only what a set
+    // is resolved *from*, then read each module's uses again and drop them — is
+    // implemented in `tos-core` and proved to report exactly what this reports
+    // (`crates/tos-core/tests/two_pass_checker.rs`). Measured over a closure at
+    // the docs/44 ceiling it costs `5.8` to `6.4 MiB` more and one extra
+    // materialization and parse per module, because what it removes — the
+    // qualified uses — is small once the type surface is a byte slab, while
+    // what it adds is a second parse tree alive beside every summary. The
+    // phases stay available for a corpus where uses dominate; production takes
+    // the cheaper structure it has evidence for.
     let diagnostics = check_module_summaries(&summaries);
     if diagnostics.iter().any(is_error) {
         return Ok(Produced::Refused(Run::Diagnosed {
