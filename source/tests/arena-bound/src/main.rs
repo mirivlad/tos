@@ -220,6 +220,9 @@ enum Body {
     Statements,
     /// The largest number of the smallest declarations that fit.
     SmallObjects,
+    /// Types declared here and named through an import there: the body that
+    /// makes the set-wide qualified-type check do work.
+    Qualified,
 }
 
 impl Body {
@@ -231,6 +234,7 @@ impl Body {
             "exports" => Body::Exports,
             "statements" => Body::Statements,
             "small" => Body::SmallObjects,
+            "qualified" => Body::Qualified,
             _ => Body::Mixed,
         }
     }
@@ -244,6 +248,7 @@ impl Body {
             Body::Exports => "exports",
             Body::Statements => "statements",
             Body::SmallObjects => "small",
+            Body::Qualified => "qualified",
         }
     }
 
@@ -255,6 +260,7 @@ impl Body {
             4 => Body::Exports,
             5 => Body::Statements,
             6 => Body::SmallObjects,
+            7 => Body::Qualified,
             _ => Body::Mixed,
         }
     }
@@ -269,6 +275,7 @@ impl Body {
                 Body::Exports => 4,
                 Body::Statements => 5,
                 Body::SmallObjects => 6,
+                Body::Qualified => 7,
             },
             Ordering::SeqCst,
         );
@@ -1604,6 +1611,7 @@ fn build_into_bundle_mode(
         if let Some(cap) = cap {
             CAP.store(cap, Ordering::SeqCst);
         }
+        let started = Instant::now();
         let written = tos_pipeline::build_into_bundle(
             &provider,
             "tos-arena-bound",
@@ -1612,6 +1620,11 @@ fn build_into_bundle_mode(
             &mut Silent,
         )
         .expect("the fixture names an entry it contains");
+        let elapsed = started.elapsed();
+        println!(
+            "  build wall time                         {:>12.1} ms",
+            elapsed.as_secs_f64() * 1000.0
+        );
         provider.settle();
         let boundary = arena();
         CAP.store(usize::MAX, Ordering::SeqCst);
@@ -2262,6 +2275,26 @@ fn fill_to(text: &mut String, index: usize, bytes: usize) {
                 format!("pub fn export{index}_{filler}(value: i32) -> i32 {{ return value; }} ")
             }
             Body::SmallObjects => format!("pub record S{index}_{filler} [x: i32] "),
+            // Every module declares its own types and names the previous
+            // module's through the chain's import, so the qualified-type check
+            // has one use per declaration to resolve across a boundary.
+            Body::Qualified => {
+                if index == 0 {
+                    format!("pub record Q0_{filler} [x: i32] ")
+                } else {
+                    // The name referenced is one of the first sixty-four the
+                    // previous module declares, which every module of this
+                    // fixture has: a use naming a filler beyond the target's
+                    // own count would be a diagnostic rather than a lookup.
+                    format!(
+                        "pub record Q{index}_{filler} [x: i32] \
+                         pub fn q{index}_{filler}(value: prev.Q{}_{}) -> i32 \
+                         {{ return value.x; }} ",
+                        index - 1,
+                        filler % 64
+                    )
+                }
+            }
             Body::Statements => unreachable!("handled above"),
         };
         if text.len() + chunk.len() > bytes {

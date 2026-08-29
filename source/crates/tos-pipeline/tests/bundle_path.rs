@@ -184,6 +184,40 @@ fn the_bundle_carries_the_images_unchanged() {
     }
 }
 
+/// The same source produces the same bundle, byte for byte.
+///
+/// Determinism is what lets a bundle be compared, cached or reproduced at all,
+/// and it has to survive the build being restructured: a two-pass check that
+/// reordered anything, or a representation that iterated a set in a different
+/// order, would show up here as different bytes rather than as a wrong answer.
+#[test]
+fn two_builds_of_one_source_set_produce_the_same_bundle_bytes() {
+    let (dependency, entry) = texts();
+    let units = units(&dependency, &entry);
+    let provider = SliceSourceProvider::new(&units);
+
+    let mut first = vec![0u8; 1 << 20];
+    let mut second = vec![0u8; 1 << 20];
+    let mut written = Vec::new();
+    for backing in [&mut first, &mut second] {
+        let mut slice = SliceBacking::new(backing);
+        let BuildIntoBundle::Written { bytes, .. } =
+            build_into_bundle(&provider, SOURCE_SET, ENTRY_PATH, &mut slice, &mut Silent)
+                .expect("the set names an entry it contains")
+        else {
+            panic!("the bundle is written");
+        };
+        written.push(bytes);
+    }
+
+    assert_eq!(written[0], written[1], "the same length");
+    assert_eq!(
+        first[..written[0]],
+        second[..written[1]],
+        "and the same bytes"
+    );
+}
+
 /// A backing too small for the closure ends the build, and leaves nothing
 /// launchable.
 #[test]

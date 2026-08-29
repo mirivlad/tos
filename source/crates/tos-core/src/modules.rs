@@ -139,6 +139,36 @@ impl<'source> ModuleEntry<'source> {
         )
     }
 
+    /// The same, without this module's qualified uses (see
+    /// [`ModuleSummary::derive_membership`]).
+    pub fn summarize_membership(&self) -> ModuleSummary {
+        ModuleSummary::derive_membership(
+            &self.path,
+            self.root,
+            self.dependency_set.as_deref(),
+            self.source,
+            self.schema,
+        )
+    }
+
+    /// The qualified type names this module writes, without the rest of a
+    /// summary.
+    ///
+    /// For a second pass: a caller that already has the set's type surfaces and
+    /// wants only this module's uses, to resolve them and drop them, rather than
+    /// holding every module's uses until a set-wide check runs.
+    pub fn qualified_uses(&self) -> Vec<crate::QualifiedUse> {
+        crate::types::qualified_type_uses(self.source, self.schema)
+            .into_iter()
+            .map(|(binding, name, span)| crate::QualifiedUse {
+                binding: binding.to_string(),
+                name: name.to_string(),
+                spelled: span.text(self.source).to_string(),
+                at: crate::Located::of(self.source, span),
+            })
+            .collect()
+    }
+
     /// Runs the per-module checks with this module's identity attached.
     pub fn check(&self) -> Vec<Diagnostic> {
         let identity = self.identity();
@@ -173,7 +203,7 @@ struct Collision {
 }
 
 /// What every declared module name resolves to, and what does not resolve.
-struct Resolution {
+pub struct Resolution {
     resolved: BTreeMap<String, usize>,
     ambiguous: BTreeMap<String, Collision>,
 }
@@ -185,6 +215,15 @@ struct Resolution {
 /// settles roots and only roots: a name declared twice inside one root has
 /// nothing ordering it, and several declared dependency source sets offering
 /// one name have nothing ordering them either.
+/// Resolves a set's declared names once, for a caller running the set-wide
+/// phases itself.
+///
+/// The phases each need it, and each computing its own would make a two-pass
+/// checker quadratic in the set for no answer it did not already have.
+pub fn resolve_set(modules: &[ModuleSummary]) -> Resolution {
+    resolve_names(modules)
+}
+
 fn resolve_names(modules: &[ModuleSummary]) -> Resolution {
     let mut candidates: BTreeMap<String, Vec<usize>> = BTreeMap::new();
     for (index, module) in modules.iter().enumerate() {
@@ -277,8 +316,33 @@ pub fn check_module_set(modules: &[ModuleEntry]) -> Vec<Diagnostic> {
 /// Per-module checks stay with `Checker::check`; this adds only what needs more
 /// than one module to see.
 pub fn check_module_summaries(modules: &[ModuleSummary]) -> Vec<Diagnostic> {
-    let mut diagnostics = Vec::new();
     let resolution = resolve_names(modules);
+    let mut diagnostics = check_module_membership(modules, &resolution);
+    let by_name = &resolution.resolved;
+    check_qualified_types(modules, by_name, &mut diagnostics);
+    diagnostics.extend(find_cycles(modules, by_name));
+    diagnostics
+}
+
+/// Everything set-wide resolution can decide **without a module's type
+/// surface**: that a path matches the name it declares, and that every import
+/// resolves to exactly one module of the set.
+///
+/// Split out because it is what a first pass can finish. The qualified-type
+/// check needs every module's declared names at once and the cycle search needs
+/// the resolved graph, so both come after; what this answers needs only a name,
+/// a path and a list of imports, which is what a caller can afford to keep for
+/// every module of a closure.
+///
+/// **The order is the contract.** `check_module_summaries` emits path
+/// mismatches, then import failures, then qualified-type failures, then cycles,
+/// and a caller assembling the phases itself has to emit them in that order or
+/// it is not reporting the same thing.
+pub fn check_module_membership(
+    modules: &[ModuleSummary],
+    resolution: &Resolution,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
     let by_name = &resolution.resolved;
 
     for module in modules {
@@ -320,9 +384,33 @@ pub fn check_module_summaries(modules: &[ModuleSummary]) -> Vec<Diagnostic> {
         }
     }
 
-    check_qualified_types(modules, by_name, &mut diagnostics);
-    diagnostics.extend(find_cycles(modules, by_name));
     diagnostics
+}
+
+/// The qualified-type check for **one** module, against the set it belongs to.
+///
+/// The same rule `check_qualified_types` applies, for a caller that has one
+/// module's uses in hand and does not intend to keep them: a second pass over
+/// the source can enumerate a module's qualified names, resolve them here, and
+/// drop them, instead of every module's uses being held until the set-wide
+/// check runs.
+///
+/// `modules` supplies the type surfaces the names resolve against, and `uses`
+/// is this module's own — which is why they are separate arguments: after a
+/// two-pass split the second is not in the first.
+pub fn check_qualified_types_of(
+    module: &ModuleSummary,
+    uses: &[crate::QualifiedUse],
+    modules: &[ModuleSummary],
+    resolution: &Resolution,
+    out: &mut Vec<Diagnostic>,
+) {
+    qualified_types_of(module, uses, modules, &resolution.resolved, out);
+}
+
+/// The cycle search, for a caller that runs the phases itself.
+pub fn check_module_cycles(modules: &[ModuleSummary], resolution: &Resolution) -> Vec<Diagnostic> {
+    find_cycles(modules, &resolution.resolved)
 }
 
 /// A diagnostic at a span whose positions were derived when the source was in
@@ -344,13 +432,26 @@ fn check_qualified_types(
     out: &mut Vec<Diagnostic>,
 ) {
     for module in modules {
+        qualified_types_of(module, &module.qualified_uses, modules, by_name, out);
+    }
+}
+
+/// One module's qualified names, resolved against the set.
+fn qualified_types_of(
+    module: &ModuleSummary,
+    uses: &[crate::QualifiedUse],
+    modules: &[ModuleSummary],
+    by_name: &BTreeMap<String, usize>,
+    out: &mut Vec<Diagnostic>,
+) {
+    {
         let mut targets: BTreeMap<&str, usize> = BTreeMap::new();
         for import in module.module_imports() {
             if let Some(&index) = by_name.get(&import.target) {
                 targets.insert(import.binding.as_str(), index);
             }
         }
-        for used in &module.qualified_uses {
+        for used in uses {
             let Some(&index) = targets.get(used.binding.as_str()) else {
                 continue;
             };
