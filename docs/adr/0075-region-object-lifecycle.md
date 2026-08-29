@@ -96,50 +96,78 @@ worker. The budget is a number attached to a process, not an authority, so it
 does not attenuate, delegate or revoke, and a system that wanted a build worker
 to spend the supervisor's allowance would have to invent a way to say so.
 
-### B — a finite memory authority whose scope is a frame range
+### B — a finite memory authority, and Region allocation as an operation on it
 
-A capability whose object is a range of pool frames, endowed at boot from the
-launcher's stated constant (ADR-0051 §3) and narrowed downward like any other:
+**A frame-range capability narrowed by attenuation does not work, and the reason
+is what attenuation is.** `CAPABILITY_V1` §4 makes attenuation a *refinement* of
+authority: it produces a narrower capability and **does not consume the input**.
+Applied to a range of frames that means the derived sub-range
+
+- reserves nothing — no frame is taken out of anyone else's reach;
+- does not exclude a second, overlapping sub-range carved from the same root;
+- leaves the root holder with undiminished authority over the very frames the
+  derived capability names;
+- produces no `RegionObject` with an identity and a lifetime of its own, because
+  attenuation makes capabilities and not objects;
+- and would leave the root holder with authority over the backing **after** a
+  derived region has been frozen, which is precisely the writable-alias the
+  transition in §3 exists to eliminate.
+
+So the earlier recommendation is withdrawn. Allocation is not refinement, and no
+amount of scope-narrowing turns one into the other.
+
+**The model instead: a finite `MemoryAuthority`, and an allocation operation
+that consumes from it.** The authority is abstract — it confers the right to
+spend a finite memory resource, not to address particular frames. Physical
+placement stays the nucleus's business and does not enter the public contract:
+contiguity, alignment and where the pages actually are should be an
+implementation fact until something is measured that needs otherwise.
+
+An allocation, presented with such an authority, performs one atomic step:
 
 ```text
-boot endowment: region authority over a pool range
-  -> capability_attenuate (operation 5), scope narrowed to a sub-range
-  -> the sub-range is the backing a build worker writes its bundle into
+1  check the authority's remaining finite resource
+2  reserve unique backing pages
+3  exclude them from every other live allocation
+4  create a nucleus-owned RegionObject
+5  return a mutable, affine Region capability over it
+6  charge the spend against that authority
+7  on final reclamation, return the resource to the same pool
 ```
 
-**The striking part is that this needs no new operation at all.**
-`CAPABILITY_V1` §3 already defines *scope* as "the range or subset the rights
-apply to", and §4's attenuation narrows rights, scope and lifetime. Carving a
-backing out of a range a process already holds is attenuation — the existing
-operation 5 — not creation. Nothing is conjured, so there is no
-resource-exhaustion channel to bound: a process can only ever carve inside what
-it was given, and the sum is bounded by construction rather than by arithmetic
-at launch.
+No overcommit, and no two live regions over the same backing — both by
+construction rather than by check-and-hope.
 
-Costs, stated plainly:
+**This is not authority ex nihilo.** A region exists only as a consequence of a
+capability the caller presented, and is bounded by that capability's finite
+resource. It is the same shape as `process_create`: authority over a new object,
+derived from authority the caller already held, bounded by it. What ADR-0055
+rejects is an operation reachable *without* a capability, and this is not one.
 
-- the pool must be **partitioned at boot**: some frames become the launch
-  authority's range and are not available to `memory::admit_memory`'s general
-  pool, which is a static reservation the nucleus does not do today;
-- **reclamation matters more** (G6): if a range cannot return to the authority
-  when the last handle over it dies, a long-running system leaks its launch
-  memory one build at a time;
-- ADR-0050's grant path is untouched, but the boot endowment gains a second kind
-  of thing in it, which ADR-0051 §3's constant has to name.
+#### One authority, or an attenuable budget
 
-### Recommendation
+| | One `MemoryAuthority` per holder, with accounting | Hierarchical, attenuable budgets |
+|---|---|---|
+| how a supervisor funds a worker | it cannot: the worker needs its own authority from the launcher, sized at launch | attenuate its own by amount, delegate the derived one |
+| where the sum is checked | at launch, against the pool | at each attenuation, against the parent's remainder |
+| what attenuation means | rights and lifetime only; the amount is fixed at endowment | **rights, lifetime and amount**, which needs `CAPABILITY_V1` §4 to admit a quantity as part of scope |
+| revocation | by generation, as for any capability | the same, and a parent's revocation must reclaim the child's unspent remainder |
+| failure mode | a worker sized wrong at launch cannot be topped up | a parent that over-delegates starves itself, which is visible and local |
+| complexity in the nucleus | one counter per authority | a tree of counters, and a rule for what a child's spend does to a parent's remainder |
 
-**B**, and A left for objects that are not memory.
+The build lifecycle needs the second: a supervisor decides how large a bundle a
+particular build may produce, and that decision is per build rather than per
+boot. But the first is what an accepted contract can express today, since
+`CAPABILITY_V1` §3's *scope* is "the range or subset the rights apply to" and a
+remaining quantity is neither.
 
-B is the option that keeps ADR-0055's rule intact rather than carving an
-exception into it: authority still has a root, still only narrows, still
-terminates at the boot endowment that is on the audit record. It also removes
-the exhaustion question instead of answering it — there is no budget to enforce
-because there is nothing to conjure.
-
-A remains necessary later, and ADR-0055 says so: an endpoint is not memory, and a
-process that needs one it was not given has no range to carve it out of. That is
-a different decision, for a different object, and it is not blocking here.
+**Recommendation: hierarchical, with the quantity named as part of the
+authority's scope**, and `CAPABILITY_V1` §3 amended to say that a scope may be a
+finite resource amount as well as a range or subset. The alternative — a flat
+authority per process, sized at launch — pushes every build's size decision back
+to boot, which is exactly the static partitioning this model was chosen to
+avoid. Neither is implemented, and no operation number, register or right is
+claimed for either.
 
 ## 3. G7 — the mutable-to-immutable transition does not exist
 
@@ -192,10 +220,11 @@ is about derived capabilities and is silent on mappings; `region_share`
 (operation 7) is about a second reader, not about access mode. Searched and
 reported, not assumed.
 
-### Recommendation
+### Decided: A
 
-**A** — a dedicated consuming transition, **name and ABI shape deliberately not
-chosen here**. What this ADR would fix is the semantics:
+**The Architect accepted the direction on 2026-08-29: a dedicated consuming
+transition.** The name, the operation number and the register shape are
+deliberately not chosen. The semantics are fixed:
 
 ```text
 input     a region capability with the write right, held by exactly one process
@@ -208,8 +237,16 @@ refusal   a writable mapping that cannot be removed, or a caller that is not the
 after     no writable alias exists — a fact of the nucleus, checkable by it
 ```
 
+Stated as the postcondition it has to be: **the nucleus can prove
+`writable_aliases == 0`.** Not the caller, and not by convention.
+
 Irreversible by construction: there is no operation in the other direction, and
 the immutable form has no write right to attenuate towards.
+
+**Atomic in both outcomes.** A transition that cannot complete leaves the region
+exactly as it was — mutable, with its capability and its mappings intact — and
+says so. There is no half-frozen state, because a region that was partly
+downgraded would be one whose access mode no single fact describes.
 
 ## 4. The lifecycle this makes possible
 
@@ -248,42 +285,96 @@ the handoff is a linear transfer, and reclamation is the last handle going away.
 **No memory-owning transaction object is needed**, and ADR-0074 §4 should be
 replaced by this section rather than kept beside it.
 
-## 5. What is still missing after this draft
+## 5. `CAPABILITY_V1` §2: a stale sentence, and the invariant that replaces it
+
+`CAPABILITY_V1` §2 says, citing ADR-0055: "**No operation of `SYSTEM_ABI_V1`
+produces a capability.**" That was true of the twelve operations ADR-0055
+examined and is no longer true of the ABI as it stands. Reconciled against every
+case, present and proposed:
+
+| Operation | Returns a capability? | Where its authority comes from |
+|---|---|---|
+| `capability_attenuate` (5) | yes, a derived one | the capability presented, narrowed — never widened |
+| `process_create` (8) | yes: `rdx` returns the child's handle | the process-authority capability presented, and an endowment every entry of which the parent already holds |
+| `process_create_with_generation` (15) | the same, plus an asserted generation | the same, with the generation recorded rather than computed (ADR-0067) |
+| a future `MemoryAuthority` → Region (§2 B) | yes, a mutable region capability | the authority presented, bounded by its finite remaining resource |
+| ADR-0055 Option B, for non-memory objects | yes, for an object only the caller can name | an explicitly accepted, bounded self-only creation rule |
+
+The line every one of them respects is not "no capability is returned" — it is
+that **nothing arrives without a stated origin, and no origin widens**.
+
+Proposed replacement for that sentence:
+
+> **`SYSTEM_ABI_V1` creates no ambient authority.** A capability an operation
+> returns must have an explicitly defined normative origin: either authority the
+> caller presented to that operation, which bounds what is produced, or an
+> explicitly accepted bounded self-only creation rule. No operation creates
+> authority over a pre-existing external object out of nothing, and no operation
+> widens what its caller held.
+
+**Where it may be applied.** `CAPABILITY_V1` is an Accepted Tier 2 interface
+contract, accepted by ADR-0048, and docs/38 places Tier 2 under Tier 1: a Tier 2
+document conforms to accepted ADRs and does not silently amend them — and the
+reverse holds too, an accepted contract is not edited without a decision that
+says so. ADR-0067 is the accepted later decision that made the sentence stale,
+but it did not amend `CAPABILITY_V1`, so the correction is not automatic
+housekeeping.
+
+Therefore **the amendment rides on this ADR's acceptance**, as exactly the
+paragraph above, replacing one sentence and nothing else. **ADR-0055 is not
+rewritten**: it recorded a twelve-operation ABI correctly, and its reasoning —
+authority has a root, only narrows, and terminates at an endowment on the audit
+record — is what the replacement states.
+
+## 6. RegionObject: what the nucleus holds, and when the backing goes back
+
+Design only. Nothing here is implemented.
+
+A `RegionObject` is nucleus-owned state, unreachable from any process except
+through a capability:
+
+```text
+identity + generation      so a stale handle is detectably stale (CAPABILITY_V1 §2)
+backing                    the pages; nothing about where they are is public
+access mode                mutable, or permanently immutable after the §3 transition
+capability references      how many live handles name it, by mode
+mapping references         how many address spaces have it mapped, by mode
+charged to                 the MemoryAuthority the allocation spent from (§2 B)
+```
+
+**Reclamation, case by case.** One sentence underneath every row: *the backing
+returns to the pool that funded it only when no capability, no mapping and no
+internal reference can reach it.*
+
+| Event | What happens to the region |
+|---|---|
+| a process dies | its handles and mappings go with it; the region survives if anything else still reaches it, and is reclaimed if not |
+| `capability_release` | one capability reference goes; a mutable region losing its only handle is unreachable and is reclaimed, because a mutable region has exactly one holder by construction |
+| a linear transfer that **succeeds** | the reference moves; the count never passes through zero |
+| a linear transfer that **fails** | nothing moved — the sender still holds it, as `CAPABILITY_V1` §4 requires |
+| the §3 transition **succeeds** | every writable capability and mapping reference is gone by the postcondition; the region continues under the read references that remain |
+| the §3 transition **fails** | the region is exactly as it was, mutable, references intact |
+| a shared immutable region | each `Shared` holder is a reference; the last one going releases it |
+| the target dies | its read mapping and handle go; if a supervisor kept the bundle for restart, the region lives on that reference alone |
+| a supervisor holds the bundle for restart | the intended case: the bundle outlives the target that verified it, and is reclaimed when the supervisor releases it |
+
+Two properties this is built to have. **No reference is kept alive by a policy**:
+every row is the same rule applied to a different event, so there is no case
+somebody has to remember. And **the charge outlives the region's users**: memory
+returns to the authority it was spent from rather than to a general pool, or a
+long-running supervisor would slowly convert one build's budget into another's.
+
+## 7. What is still missing after this draft
 
 - **G4** — what happens to an existing **mapping** when the capability that
-  authorized it is released or revoked. §3-A needs it for the transition, and it
-  is a rule about mappings rather than about handles;
-- **G6** — the reclamation rule of §4 step 12: "no capability, mapping or
-  reference remains" has to be something the nucleus can decide;
+  authorized it is released or revoked. §3 needs it for the transition, and it
+  is a rule about mappings rather than about handles; §6 assumes it;
+- **G6** — §6's reference rule has to be something the nucleus can decide
+  cheaply, and the cost of deciding it is not measured;
+- **the quantity-as-scope amendment** §2 asks of `CAPABILITY_V1` §3, without
+  which only the flat per-process authority is expressible;
 - the **boot endowment** of §2-B: which range, decided where, named in which
   audit record;
 - the ABI shape of §3-A, and of ADR-0074 §6, both of which have to wait for the
   rights in §1 to be written into `CAPABILITY_V1`.
 
-## 6. A wording correction this uncovered, for `CAPABILITY_V1` §2
-
-`CAPABILITY_V1` §2 says, citing ADR-0055: "**No operation of `SYSTEM_ABI_V1`
-produces a capability.**" That was a true statement about the twelve operations
-ADR-0055 examined, and it is no longer true of the ABI as it stands:
-
-- `capability_attenuate` (5) produces a **derived** capability — it always did,
-  and ADR-0055's own §"none of the twelve produces a capability" was about
-  authority arising, not about handles being returned;
-- `process_create` (8) and `process_create_with_generation` (15) return the
-  child's capability handle in `rdx`. That is authority over an object that did
-  not exist before the call, and it was made explicit by **ADR-0067**, whose
-  operation table states "`rdx` (out) | the child's capability handle, as
-  operation 8".
-
-Proposed amendment, to `CAPABILITY_V1` §2, replacing that one sentence:
-
-> **No operation of `SYSTEM_ABI_V1` creates authority out of nothing.** An
-> operation may return a handle to authority that already has a lawful origin:
-> a capability derived by attenuation from one the caller holds, or authority
-> over an object the caller's own authority brought into being. Every such
-> origin is bounded by what the caller was given, and no operation widens it.
-
-ADR-0055 is Accepted and is **not** rewritten: it recorded the state of a
-twelve-operation ABI correctly. What is proposed is that the Tier 2 contract
-stop restating a headcount as an invariant, and state the invariant that
-actually holds and that ADR-0055's reasoning was always about.

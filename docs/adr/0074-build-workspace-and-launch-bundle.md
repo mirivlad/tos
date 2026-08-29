@@ -222,9 +222,16 @@ today's allocator behaviour and not yet a bound:
   set-wide qualified-type check resolves a name in one module against another
   module's set;
 - so the size question is downstream of a data-structure question, and fixing
-  the size first would fix the wrong number. A semantics-preserving alternative
-  to holding every type surface at once has to be designed, measured and
-  differentially checked before a `BuildWorkspaceV1` is worth naming.
+  the size first would fix the wrong number;
+- **and the lever is now measured.** A summary costs `8.2x` to `14.1x` its own
+  semantic payload — about `90 B` of container and node overhead per declared
+  type name, against a name averaging under `7 B`. Four representations of the
+  same membership question were compared over the production summaries' own
+  names: a byte slab with a sorted offset table is `5.2x` smaller than the
+  `BTreeSet<String>` the build holds today (`40.04 MiB` against `206.45 MiB` for
+  the worst body), builds `6.6x` faster, probes faster, compares bytes exactly
+  and answers identically. That is a change of representation with no change to
+  what the check computes, and it is not implemented.
 
 Until then any margin is engineering judgement wearing a number, and the honest
 statement is that the bound is **not yet known**.
