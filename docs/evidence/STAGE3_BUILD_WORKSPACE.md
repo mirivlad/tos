@@ -561,6 +561,83 @@ lever: replacing the representation, with no change to what the check computes,
 would take the worst adversarial body's check-phase peak from `206 MiB` to about
 `40 MiB`.
 
+## After the compact representation: the adversarial rerun
+
+`TypeNames` — a byte slab with a sorted offset table — replaced the
+`BTreeSet<String>` a summary held. Same names, same answers, same diagnostics;
+the change is what the bytes are stored in. Re-measured, every body at the
+docs/44 ceiling, generative provider, products written outside:
+
+| Body | Workspace before | Workspace after | Peak committed after | Bundle |
+|---|---:|---:|---:|---:|
+| maximum small declarations | 221.04 MiB | **37.28 MiB** | 36.82 MiB | 42.63 MiB |
+| type-heavy | 155.79 | **37.02** | 36.82 | 40.22 |
+| nested types | 120.55 | **37.02** | 36.82 | 27.71 |
+| statement-heavy | 90.76 | 90.77 | 90.77 | 179.41 |
+| function-heavy | 82.59 | 72.64 | 56.26 | 107.58 |
+| mixed | 74.61 | **37.06** | 36.87 | 100.87 |
+| export-heavy | 43.30 | 43.32 | 43.15 | 107.79 |
+
+**The adversarial spread of `43–221 MiB` became `37–91 MiB`, and its shape
+changed.** What is left does not grow with the closure: at `37 MiB` for four of
+the seven bodies the workspace is one module's turn and nothing else, and the
+three that are higher are higher for a reason that lives inside a single module
+— a statement-heavy module's parse tree and IR, a function-heavy module's
+tables, an export-heavy module's declaration. **The workspace is now bounded by
+the worst single module the ceilings admit rather than by how many modules there
+are**, which is the property claim A needed and did not have.
+
+Enforced hard minimums, bisected after the change:
+
+| Body | Smallest declared workspace that completes | Largest that fails |
+|---|---:|---:|
+| statement-heavy | **95 518 720 B** (91.10 MiB) | 94 699 520 B |
+| function-heavy | 76 840 960 B (73.28 MiB) | 76 103 680 B |
+| maximum small declarations | **39 321 600 B** (37.50 MiB) | 38 338 560 B |
+
+The last row is the measurement this round was for: the body that needed
+`231 997 440 B` before now needs `39 321 600 B`, a factor of `5.9`.
+
+### The two-pass checker, measured rather than assumed
+
+The phase split is implemented and proved to report exactly what the one-pass
+check reports (`crates/tos-core/tests/two_pass_checker.rs`). Measured at the
+ceiling it does not pay:
+
+| Body | One pass | Two passes |
+|---|---|---|
+| mixed | 37.06 MiB, 31.2 s | 37.06 MiB, 34.7 s |
+| type-heavy | 37.02 MiB, 16.7 s | 42.85 MiB, 18.6 s |
+| small declarations | 37.28 MiB, 20.7 s | 43.63 MiB, 22.9 s |
+
+About `11 %` more CPU and up to `6.4 MiB` more memory. The reason is that the
+compact representation already removed the term the split was aimed at: what two
+passes stop holding — the qualified uses — is small once the type surface is a
+slab, while what they add is a second parse tree alive beside every summary and
+a third materialization of every unit. Production keeps one pass; the phases
+remain available, with their equivalence proof, for a corpus where uses
+dominate.
+
+### The physical account, after
+
+Workspace + bundle + the worker's `2.08 MiB` of process overhead and about
+`0.4 MiB` of page tables, against the ADR-0040 pool of `~229.8 MiB`:
+
+| Body | Workspace | Bundle | Total | Fits |
+|---|---:|---:|---:|---|
+| maximum small declarations | 37.28 MiB | 42.63 MiB | 82.4 MiB | yes |
+| type-heavy | 37.02 | 40.22 | 79.7 | yes |
+| nested types | 37.02 | 27.71 | 67.2 | yes |
+| mixed | 37.06 | 100.87 | 140.4 | yes |
+| export-heavy | 43.32 | 107.79 | 153.6 | yes |
+| function-heavy | 72.64 | 107.58 | 182.7 | yes |
+| **statement-heavy** | 90.77 | **179.41** | **272.7** | **no** |
+
+Six of seven now fit with room. The one that does not is over because of its
+**bundle**, not its workspace: `179.41 MiB` of images for source that is
+source-map heavy. That is an image-format question — ADR-0070's territory — and
+it is the next thing in the way, not the build workspace.
+
 ## What this is not
 
 - **Not a freestanding measurement.** A host process with a bounded heap. No
