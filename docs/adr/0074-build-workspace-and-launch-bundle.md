@@ -117,52 +117,189 @@ has no way to reach the bundle after the handoff, so nothing can rewrite what
 the target is about to verify — and even if something did, the target verifies
 anyway.
 
-## 5. Proposed: a fixed BuildWorkspace size
+## 5. The physical accounts, kept apart
 
-Derived, not chosen for its shape:
+**A correction, and it matters.** An earlier revision of this section added a
+`32 MiB` capsule, a `92 MiB` workspace and a `100.9 MiB` bundle into one line
+and concluded that a build at the docs/44 ceiling barely fits the ADR-0040
+machine. That line describes no possible system: `§22`'s own measurement says a
+Capsule v1 carries at most **127** units at the source ceiling, so a bundle over
+`256 x 256 KiB` cannot be the product of a capsule at all. Claims A, B and C
+have separate accounts and are kept apart here.
 
-```text
-enforced minimum, worst measured shape          81 100 800 B   (77.34 MiB)
-+ 11 %, the spread between the measured shapes   8 921 088 B
-+ a quarter of one turn's scratch                6 608 812 B
-rounded up to a page                            96 632 832 B   (92.16 MiB)
-```
+### A — the reference algorithm, no corpus resident anywhere
 
-The two margins are the two things that vary and that a fixed size cannot
-measure in advance: **the shape of the graph**, which was `69.54` to
-`77.14 MiB` across the three measured shapes and which is a property of the
-program rather than of the build; and **the weight of one module's turn**, which
-is `25.21 MiB` of the total for the fixture's ceiling-sized modules and would be
-larger for a module whose body is heavier than records and small functions.
+`256 x 256 KiB` through a **generative provider**: the catalog is paths, a unit
+exists between the request that made it and the drop that ends it, and no corpus
+is held inside the measured account or outside it.
 
-**It is a tight fit on the reference platform, and that has to be said.**
-ADR-0040's machine leaves about `229.8 MiB` after the nucleus. At the docs/44
-ceiling the build phase needs the capsule source mapped (`32 MiB` at the Capsule
-v1 ceiling), the workspace, and the bundle it is filling:
+| Shape | Workspace | Source at once | Bundle | Workspace + bundle |
+|---|---:|---:|---:|---:|
+| A chain | 74.61 MiB | 0.25 MiB | 100.87 MiB | 175.47 MiB |
+| B wide fan-in | 70.71 MiB | 0.25 MiB | 100.47 MiB | 171.18 MiB |
+| C balanced DAG | **76.45 MiB** | 0.25 MiB | 100.90 MiB | 177.35 MiB |
 
-| Phase | What is resident | At the docs/44 ceiling |
-|---|---|---:|
-| build | capsule + workspace + bundle | `32 + 92.16 + 100.87` = **225.03 MiB** |
-| after handoff | bundle + target grant and its overhead | `100.87 + 56.08` = **156.95 MiB** |
-| pool after the nucleus | | **~229.8 MiB** |
+Enforced, on the worst of the three: the build completes in a declared workspace
+of **`80 281 600 B`** (76.56 MiB) and fails to allocate at `79 298 560 B`.
 
-That leaves `4.77 MiB` at the peak, before the worker's own per-process overhead
-(measured at `2.08 MiB` in `STAGE3_PROCESS_GRANT.md`) and before any page tables
-for the mappings. **It does not fit with any margin at all**, and with the
-measured minimum instead of the proposed size it fits by `19.8 MiB`.
+The source figure is measured rather than argued: every snapshot handed out is
+watched weakly, and the most that was ever alive at once is **one unit**, over
+`512` requests for a closure of 256. Residency-independence is a property of
+this path, not an aspiration for it.
 
-So one of these is true, and choosing between them is not this ADR's to do:
+The physical account, worst shape, on the ADR-0040 machine:
 
-- the reference platform does not build at the docs/44 ceiling, and the ceiling
-  it does build at is smaller — at 128 ceiling-sized modules the same three
-  numbers are `32 + 92.16 + 50.63` = `174.79 MiB`, which is comfortable;
-- or the bundle does not stay whole in memory during the build, which is a
-  different §2 than the one decided;
-- or the reference platform is not where a ceiling build happens.
+| Line | Bytes |
+|---|---:|
+| BuildWorkspace (measured worst, no margin) | 76.45 MiB |
+| launch bundle | 100.90 MiB |
+| build-worker process overhead beyond its grant | 2.08 MiB |
+| page tables for both mappings, `4 KiB` pages | ~0.4 MiB |
+| **peak during the build** | **~179.8 MiB** |
+| pool after the nucleus | ~229.8 MiB |
+| **spare** | **~50 MiB** |
 
-The measured slope makes the first concrete: the workspace is flat at
-`36.4–36.5 MiB` from 8 to 64 modules, `42.98 MiB` at 128 and `77.14 MiB` at 256,
-while the bundle grows at `0.39 MiB` a module.
+After the handoff the workspace is gone and the target replaces it:
+`100.90 + 56.08 = 156.98 MiB`, which is smaller still. **A ceiling build fits
+the reference platform**, and nothing measured asks for the docs/44 ceiling to
+move.
+
+### B — a real Capsule v1
+
+The three configurations a capsule can actually hold, built through
+`CapsuleSourceProvider -> build_into_bundle`, with the capsule read into memory
+outside the measured arena as a boot maps one:
+
+| Configuration | Capsule | Workspace | Hard minimum | Bundle | Worker + tables | Physical peak |
+|---|---:|---:|---:|---:|---:|---:|
+| 127 x 256 KiB | 31.75 MiB | 43.46 MiB | 45 875 200 B | 50.49 MiB | ~2.4 MiB | **~128.1 MiB** |
+| 255 x 128 KiB | 31.88 MiB | 37.39 MiB | 39 321 600 B | 50.52 MiB | ~2.4 MiB | **~122.2 MiB** |
+| 256 x 64 KiB | 16.01 MiB | 19.84 MiB | 20 971 520 B | 25.19 MiB | ~2.2 MiB | **~63.4 MiB** |
+
+Each hard minimum is enforced the same way: the declared workspace one step
+below it — `45 219 840`, `38 666 240` and `19 922 944 B` — fails to allocate.
+
+Every one of them runs to its answer. The worst is `128.1 MiB` against a pool of
+`229.8 MiB`: a capsule build on the reference platform has about `100 MiB` of
+room to spare, and the binding constraint on a capsule is `MAX_CAPSULE_BYTES`,
+not this machine.
+
+### C — an installed-source backend
+
+**Open, and nothing here describes it.** No residency may be attributed to a
+backend that has not been chosen: not a whole corpus, not a capsule's `32 MiB`,
+not anything. What its contract must permit is the shape A already measures —
+one unit materialized at a time — which `SourceSnapshot::Owned` allows today
+without the interface changing.
+
+## 5a. A fixed BuildWorkspace size is not proposed yet
+
+`80 281 600 B` is the smallest declared workspace the worst measured build fits
+in — claim A, balanced, 256 ceiling-sized modules — enforced by refusing past
+it. It is a measurement of
+today's allocator behaviour and not yet a bound:
+
+- the workspace is flat at `36.4-36.5 MiB` from 8 to 64 modules and then climbs
+  to `77 MiB` at 256 while what is **live** stays under `40 KB`, so the climb is
+  allocator churn rather than anything the build holds;
+- the shapes measured so far vary the *graph*, not the *source*. A
+  function-heavy, type-heavy, deeply nested, export-heavy or source-map-heavy
+  module at the same `256 KiB` would exercise the frontend differently and has
+  not been measured;
+- committed against frontier, the free-block census and the largest hole at the
+  point of failure are what would show whether the growth is fragmentation, and
+  they are only now being recorded.
+
+Until those exist, any margin is engineering judgement wearing a number. The
+account in §5 leaves about `50 MiB` spare at the ceiling, so there is no pressure
+to make the eventual grant tight: a proved bound with honest headroom is worth
+more than a small one.
+
+## 5b. Region authority: what the accepted contracts already say, and what they do not
+
+The lifecycle in §4 uses the word *transaction* for a lifetime. Before any of it
+can be implemented, that word has to name an object the system already has, or
+an ADR has to make one. This is the audit, against `CAPABILITY_V1`,
+`IPC_V1` §5–§6, `SYSTEM_ABI_V1` §5 and ADR-0055.
+
+**What the contracts do give.**
+
+- A capability is `object + rights + scope + lifetime + generation`, in a
+  nucleus-owned table, process-local, unforgeable (`CAPABILITY_V1` §2–§3).
+- A **region** is already one of the object kinds a capability may name
+  (`CAPABILITY_V1` §3), and `IPC_V1` §5 says the nucleus maps and unmaps and
+  does not copy, and that a shared region is mapped under "the access mode the
+  grant declares".
+- `SYSTEM_ABI_V1` operation 7 `region_share` exists and requires a region handle
+  with `share`.
+- **Attenuation** narrows rights, scope and lifetime, and widening is
+  unexpressible (`CAPABILITY_V1` §4). Carving a smaller range out of a region a
+  process already holds is therefore expressible **without any new operation**.
+- **Delegation** is sending a capability over an endpoint; **transfer** consumes
+  the sender's handle atomically, for capabilities an interface declares linear.
+- **Revocation** is the owner invalidating derived capabilities by generation.
+- ADR-0055: **no `SYSTEM_ABI_V1` operation produces a capability.** A table is
+  written by the nucleus before the process is entered, from an endowment the
+  launcher decided, and the recursion ends at the boot process's endowment,
+  which is the launcher's stated constant (ADR-0051 §3).
+
+That last point answers the Architect's instruction directly: **a `region_create`
+operation is not merely undesirable, it is already ruled out.** Any output
+backing must arrive as an endowment or as an attenuation of one.
+
+**The six questions, answered as the contracts stand.**
+
+1. *Which object owns the backing?* **None that exists.** The only accepted
+   object that owns memory today is a process's `RuntimeMemoryGrantV1`, which is
+   the process's own arena and dies with it. There is no accepted region object
+   over pool memory that outlives its writer.
+2. *Where does its identity and lifetime live?* A capability entry carries a
+   lifetime and a generation, and ADR-0050 gives a grant an identity. **A region
+   object's own identity and lifetime are not specified anywhere.**
+3. *Who holds the original Region capability?* Necessarily the launch/recovery
+   process, by endowment — there is no other lawful origin. Nothing accepted
+   says it holds one.
+4. *Where does that capability first come from?* The endowment chain ends at the
+   boot process's constant endowment (ADR-0051 §3). **No accepted document puts
+   a region over spare pool memory into it**, and the nucleus does not carve
+   one: `memory::admit_memory` makes a pool, and process creation takes grants
+   out of it.
+5. *How is the backing reclaimed after the worker or target dies?* Process
+   reclamation returns a process's frames (`TOS.RUN.PROCESS_RECLAIMED`). **A
+   region that is not a grant has no reclamation rule at all.**
+6. *Can the owner still write to the pages after the handoff?* **Yes, and
+   nothing in the accepted contracts prevents it.** This is the critical gap:
+   - delegation leaves the sender holding what it had (`IPC_V1` §6);
+   - `IPC_V1` §6 states that **no Stage 3 object type is declared linear**, so a
+     region capability is not consumed by being handed on;
+   - there is no sealing operation and no "no writable aliases" property
+     anywhere in the contracts;
+   - revocation invalidates *derived* capabilities by generation — it does not
+     touch the owner's own, and nothing says what happens to a **mapping** that
+     an invalidated capability authorized.
+
+   So "the worker lost its writable mapping" is not immutability. A supervisor
+   or transaction owner retaining a writable capability could rewrite the bundle
+   while the target verifies it. The target verifies anyway, which is why this is
+   not a soundness hole in ADR-0073's sense — but §4's sentence "the bundle is
+   immutable from here" is **not currently provable**, and an ADR must not claim
+   it.
+
+**STOP — the normative gaps, exactly.** None of these can be closed by
+implementation; each needs an accepted contract change:
+
+| # | Gap | Where it belongs |
+|---|---|---|
+| G1 | The region object type has no declared rights set. `region_share` requires `share`, which no contract defines, and `CAPABILITY_V1` §3 enumerates rights for endpoints and processes only | `CAPABILITY_V1` §3 |
+| G2 | No access mode — read-only against writable — is expressible as a right, so "writable → sealed" cannot be an attenuation | `CAPABILITY_V1` §3–§4 |
+| G3 | No sealing, and no linear region transfer: `IPC_V1` §6 declares no Stage 3 type linear, so handing a region on cannot consume the sender's authority | `IPC_V1` §5–§6 |
+| G4 | No rule for what happens to an existing **mapping** when the capability that authorized it is released, revoked or invalidated by generation | `IPC_V1` §5 |
+| G5 | No accepted origin for a region object over pool memory that is not a process grant, and ADR-0055 forbids creating one with an operation | a new ADR + `CAPABILITY_V1` §2 |
+| G6 | No reclamation contract for a region object independent of the death of a process | a new ADR |
+
+Until G1–G6 are closed there is no Region contract to implement, and §6's ABI
+shape cannot be fixed: it would have to name a right (`read-only map`) that no
+accepted contract defines.
 
 ## 6. Process creation: two shapes, and a recommendation
 
@@ -178,14 +315,23 @@ given, and nothing is looked up ambiently.
 
 ### A — a new operation that takes the bundle as a capability
 
+**The Architect chose A as the direction on 2026-08-29, and the numbers,
+registers and rights below are not accepted.** They cannot be: the shape names a
+region right that §5b shows no contract defines. What follows is a sketch to be
+returned to *after* the Region contract exists, and operations 8 and 15 stay
+exactly as they are either way.
+
 `SYSTEM_ABI_V1` §3 already assigns a shape for an operation requiring two
 capabilities (operation 13 is the precedent): they occupy `rdi` and `rsi` in §5
 order, and the operation's own values start at `rdx`.
 
 ```text
+(numbers illustrative; not claimed, not accepted, not implemented)
 16  process_create_from_bundle
     rdi  process-authority capability
-    rsi  region handle over the bundle, with the right to be mapped read-only
+    rsi  region handle over the bundle, with whatever right the Region
+         contract ends up defining for "may be mapped, not written"
+
     rdx  how many capabilities the child is endowed with
     r10  the rights the child holds over itself
     r8   the length of the expected entry path
@@ -244,8 +390,9 @@ under this variant it would describe something the process no longer is.
 
 ### Recommendation
 
-**A**, with the two operation numbers, and with the entry path kept as a
-declared input the runtime checks.
+**A** as the direction — which the Architect has taken — and **no ABI shape
+until the Region contract exists.** The entry path stays a declared input the
+runtime checks, whatever the eventual registers are.
 
 B is only cheaper until it is written down, and what it saves is an operation
 number — which is the one thing this system has never been short of. What it
@@ -259,12 +406,13 @@ The Architect's six open questions are unchanged except where §1, §2 and the
 measurement bear on them:
 
 - **the origin of the BuildWorkspace** — §5 proposes a size, not a source;
-- **the lifecycle of a Region object** — §4 proposes a shape and implements none
-  of it;
-- **the writable → sealed transition** — §4 proposes that it is the handoff, and
-  no mechanism for it;
+- **the lifecycle of a Region object** — §4 proposes a shape, §5b shows the six
+  contract gaps that have to close before any of it can be written;
+- **the writable → sealed transition** — §4 proposes that it is the handoff;
+  §5b G2 and G3 show that no accepted contract can express it, and that §4's
+  claim of immutability is not provable today;
 - **ownership and reclamation after the worker dies** — §4 proposes the
   transaction owner;
 - **when a transferred region is mapped into the target** — §6 A places it at
-  creation, in a proposal that is not implemented;
+  creation, in a sketch that cannot be fixed until §5b's gaps close;
 - **one bundle region or several** — decided in §2: one.
