@@ -40,7 +40,7 @@
 //! the rig's limit instead of the workload's need.
 
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use tos_core::{
     lower_module_in_set, LoweringInterface, ModuleContext, ModuleEntry, ModuleSummary, Parser,
@@ -149,7 +149,18 @@ unsafe impl GlobalAlloc for MeasuredHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.ensure_adopted();
         // SAFETY: the heap has adopted its region.
-        unsafe { self.heap.alloc(layout) }
+        let pointer = unsafe { self.heap.alloc(layout) };
+        // **A declared workspace, enforced.** `--workspace-cap` names how large
+        // the build's account is allowed to be; past it this allocator refuses,
+        // which is the same answer a grant of that size would give. The default
+        // is no cap at all, so every other measurement is unaffected.
+        if !pointer.is_null() && self.heap.usage().1 > CAP.load(Ordering::Relaxed) {
+            // SAFETY: `pointer` came from `alloc` on this allocator, with this
+            // layout, and has not been handed out.
+            unsafe { self.heap.dealloc(pointer, layout) };
+            return core::ptr::null_mut();
+        }
+        pointer
     }
 
     // SAFETY: the `GlobalAlloc` contract; `pointer` was returned by `alloc` on this allocator.
@@ -163,6 +174,12 @@ unsafe impl GlobalAlloc for MeasuredHeap {
 static HEAP: MeasuredHeap = MeasuredHeap {
     heap: GlobalHeap::new(),
 };
+
+/// The declared ceiling on the measured account, in bytes.
+///
+/// `usize::MAX` until a mode sets it, so a measurement that does not ask for a
+/// bound is measured exactly as it was before this existed.
+static CAP: AtomicUsize = AtomicUsize::new(usize::MAX);
 
 /// Everything observable about the arena at one instant.
 ///
@@ -257,6 +274,46 @@ fn main() {
             _ => Shape::Chain,
         };
         build_workspace(shape, modules, unit_bytes);
+        return;
+    }
+    if std::env::args().any(|argument| argument == "--external") {
+        println!("TOS build workspace, with its products written outside it");
+        println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
+        let modules = std::env::args()
+            .skip_while(|argument| argument != "--modules")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(2);
+        let unit_bytes = std::env::args()
+            .skip_while(|argument| argument != "--unit-bytes")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(SOURCE_CEILING);
+        let room = std::env::args()
+            .skip_while(|argument| argument != "--bundle-bytes")
+            .nth(1)
+            .and_then(|value| value.parse().ok())
+            .unwrap_or(256 * 1024 * 1024);
+        // A cap, when one is asked for, is set before the build and after the
+        // fixture: what is being bounded is the build's account, not the
+        // harness's own generator.
+        let cap: Option<usize> = std::env::args()
+            .skip_while(|argument| argument != "--workspace-cap")
+            .nth(1)
+            .and_then(|value| value.parse().ok());
+        let shape = std::env::args()
+            .skip_while(|argument| argument != "--shape")
+            .nth(1)
+            .unwrap_or_else(|| String::from("chain"));
+        let shape = match shape.as_str() {
+            "wide" => Shape::WideFanIn,
+            "balanced" => Shape::Balanced,
+            _ => Shape::Chain,
+        };
+        if let Some(cap) = cap {
+            println!("declared workspace cap: {cap} B ({:.2} MiB)", mib(cap));
+        }
+        build_into_bundle_mode(shape, modules, unit_bytes, room, cap);
         return;
     }
     if std::env::args().any(|argument| argument == "--capsule") {
@@ -890,6 +947,187 @@ fn measure_build(provider: &dyn tos_pipeline::SourceProvider, entry_path: &str, 
     }
 }
 
+/// The build account when its products leave it as they are made.
+///
+/// **The measurement the workspace size is chosen from.** The bundle's backing
+/// is allocated outside the measured arena, so what the arena holds is the
+/// build workspace and nothing it has produced: the images and the declarations
+/// go into `TOSBUNDLE/v1` in the same step that makes them, and the build's own
+/// account never contains the closure it has built so far.
+///
+/// Two accounts are reported and never summed into one number without saying
+/// so: the workspace is what a grant would have to cover, the bundle is what
+/// the launch transaction has to reserve, and the machine pays for both at once.
+///
+/// With `--workspace-cap N` the measured allocator refuses past `N` bytes,
+/// which is how the smallest workspace a build fits in is found by running it
+/// rather than by arithmetic.
+fn build_into_bundle_mode(
+    shape: Shape,
+    count: usize,
+    unit_bytes: usize,
+    room: usize,
+    cap: Option<usize>,
+) {
+    println!();
+    println!(
+        "== build into an external bundle, {} shape, {count} modules of {unit_bytes} bytes ==",
+        shape.named()
+    );
+    // **One unit at a time, and each leaves the arena before the next is made.**
+    // The fixture is not the workspace, and a corpus generated inside the
+    // account being measured would put its own high-water mark under every
+    // figure below — which is exactly what it did until this was streamed.
+    let mut capsule: Vec<&'static [u8]> = Vec::with_capacity(count);
+    let mut paths: Vec<String> = Vec::with_capacity(count);
+    for_each_unit(shape, count, unit_bytes, &mut |path, text| {
+        capsule.push(capsule_bytes(&text));
+        paths.push(path);
+    });
+    let source_backing: usize = capsule.iter().map(|bytes| bytes.len()).sum();
+    let units: Vec<Unit<'_>> = paths
+        .iter()
+        .zip(capsule.iter())
+        .map(|(path, bytes)| Unit {
+            path: path.as_str(),
+            bytes,
+        })
+        .collect();
+    let entry_path = paths.last().expect("a fixture has an entry").as_str();
+    let provider = tos_pipeline::SliceSourceProvider::new(&units);
+
+    // The bundle's backing, outside the measured account. Where it comes from
+    // in a real system is undecided; that it is not the build's own memory is
+    // the point, and a host allocation is the least committal way to say so.
+    let backing = outside_the_arena_mut(room);
+    let mut slice = tos_bundle::SliceBacking::new(backing);
+
+    let before = arena();
+    // The cap comes into force here, with the fixture already built and the
+    // arena as small as it will be: what it bounds is the build.
+    if let Some(cap) = cap {
+        CAP.store(cap, Ordering::SeqCst);
+    }
+    let written = tos_pipeline::build_into_bundle(
+        &provider,
+        "tos-arena-bound",
+        entry_path,
+        &mut slice,
+        &mut Silent,
+    )
+    .expect("the fixture names an entry it contains");
+    let boundary = arena();
+
+    println!(
+        "  source backing, outside both accounts   {:>12} B ({:>7.2} MiB)",
+        source_backing,
+        mib(source_backing)
+    );
+    println!(
+        "  bundle backing offered                  {:>12} B ({:>7.2} MiB)",
+        room,
+        mib(room)
+    );
+    println!(
+        "  arena before the build                  {:>12} B committed, frontier {} B",
+        before.committed, before.frontier
+    );
+    match written {
+        tos_pipeline::BuildIntoBundle::Written { bytes, modules } => {
+            println!(
+                "  BUILD WORKSPACE frontier                {:>12} B ({:>7.2} MiB)",
+                boundary.frontier,
+                mib(boundary.frontier)
+            );
+            println!(
+                "  workspace committed at the boundary     {:>12} B ({:>7.2} MiB)",
+                boundary.committed,
+                mib(boundary.committed)
+            );
+            println!(
+                "  BUNDLE used                             {:>12} B ({:>7.2} MiB) over {modules} modules",
+                bytes,
+                mib(bytes)
+            );
+            println!(
+                "  both at once, physically                {:>12} B ({:>7.2} MiB)",
+                boundary.frontier + bytes,
+                mib(boundary.frontier + bytes)
+            );
+            println!(
+                "  allocator headroom over live bytes      {:>12} B ({:>7.2} MiB)",
+                boundary.frontier.saturating_sub(boundary.committed),
+                mib(boundary.frontier.saturating_sub(boundary.committed))
+            );
+            println!(
+                "  per module: bundle {:>9.2} KiB   workspace frontier {:>9.2} KiB",
+                bytes as f64 / modules as f64 / 1024.0,
+                boundary.frontier as f64 / modules as f64 / 1024.0
+            );
+            // The other side of the line, from the same bytes: parse the bundle
+            // and admit the closure out of it. A build that produced something
+            // no target accepts would not be a build worth sizing a workspace
+            // for.
+            let bundle = tos_bundle::Bundle::parse(&slice.bytes()[..bytes])
+                .expect("the bundle this build wrote parses");
+            let admitted = tos_pipeline::admit_bundle(
+                &bundle,
+                "main",
+                &mut Silent,
+                tos_pipeline::HOST_RESIDENCY,
+            );
+            let after_admission = arena();
+            match admitted {
+                tos_pipeline::Preparation::Ready(mut prepared) => {
+                    let run =
+                        tos_pipeline::run_prepared(&mut prepared, Vec::new(), &mut Unreachable);
+                    println!(
+                        "  admission from the bundle, frontier     {:>12} B ({:>7.2} MiB)",
+                        after_admission.frontier,
+                        mib(after_admission.frontier)
+                    );
+                    match &run {
+                        Run::Completed(completion) => println!(
+                            "  outcome: completed {:?}, fuel {} of {}",
+                            completion.value,
+                            completion.accounting.fuel_used,
+                            completion.accounting.fuel_limit
+                        ),
+                        Run::Trapped { code, .. } => println!(
+                            "  outcome: verified and executed, then trapped {code} — \
+                             the fixture's own declared bound"
+                        ),
+                        other => println!("  outcome: DID NOT RUN: {other:?}"),
+                    }
+                }
+                tos_pipeline::Preparation::Refused(run) => {
+                    println!("  outcome: THE BUNDLE WAS NOT ADMITTED: {run:?}")
+                }
+            }
+        }
+        tos_pipeline::BuildIntoBundle::OutOfRoom(full) => println!(
+            "  BUNDLE TOO SMALL: needed at least {} B of {} B",
+            full.needed, full.capacity
+        ),
+        tos_pipeline::BuildIntoBundle::Refused(run) => {
+            println!("  BUILD REFUSED at {:?}", run.failed_at())
+        }
+    }
+}
+
+/// A writable buffer outside the measured arena, for a bundle to be written to.
+fn outside_the_arena_mut(bytes: usize) -> &'static mut [u8] {
+    let layout = Layout::from_size_align(bytes.max(1), 4096).expect("a valid layout");
+    // SAFETY: a non-zero-sized layout from the system allocator, never freed —
+    // the bundle outlives the workspace that wrote it, which is the whole
+    // arrangement being measured.
+    let pointer = unsafe { std::alloc::System.alloc_zeroed(layout) };
+    assert!(!pointer.is_null(), "the bundle backing did not allocate");
+    // SAFETY: `pointer` addresses `bytes` writable bytes owned by this program
+    // alone, and no other reference to them is ever made.
+    unsafe { core::slice::from_raw_parts_mut(pointer, bytes) }
+}
+
 /// What a Capsule v1 can carry, and what building from it costs (ADR-0073, B).
 ///
 /// **The provider is the real one.** `CapsuleSourceProvider` reads the capsule's
@@ -1040,10 +1278,30 @@ impl Shape {
 fn shaped_units(shape: Shape, count: usize, unit_bytes: usize) -> (Vec<String>, Vec<String>) {
     let mut texts: Vec<String> = Vec::new();
     let mut paths: Vec<String> = Vec::new();
+    for_each_unit(shape, count, unit_bytes, &mut |path, text| {
+        paths.push(path);
+        texts.push(text);
+    });
+    (texts, paths)
+}
+
+/// The same fixture, one unit at a time, so a caller can put each somewhere
+/// else before the next is made.
+///
+/// A measurement whose corpus is built inside the account being measured is
+/// measuring the generator: the arena's frontier never falls, so a fixture that
+/// held every unit at once would leave its own high-water mark under every
+/// figure that followed. `--external` needs the workspace's own peak and
+/// nothing else, and this is how it gets it.
+fn for_each_unit(
+    shape: Shape,
+    count: usize,
+    unit_bytes: usize,
+    emit: &mut dyn FnMut(String, String),
+) {
     match shape {
         Shape::Chain => {
-            texts.push(canonical_module_calling(0, unit_bytes));
-            paths.push(module_path(0));
+            emit(module_path(0), canonical_module_calling(0, unit_bytes));
             for index in 1..count {
                 let mut text = format!(
                     "module set.m{index} version 1.0 profile bootstrap; \
@@ -1064,14 +1322,15 @@ fn shaped_units(shape: Shape, count: usize, unit_bytes: usize) -> (Vec<String>, 
                     ));
                 }
                 fill_to(&mut text, index, unit_bytes);
-                texts.push(text);
-                paths.push(module_path(index));
+                emit(module_path(index), text);
             }
         }
         Shape::WideFanIn => {
             for index in 0..count.saturating_sub(1) {
-                texts.push(canonical_module_calling(index, unit_bytes));
-                paths.push(module_path(index));
+                emit(
+                    module_path(index),
+                    canonical_module_calling(index, unit_bytes),
+                );
             }
             // Derived, not assumed: append one import and one use at a time
             // until the next pair would cross the ceiling.
@@ -1108,13 +1367,15 @@ fn shaped_units(shape: Shape, count: usize, unit_bytes: usize) -> (Vec<String>, 
                 count.saturating_sub(1),
                 entry.len()
             );
-            texts.push(entry);
-            paths.push(String::from("set/entry.tos"));
+            emit(String::from("set/entry.tos"), entry);
         }
         Shape::Balanced => {
             for index in 0..count {
                 if index < 2 {
-                    texts.push(canonical_module_calling(index, unit_bytes));
+                    emit(
+                        module_path(index),
+                        canonical_module_calling(index, unit_bytes),
+                    );
                 } else {
                     let (left, right) = (index - 1, index - 2);
                     let mut text = format!(
@@ -1135,13 +1396,11 @@ fn shaped_units(shape: Shape, count: usize, unit_bytes: usize) -> (Vec<String>, 
                         ));
                     }
                     fill_to(&mut text, index, unit_bytes);
-                    texts.push(text);
+                    emit(module_path(index), text);
                 }
-                paths.push(module_path(index));
             }
         }
     }
-    (texts, paths)
 }
 
 /// Pads a module towards the source ceiling with ordinary declarations.

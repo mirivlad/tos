@@ -25,3 +25,4 @@ tos-hash = { path = "../../crates/tos-hash" }
 # what `--capsule` measures is a build over a boot's real source backend.
 tos-capsule = { path = "../../crates/capsule", features = ["host"] }
 tos-capsule-source = { path = "../../crates/tos-capsule-source" }
+tos-bundle = { path = "../../crates/tos-bundle" }
