@@ -1147,7 +1147,7 @@ fn type_index_prototypes(modules: usize, unit_bytes: usize) {
         // Through the production summary, so the names are exactly the ones the
         // set-wide check would be asked about.
         let summary = ModuleEntry::new(&module_path(index), &source, &schema).summarize();
-        names.push(summary.declared_types.iter().cloned().collect());
+        names.push(summary.declared_types.iter().map(String::from).collect());
     }
     let total: usize = names.iter().map(|set| set.len()).sum();
     let payload: usize = names
@@ -1378,11 +1378,9 @@ fn summary_decomposition(count: usize, unit_bytes: usize) {
     let settled = arena();
 
     let names: usize = summary.declared_types.iter().map(|name| name.len()).sum();
-    let name_capacity: usize = summary
-        .declared_types
-        .iter()
-        .map(|name| name.capacity())
-        .sum();
+    // The compact form has no per-name capacity: its cost is the slab and the
+    // offset table, which `retained_bytes` reports whole.
+    let name_capacity: usize = summary.declared_types.retained_bytes();
     let uses: usize = summary
         .qualified_uses
         .iter()
