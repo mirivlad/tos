@@ -2,15 +2,21 @@
 
 # ADR-0075: Region object lifecycle, the mutable-to-immutable transition, and reclamation
 
-- Status: **Draft — not accepted. Nothing here is implemented, and no operation
-  number, register or right is claimed**
+- Status: **Draft, semantically settled — not accepted, nothing implemented.**
+  The model, the budget shape and the freeze transition are fixed; only the
+  operation names, numbers and registers are left open, and none of them is
+  needed by the next production slice, so this ADR no longer blocks
+  implementation work
 - Date: 2026-08-29
 - Decision level: 2 — it would fix what a system Region object is, how one comes
   to exist lawfully, how a writable region becomes an immutable one, and when
   its memory returns to the pool. It changes no TOS Core semantics and no
   accepted ceiling
-- Project Architect approval: **not given.** The lifecycle in §4 is the
-  Architect's stated preferred model, recorded here for analysis
+- Project Architect approval: **the direction is given** (2026-08-29/30):
+  attenuation is refinement and not allocation, the origin is a finite
+  `MemoryAuthority`, the budget model is the hierarchical attenuable one, and
+  G7 is a consuming transition whose postcondition the nucleus proves. The
+  document itself is not yet Accepted
 - Related: ADR-0037 (Accepted, revision 3) — the **type-level** region model this
   must implement rather than re-decide. ADR-0055 (Accepted) — where authority
   comes from, and its Option B. ADR-0050, ADR-0041 — grants. ADR-0074 (Draft) —
@@ -161,13 +167,28 @@ boot. But the first is what an accepted contract can express today, since
 `CAPABILITY_V1` §3's *scope* is "the range or subset the rights apply to" and a
 remaining quantity is neither.
 
-**Recommendation: hierarchical, with the quantity named as part of the
-authority's scope**, and `CAPABILITY_V1` §3 amended to say that a scope may be a
-finite resource amount as well as a range or subset. The alternative — a flat
-authority per process, sized at launch — pushes every build's size decision back
-to boot, which is exactly the static partitioning this model was chosen to
-avoid. Neither is implemented, and no operation number, register or right is
-claimed for either.
+**Decided: hierarchical, with the quantity named as part of the authority's
+scope.** The flat alternative — one authority per process, sized at launch —
+pushes every build's size decision back to boot, which is the static
+partitioning this model was chosen to avoid.
+
+The amendment that makes it expressible, to `CAPABILITY_V1` §3, replacing the
+scope line:
+
+> - **scope**: the range, subset **or finite resource amount** the rights apply
+>   to, where the object has one. An amount is a scope like any other: it
+>   narrows under attenuation and never widens, so a derived authority may spend
+>   at most what its parent had, and a parent's remaining amount is reduced by
+>   what it delegates.
+
+Two rules follow and are part of this decision rather than left to
+implementation: a child's spend is charged to its own authority and to every
+ancestor's remainder, so no chain of delegation can spend a total larger than
+its root; and revoking an authority by generation reclaims its unspent
+remainder to the parent, because an unspendable remainder is memory nobody can
+name.
+
+Neither is implemented, and no operation number, register or right is claimed.
 
 ## 3. G7 — the mutable-to-immutable transition does not exist
 

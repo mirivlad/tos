@@ -30,7 +30,6 @@
 //! source was in hand. That is the one thing that would otherwise force the
 //! source to be retained.
 
-use alloc::collections::BTreeSet;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
@@ -70,6 +69,90 @@ pub struct ImportSummary {
     pub at: Located,
 }
 
+/// The type names a module declares, held as bytes rather than as strings.
+///
+/// **One question, asked once per qualified use**: does this module declare this
+/// name. Everything else a set of `String`s would carry — a node per name, a
+/// pointer, a length, a capacity, an allocation — is cost, and it is the cost
+/// that decides how large a build workspace has to be. Measured at the docs/44
+/// source ceiling, a `BTreeSet<String>` spent about `90 B` per name on a name
+/// averaging under `7 B`; this spends the name's bytes and four more
+/// (`docs/evidence/STAGE3_BUILD_WORKSPACE.md`).
+///
+/// The names are sorted and deduplicated at construction, so membership is a
+/// binary search over one contiguous buffer. Comparison is over the bytes
+/// themselves — there is no digest here and no collision to reason about, which
+/// is why this is a representation change and not a semantic one.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct TypeNames {
+    /// Every name, sorted, end to end.
+    text: Vec<u8>,
+    /// Where each name starts, plus a terminator, so a name runs from its own
+    /// offset to the next.
+    offsets: Vec<u32>,
+}
+
+impl TypeNames {
+    /// Packs what the frontend found, sorted and deduplicated.
+    pub fn of<'a>(names: impl IntoIterator<Item = &'a str>) -> TypeNames {
+        let mut sorted: Vec<&str> = names.into_iter().collect();
+        sorted.sort_unstable();
+        sorted.dedup();
+        let mut text = Vec::with_capacity(sorted.iter().map(|name| name.len()).sum());
+        let mut offsets = Vec::with_capacity(sorted.len() + 1);
+        for name in sorted {
+            offsets.push(text.len() as u32);
+            text.extend_from_slice(name.as_bytes());
+        }
+        offsets.push(text.len() as u32);
+        TypeNames { text, offsets }
+    }
+
+    /// Whether this module declares that name.
+    pub fn contains(&self, name: &str) -> bool {
+        let count = self.len();
+        let mut low = 0usize;
+        let mut high = count;
+        while low < high {
+            let middle = (low + high) / 2;
+            match self.at(middle).as_bytes().cmp(name.as_bytes()) {
+                core::cmp::Ordering::Less => low = middle + 1,
+                core::cmp::Ordering::Greater => high = middle,
+                core::cmp::Ordering::Equal => return true,
+            }
+        }
+        false
+    }
+
+    pub fn len(&self) -> usize {
+        self.offsets.len().saturating_sub(1)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    /// The name at a position, in sorted order.
+    pub fn at(&self, position: usize) -> &str {
+        let start = self.offsets[position] as usize;
+        let end = self.offsets[position + 1] as usize;
+        // The buffer is built from `&str`s and is only ever appended to whole
+        // names, so every span is valid text. `unwrap_or` keeps the function
+        // total rather than proving it.
+        core::str::from_utf8(&self.text[start..end]).unwrap_or("")
+    }
+
+    /// Every name, in sorted order.
+    pub fn iter(&self) -> impl Iterator<Item = &str> {
+        (0..self.len()).map(|position| self.at(position))
+    }
+
+    /// What this costs, for a caller measuring a build's account.
+    pub fn retained_bytes(&self) -> usize {
+        core::mem::size_of::<TypeNames>() + self.text.capacity() + self.offsets.capacity() * 4
+    }
+}
+
 /// One qualified type name this module writes, e.g. `up.Reading`.
 #[derive(Clone, Debug)]
 pub struct QualifiedUse {
@@ -103,7 +186,7 @@ pub struct ModuleSummary {
     pub content_id: String,
     pub imports: Vec<ImportSummary>,
     /// Every type name this module declares, for a qualified name to resolve.
-    pub declared_types: BTreeSet<String>,
+    pub declared_types: TypeNames,
     /// Every qualified type name this module writes.
     pub qualified_uses: Vec<QualifiedUse>,
 }
@@ -145,10 +228,7 @@ impl ModuleSummary {
             })
             .collect();
 
-        let declared_types = crate::types::declared_type_names(source, schema)
-            .into_iter()
-            .map(ToString::to_string)
-            .collect();
+        let declared_types = TypeNames::of(crate::types::declared_type_names(source, schema));
 
         let qualified_uses = crate::types::qualified_type_uses(source, schema)
             .into_iter()

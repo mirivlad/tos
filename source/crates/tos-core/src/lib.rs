@@ -57,7 +57,7 @@ pub use parser::{
     Parser, Pattern, PatternForm, Profile, RecordDeclaration, RecordField, ResourceDeclaration,
     ResourceLimit, Schema, Span, Statement, StatementForm, TypeSyntax, TypeSyntaxForm, Visibility,
 };
-pub use summary::{ImportSummary, Located, ModulePlan, ModuleSummary, QualifiedUse};
+pub use summary::{ImportSummary, Located, ModulePlan, ModuleSummary, QualifiedUse, TypeNames};
 pub use tos_ir::module_digest;
 
 mod unicode {
