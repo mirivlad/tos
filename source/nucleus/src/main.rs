@@ -592,6 +592,30 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         mem_fail();
     }
 
+    // The page-table reserve, taken out of the pool here and nowhere else.
+    //
+    // This is the whole of what ADR-0076 §2 rule 3 allows outside the authority
+    // tree: bounded, and reserved before the tree exists. The bound is computed
+    // from this machine's map and this nucleus's own layout constants — the
+    // regions a process is given, each at the largest the accepted limits let it
+    // be — so it is derived rather than measured, and it does not move when a
+    // capsule does. Everything a process is actually *given* is charged; only
+    // the tables that map it are not, because a table is the nucleus's own
+    // structure and no process can reach one.
+    let bound = process::table_reserve(bi, descs);
+    // SAFETY: boot, immediately after admission and before any address space,
+    // process or memory authority exists.
+    let Some(reserved) = (unsafe { memory::reserve_tables(bound) }) else {
+        tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-table-reserve wanted_frames=");
+        tos_serial::put_u32_decimal(bound as u32);
+        tos_serial::puts(b" pool_frames=");
+        // SAFETY: boot, single-context, nothing else holds the pool.
+        tos_serial::put_u32_decimal(unsafe { memory::frames() }.available() as u32);
+        tos_serial::puts(b"\r\n");
+        console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-table-reserve");
+        mem_fail();
+    };
+
     // The nucleus takes over its own address space here, and not earlier: the
     // tables are frames from the pool, so the pool has to exist first. Until
     // this instruction the machine ran on the firmware's identity map — a map
@@ -602,7 +626,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     #[allow(unused_mut)]
     // SAFETY: nucleus entry; nothing else holds the pool, and no process
     // exists yet.
-    let mut space = match paging::build(bi, descs, unsafe { memory::frames() }) {
+    let mut space = match paging::build(bi, descs, unsafe { memory::tables() }) {
         Ok(space) => space,
         Err(_) => {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-address-space\r\n");
@@ -616,6 +640,24 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // this image with its own text executable. Maskable interrupts are off and
     // this is the only context running.
     unsafe { space.activate() };
+
+    // What the machine admitted, what left the pool before anything could
+    // promise it, and what the pool has left for the authority tree to be
+    // endowed with. Three numbers rather than one line saying memory is fine:
+    // a gate can check that they add up, and that the reserve is actually
+    // paying for the nucleus's own address space rather than the pool doing it
+    // quietly.
+    tos_serial::puts(b"TOS.MEM.ACCOUNT admitted_frames=");
+    tos_serial::put_u32_decimal(admission.frames as u32);
+    tos_serial::puts(b" table_reserve_frames=");
+    tos_serial::put_u32_decimal(reserved as u32);
+    tos_serial::puts(b" table_reserve_free=");
+    // SAFETY: boot, single-context, nothing else holds the reserve or the pool.
+    tos_serial::put_u32_decimal(unsafe { memory::tables() }.remaining() as u32);
+    tos_serial::puts(b" pool_frames=");
+    // SAFETY: boot, single-context, nothing else holds the pool.
+    tos_serial::put_u32_decimal(unsafe { memory::frames() }.available() as u32);
+    tos_serial::puts(b" asserted_by=nucleus\r\n");
 
     // Interrupts are enabled here and nowhere else: after the substrate exists
     // and before the first process is entered, which is exactly where ADR-0049

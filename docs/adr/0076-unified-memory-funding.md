@@ -75,6 +75,39 @@ Four rules:
 4. **There is no second free-memory counter.** After the root authority is
    endowed, nothing allocates user memory by asking the pool directly.
 
+## 2a. What is actually outside the tree (added 2026-09-01)
+
+Rule 3 above is a test, and applying it to the code rather than to the earlier
+estimate moved most of what had been called "fixed reserve" inside the tree.
+
+**Outside, pre-reserved: page tables, and nothing else.** They are the one thing
+that is both bounded before any process exists and unreachable by any process —
+a table is the nucleus's own structure, and no mapping names one. They are also
+the one thing that was still being taken from the pool *after* the point the
+root authority would be endowed, one frame at a time, at every `map_page`. So
+the frames are carved out of the pool before the endowment, into a reserve the
+pager is given **instead of** the pool: `paging` no longer takes `&mut Frames`
+at all, which makes "a page table cannot be built out of promised memory" a
+property of the signatures rather than a rule to remember.
+
+The bound is derived, not measured. It mirrors what the pager actually does —
+2 MiB leaves for the bulk of described memory, which need no page table, and
+4 KiB pages only for the chunks holding the nucleus image or the framebuffer —
+and adds each region a process is given at the largest the accepted limits let
+it be. Bounding it by the highest described address instead would have sized the
+reserve by where the firmware put the framebuffer: a page directory per gigabyte
+of a terabyte-wide map, for a machine with a few hundred megabytes in it.
+
+**Inside the tree: everything a process is given.** The grant, the stack, the
+report region, the argument region, the launch record and the image's writable
+data. `MAX_PROCESSES = 4` does not make those a fixed reserve: they are created
+per request, at sizes the request influences, and a bound that exists only
+because a table has four slots is a bound on how many can be outstanding, not a
+statement that the memory was set aside. They are charged.
+
+This replaces the `1.78 MiB` and `7.90 MiB` lines of §8, which were an estimate
+of a different classification.
+
 ## 3. A funded grant is an allocation, not a consumed authority
 
 An earlier revision said the worker's authority is attenuated to exactly the

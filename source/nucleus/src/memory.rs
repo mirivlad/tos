@@ -15,7 +15,7 @@
 //! component's bookkeeping being correct.
 
 use tos_boot_protocol::{BootInfo, MemoryRange, MEM_USABLE};
-use tos_frames::{Admission, Frames};
+use tos_frames::{Admission, Frames, FRAME_SIZE};
 use tos_runtime::region::Span;
 
 use tos_runtime::stack;
@@ -132,6 +132,160 @@ pub unsafe fn frames() -> &'static mut Frames {
     // SAFETY: the static is initialized at link time and lives for the whole
     // boot; this is the only way it is ever named.
     unsafe { &mut *core::ptr::addr_of_mut!(FRAMES) }
+}
+
+/// The frames the nucleus builds page tables out of, and nothing else.
+///
+/// **Why page tables cannot keep coming out of the pool.** ADR-0076 §2 rule 3
+/// lets kernel-only overhead live outside the authority tree *only if it is
+/// bounded and reserved before the tree exists*, and rule 4 says nothing
+/// allocates user memory by asking the pool once the root authority is endowed.
+/// Page tables are allocated on demand — one per absent level, at every
+/// `map_page` — so a tree built after the endowment would quietly spend frames
+/// the root authority has already promised to somebody. Two counters again,
+/// with the second one hidden inside the pager.
+///
+/// So the frames are taken out of the pool **before** the root authority is
+/// endowed, into a run this type owns, and the pager is given this instead of
+/// the pool. The guarantee is structural rather than a rule anybody has to
+/// remember: after `paging` stops taking `&mut Frames`, it cannot spend user
+/// memory, because it has no way to name any.
+///
+/// A reserve that runs out refuses. That is the honest failure — a process
+/// that cannot be given an address space is not started — and it is bounded
+/// by [`crate::process::address_space_tables`], which is computed from this
+/// machine's map and this nucleus's own layout constants rather than measured
+/// once and hoped for.
+pub struct Tables {
+    next: u64,
+    end: u64,
+    /// The head of the free list, threaded through the frames themselves.
+    /// Zero is the empty list: physical page zero is never in the pool.
+    free: u64,
+    available: u64,
+}
+
+impl Tables {
+    /// A reserve holding nothing, before the map has been read.
+    pub const fn empty() -> Tables {
+        Tables {
+            next: 0,
+            end: 0,
+            free: 0,
+            available: 0,
+        }
+    }
+
+    /// One cleared frame, or nothing when the reserve is spent.
+    ///
+    /// Cleared here because a carve is not: [`Frames::carve`] hands back a run
+    /// as it lies, and a page table read before it is written is a table full
+    /// of whatever the last owner left.
+    pub fn allocate_frame(&mut self) -> Option<u64> {
+        let frame = if self.free != 0 {
+            let frame = self.free;
+            // SAFETY: the frame is in this reserve, identity-mapped, and its
+            // first word is the link this reserve wrote when it took it back.
+            self.free = unsafe { core::ptr::with_exposed_provenance::<u64>(frame as usize).read() };
+            frame
+        } else if self.next < self.end {
+            let frame = self.next;
+            self.next += FRAME_SIZE;
+            frame
+        } else {
+            return None;
+        };
+        self.available -= 1;
+        // SAFETY: the frame is inside the run this reserve carved out of the
+        // pool, which is identity-mapped for the nucleus and which nothing else
+        // can reach — the pool gave it up before the reserve existed.
+        unsafe {
+            core::ptr::write_bytes(
+                core::ptr::with_exposed_provenance_mut::<u8>(frame as usize),
+                0,
+                FRAME_SIZE as usize,
+            )
+        };
+        Some(frame)
+    }
+
+    /// Takes one frame back.
+    ///
+    /// **Page tables have to come back or the reserve is not a bound.** A
+    /// process's address space is its own tree, and when the process is gone
+    /// nothing reaches any of it — so the tables it was made of return here and
+    /// the next process is built out of them. Without this the reserve would be
+    /// a bound on how many address spaces a boot may ever build rather than on
+    /// how many may exist, which is not a bound at all: the old code leaked
+    /// about fifty frames per process into the pool and only the pool's size
+    /// hid it.
+    ///
+    /// # Safety
+    ///
+    /// The frame came from this reserve, nothing maps it, and no page table
+    /// entry anywhere still points at it.
+    // SAFETY: the caller's promise that the frame is unreachable is what makes
+    // writing the free-list link into it sound.
+    pub unsafe fn release_frame(&mut self, frame: u64) {
+        // SAFETY: per the contract; the frame is in this reserve's run, which
+        // is identity-mapped for the nucleus.
+        unsafe { core::ptr::with_exposed_provenance_mut::<u64>(frame as usize).write(self.free) };
+        self.free = frame;
+        self.available += 1;
+    }
+
+    /// How many frames of the reserve are still there.
+    pub fn remaining(&self) -> u64 {
+        self.available
+    }
+}
+
+/// The page-table reserve.
+static mut TABLES: Tables = Tables::empty();
+
+/// That reserve.
+///
+/// # Safety
+///
+/// As [`frames`]: the nucleus is single-context, and no caller holds a borrow
+/// across an instruction that leaves it.
+// SAFETY: the caller is nucleus code observing the same no-borrow-across-`iretq`
+// rule the pool is accessed under.
+pub unsafe fn tables() -> &'static mut Tables {
+    // SAFETY: the static is initialized at link time and lives for the whole
+    // boot; this is the only way it is ever named.
+    unsafe { &mut *core::ptr::addr_of_mut!(TABLES) }
+}
+
+/// Takes the page-table reserve out of the pool, once, before anything else
+/// spends.
+///
+/// Contiguous because it is simplest to prove and because nothing maps it: the
+/// nucleus reaches its own tables through the identity map, as it always has.
+/// Returns the frames actually set aside, or `None` when the pool cannot cover
+/// the bound — which is a machine too small to run this nucleus, and is said so
+/// rather than worked around.
+///
+/// # Safety
+///
+/// Called once, at boot, after [`admit_memory`] and before any address space or
+/// process exists.
+// SAFETY: the caller's promise that this is boot, before any space exists, is
+// what makes the carved run unreferenced.
+pub unsafe fn reserve_tables(bound: u64) -> Option<u64> {
+    // SAFETY: nucleus code at boot; nothing else holds the pool.
+    let frames = unsafe { frames() };
+    let span = frames.carve(bound * FRAME_SIZE, FRAME_SIZE)?;
+    // SAFETY: as above, and the reserve is the only thing that names this run
+    // from here on.
+    let reserve = unsafe { tables() };
+    *reserve = Tables {
+        next: span.start,
+        end: span.end,
+        free: 0,
+        available: span.length() / FRAME_SIZE,
+    };
+    Some(reserve.remaining())
 }
 
 /// Gives this machine's free memory to the nucleus's pool, once.

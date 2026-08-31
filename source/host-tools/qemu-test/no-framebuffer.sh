@@ -16,7 +16,11 @@
 # image's address among them, because where the firmware places an allocation is
 # the platform's decision and not the boot's — together with every tick value,
 # because a clock that read the same on two different runs would be a clock that
-# had stopped. A machine without a display adapter genuinely has a different
+# had stopped. The memory account is masked for the same reason: a machine with
+# no display adapter has no framebuffer to describe, so it admits different
+# memory and needs fewer page tables to map it, and a reserve that came out the
+# same size on both would mean the bound was ignoring the machine.
+# A machine without a display adapter genuinely has a different
 # framebuffer tuple and a different loader stack address; that difference is the
 # input to this test, not a result of it.
 #
@@ -44,7 +48,7 @@ bash "$HERE/run.sh" --out "$OUT/without" --no-framebuffer --expect 33 \
 # The events, with the platform's own description of itself masked out.
 events() {
     tr -d '\r' < "$1" | grep '^TOS\.' |
-        sed -E 's/(fb_(format|width|height|pitch)|stack|runtime|available|begin|end|spin_begin|spin_end|ticks|first_tick|last_tick)=[^ ]*/\1=<platform>/g'
+        sed -E 's/(fb_(format|width|height|pitch)|stack|runtime|available|begin|end|spin_begin|spin_end|ticks|first_tick|last_tick|admitted_frames|table_reserve_frames|table_reserve_free|pool_frames)=[^ ]*/\1=<platform>/g'
 }
 
 events "$OUT/with/serial.log" > "$OUT/with.events"

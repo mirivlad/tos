@@ -39,7 +39,10 @@
 
 use core::ptr::addr_of_mut;
 
+use tos_boot_protocol::{BootInfo, MemoryRange};
 use tos_frames::{Frames, FRAME_SIZE};
+
+use crate::memory::Tables;
 use tos_launch::{
     ImageHeader, Launch, LaunchCapability, LaunchUnit, ReportHeader, IMAGE_MAGIC, LAUNCH_VERSION,
 };
@@ -379,6 +382,58 @@ const ARGUMENT_FRAMES: u64 = 1;
 
 /// Where the top of a process's stack is.
 const STACK_TOP: u64 = STACK + STACK_FRAMES * FRAME_SIZE;
+
+/// How many page tables one virtual range can need, at worst.
+///
+/// Four-level paging puts one table at each level above the leaf, so a range
+/// costs at most one PDPT per 512 GiB it touches, one page directory per GiB
+/// and one page table per 2 MiB. It is an upper bound twice over: tables shared
+/// between two ranges are counted for both, and a 2 MiB leaf needs no page
+/// table at all although one is counted for it. A bound that is loose in the
+/// safe direction is what a reserve wants.
+const fn tables_over(start: u64, length: u64) -> u64 {
+    if length == 0 {
+        return 0;
+    }
+    let last = start + length - 1;
+    ((last >> 39) - (start >> 39) + 1)
+        + ((last >> 30) - (start >> 30) + 1)
+        + ((last >> 21) - (start >> 21) + 1)
+}
+
+/// Page-table frames one address space can need on this machine
+/// (ADR-0076 §2 rule 3).
+///
+/// Derived from the layout above and the accepted limits, not measured: the
+/// identity map of this machine, then each region a process is given at the
+/// largest it is allowed to be. `IMAGE` and `SOURCE` come out of the capsule
+/// and so are bounded by `MAX_CAPSULE_BYTES`; the grant by `MAX_GRANT`; the
+/// record by `MAX_RECORD_BYTES`; the rest are fixed frame counts.
+///
+/// The identity map's own cost comes from [`paging::build_tables`], which knows
+/// which chunks that map breaks into 4 KiB pages and which it covers with a
+/// single 2 MiB leaf. The user regions are all mapped page by page, so each of
+/// them costs what [`tables_over`] says it does.
+///
+/// The nucleus's own space maps the identity map and no user region, so this
+/// covers it too, with room to spare.
+pub fn address_space_tables(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
+    const CAPSULE: u64 = tos_capsule::MAX_CAPSULE_BYTES as u64;
+    paging::build_tables(bi, descs)
+        + tables_over(IMAGE, CAPSULE)
+        + tables_over(SOURCE, CAPSULE)
+        + tables_over(RECORD, MAX_RECORD_BYTES)
+        + tables_over(GRANT, tos_runtime::region::MAX_GRANT as u64)
+        + tables_over(STACK, STACK_FRAMES * FRAME_SIZE)
+        + tables_over(REPORT, REPORT_FRAMES * FRAME_SIZE)
+        + tables_over(ARGUMENTS, ARGUMENT_FRAMES * FRAME_SIZE)
+}
+
+/// The whole page-table reserve: the nucleus's own address space, and one for
+/// every process the table can hold at once.
+pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
+    address_space_tables(bi, descs) * (1 + MAX_PROCESSES as u64)
+}
 
 /// Page-table flags, from the process's side of the boundary.
 const PRESENT_USER: u64 = 1 | (1 << 2);
@@ -1149,13 +1204,19 @@ unsafe fn retire(index: usize) {
     // remembered here: one record of what a process had, and it is the one the
     // processor used.
     //
-    // Three ranges are deliberately **not** returned. The image's text and the
+    // Two ranges are deliberately **not** returned: the image's text and the
     // capsule's source are not the pool's — the loader reserved them — and
     // releasing memory that was never allocated would hand the same frames out
-    // twice. The page tables of the dead space are the pool's and are not
-    // returned yet: freeing an interior table means proving nothing else under
-    // it is mapped, and the nucleus's own mappings live in that same tree.
-    // About fifty frames per process, named here rather than left to be found.
+    // twice.
+    //
+    // The page tables *are* returned, to the reserve they came from rather than
+    // to the pool. Every process is built its own tree, so when the process is
+    // gone nothing reaches any part of it and there is no interior table shared
+    // with anybody to prove anything about. Leaving them behind used to leak
+    // about fifty frames per process into the pool, which only the pool's size
+    // hid; against a bounded reserve it would be the difference between a bound
+    // on how many address spaces may exist and a bound on how many a boot may
+    // ever build.
     // SAFETY: no process is running — this is the scheduler between two of
     // them — so nothing else holds the pool.
     let frames = unsafe { crate::memory::frames() };
@@ -1171,6 +1232,12 @@ unsafe fn retire(index: usize) {
         release_mapped(space, frames, ARGUMENTS, ARGUMENT_FRAMES * FRAME_SIZE);
         release_mapped(space, frames, GRANT, reclaim.grant_length);
     }
+    // SAFETY: single-context nucleus between two processes; nothing else holds
+    // the reserve.
+    let tables = unsafe { crate::memory::tables() };
+    // SAFETY: this space is not the live one — the scheduler left it before
+    // this ran — it is this process's own tree, and nothing will use it again.
+    unsafe { space.release_tables(tables) };
     // Measured, not asserted: the pool says how many frames came back and how
     // many it holds now. A reclamation nobody counts is a claim, and this is
     // the number a second process would be built out of.
@@ -1704,7 +1771,10 @@ pub unsafe fn create(
     // The nucleus's own mappings are in every address space, supervisor-only:
     // a syscall and a fault both change privilege without changing CR3, so the
     // nucleus has to be reachable from where the process runs.
-    let mut space = paging::build(bi, descs, frames)?;
+    // SAFETY: nucleus code at boot or at the syscall edge, single-context, and
+    // nothing else holds the reserve for the duration of this call.
+    let tables = unsafe { crate::memory::tables() };
+    let mut space = paging::build(bi, descs, tables)?;
 
     // The runtime image, split the way its own header says it is split. A
     // process gets its text read-only and executable and its data writable and
@@ -1727,7 +1797,7 @@ pub unsafe fn create(
     }
     map_range(
         &mut space,
-        frames,
+        tables,
         IMAGE,
         Span::new(image.start, image.start + header.text),
         PRESENT_USER,
@@ -1753,7 +1823,7 @@ pub unsafe fn create(
             };
         }
         space.map_page(
-            frames,
+            tables,
             IMAGE + offset,
             frame,
             PRESENT_USER | WRITABLE | NO_EXECUTE,
@@ -1772,7 +1842,7 @@ pub unsafe fn create(
     let skew = capsule.start - capsule_frame;
     map_range(
         &mut space,
-        frames,
+        tables,
         SOURCE,
         Span::new(capsule_frame, capsule.end),
         PRESENT_USER | NO_EXECUTE,
@@ -1798,11 +1868,11 @@ pub unsafe fn create(
         tos_serial::puts(b" asserted_by=nucleus\r\n");
         return Err(Unlaunchable::OutOfFrames);
     }
-    map_fresh(&mut space, frames, GRANT, grant_length / FRAME_SIZE)?;
+    map_fresh(&mut space, tables, frames, GRANT, grant_length / FRAME_SIZE)?;
 
-    map_fresh(&mut space, frames, STACK, STACK_FRAMES)?;
-    let report = map_fresh(&mut space, frames, REPORT, REPORT_FRAMES)?;
-    let message = map_fresh(&mut space, frames, ARGUMENTS, ARGUMENT_FRAMES)?;
+    map_fresh(&mut space, tables, frames, STACK, STACK_FRAMES)?;
+    let report = map_fresh(&mut space, tables, frames, REPORT, REPORT_FRAMES)?;
+    let message = map_fresh(&mut space, tables, frames, ARGUMENTS, ARGUMENT_FRAMES)?;
     let table_bytes = units.len() * size_of::<LaunchUnit>();
     let paths_bytes: usize = units.iter().map(|(path, _)| relative(path).len()).sum();
     // Room for the endowment's description, sized by what the launcher decided
@@ -1838,7 +1908,7 @@ pub unsafe fn create(
     let mut mapped = 0;
     while mapped < record_span.length() {
         space.map_page(
-            frames,
+            tables,
             RECORD + mapped,
             record + mapped,
             PRESENT_USER | NO_EXECUTE,
@@ -2045,22 +2115,28 @@ fn path_offset(units: &[(&[u8], &[u8])], index: usize) -> u64 {
 /// Maps a physically contiguous range into a process, frame by frame.
 fn map_range(
     space: &mut AddressSpace,
-    frames: &mut Frames,
+    tables: &mut Tables,
     at: u64,
     range: Span,
     flags: u64,
 ) -> Result<(), Unlaunchable> {
     let mut offset = 0;
     while offset < range.length() {
-        space.map_page(frames, at + offset, range.start + offset, flags)?;
+        space.map_page(tables, at + offset, range.start + offset, flags)?;
         offset += FRAME_SIZE;
     }
     Ok(())
 }
 
-/// Takes `count` fresh frames and maps them writable at `at`.
+/// Takes `count` fresh frames from the pool and maps them writable at `at`.
+///
+/// Two sources, deliberately: the frames a process is given come from the pool
+/// and are charged to an authority, while the tables that map them come from
+/// the reserve and are not (ADR-0076 §2). One parameter each is what makes the
+/// difference visible at every call site.
 fn map_fresh(
     space: &mut AddressSpace,
+    tables: &mut Tables,
     frames: &mut Frames,
     at: u64,
     count: u64,
@@ -2072,7 +2148,7 @@ fn map_fresh(
             first = frame;
         }
         space.map_page(
-            frames,
+            tables,
             at + index * FRAME_SIZE,
             frame,
             PRESENT_USER | WRITABLE | NO_EXECUTE,
