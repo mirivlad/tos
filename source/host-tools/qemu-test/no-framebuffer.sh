@@ -48,7 +48,7 @@ bash "$HERE/run.sh" --out "$OUT/without" --no-framebuffer --expect 33 \
 # The events, with the platform's own description of itself masked out.
 events() {
     tr -d '\r' < "$1" | grep '^TOS\.' |
-        sed -E 's/(fb_(format|width|height|pitch)|stack|runtime|available|begin|end|spin_begin|spin_end|ticks|first_tick|last_tick|admitted_frames|table_reserve_frames|table_reserve_free|pool_frames)=[^ ]*/\1=<platform>/g'
+        sed -E 's/(fb_(format|width|height|pitch)|stack|runtime|available|begin|end|spin_begin|spin_end|ticks|first_tick|last_tick|admitted_frames|table_reserve_frames|table_reserve_free|pool_frames|root_frames)=[^ ]*/\1=<platform>/g'
 }
 
 events "$OUT/with/serial.log" > "$OUT/with.events"
