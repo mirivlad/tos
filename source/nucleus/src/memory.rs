@@ -260,31 +260,39 @@ pub unsafe fn tables() -> &'static mut Tables {
 /// Takes the page-table reserve out of the pool, once, before anything else
 /// spends.
 ///
-/// Contiguous because it is simplest to prove and because nothing maps it: the
-/// nucleus reaches its own tables through the identity map, as it always has.
-/// Returns the frames actually set aside, or `None` when the pool cannot cover
-/// the bound — which is a machine too small to run this nucleus, and is said so
-/// rather than worked around.
+/// Frame by frame, from wherever the pool has them: a page table has no use for
+/// its neighbours, and demanding a contiguous run would refuse a machine that
+/// has the memory but not one unbroken piece of it.
+///
+/// **A partial reserve is not a reserve.** If the pool runs out part-way, every
+/// frame already taken goes back and the boot refuses — a nucleus that started
+/// with room for three address spaces where its bound says five would fail
+/// later, on a process creation, with nothing to point at.
 ///
 /// # Safety
 ///
 /// Called once, at boot, after [`admit_memory`] and before any address space or
 /// process exists.
 // SAFETY: the caller's promise that this is boot, before any space exists, is
-// what makes the carved run unreferenced.
+// what makes every frame taken here unreferenced.
 pub unsafe fn reserve_tables(bound: u64) -> Option<u64> {
     // SAFETY: nucleus code at boot; nothing else holds the pool.
     let frames = unsafe { frames() };
-    let span = frames.carve(bound * FRAME_SIZE, FRAME_SIZE)?;
-    // SAFETY: as above, and the reserve is the only thing that names this run
-    // from here on.
+    // SAFETY: as above; nothing else holds the reserve.
     let reserve = unsafe { tables() };
-    *reserve = Tables {
-        next: span.start,
-        end: span.end,
-        free: 0,
-        available: span.length() / FRAME_SIZE,
-    };
+    for _ in 0..bound {
+        let Some(frame) = frames.allocate_frame() else {
+            while let Some(taken) = reserve.allocate_frame() {
+                // SAFETY: the frame came from this pool moments ago, nothing
+                // ever mapped it, and the reserve has just given it up.
+                unsafe { frames.release_frame(taken) };
+            }
+            return None;
+        };
+        // SAFETY: the pool just handed this frame over and nothing else names
+        // it; from here it is the reserve's.
+        unsafe { reserve.release_frame(frame) };
+    }
     Some(reserve.remaining())
 }
 

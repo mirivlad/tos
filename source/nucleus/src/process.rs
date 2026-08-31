@@ -401,26 +401,16 @@ const fn tables_over(start: u64, length: u64) -> u64 {
         + ((last >> 21) - (start >> 21) + 1)
 }
 
-/// Page-table frames one address space can need on this machine
-/// (ADR-0076 §2 rule 3).
+/// Page-table frames the windows a process is given cost, at their largest.
 ///
-/// Derived from the layout above and the accepted limits, not measured: the
-/// identity map of this machine, then each region a process is given at the
-/// largest it is allowed to be. `IMAGE` and `SOURCE` come out of the capsule
-/// and so are bounded by `MAX_CAPSULE_BYTES`; the grant by `MAX_GRANT`; the
-/// record by `MAX_RECORD_BYTES`; the rest are fixed frame counts.
-///
-/// The identity map's own cost comes from [`paging::build_tables`], which knows
-/// which chunks that map breaks into 4 KiB pages and which it covers with a
-/// single 2 MiB leaf. The user regions are all mapped page by page, so each of
-/// them costs what [`tables_over`] says it does.
-///
-/// The nucleus's own space maps the identity map and no user region, so this
-/// covers it too, with room to spare.
-pub fn address_space_tables(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
+/// Each is mapped page by page, so each costs what [`tables_over`] says. The
+/// sizes are the accepted limits rather than what any particular boot asks for:
+/// `IMAGE` and `SOURCE` come out of the capsule and so are bounded by
+/// `MAX_CAPSULE_BYTES`, the grant by `MAX_GRANT`, the record by
+/// `MAX_RECORD_BYTES`, and the rest are fixed frame counts.
+fn process_window_tables() -> u64 {
     const CAPSULE: u64 = tos_capsule::MAX_CAPSULE_BYTES as u64;
-    paging::build_tables(bi, descs)
-        + tables_over(IMAGE, CAPSULE)
+    tables_over(IMAGE, CAPSULE)
         + tables_over(SOURCE, CAPSULE)
         + tables_over(RECORD, MAX_RECORD_BYTES)
         + tables_over(GRANT, tos_runtime::region::MAX_GRANT as u64)
@@ -429,10 +419,28 @@ pub fn address_space_tables(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
         + tables_over(ARGUMENTS, ARGUMENT_FRAMES * FRAME_SIZE)
 }
 
-/// The whole page-table reserve: the nucleus's own address space, and one for
-/// every process the table can hold at once.
+/// The whole page-table reserve for this machine (ADR-0076 §2 rule 3).
+///
+/// ```text
+/// nucleus space          the identity map, and no user window
+/// + MAX_PROCESSES × (    the identity map again, in each process's own tree
+///     identity map
+///   + process windows )  and the windows only a process has
+/// ```
+///
+/// **The nucleus's own space is not charged for windows it does not have.** It
+/// maps this machine and nothing else — no grant, no stack region, no launch
+/// record — so giving it a process's allowance would reserve about a hundred
+/// frames to map regions that will never exist in it. A small saving, and the
+/// reference platform has no frames to spend on the convenience of one formula
+/// covering both.
+///
+/// The identity map's own cost comes from [`paging::build_tables`], which knows
+/// which chunks that map breaks into 4 KiB pages and which it covers with a
+/// single 2 MiB leaf.
 pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
-    address_space_tables(bi, descs) * (1 + MAX_PROCESSES as u64)
+    let identity = paging::build_tables(bi, descs);
+    identity + MAX_PROCESSES as u64 * (identity + process_window_tables())
 }
 
 /// Page-table flags, from the process's side of the boundary.

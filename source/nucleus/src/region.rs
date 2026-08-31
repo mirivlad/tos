@@ -41,6 +41,14 @@ pub const MAX_AUTHORITIES: usize = 64;
 /// How many region objects exist at once.
 pub const MAX_REGIONS: usize = 64;
 
+/// How many process charges can be outstanding at once.
+///
+/// One per live process, plus room for the ones being built: a creation charges
+/// before it has a slot to keep the receipt in, and a creation that fails
+/// returns its charge before anything else needs the room. Bounded like every
+/// other table here, and a full one refuses.
+pub const MAX_CHARGES: usize = 16;
+
 /// Why an operation on an authority or a region was refused.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Refusal {
@@ -113,28 +121,39 @@ fn round_up(bytes: usize, granule: usize) -> Result<usize, Refusal> {
         .ok_or(Refusal::BadArgument)
 }
 
-/// A charge made against one accounting node, and the only thing that can undo
-/// it.
+/// A receipt naming one outstanding charge in the ledger.
 ///
-/// **The receipt is the charge.** `charge_grant` is the only thing that makes
-/// one, it carries the figure that was actually rounded and debited rather than
-/// the one the caller asked for, and `refund_grant` consumes it. Neither
-/// `Copy` nor `Clone`: a lifecycle bug can lose a receipt — which leaks budget
-/// and is caught by the accounting — but it cannot spend one twice, which would
-/// *create* budget. An accounting model that can be talked into inventing free
-/// memory by a repeated call is not an accounting model.
+/// **It names the charge, not the amount.** An earlier form carried the slot of
+/// the *authority* and the bytes, and checked at refund that the authority was
+/// holding at least that much. That is not an identity. One authority funding
+/// two processes of 54 MiB holds 108 MiB; the first returns normally and leaves
+/// 54 MiB; a duplicate of the first receipt then finds 54 MiB there and takes
+/// it — the second process's bytes, returned while that process is still
+/// running. Non-`Copy` stops a safe caller from expressing it, but the
+/// accounting underneath could not tell the two charges apart, and an
+/// accounting model whose safety rests on nobody having a bug in the layer
+/// above is not one.
 ///
-/// It names an **accounting incarnation**, not a capability generation. A
-/// revoke bumps the generation and leaves the node standing while what it
-/// funded is still alive (ADR-0075 §2a), and a grant made through that
-/// capability must still return down the lineage that paid for it. The
-/// incarnation moves only when the slot has fully drained and is handed to a
-/// new occupant, which is exactly when an older receipt must stop resolving.
+/// So each charge gets its own bounded slot, and the receipt is a handle onto
+/// it. The ledger — not the caller, and not the authority's total — holds which
+/// authority funded it, how many bytes, and whether it is still outstanding.
+/// A refund finds *that* charge or finds nothing.
+///
+/// Still neither `Copy` nor `Clone`, so an ordinary lifecycle cannot even try:
+/// losing a receipt leaks budget, which the accounting shows, and there is no
+/// way to spend one twice, which would create budget.
+///
+/// The ledger names the funding node by its **accounting incarnation**, not its
+/// capability generation. A revoke bumps the generation and leaves the node
+/// standing while what it funded is still alive (ADR-0075 §2a), and a grant made
+/// through that capability must still return down the lineage that paid for it.
 #[must_use = "a charge that is dropped is memory the tree never gets back"]
 #[derive(Debug, Eq, PartialEq)]
 pub struct GrantCharge {
     slot: u32,
     incarnation: u32,
+    /// What was debited, carried for the caller to report. The ledger's copy is
+    /// the one a refund believes.
     charged: usize,
 }
 
@@ -208,10 +227,25 @@ struct Region {
     holder: u32,
 }
 
+/// One outstanding process charge, as the ledger holds it.
+#[derive(Clone, Copy, Debug, Default)]
+struct Charge {
+    live: bool,
+    /// Which occupant of this slot this is. Moves when a charge is settled, so
+    /// the receipt that settled it never resolves again and neither does one
+    /// from a previous occupant.
+    incarnation: u32,
+    /// The accounting node that paid, and which occupant of *that* slot it was.
+    authority: u32,
+    authority_incarnation: u32,
+    bytes: usize,
+}
+
 /// The nucleus's memory-authority and region state.
 pub struct Regions {
     authorities: [Authority; MAX_AUTHORITIES],
     regions: [Region; MAX_REGIONS],
+    charges: [Charge; MAX_CHARGES],
 }
 
 impl Default for Regions {
@@ -246,6 +280,13 @@ impl Regions {
                 readable_mappings: 0,
                 holder: u32::MAX,
             }; MAX_REGIONS],
+            charges: [Charge {
+                live: false,
+                incarnation: 0,
+                authority: 0,
+                authority_incarnation: 0,
+                bytes: 0,
+            }; MAX_CHARGES],
         }
     }
 
@@ -298,11 +339,19 @@ impl Regions {
         if self.authorities[at].remaining < charged {
             return Err(Refusal::Budget);
         }
+        let slot = self.free_charge()?;
         self.authorities[at].remaining -= charged;
         self.authorities[at].allocated += charged;
+        self.charges[slot] = Charge {
+            live: true,
+            incarnation: self.charges[slot].incarnation,
+            authority: at as u32,
+            authority_incarnation: self.authorities[at].incarnation,
+            bytes: charged,
+        };
         Ok(GrantCharge {
-            slot: at as u32,
-            incarnation: self.authorities[at].incarnation,
+            slot: slot as u32,
+            incarnation: self.charges[slot].incarnation,
             charged,
         })
     }
@@ -315,34 +364,46 @@ impl Regions {
     /// is not. The caller does not say how much — the receipt does, and it says
     /// the figure that was debited.
     ///
+    /// Settling is atomic in the sense that matters: the charge is struck out
+    /// of the ledger and its incarnation moved on **before** any budget moves,
+    /// so no second attempt can find it half-done.
+    ///
     /// Two refusals, and neither of them clamps:
     ///
-    /// - a receipt whose node has drained and been reused names nothing
-    ///   ([`Refusal::NotFound`]), so it cannot credit an unrelated occupant of
-    ///   the slot;
-    /// - a receipt claiming more than its node is holding is a defect in the
-    ///   lifecycle above ([`Refusal::BadArgument`]), and refusing it keeps the
-    ///   defect a leak rather than letting it mint budget.
+    /// - a receipt for a charge that is not outstanding names nothing
+    ///   ([`Refusal::NotFound`]) — whether it was already settled or its slot
+    ///   has since been given to another charge. This is what makes a duplicate
+    ///   harmless no matter what else the same authority is funding.
+    /// - a ledger entry whose funding node no longer holds it is a defect
+    ///   ([`Refusal::BadArgument`]), and refusing keeps the defect a leak
+    ///   rather than letting it mint budget.
     pub fn refund_grant(&mut self, charge: GrantCharge) -> Result<(), Refusal> {
-        let at = charge.slot as usize;
-        if at >= MAX_AUTHORITIES {
+        let slot = charge.slot as usize;
+        if slot >= MAX_CHARGES {
             return Err(Refusal::NotFound);
         }
-        let node = &self.authorities[at];
-        if !node.live || node.incarnation != charge.incarnation {
+        let entry = self.charges[slot];
+        if !entry.live || entry.incarnation != charge.incarnation {
             return Err(Refusal::NotFound);
         }
+        let at = entry.authority as usize;
+        let node = self.authorities[at];
         // Deliberately a refusal and not a `debug_assert`. Reaching here means
-        // the lifecycle above made a receipt it should not have, and the
-        // nucleus's job at that moment is to not compound it: refusing leaves
-        // the bytes stranded, which the accounting will show, while asserting
-        // would take the machine down over a leak and clamping would turn the
-        // leak into invented budget. The refusal is the report.
-        if node.allocated < charge.charged {
+        // the lifecycle above lost track of what it funded, and the nucleus's
+        // job at that moment is to not compound it: refusing leaves the bytes
+        // stranded, which the accounting will show, while asserting would take
+        // the machine down over a leak and clamping would turn the leak into
+        // invented budget. The refusal is the report.
+        if !node.live
+            || node.incarnation != entry.authority_incarnation
+            || node.allocated < entry.bytes
+        {
             return Err(Refusal::BadArgument);
         }
-        self.authorities[at].allocated -= charge.charged;
-        self.give_back_or_keep(at, charge.charged);
+        self.charges[slot].live = false;
+        self.charges[slot].incarnation = entry.incarnation.wrapping_add(1);
+        self.authorities[at].allocated -= entry.bytes;
+        self.give_back_or_keep(at, entry.bytes);
         self.settle_authority(at);
         Ok(())
     }
@@ -765,6 +826,12 @@ impl Regions {
     fn free_region(&self) -> Result<usize, Refusal> {
         (0..MAX_REGIONS)
             .find(|at| !self.regions[*at].live)
+            .ok_or(Refusal::NoRoom)
+    }
+
+    fn free_charge(&self) -> Result<usize, Refusal> {
+        (0..MAX_CHARGES)
+            .find(|at| !self.charges[*at].live)
             .ok_or(Refusal::NoRoom)
     }
 }
