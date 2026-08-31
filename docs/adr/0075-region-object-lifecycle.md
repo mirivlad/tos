@@ -2,21 +2,17 @@
 
 # ADR-0075: Region object lifecycle, the mutable-to-immutable transition, and reclamation
 
-- Status: **Draft, semantically settled — not accepted, nothing implemented.**
-  The model, the budget shape and the freeze transition are fixed; only the
-  operation names, numbers and registers are left open, and none of them is
-  needed by the next production slice, so this ADR no longer blocks
-  implementation work
+- Status: **Accepted**
 - Date: 2026-08-29
 - Decision level: 2 — it would fix what a system Region object is, how one comes
   to exist lawfully, how a writable region becomes an immutable one, and when
   its memory returns to the pool. It changes no TOS Core semantics and no
   accepted ceiling
-- Project Architect approval: **the direction is given** (2026-08-29/30):
-  attenuation is refinement and not allocation, the origin is a finite
-  `MemoryAuthority`, the budget model is the hierarchical attenuable one, and
-  G7 is a consuming transition whose postcondition the nucleus proves. The
-  document itself is not yet Accepted
+- Project Architect approval: **given, 2026-08-31**, conditional on the
+  corrections this revision makes: the reservation accounting of §2a, the
+  allocation chain of §4, the mapping rule of §5, and the root origin of §2b.
+  Operation names, numbers and register layouts are deliberately still open —
+  the first implementation slice does not need them
 - Related: ADR-0037 (Accepted, revision 3) — the **type-level** region model this
   must implement rather than re-decide. ADR-0055 (Accepted) — where authority
   comes from, and its Option B. ADR-0050, ADR-0041 — grants. ADR-0074 (Draft) —
@@ -181,14 +177,58 @@ scope line:
 >   at most what its parent had, and a parent's remaining amount is reduced by
 >   what it delegates.
 
-Two rules follow and are part of this decision rather than left to
-implementation: a child's spend is charged to its own authority and to every
-ancestor's remainder, so no chain of delegation can spend a total larger than
-its root; and revoking an authority by generation reclaims its unspent
-remainder to the parent, because an unspendable remainder is memory nobody can
-name.
+### 2a. Accounting is reservation, and nothing is debited twice
 
-Neither is implemented, and no operation number, register or right is claimed.
+An earlier revision said both that attenuating a child reduces the parent's
+remainder *and* that a child's spend is charged to every ancestor. That is the
+same byte taken twice. The model is **reservation**:
+
+```text
+remaining        what this authority may still reserve or spend itself
+attenuate(N)     atomically: parent.remaining -= N, and a child appears with
+                 remaining = N
+allocate(N)      child.remaining -= N, and nothing above it moves — the
+                 ancestors paid when they reserved
+release/revoke   a child's unspent, unreserved remainder returns to its parent
+```
+
+Grandchildren are the same rule one level down: a child reserves out of its own
+remainder, not out of the root's.
+
+**Two things do not move on revocation.** A live region does not become free
+budget because the authority that funded it lost its capability — the memory is
+still allocated and still reachable through the region's own handles. And the
+accounting node **outlives the capability** when it must: it survives until its
+allocations and descendants are drained, and what is reclaimed then travels back
+up the lineage that funded it.
+
+The invariant, for any subtree:
+
+```text
+allocated(subtree) + reserved(subtree) + free(subtree) == budget(root of subtree)
+```
+
+with `reserved` the sum of children's budgets, `allocated` the backing live
+under this node, and `free` its own `remaining`. No sequence of attenuation,
+allocation, release, revocation or reclamation may make `allocated(whole tree)`
+exceed the root budget, and every byte is debited in exactly one place: at the
+reservation that moved it down, or at the allocation that spent it.
+
+Nothing here is implemented as an operation; what §2a fixes is what the
+accounting must mean.
+
+### 2b. Where the root authority comes from
+
+The root `MemoryAuthority` is part of the **boot and launch endowment**, made
+from the finite memory pool once the nucleus has taken its fixed reserves. Its
+size and its identity are written into the launch and audit record, so the root
+of every later allocation can be named rather than assumed — which is what
+ADR-0055 requires of any authority and what `region_create` reachable by anyone
+would have destroyed.
+
+**An ordinary process holds no right to allocate.** It allocates only through a
+`MemoryAuthority` it was endowed with or was delegated, and only within that
+authority's remainder. A process with none cannot make a region at all.
 
 ## 3. G7 — the mutable-to-immutable transition does not exist
 
@@ -274,8 +314,11 @@ downgraded would be one whose access mode no single fact describes.
 The Architect's preferred model, which §3-A is what makes it expressible:
 
 ```text
-1  the worker holds a Region<mut u8> of a bounded size, carved by attenuation
-   from an endowed range (§2 B)
+1  a root MemoryAuthority is endowed at boot (§2b); a child authority is
+   reserved out of it by attenuation and given to the worker; the worker
+   allocates through that authority, and the nucleus creates a unique
+   Region<mut u8> and charges the child's remainder. Attenuation makes and
+   narrows *authority*; allocation makes a *region*
 2  a mutable region has exactly one writable owner — ADR-0037's affinity
 3  it cannot be shared, delegated or transferred, so a second writable holder is
    unexpressible rather than forbidden
@@ -347,9 +390,34 @@ rewritten**: it recorded a twelve-operation ABI correctly, and its reasoning —
 authority has a root, only narrows, and terminates at an endowment on the audit
 record — is what the replacement states.
 
+## 5a. A mapping is derived authority, and does not outlive it
+
+G4 is closed here rather than left open. **A mapping exists because a capability
+authorized it**, so it must not survive the loss of that capability in a way
+that leaves a process reading or writing memory it no longer has authority over.
+The observable rule, whatever tables an implementation keeps:
+
+- **release, revocation and generation invalidation** remove the mappings that
+  capability authorized, unless the same process holds another live capability
+  that authorizes the same mapping — in which case the mapping stands on that
+  one;
+- a **successful linear transfer** takes the sender's handle *and* its mappings
+  atomically, before ownership is considered moved: there is no instant at which
+  the receiver owns it and the sender can still reach it;
+- a **failed transfer** changes nothing at all;
+- the **freeze** destroys or downgrades every writable mapping before the
+  immutable state is fixed, which is what makes `writable_aliases == 0` a
+  postcondition rather than a hope;
+- **process death** removes that process's handles and its mappings.
+
+Which structures make this cheap is an implementation question. That it holds is
+not.
+
 ## 6. RegionObject: what the nucleus holds, and when the backing goes back
 
-Design only. Nothing here is implemented.
+Accepted as the model. The first implementation slice is this and the
+accounting of §2a, proved on their own before any bundle is written through
+them.
 
 A `RegionObject` is nucleus-owned state, unreachable from any process except
 through a capability:
@@ -360,7 +428,7 @@ backing                    the pages; nothing about where they are is public
 access mode                mutable, or permanently immutable after the §3 transition
 capability references      how many live handles name it, by mode
 mapping references         how many address spaces have it mapped, by mode
-charged to                 the MemoryAuthority the allocation spent from (§2 B)
+charged to                 the MemoryAuthority the allocation spent from (§2a)
 ```
 
 **Reclamation, case by case.** One sentence underneath every row: *the backing
@@ -385,17 +453,19 @@ somebody has to remember. And **the charge outlives the region's users**: memory
 returns to the authority it was spent from rather than to a general pool, or a
 long-running supervisor would slowly convert one build's budget into another's.
 
-## 7. What is still missing after this draft
+## 7. What is left open after acceptance
 
-- **G4** — what happens to an existing **mapping** when the capability that
-  authorized it is released or revoked. §3 needs it for the transition, and it
-  is a rule about mappings rather than about handles; §6 assumes it;
-- **G6** — §6's reference rule has to be something the nucleus can decide
-  cheaply, and the cost of deciding it is not measured;
+- **G4 is decided** in §5a;
+- **G6 is decided, and its cost is measured later.** The rule stands as §6
+  states it: the backing is reclaimed when `capability refs == 0 &&
+  mapping refs == 0 && internal refs == 0`. With those counts in the
+  `RegionObject`, the decision is local and `O(1)` at each event. If an
+  implementation shows it cannot be, that is a reason to revisit the structure
+  — not a reason to have held this decision;
 - **the quantity-as-scope amendment** §2 asks of `CAPABILITY_V1` §3, without
   which only the flat per-process authority is expressible;
-- the **boot endowment** of §2-B: which range, decided where, named in which
-  audit record;
+- the **size** of the root authority §2b endows, which is a number a launcher
+  states and this ADR does not;
 - the ABI shape of §3-A, and of ADR-0074 §6, both of which have to wait for the
   rights in §1 to be written into `CAPABILITY_V1`.
 
