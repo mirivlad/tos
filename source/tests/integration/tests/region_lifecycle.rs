@@ -410,16 +410,57 @@ fn a_second_refund_of_one_charge_is_refused_and_changes_nothing() {
     let after = regions.remaining(allowance);
     assert_eq!(after, Ok(8 * 1024 * 1024));
 
-    // The node is still live and named — it is the duplicate's claim that is
-    // impossible, not the node.
+    // The charge was struck out of the ledger when it settled, so the duplicate
+    // names nothing — whatever the authority happens to be holding.
     assert_eq!(
         regions.refund_grant(forged),
-        Err(Refusal::BadArgument),
-        "returning more than the node holds is a defect, not a clamp"
+        Err(Refusal::NotFound),
+        "a settled charge is not findable a second time"
     );
     assert_eq!(regions.remaining(allowance), after);
     assert_eq!(regions.remaining(root), Ok(ROOT - 8 * 1024 * 1024));
     assert_eq!(regions.committed(), 0);
+    assert!(regions.accounting_holds());
+}
+
+/// The counterexample the ledger exists for.
+///
+/// One authority funds two processes of the same size. The first returns
+/// normally; a duplicate of its receipt then arrives while the second is still
+/// running. Judged against the authority's total the duplicate is plausible —
+/// the node is holding exactly what it claims — and taking it would return the
+/// *second* process's bytes while that process is still using them. The charge
+/// has its own identity, so there is nothing plausible about it.
+#[test]
+fn a_duplicate_cannot_take_another_live_charge_of_the_same_authority() {
+    const FRAME: usize = 4096;
+    const GRANT: usize = 54 * 1024 * 1024;
+    const POOL: usize = 256 * 1024 * 1024;
+    let mut regions = Regions::new();
+    let root = regions.endow_root(POOL).expect("endowed");
+
+    let first = regions.charge_grant(root, GRANT, FRAME).expect("funded");
+    let second = regions.charge_grant(root, GRANT, FRAME).expect("funded");
+    assert_eq!(regions.committed(), 2 * GRANT);
+    let forged = first.forged_duplicate();
+
+    regions.refund_grant(first).expect("the first returns");
+    assert_eq!(regions.committed(), GRANT, "the second is still running");
+    let after = regions.remaining(root);
+
+    assert_eq!(
+        regions.refund_grant(forged),
+        Err(Refusal::NotFound),
+        "a settled charge is not findable, whatever else the authority holds"
+    );
+    assert_eq!(regions.committed(), GRANT, "and the second is untouched");
+    assert_eq!(regions.remaining(root), after);
+    assert!(regions.accounting_holds());
+
+    // The second still settles normally, once, for exactly its own bytes.
+    regions.refund_grant(second).expect("the second returns");
+    assert_eq!(regions.committed(), 0);
+    assert_eq!(regions.remaining(root), Ok(POOL));
     assert!(regions.accounting_holds());
 }
 
