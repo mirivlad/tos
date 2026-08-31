@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `4da5ff6cfe7a011eafc5c6eaa59a42293a3b450cc28ef368a62652d843a5232f`\
+Source-manifest SHA-256: `81c50f32a6689708580af1ee8338ff7a1462257b1215ec7358a4d7417b9b94c7`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -23906,14 +23906,18 @@ long-running supervisor would slowly convert one build's budget into another's.
 
 # ADR-0076: One physical account — frames, memory authority, process grants and region backing
 
-- Status: **Proposed**
+- Status: **Accepted**
 - Date: 2026-08-31
 - Decision level: 2 — it fixes where every dynamically allocated byte of user
   memory is charged, and makes the process grant a funded allocation rather than
   a helping from a free pool. It changes no TOS Core semantics, no ABI operation
   and no accepted ceiling; it does change what `RuntimeMemoryGrantV1` is a
   statement about
-- Project Architect approval: **not given**
+- Project Architect approval: **given, 2026-08-31**, conditional on the
+  corrections this revision makes: the funded-grant semantics of §3, the
+  retirement path for operations 8 and 15 in §4, the granularity of §7, and the
+  mapping and sharing rules of §5. §8 carries a physical finding the Architect
+  asked to be brought back rather than resolved here
 - Related: ADR-0075 (Accepted) — the authority tree and the region lifecycle this
   funds. ADR-0069 — the reference process grant. ADR-0050, ADR-0041 — grants and
   the pool. ADR-0074 (Draft) — the build workspace this has to be able to pay
@@ -23952,7 +23956,7 @@ Frames                            every usable frame the boot admitted
         │                         the launch and audit record
         ├── child authority       a supervisor's allowance
         │     ├── child          a build worker's, attenuated to its grant
-        │     │     ├── grant     consumed at creation: the process's arena
+        │     │     ├── grant     charged at creation: the process's arena
         │     │     └── region    the bundle backing it allocates
         │     └── child          a target's
         └── …
@@ -23963,9 +23967,10 @@ Four rules:
 1. **Every dynamically allocated user byte is charged to exactly one
    authority.** Process grants and region backing both, and nothing else exists
    in that class.
-2. **A process grant is a funded allocation.** It is paid for by a child
-   authority attenuated to exactly the grant's size, consumed when the process
-   is created, and returned to the funder when the process is reclaimed.
+2. **A process grant is a funded allocation** (§3). It is charged to a
+   `MemoryAuthority` the creator names, held against that authority's accounting
+   node for as long as the process lives, and returned up the same funding
+   lineage when the process is reclaimed.
 3. **Kernel-only overhead may live outside the tree only if it is bounded and
    reserved before the tree exists.** The process table, the page tables a
    proved maximum of address spaces needs, and the nucleus's own metadata
@@ -23974,7 +23979,37 @@ Four rules:
 4. **There is no second free-memory counter.** After the root authority is
    endowed, nothing allocates user memory by asking the pool directly.
 
-## 3. What `RuntimeMemoryGrantV1 = 54 MiB` becomes
+## 3. A funded grant is an allocation, not a consumed authority
+
+An earlier revision said the worker's authority is attenuated to exactly the
+grant and consumed at creation, and in the same breath had that authority pay
+for the bundle region. Those cannot both be true. The rule:
+
+- a `MemoryAuthority` is a **finite budget**, not a one-shot ticket;
+- `process_create_funded(…, memory_authority, grant_bytes)` makes an ordinary
+  funded allocation out of it: `charged` bytes leave the authority's remainder
+  and are held against its accounting node;
+- **the capability is not consumed.** The caller keeps it and may spend the
+  rest;
+- when the process is reclaimed, `charged` returns to the same funding lineage;
+- a caller that *wants* one-shot funding attenuates an exact-sized authority
+  first. The ABI does not require it.
+
+For a build worker the shape is therefore:
+
+```text
+supervisor allowance
+  └── attenuate: worker allowance = grant + bundle budget
+        ├── process_create_funded(…, worker allowance, grant = W)   charges W
+        └── the remainder is endowed to the worker explicitly, in its
+            endowment and its launch record, and pays for the bundle region
+```
+
+**Nothing is inherited.** A child does not receive a `MemoryAuthority` because
+its parent had one: if the worker is to hold the remainder, that is an entry in
+the endowment like any other authority it holds.
+
+## 3a. What `RuntimeMemoryGrantV1 = 54 MiB` becomes
 
 It stays exactly what ADR-0069 measured and fixed: the grant of an **ordinary
 runtime process**, and the number the reference platform's four-process budget
@@ -23987,35 +24022,26 @@ creation and leaves what a build worker is given to whoever funds it — which i
 the only way a workspace bound that is still being measured can be honoured
 without freezing it prematurely.
 
-## 4. Legacy `process_create` (8) and `process_create_with_generation` (15)
+## 4. Operations 8 and 15 are retired, not quietly funded
 
-Their signatures do not change, and neither does what a caller of them may
-expect. What changes is where the frames come from, and there are only three
-possibilities:
+An operation that spends the root authority without having been given a
+`MemoryAuthority` is exactly the hidden second counter this ADR exists to
+remove, so the earlier recommendation — fund legacy creations from the root — is
+withdrawn. **Operations 8 and 15 are retired.**
 
-- **A — legacy creations are funded from the root authority itself.** The
-  nucleus debits the root for `RUNTIME_GRANT` on behalf of a caller that named
-  no authority. Simple; the caller sees nothing new; and it keeps one counter.
-  Its cost is that the root pays for something nobody chose to fund, so a
-  supervisor's carefully attenuated allowance can still be undercut by an
-  ordinary `process_create` elsewhere.
-- **B — legacy creations are funded from the caller's own authority, when it
-  has one.** Closer to the model, but it makes operation 8's behaviour depend on
-  an argument it does not take, which is the kind of hidden coupling this
-  project has refused elsewhere.
-- **C — legacy creations are refused once the tree exists.** Honest and
-  disruptive: every existing caller and every QEMU gate that creates a process
-  would have to move to the funded form in the same change.
+The migration has no red tree in it:
 
-**Recommended: A, with the root's debit visible.** It is the only one that
-neither changes an accepted operation's meaning nor breaks the gates, and the
-property that matters — no frame is spent twice — holds under it, because the
-root is inside the tree rather than beside it. When the funded form exists and
-the gates use it, C becomes a cheap follow-up rather than a flag day.
+1. the funded operations are implemented, and every caller and QEMU gate that
+   creates a process moves to them;
+2. in the **same** slice that makes the root authority the only source of
+   dynamic user memory, 8 and 15 begin answering `E_NOT_SUPPORTED`;
+3. their numbers are never reused.
 
-What is **not** acceptable under any of the three: a legacy creation reaching
-`frames.available()` directly while an authority believes it holds those frames.
-That is the defect this ADR exists to prevent.
+There is deliberately no committed state in which the root authority is
+authoritative and a legacy creation still debits it behind the model's back.
+`E_NOT_SUPPORTED` is what `SYSTEM_ABI_V1` §7 already says an operation this
+version does not offer answers, so a caller built against the older ABI
+discovers the absence rather than misbehaving.
 
 ## 5. The mapping contract this needs before any ABI
 
@@ -24033,30 +24059,110 @@ table can be proposed against it:
   mapping**, in its result and its argument region, the way `process_create`
   already returns a handle and writes a record. Nothing is discovered by
   probing.
-- **Freezing does not move or unmap a reader.** It removes writable mappings —
-  the writer's own included — and leaves readable ones addressing the same
-  bytes at the same place. A holder that was writing must therefore expect its
-  window to become unreadable-for-writing at exactly the instant it asked for
-  that, and to map it again to read.
+- **Freezing downgrades in place.** `region_allocate` establishes a writable,
+  non-executable window the nucleus placed; `region_freeze` turns that same
+  window read-only at the same address, invalidating what the hardware caches
+  about it. There is no unmap and no remap, and therefore no `region_map`
+  operation in V1: a holder that was writing keeps reading, at the address it
+  already has.
 - **A linear transfer takes the sender's mapping with the handle**, atomically,
   before ownership is anywhere else (ADR-0075 §5a). The sender's window stops
   resolving; the receiver is given its own.
 - **The receiver learns its mapping the same way any other capability arrives**
   — through the receive path, with base and length in its argument region — so
   there is no second mechanism for "where is my region".
-- **`Shared<Region<T>>`**, when operation 7 is implemented, is the immutable
-  form mapped read-only in more than one address space at once. Each holder has
-  its own window; none of them can write; the region is reclaimed when the last
-  of them goes.
+- **`Shared<Region<T>>` is on the path, not after it.** A one-shot target could
+  be served by the linear transfer alone; a supervisor that keeps a bundle for
+  restart cannot. So `region_share` (operation 7) is implemented **before** the
+  final `process_create_from_bundle`: it consumes the affine immutable
+  capability, hands back a shared one, leaves the caller's read-only window
+  exactly where it is, and the shared form is copyable and delegable under the
+  accepted model. The backing lives while any shared capability, mapping or
+  internal reference remains.
 
 Layout beyond this — which addresses, in what order, with what alignment — stays
 an implementation detail.
 
-## 6. What this ADR does not decide
+## 7. Allocation granularity, and what is actually charged
 
-Operation numbers, register layouts and the names of anything. They belong to
-the ABI packet that follows this decision, and none of them can be fixed before
-§2 and §4 are.
+Public sizes stay in bytes. What the accounting moves is what the machine
+actually spends:
+
+```text
+charged = round_up(requested_bytes, allocation_granule)
+```
+
+`charged` is what leaves the authority's remainder, what the accounting node
+holds, and what returns at reclamation. The operation and the launch record
+report the **mapped and charged** length, not the requested one, so nothing
+downstream believes it has less mapped than it has.
+
+Two refusals follow, and both are already in the status space: an overflow in
+the rounding is `E_BAD_ARGUMENT`, and a budget that no longer covers the rounded
+figure is `E_LIMIT`. Charging the requested bytes while spending a whole frame
+would be a hidden overcommit, which is the same defect as a second counter and
+is refused for the same reason.
+
+## 8. The physical account, and one finding to bring back
+
+With the `BUILD_WORKER_GRANT = 100 663 296 B` (96 MiB) the Architect set — the
+smallest whole MiB above the enforced hard minimum of `95 518 720 B` — the
+reference platform's account is:
+
+| Line | |
+|---|---:|
+| pool after the nucleus | 58 839 frames, **229.84 MiB** |
+| fixed reserve: 4 address spaces of page tables at their largest mapping | 1.78 MiB |
+| fixed reserve: stack, report, argument region and launch record, 4 processes | 7.90 MiB |
+| **root MemoryAuthority** | **220.16 MiB** |
+
+Against that, a build with a supervisor resident:
+
+| Scenario | supervisor + worker + bundle | |
+|---|---:|---|
+| docs/44 ceiling, statement-heavy | 54 + 96 + 122.90 = **272.90 MiB** | does not fit |
+| docs/44 ceiling, mixed body | 54 + 96 + 87.90 = **237.90 MiB** | does not fit |
+| capsule-sized, 127 × 256 KiB | 54 + 96 + 46 = **196.00 MiB** | fits |
+
+**The shortfall is simultaneity, not the grant.** Without a supervisor's own
+`54 MiB` resident, the worst ceiling case is `96 + 122.90 = 218.90 MiB` and fits
+inside `220.16` — by `1.26 MiB`. The three terms that must coexist are the
+worker's workspace, the bundle it is writing, and whatever else is resident
+while it does.
+
+Nothing is resolved here: the grant is not reduced below its proved minimum, the
+reference platform is not changed, and no ceiling moves. What this section does
+is report the numbers the Architect asked for before the account is called
+closed.
+
+## 9. What this ADR does not decide
+
+The `spend` right's exact name in `CAPABILITY_V1`, and the register layouts of
+operations 16–20. The operation numbers are settled — 16 `capability_attenuate_scoped`,
+17 `region_allocate`, 18 `region_freeze`, 19 `process_create_funded`,
+20 `process_create_from_bundle`, with 7 `region_share` already assigned — and
+they are written into `SYSTEM_ABI_V1` when the operations exist, not before.
+
+Two shapes this ADR does fix, because they follow from §3 and §5 rather than
+from a register budget:
+
+- **`capability_attenuate_scoped` over a `MemoryAuthority` makes a child
+  accounting node** and reserves its scope out of the parent atomically. It is
+  not a second handle onto one counter: the parent's remainder falls by exactly
+  what the child may spend, which is what makes ADR-0075 §2a's invariant hold.
+- **`process_create_from_bundle` takes a shared bundle capability and consumes
+  nothing.** It funds the target's grant from the `MemoryAuthority` it is given,
+  derives the target's *own* shared capability from the caller's, maps the
+  region read-only in the target from that derived capability, and writes the
+  handle, base and length into the target's launch record. The supervisor keeps
+  its own. A target's death takes its capability and its mapping; the
+  supervisor's survives, so a restart repeats the operation without rebuilding
+  anything, and the backing is reclaimed when the last shared capability,
+  mapping and internal reference are gone.
+- It takes **no entry path**. `TOSBUNDLE/v1` already carries the exact closure,
+  the entry position and the entry path; a second answer to "what is the entry"
+  would be a second truth that can diverge from the first. The target runs the
+  entry the bundle declares and verifies the bundle itself (ADR-0073).
 
 <!-- END docs/adr/0076-unified-memory-funding.md -->
 
