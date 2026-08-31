@@ -40,7 +40,7 @@ Composition (derived, not hand-maintained)
 ------------------------------------------
 - files in the release package: 434
 - active system invariants: 21
-- architecture decision records: 75 (40 accepted)
+- architecture decision records: 76 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -119,6 +119,7 @@ Architecture decision records
 - docs/adr/0073-build-to-image-launch.md — ADR-0073: Build-to-image launch and verifier-owned process admission [**Accepted**]
 - docs/adr/0074-build-workspace-and-launch-bundle.md — ADR-0074: The build workspace, the launch bundle, and who owns them [**Draft — not accepted, and nothing in it is implemented**]
 - docs/adr/0075-region-object-lifecycle.md — ADR-0075: Region object lifecycle, the mutable-to-immutable transition, and reclamation [**Accepted**]
+- docs/adr/0076-unified-memory-funding.md — ADR-0076: One physical account — frames, memory authority, process grants and region backing [**Proposed**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
