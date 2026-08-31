@@ -279,10 +279,10 @@ fn the_bootstrap_chain_charges_every_byte_once() {
 
     // The initial supervisor is funded, not helped: its grant is charged to the
     // root like any other.
-    let charged = regions
+    let charge = regions
         .charge_grant(root, GRANT, FRAME)
         .expect("the root funds the supervisor");
-    assert_eq!(charged, GRANT, "already a whole number of frames");
+    assert_eq!(charge.charged(), GRANT, "already a whole number of frames");
     assert_eq!(regions.remaining(root), Ok(POOL - RESERVES - GRANT));
     assert_eq!(regions.committed(), GRANT);
     assert!(regions.accounting_holds());
@@ -308,7 +308,7 @@ fn the_bootstrap_chain_charges_every_byte_once() {
 
     // And when the supervisor is reclaimed its grant goes back where it came
     // from, leaving the pool as it was.
-    regions.refund_grant(root, charged);
+    regions.refund_grant(charge).expect("the grant returns");
     assert_eq!(regions.remaining(root), Ok(POOL - RESERVES - allowance));
     assert_eq!(regions.committed(), 0);
     assert!(regions.accounting_holds());
@@ -321,10 +321,14 @@ fn a_charge_is_rounded_to_the_granule() {
     let mut regions = Regions::new();
     let root = regions.endow_root(16 * 1024 * 1024).expect("endowed");
 
-    let charged = regions
+    let charge = regions
         .charge_grant(root, FRAME + 1, FRAME)
         .expect("funded");
-    assert_eq!(charged, 2 * FRAME, "a byte over a frame costs a frame");
+    assert_eq!(
+        charge.charged(),
+        2 * FRAME,
+        "a byte over a frame costs a frame"
+    );
     assert_eq!(regions.remaining(root), Ok(16 * 1024 * 1024 - 2 * FRAME));
 
     let region = regions
@@ -361,6 +365,175 @@ fn a_full_table_refuses() {
         assert!(made <= region::MAX_REGIONS, "the table is bounded");
     }
     assert_eq!(made, region::MAX_REGIONS);
+    assert!(regions.accounting_holds());
+}
+
+/// A grant is charged once, returned once, and the receipt is what says so.
+#[test]
+fn a_grant_charge_is_made_and_undone_exactly_once() {
+    const FRAME: usize = 4096;
+    let (mut regions, root) = endowed();
+    let allowance = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
+
+    let charge = regions
+        .charge_grant(allowance, 3 * 1024 * 1024, FRAME)
+        .expect("funded");
+    assert_eq!(charge.charged(), 3 * 1024 * 1024);
+    assert_eq!(regions.remaining(allowance), Ok(5 * 1024 * 1024));
+    assert_eq!(regions.committed(), 3 * 1024 * 1024);
+    assert!(regions.accounting_holds());
+
+    regions.refund_grant(charge).expect("the grant returns");
+    assert_eq!(regions.remaining(allowance), Ok(8 * 1024 * 1024));
+    assert_eq!(regions.committed(), 0);
+    assert!(regions.accounting_holds());
+}
+
+/// A repeated refund cannot invent budget.
+///
+/// Production cannot express this at all — the receipt is moved into the
+/// refund and there is no second one — so the test forges a duplicate and
+/// watches the accounting refuse it. Both refusals matter: while the node is
+/// still live the claim exceeds what it holds, and once it has drained the
+/// receipt names nothing.
+#[test]
+fn a_second_refund_of_one_charge_is_refused_and_changes_nothing() {
+    const FRAME: usize = 4096;
+    let (mut regions, root) = endowed();
+    let allowance = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
+    let charge = regions
+        .charge_grant(allowance, 2 * 1024 * 1024, FRAME)
+        .expect("funded");
+    let forged = charge.forged_duplicate();
+
+    regions.refund_grant(charge).expect("the grant returns");
+    let after = regions.remaining(allowance);
+    assert_eq!(after, Ok(8 * 1024 * 1024));
+
+    // The node is still live and named — it is the duplicate's claim that is
+    // impossible, not the node.
+    assert_eq!(
+        regions.refund_grant(forged),
+        Err(Refusal::BadArgument),
+        "returning more than the node holds is a defect, not a clamp"
+    );
+    assert_eq!(regions.remaining(allowance), after);
+    assert_eq!(regions.remaining(root), Ok(ROOT - 8 * 1024 * 1024));
+    assert_eq!(regions.committed(), 0);
+    assert!(regions.accounting_holds());
+}
+
+/// Revoking the capability does not move the grant it funded.
+///
+/// The receipt names an accounting incarnation, and a revoke bumps the
+/// *generation*. So the capability stops resolving, the process it paid for
+/// goes on running, and when it ends its bytes travel down the lineage that
+/// actually paid — past the unnamed node to its parent.
+#[test]
+fn a_grant_returns_through_its_funder_after_the_capability_is_revoked() {
+    const FRAME: usize = 4096;
+    let (mut regions, root) = endowed();
+    let allowance = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
+    let charge = regions
+        .charge_grant(allowance, 4 * 1024 * 1024, FRAME)
+        .expect("funded");
+
+    regions.revoke(allowance).expect("revoked");
+    assert_eq!(
+        regions.remaining(allowance),
+        Err(Refusal::NotFound),
+        "the capability names nothing any more"
+    );
+    assert_eq!(
+        regions.remaining(root),
+        Ok(ROOT - 4 * 1024 * 1024),
+        "the unspent half came back and the funded half did not"
+    );
+    assert_eq!(regions.committed(), 4 * 1024 * 1024);
+    assert!(regions.accounting_holds());
+
+    // The receipt still resolves: it was never about the capability.
+    regions
+        .refund_grant(charge)
+        .expect("the grant returns down the lineage that funded it");
+    assert_eq!(regions.remaining(root), Ok(ROOT));
+    assert_eq!(regions.committed(), 0);
+    assert!(regions.accounting_holds());
+}
+
+/// A drained slot handed to a new occupant stops honouring the old one's
+/// receipts.
+#[test]
+fn a_stale_receipt_cannot_credit_the_new_occupant_of_a_slot() {
+    const FRAME: usize = 4096;
+    let (mut regions, root) = endowed();
+    let first = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
+    let charge = regions
+        .charge_grant(first, 2 * 1024 * 1024, FRAME)
+        .expect("funded");
+    let stale = charge.forged_duplicate();
+
+    // The first occupant drains completely: its grant returns and its
+    // capability goes, so the node is retired and its slot is free.
+    regions.refund_grant(charge).expect("the grant returns");
+    regions.revoke(first).expect("revoked");
+    assert_eq!(regions.remaining(root), Ok(ROOT));
+
+    // A new authority takes the same slot, and the old receipt is not a gift
+    // to it.
+    let second = regions.attenuate(root, 1024 * 1024).expect("reserved");
+    let before = regions.remaining(second);
+    assert_eq!(before, Ok(1024 * 1024));
+    assert_eq!(
+        regions.refund_grant(stale),
+        Err(Refusal::NotFound),
+        "a receipt from a previous occupant of the slot names nothing"
+    );
+    assert_eq!(regions.remaining(second), before);
+    assert_eq!(regions.remaining(root), Ok(ROOT - 1024 * 1024));
+    assert_eq!(regions.committed(), 0);
+    assert!(regions.accounting_holds());
+}
+
+/// The two ways a charge is refused are not the same answer (ADR-0076 §7).
+///
+/// A size whose rounding overflows could not be served by any budget, and a
+/// caller told `E_LIMIT` would retry it forever. A size that simply exceeds
+/// what is left is a different fact about a different day.
+#[test]
+fn an_impossible_size_and_an_unaffordable_one_are_different_refusals() {
+    const FRAME: usize = 4096;
+    let (mut regions, root) = endowed();
+    let before = regions.remaining(root);
+
+    assert_eq!(
+        regions.charge_grant(root, usize::MAX, FRAME),
+        Err(Refusal::BadArgument),
+        "rounding that would wrap is a domain failure"
+    );
+    assert_eq!(regions.remaining(root), before, "and it changed nothing");
+    assert!(regions.accounting_holds());
+
+    assert_eq!(
+        regions.charge_grant(root, ROOT + 1, FRAME),
+        Err(Refusal::Budget),
+        "a figure that rounds cleanly and does not fit is a budget failure"
+    );
+    assert_eq!(regions.remaining(root), before, "and it changed nothing");
+    assert!(regions.accounting_holds());
+
+    // The same split on the region path, which charges through the same
+    // arithmetic.
+    assert_eq!(
+        regions.allocate_rounded(root, usize::MAX, FRAME, WORKER),
+        Err(Refusal::BadArgument)
+    );
+    assert_eq!(
+        regions.allocate_rounded(root, ROOT + 1, FRAME, WORKER),
+        Err(Refusal::Budget)
+    );
+    assert_eq!(regions.remaining(root), before);
+    assert_eq!(regions.committed(), 0);
     assert!(regions.accounting_holds());
 }
 

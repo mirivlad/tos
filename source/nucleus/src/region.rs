@@ -48,8 +48,18 @@ pub enum Refusal {
     NoRoom,
     /// The authority or region named does not exist, or its generation is stale.
     NotFound,
-    /// The authority has less than was asked of it.
+    /// The authority has less than was asked of it. The request was well
+    /// formed; the memory is not there (`E_LIMIT`).
     Budget,
+    /// The request cannot be expressed in the arithmetic that would have to
+    /// serve it — a size whose rounding overflows, or a receipt that claims
+    /// more than the node it names is holding (`E_BAD_ARGUMENT`).
+    ///
+    /// Separate from [`Refusal::Budget`] on purpose (ADR-0076 §7): a caller
+    /// that asked for something impossible and a caller that asked for
+    /// something unaffordable need different answers, and collapsing them tells
+    /// the first one to retry later.
+    BadArgument,
     /// The region is not in the mode this operation requires.
     WrongMode,
     /// The caller is not the one holder this operation requires.
@@ -87,7 +97,9 @@ pub enum Mode {
 /// A request rounded to what the machine actually spends (ADR-0076 §7).
 ///
 /// An overflow is a refusal rather than a wrap: a rounded figure that came back
-/// smaller than what was asked for would charge less than it spent.
+/// smaller than what was asked for would charge less than it spent. It is a
+/// *domain* refusal — no budget could have satisfied it — which is why it is
+/// [`Refusal::BadArgument`] and not [`Refusal::Budget`].
 fn round_up(bytes: usize, granule: usize) -> Result<usize, Refusal> {
     if granule <= 1 {
         return Ok(bytes);
@@ -96,7 +108,60 @@ fn round_up(bytes: usize, granule: usize) -> Result<usize, Refusal> {
     if over == 0 {
         return Ok(bytes);
     }
-    bytes.checked_add(granule - over).ok_or(Refusal::Budget)
+    bytes
+        .checked_add(granule - over)
+        .ok_or(Refusal::BadArgument)
+}
+
+/// A charge made against one accounting node, and the only thing that can undo
+/// it.
+///
+/// **The receipt is the charge.** `charge_grant` is the only thing that makes
+/// one, it carries the figure that was actually rounded and debited rather than
+/// the one the caller asked for, and `refund_grant` consumes it. Neither
+/// `Copy` nor `Clone`: a lifecycle bug can lose a receipt — which leaks budget
+/// and is caught by the accounting — but it cannot spend one twice, which would
+/// *create* budget. An accounting model that can be talked into inventing free
+/// memory by a repeated call is not an accounting model.
+///
+/// It names an **accounting incarnation**, not a capability generation. A
+/// revoke bumps the generation and leaves the node standing while what it
+/// funded is still alive (ADR-0075 §2a), and a grant made through that
+/// capability must still return down the lineage that paid for it. The
+/// incarnation moves only when the slot has fully drained and is handed to a
+/// new occupant, which is exactly when an older receipt must stop resolving.
+#[must_use = "a charge that is dropped is memory the tree never gets back"]
+#[derive(Debug, Eq, PartialEq)]
+pub struct GrantCharge {
+    slot: u32,
+    incarnation: u32,
+    charged: usize,
+}
+
+impl GrantCharge {
+    /// What was actually debited — the rounded figure, which is what the
+    /// launch record and the operation's result report (ADR-0076 §7).
+    pub fn charged(&self) -> usize {
+        self.charged
+    }
+
+    /// A second receipt for one charge, so a test can attempt what production
+    /// cannot express.
+    ///
+    /// Production has no way to make one: the type is neither `Copy` nor
+    /// `Clone`, and a process slot holds its receipt in an `Option` it `take`s
+    /// once. But "the type system prevents it" is a claim about the code that
+    /// exists, and the refusal underneath it is worth proving on its own — so
+    /// the test build, and only the test build, can forge a duplicate and
+    /// watch the accounting refuse it.
+    #[cfg(test)]
+    pub fn forged_duplicate(&self) -> GrantCharge {
+        GrantCharge {
+            slot: self.slot,
+            incarnation: self.incarnation,
+            charged: self.charged,
+        }
+    }
 }
 
 /// One accounting node. Nucleus-owned; no process has a mapping to it.
@@ -107,6 +172,9 @@ struct Authority {
     /// its allocations and descendants drain (ADR-0075 §2a).
     named: bool,
     generation: u32,
+    /// Which occupant of this slot this is. Moves when the slot is reused and
+    /// at no other time, so a charge outlives a revoke and dies with a reuse.
+    incarnation: u32,
     /// `None` for the root.
     parent: Option<u32>,
     /// What this node was given.
@@ -159,6 +227,7 @@ impl Regions {
                 live: false,
                 named: false,
                 generation: 0,
+                incarnation: 0,
                 parent: None,
                 budget: 0,
                 remaining: 0,
@@ -192,7 +261,10 @@ impl Regions {
     /// through [`allocate`], and nothing else spends.
     ///
     /// Refused rather than clamped when the reserves are the whole pool: a root
-    /// authority over nothing is authority over nothing.
+    /// authority over nothing is authority over nothing. That refusal is
+    /// [`Refusal::Budget`] and not [`Refusal::BadArgument`] — nothing about the
+    /// request is malformed, the machine is simply smaller than what has to
+    /// come out of it first.
     pub fn endow_root_after_reserves(
         &mut self,
         usable: usize,
@@ -206,14 +278,18 @@ impl Regions {
     ///
     /// **A grant is an allocation and the capability is not consumed.** The
     /// charge is held against this authority's node for as long as the process
-    /// lives; [`refund_grant`] returns it up the same funding lineage. What is
-    /// charged is the rounded figure, because that is what the machine spends.
+    /// lives; [`Regions::refund_grant`] returns it up the same funding lineage.
+    /// What is charged is the rounded figure, because that is what the machine
+    /// spends.
+    ///
+    /// The receipt is the record of it. Nothing else can undo this charge, and
+    /// the receipt cannot undo it twice.
     pub fn charge_grant(
         &mut self,
         authority: AuthorityId,
         bytes: usize,
         granule: usize,
-    ) -> Result<usize, Refusal> {
+    ) -> Result<GrantCharge, Refusal> {
         let charged = round_up(bytes, granule)?;
         if charged == 0 {
             return Err(Refusal::Empty);
@@ -224,22 +300,51 @@ impl Regions {
         }
         self.authorities[at].remaining -= charged;
         self.authorities[at].allocated += charged;
-        Ok(charged)
+        Ok(GrantCharge {
+            slot: at as u32,
+            incarnation: self.authorities[at].incarnation,
+            charged,
+        })
     }
 
-    /// Returns a process grant when the process is reclaimed.
+    /// Returns a process grant when the process is reclaimed, consuming the
+    /// receipt that made it.
     ///
     /// It travels the way a region's backing does: to the authority that funded
     /// it while that authority is still named, and past it to its parent when it
-    /// is not.
-    pub fn refund_grant(&mut self, authority: AuthorityId, charged: usize) {
-        let at = authority.index as usize;
-        if at >= MAX_AUTHORITIES || !self.authorities[at].live {
-            return;
+    /// is not. The caller does not say how much — the receipt does, and it says
+    /// the figure that was debited.
+    ///
+    /// Two refusals, and neither of them clamps:
+    ///
+    /// - a receipt whose node has drained and been reused names nothing
+    ///   ([`Refusal::NotFound`]), so it cannot credit an unrelated occupant of
+    ///   the slot;
+    /// - a receipt claiming more than its node is holding is a defect in the
+    ///   lifecycle above ([`Refusal::BadArgument`]), and refusing it keeps the
+    ///   defect a leak rather than letting it mint budget.
+    pub fn refund_grant(&mut self, charge: GrantCharge) -> Result<(), Refusal> {
+        let at = charge.slot as usize;
+        if at >= MAX_AUTHORITIES {
+            return Err(Refusal::NotFound);
         }
-        self.authorities[at].allocated = self.authorities[at].allocated.saturating_sub(charged);
-        self.give_back_or_keep(at, charged);
+        let node = &self.authorities[at];
+        if !node.live || node.incarnation != charge.incarnation {
+            return Err(Refusal::NotFound);
+        }
+        // Deliberately a refusal and not a `debug_assert`. Reaching here means
+        // the lifecycle above made a receipt it should not have, and the
+        // nucleus's job at that moment is to not compound it: refusing leaves
+        // the bytes stranded, which the accounting will show, while asserting
+        // would take the machine down over a leak and clamping would turn the
+        // leak into invented budget. The refusal is the report.
+        if node.allocated < charge.charged {
+            return Err(Refusal::BadArgument);
+        }
+        self.authorities[at].allocated -= charge.charged;
+        self.give_back_or_keep(at, charge.charged);
         self.settle_authority(at);
+        Ok(())
     }
 
     /// The root authority of a boot, from the pool the nucleus has left after
@@ -254,10 +359,12 @@ impl Regions {
         }
         let index = self.free_authority()?;
         let generation = self.authorities[index].generation.wrapping_add(1);
+        let incarnation = self.authorities[index].incarnation.wrapping_add(1);
         self.authorities[index] = Authority {
             live: true,
             named: true,
             generation,
+            incarnation,
             parent: None,
             budget: bytes,
             remaining: bytes,
@@ -287,6 +394,7 @@ impl Regions {
         }
         let index = self.free_authority()?;
         let generation = self.authorities[index].generation.wrapping_add(1);
+        let incarnation = self.authorities[index].incarnation.wrapping_add(1);
         self.authorities[at].remaining -= bytes;
         self.authorities[at].reserved += bytes;
         self.authorities[at].children += 1;
@@ -294,6 +402,7 @@ impl Regions {
             live: true,
             named: true,
             generation,
+            incarnation,
             parent: Some(at as u32),
             budget: bytes,
             remaining: bytes,
