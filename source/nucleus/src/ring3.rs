@@ -154,13 +154,27 @@ pub unsafe fn admit(space: &mut AddressSpace, payload: Payload) -> Result<usize,
     // a boundary this system does not offer.
     // SAFETY: boot, single-context, and nothing else holds the reserve.
     let tables = unsafe { crate::memory::tables() };
-    space.map_page(tables, USER_CODE, code, PRESENT_USER)?;
-    space.map_page(
-        tables,
-        USER_STACK,
-        stack,
-        PRESENT_USER | WRITABLE | NO_EXECUTE,
-    )?;
+    // Both frames go back if either mapping fails: a frame out of the pool and
+    // not yet a leaf is reachable by nothing, so nothing else could return it.
+    if let Err(refused) = space
+        .map_page(tables, USER_CODE, code, PRESENT_USER)
+        .and_then(|()| {
+            space.map_page(
+                tables,
+                USER_STACK,
+                stack,
+                PRESENT_USER | WRITABLE | NO_EXECUTE,
+            )
+        })
+    {
+        space.unmap_page(USER_CODE);
+        // SAFETY: allocated moments ago; any mapping made above is gone.
+        unsafe {
+            frames.release_frame(code);
+            frames.release_frame(stack);
+        }
+        return Err(refused);
+    }
     // SAFETY: `map_page` wrote entries into the live tree, so the processor's
     // TLB may still hold the absent state of these two addresses from an
     // earlier walk.
@@ -220,7 +234,12 @@ pub unsafe fn retire(space: &mut AddressSpace) {
     // holds the tree.
     if let Some(charge) = unsafe { CHARGE.take() } {
         // SAFETY: as above; nothing else holds the tree.
-        let _ = unsafe { crate::memory::authority() }.refund_grant(charge);
+        if unsafe { crate::memory::authority() }
+            .refund_grant(charge)
+            .is_err()
+        {
+            crate::memory::note_divergence(b"excursion-retirement-refund");
+        }
     }
 }
 

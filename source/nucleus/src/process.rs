@@ -1260,7 +1260,12 @@ unsafe fn retire(index: usize) {
     // committed is what the pool has actually lost.
     if let Some(charge) = charge {
         // SAFETY: single-context nucleus; nothing else holds the tree.
-        let _ = unsafe { crate::memory::authority() }.refund_grant(charge);
+        if unsafe { crate::memory::authority() }
+            .refund_grant(charge)
+            .is_err()
+        {
+            crate::memory::note_divergence(b"process-retirement-refund");
+        }
     }
     // Measured, not asserted: the pool says how many frames came back and how
     // many it holds now. A reclamation nobody counts is a claim, and this is
@@ -1811,6 +1816,14 @@ pub unsafe fn create(
     // identity-mapped and at least one frame long.
     let header =
         unsafe { core::ptr::with_exposed_provenance::<ImageHeader>(image.start as usize).read() };
+    #[cfg(feature = "test-creation-rollback")]
+    let header = {
+        let mut header = header;
+        if crate::injection::armed(crate::injection::Case::BadHeader) {
+            header.magic = !IMAGE_MAGIC;
+        }
+        header
+    };
     if header.magic != IMAGE_MAGIC
         || header.entry >= header.text
         || header.text > header.file
@@ -1829,6 +1842,12 @@ pub unsafe fn create(
     // nobody granted.
     let endowment_bytes = endowment.len() * size_of::<LaunchCapability>();
     let record_bytes = (size_of::<Launch>() + table_bytes + paths_bytes + endowment_bytes) as u64;
+    #[cfg(feature = "test-creation-rollback")]
+    let record_bytes = if crate::injection::armed(crate::injection::Case::RecordTooLarge) {
+        MAX_RECORD_BYTES + 1
+    } else {
+        record_bytes
+    };
     if record_bytes > MAX_RECORD_BYTES {
         return Err(Unlaunchable::TooManyUnits);
     }
@@ -1876,7 +1895,15 @@ pub unsafe fn create(
     };
     // SAFETY: single-context nucleus; nothing else holds the tree.
     let tree = unsafe { crate::memory::authority() };
-    let charge = match tree.charge_grant(root, plan.total() as usize, FRAME_SIZE as usize) {
+    #[cfg(feature = "test-creation-rollback")]
+    let wanted = if crate::injection::armed(crate::injection::Case::OverBudget) {
+        tree.remaining(root).unwrap_or(0) + FRAME_SIZE as usize
+    } else {
+        plan.total() as usize
+    };
+    #[cfg(not(feature = "test-creation-rollback"))]
+    let wanted = plan.total() as usize;
+    let charge = match tree.charge_grant(root, wanted, FRAME_SIZE as usize) {
         Ok(charge) => charge,
         Err(_) => {
             tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-funding wanted=");
@@ -1906,6 +1933,10 @@ pub unsafe fn create(
         // is what a frame from the pool already is, which is zero.
         let mut offset = header.text;
         while offset < header.memory {
+            #[cfg(feature = "test-creation-rollback")]
+            if offset > header.text && crate::injection::armed(crate::injection::Case::DataFrame) {
+                return Err(Unlaunchable::OutOfFrames);
+            }
             let frame = frames.allocate_frame().ok_or(Unlaunchable::OutOfFrames)?;
             let carried = image.length().saturating_sub(offset).min(FRAME_SIZE);
             if carried > 0 {
@@ -1920,12 +1951,18 @@ pub unsafe fn create(
                     )
                 };
             }
-            space.map_page(
+            // As in `map_fresh`: a frame that has left the pool and is not
+            // yet a leaf is invisible to the unwinding, so it goes back here.
+            if let Err(refused) = space.map_page(
                 tables,
                 IMAGE + offset,
                 frame,
                 PRESENT_USER | WRITABLE | NO_EXECUTE,
-            )?;
+            ) {
+                // SAFETY: allocated moments ago, never mapped, named by nothing.
+                unsafe { frames.release_frame(frame) };
+                return Err(Unlaunchable::Paging(refused));
+            }
             offset += FRAME_SIZE;
         }
         // The source set: read-only, not executable. A process that could write the
@@ -1959,6 +1996,10 @@ pub unsafe fn create(
         // Carving it was the reason a fourth process could not start on a machine
         // with tens of thousands of free frames: each carve took the largest run
         // there was and left the next one a smaller largest run.
+        #[cfg(feature = "test-creation-rollback")]
+        if crate::injection::armed(crate::injection::Case::GrantTable) {
+            crate::injection::enable();
+        }
         map_fresh(&mut space, tables, frames, GRANT, grant_length / FRAME_SIZE)?;
 
         map_fresh(&mut space, tables, frames, STACK, STACK_FRAMES)?;
@@ -1970,6 +2011,10 @@ pub unsafe fn create(
         // contiguously because the nucleus writes it through its own identity map,
         // where one frame at a time and one struct across two frames are different
         // things.
+        #[cfg(feature = "test-creation-rollback")]
+        if crate::injection::armed(crate::injection::Case::RecordCarve) {
+            return Err(Unlaunchable::OutOfFrames);
+        }
         let record_span = frames
             .carve(record_bytes, FRAME_SIZE)
             .ok_or(Unlaunchable::OutOfFrames)?;
@@ -1986,6 +2031,10 @@ pub unsafe fn create(
                 record_span.length() as usize,
             )
         };
+        #[cfg(feature = "test-creation-rollback")]
+        if crate::injection::armed(crate::injection::Case::RecordMapping) {
+            crate::injection::enable();
+        }
         let mut mapped = 0;
         while mapped < record_span.length() {
             space.map_page(
@@ -2118,7 +2167,12 @@ pub unsafe fn create(
             // a charge that outlived what it paid for is the counters
             // disagreeing again, in the direction that loses memory.
             // SAFETY: single-context nucleus; nothing else holds the tree.
-            let _ = unsafe { crate::memory::authority() }.refund_grant(charge);
+            if unsafe { crate::memory::authority() }
+                .refund_grant(charge)
+                .is_err()
+            {
+                crate::memory::note_divergence(b"creation-rollback-refund");
+            }
             return Err(refused);
         }
     };
@@ -2394,16 +2448,33 @@ fn map_fresh(
 ) -> Result<u64, Unlaunchable> {
     let mut first = 0;
     for index in 0..count {
+        #[cfg(feature = "test-creation-rollback")]
+        if at == GRANT && index == 8 && crate::injection::armed(crate::injection::Case::GrantFrame)
+        {
+            return Err(Unlaunchable::OutOfFrames);
+        }
         let frame = frames.allocate_frame().ok_or(Unlaunchable::OutOfFrames)?;
         if index == 0 {
             first = frame;
         }
-        space.map_page(
+        // **The one frame the rollback cannot see.** Between these two lines
+        // the frame has left the pool and is not yet a leaf anywhere, so the
+        // unwinding — which reads owned frames back out of the page tables —
+        // would walk straight past it. Every other frame of this creation is
+        // either still the pool's or reachable through a mapping; this one is
+        // neither, for exactly as long as the mapping is being made. So it is
+        // returned here, by the only code that still knows where it is.
+        if let Err(refused) = space.map_page(
             tables,
             at + index * FRAME_SIZE,
             frame,
             PRESENT_USER | WRITABLE | NO_EXECUTE,
-        )?;
+        ) {
+            // SAFETY: the pool handed this frame over moments ago, no mapping
+            // to it was ever made, and nothing else names it.
+            unsafe { frames.release_frame(frame) };
+            return Err(Unlaunchable::Paging(refused));
+        }
     }
     Ok(first)
 }

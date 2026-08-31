@@ -153,12 +153,18 @@ pub unsafe fn frames() -> &'static mut Frames {
 ///
 /// A reserve that runs out refuses. That is the honest failure — a process
 /// that cannot be given an address space is not started — and it is bounded
-/// by [`crate::process::address_space_tables`], which is computed from this
-/// machine's map and this nucleus's own layout constants rather than measured
-/// once and hoped for.
+/// by [`crate::process::table_reserve`], which is computed from this machine's
+/// map and this nucleus's own layout constants rather than measured once and
+/// hoped for.
+///
+/// **Held as a free list of ordinary frames, not as a contiguous run.** A page
+/// table is one frame, reached through the identity map and pointed at by a
+/// physical address in the entry above it; nothing about it wants its
+/// neighbours. Demanding a contiguous span would have invented a refusal the
+/// hardware does not have — a machine with the frames but not one unbroken
+/// piece of them would fail to boot — so the reserve takes its frames wherever
+/// the pool has them and links them through their own first words.
 pub struct Tables {
-    next: u64,
-    end: u64,
     /// The head of the free list, threaded through the frames themselves.
     /// Zero is the empty list: physical page zero is never in the pool.
     free: u64,
@@ -169,8 +175,6 @@ impl Tables {
     /// A reserve holding nothing, before the map has been read.
     pub const fn empty() -> Tables {
         Tables {
-            next: 0,
-            end: 0,
             free: 0,
             available: 0,
         }
@@ -182,23 +186,21 @@ impl Tables {
     /// as it lies, and a page table read before it is written is a table full
     /// of whatever the last owner left.
     pub fn allocate_frame(&mut self) -> Option<u64> {
-        let frame = if self.free != 0 {
-            let frame = self.free;
-            // SAFETY: the frame is in this reserve, identity-mapped, and its
-            // first word is the link this reserve wrote when it took it back.
-            self.free = unsafe { core::ptr::with_exposed_provenance::<u64>(frame as usize).read() };
-            frame
-        } else if self.next < self.end {
-            let frame = self.next;
-            self.next += FRAME_SIZE;
-            frame
-        } else {
+        #[cfg(feature = "test-creation-rollback")]
+        if crate::injection::tables_refuse() {
             return None;
-        };
+        }
+        if self.free == 0 {
+            return None;
+        }
+        let frame = self.free;
+        // SAFETY: the frame is one this reserve holds, identity-mapped, and its
+        // first word is the link this reserve wrote when it took it in.
+        self.free = unsafe { core::ptr::with_exposed_provenance::<u64>(frame as usize).read() };
         self.available -= 1;
-        // SAFETY: the frame is inside the run this reserve carved out of the
-        // pool, which is identity-mapped for the nucleus and which nothing else
-        // can reach — the pool gave it up before the reserve existed.
+        // SAFETY: the frame is one this reserve took out of the pool, which is
+        // identity-mapped for the nucleus and which nothing else can reach —
+        // the pool gave it up before the reserve began handing it out.
         unsafe {
             core::ptr::write_bytes(
                 core::ptr::with_exposed_provenance_mut::<u8>(frame as usize),
@@ -320,10 +322,53 @@ pub unsafe fn authority() -> &'static mut crate::region::Regions {
     unsafe { &mut *core::ptr::addr_of_mut!(AUTHORITY) }
 }
 
+/// Latched when the pool and the tree have been observed to disagree.
+static mut DIVERGED: bool = false;
+
 /// The root authority, for whoever needs to fund something out of it.
+///
+/// `None` before the boot has endowed it, and `None` for good after the
+/// accounting has been seen to diverge — see [`accounting_diverged`].
 pub fn root() -> Option<crate::region::AuthorityId> {
     // SAFETY: single-context nucleus; written once at boot and only read after.
+    if unsafe { DIVERGED } {
+        return None;
+    }
+    // SAFETY: as above.
     unsafe { ROOT }
+}
+
+/// Whether the pool and the tree have been seen to disagree.
+///
+/// A question only the evidence builds ask out loud: production reads the same
+/// fact through [`root`], which stops answering, and the boot log says it once
+/// in [`note_divergence`].
+#[cfg_attr(not(feature = "test-creation-rollback"), allow(dead_code))]
+pub fn accounting_diverged() -> bool {
+    // SAFETY: single-context nucleus.
+    unsafe { DIVERGED }
+}
+
+/// Records that an internal accounting step failed, and stops funding.
+///
+/// **A refund that refuses is not a user's refusal.** A `GrantCharge` names one
+/// outstanding entry in the ledger, so the only way `refund_grant` can fail on
+/// an internal lifecycle path is that the nucleus lost track of what it funded
+/// — and from that instant the tree's idea of free memory is larger than the
+/// pool's. Continuing to fund out of a number that is known to be wrong is how
+/// an accounting defect becomes two owners of one frame.
+///
+/// So this latches, and [`root`] answers `None` from here on: nothing new is
+/// built, and what is already running is left alone rather than taken down. The
+/// nucleus does not panic over it — a process that exists is not made safer by
+/// stopping the machine — but it does not pretend either, and the boot log says
+/// so in the vocabulary the operator already reads faults in.
+pub fn note_divergence(reason: &[u8]) {
+    // SAFETY: single-context nucleus.
+    unsafe { DIVERGED = true };
+    tos_serial::puts(b"TOS.NUCLEUS.INVARIANT reason=");
+    tos_serial::puts(reason);
+    tos_serial::puts(b" effect=funding-stopped asserted_by=nucleus\r\n");
 }
 
 /// Endows the root authority over what the pool has left, once.
