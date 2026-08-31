@@ -38,6 +38,14 @@ struct In<'a> {
     strings: Vec<String>,
 }
 
+/// A decoded span endpoint, refused when it is not one an index may hold.
+fn index_of(value: i128) -> Result<usize, ImageError> {
+    if value < 0 || value > usize::MAX as i128 {
+        return Err(ImageError::OutOfRange { what: "source map" });
+    }
+    Ok(value as usize)
+}
+
 impl In<'_> {
     fn remaining(&self) -> usize {
         self.bytes.len() - self.at
@@ -851,6 +859,11 @@ impl In<'_> {
 
         let count = self.count("source map", self.limits.source_map_entries)?;
         let mut entries = Vec::with_capacity(count);
+        // Spans arrive as steps (encoding version 2): the start as a signed
+        // step from the previous entry's start, the end as a signed step from
+        // its own start. Both are refused if they leave the range an index may
+        // hold, so a malformed map is an error rather than a wrapped number.
+        let mut previous: i128 = 0;
         for _ in 0..count {
             let at = self.varint()?;
             if at >= identities.len() as u128 {
@@ -859,8 +872,11 @@ impl In<'_> {
                 });
             }
             let (references, profile) = &identities[at as usize];
-            let byte_start = self.index()?;
-            let byte_end = self.index()?;
+            let start = previous + crate::write::unzigzag(self.varint()?);
+            let end = start + crate::write::unzigzag(self.varint()?);
+            let byte_start = index_of(start)?;
+            let byte_end = index_of(end)?;
+            previous = start;
             let derived_from = match self.byte("derived_from")? {
                 0 => None,
                 1 => Some(self.index()?),

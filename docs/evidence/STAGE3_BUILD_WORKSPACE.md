@@ -638,6 +638,78 @@ Six of seven now fit with room. The one that does not is over because of its
 source-map heavy. That is an image-format question — ADR-0070's territory — and
 it is the next thing in the way, not the build workspace.
 
+## Where a statement-heavy image's bytes go
+
+The workspace stopped being the obstacle and the bundle became it: `179.41 MiB`
+of images for a closure that cost `90.77 MiB` to build. Decomposed from the
+encoder's own layout, one standalone module filled to the source ceiling:
+
+| Section | Statement-heavy | Mixed | Export-heavy |
+|---|---:|---:|---:|
+| function bodies | 360 555 B (49.0 %) | 192 313 B (49.3 %) | 152 085 B (41.0 %) |
+| **source-map entries** | **375 092 B (51.0 %)** | 89 232 B (22.9 %) | 109 015 B (29.4 %) |
+| string table | 267 B | 52 456 B | 59 153 B |
+| types + exports | 11 B | 56 426 B | 50 644 B |
+| source-map identities | 13 B | 13 B | 13 B |
+
+**The identity fields were never the problem.** The encoder already collects the
+seven per-entry identity fields into a table: `13 B` for the whole module,
+against `1 823 970 B` if each entry wrote its own. What scales with statement
+count is the entry *body* — `47 621` entries at `7.88 B`, two per instruction —
+and it was half of a statement-heavy image.
+
+An entry was an identity reference, an absolute `byte_start`, an absolute
+`byte_end` and a parent tag. In a ceiling-sized module both offsets reach three
+varint bytes, every time, for a map that walks forward in small steps.
+
+### Two candidates, computed on the modules in hand
+
+| | Statement-heavy | Mixed | Export-heavy |
+|---|---:|---:|---:|
+| as written | 7.88 B/entry | 7.87 | 7.87 |
+| **spans as steps** | **4.00 B/entry** | **4.00** | **4.00** |
+| distinct spans in a table | 10.53 B/entry | 9.86 | 9.86 |
+
+A span table loses because there is nothing to share: `47 621` entries have
+`47 621` distinct spans. Steps win because the numbers are small — the start as
+a signed step from the previous entry's start, the end as a signed step from its
+own start.
+
+### What was changed, and what was not
+
+`ENCODING_VERSION` is now `2`. ADR-0070 §3 versions the **storage encoding**
+independently of the semantic digest scheme precisely so this can happen: the
+fields, their meanings and the digest a module is identified by are untouched,
+and a reader fails closed on a version it does not know. No stored image
+predates the change — the golden vectors carry capsules, not images — so nothing
+had to be migrated.
+
+Both steps are zigzag, which makes the encoding **total**: a map that walks
+backwards, an entry whose end precedes its start, and the longest step the
+source ceiling admits all round-trip, and there is a test that says so rather
+than a rule the writer has to obey.
+
+The measured effect: a statement-heavy image falls from `736 026 B` to
+`551 422 B`, `-25.1 %`, and its source map from `375 092` to `190 488 B`.
+
+### The physical account, after both changes
+
+256 ceiling-sized modules, workspace plus bundle plus the worker's `2.08 MiB`
+and about `0.4 MiB` of page tables, against the ADR-0040 pool of `~229.8 MiB`:
+
+| Body | Workspace | Bundle before | Bundle after | Total | Spare |
+|---|---:|---:|---:|---:|---:|
+| mixed | 37.06 MiB | 100.87 | **90.56** | 130.1 MiB | 99.7 MiB |
+| export-heavy | 43.32 | 107.79 | **95.06** | 140.9 | 88.9 |
+| function-heavy | 72.21 | 107.58 | **87.67** | 162.4 | 67.4 |
+| **statement-heavy** | 90.77 | 179.41 | **134.49** | **227.8** | **2.0** |
+
+**The statement-heavy case now fits, and only just.** Two megabytes of spare on
+a `229.8 MiB` pool is a fit, not a margin, and the next lever is visible in the
+same decomposition: function bodies are now `65 %` of a statement-heavy image at
+`15.14 B` an instruction. Whether that is reducible without changing what an
+image means has not been measured.
+
 ## What this is not
 
 - **Not a freestanding measurement.** A host process with a bounded heap. No

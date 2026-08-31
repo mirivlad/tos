@@ -198,11 +198,14 @@ fn a_real_image_still_refuses_the_frame_negatives() {
     bad[0] ^= 0xff;
     assert_eq!(parse(&bad, &limits), Err(ImageError::BadMagic));
 
+    // A version this reader does not know. It is written as a number rather
+    // than as `ENCODING_VERSION + 1` so that raising the current version makes
+    // this test fail loudly rather than silently testing the version in use.
     let mut bad = good.clone();
-    bad[11] = 2;
+    bad[11] = 9;
     assert_eq!(
         parse(&bad, &limits),
-        Err(ImageError::UnknownEncodingVersion(2))
+        Err(ImageError::UnknownEncodingVersion(9))
     );
 
     let mut bad = good.clone();

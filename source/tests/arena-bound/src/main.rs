@@ -404,6 +404,18 @@ fn main() {
         build_workspace(shape, modules, unit_bytes);
         return;
     }
+    if std::env::args().any(|argument| argument == "--image") {
+        println!("TOS image layout: where a module's bytes go");
+        let body = Body::of(
+            &std::env::args()
+                .skip_while(|argument| argument != "--body")
+                .nth(1)
+                .unwrap_or_default(),
+        );
+        body.select();
+        image_decomposition(SOURCE_CEILING);
+        return;
+    }
     if std::env::args().any(|argument| argument == "--summary") {
         println!("TOS ModuleSummary decomposition: payload against representation");
         println!("allocator: tos_runtime::BoundedHeap over a {ARENA_BYTES}-byte region");
@@ -1349,6 +1361,132 @@ fn slab_contains(index: &(Vec<u8>, Vec<u32>), name: &str) -> bool {
         }
     }
     false
+}
+
+/// Where one module's image bytes go, section by section.
+///
+/// The build's products are now the larger account, and a statement-heavy body
+/// produces `179.41 MiB` of images for a closure that costs `90.77 MiB` to
+/// build. This is what that is made of, from the encoder's own layout rather
+/// than from a guess.
+fn image_decomposition(unit_bytes: usize) {
+    println!();
+    println!(
+        "== TOSIMAGE layout, {} body, one module of {unit_bytes} B ==",
+        Body::current().named()
+    );
+    // A standalone module, filled by the selected body: the chain's own module
+    // zero is padded by its generator before the body filler is reached, and a
+    // module that imports cannot be lowered on its own.
+    let mut text = String::from(
+        "module set.m0 version 1.0 profile bootstrap; \
+         resource [fuel: 100000000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 8] ",
+    );
+    fill_to(&mut text, 0, unit_bytes);
+    let text = capsule_bytes(&text);
+    let source = SourceReader::read(text).expect("the fixture reads");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("the fixture parses");
+    let context = ModuleContext {
+        source_set: "tos-arena-bound".to_string(),
+        path: module_path(0),
+        content_id: tos_pipeline::content_id(text),
+        dependency_digest: tos_pipeline::list_digest(&[]),
+        capability_interface_digest: tos_pipeline::list_digest(&[]),
+    };
+    let module = lower_module_in_set(&source, &schema, &context, &[]).expect("the fixture lowers");
+    let (image, layout) = tos_image::encode(&module);
+
+    let instructions: usize = module
+        .functions
+        .iter()
+        .flat_map(|function| function.blocks.iter())
+        .map(|block| block.instructions.len())
+        .sum();
+    let blocks: usize = module
+        .functions
+        .iter()
+        .map(|function| function.blocks.len())
+        .sum();
+    let entries = module.source_map.len();
+
+    println!(
+        "  source bytes                            {:>12}",
+        text.len()
+    );
+    println!(
+        "  image bytes                             {:>12}",
+        image.len()
+    );
+    println!(
+        "  functions / blocks / instructions       {:>12} / {blocks} / {instructions}",
+        module.functions.len()
+    );
+    println!(
+        "  types / exports / constants             {:>12} / {} / {}",
+        module.types.len(),
+        module.exports.len(),
+        module.constants.len()
+    );
+    println!("  source-map entries                      {entries:>12}");
+    println!();
+    for (name, bytes) in [
+        ("string table", layout.strings),
+        ("header", layout.header),
+        ("types", layout.types),
+        ("imports", layout.imports),
+        ("capability imports", layout.capability_imports),
+        ("exports", layout.exports),
+        ("constants", layout.constants),
+        ("functions (bodies)", layout.functions),
+        ("source-map identities", layout.source_map_identities),
+        ("source-map entries", layout.source_map_entries),
+    ] {
+        println!(
+            "  {name:<38} {bytes:>12} B  {:>6.2}% of the payload",
+            bytes as f64 * 100.0 / layout.payload.max(1) as f64
+        );
+    }
+    println!("  {:<38} {:>12} B", "payload", layout.payload);
+    println!(
+        "  {:<38} {:>12} B  ({} distinct identities)",
+        "source map, inline equivalent", layout.source_map_inline_equivalent, layout.identity_count
+    );
+    if entries > 0 {
+        for (name, bytes) in [
+            ("source map as written", layout.source_map_entries),
+            ("candidate: delta spans", layout.source_map_delta_equivalent),
+            (
+                "candidate: shared span table",
+                layout.source_map_shared_span_equivalent,
+            ),
+        ] {
+            println!(
+                "  {name:<38} {bytes:>12} B  {:>6.2} B/entry  {:>6.1}% of what is written",
+                bytes as f64 / entries as f64,
+                bytes as f64 * 100.0 / layout.source_map_entries.max(1) as f64
+            );
+        }
+        println!(
+            "  distinct spans                          {:>12} of {entries} entries",
+            layout.span_count
+        );
+    }
+    if entries > 0 {
+        println!(
+            "  per source-map entry                    {:>12.2} B, over {entries} entries",
+            layout.source_map_entries as f64 / entries as f64
+        );
+    }
+    if instructions > 0 {
+        println!(
+            "  per instruction: body {:>8.2} B   source map {:>8.2} B",
+            layout.functions as f64 / instructions as f64,
+            layout.source_map_entries as f64 / instructions as f64
+        );
+    }
 }
 
 /// What one `ModuleSummary` is made of, and how much of it is meaning.
