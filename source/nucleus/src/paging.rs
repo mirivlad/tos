@@ -521,6 +521,28 @@ pub fn build(
     tables: &mut Tables,
 ) -> Result<AddressSpace, PagingRefused> {
     let mut space = AddressSpace::new(tables)?;
+    match fill(&mut space, bi, descs, tables) {
+        Ok(()) => Ok(space),
+        Err(refused) => {
+            // A half-built space is nobody's, and its tables are the reserve's.
+            // Leaving them behind would make a failed creation cost the machine
+            // an address space's worth of reserve until the next boot.
+            // SAFETY: this space was never activated, nothing else shares a
+            // table with it, and it is dropped on the next line.
+            unsafe { space.release_tables(tables) };
+            Err(refused)
+        }
+    }
+}
+
+/// Everything `build` maps, separated so a failure part-way has somewhere to
+/// return the tables to.
+fn fill(
+    space: &mut AddressSpace,
+    bi: &BootInfo,
+    descs: &[MemoryRange],
+    tables: &mut Tables,
+) -> Result<(), PagingRefused> {
     let fb = framebuffer(bi);
     let (text, _, data) = image_parts();
     let image = Span::new(text.start, data.end);
@@ -562,7 +584,7 @@ pub fn build(
         crate::apic::LOCAL_APIC,
         WRITABLE | NO_EXECUTE | CACHE_DISABLE | WRITE_THROUGH,
     )?;
-    Ok(space)
+    Ok(())
 }
 
 /// Reads the one address this space deliberately leaves absent.
