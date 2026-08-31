@@ -578,6 +578,136 @@ fn an_impossible_size_and_an_unaffordable_one_are_different_refusals() {
     assert!(regions.accounting_holds());
 }
 
+/// A reservation is a guarantee, not a ceiling (ADR-0076 §2b).
+///
+/// The whole of the distinction in one sequence: attenuation moves the *right*
+/// at once and no frame with it; spending moves frames and leaves the rest
+/// guaranteed to the child; and a sibling cannot have the unspent part however
+/// physically free it looks.
+#[test]
+fn attenuation_reserves_at_once_and_commits_nothing() {
+    const POOL: usize = 200 * 1024 * 1024;
+    const ALLOWANCE: usize = 100 * 1024 * 1024;
+    const SPENT: usize = 18 * 1024 * 1024;
+    let mut regions = Regions::new();
+    let root = regions.endow_root(POOL).expect("endowed");
+
+    let a = regions.attenuate(root, ALLOWANCE).expect("reserved");
+    assert_eq!(
+        regions.remaining(root),
+        Ok(POOL - ALLOWANCE),
+        "the right left the parent the moment the child existed"
+    );
+    assert_eq!(
+        regions.committed(),
+        0,
+        "and not one frame moved because of it"
+    );
+    assert!(regions.accounting_holds());
+
+    // The child spends part of what it holds.
+    let region = regions.allocate(a, SPENT, WORKER).expect("allocated");
+    assert_eq!(regions.committed(), SPENT);
+    assert_eq!(regions.remaining(a), Ok(ALLOWANCE - SPENT));
+
+    // A sibling cannot have the unspent 82 MiB, physically free though they
+    // are. That is the reservation, not a leak: an authority that could be
+    // spent by somebody else would be a limit, which is a different mechanism.
+    let b = regions
+        .attenuate(root, POOL - ALLOWANCE + 1)
+        .expect_err("the reserved remainder is not the parent's to hand out");
+    assert_eq!(b, Refusal::Budget);
+    let b = regions
+        .attenuate(root, POOL - ALLOWANCE)
+        .expect("what the parent still holds, it may hand out");
+    assert_eq!(regions.remaining(b), Ok(POOL - ALLOWANCE));
+    assert_eq!(regions.committed(), SPENT, "still only what was spent");
+    assert!(regions.accounting_holds());
+
+    // Revoked with an allocation still live: the unspent remainder goes back at
+    // once, the live bytes do not, and they follow the same lineage when they
+    // are finally released.
+    regions.revoke(a).expect("revoked");
+    assert_eq!(
+        regions.remaining(root),
+        Ok(ALLOWANCE - SPENT),
+        "the unspent remainder came back and the live bytes did not"
+    );
+    assert_eq!(regions.committed(), SPENT);
+    assert!(regions.accounting_holds());
+
+    regions.release(region).expect("the last capability goes");
+    assert_eq!(regions.remaining(root), Ok(ALLOWANCE));
+    assert_eq!(regions.committed(), 0);
+    assert!(regions.accounting_holds());
+}
+
+/// A process dying takes its reservations and its own allocations, and nothing
+/// that something else can still reach.
+///
+/// The last part is what `Shared<Region<T>>` will rest on: a holder's death
+/// must not free backing another holder is still reading, so reclamation is
+/// driven by what can reach the region rather than by who has died.
+#[test]
+fn a_death_returns_what_only_the_dead_process_could_reach() {
+    const POOL: usize = 64 * 1024 * 1024;
+    const ALLOWANCE: usize = 32 * 1024 * 1024;
+    let mut regions = Regions::new();
+    let root = regions.endow_root(POOL).expect("endowed");
+    let allowance = regions.attenuate(root, ALLOWANCE).expect("reserved");
+
+    // Two regions out of the dying process's authority. One is its own; the
+    // other has been frozen and handed on, so somebody else holds it.
+    let private = regions
+        .allocate(allowance, 4 * 1024 * 1024, WORKER)
+        .expect("allocated");
+    let handed_on = regions
+        .allocate(allowance, 2 * 1024 * 1024, WORKER)
+        .expect("allocated");
+    regions.freeze(handed_on, WORKER).expect("frozen");
+    regions
+        .transfer(handed_on, WORKER, SUPERVISOR)
+        .expect("handed on");
+    regions
+        .map(handed_on, false)
+        .expect("the receiver reads it");
+    assert_eq!(regions.committed(), 6 * 1024 * 1024);
+
+    // The process dies and its authority goes with it.
+    regions.process_died(WORKER);
+    regions.revoke(allowance).expect("its authority is revoked");
+
+    assert_eq!(
+        regions.mode(private),
+        Err(Refusal::NotFound),
+        "what only it could reach is gone"
+    );
+    assert_eq!(
+        regions.committed(),
+        2 * 1024 * 1024,
+        "and what somebody else still reaches is not freed by a death"
+    );
+    assert_eq!(
+        regions.remaining(root),
+        Ok(POOL - 2 * 1024 * 1024),
+        "the unspent reservation came back; the live backing did not"
+    );
+    assert_eq!(
+        regions.remaining(allowance),
+        Err(Refusal::NotFound),
+        "the dead process's authority names nothing"
+    );
+    assert!(regions.accounting_holds());
+
+    // When the surviving holder lets go, the backing follows the lineage that
+    // funded it, past the node that no capability names any more.
+    regions.unmap(handed_on, false).expect("the mapping goes");
+    regions.release(handed_on).expect("the capability goes");
+    assert_eq!(regions.remaining(root), Ok(POOL));
+    assert_eq!(regions.committed(), 0);
+    assert!(regions.accounting_holds());
+}
+
 /// The mode is what a caller can observe about a region, and it only goes one
 /// way.
 #[test]
