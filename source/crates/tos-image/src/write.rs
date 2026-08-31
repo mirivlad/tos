@@ -168,17 +168,17 @@ pub fn encode(module: &Module) -> (Vec<u8>, Layout) {
             .get(&identity)
             .copied()
             .expect("every identity was collected from these entries");
-        out.varint(at as u128);
+        // The identity reference carries the parent's presence in its low bit
+        // (encoding version 3). A module has few identities and most entries
+        // derive from nothing, so the reference is one byte either way and the
+        // separate presence tag was a byte per entry for a bit.
+        out.varint(((at as u128) << 1) | u128::from(entry.derived_from.is_some()));
         let start = entry.byte_start as i128;
         out.varint(zigzag(start - previous));
         out.varint(zigzag(entry.byte_end as i128 - start));
         previous = start;
-        match entry.derived_from {
-            Some(parent) => {
-                out.tag(1);
-                out.count(parent);
-            }
-            None => out.tag(0),
+        if let Some(parent) = entry.derived_from {
+            out.count(parent);
         }
     }
     layout.source_map_entries = out.bytes.len() - mark;
@@ -239,11 +239,10 @@ fn candidate_source_map_bytes(module: &Module) -> (usize, usize, usize) {
     let mut previous = 0i128;
     let mut spans: BTreeMap<(usize, usize), u32> = BTreeMap::new();
     for entry in &module.source_map {
-        delta += 1; // the identity reference, one byte while a module has few
+        delta += 1; // the identity reference and the parent's presence bit
         let start = entry.byte_start as i128;
         delta += varint_len(zigzag(start - previous));
         delta += varint_len(zigzag(entry.byte_end as i128 - start));
-        delta += 1; // presence tag
         if let Some(parent) = entry.derived_from {
             delta += varint_len(parent as u128);
         }

@@ -85,7 +85,7 @@ pub const MAGIC: [u8; 8] = *b"TOSIMAGE";
 
 /// The container's own version. Independent of the semantic schema: a new
 /// spelling of the same modules raises this and leaves identity alone.
-pub const ENCODING_VERSION: u32 = 2;
+pub const ENCODING_VERSION: u32 = 3;
 
 /// Which semantic schema the payload claims. `1` is `tos-ir/v1`.
 pub const SCHEMA_VERSION: u32 = 1;

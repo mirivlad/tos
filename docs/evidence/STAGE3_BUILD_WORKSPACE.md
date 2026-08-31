@@ -677,7 +677,14 @@ own start.
 
 ### What was changed, and what was not
 
-`ENCODING_VERSION` is now `2`. ADR-0070 §3 versions the **storage encoding**
+Two steps, both in the entry and neither in what an entry means. The spans
+became signed steps, which took an entry from `7.88 B` to `4.00 B`; then the
+parent's presence — a whole byte per entry, carrying one bit, `None` in every
+entry these fixtures produce — moved into the low bit of the identity
+reference, which a module with few identities spends one byte on either way.
+That took an entry to **`3.00 B`**.
+
+`ENCODING_VERSION` is now `3`. ADR-0070 §3 versions the **storage encoding**
 independently of the semantic digest scheme precisely so this can happen: the
 fields, their meanings and the digest a module is identified by are untouched,
 and a reader fails closed on a version it does not know. No stored image
@@ -690,7 +697,9 @@ source ceiling admits all round-trip, and there is a test that says so rather
 than a rule the writer has to obey.
 
 The measured effect: a statement-heavy image falls from `736 026 B` to
-`551 422 B`, `-25.1 %`, and its source map from `375 092` to `190 488 B`.
+`503 801 B`, `-31.6 %`, and its source map from `375 092 B` to `142 867 B`,
+`-61.9 %`. What is left of that image is `71.6 %` function bodies and `28.4 %`
+source map, where it was an even split.
 
 ### The physical account, after both changes
 
@@ -699,16 +708,20 @@ and about `0.4 MiB` of page tables, against the ADR-0040 pool of `~229.8 MiB`:
 
 | Body | Workspace | Bundle before | Bundle after | Total | Spare |
 |---|---:|---:|---:|---:|---:|
-| mixed | 37.06 MiB | 100.87 | **90.56** | 130.1 MiB | 99.7 MiB |
-| export-heavy | 43.32 | 107.79 | **95.06** | 140.9 | 88.9 |
-| function-heavy | 72.21 | 107.58 | **87.67** | 162.4 | 67.4 |
-| **statement-heavy** | 90.77 | 179.41 | **134.49** | **227.8** | **2.0** |
+| mixed | 37.06 MiB | 100.87 | **87.90** | 127.4 MiB | 102.4 MiB |
+| export-heavy | 43.32 | 107.79 | 95.06 (at v2) | 140.9 | 88.9 |
+| function-heavy | 72.21 | 107.58 | 87.67 (at v2) | 162.4 | 67.4 |
+| **statement-heavy** | 90.77 | 179.41 | **122.90** | **216.2** | **13.6** |
 
-**The statement-heavy case now fits, and only just.** Two megabytes of spare on
-a `229.8 MiB` pool is a fit, not a margin, and the next lever is visible in the
-same decomposition: function bodies are now `65 %` of a statement-heavy image at
-`15.14 B` an instruction. Whether that is reducible without changing what an
-image means has not been measured.
+**The statement-heavy case fits, with a margin rather than by accident.** The
+two rows still marked "at v2" were measured before the second step and are
+therefore upper bounds; the two re-measured after it moved as the statement-heavy
+one did.
+
+The next lever is visible in the same decomposition and is not this round's:
+function bodies are `71.6 %` of a statement-heavy image at `15.14 B` an
+instruction. Whether that is reducible without changing what an image means has
+not been measured.
 
 ## What this is not
 
