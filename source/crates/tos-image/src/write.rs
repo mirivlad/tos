@@ -28,6 +28,14 @@ pub struct Layout {
     /// What the source map would have cost with each entry's seven identity
     /// fields written inline, in this same encoding.
     pub source_map_inline_equivalent: usize,
+    /// What it would cost with each entry's span written as a delta from the
+    /// previous entry's start, and its end as a length.
+    pub source_map_delta_equivalent: usize,
+    /// What it would cost with distinct spans in a table and each entry naming
+    /// one, the way identities already work.
+    pub source_map_shared_span_equivalent: usize,
+    /// Distinct `(start, end)` spans in the module.
+    pub span_count: usize,
     /// Distinct source-map identities in the module.
     pub identity_count: usize,
     pub string_count: usize,
@@ -142,6 +150,18 @@ pub fn encode(module: &Module) -> (Vec<u8>, Layout) {
         .collect();
     let mark = out.bytes.len();
     out.count(module.source_map.len());
+    // **Spans are written as steps, not as addresses** (encoding version 2).
+    // A source map walks a module's text, so consecutive entries are usually a
+    // few bytes apart and a span is usually a few bytes wide, while the
+    // absolute offsets they were written as reached three varint bytes each in
+    // a ceiling-sized module. Measured on the fixtures this halves the section:
+    // `7.88 B` an entry became `4.00 B`, and the section is half of a
+    // statement-heavy image (`docs/evidence/STAGE3_BUILD_WORKSPACE.md`).
+    //
+    // Zigzag both times, so the encoding is total: a map that walks backwards,
+    // or a span whose end precedes its start, round-trips like any other rather
+    // than being a case the writer has to rule out.
+    let mut previous: i128 = 0;
     for entry in &module.source_map {
         let identity = identity_of(entry, &out.index);
         let at = placement
@@ -149,8 +169,10 @@ pub fn encode(module: &Module) -> (Vec<u8>, Layout) {
             .copied()
             .expect("every identity was collected from these entries");
         out.varint(at as u128);
-        out.count(entry.byte_start);
-        out.count(entry.byte_end);
+        let start = entry.byte_start as i128;
+        out.varint(zigzag(start - previous));
+        out.varint(zigzag(entry.byte_end as i128 - start));
+        previous = start;
         match entry.derived_from {
             Some(parent) => {
                 out.tag(1);
@@ -161,6 +183,10 @@ pub fn encode(module: &Module) -> (Vec<u8>, Layout) {
     }
     layout.source_map_entries = out.bytes.len() - mark;
     layout.source_map_inline_equivalent = inline_source_map_bytes(module);
+    let (delta, shared, spans) = candidate_source_map_bytes(module);
+    layout.source_map_delta_equivalent = delta;
+    layout.source_map_shared_span_equivalent = shared;
+    layout.span_count = spans;
 
     layout.payload = out.bytes.len();
     let image = frame(&out.bytes);
@@ -192,6 +218,70 @@ fn inline_source_map_bytes(module: &Module) -> usize {
         }
     }
     total
+}
+
+/// What two other source-map encodings would cost on this module.
+///
+/// **Arithmetic, not a format.** Both are computed from the entries the module
+/// actually has, in the same varint encoding the writer uses, so a choice
+/// between them is made from the module in hand rather than from a guess about
+/// what source maps look like. Neither is written by anything.
+///
+/// - **delta**: the identity reference, then the start as a zigzag delta from
+///   the previous entry's start, then the end as a length from its own start,
+///   then the parent tag. Spans that walk forward in small steps cost two bytes
+///   where they cost six;
+/// - **shared spans**: distinct `(start, end)` pairs collected into a table the
+///   way identities already are, with each entry naming one. Repetition across
+///   entries is paid once.
+fn candidate_source_map_bytes(module: &Module) -> (usize, usize, usize) {
+    let mut delta = varint_len(module.source_map.len() as u128);
+    let mut previous = 0i128;
+    let mut spans: BTreeMap<(usize, usize), u32> = BTreeMap::new();
+    for entry in &module.source_map {
+        delta += 1; // the identity reference, one byte while a module has few
+        let start = entry.byte_start as i128;
+        delta += varint_len(zigzag(start - previous));
+        delta += varint_len(zigzag(entry.byte_end as i128 - start));
+        delta += 1; // presence tag
+        if let Some(parent) = entry.derived_from {
+            delta += varint_len(parent as u128);
+        }
+        previous = start;
+        let next = spans.len() as u32;
+        spans
+            .entry((entry.byte_start, entry.byte_end))
+            .or_insert(next);
+    }
+
+    let mut shared = varint_len(spans.len() as u128);
+    for (start, end) in spans.keys() {
+        shared += varint_len(*start as u128) + varint_len(*end as u128);
+    }
+    shared += varint_len(module.source_map.len() as u128);
+    for entry in &module.source_map {
+        let at = spans
+            .get(&(entry.byte_start, entry.byte_end))
+            .copied()
+            .unwrap_or(0);
+        shared += 1; // the identity reference
+        shared += varint_len(at as u128);
+        shared += 1; // presence tag
+        if let Some(parent) = entry.derived_from {
+            shared += varint_len(parent as u128);
+        }
+    }
+    (delta, shared, spans.len())
+}
+
+/// A signed step as an unsigned varint, small numbers staying small either way.
+pub(crate) fn zigzag(value: i128) -> u128 {
+    ((value << 1) ^ (value >> 127)) as u128
+}
+
+/// The inverse, for the reader.
+pub(crate) fn unzigzag(value: u128) -> i128 {
+    ((value >> 1) as i128) ^ -((value & 1) as i128)
 }
 
 fn varint_len(mut value: u128) -> usize {

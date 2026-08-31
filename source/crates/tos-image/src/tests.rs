@@ -171,6 +171,51 @@ fn a_module_survives_encode_and_parse_exactly() {
 
 /// Reproducible bytes: the same module always encodes the same way, and a round
 /// trip is a fixed point.
+/// A source map that walks backwards, ends before it starts and reaches the
+/// ceiling still round-trips exactly.
+///
+/// Spans are written as signed steps (encoding version 2), which is what makes
+/// them cheap — and a step encoding is only admissible if it is **total**. A
+/// map that jumps backwards between entries, an entry whose end precedes its
+/// start, and offsets far enough apart to need several varint bytes are the
+/// three cases the arithmetic has to survive; none of them is something the
+/// frontend is expected to produce, and all of them are something an image may
+/// contain.
+#[test]
+fn a_source_map_that_walks_backwards_survives_the_round_trip() {
+    let mut module = every_variant();
+    let template = module
+        .source_map
+        .first()
+        .cloned()
+        .expect("the fixture has a source map");
+    let spans: [(usize, usize); 6] = [
+        (1_000, 1_010),
+        (12, 20),           // backwards from the entry before it
+        (262_143, 262_144), // at the published source ceiling
+        (500, 400),         // an end before its own start
+        (0, 0),             // empty, at the origin
+        (262_144, 0),       // the longest backwards step the ceiling admits
+    ];
+    module.source_map = spans
+        .iter()
+        .map(|(start, end)| SourceMapEntry {
+            byte_start: *start,
+            byte_end: *end,
+            derived_from: None,
+            ..template.clone()
+        })
+        .collect();
+
+    let (image, _) = encode(&module);
+    let parsed = parse(&image, &limits()).expect("the image parses");
+    assert_eq!(
+        parsed.source_map, module.source_map,
+        "every span comes back as itself, whichever way it stepped"
+    );
+    assert_eq!(parsed, module, "and so does the rest of the module");
+}
+
 #[test]
 fn encoding_is_reproducible() {
     let module = every_variant();
