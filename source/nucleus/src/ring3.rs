@@ -133,9 +133,11 @@ pub unsafe fn admit(space: &mut AddressSpace, payload: Payload) -> Result<usize,
     // The code page is executable and not writable; the stack is writable and
     // not executable. A payload that could write its own text would be testing
     // a boundary this system does not offer.
-    space.map_page(frames, USER_CODE, code, PRESENT_USER)?;
+    // SAFETY: boot, single-context, and nothing else holds the reserve.
+    let tables = unsafe { crate::memory::tables() };
+    space.map_page(tables, USER_CODE, code, PRESENT_USER)?;
     space.map_page(
-        frames,
+        tables,
         USER_STACK,
         stack,
         PRESENT_USER | WRITABLE | NO_EXECUTE,

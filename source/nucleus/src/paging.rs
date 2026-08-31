@@ -8,10 +8,13 @@
 //! — the thing that keeps one process out of another's memory. A boundary the
 //! nucleus does not own is not a boundary it can enforce.
 //!
-//! **Built from the validated map, from frames the nucleus owns.** Every table
-//! is a frame from [`tos_frames::Frames`], and every mapping comes from the
-//! memory map the Boot ABI validation already accepted. Nothing here reads a
-//! firmware table.
+//! **Built from the validated map, out of a reserve and not out of the pool.**
+//! Every table is a frame from [`crate::memory::Tables`], which is carved out
+//! of the pool before the root memory authority is endowed; every mapping comes
+//! from the memory map the Boot ABI validation already accepted. Nothing here
+//! reads a firmware table, and — since ADR-0076 §2 — nothing here can name the
+//! pool at all, so a page table cannot be built out of memory the authority
+//! tree has already promised to somebody.
 //!
 //! **What this address space deliberately does not have.**
 //!
@@ -31,7 +34,9 @@
 
 use crate::msr::{self, EFER_NXE, IA32_EFER};
 use tos_boot_protocol::{BootInfo, MemoryRange};
-use tos_frames::{Frames, FRAME_SIZE};
+use tos_frames::FRAME_SIZE;
+
+use crate::memory::Tables;
 use tos_runtime::region::Span;
 
 /// Page-table entry bits, as the architecture defines them.
@@ -79,8 +84,8 @@ impl AddressSpace {
     }
 
     /// An empty space: a cleared root table and nothing mapped.
-    pub fn new(frames: &mut Frames) -> Result<AddressSpace, PagingRefused> {
-        let root = frames.allocate_frame().ok_or(PagingRefused::NoFrame)?;
+    pub fn new(tables: &mut Tables) -> Result<AddressSpace, PagingRefused> {
+        let root = tables.allocate_frame().ok_or(PagingRefused::NoFrame)?;
         Ok(AddressSpace { root })
     }
 
@@ -122,7 +127,7 @@ impl AddressSpace {
     /// kind of defect that reads as a hang.
     fn descend(
         &self,
-        frames: &mut Frames,
+        tables: &mut Tables,
         table: u64,
         index: u64,
         interior: u64,
@@ -140,9 +145,57 @@ impl AddressSpace {
             }
             return Ok(existing & ADDRESS);
         }
-        let frame = frames.allocate_frame().ok_or(PagingRefused::NoFrame)?;
+        let frame = tables.allocate_frame().ok_or(PagingRefused::NoFrame)?;
         Self::write(table, index, frame | PRESENT | WRITABLE | interior);
         Ok(frame)
+    }
+
+    /// Returns every page table this space is made of to the reserve.
+    ///
+    /// **The tables, and never what they map.** A leaf points at memory that is
+    /// somebody else's — a frame the pool handed the process and has already
+    /// taken back, or the loader's image and capsule, which were never the
+    /// pool's at all — so every leaf is skipped and only the interior frames go
+    /// back. A 1 GiB or 2 MiB entry *is* a leaf despite sitting at an interior
+    /// level, which is why the huge bit is checked at both.
+    ///
+    /// # Safety
+    ///
+    /// This space is not the live one, no other space shares a table with it,
+    /// and nothing will use it again. Every process is built its own tree by
+    /// [`build`], which is what makes the second condition true.
+    // SAFETY: the caller's promise that this tree is unreachable is what makes
+    // handing its frames back sound.
+    pub unsafe fn release_tables(&mut self, tables: &mut Tables) {
+        for l4 in 0..ENTRIES {
+            let entry = Self::entry(self.root, l4);
+            if entry & PRESENT == 0 {
+                continue;
+            }
+            let pdpt = entry & ADDRESS;
+            for l3 in 0..ENTRIES {
+                let entry = Self::entry(pdpt, l3);
+                if entry & PRESENT == 0 || entry & HUGE != 0 {
+                    continue;
+                }
+                let directory = entry & ADDRESS;
+                for l2 in 0..ENTRIES {
+                    let entry = Self::entry(directory, l2);
+                    if entry & PRESENT == 0 || entry & HUGE != 0 {
+                        continue;
+                    }
+                    // SAFETY: a page table of a tree nothing reaches.
+                    unsafe { tables.release_frame(entry & ADDRESS) };
+                }
+                // SAFETY: as above, and every table under it has gone back.
+                unsafe { tables.release_frame(directory) };
+            }
+            // SAFETY: as above.
+            unsafe { tables.release_frame(pdpt) };
+        }
+        // SAFETY: as above; this was the last frame of the tree.
+        unsafe { tables.release_frame(self.root) };
+        self.root = 0;
     }
 
     /// What the path to a leaf with these flags must itself allow.
@@ -153,16 +206,16 @@ impl AddressSpace {
     /// Maps one 4 KiB page, identity or otherwise.
     pub fn map_page(
         &mut self,
-        frames: &mut Frames,
+        tables: &mut Tables,
         virt: u64,
         phys: u64,
         flags: u64,
     ) -> Result<(), PagingRefused> {
         let (l4, l3, l2, l1) = indices(virt)?;
         let interior = Self::interior_for(flags);
-        let pdpt = self.descend(frames, self.root, l4, interior)?;
-        let pd = self.descend(frames, pdpt, l3, interior)?;
-        let pt = self.descend(frames, pd, l2, interior)?;
+        let pdpt = self.descend(tables, self.root, l4, interior)?;
+        let pd = self.descend(tables, pdpt, l3, interior)?;
+        let pt = self.descend(tables, pd, l2, interior)?;
         Self::write(pt, l1, (phys & ADDRESS) | flags | PRESENT);
         Ok(())
     }
@@ -170,15 +223,15 @@ impl AddressSpace {
     /// Maps one 2 MiB page.
     pub fn map_huge(
         &mut self,
-        frames: &mut Frames,
+        tables: &mut Tables,
         virt: u64,
         phys: u64,
         flags: u64,
     ) -> Result<(), PagingRefused> {
         let (l4, l3, l2, _) = indices(virt)?;
         let interior = Self::interior_for(flags);
-        let pdpt = self.descend(frames, self.root, l4, interior)?;
-        let pd = self.descend(frames, pdpt, l3, interior)?;
+        let pdpt = self.descend(tables, self.root, l4, interior)?;
+        let pd = self.descend(tables, pdpt, l3, interior)?;
         Self::write(pd, l2, (phys & ADDRESS) | flags | HUGE | PRESENT);
         Ok(())
     }
@@ -394,6 +447,68 @@ fn described(chunk: u64, descs: &[MemoryRange], fb: Option<Span>) -> bool {
         || fb.is_some_and(overlaps)
 }
 
+/// An upper bound on the page-table frames [`build`] allocates for one address
+/// space on this machine.
+///
+/// **It mirrors the strategy rather than assuming the worst one.** `build` maps
+/// the bulk of described memory with 2 MiB leaves, and a 2 MiB leaf needs no
+/// page table at all; only the chunks that hold the nucleus image or the
+/// framebuffer are broken into 4 KiB pages. A bound that counted a page table
+/// per 2 MiB of address space would be two orders of magnitude out — on a
+/// machine whose framebuffer sits near the top of the 32-bit range it would
+/// reserve gigabytes to map a few hundred megabytes — so the count walks the
+/// same chunks `build` walks and asks the same question about each.
+///
+/// Still an upper bound: a chunk that needs 4 KiB pages is counted a page table
+/// even when every page in it turns out to be one this space deliberately
+/// leaves absent, and the local APIC's path is counted whether or not it shares
+/// one with something described.
+pub fn build_tables(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
+    let fb = framebuffer(bi);
+    let (text, _, data) = image_parts();
+    let image = Span::new(text.start, data.end);
+    let mut top = fb.map_or(0, |span| span.end);
+    for desc in descs {
+        if let Some(span) = Span::sized(desc.phys_start, desc.phys_length) {
+            top = top.max(span.end);
+        }
+    }
+    let top = top.div_ceil(HUGE_SIZE) * HUGE_SIZE;
+
+    // Counted over the chunks that are actually described, in increasing
+    // order, so an interior table is counted when the walk first enters the
+    // unit of address space it covers. Counting per unit of the whole span
+    // instead would size the reserve by where the firmware put its highest
+    // range — a page directory per gigabyte of a terabyte-wide map, for a
+    // machine with a few hundred megabytes in it.
+    let mut pdpts = 0;
+    let mut directories = 0;
+    let mut fine = 0;
+    let mut in_pdpt = u64::MAX;
+    let mut in_directory = u64::MAX;
+    let mut chunk = 0u64;
+    while chunk < top {
+        if described(chunk, descs, fb) {
+            if chunk >> 39 != in_pdpt {
+                in_pdpt = chunk >> 39;
+                pdpts += 1;
+            }
+            if chunk >> 30 != in_directory {
+                in_directory = chunk >> 30;
+                directories += 1;
+            }
+            if needs_pages(chunk, image, fb) {
+                fine += 1;
+            }
+        }
+        chunk += HUGE_SIZE;
+    }
+    // The root table; the interiors above; one page table per chunk broken
+    // into 4 KiB pages; and the three levels the local APIC's page may need
+    // for itself.
+    1 + pdpts + directories + fine + 3
+}
+
 /// Builds the nucleus's own address space over this machine.
 ///
 /// Identity-mapped throughout: the nucleus was linked at a physical address and
@@ -403,9 +518,9 @@ fn described(chunk: u64, descs: &[MemoryRange], fb: Option<Span>) -> bool {
 pub fn build(
     bi: &BootInfo,
     descs: &[MemoryRange],
-    frames: &mut Frames,
+    tables: &mut Tables,
 ) -> Result<AddressSpace, PagingRefused> {
-    let mut space = AddressSpace::new(frames)?;
+    let mut space = AddressSpace::new(tables)?;
     let fb = framebuffer(bi);
     let (text, _, data) = image_parts();
     let image = Span::new(text.start, data.end);
@@ -428,12 +543,12 @@ pub fn build(
             let mut page = chunk;
             while page < chunk + HUGE_SIZE {
                 if let Some(flags) = permission(page, fb) {
-                    space.map_page(frames, page, page, flags)?;
+                    space.map_page(tables, page, page, flags)?;
                 }
                 page += FRAME_SIZE;
             }
         } else {
-            space.map_huge(frames, chunk, chunk, WRITABLE | NO_EXECUTE)?;
+            space.map_huge(tables, chunk, chunk, WRITABLE | NO_EXECUTE)?;
         }
         chunk += HUGE_SIZE;
     }
@@ -442,7 +557,7 @@ pub fn build(
     // and that handler acknowledges the interrupt by writing a device register.
     // Uncacheable, supervisor-only, and not executable.
     space.map_page(
-        frames,
+        tables,
         crate::apic::LOCAL_APIC,
         crate::apic::LOCAL_APIC,
         WRITABLE | NO_EXECUTE | CACHE_DISABLE | WRITE_THROUGH,
