@@ -263,12 +263,21 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 
 ## Status
 
-Stage 0, Stage 1, Stage 1.5 and Stage 2 Part A are formally closed. The
-repository is in Stage 2 Part B: the production TOS Core reference frontend is
-being implemented against the accepted contracts in `docs/39`–`docs/44`. The
-bounded source reader and lexer are complete; the parser is in progress; the
-checker, IR lowering, verifier and interpreter are not implemented. Stage 3 is
-not authorized.
+Stage 0, Stage 1, Stage 1.5 and Stage 2 are formally closed; the Stage 2
+closure approval is archived in `source/legal/publication-records/`. The
+repository is in **Stage 3**, implemented against the accepted Stage 3
+contracts — `IPC_V1`, `CAPABILITY_V1`, `SYSTEM_ABI_V1`,
+`PROCESS_IDENTITY_V1` and ADR-0048 onwards. Stage 3 is **not closed**: no
+closure approval exists and none is claimed here.
+
+What runs today, on the real freestanding boot path: the UEFI loader, the
+nucleus, a verified ring-3 runtime image, a process created with a
+`RuntimeMemoryGrantV1` of 54 MiB, and canonical TOS Core source taken through
+the production reader, parser, checker, resolver, `tos-ir/v1` lowerer,
+independent verifier and bounded engine, with process creation, exit,
+reclamation and IPC covered by QEMU gates. What is host-side reference work
+rather than freestanding: the build-to-bundle lifecycle (ADR-0073,
+`TOSBUNDLE/v1`) and everything ADR-0074 and ADR-0075 draft around it.
 
 ADR-0030 (external vendor opaque material and `/vendor`), ADR-0031 with
 `docs/45_SYSTEM_SOURCE_HIERARCHY.md` (runtime system source hierarchy) and

@@ -36,6 +36,18 @@ pub struct Layout {
     pub source_map_shared_span_equivalent: usize,
     /// Distinct `(start, end)` spans in the module.
     pub span_count: usize,
+    /// Instructions in the module, and what their fixed per-instruction fields
+    /// cost in the encoding as written.
+    pub instruction_count: usize,
+    /// Bytes spent on each instruction's source-map reference.
+    pub instruction_source_refs: usize,
+    /// Bytes spent on the result tag, the unsafe flag and the two optional
+    /// string references — three of which are a byte each and empty in every
+    /// instruction a checked module usually has.
+    pub instruction_tags: usize,
+    /// What those two would cost with the source reference written as a step
+    /// from the previous instruction's and the four tags packed into one byte.
+    pub instruction_packed_equivalent: usize,
     /// Distinct source-map identities in the module.
     pub identity_count: usize,
     pub string_count: usize,
@@ -188,6 +200,12 @@ pub fn encode(module: &Module) -> (Vec<u8>, Layout) {
     layout.source_map_shared_span_equivalent = shared;
     layout.span_count = spans;
 
+    let (count, refs, tags, packed) = instruction_field_bytes(module);
+    layout.instruction_count = count;
+    layout.instruction_source_refs = refs;
+    layout.instruction_tags = tags;
+    layout.instruction_packed_equivalent = packed;
+
     layout.payload = out.bytes.len();
     let image = frame(&out.bytes);
     layout.image = image.len();
@@ -271,6 +289,41 @@ fn candidate_source_map_bytes(module: &Module) -> (usize, usize, usize) {
         }
     }
     (delta, shared, spans.len())
+}
+
+/// What an instruction's fixed fields cost now, and what two changes to their
+/// representation would cost.
+///
+/// **Arithmetic over the module, not a format.** The fields counted are the
+/// ones every instruction carries whatever it does: its source-map reference,
+/// its result tag, its unsafe flag and its two optional string references. The
+/// candidate writes the reference as a step from the previous instruction's and
+/// packs the four tags into one byte. Nothing writes either; this is what a
+/// decision would be taken from.
+fn instruction_field_bytes(module: &Module) -> (usize, usize, usize, usize) {
+    let mut count = 0usize;
+    let mut refs = 0usize;
+    let mut tags = 0usize;
+    let mut packed = 0usize;
+    let mut previous = 0i128;
+    for function in &module.functions {
+        for block in &function.blocks {
+            for instruction in &block.instructions {
+                count += 1;
+                refs += varint_len(instruction.source as u128);
+                // the result tag, the unsafe flag, and one byte for each
+                // optional string reference that is absent
+                tags += 1 + 1 + 1 + 1;
+                if instruction.result.is_some() {
+                    // the value index is payload either way and is not counted
+                }
+                let step = instruction.source as i128 - previous;
+                packed += varint_len(zigzag(step)) + 1;
+                previous = instruction.source as i128;
+            }
+        }
+    }
+    (count, refs, tags, packed)
 }
 
 /// A signed step as an unsigned varint, small numbers staying small either way.

@@ -1480,6 +1480,26 @@ fn image_decomposition(unit_bytes: usize) {
             layout.source_map_entries as f64 / entries as f64
         );
     }
+    if layout.instruction_count > 0 {
+        let fixed = layout.instruction_source_refs + layout.instruction_tags;
+        println!(
+            "  instruction fixed fields                {:>12} B ({:.2} B each): \
+             source refs {} + tags {}",
+            fixed,
+            fixed as f64 / layout.instruction_count as f64,
+            layout.instruction_source_refs,
+            layout.instruction_tags
+        );
+        println!(
+            "  candidate: stepped ref + packed tags    {:>12} B ({:.2} B each), saving {} B \
+             ({:.1}% of the function section)",
+            layout.instruction_packed_equivalent,
+            layout.instruction_packed_equivalent as f64 / layout.instruction_count as f64,
+            fixed.saturating_sub(layout.instruction_packed_equivalent),
+            fixed.saturating_sub(layout.instruction_packed_equivalent) as f64 * 100.0
+                / layout.functions.max(1) as f64
+        );
+    }
     if instructions > 0 {
         println!(
             "  per instruction: body {:>8.2} B   source map {:>8.2} B",
