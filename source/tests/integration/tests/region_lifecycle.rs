@@ -258,6 +258,95 @@ fn the_negatives_are_refusals_and_not_surprises() {
     assert!(regions.accounting_holds());
 }
 
+/// The bootstrap chain of ADR-0076 §2, and the property it exists for.
+///
+/// `Frames -> fixed reserves -> root MemoryAuthority -> funded initial
+/// supervisor -> the supervisor's own authority`. After the root is endowed
+/// nothing spends user memory except through the tree, so what the tree says is
+/// committed is what the pool has actually lost.
+#[test]
+fn the_bootstrap_chain_charges_every_byte_once() {
+    const FRAME: usize = 4096;
+    const POOL: usize = 58_839 * FRAME; // the reference platform's admitted pool
+    const RESERVES: usize = 9_961_472; // page tables and per-process fixed regions
+    const GRANT: usize = 54 * 1024 * 1024;
+
+    let mut regions = Regions::new();
+    let root = regions
+        .endow_root_after_reserves(POOL, RESERVES)
+        .expect("the pool covers its reserves");
+    assert_eq!(regions.remaining(root), Ok(POOL - RESERVES));
+
+    // The initial supervisor is funded, not helped: its grant is charged to the
+    // root like any other.
+    let charged = regions
+        .charge_grant(root, GRANT, FRAME)
+        .expect("the root funds the supervisor");
+    assert_eq!(charged, GRANT, "already a whole number of frames");
+    assert_eq!(regions.remaining(root), Ok(POOL - RESERVES - GRANT));
+    assert_eq!(regions.committed(), GRANT);
+    assert!(regions.accounting_holds());
+
+    // It then holds an authority of its own, reserved out of the root — which is
+    // the only way it comes to have one.
+    let supervisor = regions
+        .attenuate(root, 64 * 1024 * 1024)
+        .expect("the supervisor's allowance");
+    let worker = regions
+        .attenuate(supervisor, 96 * 1024 * 1024 + 8 * 1024 * 1024)
+        .expect_err("more than the supervisor holds is refused");
+    assert_eq!(worker, Refusal::Budget);
+
+    // Everything the pool has lost is in the tree, and only once.
+    let allowance = 64 * 1024 * 1024;
+    assert_eq!(
+        regions.remaining(root),
+        Ok(POOL - RESERVES - GRANT - allowance)
+    );
+    assert_eq!(regions.committed(), GRANT, "a reservation is not a spend");
+    assert!(regions.accounting_holds());
+
+    // And when the supervisor is reclaimed its grant goes back where it came
+    // from, leaving the pool as it was.
+    regions.refund_grant(root, charged);
+    assert_eq!(regions.remaining(root), Ok(POOL - RESERVES - allowance));
+    assert_eq!(regions.committed(), 0);
+    assert!(regions.accounting_holds());
+}
+
+/// What is charged is what the machine spends, not what was asked for.
+#[test]
+fn a_charge_is_rounded_to_the_granule() {
+    const FRAME: usize = 4096;
+    let mut regions = Regions::new();
+    let root = regions.endow_root(16 * 1024 * 1024).expect("endowed");
+
+    let charged = regions
+        .charge_grant(root, FRAME + 1, FRAME)
+        .expect("funded");
+    assert_eq!(charged, 2 * FRAME, "a byte over a frame costs a frame");
+    assert_eq!(regions.remaining(root), Ok(16 * 1024 * 1024 - 2 * FRAME));
+
+    let region = regions
+        .allocate_rounded(root, FRAME + 1, FRAME, WORKER)
+        .expect("allocated");
+    assert_eq!(
+        regions.allocated(root),
+        Ok(4 * FRAME),
+        "the grant's two frames and the region's two, all charged"
+    );
+    regions.release(region).expect("released");
+    assert_eq!(regions.allocated(root), Ok(2 * FRAME));
+    assert!(regions.accounting_holds());
+
+    // A pool that cannot cover its own reserves is refused rather than wrapped.
+    let mut empty = Regions::new();
+    assert_eq!(
+        empty.endow_root_after_reserves(1024, 2048),
+        Err(Refusal::Budget)
+    );
+}
+
 /// The tables are bounded, and a full one refuses rather than growing.
 #[test]
 fn a_full_table_refuses() {
