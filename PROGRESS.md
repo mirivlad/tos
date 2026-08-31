@@ -29,8 +29,16 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   evidence level P1, differential testing `N/A` при одном движке, Proposed
   ADR-0044. V1 surface contract фиксирует `[]` для data/declaration lists, `{}`
   только для executable blocks, `()` для arguments/grouping и explicit `return`
-  без implicit tail values. **Stage 3 production implementation не начат и не
-  авторизован.**
+  без implicit tail values.
+- **Этап сейчас: Stage 3, в работе, не закрыт.** Реализация ведётся против
+  принятых Stage 3 контрактов (`IPC_V1`, `CAPABILITY_V1`, `SYSTEM_ABI_V1`,
+  `PROCESS_IDENTITY_V1`, ADR-0048…ADR-0073). На реальном freestanding пути
+  работают процесс с `RuntimeMemoryGrantV1 = 54 MiB`, IPC, process
+  create/exit/reclaim и оба latency-бюджета (P2). Host-side reference: путь
+  build → `TOSBUNDLE/v1` → admission (ADR-0073), bounded residency (ADR-0071),
+  compact image (ADR-0070). Формального closure approval для Stage 3 нет и он
+  здесь не заявляется. Записи ниже, начиная с 2026-08-12, — журнал этой
+  работы.
 - **Stage 2 remains CLOSED.** Post-Stage-2 interstage work: **Human Boot
   Observability / Boot Console** — human-facing журнал реальной загрузки поверх
   уже существующих boot/runtime событий. Не стадия, не новый архитектурный

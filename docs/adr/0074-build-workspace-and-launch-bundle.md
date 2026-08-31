@@ -67,8 +67,14 @@ arena, 256 ceiling-sized modules:
 | C balanced DAG | 75.96 MiB | 100.90 MiB | 176.86 MiB |
 
 The workspace holds `40 KB` when the build returns, and the smallest declared
-workspace the worst measured build fits in is `81 100 800 B` — one enforced
-`40 960 B` below that, the same build fails to allocate.
+workspace the worst measured **graph** fits in was `81 100 800 B` — one enforced
+`40 960 B` below that, the same build failed to allocate.
+
+**Superseded by measurement, twice.** Adversarial *bodies* then showed the graph
+was not the worst case, and two changes since have moved every figure in this
+section: the type surface became a byte slab (`2dff355`) and the source map
+became steps (`cf7756f`, `a2c273e`). The current numbers are in §5; this section
+is what the decisions in §1 and §2 were taken from and is kept for that.
 
 The two paths are differentially equivalent: the same source through
 `build_from_provider -> admit` and through
@@ -76,6 +82,12 @@ The two paths are differentially equivalent: the same source through
 own verifier, the same value and the same accounting.
 
 ## 4. Proposed: the lifecycle is a transaction, and the handoff is linear
+
+> **Superseded by ADR-0075 §4.** Under a consuming freeze transition the
+> lifetime is carried by the capability itself — ownership is affinity, the
+> handoff is a linear transfer, reclamation is the last handle — so no
+> memory-owning transaction object is needed. What follows is kept as the
+> reasoning that led there.
 
 **The bundle backing belongs to the system launch/recovery transaction, not to
 the build worker.**
@@ -142,19 +154,28 @@ is held inside the measured account or outside it.
 Enforced, on the worst of the three: the build completes in a declared workspace
 of **`80 281 600 B`** (76.56 MiB) and fails to allocate at `79 298 560 B`.
 
-**These three vary the graph and hold the module body constant, and the body is
-the larger term.** Seven bodies at the same ceiling
-(`docs/evidence/STAGE3_BUILD_WORKSPACE.md`) put the workspace between
-`43.30 MiB` and `221.04 MiB`, and the bundle between `27.71 MiB` and
-`179.41 MiB`. The worst pair a single configuration produces is a
-statement-heavy body — `90.76 MiB` of workspace beside a `179.41 MiB` bundle,
-`270 MiB` together — and a small-declaration body at `221.04 + 42.63`. Both
-exceed the pool, so **claim A at the docs/44 ceiling with adversarial source
-does not fit the reference platform with this implementation**, and the reason
-is live data rather than fragmentation: peak committed is within `2 MiB` of the
-frontier in every adversarial body. That is a statement about the check phase's
-data structures, not about the ceiling or the machine, and §5a says what it
-blocks.
+**These three vary the graph and hold the module body constant, and the body was
+the larger term.** Seven bodies at the same ceiling first put the workspace
+between `43.30` and `221.04 MiB` and the bundle between `27.71` and
+`179.41 MiB`, and two of those configurations exceeded the pool. Peak committed
+was within `2 MiB` of the frontier in every one, so what they measured was live
+data rather than fragmentation — a fact about the check phase's data structures
+rather than about the ceiling or the machine.
+
+**Both terms have since been fixed and re-measured**
+(`docs/evidence/STAGE3_BUILD_WORKSPACE.md`):
+
+| Body | Workspace then | now | Bundle then | now |
+|---|---:|---:|---:|---:|
+| maximum small declarations | 221.04 MiB | **37.28** | 42.63 | 42.63 |
+| type-heavy | 155.79 | **37.02** | 40.22 | 40.22 |
+| statement-heavy | 90.76 | 90.77 | 179.41 | **122.90** |
+| mixed | 74.61 | **37.06** | 100.87 | **87.90** |
+
+The worst physical account is now the statement-heavy body at `216.2 MiB`
+against a pool of `~229.8`, a margin of `13.6 MiB`. **Claim A at the docs/44
+ceiling fits the reference platform**, and nothing measured asks for the ceiling
+or the platform to move.
 
 The source figure is measured rather than argued: every snapshot handed out is
 watched weakly, and the most that was ever alive at once is **one unit**, over
@@ -223,20 +244,29 @@ today's allocator behaviour and not yet a bound:
   module's set;
 - so the size question is downstream of a data-structure question, and fixing
   the size first would fix the wrong number;
-- **and the lever is now measured.** A summary costs `8.2x` to `14.1x` its own
-  semantic payload — about `90 B` of container and node overhead per declared
-  type name, against a name averaging under `7 B`. Four representations of the
-  same membership question were compared over the production summaries' own
-  names: a byte slab with a sorted offset table is `5.2x` smaller than the
-  `BTreeSet<String>` the build holds today (`40.04 MiB` against `206.45 MiB` for
-  the worst body), builds `6.6x` faster, probes faster, compares bytes exactly
-  and answers identically. That is a change of representation with no change to
-  what the check computes, and it is not implemented.
+- **and the lever was measured and then taken.** A summary cost `8.2x` to
+  `14.1x` its own semantic payload — about `90 B` per declared type name against
+  a name averaging under `7 B`. Of four representations compared over the
+  production summaries' own names, a byte slab with a sorted offset table was
+  `5.2x` smaller, built `6.6x` faster, probed faster and answered identically.
+  It is now what a summary holds (`tos_core::TypeNames`, `2dff355`), and the
+  worst body's workspace fell from `221.04 MiB` to `37.28`.
 
 Until then any margin is engineering judgement wearing a number, and the honest
-statement is that the bound is **not yet known**.
+statement is that the bound is **not yet known**. What is known, after both
+changes, is that the workspace is bounded by the worst single module the
+ceilings admit rather than by how many modules there are: `37 MiB` for four of
+the seven bodies, `90.77 MiB` for the worst, with enforced hard minimums of
+`39 321 600 B` and `95 518 720 B`.
 
 ## 5b. Region authority: what the accepted contracts already say, and what they do not
+
+> **Superseded by ADR-0075.** This section's audit stands as the record of what
+> was found, and two of its conclusions were corrected there: G1 and G2 are
+> reconciliation with ADR-0037 rather than open decisions (ADR-0075 §1), and
+> ADR-0055 does not forbid region creation outright (ADR-0075 §2). The origin
+> model, the freeze transition, the lifecycle and the reclamation rules are
+> ADR-0075's, not this document's.
 
 The lifecycle in §4 uses the word *transaction* for a lifetime. Before any of it
 can be implemented, that word has to name an object the system already has, or
