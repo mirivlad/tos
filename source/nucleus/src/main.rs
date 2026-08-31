@@ -647,6 +647,17 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // a gate can check that they add up, and that the reserve is actually
     // paying for the nucleus's own address space rather than the pool doing it
     // quietly.
+    // The root memory authority, over exactly what the pool has left. From here
+    // there is one number for free user memory and it is the tree's: the pool
+    // still hands out physical frames, but only behind a charge made first
+    // (ADR-0076 §2 rule 4).
+    // SAFETY: boot, after the reserve and before any process exists.
+    let Some(root_bytes) = (unsafe { memory::endow_root() }) else {
+        tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-root-authority\r\n");
+        console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-root-authority");
+        mem_fail();
+    };
+
     tos_serial::puts(b"TOS.MEM.ACCOUNT admitted_frames=");
     tos_serial::put_u32_decimal(admission.frames as u32);
     tos_serial::puts(b" table_reserve_frames=");
@@ -657,6 +668,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::puts(b" pool_frames=");
     // SAFETY: boot, single-context, nothing else holds the pool.
     tos_serial::put_u32_decimal(unsafe { memory::frames() }.available() as u32);
+    tos_serial::puts(b" root_frames=");
+    tos_serial::put_u32_decimal((root_bytes / tos_frames::FRAME_SIZE as usize) as u32);
     tos_serial::puts(b" asserted_by=nucleus\r\n");
 
     // Interrupts are enabled here and nowhere else: after the substrate exists

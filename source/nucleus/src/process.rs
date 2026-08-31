@@ -108,6 +108,9 @@ struct Slot {
     arguments_phys: u64,
     /// What the launcher gave it that has to come back when it ends.
     reclaim: Option<Reclaim>,
+    /// The receipt for the memory that was charged to build it. `take`n once,
+    /// at retirement, which is what makes the grant return exactly once.
+    charge: Option<crate::region::GrantCharge>,
     /// Timer interrupts taken while **this** process was on the processor.
     ticks: u64,
     /// How many times it was given the processor. Round-robin over two
@@ -206,6 +209,7 @@ impl Slot {
         report_length: 0,
         arguments_phys: 0,
         reclaim: None,
+        charge: None,
         ticks: 0,
         quanta: 0,
         first_tick: 0,
@@ -608,18 +612,23 @@ pub fn entries() -> u64 {
 
 /// The lowest runnable slot, or nothing when the table holds no process that
 /// can be given the processor.
-/// How many bytes one process's grant is, or zero when the pool cannot serve it.
+/// How many bytes one process's runtime arena is.
 ///
 /// The size is a constant of the reference platform (`RUNTIME_GRANT`), not a
 /// share of what remains: see that constant for why, and for where its number
-/// comes from. What the pool decides is only whether the answer is yes.
-fn grant_bytes(frames: &Frames) -> u64 {
+/// comes from.
+///
+/// **It no longer asks the pool.** Whether the memory is there is not this
+/// function's question any more and never really was: the arena is one line of
+/// a process's footprint (`DynamicCharge`), the whole footprint is charged to a
+/// `MemoryAuthority` before anything is allocated, and the authority is what
+/// answers. Asking `frames.available()` here was the second counter ADR-0076 §1
+/// describes — a size that fit the pool at the moment it was measured and could
+/// be gone by the time it was spent.
+fn grant_bytes() -> u64 {
     let wanted = tos_runtime::region::RUNTIME_GRANT as u64;
     debug_assert!(wanted <= tos_runtime::region::MAX_GRANT as u64);
     debug_assert!(wanted >= tos_runtime::region::MIN_GRANT as u64);
-    if frames.available() * FRAME_SIZE < wanted {
-        return 0;
-    }
     wanted
 }
 
@@ -1201,6 +1210,7 @@ unsafe fn retire(index: usize) {
     // holds this slot.
     let slot = unsafe { &mut table()[index] };
     let reclaim = slot.reclaim.take();
+    let charge = slot.charge.take();
     let mut space_taken = slot.space.take();
     let (Some(space), Some(reclaim)) = (space_taken.as_mut(), reclaim) else {
         // A process the nucleus did not build a space for holds nothing of the
@@ -1246,6 +1256,12 @@ unsafe fn retire(index: usize) {
     // SAFETY: this space is not the live one — the scheduler left it before
     // this ran — it is this process's own tree, and nothing will use it again.
     unsafe { space.release_tables(tables) };
+    // And the authority that funded it is told, so what the tree says is
+    // committed is what the pool has actually lost.
+    if let Some(charge) = charge {
+        // SAFETY: single-context nucleus; nothing else holds the tree.
+        let _ = unsafe { crate::memory::authority() }.refund_grant(charge);
+    }
     // Measured, not asserted: the pool says how many frames came back and how
     // many it holds now. A reclamation nobody counts is a claim, and this is
     // the number a second process would be built out of.
@@ -1816,13 +1832,7 @@ pub unsafe fn create(
     if record_bytes > MAX_RECORD_BYTES {
         return Err(Unlaunchable::TooManyUnits);
     }
-    let grant_length = grant_bytes(frames);
-    if grant_length == 0 {
-        tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-grant available=");
-        tos_serial::put_u32_decimal(frames.available() as u32);
-        tos_serial::puts(b" asserted_by=nucleus\r\n");
-        return Err(Unlaunchable::OutOfFrames);
-    }
+    let grant_length = grant_bytes();
     // A slot to publish into, checked before anything is built rather than
     // after: `admit` consumes the address space, so a table that turned out to
     // be full at the end would leave the transaction with nothing to roll back.
@@ -1850,6 +1860,32 @@ pub unsafe fn create(
         report: REPORT_FRAMES * FRAME_SIZE,
         arguments: ARGUMENT_FRAMES * FRAME_SIZE,
         record: record_bytes.div_ceil(FRAME_SIZE) * FRAME_SIZE,
+    };
+
+    // The footprint is charged before anything is allocated, and to a
+    // `MemoryAuthority` rather than to the pool. This is the funded creation of
+    // ADR-0076 §3 in its internal form: the boot's own root pays, because the
+    // boot is what asked. When operation 19 exists the authority becomes an
+    // argument and this call is what it reaches.
+    //
+    // Refused here, the machine is untouched — which is the whole reason the
+    // price is known this early.
+    let Some(root) = crate::memory::root() else {
+        tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-authority asserted_by=nucleus\r\n");
+        return Err(Unlaunchable::OutOfFrames);
+    };
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    let tree = unsafe { crate::memory::authority() };
+    let charge = match tree.charge_grant(root, plan.total() as usize, FRAME_SIZE as usize) {
+        Ok(charge) => charge,
+        Err(_) => {
+            tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-funding wanted=");
+            tos_serial::put_u32_decimal(plan.total() as u32);
+            tos_serial::puts(b" remaining=");
+            tos_serial::put_u32_decimal(tree.remaining(root).unwrap_or(0) as u32);
+            tos_serial::puts(b" asserted_by=nucleus\r\n");
+            return Err(Unlaunchable::OutOfFrames);
+        }
     };
 
     // From here the machine is being changed, and every path out that is not
@@ -2078,6 +2114,11 @@ pub unsafe fn create(
                     carved,
                 )
             };
+            // The frames are back in the pool, so the authority has to be told:
+            // a charge that outlived what it paid for is the counters
+            // disagreeing again, in the direction that loses memory.
+            // SAFETY: single-context nucleus; nothing else holds the tree.
+            let _ = unsafe { crate::memory::authority() }.refund_grant(charge);
             return Err(refused);
         }
     };
@@ -2132,6 +2173,13 @@ pub unsafe fn create(
     // which is what the pre-check exists to guarantee, because `admit` takes
     // the space and a failure here would have nothing left to unwind.
     ?;
+
+    // The receipt moves into the slot at the commit and comes out once, at
+    // retirement. This is the ordinary lifecycle ADR-0076 §3 describes, and the
+    // `Option::take` is what makes "exactly once" a property of the code rather
+    // than of everybody remembering.
+    // SAFETY: single-context nucleus; nothing else touches the table.
+    unsafe { table()[index].charge = Some(charge) };
 
     // The endowment, written after the process has a table to hold it in and
     // before the process is entered — which is the whole of ADR-0055: a process

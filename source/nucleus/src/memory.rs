@@ -296,6 +296,66 @@ pub unsafe fn reserve_tables(bound: u64) -> Option<u64> {
     Some(reserve.remaining())
 }
 
+/// The authority tree, and the root of it.
+///
+/// One instance, nucleus-owned, for the whole boot: ADR-0076 §2 says one pool
+/// and one tree, and a tree with two instances is two trees.
+static mut AUTHORITY: crate::region::Regions = crate::region::Regions::new();
+
+/// The root authority, once the boot has endowed it. `None` before that, which
+/// is the only window in which nothing can be funded.
+static mut ROOT: Option<crate::region::AuthorityId> = None;
+
+/// The tree.
+///
+/// # Safety
+///
+/// As [`frames`]: single-context nucleus, no borrow held across an instruction
+/// that leaves it.
+// SAFETY: the caller is nucleus code observing the same no-borrow-across-`iretq`
+// rule the pool is accessed under.
+pub unsafe fn authority() -> &'static mut crate::region::Regions {
+    // SAFETY: the static is initialized at link time and lives for the whole
+    // boot; this is the only way it is ever named.
+    unsafe { &mut *core::ptr::addr_of_mut!(AUTHORITY) }
+}
+
+/// The root authority, for whoever needs to fund something out of it.
+pub fn root() -> Option<crate::region::AuthorityId> {
+    // SAFETY: single-context nucleus; written once at boot and only read after.
+    unsafe { ROOT }
+}
+
+/// Endows the root authority over what the pool has left, once.
+///
+/// **Everything the pool still holds, and no second subtraction.** The
+/// page-table reserve has already physically left the pool
+/// ([`reserve_tables`]), so `available()` is exactly the memory that is free to
+/// be promised; taking the reserve off again would endow a root over less than
+/// the machine has and quietly strand the difference.
+///
+/// After this returns there is one number for free user memory, and it is the
+/// tree's. Nothing may allocate user memory by asking the pool directly
+/// (ADR-0076 §2 rule 4) — the pool still hands out the physical frames, but
+/// only behind a charge that was made first.
+///
+/// # Safety
+///
+/// Called once, at boot, after [`reserve_tables`] and before any process
+/// exists.
+// SAFETY: the caller's promise that no process exists yet is what makes the
+// pool's remainder unpromised.
+pub unsafe fn endow_root() -> Option<usize> {
+    // SAFETY: nucleus code at boot; nothing else holds the pool.
+    let bytes = unsafe { frames() }.available() as usize * FRAME_SIZE as usize;
+    // SAFETY: as above; nothing else holds the tree.
+    let tree = unsafe { authority() };
+    let root = tree.endow_root(bytes).ok()?;
+    // SAFETY: single-context nucleus at boot; this is the only write.
+    unsafe { ROOT = Some(root) };
+    Some(bytes)
+}
+
 /// Gives this machine's free memory to the nucleus's pool, once.
 ///
 /// # Safety

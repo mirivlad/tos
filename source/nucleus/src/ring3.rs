@@ -99,11 +99,30 @@ impl Payload {
 ///
 /// `space` is the address space currently loaded in `CR3` and no other context
 /// is running.
+/// The excursion's own charge, held between its admission and its retirement.
+static mut CHARGE: Option<crate::region::GrantCharge> = None;
+
 // SAFETY: the caller's promise that this space is the live one is what makes
 // the two mappings below reachable by the payload.
 pub unsafe fn admit(space: &mut AddressSpace, payload: Payload) -> Result<usize, PagingRefused> {
     // SAFETY: nucleus code at boot, before any process runs.
     let frames = unsafe { crate::memory::frames() };
+    // The excursion's two frames are pool-backed user memory like any other, so
+    // they are funded like any other (ADR-0076 §2 rule 4). It is a test-only
+    // path, which is exactly why it must not be the one place that takes frames
+    // the tree has already promised: an invariant with an exception in a build
+    // somebody runs is not an invariant.
+    let Some(root) = crate::memory::root() else {
+        return Err(PagingRefused::NoFrame);
+    };
+    // SAFETY: single-context nucleus at boot; nothing else holds the tree.
+    let tree = unsafe { crate::memory::authority() };
+    let Ok(charge) = tree.charge_grant(root, 2 * FRAME_SIZE as usize, FRAME_SIZE as usize) else {
+        return Err(PagingRefused::NoFrame);
+    };
+    // SAFETY: single-context nucleus at boot; this is the only write, and the
+    // retirement below is the only read.
+    unsafe { CHARGE = Some(charge) };
     const PRESENT_USER: u64 = 1 | (1 << 2);
     const WRITABLE: u64 = 1 << 1;
     const NO_EXECUTE: u64 = 1 << 63;
@@ -194,6 +213,14 @@ pub unsafe fn retire(space: &mut AddressSpace) {
     unsafe {
         frames.release_frame(CODE_FRAME);
         frames.release_frame(STACK_FRAME);
+    }
+    // And the tree is told, so what it says is committed is what the pool has
+    // actually lost.
+    // SAFETY: single-context nucleus; the excursion is over and nothing else
+    // holds the tree.
+    if let Some(charge) = unsafe { CHARGE.take() } {
+        // SAFETY: as above; nothing else holds the tree.
+        let _ = unsafe { crate::memory::authority() }.refund_grant(charge);
     }
 }
 
