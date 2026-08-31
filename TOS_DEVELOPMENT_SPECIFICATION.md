@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `81c50f32a6689708580af1ee8338ff7a1462257b1215ec7358a4d7417b9b94c7`\
+Source-manifest SHA-256: `2b9f5d9e8d0f3b4f748d5695e17512336d37a1af10031b611bf94501a4de72e9`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -21115,6 +21115,26 @@ The backing is released the way every other process mapping is released: out of
 the page tables it was mapped into, at retirement, cleared on the way
 (ADR-0050 §3). The slot keeps a length, not a physical span, because the grant
 is not one.
+
+### 2a. Reconciliation with ADR-0076 (added 2026-09-01, not a rewrite)
+
+ADR-0076 is a later Accepted decision and narrows what §2 and §3 say, without
+retracting either. What holds after it:
+
+- **`RUNTIME_GRANT = 54 MiB` is the grant of an ordinary Stage 3 runtime
+  process**, which is what it was measured for and what the four-process budget
+  was computed from;
+- a **funded, special-purpose process may receive a different fixed policy
+  grant** — a build worker's, for one, which the workspace measurements put far
+  above `54 MiB`;
+- that does not weaken §2's rule. A role's grant is still a **fixed policy
+  value**: not a share of what remains, not `min(available, …)`, not adaptive,
+  and not derived from how much memory another allocation happened to leave;
+- **each role's grant carries its own evidence.** `54 MiB` has
+  `STAGE3_PROCESS_GRANT.md`; any other role's number needs a measurement of that
+  role before it is a number rather than a guess.
+
+The text below is the original decision and is unchanged.
 
 ### 2. The size is a fixed property of the profile
 

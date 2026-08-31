@@ -84,6 +84,21 @@ pub enum Mode {
     Immutable,
 }
 
+/// A request rounded to what the machine actually spends (ADR-0076 §7).
+///
+/// An overflow is a refusal rather than a wrap: a rounded figure that came back
+/// smaller than what was asked for would charge less than it spent.
+fn round_up(bytes: usize, granule: usize) -> Result<usize, Refusal> {
+    if granule <= 1 {
+        return Ok(bytes);
+    }
+    let over = bytes % granule;
+    if over == 0 {
+        return Ok(bytes);
+    }
+    bytes.checked_add(granule - over).ok_or(Refusal::Budget)
+}
+
 /// One accounting node. Nucleus-owned; no process has a mapping to it.
 #[derive(Clone, Copy, Debug, Default)]
 struct Authority {
@@ -165,6 +180,68 @@ impl Regions {
         }
     }
 
+    /// The root authority over a pool, once the nucleus's fixed reserves are
+    /// out of it (ADR-0076 §2).
+    ///
+    /// **The bootstrap chain, in one call.** `usable` is what the boot admitted;
+    /// `reserved` is the part that is bounded and proved before any process
+    /// exists — the process table, the page tables a proved maximum of address
+    /// spaces needs, and the nucleus's own metadata. What is left is the root
+    /// authority, and after this returns there is no other source of dynamic
+    /// user memory: a grant is charged through [`charge_grant`], a region
+    /// through [`allocate`], and nothing else spends.
+    ///
+    /// Refused rather than clamped when the reserves are the whole pool: a root
+    /// authority over nothing is authority over nothing.
+    pub fn endow_root_after_reserves(
+        &mut self,
+        usable: usize,
+        reserved: usize,
+    ) -> Result<AuthorityId, Refusal> {
+        let root = usable.checked_sub(reserved).ok_or(Refusal::Budget)?;
+        self.endow_root(root)
+    }
+
+    /// Charges a process grant to an authority (ADR-0076 §3).
+    ///
+    /// **A grant is an allocation and the capability is not consumed.** The
+    /// charge is held against this authority's node for as long as the process
+    /// lives; [`refund_grant`] returns it up the same funding lineage. What is
+    /// charged is the rounded figure, because that is what the machine spends.
+    pub fn charge_grant(
+        &mut self,
+        authority: AuthorityId,
+        bytes: usize,
+        granule: usize,
+    ) -> Result<usize, Refusal> {
+        let charged = round_up(bytes, granule)?;
+        if charged == 0 {
+            return Err(Refusal::Empty);
+        }
+        let at = self.authority(authority)?;
+        if self.authorities[at].remaining < charged {
+            return Err(Refusal::Budget);
+        }
+        self.authorities[at].remaining -= charged;
+        self.authorities[at].allocated += charged;
+        Ok(charged)
+    }
+
+    /// Returns a process grant when the process is reclaimed.
+    ///
+    /// It travels the way a region's backing does: to the authority that funded
+    /// it while that authority is still named, and past it to its parent when it
+    /// is not.
+    pub fn refund_grant(&mut self, authority: AuthorityId, charged: usize) {
+        let at = authority.index as usize;
+        if at >= MAX_AUTHORITIES || !self.authorities[at].live {
+            return;
+        }
+        self.authorities[at].allocated = self.authorities[at].allocated.saturating_sub(charged);
+        self.give_back_or_keep(at, charged);
+        self.settle_authority(at);
+    }
+
     /// The root authority of a boot, from the pool the nucleus has left after
     /// its own fixed reserves (ADR-0075 §2b).
     ///
@@ -232,6 +309,10 @@ impl Regions {
 
     /// Spends `bytes` of an authority and creates a mutable region.
     ///
+    /// What is charged is `bytes` rounded up to the allocation granule
+    /// (ADR-0076 §7): charging the request while spending a whole frame is a
+    /// hidden overcommit, which is the same defect as a second counter.
+    ///
     /// Atomic in the sense that matters: either the budget is there and a region
     /// with unique backing exists, or nothing changed. Only this authority is
     /// debited — the ancestors paid when they reserved.
@@ -241,9 +322,21 @@ impl Regions {
         bytes: usize,
         holder: u32,
     ) -> Result<RegionId, Refusal> {
+        self.allocate_rounded(authority, bytes, 1, holder)
+    }
+
+    /// The same, charged to a granule.
+    pub fn allocate_rounded(
+        &mut self,
+        authority: AuthorityId,
+        bytes: usize,
+        granule: usize,
+        holder: u32,
+    ) -> Result<RegionId, Refusal> {
         if bytes == 0 {
             return Err(Refusal::Empty);
         }
+        let bytes = round_up(bytes, granule)?;
         let at = self.authority(authority)?;
         if self.authorities[at].remaining < bytes {
             return Err(Refusal::Budget);
@@ -543,6 +636,15 @@ impl Regions {
             return Err(Refusal::NotFound);
         }
         Ok(at)
+    }
+
+    /// What is charged, and what a whole tree has spent — the two numbers a
+    /// caller checks the pool against.
+    pub fn committed(&self) -> usize {
+        (0..MAX_AUTHORITIES)
+            .filter(|at| self.authorities[*at].live)
+            .map(|at| self.authorities[at].allocated)
+            .sum()
     }
 
     fn free_authority(&self) -> Result<usize, Refusal> {

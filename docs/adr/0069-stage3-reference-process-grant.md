@@ -54,6 +54,26 @@ the page tables it was mapped into, at retirement, cleared on the way
 (ADR-0050 §3). The slot keeps a length, not a physical span, because the grant
 is not one.
 
+### 2a. Reconciliation with ADR-0076 (added 2026-09-01, not a rewrite)
+
+ADR-0076 is a later Accepted decision and narrows what §2 and §3 say, without
+retracting either. What holds after it:
+
+- **`RUNTIME_GRANT = 54 MiB` is the grant of an ordinary Stage 3 runtime
+  process**, which is what it was measured for and what the four-process budget
+  was computed from;
+- a **funded, special-purpose process may receive a different fixed policy
+  grant** — a build worker's, for one, which the workspace measurements put far
+  above `54 MiB`;
+- that does not weaken §2's rule. A role's grant is still a **fixed policy
+  value**: not a share of what remains, not `min(available, …)`, not adaptive,
+  and not derived from how much memory another allocation happened to leave;
+- **each role's grant carries its own evidence.** `54 MiB` has
+  `STAGE3_PROCESS_GRANT.md`; any other role's number needs a measurement of that
+  role before it is a number rather than a guess.
+
+The text below is the original decision and is unchanged.
+
 ### 2. The size is a fixed property of the profile
 
 The grant size is a constant of the reference profile. It is **not** a function
