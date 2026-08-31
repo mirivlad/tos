@@ -98,11 +98,26 @@ docs/42 §2 requires — `Region<T>` originates only through a capability
 operation, with element type, alignment, access, size, lifetime and transfer
 rules declared by the interface.
 
-The nucleus maps and unmaps; it does not copy the payload through itself. A
-transferred region leaves the sender's address space at transfer, if the
-interface declares the transfer linear; a shared region is mapped in both under
-the access mode the grant declares, and `Shared`/`mut` rules from docs/40–41
-govern what may be done with it.
+The nucleus maps and unmaps; it does not copy the payload through itself.
+
+**A region is linear** (ADR-0037, ADR-0075 §1). `Region<T>` is Transferable into
+exactly one task, so a transfer consumes the sender's handle atomically with the
+receiver's acquisition — `CAPABILITY_V1` §4's linear case, and the first Stage 3
+object type declared so. `Region<mut T>` is neither shareable nor transferable:
+a writable region handle may not be delegated or sent at all, and a send that
+names one is refused whole. A shared region is the immutable form after `share`,
+mapped under the access mode the grant declares, and `Shared`/`mut` rules from
+docs/40–41 govern what may be done with it. `share` **consumes** its argument,
+as the predeclared operation of the same name does in source.
+
+**A mapping is derived authority and does not outlive it** (ADR-0075 §5a).
+Release, revocation and generation invalidation remove the mappings that
+capability authorized, unless the same process holds another live capability
+authorizing the same mapping. A successful linear transfer takes the sender's
+handle *and* its mappings atomically, before ownership is considered moved; a
+failed transfer changes nothing. The consuming mutable-to-immutable transition
+destroys or downgrades every writable mapping before the immutable state is
+fixed. A process's death takes its handles and its mappings with it.
 
 ## 6. Capability transfer
 
@@ -127,9 +142,9 @@ transfer exists.
 
 Sending a capability is **delegation**: the sender keeps what it had. Transfer
 that consumes the sender's handle is `CAPABILITY_V1` §4's *linear* case, and it
-applies to capabilities an interface declares linear. No Stage 3 object type is
-so declared, so nothing in Stage 3 is consumed by being sent — which is a
-statement about what exists rather than a relaxation of the rule.
+applies to capabilities an interface declares linear. An immutable **region** is
+so declared (§5): it moves into exactly one holder and the sender keeps nothing.
+Every other Stage 3 object type is delegated rather than transferred.
 
 ## 7. Queues and backpressure
 
