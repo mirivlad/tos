@@ -865,7 +865,9 @@ impl In<'_> {
         // hold, so a malformed map is an error rather than a wrapped number.
         let mut previous: i128 = 0;
         for _ in 0..count {
-            let at = self.varint()?;
+            let reference = self.varint()?;
+            let derives = reference & 1 == 1;
+            let at = reference >> 1;
             if at >= identities.len() as u128 {
                 return Err(ImageError::OutOfRange {
                     what: "identity table",
@@ -877,16 +879,7 @@ impl In<'_> {
             let byte_start = index_of(start)?;
             let byte_end = index_of(end)?;
             previous = start;
-            let derived_from = match self.byte("derived_from")? {
-                0 => None,
-                1 => Some(self.index()?),
-                tag => {
-                    return Err(ImageError::UnknownTag {
-                        family: "derived_from",
-                        tag,
-                    })
-                }
-            };
+            let derived_from = if derives { Some(self.index()?) } else { None };
             entries.push(SourceMapEntry {
                 source_set: self.strings[references[0]].clone(),
                 path: self.strings[references[1]].clone(),
