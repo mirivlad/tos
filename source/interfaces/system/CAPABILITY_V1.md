@@ -47,10 +47,14 @@ implementation nothing to honour: a process cannot construct a handle, because
 constructing one would mean writing into a table it cannot address. A guessed
 index either misses, or hits an entry the process was already given.
 
-**Where the entries come from** (ADR-0055). No operation of `SYSTEM_ABI_V1`
-produces a capability, and that is deliberate: an operation reachable without a
-capability that *creates* authority is ambient authority with a handle in front
-of it. A process's table is written by the nucleus **before the process is
+**Where the entries come from** (ADR-0055, ADR-0075 §5). `SYSTEM_ABI_V1` creates
+no ambient authority. A capability an operation returns must have an explicitly
+defined normative origin: either authority the caller presented to that
+operation, which bounds what is produced, or an explicitly accepted bounded
+self-only creation rule. No operation creates authority over a pre-existing
+external object out of nothing, and no operation widens what its caller held.
+An operation reachable *without* a capability that creates authority would be
+ambient authority with a handle in front of it, and there is none. A process's table is written by the nucleus **before the process is
 entered**, from the endowment the party that launched it decided. The endowment
 travels in the launch record (`LAUNCH_VERSION` 2), and `process_create` carries
 the same shape from a parent to a child, where every entry must be an
@@ -78,8 +82,16 @@ capability = object + rights + scope + lifetime + generation
 - **rights**: a finite set from the object type's declared rights — for an
   endpoint `send`, `receive` and `call` (`IPC_V1` §2); for a process `create`,
   `terminate` and `wait_child` (ADR-0067), which are exactly the operations of
-  `SYSTEM_ABI_V1` §5 that name one;
-- **scope**: the range or subset the rights apply to, where the object has one;
+  `SYSTEM_ABI_V1` §5 that name one; for a **region** `read`, `write` and
+  `share`, which is what ADR-0037's accepted type model requires — a
+  `Region<mut T>` is readable and writable and is neither shareable nor
+  transferable, so `write` and `share` never appear together, and a
+  `DmaRegion` is granted neither `share` nor transfer in V1;
+- **scope**: the range, subset **or finite resource amount** the rights apply
+  to, where the object has one. An amount is a scope like any other: it narrows
+  under attenuation and never widens, so a derived authority may spend at most
+  what its parent had, and attenuating a child reduces the parent's remaining
+  amount by what it reserved (ADR-0075 §2a);
 - **lifetime**: bounded by the object, and never longer than the grantor's own.
 
 A capability with unbounded scope is not a capability, it is ambient authority
