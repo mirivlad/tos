@@ -1782,13 +1782,15 @@ pub unsafe fn create(
     // SAFETY: nucleus code at boot or at the syscall edge, single-context, and
     // nothing else holds the reserve for the duration of this call.
     let tables = unsafe { crate::memory::tables() };
-    let mut space = paging::build(bi, descs, tables)?;
 
-    // The runtime image, split the way its own header says it is split. A
-    // process gets its text read-only and executable and its data writable and
-    // not executable, for the same reason the nucleus does: a mapping that is
-    // both is a defect. The header is read from the image rather than assumed,
-    // and every boundary in it is checked against the bytes that arrived.
+    // Everything that can be decided is decided here, before a frame moves.
+    //
+    // The header is read from the image rather than assumed, and every boundary
+    // in it is checked against the bytes that arrived; the record is sized by
+    // the set it will carry; the arena's size is the reference platform's
+    // constant. Only then is the footprint known — and a creation that cannot
+    // be afforded has to be refused before it has taken anything, not unwound
+    // after it has.
     // SAFETY: `image` is the range the loader reserved and the nucleus digested,
     // identity-mapped and at least one frame long.
     let header =
@@ -1803,84 +1805,6 @@ pub unsafe fn create(
     {
         return Err(Unlaunchable::NotARuntimeImage);
     }
-    map_range(
-        &mut space,
-        tables,
-        IMAGE,
-        Span::new(image.start, image.start + header.text),
-        PRESENT_USER,
-    )?;
-    // Data and `.bss` are fresh frames, not the loader's copy: two processes
-    // will share one image and must not share one writable page, and the file
-    // carries no `.bss` at all. What the file does carry is copied in; the rest
-    // is what a frame from the pool already is, which is zero.
-    let mut offset = header.text;
-    while offset < header.memory {
-        let frame = frames.allocate_frame().ok_or(Unlaunchable::OutOfFrames)?;
-        let carried = image.length().saturating_sub(offset).min(FRAME_SIZE);
-        if carried > 0 {
-            // SAFETY: `offset + carried` is inside the image range the caller
-            // named, and `frame` is a cleared frame this pool just handed out
-            // that nothing else references.
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    core::ptr::with_exposed_provenance::<u8>((image.start + offset) as usize),
-                    core::ptr::with_exposed_provenance_mut::<u8>(frame as usize),
-                    carried as usize,
-                )
-            };
-        }
-        space.map_page(
-            tables,
-            IMAGE + offset,
-            frame,
-            PRESENT_USER | WRITABLE | NO_EXECUTE,
-        )?;
-        offset += FRAME_SIZE;
-    }
-    // The source set: read-only, not executable. A process that could write the
-    // text it was verified against could execute something else.
-    //
-    // Mapped from the frame the capsule *starts in*, not from its first byte: a
-    // page table addresses frames, so a range beginning mid-frame would be
-    // mapped with its low bits silently dropped and every unit inside it would
-    // be offset by however far into the frame the capsule began. The skew is
-    // added back when each unit's address is computed, below.
-    let capsule_frame = capsule.start & !(FRAME_SIZE - 1);
-    let skew = capsule.start - capsule_frame;
-    map_range(
-        &mut space,
-        tables,
-        SOURCE,
-        Span::new(capsule_frame, capsule.end),
-        PRESENT_USER | NO_EXECUTE,
-    )?;
-
-    // The grant. One region, contiguous, mapped writable and not executable —
-    // ADR-0041's property, one address space further out.
-    // The grant is **virtually** contiguous and physically whatever the pool
-    // has. Nothing requires more: the process is told `grant_base = GRANT`, a
-    // virtual address, and `tos-frames` says which of its two doors this is —
-    // `allocate_frame` "is what an address space, a page table or a per-process
-    // grant is built from", while `carve` is "for the few structures that must
-    // be contiguous because nothing maps them yet", which at boot is the Stage 2
-    // heap. A per-process grant is mapped, so it is not one of those.
-    //
-    // Carving it was the reason a fourth process could not start on a machine
-    // with tens of thousands of free frames: each carve took the largest run
-    // there was and left the next one a smaller largest run.
-    let grant_length = grant_bytes(frames);
-    if grant_length == 0 {
-        tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-grant available=");
-        tos_serial::put_u32_decimal(frames.available() as u32);
-        tos_serial::puts(b" asserted_by=nucleus\r\n");
-        return Err(Unlaunchable::OutOfFrames);
-    }
-    map_fresh(&mut space, tables, frames, GRANT, grant_length / FRAME_SIZE)?;
-
-    map_fresh(&mut space, tables, frames, STACK, STACK_FRAMES)?;
-    let report = map_fresh(&mut space, tables, frames, REPORT, REPORT_FRAMES)?;
-    let message = map_fresh(&mut space, tables, frames, ARGUMENTS, ARGUMENT_FRAMES)?;
     let table_bytes = units.len() * size_of::<LaunchUnit>();
     let paths_bytes: usize = units.iter().map(|(path, _)| relative(path).len()).sum();
     // Room for the endowment's description, sized by what the launcher decided
@@ -1892,122 +1816,289 @@ pub unsafe fn create(
     if record_bytes > MAX_RECORD_BYTES {
         return Err(Unlaunchable::TooManyUnits);
     }
-    // Sized by the set it carries, not by a frame: a capsule may hold a
-    // thousand source files, and a record that fitted only what one frame holds
-    // would refuse to launch a machine whose capsule is merely large. Carved
-    // contiguously because the nucleus writes it through its own identity map,
-    // where one frame at a time and one struct across two frames are different
-    // things.
-    let record_span = frames
-        .carve(record_bytes, FRAME_SIZE)
-        .ok_or(Unlaunchable::OutOfFrames)?;
-    let record = record_span.start;
-    // A carve is not cleared (ADR-0050 section 3 clears on release), and this
-    // one becomes a process's memory, so it is cleared here.
-    // SAFETY: the run was just carved from the pool, is identity-mapped for the
-    // nucleus, and nothing else references it.
-    unsafe {
-        core::ptr::write_bytes(
-            core::ptr::with_exposed_provenance_mut::<u8>(record as usize),
-            0,
-            record_span.length() as usize,
-        )
+    let grant_length = grant_bytes(frames);
+    if grant_length == 0 {
+        tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-grant available=");
+        tos_serial::put_u32_decimal(frames.available() as u32);
+        tos_serial::puts(b" asserted_by=nucleus\r\n");
+        return Err(Unlaunchable::OutOfFrames);
+    }
+    // A slot to publish into, checked before anything is built rather than
+    // after: `admit` consumes the address space, so a table that turned out to
+    // be full at the end would leave the transaction with nothing to roll back.
+    // Nothing can take the last slot between here and there — creation is not
+    // re-entrant and no process runs while it happens.
+    // SAFETY: single-context nucleus; nothing else touches the table.
+    if unsafe { table() }
+        .iter()
+        .all(|slot| slot.state != State::Free)
+    {
+        // SAFETY: single-context nucleus; nothing else touches the table.
+        let pending = unsafe { table() }
+            .iter()
+            .filter(|slot| slot.state == State::Over && slot.notice_pending)
+            .count();
+        tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-slot uncollected=");
+        tos_serial::put_u32_decimal(pending as u32);
+        tos_serial::puts(b" asserted_by=nucleus\r\n");
+        return Err(Unlaunchable::TooManyProcesses);
+    }
+    let plan = DynamicCharge {
+        data: header.memory - header.text,
+        grant: grant_length,
+        stack: STACK_FRAMES * FRAME_SIZE,
+        report: REPORT_FRAMES * FRAME_SIZE,
+        arguments: ARGUMENT_FRAMES * FRAME_SIZE,
+        record: record_bytes.div_ceil(FRAME_SIZE) * FRAME_SIZE,
     };
-    let mut mapped = 0;
-    while mapped < record_span.length() {
-        space.map_page(
+
+    // From here the machine is being changed, and every path out that is not
+    // `admit` has to change it back.
+    let mut space = paging::build(bi, descs, tables)?;
+    let mut carved: Option<Span> = None;
+    let furnished = (|| -> Result<Furnished, Unlaunchable> {
+        map_range(
+            &mut space,
             tables,
-            RECORD + mapped,
-            record + mapped,
+            IMAGE,
+            Span::new(image.start, image.start + header.text),
+            PRESENT_USER,
+        )?;
+        // Data and `.bss` are fresh frames, not the loader's copy: two processes
+        // will share one image and must not share one writable page, and the file
+        // carries no `.bss` at all. What the file does carry is copied in; the rest
+        // is what a frame from the pool already is, which is zero.
+        let mut offset = header.text;
+        while offset < header.memory {
+            let frame = frames.allocate_frame().ok_or(Unlaunchable::OutOfFrames)?;
+            let carried = image.length().saturating_sub(offset).min(FRAME_SIZE);
+            if carried > 0 {
+                // SAFETY: `offset + carried` is inside the image range the caller
+                // named, and `frame` is a cleared frame this pool just handed out
+                // that nothing else references.
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        core::ptr::with_exposed_provenance::<u8>((image.start + offset) as usize),
+                        core::ptr::with_exposed_provenance_mut::<u8>(frame as usize),
+                        carried as usize,
+                    )
+                };
+            }
+            space.map_page(
+                tables,
+                IMAGE + offset,
+                frame,
+                PRESENT_USER | WRITABLE | NO_EXECUTE,
+            )?;
+            offset += FRAME_SIZE;
+        }
+        // The source set: read-only, not executable. A process that could write the
+        // text it was verified against could execute something else.
+        //
+        // Mapped from the frame the capsule *starts in*, not from its first byte: a
+        // page table addresses frames, so a range beginning mid-frame would be
+        // mapped with its low bits silently dropped and every unit inside it would
+        // be offset by however far into the frame the capsule began. The skew is
+        // added back when each unit's address is computed, below.
+        let capsule_frame = capsule.start & !(FRAME_SIZE - 1);
+        let skew = capsule.start - capsule_frame;
+        map_range(
+            &mut space,
+            tables,
+            SOURCE,
+            Span::new(capsule_frame, capsule.end),
             PRESENT_USER | NO_EXECUTE,
         )?;
-        mapped += FRAME_SIZE;
-    }
 
-    // The record itself, written through the nucleus's identity map and read by
-    // the process through its own. Everything it carries lives in one frame:
-    // the record, then the unit table, then the paths the units name. The one
-    // arithmetic that matters is the last: the tail begins after *the units
-    // there are*, not after the most that would fit, and the whole of it is
-    // checked against the frame before a single byte is written. Sized against
-    // capacity instead, as the first version of this was, the tail begins 16
-    // bytes from the end of the frame and the first path walks straight out of
-    // it — which it did, into a page table, and the fault it produced named a
-    // missing mapping rather than the write that removed it.
-    let unit_table = RECORD + size_of::<Launch>() as u64;
-    let tail = size_of::<Launch>() as u64 + table_bytes as u64;
-    // The endowment's description goes after the paths, so that the two
-    // variable-length parts are laid out in the order they were sized in.
-    let endowment_at = tail + paths_bytes as u64;
-    let mut launch = Launch {
-        version: LAUNCH_VERSION,
-        unit_count: units.len() as u32,
-        entry_index: entry_index as u32,
-        // The grant contract's own version and the identity of the nucleus
-        // build that made it (ADR-0041 §1, ADR-0050 §2). Neither depended on
-        // the grant being one physical span, which is why assembling it from
-        // frames changes what the process is told about it not at all.
-        grant_version: tos_runtime::GRANT_VERSION,
-        grant_base: GRANT,
-        grant_length,
-        grant_identity: identity,
-        units: unit_table,
-        report_base: REPORT,
-        report_length: REPORT_FRAMES * FRAME_SIZE,
-        stack_base: STACK,
-        stack_length: STACK_FRAMES * FRAME_SIZE,
-        arguments_base: ARGUMENTS,
-        arguments_length: ARGUMENT_FRAMES * FRAME_SIZE,
-        capabilities: RECORD + endowment_at,
-        // Patched once the process has a slot to hold the capabilities in: a
-        // count written before the grants exist would describe authority the
-        // nucleus had not issued.
-        capability_count: 0,
-        reserved: 0,
-        source_set: [0; 96],
-    };
-    let named = source_set.len().min(launch.source_set.len());
-    launch.source_set[..named].copy_from_slice(&source_set[..named]);
-    // SAFETY: `record` is a cleared frame this pool just handed out; nothing
-    // else references it, and it is identity-mapped for the nucleus.
-    unsafe { core::ptr::with_exposed_provenance_mut::<Launch>(record as usize).write(launch) };
+        // The grant. One region, contiguous, mapped writable and not executable —
+        // ADR-0041's property, one address space further out.
+        // The grant is **virtually** contiguous and physically whatever the pool
+        // has. Nothing requires more: the process is told `grant_base = GRANT`, a
+        // virtual address, and `tos-frames` says which of its two doors this is —
+        // `allocate_frame` "is what an address space, a page table or a per-process
+        // grant is built from", while `carve` is "for the few structures that must
+        // be contiguous because nothing maps them yet", which at boot is the Stage 2
+        // heap. A per-process grant is mapped, so it is not one of those.
+        //
+        // Carving it was the reason a fourth process could not start on a machine
+        // with tens of thousands of free frames: each carve took the largest run
+        // there was and left the next one a smaller largest run.
+        map_fresh(&mut space, tables, frames, GRANT, grant_length / FRAME_SIZE)?;
 
-    for (index, (path, bytes)) in units.iter().enumerate() {
-        // Every unit is inside the capsule, so its address in the process is
-        // its offset from the capsule's base. Nothing is copied: the process
-        // reads the same bytes whose digest the boot already accounted for.
-        let unit = LaunchUnit {
-            path: RECORD + tail + path_offset(units, index),
-            path_length: relative(path).len() as u64,
-            bytes: SOURCE + skew + (bytes.as_ptr() as u64 - capsule.start),
-            bytes_length: bytes.len() as u64,
-        };
-        // SAFETY: the bound checked above covers the whole unit table, so this
-        // entry is inside the record's frame, which the nucleus owns and has
-        // cleared.
+        map_fresh(&mut space, tables, frames, STACK, STACK_FRAMES)?;
+        let report = map_fresh(&mut space, tables, frames, REPORT, REPORT_FRAMES)?;
+        let message = map_fresh(&mut space, tables, frames, ARGUMENTS, ARGUMENT_FRAMES)?;
+        // Sized by the set it carries, not by a frame: a capsule may hold a
+        // thousand source files, and a record that fitted only what one frame holds
+        // would refuse to launch a machine whose capsule is merely large. Carved
+        // contiguously because the nucleus writes it through its own identity map,
+        // where one frame at a time and one struct across two frames are different
+        // things.
+        let record_span = frames
+            .carve(record_bytes, FRAME_SIZE)
+            .ok_or(Unlaunchable::OutOfFrames)?;
+        carved = Some(record_span);
+        let record = record_span.start;
+        // A carve is not cleared (ADR-0050 section 3 clears on release), and this
+        // one becomes a process's memory, so it is cleared here.
+        // SAFETY: the run was just carved from the pool, is identity-mapped for the
+        // nucleus, and nothing else references it.
         unsafe {
-            core::ptr::with_exposed_provenance_mut::<LaunchUnit>(
-                (record + size_of::<Launch>() as u64) as usize,
+            core::ptr::write_bytes(
+                core::ptr::with_exposed_provenance_mut::<u8>(record as usize),
+                0,
+                record_span.length() as usize,
             )
-            .add(index)
-            .write(unit)
         };
-        // The paths are the capsule's names, which live in the capsule's name
-        // arena rather than beside their content, so they are copied into the
-        // record's own tail — module-root relative, which is what docs/42
-        // section 1 derives a module name from, so the capsule's leading slash
-        // is not part of the name.
-        let at = record + tail + path_offset(units, index);
-        for (offset, byte) in relative(path).iter().enumerate() {
-            // SAFETY: the bound checked above covers the record, the whole unit
-            // table and every path, so this byte is inside the record's frame.
-            unsafe {
-                core::ptr::with_exposed_provenance_mut::<u8>(at as usize)
-                    .add(offset)
-                    .write(*byte)
-            };
+        let mut mapped = 0;
+        while mapped < record_span.length() {
+            space.map_page(
+                tables,
+                RECORD + mapped,
+                record + mapped,
+                PRESENT_USER | NO_EXECUTE,
+            )?;
+            mapped += FRAME_SIZE;
         }
-    }
+
+        // The record itself, written through the nucleus's identity map and read by
+        // the process through its own. Everything it carries lives in one frame:
+        // the record, then the unit table, then the paths the units name. The one
+        // arithmetic that matters is the last: the tail begins after *the units
+        // there are*, not after the most that would fit, and the whole of it is
+        // checked against the frame before a single byte is written. Sized against
+        // capacity instead, as the first version of this was, the tail begins 16
+        // bytes from the end of the frame and the first path walks straight out of
+        // it — which it did, into a page table, and the fault it produced named a
+        // missing mapping rather than the write that removed it.
+        let unit_table = RECORD + size_of::<Launch>() as u64;
+        let tail = size_of::<Launch>() as u64 + table_bytes as u64;
+        // The endowment's description goes after the paths, so that the two
+        // variable-length parts are laid out in the order they were sized in.
+        let endowment_at = tail + paths_bytes as u64;
+        let mut launch = Launch {
+            version: LAUNCH_VERSION,
+            unit_count: units.len() as u32,
+            entry_index: entry_index as u32,
+            // The grant contract's own version and the identity of the nucleus
+            // build that made it (ADR-0041 §1, ADR-0050 §2). Neither depended on
+            // the grant being one physical span, which is why assembling it from
+            // frames changes what the process is told about it not at all.
+            grant_version: tos_runtime::GRANT_VERSION,
+            grant_base: GRANT,
+            grant_length,
+            grant_identity: identity,
+            units: unit_table,
+            report_base: REPORT,
+            report_length: REPORT_FRAMES * FRAME_SIZE,
+            stack_base: STACK,
+            stack_length: STACK_FRAMES * FRAME_SIZE,
+            arguments_base: ARGUMENTS,
+            arguments_length: ARGUMENT_FRAMES * FRAME_SIZE,
+            capabilities: RECORD + endowment_at,
+            // Patched once the process has a slot to hold the capabilities in: a
+            // count written before the grants exist would describe authority the
+            // nucleus had not issued.
+            capability_count: 0,
+            reserved: 0,
+            source_set: [0; 96],
+        };
+        let named = source_set.len().min(launch.source_set.len());
+        launch.source_set[..named].copy_from_slice(&source_set[..named]);
+        // SAFETY: `record` is a cleared frame this pool just handed out; nothing
+        // else references it, and it is identity-mapped for the nucleus.
+        unsafe { core::ptr::with_exposed_provenance_mut::<Launch>(record as usize).write(launch) };
+
+        for (index, (path, bytes)) in units.iter().enumerate() {
+            // Every unit is inside the capsule, so its address in the process is
+            // its offset from the capsule's base. Nothing is copied: the process
+            // reads the same bytes whose digest the boot already accounted for.
+            let unit = LaunchUnit {
+                path: RECORD + tail + path_offset(units, index),
+                path_length: relative(path).len() as u64,
+                bytes: SOURCE + skew + (bytes.as_ptr() as u64 - capsule.start),
+                bytes_length: bytes.len() as u64,
+            };
+            // SAFETY: the bound checked above covers the whole unit table, so this
+            // entry is inside the record's frame, which the nucleus owns and has
+            // cleared.
+            unsafe {
+                core::ptr::with_exposed_provenance_mut::<LaunchUnit>(
+                    (record + size_of::<Launch>() as u64) as usize,
+                )
+                .add(index)
+                .write(unit)
+            };
+            // The paths are the capsule's names, which live in the capsule's name
+            // arena rather than beside their content, so they are copied into the
+            // record's own tail — module-root relative, which is what docs/42
+            // section 1 derives a module name from, so the capsule's leading slash
+            // is not part of the name.
+            let at = record + tail + path_offset(units, index);
+            for (offset, byte) in relative(path).iter().enumerate() {
+                // SAFETY: the bound checked above covers the record, the whole unit
+                // table and every path, so this byte is inside the record's frame.
+                unsafe {
+                    core::ptr::with_exposed_provenance_mut::<u8>(at as usize)
+                        .add(offset)
+                        .write(*byte)
+                };
+            }
+        }
+
+        Ok(Furnished {
+            report,
+            message,
+            record,
+            record_span,
+            endowment_at,
+        })
+    })();
+    // Either the space is furnished or the machine is as it was. There is no
+    // third outcome: the process is not in the table yet, so nothing outside
+    // this function has seen any of it.
+    let Furnished {
+        report,
+        message,
+        record,
+        record_span,
+        endowment_at,
+    } = match furnished {
+        Ok(furnished) => furnished,
+        Err(refused) => {
+            // SAFETY: this space was never activated and nothing else shares a
+            // table with it; every frame named was allocated for this creation.
+            unsafe {
+                discard(
+                    &mut space,
+                    tables,
+                    frames,
+                    &plan,
+                    IMAGE + header.text,
+                    carved,
+                )
+            };
+            return Err(refused);
+        }
+    };
+
+    // What this creation actually costs the pool, line by line, so a gate can
+    // check the accounting against it rather than take the total on trust.
+    tos_serial::puts(b"TOS.RUN.PROCESS_CHARGE data=");
+    tos_serial::put_u32_decimal(plan.data as u32);
+    tos_serial::puts(b" grant=");
+    tos_serial::put_u32_decimal(plan.grant as u32);
+    tos_serial::puts(b" stack=");
+    tos_serial::put_u32_decimal(plan.stack as u32);
+    tos_serial::puts(b" report=");
+    tos_serial::put_u32_decimal(plan.report as u32);
+    tos_serial::puts(b" arguments=");
+    tos_serial::put_u32_decimal(plan.arguments as u32);
+    tos_serial::puts(b" record=");
+    tos_serial::put_u32_decimal(plan.record as u32);
+    tos_serial::puts(b" total=");
+    tos_serial::put_u32_decimal(plan.total() as u32);
+    tos_serial::puts(b" asserted_by=nucleus\r\n");
 
     // The process is complete and nothing has entered it. The scheduler will,
     // when it is this one's turn — which may be after another process has been
@@ -2033,7 +2124,14 @@ pub unsafe fn create(
             parent,
             restart_generation,
         )
-    }?;
+    }
+    // The one refusal `admit` has was ruled out before the transaction opened,
+    // and nothing that could take a slot has run since: creation is not
+    // re-entrant and no process is on the processor while it happens. So this
+    // is the commit, and there is no path from here back to the discard above —
+    // which is what the pre-check exists to guarantee, because `admit` takes
+    // the space and a failure here would have nothing left to unwind.
+    ?;
 
     // The endowment, written after the process has a table to hold it in and
     // before the process is entered — which is the whole of ADR-0055: a process
@@ -2091,6 +2189,103 @@ unsafe fn release_mapped(space: &mut AddressSpace, frames: &mut Frames, at: u64,
         }
         offset += FRAME_SIZE;
     }
+}
+
+/// What one process costs the pool, decided before a frame moves
+/// (ADR-0076 §2a).
+///
+/// **Every pool-backed frame the process will hold, and nothing else.** Page
+/// tables are not here — they come from the reserve, which left the pool before
+/// anything could promise it. The image's text and the capsule are not here
+/// either: those are the loader's memory, mapped read-only into the process and
+/// never allocated at all.
+///
+/// Each line is already what the machine will actually spend, frame-rounded,
+/// because charging the request while spending a frame is the hidden overcommit
+/// ADR-0076 §7 refuses.
+#[derive(Clone, Copy, Debug, Default)]
+struct DynamicCharge {
+    /// The image's writable data and `.bss`, which are fresh frames because two
+    /// processes share one image and must not share one writable page.
+    data: u64,
+    /// The runtime arena, and the only line of this the process is told about.
+    grant: u64,
+    stack: u64,
+    report: u64,
+    arguments: u64,
+    /// The launch record, sized by the set it carries.
+    record: u64,
+}
+
+impl DynamicCharge {
+    fn total(&self) -> u64 {
+        self.data + self.grant + self.stack + self.report + self.arguments + self.record
+    }
+}
+
+/// Undoes a creation that failed part-way.
+///
+/// **A creation is a transaction.** Until `admit` puts it in the table the
+/// process is not observable and not runnable, so a failure has to leave the
+/// machine exactly as it found it: every user frame back in the pool, every
+/// page table back in the reserve, and nothing half-mapped in a tree nobody
+/// will ever load. Anything less makes a refused creation cost the machine
+/// memory until the next boot — which is the same defect as a second counter,
+/// arriving one failed launch at a time.
+///
+/// # Safety
+///
+/// This space was never activated, nothing else shares a table with it, and
+/// every frame named here was allocated for this creation and is unreferenced.
+// SAFETY: the caller's promise that the space was never entered is what makes
+// every frame below unreachable by anything.
+unsafe fn discard(
+    space: &mut AddressSpace,
+    tables: &mut Tables,
+    frames: &mut Frames,
+    plan: &DynamicCharge,
+    data_at: u64,
+    record: Option<Span>,
+) {
+    // Read back out of the page tables, exactly as reclamation does, so a range
+    // that was never reached contributes nothing rather than needing a flag.
+    // SAFETY: per this function's contract.
+    unsafe {
+        release_mapped(space, frames, data_at, plan.data);
+        release_mapped(space, frames, STACK, plan.stack);
+        release_mapped(space, frames, REPORT, plan.report);
+        release_mapped(space, frames, ARGUMENTS, plan.arguments);
+        release_mapped(space, frames, GRANT, plan.grant);
+    }
+    // The record is carved rather than allocated frame by frame, so a failure
+    // between the carve and the last of its mappings leaves frames the page
+    // tables do not name. Unmapped without releasing, then released as the one
+    // run it actually is.
+    if let Some(span) = record {
+        let mut offset = 0;
+        while offset < span.length() {
+            space.unmap_page(RECORD + offset);
+            offset += FRAME_SIZE;
+        }
+        let mut frame = span.start;
+        while frame < span.end {
+            // SAFETY: the carve handed this run over, its mappings are gone,
+            // and nothing else ever named it.
+            unsafe { frames.release_frame(frame) };
+            frame += FRAME_SIZE;
+        }
+    }
+    // SAFETY: per this function's contract; this tree is nobody's now.
+    unsafe { space.release_tables(tables) };
+}
+
+/// What a furnished space hands back to the publication step.
+struct Furnished {
+    report: u64,
+    message: u64,
+    record: u64,
+    record_span: Span,
+    endowment_at: u64,
 }
 
 /// A capsule path as a module-root-relative one: what docs/42 section 1
