@@ -108,6 +108,59 @@ statement that the memory was set aside. They are charged.
 This replaces the `1.78 MiB` and `7.90 MiB` lines of §8, which were an estimate
 of a different classification.
 
+## 2b. A `MemoryAuthority` is a reservation, not a limit (added 2026-09-01)
+
+"Finite budget" in §3 is right and reads two ways, and only one of them is what
+this ADR decided. Three things have to stay apart:
+
+| | what it is | when the frames move |
+|---|---|---|
+| **committed** | physical frames a process or region actually holds | now |
+| **reservation** — a `MemoryAuthority` | a guaranteed right to obtain a finite number of frames later | the right moves now, the frames later |
+| **a memory limit** (`memory.max`) | a ceiling a process may not pass, with nothing set aside behind it | never guaranteed at all |
+
+`attenuate(parent, N)` is the middle one. `N` stops being available to the
+parent and its other children **the moment the child exists**, whether or not a
+single frame has been allocated; the child may spend it whenever it likes; the
+unspent remainder stays guaranteed to the child for as long as the authority
+lives; and release, revoke or the death of whoever held it returns that
+remainder up the funding lineage.
+
+So this is the intended behaviour, not a leak:
+
+> A supervisor holding `200 MiB` attenuates `100 MiB` to process A. A uses
+> `18 MiB`. `82 MiB` are physically free and B cannot have them.
+
+An operator who wanted "A may use up to `100 MiB` **if the memory exists**" was
+asking for a limit, which is a different mechanism with a different failure
+mode: a limit can be handed out several times over and discovers it was lying
+when somebody tries to spend. **This ADR does not decide limits and Stage 3 does
+not implement them.** No object, right or operation for `memory.max` is
+introduced here; if overcommitted quota is ever wanted it is a policy layer
+above real funding, never a second reading of this one.
+
+Two consequences worth stating, because they are where the distinction bites:
+
+- **A funded creation charges the footprint it actually needs now, and reserves
+  nothing on the side.** Whatever memory a process may obtain later belongs to
+  it only through a `MemoryAuthority` its creator explicitly endowed. There is no
+  implicit allowance because a process was funded — §3's *nothing is inherited*
+  is exactly this rule, and it is what keeps a creation from silently taking a
+  reservation out of its funder.
+- **A build worker's allowance is a policy exception, not a mechanical one.**
+  When the reference contract requires a worker to be *guaranteed* to survive an
+  admissible build, the supervisor attenuates `funding + bundle reservation` and
+  endows the remainder explicitly (§3). The bytes the creation spends become
+  committed; the remainder stays reserved and later pays for the bundle region;
+  if it is never needed it goes back on release, revoke or death. That is one
+  deliberate reservation, not a general quota.
+
+`RuntimeMemoryGrantV1` is unchanged by this. The runtime grant is physically
+backed at creation because the current runtime contract says a process is handed
+its arena, and introducing demand paging to make reserved and committed differ
+more prettily would be a change to that contract rather than a clarification of
+this one.
+
 ## 3. A funded grant is an allocation, not a consumed authority
 
 An earlier revision said the worker's authority is attenuated to exactly the
