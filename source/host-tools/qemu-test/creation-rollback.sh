@@ -3,10 +3,16 @@
 #
 # A process creation is a transaction (ADR-0076 §2a).
 #
-# Eight ways a creation can fail, each driven deliberately on a real machine,
+# Nine ways a creation can fail — eight driven deliberately on a real machine,
 # with the pool, the page-table reserve and the authority tree measured on both
 # sides of it. What the gate asserts is that every one of those numbers is the
 # same afterwards as before — not that the failure was reported.
+#
+# The ninth is not an injection at all: an endowment the launcher decided on
+# that cannot be written whole. ADR-0055 makes a half-endowed child invalid, so
+# the creation is refused before the process exists — and the capability table
+# is measured with the rest, because a refusal that left two of three grants
+# behind would be exactly the leak the preflight exists to prevent.
 #
 # Two of the cases exist for defects that no count of successful boots would
 # find. `grant-table` refuses the reserve at the one instant a user frame has
@@ -56,6 +62,7 @@ EXPECTED = [
     "grant-table",
     "record-carve",
     "record-mapping",
+    "endowment",
 ]
 
 seen = {}
@@ -75,7 +82,7 @@ for case in EXPECTED:
         raise SystemExit(
             f"creation-rollback: FAIL: {case} did not refuse the creation"
         )
-    for name in ("pool", "tables", "free", "committed"):
+    for name in ("pool", "tables", "free", "committed", "capabilities"):
         before, after = fields[name].split("/")
         if before != after:
             raise SystemExit(

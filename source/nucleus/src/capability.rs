@@ -178,16 +178,7 @@ pub fn resolve(process: usize, handle: u64, rights: u32) -> Result<Object, Refus
     // an entry whose object has ended is not a capability. Checked here, once,
     // rather than in each operation: an operation that had to remember to ask
     // is an operation that will one day forget.
-    let alive = match entry.object {
-        Object::Process { slot, generation } => {
-            crate::process::generation(slot as usize) == Some(generation)
-        }
-        Object::Reply { caller, generation } => {
-            crate::process::reply_token(caller as usize) == Some(generation)
-        }
-        _ => true,
-    };
-    if !alive {
+    if !object_is_live(entry.object) {
         return Err(Refused::NoCapability);
     }
     Ok(entry.object)
@@ -247,6 +238,56 @@ fn receiver_of(endpoint: u32) -> Option<usize> {
     })
 }
 
+/// Takes one more name for what a capability is about to name.
+///
+/// **One door for every object kind, before there is a kind that needs it.**
+/// Today `Endpoint`, `Process` and `Reply` count nothing: an endpoint outlives
+/// its handles, a process's slot has its own generation, and a reply is
+/// single-use by that generation. `MemoryAuthority` will not be like them — the
+/// loss of its last name returns an unspent reservation up a funding lineage
+/// (ADR-0075 §2a) — and the way that goes wrong is a special case appearing in
+/// four places that today do not look at the kind at all. So the four places
+/// route through here first.
+///
+/// Fallible on purpose. An authority's name count is bounded and refuses rather
+/// than wrapping, so this is the step that can say no.
+fn retain_object(object: Object) -> Result<(), NotGranted> {
+    match object {
+        // Nothing to count, and nothing that a later kind should inherit by
+        // being forgotten here: each arm is a decision.
+        Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {
+            Ok(())
+        }
+    }
+}
+
+/// Drops one name, when an entry that held it is destroyed.
+fn release_object(object: Object) {
+    match object {
+        Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
+    }
+}
+
+/// Whether the object a handle names is still usable authority.
+///
+/// Distinct from the handle's own generation: an object can outlive the last
+/// capability that named it — a memory-authority node does, while what it
+/// funded is still alive — without being something a caller may still act
+/// through.
+fn object_is_live(object: Object) -> bool {
+    match object {
+        Object::None => false,
+        // An endpoint is a table slot for the life of the boot.
+        Object::Endpoint(_) => true,
+        Object::Process { slot, generation } => {
+            crate::process::generation(slot as usize) == Some(generation)
+        }
+        Object::Reply { caller, generation } => {
+            crate::process::reply_token(caller as usize) == Some(generation)
+        }
+    }
+}
+
 /// Gives a process a capability, and returns the handle it will name it by.
 ///
 /// The only way an entry is ever written. It is reachable from the launcher and
@@ -279,6 +320,11 @@ pub fn grant(process: usize, object: Object, rights: u32, scope: u64) -> Result<
         .iter()
         .position(|entry| entry.object == Object::None)
         .ok_or(NotGranted::NoRoom)?;
+    // The last thing that can fail, and then nothing that can. A retain
+    // followed by a fallible step would need a rollback; a retain followed only
+    // by writes needs none, and the entry and the name appear together as far
+    // as anything outside this function can tell.
+    retain_object(object)?;
     let entry = &mut table[process][index];
     entry.object = object;
     entry.rights = rights;
@@ -303,10 +349,16 @@ pub fn release(process: usize, handle: u64) -> Result<(), Refused> {
     if entry.generation != generation || entry.object == Object::None {
         return Err(Refused::NoCapability);
     }
+    let object = entry.object;
     entry.object = Object::None;
     entry.rights = 0;
     entry.scope = 0;
     entry.generation = entry.generation.wrapping_add(1);
+    // The entry is gone and the name goes with it, with nothing in between that
+    // anything could observe: a released handle whose object still counted it,
+    // or an object decremented while its entry stood, are the two halves of the
+    // same defect.
+    release_object(object);
     Ok(())
 }
 
@@ -355,12 +407,17 @@ pub fn clear(process: usize) {
     if process >= MAX_PROCESSES {
         return;
     }
+    // **One decrement per entry actually destroyed**, not one per object. A
+    // process holding three aliases of one authority was holding three names,
+    // and a sweep that noticed the authority once would leave two behind.
     for entry in table[process].iter_mut() {
         if entry.object != Object::None {
+            let object = entry.object;
             entry.object = Object::None;
             entry.rights = 0;
             entry.scope = 0;
             entry.generation = entry.generation.wrapping_add(1);
+            release_object(object);
         }
     }
 }
@@ -442,8 +499,89 @@ impl Binding {
     }
 }
 
+/// How many capabilities a process holds, for evidence that a refusal left the
+/// table as it found it.
+#[cfg_attr(not(feature = "test-creation-rollback"), allow(dead_code))]
+pub fn held(process: usize) -> usize {
+    if process >= MAX_PROCESSES {
+        return 0;
+    }
+    // SAFETY: single-context nucleus; bounds checked immediately above.
+    let table = unsafe { tables() };
+    table[process]
+        .iter()
+        .filter(|entry| entry.object != Object::None)
+        .count()
+}
+
+/// Whether a whole endowment can be written, asked before any of it is.
+///
+/// **All or nothing, and the way to get that is to ask first.** ADR-0055 makes
+/// a half-endowed child invalid: a process holding two of the three
+/// capabilities its launcher decided on is a process nobody decided on, and it
+/// has no way to know what it is missing. `endow` used to grant until something
+/// refused and then stop — and it ran *after* the process was already in the
+/// table, so the child was published, runnable and short of authority.
+///
+/// The alternative to this is a transaction log and a rollback. It is not
+/// needed here: everything that can refuse is countable in advance against
+/// fixed tables, so checking first turns the commit into a sequence of writes.
+/// A rollback that never runs is a rollback nothing proves.
+///
+/// What is checked, in the order a refusal is most likely:
+///
+/// - the endowment fits a process's table at all;
+/// - no entry claims the receive right on an endpoint somebody already
+///   receives on (`IPC_V1` §2), which `grant` checks one entry at a time;
+/// - and no **two entries of this endowment** claim it either — the check
+///   inside `grant` cannot see that, because the first of the pair has not been
+///   written when the second is validated.
+///
+/// `Endowment::Own` is deliberately not checked: it names the process being
+/// created, whose slot does not exist yet. It cannot fail after the slot does,
+/// which is the only place `endow` is called from.
+pub fn endowable(endowment: &[Endowment]) -> Result<(), NotGranted> {
+    if endowment.len() > MAX_CAPABILITIES {
+        return Err(NotGranted::NoRoom);
+    }
+    for (position, entry) in endowment.iter().enumerate() {
+        let Endowment::Existing { object, rights, .. } = *entry else {
+            continue;
+        };
+        if rights & tos_launch::RIGHT_RECEIVE == 0 {
+            continue;
+        }
+        let Object::Endpoint(endpoint) = object else {
+            continue;
+        };
+        if receiver_of(endpoint).is_some() {
+            return Err(NotGranted::ReceiverExists);
+        }
+        let claimed_earlier = endowment[..position].iter().any(|earlier| {
+            matches!(
+                *earlier,
+                Endowment::Existing {
+                    object: Object::Endpoint(other),
+                    rights: earlier_rights,
+                    ..
+                } if other == endpoint && earlier_rights & tos_launch::RIGHT_RECEIVE != 0
+            )
+        });
+        if claimed_earlier {
+            return Err(NotGranted::ReceiverExists);
+        }
+    }
+    Ok(())
+}
+
 /// Writes a process's whole endowment, and describes it back for the record the
 /// process reads (ADR-0055).
+///
+/// **Infallible by the time it runs.** [`endowable`] answered everything that
+/// could refuse before the process was published, so a refusal here is a defect
+/// in this file rather than a decision about the caller — it is reported as one
+/// and the entries already written stand, because by now there is a running
+/// process that they belong to.
 ///
 /// Returns how many entries were written. The description is what the process
 /// will find in its launch record: which handle names what, so that a process
@@ -486,7 +624,7 @@ pub fn endow(process: usize, endowment: &[Endowment], out: &mut [LaunchCapabilit
                 // authority than whoever launched it decided, with nothing on
                 // the record saying so — and `CAPABILITY_V1` §2 requires the
                 // endowment to be named rather than implied.
-                tos_serial::puts(b"TOS.RUN.ENDOWMENT_REFUSED process=");
+                tos_serial::puts(b"TOS.NUCLEUS.INVARIANT reason=endowment-preflight process=");
                 tos_serial::put_u32_decimal(process as u32);
                 tos_serial::puts(match refused {
                     NotGranted::NoRoom => b" reason=table-full\r\n",
