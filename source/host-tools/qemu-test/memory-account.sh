@@ -30,6 +30,18 @@
 #       what the creation said it would cost is what the reclamation handed
 #       back, so the price was known rather than discovered
 #
+#   reserve == backing + processes × (identity + windows + region mappings)
+#       and **no standalone identity term**. While every tree came from the
+#       reserve, one was right: the nucleus's own address space. It stopped
+#       being right when that space began to be built from the pool before the
+#       reserve exists — the frames are gone by then and are reported as their
+#       own line — and the second reservation cost 25 frames the region lanes
+#       needed. This is the check that would catch it if boot ordering moves
+#       again
+#
+#   root >= MAX_PROCESSES × the ordinary process charge
+#       the reference platform can still fund every process its table can hold
+#
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,11 +75,12 @@ def one(prefix):
 FRAME = 4096
 
 account = one("TOS.MEM.ACCOUNT ")
+reserve_lines = one("TOS.MEM.RESERVE ")
 charge = one("TOS.RUN.PROCESS_CHARGE ")
 reclaimed = one("TOS.RUN.PROCESS_RECLAIMED ")
 
 admitted = int(account["admitted_frames"])
-own_space = int(account["nucleus_space_frames"])
+own_space = int(account["nucleus_space_actual_frames"])
 reserve = int(account["table_reserve_frames"])
 pool = int(account["pool_frames"])
 root = int(account["root_frames"])
@@ -103,6 +116,38 @@ check(
 
 # And the pool is back to what the root was endowed with.
 check("the pool returned to the root's endowment", int(reclaimed["available"]), root)
+
+# The reserve is what its parts say it is, and no part is counted twice.
+identity = int(reserve_lines["process_identity_frames"])
+windows = int(reserve_lines["process_windows_frames"])
+mappings = int(reserve_lines["process_region_mapping_frames"])
+backing = int(reserve_lines["region_backing_frames"])
+processes = int(reserve_lines["processes"])
+check("the reserve is its parts", reserve, backing + processes * (identity + windows + mappings))
+check(
+    "and its total is the one the boot took",
+    reserve,
+    int(reserve_lines["total_frames"]),
+)
+# The nucleus's own space is smaller than the bound one process's identity
+# mappings are reserved for — it maps the same machine and no user window — so a
+# reserve that had grown by roughly that amount is the signature of the term
+# being counted twice.
+if own_space > identity:
+    raise SystemExit(
+        f"memory-account: FAIL: the nucleus's own space is {own_space} frames, "
+        f"more than the {identity} one process's identity mappings are bounded by"
+    )
+
+# And the platform can still fund every process its table can hold.
+ordinary = int(charge["total"]) // FRAME
+needed = processes * ordinary
+if root < needed:
+    raise SystemExit(
+        f"memory-account: FAIL: {processes} processes need {needed} frames "
+        f"and the root holds {root}"
+    )
+print(f"  {processes} ordinary processes need {needed}; margin {root - needed}")
 
 print(f"MEMORY-ACCOUNT PASS: {admitted} admitted, {reserve} reserved, {root} funded")
 PY

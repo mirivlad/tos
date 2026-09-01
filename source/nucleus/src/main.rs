@@ -655,7 +655,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-region-aperture");
         mem_fail();
     }
-    let bound = process::table_reserve(bi, descs);
+    let bound = process::table_reserve(bi, descs, admission.frames * tos_frames::FRAME_SIZE);
     // SAFETY: boot, immediately after admission and before any address space,
     // process or memory authority exists.
     let Some(reserved) = (unsafe { memory::reserve_tables(bound) }) else {
@@ -686,9 +686,30 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         mem_fail();
     };
 
+    // The reserve, decomposed, so a gate can check that no term is counted
+    // twice. `nucleus_space_actual` is memory already gone from the pool before
+    // the reserve existed; `process_identity` is the most *one future process's*
+    // identity mappings can cost the reserve. They are related quantities and
+    // not one account, and confusing them is what put a second nucleus address
+    // space in the reserve.
+    let admitted_bytes = admission.frames * tos_frames::FRAME_SIZE;
+    tos_serial::puts(b"TOS.MEM.RESERVE process_identity_frames=");
+    tos_serial::put_u32_decimal(paging::build_tables(bi, descs) as u32);
+    tos_serial::puts(b" process_windows_frames=");
+    tos_serial::put_u32_decimal(process::process_window_tables() as u32);
+    tos_serial::puts(b" process_region_mapping_frames=");
+    tos_serial::put_u32_decimal(process::region_mapping_bound(admitted_bytes) as u32);
+    tos_serial::puts(b" region_backing_frames=");
+    tos_serial::put_u32_decimal(process::region_backing_bound(admitted_bytes) as u32);
+    tos_serial::puts(b" processes=");
+    tos_serial::put_u32_decimal(process::MAX_PROCESSES as u32);
+    tos_serial::puts(b" total_frames=");
+    tos_serial::put_u32_decimal(reserved as u32);
+    tos_serial::puts(b" asserted_by=nucleus\r\n");
+
     tos_serial::puts(b"TOS.MEM.ACCOUNT admitted_frames=");
     tos_serial::put_u32_decimal(admission.frames as u32);
-    tos_serial::puts(b" nucleus_space_frames=");
+    tos_serial::puts(b" nucleus_space_actual_frames=");
     // SAFETY: boot, single-context, nothing else holds the pool.
     let left = unsafe { memory::frames() }.available();
     tos_serial::put_u32_decimal((before_own_space - left - reserved) as u32);

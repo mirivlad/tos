@@ -462,6 +462,42 @@ const fn tables_over(start: u64, length: u64) -> u64 {
         + ((last >> 21) - (start >> 21) + 1)
 }
 
+/// Page-table frames the region lanes can need, at worst.
+///
+/// Two trees, bounded the same way. The **backing index** is the nucleus's own
+/// record of which physical frames make up each region — never loaded into
+/// `CR3`, giving no process access to anything. The **mappings** are what each
+/// process's address space holds of the regions it can reach.
+///
+/// ```text
+/// a = ceil(P / 512 GiB)   how many lane-sized units this machine's memory is
+/// b = ceil(P / 1 GiB)     page directories, if it were all one run
+/// c = ceil(P / 2 MiB)     page tables, likewise
+/// ```
+///
+/// **The bound is not the worst region size times the number of regions**,
+/// which would reserve more than the machine has: the *total* backing alive at
+/// once cannot exceed `P`, whatever it is divided into. What dividing it costs
+/// is the boundaries — at most one extra table per level per lane after the
+/// first, because each lane starts on a fresh 512-GiB boundary.
+///
+/// A process is bounded by its capability table rather than by `MAX_REGIONS`:
+/// it cannot reach more distinct regions than it can hold handles for.
+pub fn lane_tables(top: u64, slots: u64) -> u64 {
+    let units = |unit: u64| top.div_ceil(unit) + slots - 1;
+    units(REGION_LANE_SPAN) + units(1 << 30) + units(2 * 1024 * 1024)
+}
+
+/// The backing index's own bound: the lanes, plus the root of that tree.
+pub fn region_backing_bound(admitted: u64) -> u64 {
+    1 + lane_tables(admitted, MAX_REGIONS as u64)
+}
+
+/// What one process's region mappings can cost it.
+pub fn region_mapping_bound(admitted: u64) -> u64 {
+    lane_tables(admitted, crate::capability::MAX_CAPABILITIES as u64)
+}
+
 /// Page-table frames the windows a process is given cost, at their largest.
 ///
 /// Each is mapped page by page, so each costs what [`tables_over`] says. The
@@ -469,7 +505,7 @@ const fn tables_over(start: u64, length: u64) -> u64 {
 /// `IMAGE` and `SOURCE` come out of the capsule and so are bounded by
 /// `MAX_CAPSULE_BYTES`, the grant by `MAX_GRANT`, the record by
 /// `MAX_RECORD_BYTES`, and the rest are fixed frame counts.
-fn process_window_tables() -> u64 {
+pub fn process_window_tables() -> u64 {
     const CAPSULE: u64 = tos_capsule::MAX_CAPSULE_BYTES as u64;
     tables_over(IMAGE, CAPSULE)
         + tables_over(SOURCE, CAPSULE)
@@ -505,6 +541,15 @@ fn process_window_tables() -> u64 {
 /// which chunks that map breaks into 4 KiB pages and which it covers with a
 /// single 2 MiB leaf.
 ///
+/// **The nucleus's own space is not in here, and used to be.** While every tree
+/// came from the reserve, a leading `identity` term for the nucleus's own
+/// address space was right. It stopped being right the moment that space began
+/// to be built from the pool before the reserve exists: the frames are gone
+/// from `Frames` by then and are reported as their own line of the account, so
+/// reserving for them again is a second reservation for a tree that already
+/// exists and will never be built twice. It cost 25 frames — and the region
+/// lanes needed 17 of them.
+///
 /// **The region lanes are not in it yet, and that is a finding rather than an
 /// omission.** The derived lane bound is `1 477` frames on the reference
 /// machine against `517` without it, and the `960` between them are more than
@@ -517,9 +562,12 @@ fn process_window_tables() -> u64 {
 /// that process, so the bound is added in the slice that starts using it, once
 /// the collision has been resolved. `docs/evidence/STAGE3_REGION_APERTURE.md`
 /// carries the arithmetic.
-pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
-    let identity = paging::build_tables(bi, descs);
-    identity + MAX_PROCESSES as u64 * (identity + process_window_tables())
+pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange], admitted: u64) -> u64 {
+    region_backing_bound(admitted)
+        + MAX_PROCESSES as u64
+            * (paging::build_tables(bi, descs)
+                + process_window_tables()
+                + region_mapping_bound(admitted))
 }
 
 /// Page-table flags, from the process's side of the boundary.
