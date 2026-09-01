@@ -513,6 +513,11 @@ fn lane_tables(top: u64, slots: u64) -> u64 {
 
 /// The whole page-table reserve for this machine (ADR-0076 §2 rule 3).
 ///
+/// `admitted` is what the pool actually holds — not the sum of the map's usable
+/// ranges, which includes the image, the capsule, the handoff record, the
+/// framebuffer and the loader's stack. Bounding the lanes by memory that was
+/// never admitted would reserve tables to map frames nothing can ever be given.
+///
 /// ```text
 /// nucleus space          the identity map, and no user window
 /// + MAX_PROCESSES × (    the identity map again, in each process's own tree
@@ -530,13 +535,8 @@ fn lane_tables(top: u64, slots: u64) -> u64 {
 /// The identity map's own cost comes from [`paging::build_tables`], which knows
 /// which chunks that map breaks into 4 KiB pages and which it covers with a
 /// single 2 MiB leaf.
-pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
+pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange], admitted: u64) -> u64 {
     let identity = paging::build_tables(bi, descs);
-    let admitted: u64 = descs
-        .iter()
-        .filter(|range| range.ty == tos_boot_protocol::MEM_USABLE)
-        .map(|range| range.phys_length)
-        .sum();
     // The backing index, once for the machine; and each process's own region
     // mappings, bounded by the handles it can hold rather than by how many
     // regions exist.
