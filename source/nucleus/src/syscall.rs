@@ -632,6 +632,13 @@ fn send(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
         Ok(()) => {}
         Err(answer) => return answer,
     }
+    // The queue is about to become a holder of everything the message carries,
+    // and it is a holder that outlives this call: taken before the message is
+    // queued, so no path exists where the message is committed and its objects
+    // are not counted.
+    if capability::retain_in_transit(&granted[..count]).is_err() {
+        return Answer::status(E_LIMIT);
+    }
     // SAFETY: `from` is the physical address of this process's argument region,
     // mapped by the launcher and read here through the nucleus's own identity
     // map.
@@ -640,22 +647,31 @@ fn send(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
             deliver_to_waiter(endpoint);
             Answer::status(OK)
         }
-        Err(ipc::Refused::BadArgument) => Answer::status(E_BAD_ARGUMENT),
-        Err(ipc::Refused::Limit) if frame.rdx & NON_BLOCKING != 0 => Answer::status(E_LIMIT),
-        Err(ipc::Refused::Limit) => {
-            // `IPC_V1` §7: the system never grows a queue to accept a message,
-            // so the sender waits for room rather than the queue making some.
-            // SAFETY: this is the running context's own frame, and the handle
-            // the wait is on was resolved above.
-            unsafe {
-                crate::process::block(
-                    frame,
-                    crate::process::Waiting::Room(endpoint),
-                    ENDPOINT_SEND as u32,
-                )
+        // A send that did not happen holds nothing: the message's names go
+        // back before the refusal is answered, including on the blocking path,
+        // where the caller will resolve and retain again when it is resumed.
+        Err(refused) => {
+            capability::release_from_transit(&granted[..count]);
+            match refused {
+                ipc::Refused::BadArgument => Answer::status(E_BAD_ARGUMENT),
+                ipc::Refused::Limit if frame.rdx & NON_BLOCKING != 0 => Answer::status(E_LIMIT),
+                ipc::Refused::Limit => {
+                    // `IPC_V1` §7: the system never grows a queue to accept a
+                    // message, so the sender waits for room rather than the
+                    // queue making some.
+                    // SAFETY: this is the running context's own frame, and the
+                    // handle the wait is on was resolved above.
+                    unsafe {
+                        crate::process::block(
+                            frame,
+                            crate::process::Waiting::Room(endpoint),
+                            ENDPOINT_SEND as u32,
+                        )
+                    }
+                }
+                ipc::Refused::WouldBlock => Answer::status(E_WOULD_BLOCK),
             }
         }
-        Err(ipc::Refused::WouldBlock) => Answer::status(E_WOULD_BLOCK),
     }
 }
 
@@ -699,6 +715,11 @@ fn call(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
         tos_launch::RIGHT_REPLY,
         0,
     );
+    // As in `send`: the queue becomes a holder of everything the message
+    // carries — the reply capability among them — before it is queued.
+    if capability::retain_in_transit(&granted).is_err() {
+        return Answer::status(E_LIMIT);
+    }
     // SAFETY: `from` is this process's own argument region.
     match unsafe { ipc::send(endpoint, from, frame.rsi, &granted) } {
         Ok(()) => {
@@ -709,8 +730,13 @@ fn call(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
                 crate::process::block(frame, crate::process::Waiting::Reply, ENDPOINT_CALL as u32)
             }
         }
-        Err(ipc::Refused::BadArgument) => Answer::status(E_BAD_ARGUMENT),
-        Err(_) => Answer::status(E_LIMIT),
+        Err(refused) => {
+            capability::release_from_transit(&granted);
+            match refused {
+                ipc::Refused::BadArgument => Answer::status(E_BAD_ARGUMENT),
+                _ => Answer::status(E_LIMIT),
+            }
+        }
     }
 }
 
@@ -976,6 +1002,11 @@ fn hand_over(receiver: usize, region: u64, granted: &[(Object, u32, u64)]) {
             .write(handle)
         };
     }
+    // The message has stopped being a holder, and it stops **after** the
+    // receiver has become one: the order is what keeps a count from passing
+    // through zero between the two, which for an authority would mean returning
+    // a reservation to its parent and then delivering it.
+    capability::release_from_transit(granted);
 }
 
 /// Hands the message just queued to a context waiting for one, if there is one.

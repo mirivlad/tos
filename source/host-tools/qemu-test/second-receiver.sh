@@ -70,7 +70,7 @@ bash "$ROOT/host-tools/qemu-test/run.sh" \
     --out "$OUT" \
     --nucleus "$TEST_NUCLEUS" \
     --expect 33 \
-    --require "TOS.NUCLEUS.ENTRY TOS.RUN.ENDOWMENT_REFUSED TOS.HALT" \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.PROCESS_REFUSED TOS.HALT" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE"
 
 LOG="$OUT/events.log"
@@ -86,29 +86,37 @@ exactly() {
 # `endpoint-already-received`, not `table-full`: the second process's table is
 # empty, so a nucleus that refused for want of room would be refusing a different
 # thing and this gate would be reporting the wrong fact as proved.
-exactly 1 '^TOS\.RUN\.ENDOWMENT_REFUSED process=1 reason=endpoint-already-received$' \
+exactly 1 '^TOS\.RUN\.PROCESS_REFUSED reason=endowment-endpoint-received asserted_by=nucleus$' \
     "the launcher's second receive-rights grant was not refused by the rule"
-exactly 0 '^TOS\.RUN\.ENDOWMENT_REFUSED .*reason=table-full$' \
+exactly 0 '^TOS\.RUN\.PROCESS_REFUSED reason=endowment-table-full.*$' \
     "a grant was refused for want of room, which is not what this boot is about"
+exactly 1 '^TOS\.TEST\.SECOND_NOT_CREATED reason=endowment$' \
+    "the boot did not report that the second process was never created"
 
 # --- and the first process did get it ------------------------------------------
 # Without this the gate passes on a nucleus whose `grant` refuses everything.
 exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=1 rights=$BOTH_HALVES binding=endpoint\$" \
     "the one process allowed to receive did not get the right"
 
-# --- and the second started, holding nothing -----------------------------------
-exactly 1 '^TOS\.RUN\.PROCESS_ENDOWED process=1 capabilities=0 policy=launcher-constant asserted_by=launcher$' \
-    "the refused process was not started with an empty endowment"
-exactly 1 '^TOS\.RUN\.CAPABILITY held=0 endowment=empty$' \
-    "the refused process did not report that it holds nothing"
+# --- and the second was never created at all -----------------------------------
+# An endowment is written whole or not at all (ADR-0055), so the launcher does
+# not get a process holding less than it decided. Until this gate was brought to
+# the contract, it got exactly that: a published, runnable process short of the
+# one capability it was launched for, with no way to know it was missing.
+exactly 0 '^TOS\.RUN\.PROCESS_ENDOWED process=1.*$' \
+    "a second process was endowed, when the whole creation should have been refused"
+exactly 0 '^TOS\.RUN\.PROCESS_BEGIN process=1.*$' \
+    "a second process was begun, when the whole creation should have been refused"
+exactly 1 '^TOS\.RUN\.CAPABILITY held=1 .*$' \
+    "more or fewer than one process reported what it holds"
 
 # --- the boot is a working system with one refusal in it -----------------------
-exactly 2 "^TOS\\.RUN\\.COMPLETED value=$EXPECTED_VALUE\$" \
-    "the two processes did not both complete their own work"
+exactly 1 "^TOS\\.RUN\\.COMPLETED value=$EXPECTED_VALUE\$" \
+    "the one process that was startable did not complete its own work"
 
 # --- and the refusal has the consequence it should -----------------------------
-# The refused process was the only other party on that endpoint, so once it holds
-# nothing there is nobody to send. The one holder's wait is therefore one nothing
+# The refused process was the only other party on that endpoint, so once it does
+# not exist there is nobody to send. The one holder's wait is therefore one nothing
 # in the system can satisfy, and ADR-0059's liveness rule ends it. Asserted
 # rather than tolerated: a wait that was *not* cancelled here would mean somebody
 # sent, which would mean the refusal did not take.
@@ -116,5 +124,5 @@ exactly 1 '^TOS\.RUN\.BLOCK_CANCELLED process=0 operation=2 endpoint=0 reason=no
     "the surviving receiver's wait was satisfied by a process that should hold nothing"
 
 echo "SECOND-RECEIVER PASS: one endpoint, one receive-rights holder"
-echo "  the launcher asked for a second and was refused at the grant, by the rule"
-echo "  the first process kept both halves; the second started holding nothing"
+echo "  the launcher asked for a second and the whole creation was refused, by the rule"
+echo "  the first process kept both halves; the second was never created"

@@ -499,6 +499,47 @@ impl Binding {
     }
 }
 
+/// Takes a name for every object a committed message carries.
+///
+/// **A message is a holder.** Delegation copies the object into the queue and
+/// leaves the sender's handle alone (`CAPABILITY_V1` §4), so between a send
+/// committing and a receive granting there is an interval in which the queue is
+/// the only thing that will ever produce a holder — the sender may release its
+/// handle, or end, before anybody receives. An object whose lifecycle counts
+/// names has to be told about that interval or its last name goes while a
+/// message still carries it.
+///
+/// Taken **before** the message is queued, so a failure here leaves nothing
+/// half-committed. Today every kind counts nothing and this is structure rather
+/// than effect; `MemoryAuthority` is what it is structure for.
+pub fn retain_in_transit(granted: &[(Object, u32, u64)]) -> Result<(), NotGranted> {
+    for (position, (object, _, _)) in granted.iter().enumerate() {
+        if *object == Object::None {
+            continue;
+        }
+        if let Err(refused) = retain_object(*object) {
+            // Whatever was taken before the refusal goes back, so a send that
+            // did not happen leaves no name behind it.
+            release_from_transit(&granted[..position]);
+            return Err(refused);
+        }
+    }
+    Ok(())
+}
+
+/// Drops a message's names: it was delivered, or it was never queued.
+///
+/// After delivery this runs **once the receiver already holds its own names**,
+/// so the count does not pass through zero on the way from one holder to the
+/// next.
+pub fn release_from_transit(granted: &[(Object, u32, u64)]) {
+    for (object, _, _) in granted {
+        if *object != Object::None {
+            release_object(*object);
+        }
+    }
+}
+
 /// How many capabilities a process holds, for evidence that a refusal left the
 /// table as it found it.
 #[cfg_attr(not(feature = "test-creation-rollback"), allow(dead_code))]
