@@ -1007,6 +1007,16 @@ fn resolve_transfers(
         // it is the only right this needs: sending a capability is not an
         // operation *on* the object it names.
         let object = capability::resolve(caller, handle, 0).map_err(Answer::from)?;
+        // **Delegation copies, and an affine object cannot be copied.** The
+        // sender keeps its handle while the receiver is given one, which for a
+        // region is two holders where the type model allows one — and for a
+        // mutable region it is the writable alias the freeze exists to
+        // eliminate. An immutable region *is* transferable, but only linearly,
+        // and this path has no way to consume the sender's handle atomically
+        // with the receiver's acquisition. Refused until it has.
+        if object.is_affine() {
+            return Err(Answer::status(E_NO_CAPABILITY));
+        }
         *entry = (object, capability::rights_of(caller, handle), 0);
     }
     Ok(())

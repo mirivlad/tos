@@ -601,8 +601,15 @@ impl Regions {
             bytes,
             mutable: true,
             charged_to: at as u32,
-            capabilities: 1,
-            internal: 0,
+            // **Nobody holds it yet.** Building a region is a nucleus
+            // transaction, not a capability: the backing has to be laid down
+            // and mapped before anything can be given a handle, and a fictitious
+            // first capability handed over afterwards would be a holder the
+            // nucleus invented to have something to pass. The construction
+            // reference keeps it alive for exactly that stretch, and goes when
+            // the caller's handle exists.
+            capabilities: 0,
+            internal: 1,
             writable_mappings: 0,
             readable_mappings: 0,
             holder,
@@ -631,14 +638,24 @@ impl Regions {
     }
 
     /// Drops one mapping.
+    ///
+    /// An unmapping of something that was never mapped is refused rather than
+    /// clamped to zero: a count that silently absorbs an impossible operation
+    /// is a count that cannot be used to decide when backing may be reclaimed.
     pub fn unmap(&mut self, region: RegionId, writable: bool) -> Result<(), Refusal> {
         let at = self.region(region)?;
-        if writable {
-            self.regions[at].writable_mappings =
-                self.regions[at].writable_mappings.saturating_sub(1);
+        let held = if writable {
+            self.regions[at].writable_mappings
         } else {
-            self.regions[at].readable_mappings =
-                self.regions[at].readable_mappings.saturating_sub(1);
+            self.regions[at].readable_mappings
+        };
+        if held == 0 {
+            return Err(Refusal::BadArgument);
+        }
+        if writable {
+            self.regions[at].writable_mappings -= 1;
+        } else {
+            self.regions[at].readable_mappings -= 1;
         }
         self.settle_region(at);
         Ok(())
@@ -698,11 +715,41 @@ impl Regions {
         Ok(())
     }
 
-    /// Releases one capability over a region, reclaiming it if that was the
-    /// last way to reach it.
-    pub fn release(&mut self, region: RegionId) -> Result<(), Refusal> {
+    /// Whether a capability may name this region: only if none does.
+    pub fn can_name(&self, region: RegionId) -> bool {
+        self.region(region)
+            .is_ok_and(|at| self.regions[at].capabilities == 0)
+    }
+
+    /// Takes the one capability reference a region may have.
+    ///
+    /// **Affine, and enforced here rather than at each operation.** A region's
+    /// capability count is `{0, 1}` and not a number to add to: ADR-0037 gives
+    /// a `Region<mut T>` exactly one holder, and a second handle to a mutable
+    /// region is the writable alias the consuming freeze exists to eliminate.
+    /// Operation 5 refuses to make one, but an operation that reached `grant`
+    /// by another road would too — so the object refuses, and affinity is a
+    /// property of the kind rather than something every path must remember.
+    pub fn retain_capability(&mut self, region: RegionId) -> Result<(), Refusal> {
         let at = self.region(region)?;
-        self.regions[at].capabilities = self.regions[at].capabilities.saturating_sub(1);
+        if self.regions[at].capabilities != 0 {
+            return Err(Refusal::NotTheHolder);
+        }
+        self.regions[at].capabilities = 1;
+        Ok(())
+    }
+
+    /// Gives it up, reclaiming the region if that was the last way to reach it.
+    ///
+    /// A release of a capability nobody holds is a defect in the lifecycle
+    /// above, not a harmless repeat: it is refused rather than clamped, for the
+    /// same reason a second refund of a grant is.
+    pub fn release_capability(&mut self, region: RegionId) -> Result<(), Refusal> {
+        let at = self.region(region)?;
+        if self.regions[at].capabilities == 0 {
+            return Err(Refusal::BadArgument);
+        }
+        self.regions[at].capabilities = 0;
         self.settle_region(at);
         Ok(())
     }
