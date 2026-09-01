@@ -1217,13 +1217,19 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // The second process starts, and starts with **nothing**: the one thing its
     // endowment asked for is the one thing it may not have. A launcher asking
     // for the impossible does not stop the boot — it is told, on the record,
-    // that it did not get it.
+    // that there is no such process.
     #[cfg(feature = "test-second-receiver")]
     {
         tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
+        // **The refusal is the point of this boot, and it is now a refusal to
+        // create.** An endowment is written whole or not at all (ADR-0055), so
+        // a launcher asking for a receive right the rule cannot give does not
+        // get a process holding less than it decided — it gets no process. The
+        // boot goes on with the one process that was startable, because a
+        // launcher asking for the impossible is told so rather than ending the
+        // system.
         if build(&second_endowment).is_err() {
-            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
-            mem_fail();
+            tos_serial::puts(b"TOS.TEST.SECOND_NOT_CREATED reason=endowment\r\n");
         }
     }
     // SAFETY: `space` is the nucleus's own address space, it is the live one,
