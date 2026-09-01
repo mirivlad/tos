@@ -5,15 +5,20 @@ import capability system.time.Clock as clock;
 
 resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 1]
 
-// A declared effect set admits the operation that needs it.
-pub fn sample() -> duration uses [clock] {
-    return clock.now();
+// `Clock` is illustrative here: this vector checks effect propagation, not a
+// service operation. Capabilities are not methods; accepted system operations
+// use an interface schema (`extern fn`) in Full profile.
+fn inspect(borrow cap: system.time.Clock) -> unit { }
+
+// A declared effect set admits use of the imported authority value.
+pub fn sample() -> unit uses [clock] {
+    inspect(borrow clock);
 }
 
 // A caller that declares the same effect covers its callee, so the declared
 // set of a well-formed module is already its transitive set.
-pub fn twice() -> duration uses [clock] {
-    return sample();
+pub fn twice() -> unit uses [clock] {
+    sample();
 }
 
 // A function that needs no authority declares nothing, and calling one is free.
