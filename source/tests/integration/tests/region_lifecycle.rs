@@ -924,6 +924,27 @@ fn the_root_outlives_every_name_and_is_never_settled() {
     );
     assert_eq!(regions.names(root), Ok(1), "and is still the boot's");
     assert!(regions.accounting_holds());
+
+    // And the root has no naming lifecycle at all. Surviving these would not be
+    // enough: a caller able to drive its count to zero would be a caller able
+    // to unmake the anchor, however carefully the settling avoided retiring it.
+    assert_eq!(regions.retain(root), Err(Refusal::Anchored));
+    assert_eq!(regions.release_name(root), Err(Refusal::Anchored));
+    assert_eq!(regions.revoke(root), Err(Refusal::Anchored));
+    assert_eq!(regions.names(root), Ok(1));
+    assert_eq!(regions.remaining(root), Ok(POOL));
+
+    // What it does have is the operations a funding anchor needs.
+    let again = regions.charge_grant(root, 4096, 4096).expect("still funds");
+    let child = regions
+        .attenuate(root, 1024 * 1024)
+        .expect("still reserves");
+    regions.refund_grant(again).expect("still receives refunds");
+    regions
+        .release_name(child)
+        .expect("and its children are ordinary");
+    assert_eq!(regions.remaining(root), Ok(POOL));
+    assert!(regions.accounting_holds());
 }
 
 /// The mode is what a caller can observe about a region, and it only goes one

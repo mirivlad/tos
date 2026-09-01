@@ -77,7 +77,21 @@ pub enum Refusal {
     /// The tree has been stopped: the pool and the accounting were found to
     /// disagree, so nothing new may be reserved or spent anywhere in it. Giving
     /// things back is still allowed — see [`Regions::poison`].
+    ///
+    /// **Not ordinary budget exhaustion, and the ABI has no word for it.** The
+    /// accepted status space of `SYSTEM_ABI_V1` is closed, and inventing a
+    /// status as an implementation detail is not on offer. When an operation
+    /// carries this out to ring 3 it answers the nearest accepted resource
+    /// refusal, and what that answer means is written down where the operation
+    /// is: the caller is refused fail-closed, the nucleus has already said
+    /// `TOS.NUCLEUS.INVARIANT … funding-stopped` on the console, and the
+    /// refusal is **not** evidence that the authority's own budget ran out. If
+    /// that conflation ever turns out to matter to a caller, a distinct status
+    /// is a decision to bring to the Architect, not one to take here.
     Stopped,
+    /// The root is the boot's accounting anchor and has no naming lifecycle:
+    /// it cannot be retained, released or revoked.
+    Anchored,
 }
 
 /// A handle into the authority table, with the generation that makes a stale
@@ -710,9 +724,22 @@ impl Regions {
     /// transit reference is released: the count never passes through zero, and
     /// an unused remainder cannot return to a parent while a message that
     /// carries the authority is still on its way.
+    /// The root is refused: see [`Regions::release_name`] for why it has no
+    /// naming lifecycle at all. And the count is `checked_add` rather than
+    /// bounded by an argument about how many references can exist — the bound
+    /// would have to hold across the capability table, every endowment and
+    /// every message in flight, which is a proof that would have to be redone
+    /// whenever any of those changes. A refusal costs one branch and needs no
+    /// proof.
     pub fn retain(&mut self, authority: AuthorityId) -> Result<(), Refusal> {
         let at = self.authority(authority)?;
-        self.authorities[at].names += 1;
+        if self.authorities[at].parent.is_none() {
+            return Err(Refusal::Anchored);
+        }
+        self.authorities[at].names = self.authorities[at]
+            .names
+            .checked_add(1)
+            .ok_or(Refusal::NoRoom)?;
         Ok(())
     }
 
@@ -726,8 +753,20 @@ impl Regions {
     /// lineage when they drain. Releasing one of several aliases returns
     /// nothing and leaves the others working, which is the whole difference
     /// between a release and a revoke.
+    /// **The root has no naming lifecycle.** It is refused here, in
+    /// [`Regions::retain`] and in [`Regions::revoke`], rather than merely
+    /// surviving them: making `settle_authority` a no-op for it would leave a
+    /// caller able to drive its count to zero, and an anchor whose synthetic
+    /// boot reference can be released by anybody is not an anchor. Charging,
+    /// attenuating and refunding into it are the operations it does have.
+    ///
+    /// The subtraction cannot underflow: [`Regions::authority`] resolves only a
+    /// node with at least one name, so a handle that got this far names one.
     pub fn release_name(&mut self, authority: AuthorityId) -> Result<(), Refusal> {
         let at = self.authority(authority)?;
+        if self.authorities[at].parent.is_none() {
+            return Err(Refusal::Anchored);
+        }
         self.authorities[at].names -= 1;
         if self.authorities[at].names > 0 {
             return Ok(());
@@ -763,6 +802,9 @@ impl Regions {
     /// travels up the lineage that funded it.
     pub fn revoke(&mut self, authority: AuthorityId) -> Result<(), Refusal> {
         let at = self.authority(authority)?;
+        if self.authorities[at].parent.is_none() {
+            return Err(Refusal::Anchored);
+        }
         let returning = self.authorities[at].remaining;
         self.authorities[at].remaining = 0;
         self.authorities[at].names = 0;
