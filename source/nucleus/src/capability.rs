@@ -80,6 +80,15 @@ pub enum Object {
     /// and the aliases in between are names for one budget rather than several
     /// reservations.
     MemoryAuthority { index: u32, generation: u32 },
+    /// A region of memory, named by its object in the region table.
+    ///
+    /// **Affine, and that is what makes the type model hold.** ADR-0037 gives a
+    /// `Region<mut T>` exactly one holder and ADR-0075 §5a makes its transfer
+    /// linear, so a second handle to the same region is not an attenuation of
+    /// authority — it is the writable alias the freeze exists to eliminate.
+    /// Generic attenuation cannot make one, because generic attenuation does
+    /// not consume its input and would therefore leave two.
+    Region { index: u32, generation: u32 },
 }
 
 impl Object {
@@ -91,7 +100,20 @@ impl Object {
             Object::Process { .. } => tos_launch::OBJECT_PROCESS,
             Object::Reply { .. } => tos_launch::OBJECT_REPLY,
             Object::MemoryAuthority { .. } => tos_launch::OBJECT_MEMORY_AUTHORITY,
+            Object::Region { .. } => tos_launch::OBJECT_REGION,
         }
+    }
+
+    /// Whether a second capability may name the same object.
+    ///
+    /// **Affine kinds answer no, and no operation overrides it.** For a region
+    /// the reason is the type model: a second handle to a mutable region is a
+    /// second writer, which is exactly what the consuming freeze exists to make
+    /// impossible (ADR-0037, ADR-0075 §5a). Generic attenuation is refinement
+    /// and does not consume its input, so it could only ever *add* a name —
+    /// which is why it refuses these rather than narrowing them.
+    fn is_affine(&self) -> bool {
+        matches!(self, Object::Region { .. })
     }
 }
 
@@ -287,6 +309,10 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
                 .retain(crate::region::AuthorityId { index, generation })
                 .map_err(|_| NotGranted::NoRoom)
         }
+        // Affine: exactly one capability names a region, and `grant` is
+        // reached for it only by the operation that creates it. Nothing here
+        // counts a second, because there is never a second.
+        Object::Region { .. } => Ok(()),
     }
 }
 
@@ -294,6 +320,9 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
 fn release_capability(object: Object) {
     match object {
         Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
+        // The one capability naming a region goes, which is one of the three
+        // ways a region can become unreachable (ADR-0075 §6).
+        Object::Region { .. } => {}
         Object::MemoryAuthority { index, generation } => {
             // SAFETY: single-context nucleus; nothing else holds the tree.
             if unsafe { crate::memory::authority() }
@@ -334,6 +363,12 @@ fn object_is_live(object: Object) -> bool {
             // SAFETY: single-context nucleus; nothing else holds the tree.
             unsafe { crate::memory::authority() }
                 .remaining(crate::region::AuthorityId { index, generation })
+                .is_ok()
+        }
+        Object::Region { index, generation } => {
+            // SAFETY: as above.
+            unsafe { crate::memory::authority() }
+                .mode(crate::region::RegionId { index, generation })
                 .is_ok()
         }
     }
@@ -433,6 +468,9 @@ pub fn release(process: usize, handle: u64) -> Result<(), Refused> {
 /// silently narrowed, because a scope this stage cannot compare is a scope it
 /// must not claim to have checked.
 ///
+/// **On an affine object it refuses.** A region has exactly one capability by
+/// construction, and refinement adds rather than moves — see the refusal below.
+///
 /// **On a `MemoryAuthority` this is an alias and can be nothing else.** The
 /// result names the same accounting node, spending from the same remainder, and
 /// it may keep `RIGHT_SPEND` — two handles spending one budget is what decision
@@ -451,6 +489,16 @@ pub fn attenuate(process: usize, handle: u64, rights: u32, scope: u64) -> Result
     // SAFETY: single-context nucleus; bounds checked immediately above.
     let entry = unsafe { tables()[process][index] };
     if entry.generation != generation || entry.object == Object::None {
+        return Err(Refused::NoCapability);
+    }
+    // **An affine object has no second name, and refinement can only make
+    // one.** Attenuation does not consume its input (`CAPABILITY_V1` §4), so
+    // for a region it would leave two handles where the type model allows one —
+    // and for a mutable region that second handle is the writable alias the
+    // consuming freeze exists to eliminate (ADR-0037, ADR-0075 §5a). Refused as
+    // "the caller does not hold what this operation needs", which is what it
+    // is: there is no attenuation of this object to hold.
+    if entry.object.is_affine() {
         return Err(Refused::NoCapability);
     }
     // Every dimension a subset, and the intersection is what a subset means.
@@ -606,8 +654,8 @@ fn retain_transit(object: Object) -> Result<(), NotGranted> {
         // Not a name. A region in transit has had its sender's handle and
         // mapping taken from it and its receiver has nothing yet, so this is
         // the nucleus's own reference and is counted as one (ADR-0075 §6).
-        #[allow(unreachable_patterns)]
-        _ => Ok(()),
+        // Wired when a region can actually be sent; the count exists already.
+        Object::Region { .. } => Ok(()),
     }
 }
 
@@ -616,8 +664,7 @@ fn release_transit(object: Object) {
     match object {
         Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
         Object::MemoryAuthority { .. } => release_capability(object),
-        #[allow(unreachable_patterns)]
-        _ => {}
+        Object::Region { .. } => {}
     }
 }
 

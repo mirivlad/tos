@@ -104,6 +104,19 @@ pub const RIGHT_WAIT_CHILD: u32 = 1 << 6;
 /// distinction `CAPABILITY_V1` §4 already draws between holding and acting.
 pub const RIGHT_SPEND: u32 = 1 << 7;
 
+/// What a holder may do with a region (ADR-0037, `CAPABILITY_V1` §3).
+///
+/// **Three rights, and the pairs they form are the type model.** A
+/// `Region<mut T>` is `read | write` and never `share`: it is held by exactly
+/// one process and is neither shareable nor transferable, because a second
+/// writer is what the freeze exists to rule out. An immutable region is
+/// `read | share` and never `write` again — the transition has no inverse. The
+/// combination `write | share` is not a right somebody forgot to grant; it is
+/// the one this model exists to make unexpressible.
+pub const RIGHT_READ: u32 = 1 << 8;
+pub const RIGHT_WRITE: u32 = 1 << 9;
+pub const RIGHT_SHARE: u32 = 1 << 10;
+
 /// One capability the launcher endowed this process with, described to the
 /// process that holds it.
 ///
