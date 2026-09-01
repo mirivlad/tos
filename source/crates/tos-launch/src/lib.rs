@@ -51,6 +51,15 @@ pub const OBJECT_INTERFACE: u32 = 4;
 /// bit, because answering a call is an authority somebody was given and can
 /// therefore be refused, delegated once, or lost with the caller.
 pub const OBJECT_REPLY: u32 = 5;
+/// A finite memory authority: the right to spend a bounded amount of this
+/// machine's memory, and the node the accounting hangs off (ADR-0075, ADR-0076).
+///
+/// **Not a limit and not a share.** A capability of this kind names a
+/// reservation — an amount that has already left whoever reserved it and is
+/// guaranteed to whoever holds this — and several capabilities may name the
+/// same one. They are names for one budget, never several budgets
+/// (ADR-0076 §2b).
+pub const OBJECT_MEMORY_AUTHORITY: u32 = 6;
 
 /// The one right a reply capability has: `endpoint_reply` (4) is the only
 /// operation that names one.
@@ -83,6 +92,17 @@ pub const RIGHT_TERMINATE: u32 = 1 << 4;
 /// supervision hierarchy exist without ambient authority, and subtractable by
 /// attenuation, which is what keeps the observation itself a granted thing.
 pub const RIGHT_WAIT_CHILD: u32 = 1 << 6;
+
+/// The one right a memory authority has in Stage 3: to spend what it reserves,
+/// which is what reserving a child out of it and allocating a region through it
+/// both are.
+///
+/// One right rather than a pair, because there is nothing a holder can do with
+/// an authority that is not spending: reading a remainder it may not spend is
+/// not an authority, it is a number. A handle without this is still a name — it
+/// keeps the node reachable, and it can be released or delegated — which is the
+/// distinction `CAPABILITY_V1` §4 already draws between holding and acting.
+pub const RIGHT_SPEND: u32 = 1 << 7;
 
 /// One capability the launcher endowed this process with, described to the
 /// process that holds it.

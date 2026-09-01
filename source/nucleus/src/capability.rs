@@ -66,6 +66,16 @@ pub enum Object {
     /// resolving. A reply that could be sent twice would be an unbounded channel
     /// back into a process that asked one question.
     Reply { caller: u32, generation: u32 },
+    /// A finite memory authority, named by its accounting node (ADR-0076 §2b).
+    ///
+    /// **Several capabilities may name one of these**, and that is the whole
+    /// difference from every kind above it. An endpoint outlives its handles, a
+    /// process slot has its own generation, a reply is single-use — none of them
+    /// has to be told when a name appears or goes. An authority does: the loss
+    /// of its *last* name returns an unspent reservation up a funding lineage,
+    /// and the aliases in between are names for one budget rather than several
+    /// reservations.
+    MemoryAuthority { index: u32, generation: u32 },
 }
 
 impl Object {
@@ -76,6 +86,7 @@ impl Object {
             Object::Endpoint(_) => tos_launch::OBJECT_ENDPOINT,
             Object::Process { .. } => tos_launch::OBJECT_PROCESS,
             Object::Reply { .. } => tos_launch::OBJECT_REPLY,
+            Object::MemoryAuthority { .. } => tos_launch::OBJECT_MEMORY_AUTHORITY,
         }
     }
 }
@@ -258,6 +269,12 @@ fn retain_object(object: Object) -> Result<(), NotGranted> {
         Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {
             Ok(())
         }
+        Object::MemoryAuthority { index, generation } => {
+            // SAFETY: single-context nucleus; nothing else holds the tree.
+            unsafe { crate::memory::authority() }
+                .retain(crate::region::AuthorityId { index, generation })
+                .map_err(|_| NotGranted::NoRoom)
+        }
     }
 }
 
@@ -265,6 +282,18 @@ fn retain_object(object: Object) -> Result<(), NotGranted> {
 fn release_object(object: Object) {
     match object {
         Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
+        Object::MemoryAuthority { index, generation } => {
+            // SAFETY: single-context nucleus; nothing else holds the tree.
+            if unsafe { crate::memory::authority() }
+                .release_name(crate::region::AuthorityId { index, generation })
+                .is_err()
+            {
+                // The entry named a node the tree does not recognise, so a name
+                // was destroyed that the accounting never counted. Fail closed
+                // rather than go on funding from a tree that is a reference out.
+                crate::memory::note_divergence(b"authority-name-release");
+            }
+        }
     }
 }
 
@@ -285,14 +314,33 @@ fn object_is_live(object: Object) -> bool {
         Object::Reply { caller, generation } => {
             crate::process::reply_token(caller as usize) == Some(generation)
         }
+        // A node that survives only because allocations, charges or descendants
+        // remain is not usable authority: its last name went, its generation
+        // moved on, and its remainder was returned to whoever funded it. The
+        // tree refusing to resolve it is what says so.
+        Object::MemoryAuthority { index, generation } => {
+            // SAFETY: single-context nucleus; nothing else holds the tree.
+            unsafe { crate::memory::authority() }
+                .remaining(crate::region::AuthorityId { index, generation })
+                .is_ok()
+        }
     }
 }
 
 /// Gives a process a capability, and returns the handle it will name it by.
 ///
-/// The only way an entry is ever written. It is reachable from the launcher and
-/// from attenuation, and from nothing a process can call directly — which is
-/// the whole of "no operation produces a capability".
+/// The only way an entry is ever written, and the reason that matters is not
+/// the one this comment used to give.
+///
+/// **The invariant is that no operation produces ambient authority**, not that
+/// no operation produces a capability — several do, and always did. Operation 5
+/// returns a derived one, `process_create` returns a handle to the child it
+/// made, a call hands the receiver the right to answer it, and operation 16
+/// will return a child authority. What every one of them has in common is an
+/// explicit normative origin: the result is bounded by authority the caller
+/// presented, or by a creation rule the contract accepted. Nothing here mints a
+/// capability out of nothing, and that — rather than a count of operations that
+/// return one — is what docs/02 rules out.
 ///
 /// **This is where `IPC_V1` §2's one-receiver rule is kept**, because this is
 /// the only door authority comes through. Checking it at `endpoint_receive`
