@@ -253,7 +253,15 @@ fn receiver_of(endpoint: u32) -> Option<usize> {
     })
 }
 
-/// Takes one more name for what a capability is about to name.
+/// Takes a reference **a capability** holds, for what it is about to name.
+///
+/// **Two kinds of reference, not one, and the difference is not cosmetic.** A
+/// memory authority counts both the same way — a handle and a message in flight
+/// are each a name for one budget — and a region cannot: ADR-0075 §6 makes its
+/// reclamation wait on capability references, mappings and internal references
+/// separately, because the three are lost by three different events, and a
+/// count that merged them would free backing while a message still carried it.
+/// So the split is here, before the kind that needs it arrives.
 ///
 /// **One door for every object kind, before there is a kind that needs it.**
 /// Today `Endpoint`, `Process` and `Reply` count nothing: an endpoint outlives
@@ -266,7 +274,7 @@ fn receiver_of(endpoint: u32) -> Option<usize> {
 ///
 /// Fallible on purpose. An authority's name count is bounded and refuses rather
 /// than wrapping, so this is the step that can say no.
-fn retain_object(object: Object) -> Result<(), NotGranted> {
+fn retain_capability(object: Object) -> Result<(), NotGranted> {
     match object {
         // Nothing to count, and nothing that a later kind should inherit by
         // being forgotten here: each arm is a decision.
@@ -282,8 +290,8 @@ fn retain_object(object: Object) -> Result<(), NotGranted> {
     }
 }
 
-/// Drops one name, when an entry that held it is destroyed.
-fn release_object(object: Object) {
+/// Drops the reference a destroyed capability entry held.
+fn release_capability(object: Object) {
     match object {
         Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
         Object::MemoryAuthority { index, generation } => {
@@ -376,7 +384,7 @@ pub fn grant(process: usize, object: Object, rights: u32, scope: u64) -> Result<
     // followed by a fallible step would need a rollback; a retain followed only
     // by writes needs none, and the entry and the name appear together as far
     // as anything outside this function can tell.
-    retain_object(object)?;
+    retain_capability(object)?;
     let entry = &mut table[process][index];
     entry.object = object;
     entry.rights = rights;
@@ -410,7 +418,7 @@ pub fn release(process: usize, handle: u64) -> Result<(), Refused> {
     // anything could observe: a released handle whose object still counted it,
     // or an object decremented while its entry stood, are the two halves of the
     // same defect.
-    release_object(object);
+    release_capability(object);
     Ok(())
 }
 
@@ -480,7 +488,7 @@ pub fn clear(process: usize) {
             entry.rights = 0;
             entry.scope = 0;
             entry.generation = entry.generation.wrapping_add(1);
-            release_object(object);
+            release_capability(object);
         }
     }
 }
@@ -588,12 +596,37 @@ impl Binding {
 /// Taken **before** the message is queued, so a failure here leaves nothing
 /// half-committed. Today every kind counts nothing and this is structure rather
 /// than effect; `MemoryAuthority` is what it is structure for.
+fn retain_transit(object: Object) -> Result<(), NotGranted> {
+    match object {
+        Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {
+            Ok(())
+        }
+        // A name like any other: one budget, several ways of reaching it.
+        Object::MemoryAuthority { .. } => retain_capability(object),
+        // Not a name. A region in transit has had its sender's handle and
+        // mapping taken from it and its receiver has nothing yet, so this is
+        // the nucleus's own reference and is counted as one (ADR-0075 §6).
+        #[allow(unreachable_patterns)]
+        _ => Ok(()),
+    }
+}
+
+/// Drops a reference a message held.
+fn release_transit(object: Object) {
+    match object {
+        Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
+        Object::MemoryAuthority { .. } => release_capability(object),
+        #[allow(unreachable_patterns)]
+        _ => {}
+    }
+}
+
 pub fn retain_in_transit(granted: &[(Object, u32, u64)]) -> Result<(), NotGranted> {
     for (position, (object, _, _)) in granted.iter().enumerate() {
         if *object == Object::None {
             continue;
         }
-        if let Err(refused) = retain_object(*object) {
+        if let Err(refused) = retain_transit(*object) {
             // Whatever was taken before the refusal goes back, so a send that
             // did not happen leaves no name behind it.
             release_from_transit(&granted[..position]);
@@ -611,7 +644,7 @@ pub fn retain_in_transit(granted: &[(Object, u32, u64)]) -> Result<(), NotGrante
 pub fn release_from_transit(granted: &[(Object, u32, u64)]) {
     for (object, _, _) in granted {
         if *object != Object::None {
-            release_object(*object);
+            release_transit(*object);
         }
     }
 }

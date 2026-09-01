@@ -238,6 +238,10 @@ struct Region {
     charged_to: u32,
     /// How many capabilities name it.
     capabilities: usize,
+    /// How many references the nucleus itself holds: a committed delegation
+    /// still in transit, and later anything else that must keep a region alive
+    /// while no process can reach it (ADR-0075 §6).
+    internal: usize,
     /// How many address spaces have it mapped, by mode.
     writable_mappings: usize,
     readable_mappings: usize,
@@ -298,6 +302,7 @@ impl Regions {
                 mutable: false,
                 charged_to: 0,
                 capabilities: 0,
+                internal: 0,
                 writable_mappings: 0,
                 readable_mappings: 0,
                 holder: u32::MAX,
@@ -597,6 +602,7 @@ impl Regions {
             mutable: true,
             charged_to: at as u32,
             capabilities: 1,
+            internal: 0,
             writable_mappings: 0,
             readable_mappings: 0,
             holder,
@@ -699,6 +705,44 @@ impl Regions {
         self.regions[at].capabilities = self.regions[at].capabilities.saturating_sub(1);
         self.settle_region(at);
         Ok(())
+    }
+
+    /// Takes an internal reference: the nucleus itself will keep this region
+    /// alive for a while.
+    ///
+    /// **The interval a committed delegation lives in.** A region sent over an
+    /// endpoint has had the sender's mapping and handle taken from it
+    /// atomically (ADR-0075 §5a) and the receiver has nothing yet: for that
+    /// stretch nothing a process holds names it, and only this keeps it from
+    /// being reclaimed out from under the message. It is not a capability and
+    /// is not counted as one — ADR-0075 §6 makes reclamation wait on
+    /// capabilities, mappings **and** internal references, three counts rather
+    /// than one, because they are lost by three different events.
+    pub fn retain_internal(&mut self, region: RegionId) -> Result<(), Refusal> {
+        let at = self.region(region)?;
+        self.regions[at].internal = self.regions[at]
+            .internal
+            .checked_add(1)
+            .ok_or(Refusal::NoRoom)?;
+        Ok(())
+    }
+
+    /// Drops one internal reference, reclaiming the region if that was the last
+    /// way to reach it.
+    pub fn release_internal(&mut self, region: RegionId) -> Result<(), Refusal> {
+        let at = self.region(region)?;
+        if self.regions[at].internal == 0 {
+            return Err(Refusal::BadArgument);
+        }
+        self.regions[at].internal -= 1;
+        self.settle_region(at);
+        Ok(())
+    }
+
+    /// How many internal references the nucleus holds on a region.
+    pub fn internal(&self, region: RegionId) -> Result<usize, Refusal> {
+        let at = self.region(region)?;
+        Ok(self.regions[at].internal)
     }
 
     /// A process ended: its handles and its mappings go with it.
@@ -905,6 +949,7 @@ impl Regions {
         let region = self.regions[at];
         if !region.live
             || region.capabilities != 0
+            || region.internal != 0
             || region.writable_mappings != 0
             || region.readable_mappings != 0
         {

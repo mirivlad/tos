@@ -973,6 +973,68 @@ fn whether_names_can_be_taken_is_answerable_without_taking_them() {
     assert!(regions.accounting_holds());
 }
 
+/// A region in transit is reachable by nothing a process holds, and lives.
+///
+/// The interval a committed delegation opens: the sender's handle and mapping
+/// were taken from it atomically (ADR-0075 §5a) and the receiver has nothing
+/// yet. Capability references and mappings are both zero, and the region must
+/// still be there when the message arrives — which is why ADR-0075 §6 makes
+/// reclamation wait on three counts rather than one.
+#[test]
+fn an_internal_reference_keeps_a_region_no_process_can_reach() {
+    let (mut regions, root) = endowed();
+    let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
+    let sent = regions
+        .allocate(authority, 2 * 1024 * 1024, WORKER)
+        .expect("allocated");
+    regions.map(sent, true).expect("the sender writes it");
+    regions.freeze(sent, WORKER).expect("and freezes it");
+    regions.map(sent, false).expect("and reads it");
+
+    // The send commits: the message takes its reference before the sender's
+    // handle and mapping go, so nothing is ever unreferenced.
+    regions.retain_internal(sent).expect("the message names it");
+    assert_eq!(regions.internal(sent), Ok(1));
+    regions
+        .unmap(sent, false)
+        .expect("the sender's mapping goes");
+    regions.release(sent).expect("and the sender's handle");
+    assert_eq!(
+        regions.allocated(root),
+        Ok(2 * 1024 * 1024),
+        "nothing a process holds names it, and it is still there"
+    );
+
+    // The sender dies before anybody receives. Still there.
+    regions.process_died(WORKER);
+    assert_eq!(regions.allocated(root), Ok(2 * 1024 * 1024));
+    assert!(regions.accounting_holds());
+
+    // The receiver acquires before the message lets go, so the region never
+    // passes through unreachable.
+    regions.map(sent, false).expect("the receiver reads it");
+    regions
+        .release_internal(sent)
+        .expect("and the message is done");
+    assert_eq!(regions.internal(sent), Ok(0));
+    assert_eq!(regions.allocated(root), Ok(2 * 1024 * 1024));
+
+    // And when the last of the three goes, the backing returns.
+    regions
+        .unmap(sent, false)
+        .expect("the receiver's mapping goes");
+    assert_eq!(regions.allocated(root), Ok(0));
+    assert_eq!(regions.remaining(authority), Ok(8 * 1024 * 1024));
+    assert!(regions.accounting_holds());
+
+    // Releasing one that is not held is a defect, not a no-op.
+    let other = regions
+        .allocate(authority, 1024 * 1024, WORKER)
+        .expect("allocated");
+    assert_eq!(regions.release_internal(other), Err(Refusal::BadArgument));
+    assert!(regions.accounting_holds());
+}
+
 /// The mode is what a caller can observe about a region, and it only goes one
 /// way.
 #[test]
