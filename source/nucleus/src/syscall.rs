@@ -1009,27 +1009,35 @@ fn release_capability(caller: usize, handle: u64) -> Answer {
         Ok(object) => object,
         Err(refused) => return refused.into(),
     };
-    if let Object::Region { index, .. } = object {
+    if let Object::Region { index, generation } = object {
+        let region = crate::region::RegionId { index, generation };
+        // SAFETY: single-context nucleus; nothing else holds the tree.
+        let tree = unsafe { crate::memory::authority() };
+        let Ok(length) = tree.length(region) else {
+            crate::memory::note_divergence(b"region-release-length");
+            return Answer::status(E_LIMIT);
+        };
+        // Everything that could refuse is asked here, while the window, the
+        // handle and the region's own counts are all still intact. Below this
+        // line nothing can refuse, so there is nothing to roll back — which
+        // matters because rebuilding a released lane could itself need reserve
+        // frames and fail.
+        let pages = length as u64 / FRAME_SIZE;
+        if !crate::process::lane_matches(caller, index, pages, true)
+            || tree.mappings(region) != Ok((1, 0))
+        {
+            crate::memory::note_divergence(b"region-release-lane");
+            return Answer::status(E_LIMIT);
+        }
+
+        // --- committed from here ---
         // SAFETY: the caller's space is the live one, and the flush follows
         // before this returns to ring 3.
         unsafe { crate::process::unmap_region(caller, index) };
         // SAFETY: the tree is complete and maps this nucleus.
         unsafe { crate::paging::AddressSpace::flush() };
-        // SAFETY: single-context nucleus; nothing else holds the tree.
-        let tree = unsafe { crate::memory::authority() };
-        let region = crate::region::RegionId {
-            index,
-            generation: match object {
-                Object::Region { generation, .. } => generation,
-                _ => 0,
-            },
-        };
         if tree.unmap(region, true).is_err() {
-            // The region did not think it was mapped. The window is gone
-            // either way, and the capability stays so the caller is not left
-            // holding nothing.
             crate::memory::note_divergence(b"region-mapping-count");
-            return Answer::status(E_LIMIT);
         }
     }
     match capability::release(caller, handle) {
@@ -1201,11 +1209,13 @@ fn region_allocate_inner(caller: usize, handle: u64, bytes: u64) -> Answer {
     // is finished.
     unsafe { crate::paging::AddressSpace::flush() };
 
-    // The mapping is a way of reaching it, so construction can let go.
-    if tree.release_internal(region).is_err() {
-        crate::memory::note_divergence(b"region-construction-ref");
-        return Answer::status(E_LIMIT);
-    }
+    // **The capability first, and construction lets go afterwards.** Dropping
+    // the construction reference before the handoff was committed left one
+    // failure — an impossible internal state — able to return a refusal while a
+    // live user mapping existed that nothing could name. Now the caller has its
+    // handle before the nucleus stops holding the region, and the counts never
+    // pass through zero on the way: the mapping alone would have kept it alive
+    // in between anyway.
     let granted = capability::grant(
         caller,
         Object::Region {
@@ -1216,17 +1226,21 @@ fn region_allocate_inner(caller: usize, handle: u64, bytes: u64) -> Answer {
         0,
     );
     let Ok(named) = granted else {
-        // Ruled out by the preflight, and undone whole if it happens: the
-        // mapping goes, which is now the only reference, and the region
-        // becomes reclaimable on the way out.
-        // SAFETY: the caller's space is the live one and the flush follows.
-        unsafe { crate::process::unmap_region(caller, region.index) };
+        // The preflight proved a slot was free and the region proved it had no
+        // capability, so reaching here is the capability table and the region
+        // disagreeing rather than a caller asking for too much. Undone whole,
+        // and said so.
+        crate::memory::note_divergence(b"region-handoff");
         let _ = tree.unmap(region, true);
-        // SAFETY: as above.
-        unsafe { crate::paging::AddressSpace::flush() };
-        drain_reclaims();
-        return Answer::status(E_LIMIT);
+        return unbuild(caller, region, built, true, E_LIMIT);
     };
+    // Now the caller can name it, the nucleus need not.
+    if tree.release_internal(region).is_err() {
+        // The region is nameable, mapped and usable; what is lost is a
+        // reference the accounting will show. Better a leak the numbers report
+        // than a refusal for a region the caller already holds.
+        crate::memory::note_divergence(b"region-construction-ref");
+    }
 
     // SAFETY: the argument region is this process's own, mapped by the
     // launcher, and the nucleus writes it through its own identity map.

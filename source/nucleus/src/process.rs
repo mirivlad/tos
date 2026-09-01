@@ -550,18 +550,22 @@ pub fn process_window_tables() -> u64 {
 /// exists and will never be built twice. It cost 25 frames — and the region
 /// lanes needed 17 of them.
 ///
-/// **The region lanes are not in it yet, and that is a finding rather than an
-/// omission.** The derived lane bound is `1 477` frames on the reference
-/// machine against `517` without it, and the `960` between them are more than
-/// the margin the four-process budget had: four grants of `14 356` frames need
-/// `57 424`, and a root endowed over what is left after a `1 477`-frame reserve
-/// holds `57 407`. Seventeen frames short — 68 KiB — and the fourth process
-/// stops being creatable, which the lifecycle gate found immediately.
+/// **The region lanes are in it, and getting them there found a duplicate.**
+/// Added to the formula as it first stood, the lane bound gave `1 477` frames
+/// and the fourth process stopped being creatable — seventeen short of the
+/// `57 424` four grants need. The cause was not the lanes: the leading
+/// `identity` term reserved the nucleus's own address space a second time,
+/// after that space had begun to be built from the pool before the reserve
+/// exists. Removing it recovered 25 frames, more than the 17 the lanes were
+/// short by, and no ceiling moved.
 ///
-/// Reserving for lanes that nothing can yet allocate buys nothing and costs
-/// that process, so the bound is added in the slice that starts using it, once
-/// the collision has been resolved. `docs/evidence/STAGE3_REGION_APERTURE.md`
-/// carries the arithmetic.
+/// The current formula is what this function computes: the backing index once
+/// for the machine, and for each process its identity mappings, its fixed
+/// windows and its region lanes. On the reference machine that is `1 452`
+/// frames. `docs/evidence/STAGE3_REGION_APERTURE.md` carries the arithmetic and
+/// keeps the failed measurement, because it is the evidence that the
+/// four-process lifecycle gate catches an accounting error the arithmetic gate
+/// could not see at the time.
 pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange], admitted: u64) -> u64 {
     region_backing_bound(admitted)
         + MAX_PROCESSES as u64
@@ -2672,6 +2676,40 @@ pub fn map_region(process: usize, index: u32, pages: u64, writable: bool) -> Res
         }
     }
     Ok(lane)
+}
+
+/// Whether a process's region lane is exactly what it should be.
+///
+/// **Asked before anything is destroyed, never during.** Detaching a lane and
+/// then asking the region whether it agreed leaves nothing to do when it did
+/// not: the window is already gone, and rebuilding it can need reserve frames
+/// and fail. So the whole lane is validated first — the branch is there, it has
+/// exactly the pages the region has, every leaf names the frame the backing
+/// index names for that page, the write bit is what was expected, and nothing
+/// is mapped beyond the region's length — and only then may the commit release
+/// the branch without discovering anything.
+pub fn lane_matches(process: usize, index: u32, pages: u64, writable: bool) -> bool {
+    let lane = region_lane(index);
+    // SAFETY: single-context nucleus; the index exists from boot.
+    let Some(backing) = (unsafe { crate::memory::backing() }) else {
+        return false;
+    };
+    // SAFETY: as above; nothing else touches the table.
+    let table = unsafe { table() };
+    let Some(space) = table.get(process).and_then(|slot| slot.space.as_ref()) else {
+        return false;
+    };
+    for page in 0..pages {
+        let at = lane + page * FRAME_SIZE;
+        let (Some(mapped), Some(backed)) = (space.translate(at), backing.frame_at(lane, page))
+        else {
+            return false;
+        };
+        if mapped != backed || space.writable(at) != Some(writable) {
+            return false;
+        }
+    }
+    space.translate(lane + pages * FRAME_SIZE).is_none()
 }
 
 /// Takes a region's window away from a process, and its lane's tables with it.

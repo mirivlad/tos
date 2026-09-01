@@ -442,6 +442,24 @@ impl AddressSpace {
         (leaf & PRESENT != 0).then_some(leaf & ADDRESS)
     }
 
+    /// Whether one mapped page may be written, if it is mapped at all.
+    ///
+    /// The leaf's own bit, not the path's: every real permission is stated on
+    /// the leaf here, and the interiors are deliberately permissive.
+    pub fn writable(&self, virt: u64) -> Option<bool> {
+        let (l4, l3, l2, l1) = indices(virt).ok()?;
+        let mut table = self.root;
+        for index in [l4, l3, l2] {
+            let entry = Self::entry(table, index);
+            if entry & PRESENT == 0 || entry & HUGE != 0 {
+                return None;
+            }
+            table = entry & ADDRESS;
+        }
+        let leaf = Self::entry(table, l1);
+        (leaf & PRESENT != 0).then_some(leaf & WRITABLE != 0)
+    }
+
     /// Discards every cached translation of the live space.
     ///
     /// **One reload rather than an address at a time.** A region lane is half a
