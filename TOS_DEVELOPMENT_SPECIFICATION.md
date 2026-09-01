@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `1e4c39ddc12561868ae5992d0b46cb1f7c6cbf9216694703b799516dbbb3268b`\
+Source-manifest SHA-256: `177c9a8c27439c93fee40effff78aa8effb5b94408d1ed789757c3864bf12f64`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2399,6 +2399,16 @@ are marked and are exactly those a process can only apply to itself.
 | 13 | `endpoint_reply_receive` | **two**: `rdi` = reply handle (single use), `rsi` = endpoint handle with `receive` | answers the call the reply names, then waits for the next message on the endpoint, without returning to CPL 3 in between. `rdx` = the answer's length, `r10` = flags. The length taken is returned in `rdx`, as for `endpoint_receive` (ADR-0063) |
 | 14 | `process_wait_child` | process capability with `wait_child` | the earliest pending ending among that process object's **direct children** (ADR-0067). `rsi` = flags. `rdx` returns the ended child's instance id, and the record is written to the caller's argument region at `WAIT_CHILD_RECORD`. Blocks with no pending ending; `E_WOULD_BLOCK` when asked not to; `E_CANCELLED` when the relation it watches ends or the liveness rule fires |
 | 15 | `process_create_with_generation` | process-authority capability | `process_create` (8) plus `r8` = the **supervisor-asserted restart generation**, recorded and never computed. `rdx` returns the child's capability handle as for 8; the child's instance id is written to the argument region at `CREATE_INSTANCE_ID` (ADR-0067) |
+
+| 16 | `capability_attenuate_scoped` | memory-authority capability with `spend` | reserves `rsi` bytes of it as a **child** authority and returns a capability naming that child. The parent's remaining amount falls by exactly what the child may spend; no physical memory moves, and the pool is untouched (ADR-0076 §2b). `E_BAD_ARGUMENT` for a size no budget could serve, `E_LIMIT` for one this budget cannot |
+
+**Operation 16 is not operation 5 with an amount.** Generic attenuation (5)
+refines rights and returns another *name* for the same authority, spending from
+the same remainder; there is no path through it to a smaller amount, because the
+amount is not in the capability. Scoped attenuation makes a new accounting node
+and moves budget down into it. One changes what everybody else may spend and the
+other does not, which is why they are two operations rather than two spellings
+of one (`CAPABILITY_V1` §3).
 
 Operation `0` is not assigned and never will be. A register that was never
 written holds zero, so a zero selector is overwhelmingly likely to be a caller

@@ -612,6 +612,22 @@ pub fn release_from_transit(granted: &[(Object, u32, u64)]) {
     }
 }
 
+/// Whether a process's table has room for one more capability.
+///
+/// Asked before an operation makes the object a capability would name, so that
+/// a full table refuses before anything exists rather than after: a child
+/// authority with no handle to it is a reservation nobody can spend or return.
+pub fn has_room(process: usize) -> bool {
+    if process >= MAX_PROCESSES {
+        return false;
+    }
+    // SAFETY: single-context nucleus; bounds checked immediately above.
+    let table = unsafe { tables() };
+    table[process]
+        .iter()
+        .any(|entry| entry.object == Object::None)
+}
+
 /// How many capabilities a process holds, for evidence that a refusal left the
 /// table as it found it.
 #[cfg_attr(not(feature = "test-creation-rollback"), allow(dead_code))]

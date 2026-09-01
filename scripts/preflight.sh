@@ -227,6 +227,10 @@ qemu_creation_rollback() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/creation-rollback.sh \
         target/preflight-qemu/creation-rollback)
 }
+qemu_memory_authority() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/memory-authority.sh \
+        target/preflight-qemu/memory-authority)
+}
 qemu_exception_ud2() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh ud2)
 }
@@ -433,6 +437,7 @@ gate qemu       full-only "QEMU boot-module failure code"              qemu_boot
 gate qemu       full-only "QEMU capsule size limit"                    qemu_capsule_size_limit
 gate qemu       full-only "QEMU unified memory account"                 qemu_memory_account
 gate qemu       full-only "QEMU creation rollback"                     qemu_creation_rollback
+gate qemu       full-only "QEMU memory authority at CPL 3"              qemu_memory_authority
 gate qemu       full-only "QEMU exception #UD"                         qemu_exception_ud2
 gate qemu       full-only "QEMU exception #GP"                         qemu_exception_gp
 gate qemu       full-only "QEMU unmapped page faults"                  qemu_paging_unmapped

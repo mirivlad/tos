@@ -2329,6 +2329,19 @@ pub unsafe fn create(
         );
         crate::capability::endow(index, endowment, out)
     };
+    // The allowance now has two names: the one `attenuate` gave its maker and
+    // the one the endowment just wrote. The maker's goes, leaving the process
+    // holding the only one — and the count never passed through zero, so the
+    // reservation never went back to the anchor on the way.
+    if let Some(child) = allowance {
+        // SAFETY: single-context nucleus; nothing else holds the tree.
+        if unsafe { crate::memory::authority() }
+            .release_name(child)
+            .is_err()
+        {
+            crate::memory::note_divergence(b"allowance-handover");
+        }
+    }
     // SAFETY: `record` addresses the `Launch` written above, in the nucleus's
     // own identity map, and this field is the only one changed.
     unsafe {
