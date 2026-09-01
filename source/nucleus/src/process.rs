@@ -471,6 +471,10 @@ pub enum Unlaunchable {
     TooManyProcesses,
     /// The entry index names no unit of this boot's source set.
     NoSuchModule,
+    /// The endowment the creator decided on cannot be written whole, so it is
+    /// not written at all (ADR-0055): a child holding some of what it was given
+    /// is a child nobody decided on.
+    Unendowable,
 }
 
 impl From<PagingRefused> for Unlaunchable {
@@ -1852,6 +1856,21 @@ pub unsafe fn create(
         return Err(Unlaunchable::TooManyUnits);
     }
     let grant_length = grant_bytes();
+    // The whole endowment, checked before the process exists rather than
+    // written into it afterwards. ADR-0055 makes a half-endowed child invalid,
+    // and until now `endow` ran after `admit`: a refusal on the third entry
+    // left a published, runnable process holding the first two and no way to
+    // know what it was missing.
+    if let Err(refused) = crate::capability::endowable(endowment) {
+        tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=");
+        tos_serial::puts(match refused {
+            crate::capability::NotGranted::NoRoom => b"endowment-table-full",
+            crate::capability::NotGranted::ReceiverExists => b"endowment-endpoint-received",
+        });
+        tos_serial::puts(b" asserted_by=nucleus\r\n");
+        return Err(Unlaunchable::Unendowable);
+    }
+
     // A slot to publish into, checked before anything is built rather than
     // after: `admit` consumes the address space, so a table that turned out to
     // be full at the end would leave the transaction with nothing to roll back.

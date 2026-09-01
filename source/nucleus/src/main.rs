@@ -803,12 +803,14 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             let root = memory::root().expect("the root was endowed above");
             let free_before = tree.remaining(root).unwrap_or(0);
             let committed_before = tree.committed();
+            let held_before = capability::held(0);
 
             injection::arm(case);
             // SAFETY: the template was established above and the nucleus's own
             // address space is the live one.
             let refused = unsafe { process::create(entry_index, &[], 0, None) }.is_err();
             injection::disarm();
+            let _ = &case;
 
             // SAFETY: as above.
             let (pool_after, tables_after) =
@@ -835,12 +837,93 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             tos_serial::put_u32_decimal(committed_before as u32);
             tos_serial::puts(b"/");
             tos_serial::put_u32_decimal(tree.committed() as u32);
+            tos_serial::puts(b" capabilities=");
+            tos_serial::put_u32_decimal(held_before as u32);
+            tos_serial::puts(b"/");
+            tos_serial::put_u32_decimal(capability::held(0) as u32);
             tos_serial::puts(b" holds=");
             tos_serial::put_u32_decimal(u32::from(tree.accounting_holds()));
             tos_serial::puts(b" diverged=");
             tos_serial::put_u32_decimal(u32::from(memory::accounting_diverged()));
             tos_serial::puts(b" asserted_by=nucleus\r\n");
         }
+    }
+
+    // The ninth failure, and the only one that is not an injection: an
+    // endowment the launcher decided on that cannot be written whole. Two valid
+    // entries and a third claiming the receive right on an endpoint the second
+    // already claims — `IPC_V1` §2 allows one receiver, and `grant` cannot see
+    // the clash because the first of the pair is not written when the second is
+    // checked. ADR-0055 makes the child invalid rather than short, so the
+    // creation is refused before the process exists at all.
+    #[cfg(feature = "test-creation-rollback")]
+    {
+        let binding = capability::Binding::new(b"a").expect("a short name");
+        let endowment = [
+            capability::Endowment::Existing {
+                binding,
+                object: capability::Object::Endpoint(0),
+                rights: tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding,
+                object: capability::Object::Endpoint(0),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding,
+                object: capability::Object::Endpoint(0),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+        ];
+        // SAFETY: boot, single-context, before any process exists.
+        let (pool_before, tables_before) =
+            unsafe { (memory::frames().available(), memory::tables().remaining()) };
+        // SAFETY: as above.
+        let tree = unsafe { memory::authority() };
+        let root = memory::root().expect("the root was endowed above");
+        let free_before = tree.remaining(root).unwrap_or(0);
+        let committed_before = tree.committed();
+        let held_before = capability::held(0);
+
+        // SAFETY: as above.
+        let refused = unsafe { process::create(entry_index, &endowment, 0, None) }.is_err();
+
+        // SAFETY: as above.
+        let (pool_after, tables_after) =
+            unsafe { (memory::frames().available(), memory::tables().remaining()) };
+        // SAFETY: as above.
+        let tree = unsafe { memory::authority() };
+        tos_serial::puts(b"TOS.RUN.CREATE_ROLLBACK case=endowment refused=");
+        tos_serial::put_u32_decimal(u32::from(refused));
+        tos_serial::puts(b" pool=");
+        tos_serial::put_u32_decimal(pool_before as u32);
+        tos_serial::puts(b"/");
+        tos_serial::put_u32_decimal(pool_after as u32);
+        tos_serial::puts(b" tables=");
+        tos_serial::put_u32_decimal(tables_before as u32);
+        tos_serial::puts(b"/");
+        tos_serial::put_u32_decimal(tables_after as u32);
+        tos_serial::puts(b" free=");
+        tos_serial::put_u32_decimal(free_before as u32);
+        tos_serial::puts(b"/");
+        tos_serial::put_u32_decimal(tree.remaining(root).unwrap_or(0) as u32);
+        tos_serial::puts(b" committed=");
+        tos_serial::put_u32_decimal(committed_before as u32);
+        tos_serial::puts(b"/");
+        tos_serial::put_u32_decimal(tree.committed() as u32);
+        tos_serial::puts(b" capabilities=");
+        tos_serial::put_u32_decimal(held_before as u32);
+        tos_serial::puts(b"/");
+        tos_serial::put_u32_decimal(capability::held(0) as u32);
+        tos_serial::puts(b" holds=");
+        tos_serial::put_u32_decimal(u32::from(tree.accounting_holds()));
+        tos_serial::puts(b" diverged=");
+        tos_serial::put_u32_decimal(u32::from(memory::accounting_diverged()));
+        tos_serial::puts(b" asserted_by=nucleus\r\n");
     }
 
     // Building a process and entering one are separate steps, and this is where
