@@ -104,10 +104,10 @@ amount of memory.
    the same reserve — they must, since nothing else may take frames the tree has
    promised — and what that does to the bound.
 
-## 4a. The derivation, and the collision it found (added 2026-09-01)
+## 4a. The derivation, the collision, and what it actually was (2026-09-01)
 
-The bound was derived and measured before being deferred, because a bound
-nobody computed is not a bound. With `P` the memory the pool admitted:
+The bound was derived and measured before being used, because a bound nobody
+computed is not a bound. With `P` the memory the pool admitted:
 
 ```text
 a = ceil(P / 512 GiB)    b = ceil(P / 1 GiB)    c = ceil(P / 2 MiB)
@@ -116,45 +116,76 @@ backing index   1 + (a + R - 1) + (b + R - 1) + (c + R - 1)
 per process         (a + C - 1) + (b + C - 1) + (c + C - 1)
 ```
 
-Spreading `P` over `slots` lanes costs one extra table per level per lane after
-the first, because each lane starts on a fresh 512-GiB boundary; the total
-backing alive at once cannot exceed `P` however it is divided. A process is
-bounded by `C = MAX_CAPABILITIES`, not by `R = MAX_REGIONS`: it cannot reach
-more distinct regions than it can hold handles for.
+Spreading `P` over `slots` lanes costs at most one extra table per level per
+lane after the first, because each lane starts on a fresh 512-GiB boundary; the
+total backing alive at once cannot exceed `P` however it is divided. A process
+is bounded by `C = MAX_CAPABILITIES`, not by `R = MAX_REGIONS`: it cannot reach
+more distinct regions than it can hold handles for. On the reference machine —
+`P = 58 909` frames, `a = 1`, `b = 1`, `c = 116` — that is `308` frames for the
+backing index and `163` per process.
 
-On the reference machine — `P = 58 909` frames, `a = 1`, `b = 1`, `c = 116`:
+### What the first measurement showed, and why it was wrong
+
+Added to the reserve as it then stood, this gave `1 477` frames and the fourth
+process stopped being creatable: four grants of `14 356` frames need `57 424`,
+and the root held `57 407`. Seventeen frames short. The lifecycle gate found it
+on the first run, refusing the fourth creation for want of funding.
+
+**That was not a ceiling problem. It was the nucleus's own address space
+reserved twice.** The formula was
+
+```text
+identity + MAX_PROCESSES * (identity + windows)
+```
+
+and the leading `identity` was right for as long as every page-table tree came
+from the reserve — it was the nucleus's own space. It stopped being right in the
+same slice that moved that space out of the reserve and into the pool, built
+before the reserve exists because until the nucleus owns its own map some of
+what the memory map reports usable is still mapped read-only by the firmware.
+From that moment those frames were already gone from `Frames`, reported as their
+own line of the account, and reserved a second time for a tree that will never
+be built again.
+
+The corrected baseline drops the standalone term:
+
+```text
+backing + MAX_PROCESSES * (identity + windows + region mappings)
+```
+
+which recovers exactly the 25 frames the duplicate cost — more than the 17 the
+lanes were short by.
+
+### The reference machine, measured
 
 | | frames |
 |---|---:|
-| existing reserve | 517 |
+| admitted | 58 909 |
+| the nucleus's own space, already spent | 23 |
 | backing index | 308 |
-| region mappings, 4 processes | 652 |
-| **reserve with lanes** | **1 477** |
+| per process: identity 25 + windows 98 + region mappings 163 | 286 |
+| **page-table reserve** | **1 452** |
+| **root authority** | **57 434** |
+| four ordinary processes at 14 356 | 57 424 |
+| **margin** | **10 frames** |
 
-**And that is 17 frames more than the platform has.** Four grants of `14 356`
-frames need `57 424`. A root endowed over what is left after a 1 477-frame
-reserve — and after the nucleus's own 23-frame address space — holds `57 407`.
-Sixty-eight kilobytes short, and the fourth process stops being creatable; the
-lifecycle gate found it on the first run.
+No ceiling moved. `MAX_PROCESSES`, `MAX_CAPABILITIES`, `MAX_REGIONS`, the
+reference platform's memory and the runtime grant are all unchanged, and the
+conservative region derivation is the one being used rather than a tightened
+one.
 
-So the lane bound is **not** in `table_reserve` today. Reserving for lanes that
-nothing can yet allocate buys nothing and costs a process that works, so it is
-added in the slice that starts using it. What it needs first is a decision, and
-the honest options are all Level-2:
+The failed measurement is kept here on purpose. It is the evidence that the
+four-process lifecycle gate catches an accounting error the arithmetic gate
+could not see at the time — and the arithmetic gate now checks the
+decomposition, so a future change to boot ordering that reintroduces a
+standalone identity term fails on the number rather than on a process that
+will not start.
 
-1. **Fewer simultaneous processes**, or a smaller `MAX_CAPABILITIES`, either of
-   which lowers the bound directly — `C` appears three times in the per-process
-   term.
-2. **A smaller `MAX_REGIONS`**, which lowers the backing index by three frames
-   per slot removed.
-3. **A tighter derivation.** The `c` term assumes a process could map all of the
-   machine's memory as regions. It is a true upper bound and may be loose for
-   the reference platform, but nothing in the accepted contracts makes it
-   looser.
-4. **A larger reference platform**, which ADR-0040 fixes and this does not
-   reopen.
-
-The measurement is the deliverable here; the choice is not mine.
+**Ten frames is not comfortable.** It is a true margin under a conservative
+bound, and both the bound and the four-process figure are printed by the boot
+and checked by the gate, so it cannot quietly become negative. If it needs to be
+larger, the honest levers are the ones §4a of the previous revision listed, and
+they are all Level-2.
 
 ## 5. What is not blocked by this
 
