@@ -77,6 +77,7 @@ const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
 const PROCESS_EXIT: u64 = 12;
 const ENDPOINT_REPLY_RECEIVE: u64 = 13;
+const CAPABILITY_ATTENUATE_SCOPED: u64 = 16;
 
 /// Statuses, as `SYSTEM_ABI_V1` §4 assigns them. Named here because this image
 /// checks them: a refusal it could not name it could not report.
@@ -864,6 +865,62 @@ fn named(capability: &LaunchCapability) -> &str {
     }
 }
 
+/// What a memory authority is, asked from ring 3 (`SYSTEM_ABI_V1` §5, 16).
+///
+/// The claims, in the order they are made:
+///
+/// - reserving out of an authority yields a **different** capability, naming a
+///   child rather than the parent again;
+/// - a child can be reserved out of, so the tree is a tree;
+/// - a size larger than the budget is `E_LIMIT`, and zero is `E_BAD_ARGUMENT` —
+///   an unaffordable request and an impossible one are not the same answer
+///   (ADR-0076 §7);
+/// - an alias made by generic attenuation (5) spends the **same** budget: after
+///   the alias reserves everything a probe amount leaves, the original cannot
+///   reserve it again. Two names, one remainder;
+/// - and releasing a child returns what it held, so the parent can reserve that
+///   amount again afterwards.
+fn memory_authority(report: &mut Report, first: &LaunchCapability) {
+    const MIB: u64 = 1024 * 1024;
+    let parent = first.handle;
+
+    // SAFETY: every call below names a capability this process holds, and each
+    // does nothing when it refuses.
+    let (child_status, child) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, parent, MIB) };
+    let distinct = u64::from(child != parent && child_status == OK);
+    // SAFETY: as above.
+    let (grandchild_status, grandchild) =
+        unsafe { call(CAPABILITY_ATTENUATE_SCOPED, child, MIB / 2) };
+    // More than a one-megabyte child can hold, and more than any budget could:
+    // the first is a limit, the second could not be served by any machine.
+    // SAFETY: as above.
+    let (over, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, child, 4 * MIB) };
+    // SAFETY: as above.
+    let (zero, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, child, 0) };
+    // SAFETY: as above; a handle naming nothing is refused rather than acted on.
+    let (bad_handle, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, 0xffff, MIB) };
+
+    // Two names for one budget: the alias reserves, and what it reserved is
+    // gone from what the original can reserve.
+    // SAFETY: as above.
+    let (alias_status, alias) = unsafe { call(CAPABILITY_ATTENUATE, child, first.rights as u64) };
+    // SAFETY: as above.
+    let (through_alias, spent) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, alias, MIB / 2) };
+    // SAFETY: as above.
+    let (after_alias, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, child, MIB / 2) };
+
+    // And what a child held comes back when its last name goes.
+    // SAFETY: as above.
+    let (released, _) = unsafe { call(CAPABILITY_RELEASE, grandchild, 0) };
+    // SAFETY: as above.
+    let (reclaimed, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, child, MIB / 2) };
+
+    report.line(&alloc::format!(
+        "TOS.RUN.AUTHORITY child={child_status} distinct={distinct} grandchild={grandchild_status} over={over} zero={zero} bad_handle={bad_handle} alias={alias_status} through_alias={through_alias} after_alias={after_alias} released={released} reclaimed={reclaimed}"
+    ));
+    let _ = spent;
+}
+
 fn authority(launch: &Launch, report: &mut Report) {
     if launch.capability_count == 0 {
         report.line("TOS.RUN.CAPABILITY held=0 endowment=empty");
@@ -922,6 +979,15 @@ fn authority(launch: &Launch, report: &mut Report) {
     report.line(&alloc::format!(
         "TOS.RUN.CAPABILITY.PROBE out_of_range={out_of_range} in_range_refused={in_range_refused} guessed={guessed}"
     ));
+
+    // A memory authority: the one kind whose scope is a quantity, and the one
+    // whose amount moves. Everything below is done from CPL 3 through the
+    // ordinary edge, because a reservation model proved only in a host test is
+    // a model nothing has actually asked the nucleus for.
+    if first.object == tos_launch::OBJECT_MEMORY_AUTHORITY {
+        memory_authority(report, first);
+        return;
+    }
 
     // A process holding **both** halves of an endpoint is the deputy: strong
     // enough to send on its own account, and about to be asked by somebody

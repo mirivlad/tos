@@ -506,6 +506,13 @@ impl Regions {
     /// **This is the only way a second authority comes to exist**, and it moves
     /// budget rather than copying it: the parent can no longer spend what the
     /// child now may. Attenuation makes authority; it does not make a region.
+    ///
+    /// The child comes back with **one name, and it is the maker's**. Whoever
+    /// called this holds it and has to do one of two things with it: hand it to
+    /// a capability — which retains a second name, after which the maker
+    /// releases its own, so the count goes 1 → 2 → 1 and never through zero —
+    /// or release it, which returns the whole reservation to the parent. A
+    /// maker that does neither has reserved memory nobody can spend or return.
     pub fn attenuate(&mut self, parent: AuthorityId, bytes: usize) -> Result<AuthorityId, Refusal> {
         if self.stopped {
             return Err(Refusal::Stopped);

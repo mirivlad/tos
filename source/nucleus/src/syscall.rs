@@ -77,6 +77,16 @@ pub const PROCESS_WAIT_CHILD: u64 = 14;
 /// `process_create` with the restart generation its caller asserts (ADR-0067).
 /// Operation 8 is unchanged and asserts none.
 const PROCESS_CREATE_WITH_GENERATION: u64 = 15;
+/// Reserve part of a memory authority as a child of it (ADR-0076 §9).
+/// `rdi` = the authority, `rsi` = the bytes to reserve; the result is a handle
+/// to the child, in the value register operation 5 already returns one in.
+///
+/// **A different operation from 5, because it does a different thing.** Five
+/// refines rights and hands back another name for the same budget; this makes a
+/// new accounting node and takes the parent's remainder down by what the child
+/// may spend. One changes what everybody else can spend and the other does not,
+/// so they are not two spellings of one call.
+const CAPABILITY_ATTENUATE_SCOPED: u64 = 16;
 
 /// The one call flag this contract version has.
 ///
@@ -355,6 +365,9 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
                 Ok(handle) => Answer::value(handle),
                 Err(refused) => refused.into(),
             }
+        }
+        CAPABILITY_ATTENUATE_SCOPED => {
+            attenuate_scoped(caller, arguments.first(), arguments.second())
         }
         CAPABILITY_RELEASE => match capability::release(caller, arguments.first()) {
             Ok(()) => Answer::status(OK),
@@ -905,6 +918,72 @@ fn child_endowment(
         };
     }
     Ok(count)
+}
+
+/// Reserves part of a memory authority as a child of it (operation 16).
+///
+/// The reservation moves at once and no frame moves with it (ADR-0076 §2b): the
+/// parent's remainder falls by exactly what the child may spend, the child
+/// starts with all of it unspent, and the pool is untouched.
+///
+/// **The capability slot is found before the node is made.** A child authority
+/// with no handle naming it is a reservation nobody can spend or return, and it
+/// would be one the caller could not even be told about. So a full table
+/// refuses here, before the parent has been touched, rather than after —
+/// leaving the failure path with nothing to undo but its own refusal.
+fn attenuate_scoped(caller: usize, handle: u64, bytes: u64) -> Answer {
+    let object = match capability::resolve(caller, handle, tos_launch::RIGHT_SPEND) {
+        Ok(object) => object,
+        Err(refused) => return refused.into(),
+    };
+    // The right alone is not enough: `spend` over something that is not an
+    // authority is a right nobody granted over an object this cannot reserve
+    // out of.
+    let Object::MemoryAuthority { index, generation } = object else {
+        return Answer::status(E_NO_CAPABILITY);
+    };
+    if !capability::has_room(caller) {
+        return Answer::status(E_LIMIT);
+    }
+    let parent = crate::region::AuthorityId { index, generation };
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    let tree = unsafe { crate::memory::authority() };
+    let child = match tree.attenuate(parent, bytes as usize) {
+        Ok(child) => child,
+        // A size no budget could serve, told apart from a budget that cannot
+        // serve this one (ADR-0076 §7). `Stopped` answers the nearest accepted
+        // resource refusal: the caller is refused fail-closed, the nucleus has
+        // already said `TOS.NUCLEUS.INVARIANT … funding-stopped`, and this is
+        // not evidence that the authority's own budget ran out.
+        Err(crate::region::Refusal::Empty | crate::region::Refusal::BadArgument) => {
+            return Answer::status(E_BAD_ARGUMENT);
+        }
+        Err(_) => return Answer::status(E_LIMIT),
+    };
+    let named = capability::grant(
+        caller,
+        Object::MemoryAuthority {
+            index: child.index,
+            generation: child.generation,
+        },
+        tos_launch::RIGHT_SPEND,
+        0,
+    );
+    // The child came back holding the maker's name; the grant took a second.
+    // The maker's goes here, so the caller's handle is the only name — and the
+    // count never passed through zero on the way, so the reservation never went
+    // back to the parent in between.
+    let answer = match named {
+        Ok(handle) => Answer::value(handle),
+        // Ruled out above, and undone completely if it happens anyway: releasing
+        // the only name returns the whole reservation to the parent rather than
+        // leaving a node nothing can reach.
+        Err(_) => Answer::status(E_LIMIT),
+    };
+    if tree.release_name(child).is_err() {
+        crate::memory::note_divergence(b"scoped-attenuation-handover");
+    }
+    answer
 }
 
 /// Resolves the handles a message carries, in the caller's table.
