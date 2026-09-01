@@ -33,6 +33,11 @@ test-lifecycle = []
 # Deterministic failure injection for the creation transaction, so the rollback
 # is proved against real refusals rather than asserted.
 test-creation-rollback = []
+# A boot whose process is endowed the root's remainder, so operation 16 can be
+# asked for from ring 3. Not the canonical boot: `system.boot.init` declares no
+# capability request, and ADR-0055 gives a process what its launcher decided
+# rather than what a gate would find convenient.
+test-memory-authority = []
 # Gives one process the right to receive on an endpoint nobody can send to, so
 # that the state ADR-0059's liveness rule is about is a real state of a real
 # system rather than a description of one.
