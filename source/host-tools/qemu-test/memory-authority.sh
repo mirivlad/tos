@@ -31,14 +31,29 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/../.." && pwd)"
 OUT="${1:?usage: memory-authority.sh OUTDIR}"
 mkdir -p "$OUT"
 
 fail() { echo "memory-authority: FAIL: $*" >&2; exit 1; }
 
-bash "$HERE/run.sh" --out "$OUT/boot" --expect 33 > "$OUT/boot.log" 2>&1 || {
+# **Not the canonical boot.** `system.boot.init` declares no capability
+# request, and ADR-0055 gives a process what its launcher decided rather than
+# what a gate would find convenient — granting it an authority it never asked
+# for would be the launcher answering a request that does not exist. This build
+# endows the allowance to a process, which is the same chain with a module at
+# the end of it that asked.
+# Built into its own directory, so the ordinary nucleus at the shared path is
+# not replaced by a feature build that a later gate would then boot.
+BUILD="$ROOT/target/evidence/memory-authority"
+(cd "$ROOT" && cargo build --release -p tos-nucleus \
+    --target x86_64-unknown-none --features test-memory-authority --target-dir "$BUILD") \
+    > "$OUT/build.log" 2>&1 || { cat "$OUT/build.log" >&2; fail "the build did not"; }
+
+bash "$HERE/run.sh" --nucleus "$BUILD/x86_64-unknown-none/release/tos-nucleus" \
+    --out "$OUT/boot" --expect 33 > "$OUT/boot.log" 2>&1 || {
     cat "$OUT/boot.log" >&2
-    fail "the ordinary boot did not pass"
+    fail "the boot did not pass"
 }
 
 python3 - "$OUT/boot/serial.log" <<'PY'

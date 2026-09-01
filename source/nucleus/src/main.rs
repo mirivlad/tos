@@ -1173,28 +1173,39 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-deputy",
         feature = "test-lifecycle"
     )))]
-    // The bootstrap chain ends here (ADR-0076 §2, ADR-0075 §2b):
+    // **Nothing, because the module asks for nothing.** ADR-0055 makes an
+    // endowment what a launcher decided, and ADR-0061 makes each entry the
+    // answer to an `import capability` the module declared. `system.boot.init`
+    // declares none, so it is given none — granting it a memory authority it
+    // never asked for would be the launcher answering a request that does not
+    // exist, which is a different defect from ambient authority only in how it
+    // is spelled.
+    //
+    // The bootstrap chain that ends in a held authority is real and is proved
+    // by the evidence build below, where the module that receives it is one
+    // that asked:
     //
     // ```text
     // Frames -> table reserve -> root MemoryAuthority
-    //        -> the initial process's exact footprint, charged to the root
+    //        -> the process's exact footprint, charged to the root
     //        -> everything the root has left, as a child, endowed explicitly
     // ```
+    #[cfg(not(feature = "test-memory-authority"))]
+    let first_endowment: [capability::Endowment; 0] = [];
+    // The same chain, given to a process, so operation 16 can be asked for from
+    // ring 3 rather than described.
     //
-    // **The raw root is not what it gets.** The root is the boot's accounting
-    // anchor: it has no parent to return to, no ring-3 handle names it, and it
-    // must survive a process ending or being restarted. What the first process
-    // is given is an ordinary child of it — reserved out of the root, with an
+    // **A child of the root and never the root itself.** The root is the boot's
+    // accounting anchor: it has no parent to return to, no ring-3 handle names
+    // it, and it must survive a process ending or being restarted. What this
+    // process gets is an ordinary child — reserved out of the root, with an
     // ordinary reference lifecycle, returning its unspent part to the anchor
-    // when its last name goes. Nothing is inherited and nothing is ambient:
-    // this is an entry in the endowment like any other, and the process finds
-    // it in its launch record rather than asking for it.
+    // when its last name goes.
     //
     // All of what is left, because once there is user-space supervision the
     // policy for dynamic user memory belongs below that allowance rather than
-    // to nucleus spending nobody authorised. The root normally ends the boot
-    // with `allocated = the footprint`, `reserved = the allowance` and
-    // `remaining = 0`, and that is intentional.
+    // to nucleus spending nobody authorised.
+    #[cfg(feature = "test-memory-authority")]
     let first_endowment = [capability::Endowment::Remainder {
         binding: capability::Binding::new(b"memory").expect("a short name"),
         rights: tos_launch::RIGHT_SPEND,
