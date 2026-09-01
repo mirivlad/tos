@@ -139,6 +139,22 @@ fn round_up(bytes: usize, granule: usize) -> Result<usize, Refusal> {
         .ok_or(Refusal::BadArgument)
 }
 
+/// Responsibility for retiring one region, and the only thing that can credit
+/// its bytes back.
+///
+/// **Physical first, accounting second.** The frames a region is made of belong
+/// to the pool and the tables that map it belong to the reserve; the bytes are
+/// not free until both are back. Neither `Copy` nor `Clone`, so a retirement
+/// cannot be finished twice, and it names the slot *and* the generation, so it
+/// cannot finish a later occupant of the same slot.
+#[must_use = "a retirement that is dropped is memory neither account gets back"]
+#[derive(Debug, Eq, PartialEq)]
+pub struct Reclaim {
+    slot: u32,
+    generation: u32,
+    bytes: usize,
+}
+
 /// A receipt naming one outstanding charge in the ledger.
 ///
 /// **It names the charge, not the amount.** An earlier form carried the slot of
@@ -248,6 +264,12 @@ struct Region {
     /// Which process holds it while it is mutable, and while it is immutable
     /// and unshared. `u32::MAX` is nobody.
     holder: u32,
+    /// Nothing can reach it any more, and its backing has not been given back
+    /// yet. It resolves to nothing from here on, and its slot is not reusable
+    /// until the physical retirement has finished.
+    reclaimable: bool,
+    /// Somebody is performing that retirement, and holds the receipt.
+    taken: bool,
 }
 
 /// One outstanding process charge, as the ledger holds it.
@@ -306,6 +328,8 @@ impl Regions {
                 writable_mappings: 0,
                 readable_mappings: 0,
                 holder: u32::MAX,
+                reclaimable: false,
+                taken: false,
             }; MAX_REGIONS],
             charges: [Charge {
                 live: false,
@@ -613,6 +637,8 @@ impl Regions {
             writable_mappings: 0,
             readable_mappings: 0,
             holder,
+            reclaimable: false,
+            taken: false,
         };
         Ok(RegionId {
             index: index as u32,
@@ -712,6 +738,80 @@ impl Regions {
         }
         self.regions[at].readable_mappings = 0;
         self.regions[at].holder = to;
+        Ok(())
+    }
+
+    /// A region whose retirement has not been performed, if there is one.
+    ///
+    /// What the retirement path asks between one release and the next: the
+    /// nucleus finds these rather than being told, because the reference that
+    /// went may have been anybody's.
+    pub fn reclaimable(&self) -> Option<RegionId> {
+        (0..MAX_REGIONS)
+            .find(|at| {
+                self.regions[*at].live && self.regions[*at].reclaimable && !self.regions[*at].taken
+            })
+            .map(|at| RegionId {
+                index: at as u32,
+                generation: self.regions[at].generation,
+            })
+    }
+
+    /// Takes responsibility for retiring a region, and the receipt that says so.
+    ///
+    /// **The receipt is what keeps the two accounts from diverging.** Between
+    /// this and [`Regions::finish_reclaim`] the caller returns the backing
+    /// frames to the pool and the lane's tables to the reserve; only the
+    /// receipt can then credit the authority, it can only do so once, and it
+    /// cannot credit a different region or a later occupant of the slot. The
+    /// slot stays live and unreusable until it does.
+    pub fn take_reclaim(&mut self, region: RegionId) -> Result<Reclaim, Refusal> {
+        let at = region.index as usize;
+        if at >= MAX_REGIONS {
+            return Err(Refusal::NotFound);
+        }
+        let held = self.regions[at];
+        if !held.live || !held.reclaimable || held.taken || held.generation != region.generation {
+            return Err(Refusal::NotFound);
+        }
+        self.regions[at].taken = true;
+        Ok(Reclaim {
+            slot: region.index,
+            generation: region.generation,
+            bytes: held.bytes,
+        })
+    }
+
+    /// How many bytes a retirement has to give back before it is finished.
+    pub fn reclaim_bytes(&self, ticket: &Reclaim) -> usize {
+        ticket.bytes
+    }
+
+    /// Finishes a retirement: the backing is back, so the budget goes back.
+    ///
+    /// The last step and never the first. What it credits is what the receipt
+    /// says, to the authority that funded it, along the lineage that paid —
+    /// and the slot becomes reusable only here, so nothing can occupy it while
+    /// its frames are still out.
+    pub fn finish_reclaim(&mut self, ticket: Reclaim) -> Result<(), Refusal> {
+        let at = ticket.slot as usize;
+        if at >= MAX_REGIONS {
+            return Err(Refusal::NotFound);
+        }
+        let held = self.regions[at];
+        if !held.live || !held.taken || held.generation != ticket.generation {
+            return Err(Refusal::NotFound);
+        }
+        let funder = held.charged_to as usize;
+        if self.authorities[funder].allocated < held.bytes {
+            return Err(Refusal::BadArgument);
+        }
+        self.regions[at].live = false;
+        self.regions[at].taken = false;
+        self.regions[at].reclaimable = false;
+        self.authorities[funder].allocated -= held.bytes;
+        self.give_back_or_keep(funder, held.bytes);
+        self.settle_authority(funder);
         Ok(())
     }
 
@@ -991,10 +1091,20 @@ impl Regions {
         total
     }
 
-    /// Reclaims a region whose last way of being reached has gone.
+    /// Marks a region whose last way of being reached has gone.
+    ///
+    /// **It does not credit anybody.** Once a region has physical backing, the
+    /// bytes are not free when the last reference goes — they are free when the
+    /// frames are back in the pool. Crediting here would let the authority tree
+    /// hand out memory that `Frames` still holds, which is the two-counters
+    /// defect wearing a different hat. So this only records that the region has
+    /// become reclaimable; [`Regions::take_reclaim`] and
+    /// [`Regions::finish_reclaim`] are what actually retire it, in that order,
+    /// with the physical work in between.
     fn settle_region(&mut self, at: usize) {
         let region = self.regions[at];
         if !region.live
+            || region.reclaimable
             || region.capabilities != 0
             || region.internal != 0
             || region.writable_mappings != 0
@@ -1002,12 +1112,8 @@ impl Regions {
         {
             return;
         }
-        let funder = region.charged_to as usize;
-        self.regions[at].live = false;
+        self.regions[at].reclaimable = true;
         self.regions[at].holder = u32::MAX;
-        self.authorities[funder].allocated -= region.bytes;
-        self.give_back_or_keep(funder, region.bytes);
-        self.settle_authority(funder);
     }
 
     /// Returns reclaimed bytes to the authority that funded them, or past it to
@@ -1082,7 +1188,9 @@ impl Regions {
             return Err(Refusal::NotFound);
         }
         let region = &self.regions[at];
-        if !region.live || region.generation != id.generation {
+        // A region awaiting retirement resolves to nothing: nothing can reach
+        // it, and its backing is still out.
+        if !region.live || region.reclaimable || region.generation != id.generation {
             return Err(Refusal::NotFound);
         }
         Ok(at)

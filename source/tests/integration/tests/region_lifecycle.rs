@@ -50,6 +50,21 @@ fn handed_over(
     region
 }
 
+/// The retirement a real reclamation performs.
+///
+/// The physical work belongs between the two halves: operation 17's reclaim
+/// returns the backing frames to the pool and the lane's page tables to the
+/// reserve, and only then may the authority be credited. Here there is no
+/// backing yet, so the two halves are adjacent — but they are still two, and
+/// the receipt is what makes the order unskippable.
+fn retire(regions: &mut Regions) {
+    while let Some(region) = regions.reclaimable() {
+        let ticket = regions.take_reclaim(region).expect("taken once");
+        assert!(regions.reclaim_bytes(&ticket) > 0);
+        regions.finish_reclaim(ticket).expect("and finished once");
+    }
+}
+
 /// A root authority, and the accounting checked before anything happens.
 fn endowed() -> (Regions, region::AuthorityId) {
     let mut regions = Regions::new();
@@ -163,9 +178,11 @@ fn a_region_is_allocated_frozen_transferred_and_reclaimed() {
     regions.map(bundle, false).expect("the receiver reads it");
     assert_eq!(regions.allocated(root), Ok(2 * 1024 * 1024));
     regions.unmap(bundle, false).expect("the mapping goes");
+    retire(&mut regions);
     regions
         .release_capability(bundle)
         .expect("the last capability goes");
+    retire(&mut regions);
     assert_eq!(
         regions.allocated(root),
         Ok(0),
@@ -186,6 +203,7 @@ fn a_mapping_keeps_a_region_alive_after_its_last_capability() {
     regions
         .release_capability(held)
         .expect("the capability goes");
+    retire(&mut regions);
     assert_eq!(
         regions.allocated(root),
         Ok(1024 * 1024),
@@ -194,6 +212,7 @@ fn a_mapping_keeps_a_region_alive_after_its_last_capability() {
     regions
         .unmap(held, false)
         .expect("and now the mapping goes");
+    retire(&mut regions);
     assert_eq!(regions.allocated(root), Ok(0));
     assert!(regions.accounting_holds());
 }
@@ -224,6 +243,7 @@ fn revocation_returns_the_remainder_and_never_the_live_backing() {
     regions
         .release_capability(region)
         .expect("the region's holder lets go");
+    retire(&mut regions);
     assert_eq!(regions.remaining(root), Ok(ROOT));
     assert_eq!(regions.allocated(root), Ok(0));
     assert!(regions.accounting_holds());
@@ -238,6 +258,7 @@ fn a_process_ending_reclaims_what_only_it_could_reach() {
     regions.map(region, true).expect("mapped writably");
 
     regions.process_died(WORKER);
+    retire(&mut regions);
     assert_eq!(
         regions.allocated(root),
         Ok(0),
@@ -271,7 +292,9 @@ fn the_negatives_are_refusals_and_not_surprises() {
     // A stale handle names nothing: the region is released and its id no longer
     // resolves, whatever the generation counter has moved on to.
     regions.release_capability(region).expect("released");
+    retire(&mut regions);
     assert_eq!(regions.release_capability(region), Err(Refusal::NotFound));
+    retire(&mut regions);
     assert_eq!(regions.freeze(region, WORKER), Err(Refusal::NotFound));
     assert!(regions.accounting_holds());
 }
@@ -354,12 +377,14 @@ fn a_charge_is_rounded_to_the_granule() {
         .expect("allocated");
     regions.retain_capability(region).expect("handed over");
     regions.release_internal(region).expect("construction over");
+    retire(&mut regions);
     assert_eq!(
         regions.allocated(root),
         Ok(4 * FRAME),
         "the grant's two frames and the region's two, all charged"
     );
     regions.release_capability(region).expect("released");
+    retire(&mut regions);
     assert_eq!(regions.allocated(root), Ok(2 * FRAME));
     assert!(regions.accounting_holds());
 
@@ -659,6 +684,7 @@ fn attenuation_reserves_at_once_and_commits_nothing() {
     regions
         .release_capability(region)
         .expect("the last capability goes");
+    retire(&mut regions);
     assert_eq!(regions.remaining(root), Ok(ALLOWANCE));
     assert_eq!(regions.committed(), 0);
     assert!(regions.accounting_holds());
@@ -693,6 +719,7 @@ fn a_death_returns_what_only_the_dead_process_could_reach() {
 
     // The process dies and its authority goes with it.
     regions.process_died(WORKER);
+    retire(&mut regions);
     regions.revoke(allowance).expect("its authority is revoked");
 
     assert_eq!(
@@ -720,9 +747,11 @@ fn a_death_returns_what_only_the_dead_process_could_reach() {
     // When the surviving holder lets go, the backing follows the lineage that
     // funded it, past the node that no capability names any more.
     regions.unmap(handed_on, false).expect("the mapping goes");
+    retire(&mut regions);
     regions
         .release_capability(handed_on)
         .expect("the capability goes");
+    retire(&mut regions);
     assert_eq!(regions.remaining(root), Ok(POOL));
     assert_eq!(regions.committed(), 0);
     assert!(regions.accounting_holds());
@@ -787,6 +816,7 @@ fn a_stopped_tree_refuses_to_grow_and_still_gives_back() {
     regions
         .release_capability(region)
         .expect("a region still releases");
+    retire(&mut regions);
     assert_eq!(regions.committed(), 0);
     regions.revoke(child).expect("an authority still revokes");
     assert_eq!(
@@ -851,6 +881,7 @@ fn only_the_last_name_of_an_authority_returns_its_remainder() {
     regions
         .release_capability(spent)
         .expect("the backing is let go");
+    retire(&mut regions);
     assert_eq!(regions.remaining(root), Ok(POOL));
     assert!(regions.accounting_holds());
 }
@@ -885,6 +916,7 @@ fn an_authority_in_transit_never_returns_to_its_parent() {
 
     // The sender dies before anybody receives. Still nothing comes back.
     regions.process_died(WORKER);
+    retire(&mut regions);
     assert_eq!(regions.remaining(root), held);
     assert_eq!(
         regions.remaining(allowance),
@@ -1016,9 +1048,11 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
     regions
         .unmap(sent, false)
         .expect("the sender's mapping goes");
+    retire(&mut regions);
     regions
         .release_capability(sent)
         .expect("and the sender's handle");
+    retire(&mut regions);
     assert_eq!(
         regions.allocated(root),
         Ok(2 * 1024 * 1024),
@@ -1027,6 +1061,7 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
 
     // The sender dies before anybody receives. Still there.
     regions.process_died(WORKER);
+    retire(&mut regions);
     assert_eq!(regions.allocated(root), Ok(2 * 1024 * 1024));
     assert!(regions.accounting_holds());
 
@@ -1036,6 +1071,7 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
     regions
         .release_internal(sent)
         .expect("and the message is done");
+    retire(&mut regions);
     assert_eq!(regions.internal(sent), Ok(0));
     assert_eq!(regions.allocated(root), Ok(2 * 1024 * 1024));
 
@@ -1043,6 +1079,7 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
     regions
         .unmap(sent, false)
         .expect("the receiver's mapping goes");
+    retire(&mut regions);
     assert_eq!(regions.allocated(root), Ok(0));
     assert_eq!(regions.remaining(authority), Ok(8 * 1024 * 1024));
     assert!(regions.accounting_holds());
@@ -1050,6 +1087,7 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
     // Releasing one that is not held is a defect, not a no-op.
     let other = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
     assert_eq!(regions.release_internal(other), Err(Refusal::BadArgument));
+    retire(&mut regions);
     assert!(regions.accounting_holds());
 }
 
@@ -1075,6 +1113,7 @@ fn a_region_refuses_a_second_capability() {
     regions
         .release_capability(region)
         .expect("the holder lets go");
+    retire(&mut regions);
     assert_eq!(
         regions.allocated(root),
         Ok(0),
@@ -1095,15 +1134,79 @@ fn an_unmapping_of_nothing_is_a_defect() {
     let region = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
 
     assert_eq!(regions.unmap(region, false), Err(Refusal::BadArgument));
+    retire(&mut regions);
     assert_eq!(regions.unmap(region, true), Err(Refusal::BadArgument));
+    retire(&mut regions);
     regions.map(region, true).expect("mapped");
     regions.unmap(region, true).expect("and unmapped");
+    retire(&mut regions);
     assert_eq!(
         regions.unmap(region, true),
         Err(Refusal::BadArgument),
         "and not twice"
     );
+    retire(&mut regions);
     assert_eq!(regions.allocated(root), Ok(1024 * 1024));
+    assert!(regions.accounting_holds());
+}
+
+/// Memory is not free when the last reference goes; it is free when the frames
+/// are back.
+///
+/// Between those two moments the backing still belongs to the pool and the
+/// lane's tables to the reserve. An authority credited at the first would be
+/// handing out memory `Frames` still holds — the two-counters defect wearing a
+/// different hat — so the receipt stands between them and the order cannot be
+/// skipped.
+#[test]
+fn a_region_is_credited_back_only_after_its_backing_is() {
+    let (mut regions, root) = endowed();
+    let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
+    let region = handed_over(&mut regions, authority, 2 * 1024 * 1024, WORKER);
+
+    assert_eq!(regions.reclaimable(), None, "nothing to retire yet");
+    regions
+        .release_capability(region)
+        .expect("the only holder lets go");
+
+    // Nothing can reach it, and not a byte has come back.
+    assert_eq!(
+        regions.allocated(root),
+        Ok(2 * 1024 * 1024),
+        "the bytes are still spent until the frames are back"
+    );
+    assert_eq!(
+        regions.mode(region),
+        Err(Refusal::NotFound),
+        "and it resolves to nothing while it waits"
+    );
+
+    // The nucleus finds it, takes responsibility, and only then credits.
+    let pending = regions.reclaimable().expect("one region awaits retirement");
+    let ticket = regions.take_reclaim(pending).expect("taken");
+    assert_eq!(regions.reclaim_bytes(&ticket), 2 * 1024 * 1024);
+    assert_eq!(
+        regions.take_reclaim(pending),
+        Err(Refusal::NotFound),
+        "and nobody else can take the same one"
+    );
+    assert_eq!(
+        regions.allocated(root),
+        Ok(2 * 1024 * 1024),
+        "still spent while the physical work is outstanding"
+    );
+
+    regions.finish_reclaim(ticket).expect("the frames are back");
+    assert_eq!(regions.allocated(root), Ok(0));
+    assert_eq!(regions.remaining(authority), Ok(8 * 1024 * 1024));
+    assert_eq!(regions.reclaimable(), None);
+    assert!(regions.accounting_holds());
+
+    // And the slot is reusable only now, with a generation that makes the old
+    // handle name nothing.
+    let next = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
+    assert_eq!(regions.mode(region), Err(Refusal::NotFound));
+    assert_eq!(regions.mode(next), Ok(Mode::Mutable));
     assert!(regions.accounting_holds());
 }
 
