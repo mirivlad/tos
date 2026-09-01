@@ -420,6 +420,17 @@ pub fn release(process: usize, handle: u64) -> Result<(), Refused> {
 /// caller's, and a scope that is not the input's is refused rather than
 /// silently narrowed, because a scope this stage cannot compare is a scope it
 /// must not claim to have checked.
+///
+/// **On a `MemoryAuthority` this is an alias and can be nothing else.** The
+/// result names the same accounting node, spending from the same remainder, and
+/// it may keep `RIGHT_SPEND` — two handles spending one budget is what decision
+/// B means, not two budgets. There is no path from here to a smaller authority:
+/// the amount is not in this entry to narrow, it lives in the tree, and the
+/// only thing that moves it is scoped attenuation, which makes a child node and
+/// takes the parent's remainder down by what the child may spend. The scope
+/// check above is what keeps a caller from expressing anything else here — an
+/// authority's entry carries scope zero, so a caller inventing an amount is
+/// refused before rights are even considered.
 pub fn attenuate(process: usize, handle: u64, rights: u32, scope: u64) -> Result<u64, Refused> {
     let (index, generation) = parts(handle);
     if process >= MAX_PROCESSES || index >= MAX_CAPABILITIES {

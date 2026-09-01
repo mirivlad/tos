@@ -88,10 +88,25 @@ capability = object + rights + scope + lifetime + generation
   transferable, so `write` and `share` never appear together, and a
   `DmaRegion` is granted neither `share` nor transfer in V1;
 - **scope**: the range, subset **or finite resource amount** the rights apply
-  to, where the object has one. An amount is a scope like any other: it narrows
-  under attenuation and never widens, so a derived authority may spend at most
-  what its parent had, and attenuating a child reduces the parent's remaining
-  amount by what it reserved (ADR-0075 §2a);
+  to, where the object has one. An amount never widens, so a derived authority
+  may spend at most what its parent had.
+
+  **A quantity is reserved by scoped attenuation, and by nothing else.**
+  Generic attenuation refines *rights* and leaves an amount exactly as it was:
+  what it produces is another name for the same authority, spending from the
+  same remainder (ADR-0076 §2b). Reserving a smaller amount out of a larger one
+  is a different operation — it makes a new accounting node and reduces the
+  parent's remainder by what the child may spend (ADR-0075 §2a) — and the two
+  must not be reachable through one call, because one of them changes what
+  everybody else can spend and the other does not. So:
+
+  | | object | amount | effect on the parent |
+  |---|---|---|---|
+  | generic attenuation | the same one | unchanged | none |
+  | scoped attenuation | a new child | the child's | its remainder falls by that |
+
+  An earlier revision of this section said an amount "narrows under
+  attenuation", which read as though one operation did both;
 - **lifetime**: bounded by the object, and never longer than the grantor's own.
 
 A capability with unbounded scope is not a capability, it is ambient authority
