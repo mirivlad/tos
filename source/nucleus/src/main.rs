@@ -655,7 +655,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-region-aperture");
         mem_fail();
     }
-    let bound = process::table_reserve(bi, descs);
+    let bound = process::table_reserve(bi, descs, admission.frames * tos_frames::FRAME_SIZE);
     // SAFETY: boot, immediately after admission and before any address space,
     // process or memory authority exists.
     let Some(reserved) = (unsafe { memory::reserve_tables(bound) }) else {
