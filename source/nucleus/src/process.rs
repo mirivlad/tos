@@ -1934,6 +1934,53 @@ pub unsafe fn create(
         }
     };
 
+    // The funder's remainder, once the footprint is paid for, as an ordinary
+    // child of it (ADR-0076 §3). This is where a supervisor's allowance comes
+    // from: not the anchor itself — which no process ever holds — but a child
+    // with an ordinary reference lifecycle, whose unspent part returns to the
+    // anchor when its last name goes.
+    //
+    // Resolved here rather than in `endow` because it can refuse, and by the
+    // time `endow` runs there is a published process that a refusal would leave
+    // half-endowed.
+    let mut resolved = [crate::capability::Endowment::Own {
+        binding: crate::capability::Binding::NONE,
+        rights: 0,
+    }; crate::capability::MAX_CAPABILITIES];
+    let mut allowance = None;
+    for (position, entry) in endowment.iter().enumerate() {
+        resolved[position] = match *entry {
+            crate::capability::Endowment::Remainder { binding, rights } => {
+                let left = tree.remaining(root).unwrap_or(0);
+                match tree.attenuate(root, left) {
+                    Ok(child) => {
+                        allowance = Some(child);
+                        crate::capability::Endowment::Existing {
+                            binding,
+                            object: crate::capability::Object::MemoryAuthority {
+                                index: child.index,
+                                generation: child.generation,
+                            },
+                            rights,
+                            scope: 0,
+                        }
+                    }
+                    Err(_) => {
+                        tos_serial::puts(
+                            b"TOS.RUN.PROCESS_REFUSED reason=no-allowance asserted_by=nucleus\r\n",
+                        );
+                        if tree.refund_grant(charge).is_err() {
+                            crate::memory::note_divergence(b"allowance-rollback-refund");
+                        }
+                        return Err(Unlaunchable::Unendowable);
+                    }
+                }
+            }
+            other => other,
+        };
+    }
+    let endowment = &resolved[..endowment.len()];
+
     // From here the machine is being changed, and every path out that is not
     // `admit` has to change it back.
     let mut space = paging::build(bi, descs, tables)?;
@@ -2184,8 +2231,20 @@ pub unsafe fn create(
             };
             // The frames are back in the pool, so the authority has to be told:
             // a charge that outlived what it paid for is the counters
-            // disagreeing again, in the direction that loses memory.
+            // disagreeing again, in the direction that loses memory. The
+            // allowance goes with it — a child reserved for a process that was
+            // never created is a reservation nobody can spend or return.
             // SAFETY: single-context nucleus; nothing else holds the tree.
+            if let Some(child) = allowance {
+                // SAFETY: as above.
+                if unsafe { crate::memory::authority() }
+                    .release_name(child)
+                    .is_err()
+                {
+                    crate::memory::note_divergence(b"allowance-rollback-release");
+                }
+            }
+            // SAFETY: as above.
             if unsafe { crate::memory::authority() }
                 .refund_grant(charge)
                 .is_err()
