@@ -191,9 +191,10 @@ impl GrantCharge {
 #[derive(Clone, Copy, Debug, Default)]
 struct Authority {
     live: bool,
-    /// Whether a capability still names this node. A revoked node stays until
-    /// its allocations and descendants drain (ADR-0075 §2a).
-    named: bool,
+    /// How many live references can still produce a valid holder of this node:
+    /// capability handles, plus a committed delegation still in transit. Not a
+    /// count of reservations — every one of them names the same budget.
+    names: usize,
     generation: u32,
     /// Which occupant of this slot this is. Moves when the slot is reused and
     /// at no other time, so a charge outlives a revoke and dies with a reuse.
@@ -266,7 +267,7 @@ impl Regions {
         Regions {
             authorities: [Authority {
                 live: false,
-                named: false,
+                names: 0,
                 generation: 0,
                 incarnation: 0,
                 parent: None,
@@ -466,7 +467,10 @@ impl Regions {
         let incarnation = self.authorities[index].incarnation.wrapping_add(1);
         self.authorities[index] = Authority {
             live: true,
-            named: true,
+            // The root is reachable because the boot made it, not because a
+            // capability names it (§4 of the ownership decision): ring 3 never
+            // holds it and it must outlive every process.
+            names: 1,
             generation,
             incarnation,
             parent: None,
@@ -507,7 +511,8 @@ impl Regions {
         self.authorities[at].children += 1;
         self.authorities[index] = Authority {
             live: true,
-            named: true,
+            // The capability this operation hands back is the first name.
+            names: 1,
             generation,
             incarnation,
             parent: Some(at as u32),
@@ -687,7 +692,69 @@ impl Regions {
         }
     }
 
-    /// Revokes an authority's capability.
+    /// Takes one more live reference to an authority.
+    ///
+    /// **Several names, one budget.** A `MemoryAuthority` is not affine: an
+    /// alias made by generic attenuation, an entry in an endowment, a
+    /// delegation's receiving handle and a committed delegation still in
+    /// transit are all names for the same node, the same `remaining` and the
+    /// same funding lineage. None of them is a second reservation, and losing
+    /// one of them is not losing the authority.
+    ///
+    /// One counter with typed call sites rather than two. What the invariant
+    /// needs is that the node stays reachable for as long as *anything* can
+    /// still produce a valid holder, and a send that commits before its
+    /// receiver has a table entry is exactly the interval where that would
+    /// otherwise fail. So a committed delegation retains **before** the
+    /// sender's handle is released and the receiver retains **before** the
+    /// transit reference is released: the count never passes through zero, and
+    /// an unused remainder cannot return to a parent while a message that
+    /// carries the authority is still on its way.
+    pub fn retain(&mut self, authority: AuthorityId) -> Result<(), Refusal> {
+        let at = self.authority(authority)?;
+        self.authorities[at].names += 1;
+        Ok(())
+    }
+
+    /// Drops one live reference: a handle released, a process that held one
+    /// ending, or a delegation that never arrived.
+    ///
+    /// Only the loss of the **last** one performs ADR-0075 §2a's transition —
+    /// the unused remainder returns upward, the generation moves on so stale
+    /// handles fail, and the accounting node lives on while allocations,
+    /// charges or descendants remain, returning their bytes along the original
+    /// lineage when they drain. Releasing one of several aliases returns
+    /// nothing and leaves the others working, which is the whole difference
+    /// between a release and a revoke.
+    pub fn release_name(&mut self, authority: AuthorityId) -> Result<(), Refusal> {
+        let at = self.authority(authority)?;
+        self.authorities[at].names -= 1;
+        if self.authorities[at].names > 0 {
+            return Ok(());
+        }
+        let returning = self.authorities[at].remaining;
+        self.authorities[at].remaining = 0;
+        self.authorities[at].generation = self.authorities[at].generation.wrapping_add(1);
+        self.give_back(at, returning);
+        self.settle_authority(at);
+        Ok(())
+    }
+
+    /// How many live references name this node.
+    pub fn names(&self, authority: AuthorityId) -> Result<usize, Refusal> {
+        let at = self.authority(authority)?;
+        Ok(self.authorities[at].names)
+    }
+
+    /// Drops **every** name at once, whoever held them.
+    ///
+    /// **Not what `capability_release` does.** Under the several-names model a
+    /// release drops one reference and a revoke ends the node for all of them,
+    /// so wiring one to the other would let any alias holder destroy an
+    /// authority two other processes were relying on. This stays the
+    /// state-machine mechanism for whole-node invalidation and the evidence
+    /// that it works; what public operation may authorise it, if any, is a
+    /// separate scoped-revocation decision and is not settled by operation 16.
     ///
     /// Its unspent, unreserved remainder returns to its parent at once. The node
     /// itself survives while anything it funded is still alive, because a live
@@ -698,7 +765,7 @@ impl Regions {
         let at = self.authority(authority)?;
         let returning = self.authorities[at].remaining;
         self.authorities[at].remaining = 0;
-        self.authorities[at].named = false;
+        self.authorities[at].names = 0;
         self.authorities[at].generation = self.authorities[at].generation.wrapping_add(1);
         self.give_back(at, returning);
         self.settle_authority(at);
@@ -790,7 +857,7 @@ impl Regions {
     /// Returns reclaimed bytes to the authority that funded them, or past it to
     /// its parent when it is no longer named by any capability.
     fn give_back_or_keep(&mut self, at: usize, bytes: usize) {
-        if self.authorities[at].named {
+        if self.authorities[at].names > 0 {
             self.authorities[at].remaining += bytes;
         } else {
             self.give_back(at, bytes);
@@ -819,7 +886,15 @@ impl Regions {
     /// it.
     fn settle_authority(&mut self, at: usize) {
         let node = self.authorities[at];
-        if !node.live || node.named || node.allocated != 0 || node.children != 0 {
+        // The root is never retired: it has nowhere to return to, it is not
+        // kept alive by anybody's handle, and a boot whose accounting anchor
+        // could be settled by a process ending would have no anchor.
+        if !node.live
+            || node.parent.is_none()
+            || node.names > 0
+            || node.allocated != 0
+            || node.children != 0
+        {
             return;
         }
         let remainder = node.remaining;
@@ -839,7 +914,7 @@ impl Regions {
             return Err(Refusal::NotFound);
         }
         let node = &self.authorities[at];
-        if !node.live || !node.named || node.generation != id.generation {
+        if !node.live || node.names == 0 || node.generation != id.generation {
             return Err(Refusal::NotFound);
         }
         Ok(at)

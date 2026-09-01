@@ -777,6 +777,155 @@ fn a_stopped_tree_refuses_to_grow_and_still_gives_back() {
     assert!(regions.accounting_holds());
 }
 
+/// Several names, one budget: releasing one alias returns nothing.
+#[test]
+fn only_the_last_name_of_an_authority_returns_its_remainder() {
+    const POOL: usize = 200 * 1024 * 1024;
+    const ALLOWANCE: usize = 100 * 1024 * 1024;
+    let mut regions = Regions::new();
+    let root = regions.endow_root(POOL).expect("endowed");
+    let allowance = regions
+        .attenuate(root, ALLOWANCE)
+        .expect("the supervisor's own name for it");
+    assert_eq!(regions.names(allowance), Ok(1));
+
+    // A second name — an alias from generic attenuation, an endowment entry, a
+    // delegation. Not a second reservation: the parent's remainder does not
+    // move and nothing is committed.
+    let before = regions.remaining(root);
+    regions.retain(allowance).expect("the worker's name for it");
+    assert_eq!(regions.names(allowance), Ok(2));
+    assert_eq!(regions.remaining(root), before, "an alias reserves nothing");
+    assert_eq!(regions.committed(), 0, "and commits nothing");
+    assert_eq!(regions.remaining(allowance), Ok(ALLOWANCE));
+
+    // One of the two goes. The authority is still there and still works.
+    regions.release_name(allowance).expect("one name goes");
+    assert_eq!(
+        regions.remaining(root),
+        before,
+        "releasing one alias returns nothing"
+    );
+    assert_eq!(
+        regions.remaining(allowance),
+        Ok(ALLOWANCE),
+        "and the other name still resolves"
+    );
+    let spent = regions
+        .allocate(allowance, 8 * 1024 * 1024, WORKER)
+        .expect("and can still spend");
+
+    // The last one goes: now the unused remainder returns, and the node lives
+    // on only because something it funded is still alive.
+    regions.release_name(allowance).expect("the last name goes");
+    assert_eq!(
+        regions.remaining(allowance),
+        Err(Refusal::NotFound),
+        "a stale handle fails once the generation has moved"
+    );
+    assert_eq!(
+        regions.remaining(root),
+        Ok(POOL - 8 * 1024 * 1024),
+        "the unused remainder came back and the live backing did not"
+    );
+    assert!(regions.accounting_holds());
+
+    regions.release(spent).expect("the backing is let go");
+    assert_eq!(regions.remaining(root), Ok(POOL));
+    assert!(regions.accounting_holds());
+}
+
+/// A delegation that has committed but not arrived still names the authority.
+///
+/// The interval the model has to survive: the send is done, the sender may be
+/// gone, and the receiver has no table entry yet. If the count passed through
+/// zero there, the reservation would return to the parent and the message would
+/// deliver an authority that no longer exists.
+#[test]
+fn an_authority_in_transit_never_returns_to_its_parent() {
+    const POOL: usize = 64 * 1024 * 1024;
+    const ALLOWANCE: usize = 16 * 1024 * 1024;
+    let mut regions = Regions::new();
+    let root = regions.endow_root(POOL).expect("endowed");
+    let allowance = regions.attenuate(root, ALLOWANCE).expect("the sender's");
+    let held = regions.remaining(root);
+
+    // The send commits: the message's reference is taken *before* the sender's
+    // handle is dropped, so the count never reaches zero.
+    regions.retain(allowance).expect("the message names it");
+    regions
+        .release_name(allowance)
+        .expect("and the sender's handle goes with the send");
+    assert_eq!(regions.names(allowance), Ok(1));
+    assert_eq!(
+        regions.remaining(root),
+        held,
+        "nothing came back while the message was in flight"
+    );
+
+    // The sender dies before anybody receives. Still nothing comes back.
+    regions.process_died(WORKER);
+    assert_eq!(regions.remaining(root), held);
+    assert_eq!(
+        regions.remaining(allowance),
+        Ok(ALLOWANCE),
+        "and the authority is intact"
+    );
+
+    // The receiver acquires its own handle before the message's reference goes.
+    regions.retain(allowance).expect("the receiver's handle");
+    regions
+        .release_name(allowance)
+        .expect("and the message is done with it");
+    assert_eq!(regions.names(allowance), Ok(1));
+    assert_eq!(regions.remaining(allowance), Ok(ALLOWANCE));
+    assert_eq!(regions.remaining(root), held);
+    assert!(regions.accounting_holds());
+
+    // A send that never commits takes no reference at all, so the sender is
+    // left holding exactly what it had.
+    assert_eq!(regions.names(allowance), Ok(1));
+    regions
+        .release_name(allowance)
+        .expect("the receiver lets go");
+    assert_eq!(regions.remaining(root), Ok(POOL));
+    assert!(regions.accounting_holds());
+}
+
+/// The root is the boot's anchor and no process's property.
+#[test]
+fn the_root_outlives_every_name_and_is_never_settled() {
+    const POOL: usize = 64 * 1024 * 1024;
+    let mut regions = Regions::new();
+    let root = regions.endow_root(POOL).expect("endowed");
+
+    // A supervisor is funded and given an allowance that is a child of the
+    // root, never the root itself.
+    let charge = regions
+        .charge_grant(root, 8 * 1024 * 1024, 4096)
+        .expect("the supervisor's footprint");
+    let allowance = regions
+        .attenuate(root, POOL - 8 * 1024 * 1024)
+        .expect("everything left, as a child");
+    assert_eq!(
+        regions.remaining(root),
+        Ok(0),
+        "the root keeps nothing back"
+    );
+
+    // The supervisor ends: its allowance and its footprint both come home, and
+    // the root is still there to receive them.
+    regions.release_name(allowance).expect("its allowance goes");
+    regions.refund_grant(charge).expect("its footprint returns");
+    assert_eq!(
+        regions.remaining(root),
+        Ok(POOL),
+        "the anchor survived the process that was funded from it"
+    );
+    assert_eq!(regions.names(root), Ok(1), "and is still the boot's");
+    assert!(regions.accounting_holds());
+}
+
 /// The mode is what a caller can observe about a region, and it only goes one
 /// way.
 #[test]
