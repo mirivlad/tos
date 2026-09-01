@@ -104,6 +104,58 @@ amount of memory.
    the same reserve — they must, since nothing else may take frames the tree has
    promised — and what that does to the bound.
 
+## 4a. The derivation, and the collision it found (added 2026-09-01)
+
+The bound was derived and measured before being deferred, because a bound
+nobody computed is not a bound. With `P` the memory the pool admitted:
+
+```text
+a = ceil(P / 512 GiB)    b = ceil(P / 1 GiB)    c = ceil(P / 2 MiB)
+
+backing index   1 + (a + R - 1) + (b + R - 1) + (c + R - 1)
+per process         (a + C - 1) + (b + C - 1) + (c + C - 1)
+```
+
+Spreading `P` over `slots` lanes costs one extra table per level per lane after
+the first, because each lane starts on a fresh 512-GiB boundary; the total
+backing alive at once cannot exceed `P` however it is divided. A process is
+bounded by `C = MAX_CAPABILITIES`, not by `R = MAX_REGIONS`: it cannot reach
+more distinct regions than it can hold handles for.
+
+On the reference machine — `P = 58 909` frames, `a = 1`, `b = 1`, `c = 116`:
+
+| | frames |
+|---|---:|
+| existing reserve | 517 |
+| backing index | 308 |
+| region mappings, 4 processes | 652 |
+| **reserve with lanes** | **1 477** |
+
+**And that is 17 frames more than the platform has.** Four grants of `14 356`
+frames need `57 424`. A root endowed over what is left after a 1 477-frame
+reserve — and after the nucleus's own 23-frame address space — holds `57 407`.
+Sixty-eight kilobytes short, and the fourth process stops being creatable; the
+lifecycle gate found it on the first run.
+
+So the lane bound is **not** in `table_reserve` today. Reserving for lanes that
+nothing can yet allocate buys nothing and costs a process that works, so it is
+added in the slice that starts using it. What it needs first is a decision, and
+the honest options are all Level-2:
+
+1. **Fewer simultaneous processes**, or a smaller `MAX_CAPABILITIES`, either of
+   which lowers the bound directly — `C` appears three times in the per-process
+   term.
+2. **A smaller `MAX_REGIONS`**, which lowers the backing index by three frames
+   per slot removed.
+3. **A tighter derivation.** The `c` term assumes a process could map all of the
+   machine's memory as regions. It is a true upper bound and may be loose for
+   the reference platform, but nothing in the accepted contracts makes it
+   looser.
+4. **A larger reference platform**, which ADR-0040 fixes and this does not
+   reopen.
+
+The measurement is the deliverable here; the choice is not mine.
+
 ## 5. What is not blocked by this
 
 Operation 16 is done and green: it maps nothing. Everything below the mapping
