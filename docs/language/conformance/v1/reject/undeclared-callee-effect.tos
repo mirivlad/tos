@@ -5,12 +5,14 @@ import capability system.time.Clock as clock;
 
 resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 1]
 
-fn sample() -> duration uses [clock] {
-    return clock.now();
+fn inspect(borrow cap: system.time.Clock) -> unit { }
+
+fn sample() -> unit uses [clock] {
+    inspect(borrow clock);
 }
 
 // A call may not launder authority: the caller must declare every effect its
 // callee requires.
-pub fn main() -> duration {
-    return sample();
+pub fn main() -> unit {
+    sample();
 }

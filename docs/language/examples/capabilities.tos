@@ -16,10 +16,12 @@ resource [
     imports: 1,
 ]
 
-pub enum ClockError [
-    Unavailable,
-]
+// This example is only about requesting authority and declaring its effect.
+// A capability is not a callable object: real system operations are reached
+// through an accepted interface schema (`extern fn`), as SYSTEM_INTERFACE_V1
+// demonstrates. `system.time.Clock` has no accepted service schema yet.
+fn inspect(borrow cap: system.time.Clock) -> unit { }
 
-pub fn sample() -> Result<duration, ClockError> uses [clock] {
-    return clock.now();
+pub fn sample() -> unit uses [clock] {
+    inspect(borrow clock);
 }

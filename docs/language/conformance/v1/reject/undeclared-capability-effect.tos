@@ -5,8 +5,10 @@ import capability system.time.Clock as clock;
 
 resource [fuel: 10000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 1]
 
-// The capability is imported by the module, but authority is never ambient: an
-// operation that needs it is type-correct only inside a declared effect set.
-pub fn sample() -> duration {
-    return clock.now();
+fn inspect(borrow cap: system.time.Clock) -> unit { }
+
+// The capability is imported by the module, but authority is never ambient: a
+// use of that authority is type-correct only inside a declared effect set.
+pub fn sample() -> unit {
+    inspect(borrow clock);
 }
