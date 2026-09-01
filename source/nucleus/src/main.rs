@@ -93,6 +93,7 @@ compile_error!("the IPC numerator must keep preemption active");
 
 #[cfg_attr(feature = "test-measurement-no-preemption", allow(dead_code))]
 mod apic;
+mod backing;
 mod capability;
 mod console;
 mod exception;
@@ -675,6 +676,15 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // a gate can check that they add up, and that the reserve is actually
     // paying for the nucleus's own address space rather than the pool doing it
     // quietly.
+    // The backing index is rooted before the tree is endowed: its one permanent
+    // frame is part of the reserve, not of what the root will promise.
+    // SAFETY: boot, after the reserve and before any region exists.
+    if !unsafe { memory::root_backing() } {
+        tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-region-backing\r\n");
+        console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-region-backing");
+        mem_fail();
+    }
+
     // The root memory authority, over exactly what the pool has left. From here
     // there is one number for free user memory and it is the tree's: the pool
     // still hands out physical frames, but only behind a charge made first
@@ -705,6 +715,11 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::put_u32_decimal(process::MAX_PROCESSES as u32);
     tos_serial::puts(b" total_frames=");
     tos_serial::put_u32_decimal(reserved as u32);
+    // The backing index's root is permanent: taken once and never given back,
+    // so the reserve's runtime baseline is one below its size. A diagnostic
+    // that expected the raw size would report a leak that is not one.
+    tos_serial::puts(b" backing_root_frames=1 runtime_baseline_frames=");
+    tos_serial::put_u32_decimal(reserved as u32 - 1);
     tos_serial::puts(b" asserted_by=nucleus\r\n");
 
     tos_serial::puts(b"TOS.MEM.ACCOUNT admitted_frames=");
@@ -1241,7 +1256,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     //        -> the process's exact footprint, charged to the root
     //        -> everything the root has left, as a child, endowed explicitly
     // ```
-    #[cfg(not(feature = "test-memory-authority"))]
+    #[cfg(not(any(feature = "test-memory-authority", feature = "test-creation-rollback")))]
     let first_endowment: [capability::Endowment; 0] = [];
     // The same chain, given to a process, so operation 16 can be asked for from
     // ring 3 rather than described.
@@ -1256,7 +1271,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // All of what is left, because once there is user-space supervision the
     // policy for dynamic user memory belongs below that allowance rather than
     // to nucleus spending nobody authorised.
-    #[cfg(feature = "test-memory-authority")]
+    #[cfg(any(feature = "test-memory-authority", feature = "test-creation-rollback"))]
     let first_endowment = [capability::Endowment::Remainder {
         binding: capability::Binding::new(b"memory").expect("a short name"),
         rights: tos_launch::RIGHT_SPEND,

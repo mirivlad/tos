@@ -38,6 +38,7 @@ use crate::capability::{self, Object, Refused};
 use crate::exception::{KERNEL_SELECTOR_BASE, USER_SELECTOR_BASE};
 use crate::ipc;
 use crate::msr::{self, EFER_SCE, IA32_EFER, IA32_FMASK, IA32_LSTAR, IA32_STAR};
+use tos_frames::FRAME_SIZE;
 
 core::arch::global_asm!(include_str!("syscall.S"));
 
@@ -87,6 +88,11 @@ const PROCESS_CREATE_WITH_GENERATION: u64 = 15;
 /// may spend. One changes what everybody else can spend and the other does not,
 /// so they are not two spellings of one call.
 const CAPABILITY_ATTENUATE_SCOPED: u64 = 16;
+/// Allocate a region out of a memory authority (ADR-0075, ADR-0076 §5).
+/// `rdi` = the authority, `rsi` = the bytes wanted; `rdx` returns the region's
+/// capability, and its base and charged length are written to the caller's
+/// argument region at `REGION_ALLOCATE_RECORD`.
+const REGION_ALLOCATE: u64 = 17;
 
 /// The one call flag this contract version has.
 ///
@@ -369,10 +375,8 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
         CAPABILITY_ATTENUATE_SCOPED => {
             attenuate_scoped(caller, arguments.first(), arguments.second())
         }
-        CAPABILITY_RELEASE => match capability::release(caller, arguments.first()) {
-            Ok(()) => Answer::status(OK),
-            Err(refused) => refused.into(),
-        },
+        REGION_ALLOCATE => region_allocate(caller, arguments.first(), arguments.second()),
+        CAPABILITY_RELEASE => release_capability(caller, arguments.first()),
 
         // A process is created under the authority of a process, never under an
         // authority meaning "processes" — `CAPABILITY_V1` §3 admits an object
@@ -984,6 +988,349 @@ fn attenuate_scoped(caller: usize, handle: u64, bytes: u64) -> Answer {
         crate::memory::note_divergence(b"scoped-attenuation-handover");
     }
     answer
+}
+
+/// Gives up a capability, and everything that was derived from holding it.
+///
+/// **A mapping is derived authority, so it cannot outlive the capability it
+/// was derived from** (ADR-0075 §5a). Releasing the handle to a region and
+/// leaving its window mapped would be the capability model bypassed in one
+/// line: the process would keep reading and writing memory it no longer holds
+/// any authority over. So the window goes first, then the entry, and ring 3
+/// cannot observe a state in between — the nucleus does not return until both
+/// are done.
+///
+/// The order is deliberate. Detaching the mapping is the step that can find an
+/// impossible state; if it does, the capability is *not* destroyed, because a
+/// caller left holding a handle to memory it can still reach is recoverable
+/// and a caller left with neither is not.
+fn release_capability(caller: usize, handle: u64) -> Answer {
+    let object = match capability::resolve(caller, handle, 0) {
+        Ok(object) => object,
+        Err(refused) => return refused.into(),
+    };
+    if let Object::Region { index, .. } = object {
+        // SAFETY: the caller's space is the live one, and the flush follows
+        // before this returns to ring 3.
+        unsafe { crate::process::unmap_region(caller, index) };
+        // SAFETY: the tree is complete and maps this nucleus.
+        unsafe { crate::paging::AddressSpace::flush() };
+        // SAFETY: single-context nucleus; nothing else holds the tree.
+        let tree = unsafe { crate::memory::authority() };
+        let region = crate::region::RegionId {
+            index,
+            generation: match object {
+                Object::Region { generation, .. } => generation,
+                _ => 0,
+            },
+        };
+        if tree.unmap(region, true).is_err() {
+            // The region did not think it was mapped. The window is gone
+            // either way, and the capability stays so the caller is not left
+            // holding nothing.
+            crate::memory::note_divergence(b"region-mapping-count");
+            return Answer::status(E_LIMIT);
+        }
+    }
+    match capability::release(caller, handle) {
+        Ok(()) => {
+            drain_reclaims();
+            Answer::status(OK)
+        }
+        Err(refused) => refused.into(),
+    }
+}
+
+/// Each way a region's construction can fail, driven once, with the machine
+/// measured on both sides.
+///
+/// Wrapped here rather than driven from the boot because operation 17 needs a
+/// caller: a process with an address space of its own and an authority it was
+/// endowed. So the evidence build lets ring 3 ask, and fails the first few
+/// asks at named points.
+#[cfg(feature = "test-creation-rollback")]
+static mut REGION_CASE: usize = 0;
+
+#[cfg(not(feature = "test-creation-rollback"))]
+fn region_allocate(caller: usize, handle: u64, bytes: u64) -> Answer {
+    region_allocate_inner(caller, handle, bytes)
+}
+
+#[cfg(feature = "test-creation-rollback")]
+fn region_allocate(caller: usize, handle: u64, bytes: u64) -> Answer {
+    use crate::injection::Case;
+    const CASES: [(&[u8], Option<Case>, Option<u64>); 6] = [
+        (b"zero", None, Some(0)),
+        (b"round-overflow", None, Some(u64::MAX)),
+        (b"over-budget", None, Some(u64::MAX / 2)),
+        (b"pool-mid-backing", Some(Case::RegionPool), None),
+        (b"tables-mid-backing", Some(Case::RegionBackingTable), None),
+        (b"tables-mid-mapping", Some(Case::RegionMappingTable), None),
+    ];
+    // SAFETY: single-context nucleus; the only writer is this function.
+    let at = unsafe { REGION_CASE };
+    if at >= CASES.len() {
+        return region_allocate_inner(caller, handle, bytes);
+    }
+    // SAFETY: as above.
+    unsafe { REGION_CASE = at + 1 };
+    let (name, case, size) = CASES[at];
+    let before = crate::memory::snapshot(caller);
+    if let Some(case) = case {
+        crate::injection::arm(case);
+    }
+    let answer = region_allocate_inner(caller, handle, size.unwrap_or(bytes));
+    crate::injection::disarm();
+    crate::memory::report_rollback(b"TOS.RUN.REGION_ROLLBACK", name, &before, caller);
+    answer
+}
+
+/// Allocates a region out of a memory authority (operation 17).
+///
+/// **A transaction, and the order is the argument.** Everything knowable is
+/// decided before anything moves: the authority and its right, the size and its
+/// rounding, a free region slot, a free capability slot, and that the caller has
+/// an address space of its own to map into. Then the authority is charged, the
+/// backing is laid down a frame at a time, the caller's lane is mapped from
+/// exactly those frames, and only then does a capability naming it exist.
+///
+/// **The region is never unreachable.** It is born holding one construction
+/// reference — the nucleus's, for as long as it is building — and that goes
+/// only once the caller's mapping is in place, which is itself a way of
+/// reaching it. There is no instant at which the three counts are all zero and
+/// something could retire it out from under the transaction.
+///
+/// A failure at any point puts back everything: the frames to the pool, the
+/// backing lane's tables and the process lane's tables to the reserve, and the
+/// charge to the authority. Ring 3 sees the whole region or nothing.
+#[cfg_attr(feature = "test-creation-rollback", allow(clippy::needless_return))]
+fn region_allocate_inner(caller: usize, handle: u64, bytes: u64) -> Answer {
+    let object = match capability::resolve(caller, handle, tos_launch::RIGHT_SPEND) {
+        Ok(object) => object,
+        Err(refused) => return refused.into(),
+    };
+    let Object::MemoryAuthority { index, generation } = object else {
+        return Answer::status(E_NO_CAPABILITY);
+    };
+    if bytes == 0 {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    // A borrowed context runs in the nucleus's own address space, and a user
+    // window there is not a region, it is a hole in the boundary.
+    if !crate::process::owns_space(caller) || !capability::has_room(caller) {
+        return Answer::status(E_LIMIT);
+    }
+    let region_area = crate::process::arguments_region();
+    if region_area == 0 {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    let authority = crate::region::AuthorityId { index, generation };
+
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    let tree = unsafe { crate::memory::authority() };
+    let region = match tree.allocate_rounded(
+        authority,
+        bytes as usize,
+        FRAME_SIZE as usize,
+        caller as u32,
+    ) {
+        Ok(region) => region,
+        Err(crate::region::Refusal::Empty | crate::region::Refusal::BadArgument) => {
+            return Answer::status(E_BAD_ARGUMENT);
+        }
+        Err(_) => return Answer::status(E_LIMIT),
+    };
+    let length = tree.length(region).unwrap_or(0) as u64;
+    let pages = length / FRAME_SIZE;
+    let lane = crate::process::region_lane(region.index);
+
+    // The backing, one arbitrary frame at a time. Physical contiguity is not a
+    // region's business, and demanding it would refuse an authority that has
+    // the memory in pieces.
+    // SAFETY: single-context nucleus; nothing else holds these.
+    let frames = unsafe { crate::memory::frames() };
+    // SAFETY: as above.
+    let tables = unsafe { crate::memory::tables() };
+    // SAFETY: as above; the index exists from boot.
+    let Some(backing) = (unsafe { crate::memory::backing() }) else {
+        return unbuild(caller, region, 0, false, E_LIMIT);
+    };
+    let mut built = 0;
+    while built < pages {
+        #[cfg(feature = "test-creation-rollback")]
+        if crate::injection::armed(crate::injection::Case::RegionPool) && built == 1 {
+            return unbuild(caller, region, built, false, E_LIMIT);
+        }
+        #[cfg(feature = "test-creation-rollback")]
+        if crate::injection::armed(crate::injection::Case::RegionBackingTable) && built == 1 {
+            return unbuild(caller, region, built, false, E_LIMIT);
+        }
+        let Some(frame) = frames.allocate_frame() else {
+            // The authority paid for these bytes and the accounting says the
+            // pool has them, so it not having them is the two accounts
+            // disagreeing rather than a caller asking for too much.
+            crate::memory::note_divergence(b"region-backing-pool");
+            return unbuild(caller, region, built, false, E_LIMIT);
+        };
+        if backing.construct(tables, lane, built, frame).is_err() {
+            // SAFETY: the frame was handed over a moment ago and nothing
+            // named it.
+            unsafe { frames.release_frame(frame) };
+            crate::memory::note_divergence(b"region-backing-table");
+            return unbuild(caller, region, built, false, E_LIMIT);
+        }
+        built += 1;
+    }
+
+    // The caller's window, from exactly those frames.
+    #[cfg(feature = "test-creation-rollback")]
+    if crate::injection::armed(crate::injection::Case::RegionMappingTable) {
+        return unbuild(caller, region, built, false, E_LIMIT);
+    }
+    if crate::process::map_region(caller, region.index, pages, true).is_err() {
+        crate::memory::note_divergence(b"region-mapping-table");
+        return unbuild(caller, region, built, false, E_LIMIT);
+    }
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    let tree = unsafe { crate::memory::authority() };
+    if tree.map(region, true).is_err() {
+        return unbuild(caller, region, built, true, E_LIMIT);
+    }
+    // A reused lane must not answer with what the last one held.
+    // SAFETY: the live tree is complete and maps this nucleus; the edit above
+    // is finished.
+    unsafe { crate::paging::AddressSpace::flush() };
+
+    // The mapping is a way of reaching it, so construction can let go.
+    if tree.release_internal(region).is_err() {
+        crate::memory::note_divergence(b"region-construction-ref");
+        return Answer::status(E_LIMIT);
+    }
+    let granted = capability::grant(
+        caller,
+        Object::Region {
+            index: region.index,
+            generation: region.generation,
+        },
+        tos_launch::RIGHT_READ | tos_launch::RIGHT_WRITE,
+        0,
+    );
+    let Ok(named) = granted else {
+        // Ruled out by the preflight, and undone whole if it happens: the
+        // mapping goes, which is now the only reference, and the region
+        // becomes reclaimable on the way out.
+        // SAFETY: the caller's space is the live one and the flush follows.
+        unsafe { crate::process::unmap_region(caller, region.index) };
+        let _ = tree.unmap(region, true);
+        // SAFETY: as above.
+        unsafe { crate::paging::AddressSpace::flush() };
+        drain_reclaims();
+        return Answer::status(E_LIMIT);
+    };
+
+    // SAFETY: the argument region is this process's own, mapped by the
+    // launcher, and the nucleus writes it through its own identity map.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<tos_launch::RegionAllocateRecord>(
+            (region_area + tos_launch::REGION_ALLOCATE_RECORD) as usize,
+        )
+        .write(tos_launch::RegionAllocateRecord { base: lane, length })
+    };
+    Answer::value(named)
+}
+
+/// Undoes a region under construction, whatever it got as far as.
+///
+/// Construction fills a lane from page zero, so the count is the record and no
+/// list of frames is needed. The charge goes back last, after the frames, which
+/// is the same order every other retirement observes.
+fn unbuild(
+    caller: usize,
+    region: crate::region::RegionId,
+    built: u64,
+    mapped: bool,
+    status: i64,
+) -> Answer {
+    let lane = crate::process::region_lane(region.index);
+    // SAFETY: single-context nucleus; nothing else holds these.
+    let frames = unsafe { crate::memory::frames() };
+    // SAFETY: as above.
+    let tables = unsafe { crate::memory::tables() };
+    if mapped {
+        // SAFETY: the caller's space is the live one; the flush below follows.
+        unsafe { crate::process::unmap_region(caller, region.index) };
+    }
+    // SAFETY: as above; the index exists from boot.
+    if let Some(backing) = unsafe { crate::memory::backing() } {
+        // SAFETY: nothing outside this transaction ever mapped these frames.
+        unsafe { backing.discard(tables, frames, lane, built) };
+    }
+    // **The transaction finishes its own retirement.** It has just put the
+    // backing back itself, so leaving the region to the general drain would
+    // have that drain look for a lane this rollback has already emptied — and
+    // an index that does not describe what it should is a divergence, which is
+    // exactly what a rollback must not manufacture. So the construction
+    // reference goes, the receipt is taken here, and the charge is credited by
+    // the code that did the physical work.
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    let tree = unsafe { crate::memory::authority() };
+    if tree.release_internal(region).is_err() {
+        crate::memory::note_divergence(b"region-rollback-ref");
+        return Answer::status(status);
+    }
+    match tree.take_reclaim(region) {
+        Ok(ticket) => {
+            if tree.finish_reclaim(ticket).is_err() {
+                crate::memory::note_divergence(b"region-rollback-finish");
+            }
+        }
+        Err(_) => crate::memory::note_divergence(b"region-rollback-receipt"),
+    }
+    Answer::status(status)
+}
+
+/// Retires every region nothing can reach any more.
+///
+/// Physical first and accounting second: the frames go back to the pool and the
+/// lane's tables to the reserve, and only the receipt from that work credits
+/// the authority.
+pub fn drain_reclaims() {
+    loop {
+        // SAFETY: single-context nucleus; nothing else holds the tree.
+        let tree = unsafe { crate::memory::authority() };
+        let Some(region) = tree.reclaimable() else {
+            return;
+        };
+        let Ok(ticket) = tree.take_reclaim(region) else {
+            return;
+        };
+        let pages = tree.reclaim_bytes(&ticket) as u64 / FRAME_SIZE;
+        let lane = crate::process::region_lane(region.index);
+        // SAFETY: single-context nucleus; nothing else holds these.
+        let frames = unsafe { crate::memory::frames() };
+        // SAFETY: as above.
+        let tables = unsafe { crate::memory::tables() };
+        // SAFETY: as above.
+        let Some(backing) = (unsafe { crate::memory::backing() }) else {
+            crate::memory::note_divergence(b"region-reclaim-index");
+            return;
+        };
+        // SAFETY: every process that mapped these frames has had its lane
+        // released or its address space destroyed.
+        if unsafe { backing.drain(tables, frames, lane, pages) }.is_err() {
+            // The index does not describe what it should. Nothing is credited:
+            // stranded memory the accounting shows is safer than free memory
+            // the pool does not have.
+            crate::memory::note_divergence(b"region-backing-corrupt");
+            return;
+        }
+        // SAFETY: as above.
+        let tree = unsafe { crate::memory::authority() };
+        if tree.finish_reclaim(ticket).is_err() {
+            crate::memory::note_divergence(b"region-reclaim-finish");
+            return;
+        }
+    }
 }
 
 /// Resolves the handles a message carries, in the caller's table.

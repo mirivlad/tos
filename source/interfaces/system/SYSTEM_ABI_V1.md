@@ -138,6 +138,13 @@ are marked and are exactly those a process can only apply to itself.
 
 | 16 | `capability_attenuate_scoped` | memory-authority capability with `spend` | reserves `rsi` bytes of it as a **child** authority and returns a capability naming that child. The parent's remaining amount falls by exactly what the child may spend; no physical memory moves, and the pool is untouched (ADR-0076 §2b). `E_BAD_ARGUMENT` for a size no budget could serve, `E_LIMIT` for one this budget cannot |
 
+| 17 | `region_allocate` | memory-authority capability with `spend` | allocates `rsi` bytes of region backing out of it, maps it into the caller writable and not executable, and returns an **affine** region capability in `rdx` with `read | write`. The region's base and its **charged and mapped** length — the request rounded up to whole frames — are written to the caller's argument region at `REGION_ALLOCATE_RECORD`. The nucleus chooses the address; a caller never supplies one. `E_BAD_ARGUMENT` for a size no budget could serve, `E_LIMIT` for one this budget cannot |
+
+**A region capability is affine.** Exactly one names a region, so operation 5
+refuses to refine one — refinement does not consume its input and could only
+add a second — and neither an endowment nor a delegation may carry one, because
+both copy. A linear transfer is a later operation and is not this one.
+
 **Operation 16 is not operation 5 with an amount.** Generic attenuation (5)
 refines rights and returns another *name* for the same authority, spending from
 the same remainder; there is no path through it to a smaller amount, because the

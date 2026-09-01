@@ -298,6 +298,118 @@ pub unsafe fn reserve_tables(bound: u64) -> Option<u64> {
     Some(reserve.remaining())
 }
 
+/// Which physical frames each region is made of.
+static mut BACKING: Option<crate::backing::RegionBackingSpace> = None;
+
+/// That index.
+///
+/// # Safety
+///
+/// As [`frames`]: single-context nucleus, no borrow held across an instruction
+/// that leaves it. `None` before the boot has created it, which is before any
+/// region can exist.
+// SAFETY: the caller is nucleus code observing the same no-borrow rule.
+pub unsafe fn backing() -> Option<&'static mut crate::backing::RegionBackingSpace> {
+    // SAFETY: the static is initialized at link time and lives for the whole
+    // boot; this is the only way it is ever named.
+    unsafe { (*core::ptr::addr_of_mut!(BACKING)).as_mut() }
+}
+
+/// Roots the backing index, once, out of the reserve.
+///
+/// **One permanent frame.** It is taken after the reserve exists and before the
+/// root authority is endowed, it is part of the reserve's accepted bound, and
+/// it is never given back — so the reserve's runtime baseline is one frame
+/// below its size for the life of the boot, and a diagnostic that expected the
+/// raw size would be reporting a leak that is not one.
+///
+/// # Safety
+///
+/// Called once, at boot, after [`reserve_tables`] and before any region exists.
+// SAFETY: the caller's promise that this is boot is what makes the reserve
+// untouched by anything else at this moment.
+pub unsafe fn root_backing() -> bool {
+    // SAFETY: nucleus code at boot; nothing else holds the reserve.
+    let tables = unsafe { tables() };
+    let Some(index) = crate::backing::RegionBackingSpace::create(tables) else {
+        return false;
+    };
+    // SAFETY: single-context nucleus at boot; this is the only write.
+    unsafe { BACKING = Some(index) };
+    true
+}
+
+/// Everything a failed operation must leave exactly as it found it.
+///
+/// Seven numbers rather than a claim: the pool from both sides, the reserve,
+/// what the tree has free and what it has committed, how many regions exist,
+/// and how many capabilities the caller holds. A rollback is only as good as
+/// what somebody counted before and after it.
+#[cfg_attr(not(feature = "test-creation-rollback"), allow(dead_code))]
+pub struct Snapshot {
+    available: u64,
+    in_use: u64,
+    tables: u64,
+    free: usize,
+    committed: usize,
+    regions: usize,
+    capabilities: usize,
+}
+
+/// Takes one.
+#[cfg_attr(not(feature = "test-creation-rollback"), allow(dead_code))]
+pub fn snapshot(process: usize) -> Snapshot {
+    // SAFETY: single-context nucleus; nothing else holds these.
+    let frames = unsafe { frames() };
+    // SAFETY: as above.
+    let tables = unsafe { tables() };
+    // SAFETY: as above.
+    let tree = unsafe { authority() };
+    let root = root();
+    Snapshot {
+        available: frames.available(),
+        in_use: frames.in_use(),
+        tables: tables.remaining(),
+        free: root.and_then(|root| tree.remaining(root).ok()).unwrap_or(0),
+        committed: tree.committed(),
+        regions: tree.live_regions(),
+        capabilities: crate::capability::held(process),
+    }
+}
+
+/// Says what changed, in the form a gate can check as arithmetic.
+#[cfg_attr(not(feature = "test-creation-rollback"), allow(dead_code))]
+pub fn report_rollback(event: &[u8], case: &[u8], before: &Snapshot, process: usize) {
+    let after = snapshot(process);
+    let pair = |name: &[u8], before: u64, after: u64| {
+        tos_serial::puts(name);
+        tos_serial::put_u32_decimal(before as u32);
+        tos_serial::puts(b"/");
+        tos_serial::put_u32_decimal(after as u32);
+    };
+    tos_serial::puts(event);
+    tos_serial::puts(b" case=");
+    tos_serial::puts(case);
+    pair(b" pool=", before.available, after.available);
+    pair(b" in_use=", before.in_use, after.in_use);
+    pair(b" tables=", before.tables, after.tables);
+    pair(b" free=", before.free as u64, after.free as u64);
+    pair(
+        b" committed=",
+        before.committed as u64,
+        after.committed as u64,
+    );
+    pair(b" regions=", before.regions as u64, after.regions as u64);
+    pair(
+        b" capabilities=",
+        before.capabilities as u64,
+        after.capabilities as u64,
+    );
+    tos_serial::puts(b" diverged=");
+    tos_serial::put_u32_decimal(u32::from(accounting_diverged()));
+    tos_serial::puts(b" asserted_by=nucleus\r\n");
+}
+
 /// The authority tree, and the root of it.
 ///
 /// One instance, nucleus-owned, for the whole boot: ADR-0076 §2 says one pool

@@ -103,5 +103,48 @@ if "TOS.RUN.PROCESS_BEGIN " not in serial:
         "creation-rollback: FAIL: no process was built after the refusals"
     )
 
-print(f"CREATION-ROLLBACK PASS: {len(EXPECTED)} failures, nothing left behind by any")
+# The same discipline for operation 17, asked from ring 3 because a region needs
+# a caller: a process with an address space of its own and an authority it was
+# endowed. Six ways its construction can fail, three of them injected at the
+# instant a frame is out of the pool or a table out of the reserve.
+REGION = [
+    "zero",
+    "round-overflow",
+    "over-budget",
+    "pool-mid-backing",
+    "tables-mid-backing",
+    "tables-mid-mapping",
+]
+regions = {}
+for line in serial.splitlines():
+    if line.startswith("TOS.RUN.REGION_ROLLBACK "):
+        fields = dict(re.findall(r"(\w+)=(\S+)", line))
+        regions[fields["case"]] = fields
+missing = [case for case in REGION if case not in regions]
+if missing:
+    raise SystemExit(f"creation-rollback: FAIL: no region evidence for {', '.join(missing)}")
+for case in REGION:
+    fields = regions[case]
+    for name in ("pool", "in_use", "tables", "free", "committed", "regions", "capabilities"):
+        before, after = fields[name].split("/")
+        if before != after:
+            raise SystemExit(
+                f"creation-rollback: FAIL: region {case} left {name} at {after}, was {before}"
+            )
+    if fields["diverged"] != "0":
+        raise SystemExit(f"creation-rollback: FAIL: region {case} diverged the accounts")
+    print(f"  region {case}: refused, and the machine is as it was")
+
+# And what those failures returned is enough to allocate with afterwards.
+probes = [l for l in serial.splitlines() if l.startswith("TOS.RUN.REGION.PROBES ")]
+if len(probes) != 1:
+    raise SystemExit("creation-rollback: FAIL: the region probe did not report")
+completed = int(dict(re.findall(r"(\w+)=(-?\d+)", probes[0]))["completed"])
+if completed < 1:
+    raise SystemExit(
+        "creation-rollback: FAIL: no region could be allocated after the refusals"
+    )
+print(f"  and {completed} ordinary regions were allocated out of what they returned")
+
+print(f"CREATION-ROLLBACK PASS: {len(EXPECTED) + len(REGION)} failures, nothing left behind by any")
 PY

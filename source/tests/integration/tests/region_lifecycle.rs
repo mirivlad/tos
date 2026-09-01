@@ -257,7 +257,8 @@ fn a_process_ending_reclaims_what_only_it_could_reach() {
     let region = handed_over(&mut regions, authority, 2 * 1024 * 1024, WORKER);
     regions.map(region, true).expect("mapped writably");
 
-    regions.process_died(WORKER);
+    regions.capabilities_destroyed(WORKER);
+    regions.mappings_destroyed(WORKER);
     retire(&mut regions);
     assert_eq!(
         regions.allocated(root),
@@ -718,7 +719,8 @@ fn a_death_returns_what_only_the_dead_process_could_reach() {
     assert_eq!(regions.committed(), 6 * 1024 * 1024);
 
     // The process dies and its authority goes with it.
-    regions.process_died(WORKER);
+    regions.capabilities_destroyed(WORKER);
+    regions.mappings_destroyed(WORKER);
     retire(&mut regions);
     regions.revoke(allowance).expect("its authority is revoked");
 
@@ -915,7 +917,8 @@ fn an_authority_in_transit_never_returns_to_its_parent() {
     );
 
     // The sender dies before anybody receives. Still nothing comes back.
-    regions.process_died(WORKER);
+    regions.capabilities_destroyed(WORKER);
+    regions.mappings_destroyed(WORKER);
     retire(&mut regions);
     assert_eq!(regions.remaining(root), held);
     assert_eq!(
@@ -1060,7 +1063,8 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
     );
 
     // The sender dies before anybody receives. Still there.
-    regions.process_died(WORKER);
+    regions.capabilities_destroyed(WORKER);
+    regions.mappings_destroyed(WORKER);
     retire(&mut regions);
     assert_eq!(regions.allocated(root), Ok(2 * 1024 * 1024));
     assert!(regions.accounting_holds());
@@ -1165,6 +1169,12 @@ fn a_region_is_credited_back_only_after_its_backing_is() {
     let region = handed_over(&mut regions, authority, 2 * 1024 * 1024, WORKER);
 
     assert_eq!(regions.reclaimable(), None, "nothing to retire yet");
+    assert_eq!(regions.live_regions(), 1);
+    assert_eq!(
+        regions.length(region),
+        Ok(2 * 1024 * 1024),
+        "and its length is what was charged, not what was asked for"
+    );
     regions
         .release_capability(region)
         .expect("the only holder lets go");
@@ -1204,6 +1214,7 @@ fn a_region_is_credited_back_only_after_its_backing_is() {
 
     // And the slot is reusable only now, with a generation that makes the old
     // handle name nothing.
+    assert_eq!(regions.live_regions(), 0, "and the slot is nobody's");
     let next = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
     assert_eq!(regions.mode(region), Err(Refusal::NotFound));
     assert_eq!(regions.mode(next), Ok(Mode::Mutable));

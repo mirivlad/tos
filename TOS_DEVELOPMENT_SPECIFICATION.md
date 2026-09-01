@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `177c9a8c27439c93fee40effff78aa8effb5b94408d1ed789757c3864bf12f64`\
+Source-manifest SHA-256: `ef320c19cbf0979447b39e97afd50e565f8889d2188f4cc62d0728fdfc58ddab`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2401,6 +2401,13 @@ are marked and are exactly those a process can only apply to itself.
 | 15 | `process_create_with_generation` | process-authority capability | `process_create` (8) plus `r8` = the **supervisor-asserted restart generation**, recorded and never computed. `rdx` returns the child's capability handle as for 8; the child's instance id is written to the argument region at `CREATE_INSTANCE_ID` (ADR-0067) |
 
 | 16 | `capability_attenuate_scoped` | memory-authority capability with `spend` | reserves `rsi` bytes of it as a **child** authority and returns a capability naming that child. The parent's remaining amount falls by exactly what the child may spend; no physical memory moves, and the pool is untouched (ADR-0076 §2b). `E_BAD_ARGUMENT` for a size no budget could serve, `E_LIMIT` for one this budget cannot |
+
+| 17 | `region_allocate` | memory-authority capability with `spend` | allocates `rsi` bytes of region backing out of it, maps it into the caller writable and not executable, and returns an **affine** region capability in `rdx` with `read | write`. The region's base and its **charged and mapped** length — the request rounded up to whole frames — are written to the caller's argument region at `REGION_ALLOCATE_RECORD`. The nucleus chooses the address; a caller never supplies one. `E_BAD_ARGUMENT` for a size no budget could serve, `E_LIMIT` for one this budget cannot |
+
+**A region capability is affine.** Exactly one names a region, so operation 5
+refuses to refine one — refinement does not consume its input and could only
+add a second — and neither an endowment nor a delegation may carry one, because
+both copy. A linear transfer is a later operation and is not this one.
 
 **Operation 16 is not operation 5 with an amount.** Generic attenuation (5)
 refines rights and returns another *name* for the same authority, spending from

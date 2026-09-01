@@ -78,6 +78,7 @@ const TIME_MONOTONIC: u64 = 11;
 const PROCESS_EXIT: u64 = 12;
 const ENDPOINT_REPLY_RECEIVE: u64 = 13;
 const CAPABILITY_ATTENUATE_SCOPED: u64 = 16;
+const REGION_ALLOCATE: u64 = 17;
 
 /// Statuses, as `SYSTEM_ABI_V1` §4 assigns them. Named here because this image
 /// checks them: a refusal it could not name it could not report.
@@ -880,7 +881,19 @@ fn named(capability: &LaunchCapability) -> &str {
 ///   reserve it again. Two names, one remainder;
 /// - and releasing a child returns what it held, so the parent can reserve that
 ///   amount again afterwards.
-fn memory_authority(report: &mut Report, first: &LaunchCapability) {
+/// What operation 17 wrote about the region it just made.
+fn region_record(launch: &Launch) -> tos_launch::RegionAllocateRecord {
+    // SAFETY: the launcher mapped this process's argument region readable at
+    // the address the record names, and the nucleus wrote the record there.
+    unsafe {
+        core::ptr::with_exposed_provenance::<tos_launch::RegionAllocateRecord>(
+            (launch.arguments_base + tos_launch::REGION_ALLOCATE_RECORD) as usize,
+        )
+        .read()
+    }
+}
+
+fn memory_authority(launch: &Launch, report: &mut Report, first: &LaunchCapability) {
     const MIB: u64 = 1024 * 1024;
     let parent = first.handle;
 
@@ -914,6 +927,68 @@ fn memory_authority(report: &mut Report, first: &LaunchCapability) {
     let (released, _) = unsafe { call(CAPABILITY_RELEASE, grandchild, 0) };
     // SAFETY: as above.
     let (reclaimed, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, child, MIB / 2) };
+
+    // A real region: allocated, written at both ends, released, and allocated
+    // again into the same slot to prove the lane is reusable and the old handle
+    // is not.
+    const ODD: u64 = 3 * 4096 + 17;
+    // SAFETY: as above; the nucleus writes the record into this process's own
+    // argument region and returns the handle.
+    let (region_status, region) = unsafe { call(REGION_ALLOCATE, parent, ODD) };
+    let record = region_record(launch);
+    let rounded = u64::from(record.length == 4 * 4096);
+    let in_lane = u64::from(record.base >= 1 << 39);
+    let mut wrote = 0;
+    let mut zeroed = 0;
+    if region_status == OK && record.length > 0 {
+        // SAFETY: the nucleus mapped this range writable and not executable in
+        // this address space, and reported its base and length here.
+        unsafe {
+            let first = core::ptr::with_exposed_provenance_mut::<u64>(record.base as usize);
+            let last = core::ptr::with_exposed_provenance_mut::<u64>(
+                (record.base + record.length - 8) as usize,
+            );
+            // A fresh region is memory nobody has used: the pool clears what it
+            // hands out, and this is what says operation 17 did not go round it.
+            zeroed = u64::from(first.read_volatile() == 0 && last.read_volatile() == 0);
+            first.write_volatile(0x5445_5354_5f31);
+            last.write_volatile(0x5445_5354_5f32);
+            wrote = u64::from(
+                first.read_volatile() == 0x5445_5354_5f31
+                    && last.read_volatile() == 0x5445_5354_5f32,
+            );
+        }
+    }
+    // SAFETY: as above.
+    let (released, _) = unsafe { call(CAPABILITY_RELEASE, region, 0) };
+    // SAFETY: as above.
+    let (again, second) = unsafe { call(REGION_ALLOCATE, parent, ODD) };
+    let same_lane = u64::from(region_record(launch).base == record.base);
+    // SAFETY: as above; the first handle named a region that no longer exists.
+    let (stale, _) = unsafe { call(CAPABILITY_RELEASE, region, 0) };
+    // SAFETY: as above.
+    let (freed, _) = unsafe { call(CAPABILITY_RELEASE, second, 0) };
+
+    // Eight more, each released at once. In an ordinary build every one
+    // succeeds; in the fault-injection build the nucleus fails each at a named
+    // point and reports what the machine looked like on both sides of it.
+    let mut probes = 0;
+    for _ in 0..8 {
+        // SAFETY: as above.
+        let (status, handle) = unsafe { call(REGION_ALLOCATE, parent, 2 * 4096) };
+        if status == OK {
+            probes += 1;
+            // SAFETY: as above.
+            unsafe { call(CAPABILITY_RELEASE, handle, 0) };
+        }
+    }
+    report.line(&alloc::format!("TOS.RUN.REGION.PROBES completed={probes}"));
+
+    report.line(&alloc::format!(
+        "TOS.RUN.REGION allocate={region_status} rounded={rounded} in_lane={in_lane} \
+zeroed={zeroed} wrote={wrote} released={released} again={again} same_lane={same_lane} \
+stale={stale} freed={freed}"
+    ));
 
     report.line(&alloc::format!(
         "TOS.RUN.AUTHORITY child={child_status} distinct={distinct} grandchild={grandchild_status} over={over} zero={zero} bad_handle={bad_handle} alias={alias_status} through_alias={through_alias} after_alias={after_alias} released={released} reclaimed={reclaimed}"
@@ -985,7 +1060,7 @@ fn authority(launch: &Launch, report: &mut Report) {
     // ordinary edge, because a reservation model proved only in a host test is
     // a model nothing has actually asked the nucleus for.
     if first.object == tos_launch::OBJECT_MEMORY_AUTHORITY {
-        memory_authority(report, first);
+        memory_authority(launch, report, first);
         return;
     }
 
