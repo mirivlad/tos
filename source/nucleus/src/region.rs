@@ -820,6 +820,15 @@ impl Regions {
         (0..MAX_REGIONS).filter(|at| self.regions[*at].live).count()
     }
 
+    /// How many address spaces map this region, writably and readably.
+    pub fn mappings(&self, region: RegionId) -> Result<(usize, usize), Refusal> {
+        let at = self.region(region)?;
+        Ok((
+            self.regions[at].writable_mappings,
+            self.regions[at].readable_mappings,
+        ))
+    }
+
     /// How many bytes a region was charged and mapped, which is what its
     /// holder is told rather than what it asked for (ADR-0076 §7).
     pub fn length(&self, region: RegionId) -> Result<usize, Refusal> {

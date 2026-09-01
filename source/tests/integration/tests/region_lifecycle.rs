@@ -1137,11 +1137,17 @@ fn an_unmapping_of_nothing_is_a_defect() {
     let authority = regions.attenuate(root, 4 * 1024 * 1024).expect("reserved");
     let region = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
 
+    assert_eq!(regions.mappings(region), Ok((0, 0)), "nothing maps it yet");
     assert_eq!(regions.unmap(region, false), Err(Refusal::BadArgument));
     retire(&mut regions);
     assert_eq!(regions.unmap(region, true), Err(Refusal::BadArgument));
     retire(&mut regions);
     regions.map(region, true).expect("mapped");
+    assert_eq!(
+        regions.mappings(region),
+        Ok((1, 0)),
+        "and the counts say which kind, not only how many"
+    );
     regions.unmap(region, true).expect("and unmapped");
     retire(&mut regions);
     assert_eq!(
