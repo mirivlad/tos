@@ -506,13 +506,26 @@ pub enum Endowment {
     },
     /// Authority over the process being created.
     Own { binding: Binding, rights: u32 },
+    /// Everything the authority that funded this creation has left once the
+    /// creation is paid for, as a child of it (ADR-0076 §3).
+    ///
+    /// Like [`Endowment::Own`] and for the same reason, it names something that
+    /// does not exist when the launcher decides on it: the remainder is not
+    /// known until the footprint has been charged, and the child node is made
+    /// out of it there. **Not the funder itself** — a supervisor is given an
+    /// ordinary child authority with an ordinary reference lifecycle, never the
+    /// boot's accounting anchor, so a supervisor ending or being restarted
+    /// cannot take the anchor with it.
+    Remainder { binding: Binding, rights: u32 },
 }
 
 impl Endowment {
     /// The request this grant answers.
     fn binding(&self) -> &Binding {
         match self {
-            Endowment::Existing { binding, .. } | Endowment::Own { binding, .. } => binding,
+            Endowment::Existing { binding, .. }
+            | Endowment::Own { binding, .. }
+            | Endowment::Remainder { binding, .. } => binding,
         }
     }
 }
@@ -702,6 +715,11 @@ pub fn endow(process: usize, endowment: &[Endowment], out: &mut [LaunchCapabilit
                 scope,
                 ..
             } => (object, rights, scope),
+            // Resolved into an `Existing` before this runs: the remainder is
+            // only known once the creation has been charged, and turning it
+            // into a child node is a step that can refuse, which is not a thing
+            // this function is allowed to do any more.
+            Endowment::Remainder { .. } => break,
             Endowment::Own { rights, .. } => {
                 let Some(generation) = crate::process::generation(process) else {
                     break;

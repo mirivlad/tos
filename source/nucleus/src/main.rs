@@ -1173,7 +1173,32 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-deputy",
         feature = "test-lifecycle"
     )))]
-    let first_endowment: [capability::Endowment; 0] = [];
+    // The bootstrap chain ends here (ADR-0076 §2, ADR-0075 §2b):
+    //
+    // ```text
+    // Frames -> table reserve -> root MemoryAuthority
+    //        -> the initial process's exact footprint, charged to the root
+    //        -> everything the root has left, as a child, endowed explicitly
+    // ```
+    //
+    // **The raw root is not what it gets.** The root is the boot's accounting
+    // anchor: it has no parent to return to, no ring-3 handle names it, and it
+    // must survive a process ending or being restarted. What the first process
+    // is given is an ordinary child of it — reserved out of the root, with an
+    // ordinary reference lifecycle, returning its unspent part to the anchor
+    // when its last name goes. Nothing is inherited and nothing is ambient:
+    // this is an entry in the endowment like any other, and the process finds
+    // it in its launch record rather than asking for it.
+    //
+    // All of what is left, because once there is user-space supervision the
+    // policy for dynamic user memory belongs below that allowance rather than
+    // to nucleus spending nobody authorised. The root normally ends the boot
+    // with `allocated = the footprint`, `reserved = the allowance` and
+    // `remaining = 0`, and that is intentional.
+    let first_endowment = [capability::Endowment::Remainder {
+        binding: capability::Binding::new(b"memory").expect("a short name"),
+        rights: tos_launch::RIGHT_SPEND,
+    }];
     let first = match build(&first_endowment) {
         Ok(index) => index,
         Err(_) => {
