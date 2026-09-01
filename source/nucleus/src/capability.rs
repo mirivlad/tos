@@ -8,13 +8,17 @@
 //! may do is at the other end of that lookup, in memory no process has a
 //! mapping to.
 //!
-//! **Nothing here creates authority.** No operation of `SYSTEM_ABI_V1` produces
-//! a capability, deliberately: an operation that manufactures authority and is
-//! reachable without any is ambient authority with a handle in front of it. A
-//! table is written by [`endow`] before its process is entered, from what
-//! whoever launched it decided (ADR-0055). A process can shrink its table
-//! (`capability_release`) or refine it (`capability_attenuate`); it has no way
-//! to widen it.
+//! **`SYSTEM_ABI_V1` creates no ambient authority.** Several operations return
+//! a capability — 5 a refined one, `process_create` a handle to the child, a
+//! call the right to answer it, 16 a child authority — and every one of them
+//! has an explicit normative origin: the result is bounded by authority the
+//! caller presented, or by a creation rule the contract accepted, and it never
+//! widens either. What does not exist is an operation that manufactures
+//! authority and is reachable without any, which is ambient authority with a
+//! handle in front of it. A table is first written by [`endow`] before its
+//! process is entered, from what whoever launched it decided (ADR-0055); a
+//! process can shrink its table (`capability_release`) or refine it
+//! (`capability_attenuate`), and has no way to widen it.
 //!
 //! **The generation is what makes a stale handle detectably stale.** Releasing a
 //! capability and reusing its slot must not let an old index silently address
@@ -673,6 +677,40 @@ pub fn endowable(endowment: &[Endowment]) -> Result<(), NotGranted> {
     if endowment.len() > MAX_CAPABILITIES {
         return Err(NotGranted::NoRoom);
     }
+    // Every object named has to still be one, and every name that will be taken
+    // has to be takeable. The second is a *sum*: an endowment naming one memory
+    // authority three times costs it three names, and asking three times
+    // whether one more would fit is not the same question.
+    for (position, entry) in endowment.iter().enumerate() {
+        let Endowment::Existing { object, .. } = *entry else {
+            continue;
+        };
+        if !object_is_live(object) {
+            return Err(NotGranted::NoRoom);
+        }
+        if let Object::MemoryAuthority { index, generation } = object {
+            let names = endowment
+                .iter()
+                .filter(|other| {
+                    matches!(
+                        **other,
+                        Endowment::Existing {
+                            object: Object::MemoryAuthority { index: i, generation: g },
+                            ..
+                        } if i == index && g == generation
+                    )
+                })
+                .count();
+            // Asked once, at the first entry naming it, for all of them.
+            if position == 0 || names > 0 {
+                // SAFETY: single-context nucleus; nothing else holds the tree.
+                let tree = unsafe { crate::memory::authority() };
+                if !tree.can_retain(crate::region::AuthorityId { index, generation }, names) {
+                    return Err(NotGranted::NoRoom);
+                }
+            }
+        }
+    }
     for (position, entry) in endowment.iter().enumerate() {
         let Endowment::Existing { object, rights, .. } = *entry else {
             continue;
@@ -716,8 +754,17 @@ pub fn endowable(endowment: &[Endowment]) -> Result<(), NotGranted> {
 /// will find in its launch record: which handle names what, so that a process
 /// does not have to discover its own authority by guessing indices.
 pub fn endow(process: usize, endowment: &[Endowment], out: &mut [LaunchCapability]) -> u32 {
+    // Not `take(out.len())`. A silent truncation would leave a process short of
+    // authority its launcher decided on, which is the defect the preflight
+    // exists to prevent, arriving by a different door. The record is sized from
+    // this same slice by the only caller, so a mismatch is the nucleus having
+    // lost track of its own sizing rather than anything a caller did.
+    if out.len() < endowment.len() {
+        crate::memory::note_divergence(b"endowment-record-undersized");
+        return 0;
+    }
     let mut written = 0;
-    for entry in endowment.iter().take(out.len()) {
+    for entry in endowment.iter() {
         // The name before the authority: a grant whose binding does not fit is
         // refused rather than truncated, because a truncated name is a name —
         // of a request the module did not make (ADR-0061).
