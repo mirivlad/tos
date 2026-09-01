@@ -353,19 +353,29 @@ pub fn accounting_diverged() -> bool {
 ///
 /// **A refund that refuses is not a user's refusal.** A `GrantCharge` names one
 /// outstanding entry in the ledger, so the only way `refund_grant` can fail on
-/// an internal lifecycle path is that the nucleus lost track of what it funded
-/// — and from that instant the tree's idea of free memory is larger than the
-/// pool's. Continuing to fund out of a number that is known to be wrong is how
-/// an accounting defect becomes two owners of one frame.
+/// an internal lifecycle path is that the nucleus lost track of what it funded.
+/// From that instant the pool and the tree are known to disagree — and
+/// **which way is not a safety property.** On the retirement path the frames
+/// have already gone back to the pool when the refund refuses, so the tree
+/// stays *more* occupied than the machine really is; a different defect could
+/// as easily leave it less. Building anything on the direction of a divergence
+/// is building on the assumption that the bug is the one that was imagined.
 ///
-/// So this latches, and [`root`] answers `None` from here on: nothing new is
-/// built, and what is already running is left alone rather than taken down. The
-/// nucleus does not panic over it — a process that exists is not made safer by
-/// stopping the machine — but it does not pretend either, and the boot log says
-/// so in the vocabulary the operator already reads faults in.
+/// So the latch says only what is known: neither side is a trustworthy funding
+/// account any more. It stops [`root`] answering **and** poisons the tree
+/// itself, so a child authority somebody already holds cannot reserve or spend
+/// either — after operation 16 that will be the ordinary case, and a rule that
+/// lives in one accessor would not have reached it.
+///
+/// Giving things back still works, deliberately. The nucleus does not panic
+/// over this — a process that exists is not made safer by stopping the machine
+/// — but it does not pretend either, and the boot log says so in the vocabulary
+/// the operator already reads faults in.
 pub fn note_divergence(reason: &[u8]) {
     // SAFETY: single-context nucleus.
     unsafe { DIVERGED = true };
+    // SAFETY: as above; nothing else holds the tree.
+    unsafe { authority() }.poison();
     tos_serial::puts(b"TOS.NUCLEUS.INVARIANT reason=");
     tos_serial::puts(reason);
     tos_serial::puts(b" effect=funding-stopped asserted_by=nucleus\r\n");

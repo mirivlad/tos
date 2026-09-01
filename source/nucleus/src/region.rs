@@ -74,6 +74,10 @@ pub enum Refusal {
     NotTheHolder,
     /// A zero-sized authority or region, which is authority over nothing.
     Empty,
+    /// The tree has been stopped: the pool and the accounting were found to
+    /// disagree, so nothing new may be reserved or spent anywhere in it. Giving
+    /// things back is still allowed — see [`Regions::poison`].
+    Stopped,
 }
 
 /// A handle into the authority table, with the generation that makes a stale
@@ -246,6 +250,9 @@ pub struct Regions {
     authorities: [Authority; MAX_AUTHORITIES],
     regions: [Region; MAX_REGIONS],
     charges: [Charge; MAX_CHARGES],
+    /// Set once the pool and this tree have been found to disagree, and never
+    /// cleared. See [`Regions::poison`].
+    stopped: bool,
 }
 
 impl Default for Regions {
@@ -287,7 +294,40 @@ impl Regions {
                 authority_incarnation: 0,
                 bytes: 0,
             }; MAX_CHARGES],
+            stopped: false,
         }
+    }
+
+    /// Stops the whole tree from committing or reserving anything further.
+    ///
+    /// **Why the latch belongs here and not at one caller.** The effect used to
+    /// be that `memory::root()` stopped answering, which was enough only while
+    /// the root was the one thing anybody could fund from. It stops being
+    /// enough the moment a process holds a child `MemoryAuthority` of its own:
+    /// operation 16 would reserve out of that child, 17 would spend it, 19 and
+    /// 20 would fund from it, and not one of them would have asked the root
+    /// anything. A rule of the form "every future system call must remember to
+    /// check a flag" is a rule that will be forgotten in exactly one of them.
+    ///
+    /// So the tree itself refuses. Every path that *increases* what is
+    /// reserved or committed — [`Regions::attenuate`], [`Regions::charge_grant`]
+    /// and [`Regions::allocate_rounded`], which is all of them — answers
+    /// [`Refusal::Stopped`], and an operation added later has to go through one
+    /// of those three to spend anything.
+    ///
+    /// **Giving back keeps working, and that is the point.** Releasing a
+    /// capability, revoking an authority, refunding a charge, reclaiming a
+    /// region, returning an unused reservation and settling a lineage all still
+    /// run: the machine has to be able to shrink safely towards a state
+    /// somebody can inspect. What it may not do is grow on numbers that are
+    /// known to be wrong.
+    pub fn poison(&mut self) {
+        self.stopped = true;
+    }
+
+    /// Whether the tree has been stopped.
+    pub fn stopped(&self) -> bool {
+        self.stopped
     }
 
     /// The root authority over a pool, once the nucleus's fixed reserves are
@@ -331,6 +371,9 @@ impl Regions {
         bytes: usize,
         granule: usize,
     ) -> Result<GrantCharge, Refusal> {
+        if self.stopped {
+            return Err(Refusal::Stopped);
+        }
         let charged = round_up(bytes, granule)?;
         if charged == 0 {
             return Err(Refusal::Empty);
@@ -446,6 +489,9 @@ impl Regions {
     /// budget rather than copying it: the parent can no longer spend what the
     /// child now may. Attenuation makes authority; it does not make a region.
     pub fn attenuate(&mut self, parent: AuthorityId, bytes: usize) -> Result<AuthorityId, Refusal> {
+        if self.stopped {
+            return Err(Refusal::Stopped);
+        }
         if bytes == 0 {
             return Err(Refusal::Empty);
         }
@@ -503,6 +549,9 @@ impl Regions {
         granule: usize,
         holder: u32,
     ) -> Result<RegionId, Refusal> {
+        if self.stopped {
+            return Err(Refusal::Stopped);
+        }
         if bytes == 0 {
             return Err(Refusal::Empty);
         }

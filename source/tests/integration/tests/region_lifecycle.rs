@@ -708,6 +708,75 @@ fn a_death_returns_what_only_the_dead_process_could_reach() {
     assert!(regions.accounting_holds());
 }
 
+/// A stopped tree refuses to grow anywhere, and still lets everything shrink.
+///
+/// The latch cannot live at the root's accessor. Once a process holds a child
+/// authority of its own — which is what operation 16 exists to give it —
+/// reserving and spending never touch the root again, so a rule enforced there
+/// would be enforced nowhere. It is the tree that refuses.
+#[test]
+fn a_stopped_tree_refuses_to_grow_and_still_gives_back() {
+    const POOL: usize = 64 * 1024 * 1024;
+    const FRAME: usize = 4096;
+    let mut regions = Regions::new();
+    let root = regions.endow_root(POOL).expect("endowed");
+    let child = regions
+        .attenuate(root, 32 * 1024 * 1024)
+        .expect("a child the process holds");
+    let region = regions
+        .allocate(child, 4 * 1024 * 1024, WORKER)
+        .expect("something it already spent");
+    let charge = regions
+        .charge_grant(child, 8 * 1024 * 1024, FRAME)
+        .expect("something it already funded");
+
+    let free = regions.remaining(child);
+    let committed = regions.committed();
+    regions.poison();
+    assert!(regions.stopped());
+
+    // Nothing anywhere in the tree may reserve or spend, and the child is the
+    // one that matters: it never asks the root anything.
+    assert_eq!(
+        regions.attenuate(child, 1024 * 1024),
+        Err(Refusal::Stopped),
+        "a reservation out of a child is still a reservation"
+    );
+    assert_eq!(
+        regions.allocate(child, 1024 * 1024, WORKER),
+        Err(Refusal::Stopped)
+    );
+    assert_eq!(
+        regions.charge_grant(child, 1024 * 1024, FRAME),
+        Err(Refusal::Stopped),
+        "and a funded creation is a spend like any other"
+    );
+    assert_eq!(regions.attenuate(root, 1024 * 1024), Err(Refusal::Stopped));
+    assert_eq!(regions.allocate(root, 1024, WORKER), Err(Refusal::Stopped));
+    assert_eq!(
+        regions.remaining(child),
+        free,
+        "and none of it changed a byte"
+    );
+    assert_eq!(regions.committed(), committed);
+    assert!(regions.accounting_holds());
+
+    // What must keep working is everything that makes the machine smaller: the
+    // operator has to be able to reach a state worth inspecting.
+    regions
+        .refund_grant(charge)
+        .expect("a charge still returns");
+    regions.release(region).expect("a region still releases");
+    assert_eq!(regions.committed(), 0);
+    regions.revoke(child).expect("an authority still revokes");
+    assert_eq!(
+        regions.remaining(root),
+        Ok(POOL),
+        "and every unused reservation came back"
+    );
+    assert!(regions.accounting_holds());
+}
+
 /// The mode is what a caller can observe about a region, and it only goes one
 /// way.
 #[test]
