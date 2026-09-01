@@ -480,37 +480,6 @@ fn process_window_tables() -> u64 {
         + tables_over(ARGUMENTS, ARGUMENT_FRAMES * FRAME_SIZE)
 }
 
-/// Page-table frames the region lanes can need, at worst.
-///
-/// Two trees are bounded here and they are bounded the same way.
-///
-/// The **backing index** is the nucleus's own record of which physical frames
-/// make up each region: one page-table-shaped structure, never loaded into
-/// `CR3`, giving no process access to anything. The **mappings** are what each
-/// process's address space holds of the regions it can reach.
-///
-/// ```text
-/// a = ceil(P / 512 GiB)   how many lane-sized units this machine's memory is
-/// b = ceil(P / 1 GiB)     page directories, if it were all one run
-/// c = ceil(P / 2 MiB)     page tables, likewise
-/// ```
-///
-/// where `P` is every byte the boot admitted. **The bound is not the worst
-/// region size times the number of regions**, which would reserve more than the
-/// machine has: the *total* backing alive at once cannot exceed `P`, whatever
-/// it is divided into. What dividing it costs is the boundaries — spreading `P`
-/// across `slots` lanes adds at most one extra table per level per lane after
-/// the first, because each lane starts on a fresh 512-GiB boundary. Hence
-/// `a + slots - 1` and so on, and the root of the backing tree once.
-///
-/// A process is bounded by its capability table rather than by `MAX_REGIONS`:
-/// it cannot reach more distinct regions than it can hold handles for, and its
-/// address-space root is already counted by the windows above.
-fn lane_tables(top: u64, slots: u64) -> u64 {
-    let units = |unit: u64| top.div_ceil(unit) + slots - 1;
-    units(REGION_LANE_SPAN) + units(1 << 30) + units(2 * 1024 * 1024)
-}
-
 /// The whole page-table reserve for this machine (ADR-0076 §2 rule 3).
 ///
 /// `admitted` is what the pool actually holds — not the sum of the map's usable
@@ -535,14 +504,22 @@ fn lane_tables(top: u64, slots: u64) -> u64 {
 /// The identity map's own cost comes from [`paging::build_tables`], which knows
 /// which chunks that map breaks into 4 KiB pages and which it covers with a
 /// single 2 MiB leaf.
-pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange], admitted: u64) -> u64 {
+///
+/// **The region lanes are not in it yet, and that is a finding rather than an
+/// omission.** The derived lane bound is `1 477` frames on the reference
+/// machine against `517` without it, and the `960` between them are more than
+/// the margin the four-process budget had: four grants of `14 356` frames need
+/// `57 424`, and a root endowed over what is left after a `1 477`-frame reserve
+/// holds `57 407`. Seventeen frames short — 68 KiB — and the fourth process
+/// stops being creatable, which the lifecycle gate found immediately.
+///
+/// Reserving for lanes that nothing can yet allocate buys nothing and costs
+/// that process, so the bound is added in the slice that starts using it, once
+/// the collision has been resolved. `docs/evidence/STAGE3_REGION_APERTURE.md`
+/// carries the arithmetic.
+pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
     let identity = paging::build_tables(bi, descs);
-    // The backing index, once for the machine; and each process's own region
-    // mappings, bounded by the handles it can hold rather than by how many
-    // regions exist.
-    let backing = 1 + lane_tables(admitted, MAX_REGIONS as u64);
-    let mappings = lane_tables(admitted, crate::capability::MAX_CAPABILITIES as u64);
-    identity + backing + MAX_PROCESSES as u64 * (identity + process_window_tables() + mappings)
+    identity + MAX_PROCESSES as u64 * (identity + process_window_tables())
 }
 
 /// Page-table flags, from the process's side of the boundary.
