@@ -947,6 +947,32 @@ fn the_root_outlives_every_name_and_is_never_settled() {
     assert!(regions.accounting_holds());
 }
 
+/// A preflight has to be able to ask without doing.
+///
+/// The endowment commit is only infallible if every fallible step was asked in
+/// advance, and taking names is one of them. The question is a *sum*: an
+/// endowment naming one authority three times costs it three names, and asking
+/// three times whether one more would fit is a different question that happens
+/// to have the same answer until it does not.
+#[test]
+fn whether_names_can_be_taken_is_answerable_without_taking_them() {
+    let (mut regions, root) = endowed();
+    let child = regions.attenuate(root, 1024 * 1024).expect("reserved");
+
+    assert!(regions.can_retain(child, 1));
+    assert!(regions.can_retain(child, 3), "and several at once");
+    assert_eq!(regions.names(child), Ok(1), "having taken none of them");
+
+    // The anchor has no naming lifecycle, so nothing can be taken of it — which
+    // the preflight has to know before the commit tries.
+    assert!(!regions.can_retain(root, 1));
+
+    // A handle that names nothing cannot be retained either.
+    regions.release_name(child).expect("the last name goes");
+    assert!(!regions.can_retain(child, 1));
+    assert!(regions.accounting_holds());
+}
+
 /// The mode is what a caller can observe about a region, and it only goes one
 /// way.
 #[test]

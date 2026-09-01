@@ -786,6 +786,21 @@ impl Regions {
         Ok(())
     }
 
+    /// Whether `count` more names could be taken, without taking any.
+    ///
+    /// **A preflight needs a pure question.** The endowment commit is meant to
+    /// be infallible, and it can only be that if every fallible step has been
+    /// asked in advance — including this one, and including the case where one
+    /// endowment names the same authority several times, whose cost is the sum
+    /// rather than each entry on its own.
+    pub fn can_retain(&self, authority: AuthorityId, count: usize) -> bool {
+        let Ok(at) = self.authority(authority) else {
+            return false;
+        };
+        self.authorities[at].parent.is_some()
+            && self.authorities[at].names.checked_add(count).is_some()
+    }
+
     /// How many live references name this node.
     pub fn names(&self, authority: AuthorityId) -> Result<usize, Refusal> {
         let at = self.authority(authority)?;
