@@ -18,10 +18,23 @@
 //!                        funded it, and drain upward from there
 //! ```
 //!
-//! A **`RegionObject`** is memory with an identity, a mode and a count of what
-//! can still reach it. It is mutable when it is made, immutable for good after
-//! the consuming transition, and reclaimed only when nothing — no capability, no
-//! mapping, no internal reference — can reach it.
+//! A **`RegionObject`** is memory with an identity, a state and a record of
+//! what can still reach it. It is mutable when it is made, immutable for good
+//! after the consuming freeze, shared for good after the consuming share, and
+//! reclaimed only when nothing — no capability, no mapping, no internal
+//! reference — can reach it.
+//!
+//! ```text
+//! MutableAffine    one capability, read|write, one exclusive holder,
+//!                  one writable mapping, neither transferable nor shareable
+//! ImmutableAffine  one capability, read|share, one exclusive holder,
+//!                  read-only mapping, transferable linearly, consumable by share
+//! SharedImmutable  capability refs may exceed one, read only, read-only
+//!                  mappings in several processes, no exclusive holder, copyable
+//! ```
+//!
+//! The arrows go one way only, and each is consuming: `freeze` takes the first
+//! to the second and `share` takes the second to the third (ADR-0075 §3, §4).
 //!
 //! **What this module is not.** It maps nothing, it touches no page table and it
 //! has no syscall: it is the state machine those will be written against, so
@@ -109,16 +122,65 @@ pub struct RegionId {
     pub generation: u32,
 }
 
-/// What a region may be done to.
+/// What a region may be done to: the three states of ADR-0075, in the one
+/// order they can be reached in.
+///
+/// **Not three flavours of one thing.** Each transition is consuming and none
+/// has an inverse, so the state is a fact about the object rather than a
+/// summary of the rights some capability happens to carry. Deriving affinity
+/// from rights would make a region's identity depend on what was last granted;
+/// deriving it from here makes the rights a consequence.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Mode {
-    /// Readable and writable, held by exactly one process, neither shareable
-    /// nor transferable (ADR-0037).
+    /// Readable and writable, named by exactly one capability, held by exactly
+    /// one process, neither shareable nor transferable (ADR-0037).
     Mutable,
-    /// Readable and shareable, transferable into exactly one holder, and never
+    /// Readable and shareable, still named by exactly one capability and held
+    /// by exactly one process, transferable into exactly one other, and never
     /// writable again.
     Immutable,
+    /// Readable, and readable by more than one at a time: several capabilities
+    /// may name it, several address spaces may map it, and none of them is *the*
+    /// holder. The only copyable form a region has.
+    Shared,
 }
+
+impl Mode {
+    /// Whether a second capability naming this region would be a second
+    /// **owner** rather than a second reader.
+    ///
+    /// The affine states answer yes and the shared one answers no, and that is
+    /// the whole of the difference `Object::Region` and `Object::SharedRegion`
+    /// carry into the capability table.
+    pub fn is_affine(self) -> bool {
+        matches!(self, Mode::Mutable | Mode::Immutable)
+    }
+}
+
+/// Nobody. The value of [`Region::holder`] for a region in transit, for one
+/// whose exclusive holder has died, and for a shared one, which has none by
+/// construction.
+const NOBODY: u32 = u32::MAX;
+
+/// How many address spaces may map one region at once.
+///
+/// The nucleus's process bound, restated here rather than imported: this module
+/// is compiled on its own by the state-machine evidence, which has no process
+/// table, and a state machine that could not be exercised without one would be
+/// a state machine proved only through the thing it is supposed to constrain.
+/// `process.rs` asserts at compile time that the two agree, which is what keeps
+/// a restatement from becoming a second opinion.
+pub const MAX_MAPPING_SPACES: usize = 4;
+
+/// One process's bit in a mapping set.
+///
+/// Four address spaces fit in a byte, so every question about the set — is P
+/// among them, how many are there — is one instruction rather than a search.
+fn bit(process: u32) -> Option<u8> {
+    (process < MAX_MAPPING_SPACES as u32).then(|| 1u8 << process)
+}
+
+const _: () = assert!(MAX_MAPPING_SPACES <= 8);
 
 /// A request rounded to what the machine actually spends (ADR-0076 §7).
 ///
@@ -244,25 +306,34 @@ struct Authority {
 }
 
 /// One region object.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 struct Region {
     live: bool,
     generation: u32,
     bytes: usize,
-    mutable: bool,
+    /// Which of the three states of ADR-0075 it is in. It only ever moves
+    /// forward.
+    state: Mode,
     /// Which authority paid for it, and that generation.
     charged_to: u32,
-    /// How many capabilities name it.
+    /// How many capabilities name it. `{0, 1}` while affine; unbounded above
+    /// once shared, because a shared region is what several holders are for.
     capabilities: usize,
     /// How many references the nucleus itself holds: a committed delegation
     /// still in transit, and later anything else that must keep a region alive
     /// while no process can reach it (ADR-0075 §6).
     internal: usize,
-    /// How many address spaces have it mapped, by mode.
-    writable_mappings: usize,
-    readable_mappings: usize,
-    /// Which process holds it while it is mutable, and while it is immutable
-    /// and unshared. `u32::MAX` is nobody.
+    /// **Which** address spaces have it mapped, by mode — not how many.
+    ///
+    /// A pair of counters could answer "how many map it" and nothing else, and
+    /// a shared region needs three other questions answered: is *this* process
+    /// one of them, in which mode, and does a mapping have to be built or does
+    /// one already exist. One process holding several shared handles still has
+    /// exactly one physical mapping, and a count could not tell that from two.
+    writable_mapped_by: u8,
+    readable_mapped_by: u8,
+    /// Which process holds it while it is affine. [`NOBODY`] while it is in
+    /// transit, once its holder has died, and always once it is shared.
     holder: u32,
     /// Nothing can reach it any more, and its backing has not been given back
     /// yet. It resolves to nothing from here on, and its slot is not reusable
@@ -321,13 +392,13 @@ impl Regions {
                 live: false,
                 generation: 0,
                 bytes: 0,
-                mutable: false,
+                state: Mode::Mutable,
                 charged_to: 0,
                 capabilities: 0,
                 internal: 0,
-                writable_mappings: 0,
-                readable_mappings: 0,
-                holder: u32::MAX,
+                writable_mapped_by: 0,
+                readable_mapped_by: 0,
+                holder: NOBODY,
                 reclaimable: false,
                 taken: false,
             }; MAX_REGIONS],
@@ -623,7 +694,7 @@ impl Regions {
             live: true,
             generation,
             bytes,
-            mutable: true,
+            state: Mode::Mutable,
             charged_to: at as u32,
             // **Nobody holds it yet.** Building a region is a nucleus
             // transaction, not a capability: the backing has to be laid down
@@ -634,8 +705,8 @@ impl Regions {
             // the caller's handle exists.
             capabilities: 0,
             internal: 1,
-            writable_mappings: 0,
-            readable_mappings: 0,
+            writable_mapped_by: 0,
+            readable_mapped_by: 0,
             holder,
             reclaimable: false,
             taken: false,
@@ -646,69 +717,149 @@ impl Regions {
         })
     }
 
-    /// Maps a region into its holder, writably or not.
+    /// Maps a region into one process's address space, writably or not.
     ///
-    /// A writable mapping of an immutable region is unexpressible rather than
-    /// refused politely: the mode is the answer.
-    pub fn map(&mut self, region: RegionId, writable: bool) -> Result<(), Refusal> {
+    /// A writable mapping of anything but a mutable region is unexpressible
+    /// rather than refused politely: the state is the answer. And an affine
+    /// region is mapped by its holder or by nobody — a second address space
+    /// with a window onto a region that has one owner is the alias the whole
+    /// model exists to rule out.
+    ///
+    /// **One process, one physical mapping.** A duplicate is refused rather
+    /// than counted, in either mode: a process holding three shared handles to
+    /// one region still has one window at one address, and a count that grew
+    /// with the handles could never say when the window should go.
+    pub fn map(&mut self, region: RegionId, process: u32, writable: bool) -> Result<(), Refusal> {
         let at = self.region(region)?;
-        if writable && !self.regions[at].mutable {
+        let Some(bit) = bit(process) else {
+            return Err(Refusal::BadArgument);
+        };
+        if writable && self.regions[at].state != Mode::Mutable {
             return Err(Refusal::WrongMode);
         }
+        if self.regions[at].state.is_affine() && self.regions[at].holder != process {
+            return Err(Refusal::NotTheHolder);
+        }
+        if (self.regions[at].writable_mapped_by | self.regions[at].readable_mapped_by) & bit != 0 {
+            return Err(Refusal::BadArgument);
+        }
         if writable {
-            self.regions[at].writable_mappings += 1;
+            self.regions[at].writable_mapped_by |= bit;
         } else {
-            self.regions[at].readable_mappings += 1;
+            self.regions[at].readable_mapped_by |= bit;
         }
         Ok(())
     }
 
-    /// Drops one mapping.
+    /// Drops one process's mapping.
     ///
-    /// An unmapping of something that was never mapped is refused rather than
-    /// clamped to zero: a count that silently absorbs an impossible operation
-    /// is a count that cannot be used to decide when backing may be reclaimed.
-    pub fn unmap(&mut self, region: RegionId, writable: bool) -> Result<(), Refusal> {
+    /// An unmapping by a process that did not map it — or that mapped it in the
+    /// other mode — is refused rather than absorbed: a record that silently
+    /// swallows an impossible operation is a record that cannot be used to
+    /// decide when backing may be reclaimed.
+    pub fn unmap(&mut self, region: RegionId, process: u32, writable: bool) -> Result<(), Refusal> {
         let at = self.region(region)?;
-        let held = if writable {
-            self.regions[at].writable_mappings
-        } else {
-            self.regions[at].readable_mappings
+        let Some(bit) = bit(process) else {
+            return Err(Refusal::BadArgument);
         };
-        if held == 0 {
+        let held = if writable {
+            &mut self.regions[at].writable_mapped_by
+        } else {
+            &mut self.regions[at].readable_mapped_by
+        };
+        if *held & bit == 0 {
             return Err(Refusal::BadArgument);
         }
-        if writable {
-            self.regions[at].writable_mappings -= 1;
-        } else {
-            self.regions[at].readable_mappings -= 1;
-        }
+        *held &= !bit;
         self.settle_region(at);
         Ok(())
+    }
+
+    /// Whether a process maps this region, and writably if it does.
+    ///
+    /// What a release has to ask before it destroys anything: the mode a
+    /// mapping is in is a fact about the region and the process, never a
+    /// constant of the operation. An operation that assumed "writable" would be
+    /// right exactly until the first freeze.
+    pub fn mapped_by(&self, region: RegionId, process: u32) -> Result<Option<bool>, Refusal> {
+        let at = self.region(region)?;
+        let Some(bit) = bit(process) else {
+            return Err(Refusal::BadArgument);
+        };
+        Ok(if self.regions[at].writable_mapped_by & bit != 0 {
+            Some(true)
+        } else if self.regions[at].readable_mapped_by & bit != 0 {
+            Some(false)
+        } else {
+            None
+        })
     }
 
     /// The consuming transition: a writable region becomes permanently
     /// immutable (ADR-0075 §3).
     ///
-    /// In one step, before it returns: every writable mapping is gone, the mode
-    /// is fixed, and no future mapping may be writable. The postcondition is the
-    /// nucleus's to assert — `writable_aliases == 0` — and it is checked here
-    /// rather than promised.
+    /// In one step, before it returns: the holder's writable mapping becomes a
+    /// readable one, the state is fixed, and no future mapping may be writable.
+    /// The postcondition is the nucleus's to assert — `writable_aliases == 0` —
+    /// and it is checked here rather than promised.
     ///
     /// Only the sole holder may do it, because only a sole holder can be sure
     /// no other writer exists; a `Region<mut T>` has exactly one by
-    /// construction (ADR-0037).
+    /// construction (ADR-0037). And the holder's writable window must be
+    /// exactly the one this expects: the state machine will not declare a
+    /// region unwritable while a writable mapping it did not account for
+    /// stands.
     pub fn freeze(&mut self, region: RegionId, holder: u32) -> Result<(), Refusal> {
         let at = self.region(region)?;
-        if !self.regions[at].mutable {
+        if self.regions[at].state != Mode::Mutable {
             return Err(Refusal::WrongMode);
         }
+        let Some(bit) = bit(holder) else {
+            return Err(Refusal::BadArgument);
+        };
         if self.regions[at].holder != holder || self.regions[at].capabilities != 1 {
             return Err(Refusal::NotTheHolder);
         }
-        self.regions[at].writable_mappings = 0;
-        self.regions[at].mutable = false;
+        if self.regions[at].writable_mapped_by != bit || self.regions[at].readable_mapped_by != 0 {
+            return Err(Refusal::WrongMode);
+        }
+        self.regions[at].writable_mapped_by = 0;
+        self.regions[at].readable_mapped_by = bit;
+        self.regions[at].state = Mode::Immutable;
         debug_assert_eq!(self.writable_aliases(region), Ok(0));
+        Ok(())
+    }
+
+    /// The second consuming transition: an immutable affine region becomes a
+    /// shared one (ADR-0037 §4, `IPC_V1` §5).
+    ///
+    /// `share` consumes its argument, so what comes back is not a second name
+    /// for the affine form — the affine form stops existing. After it there is
+    /// no exclusive holder, several capabilities may name the region, and
+    /// several address spaces may map it read-only. The caller's own mapping
+    /// does not move: it is the same backing at the same address, under a
+    /// capability of a different shape.
+    ///
+    /// Irreversible, like the freeze before it, and for the same reason: there
+    /// is no operation that collects a shared region back into one owner, and
+    /// one that existed would have to prove something about handles it cannot
+    /// see.
+    pub fn share(&mut self, region: RegionId, holder: u32) -> Result<(), Refusal> {
+        let at = self.region(region)?;
+        if self.regions[at].state != Mode::Immutable {
+            return Err(Refusal::WrongMode);
+        }
+        let Some(bit) = bit(holder) else {
+            return Err(Refusal::BadArgument);
+        };
+        if self.regions[at].holder != holder || self.regions[at].capabilities != 1 {
+            return Err(Refusal::NotTheHolder);
+        }
+        if self.regions[at].readable_mapped_by != bit || self.regions[at].writable_mapped_by != 0 {
+            return Err(Refusal::WrongMode);
+        }
+        self.regions[at].state = Mode::Shared;
+        self.regions[at].holder = NOBODY;
         Ok(())
     }
 
@@ -716,29 +867,74 @@ impl Regions {
     /// that is the point.
     pub fn writable_aliases(&self, region: RegionId) -> Result<usize, Refusal> {
         let at = self.region(region)?;
-        Ok(if self.regions[at].mutable {
-            self.regions[at].capabilities + self.regions[at].writable_mappings
+        let mapped = self.regions[at].writable_mapped_by.count_ones() as usize;
+        Ok(if self.regions[at].state == Mode::Mutable {
+            self.regions[at].capabilities + mapped
         } else {
-            self.regions[at].writable_mappings
+            mapped
         })
     }
 
-    /// Moves an immutable region into exactly one other holder.
+    /// Gives up an immutable affine region's ownership, without giving it to
+    /// anybody yet.
     ///
-    /// Linear: the sender's handle and its mappings are gone before ownership is
-    /// considered moved, so there is no instant at which both hold it
-    /// (ADR-0075 §5a). A mutable region is not transferable at all.
-    pub fn transfer(&mut self, region: RegionId, from: u32, to: u32) -> Result<(), Refusal> {
+    /// The sender's half of a linear transfer: its mapping bit and its
+    /// ownership go together, before the message is queued, so there is no
+    /// instant at which the sender can still reach memory it has sent
+    /// (ADR-0075 §5a). What keeps the region alive across the gap is the
+    /// message's internal reference, which the caller takes **first**.
+    ///
+    /// Mutable and shared regions are refused: the first is not transferable at
+    /// all, and the second has no ownership to give up.
+    pub fn detach(&mut self, region: RegionId, from: u32) -> Result<(), Refusal> {
         let at = self.region(region)?;
-        if self.regions[at].mutable {
+        if self.regions[at].state != Mode::Immutable {
             return Err(Refusal::WrongMode);
         }
+        let Some(bit) = bit(from) else {
+            return Err(Refusal::BadArgument);
+        };
         if self.regions[at].holder != from {
             return Err(Refusal::NotTheHolder);
         }
-        self.regions[at].readable_mappings = 0;
+        if self.regions[at].readable_mapped_by != bit || self.regions[at].writable_mapped_by != 0 {
+            return Err(Refusal::WrongMode);
+        }
+        self.regions[at].readable_mapped_by = 0;
+        self.regions[at].holder = NOBODY;
+        self.settle_region(at);
+        Ok(())
+    }
+
+    /// Takes ownership of an immutable affine region that nobody holds.
+    ///
+    /// The receiver's half. It runs before the mapping and before the
+    /// capability, because both of those ask the region who its holder is.
+    pub fn adopt(&mut self, region: RegionId, to: u32) -> Result<(), Refusal> {
+        let at = self.region(region)?;
+        if self.regions[at].state != Mode::Immutable {
+            return Err(Refusal::WrongMode);
+        }
+        if bit(to).is_none() {
+            return Err(Refusal::BadArgument);
+        }
+        if self.regions[at].holder != NOBODY {
+            return Err(Refusal::NotTheHolder);
+        }
+        if self.regions[at].capabilities != 0
+            || self.regions[at].writable_mapped_by != 0
+            || self.regions[at].readable_mapped_by != 0
+        {
+            return Err(Refusal::WrongMode);
+        }
         self.regions[at].holder = to;
         Ok(())
+    }
+
+    /// Who holds an affine region, when anybody does.
+    pub fn holder(&self, region: RegionId) -> Result<Option<u32>, Refusal> {
+        let at = self.region(region)?;
+        Ok((self.regions[at].holder != NOBODY).then_some(self.regions[at].holder))
     }
 
     /// A region whose retirement has not been performed, if there is one.
@@ -820,13 +1016,21 @@ impl Regions {
         (0..MAX_REGIONS).filter(|at| self.regions[*at].live).count()
     }
 
-    /// How many address spaces map this region, writably and readably.
+    /// How many address spaces map this region, writably and readably —
+    /// derived from the sets rather than kept beside them, so the two cannot
+    /// disagree.
     pub fn mappings(&self, region: RegionId) -> Result<(usize, usize), Refusal> {
         let at = self.region(region)?;
         Ok((
-            self.regions[at].writable_mappings,
-            self.regions[at].readable_mappings,
+            self.regions[at].writable_mapped_by.count_ones() as usize,
+            self.regions[at].readable_mapped_by.count_ones() as usize,
         ))
+    }
+
+    /// How many capabilities name this region.
+    pub fn capabilities(&self, region: RegionId) -> Result<usize, Refusal> {
+        let at = self.region(region)?;
+        Ok(self.regions[at].capabilities)
     }
 
     /// How many bytes a region was charged and mapped, which is what its
@@ -836,31 +1040,51 @@ impl Regions {
         Ok(self.regions[at].bytes)
     }
 
-    /// Whether a capability may name this region: only if none does.
+    /// Whether one more capability may name this region.
+    ///
+    /// For an affine region: only if none does. For a shared one: always, which
+    /// is what being shared is.
     pub fn can_name(&self, region: RegionId) -> bool {
-        self.region(region)
-            .is_ok_and(|at| self.regions[at].capabilities == 0)
+        self.region(region).is_ok_and(|at| {
+            !self.regions[at].state.is_affine() || self.regions[at].capabilities == 0
+        })
     }
 
-    /// Takes the one capability reference a region may have.
+    /// Takes a capability reference on a region.
     ///
-    /// **Affine, and enforced here rather than at each operation.** A region's
-    /// capability count is `{0, 1}` and not a number to add to: ADR-0037 gives
-    /// a `Region<mut T>` exactly one holder, and a second handle to a mutable
-    /// region is the writable alias the consuming freeze exists to eliminate.
-    /// Operation 5 refuses to make one, but an operation that reached `grant`
-    /// by another road would too — so the object refuses, and affinity is a
-    /// property of the kind rather than something every path must remember.
+    /// **Affinity is enforced here rather than at each operation.** While a
+    /// region is mutable or immutable-affine its capability count is `{0, 1}`
+    /// and not a number to add to: ADR-0037 gives a `Region<mut T>` exactly one
+    /// holder, and a second handle to a mutable region is the writable alias
+    /// the consuming freeze exists to eliminate. Operation 5 refuses to make
+    /// one, but an operation that reached `grant` by another road would too —
+    /// so the object refuses, and affinity is a property of the state rather
+    /// than something every path must remember.
+    ///
+    /// Once shared it is an ordinary count, because a shared region is exactly
+    /// the case where several names for one object are the point. Bounded by a
+    /// `checked_add` rather than by an argument about how many can exist: the
+    /// bound would have to hold across every capability table and every message
+    /// in flight, which is a proof that would need redoing whenever either
+    /// changes.
     pub fn retain_capability(&mut self, region: RegionId) -> Result<(), Refusal> {
         let at = self.region(region)?;
-        if self.regions[at].capabilities != 0 {
-            return Err(Refusal::NotTheHolder);
+        if self.regions[at].state.is_affine() {
+            if self.regions[at].capabilities != 0 {
+                return Err(Refusal::NotTheHolder);
+            }
+            self.regions[at].capabilities = 1;
+            return Ok(());
         }
-        self.regions[at].capabilities = 1;
+        self.regions[at].capabilities = self.regions[at]
+            .capabilities
+            .checked_add(1)
+            .ok_or(Refusal::NoRoom)?;
         Ok(())
     }
 
-    /// Gives it up, reclaiming the region if that was the last way to reach it.
+    /// Gives one up, reclaiming the region if that was the last way to reach
+    /// it.
     ///
     /// A release of a capability nobody holds is a defect in the lifecycle
     /// above, not a harmless repeat: it is refused rather than clamped, for the
@@ -870,7 +1094,7 @@ impl Regions {
         if self.regions[at].capabilities == 0 {
             return Err(Refusal::BadArgument);
         }
-        self.regions[at].capabilities = 0;
+        self.regions[at].capabilities -= 1;
         self.settle_region(at);
         Ok(())
     }
@@ -913,33 +1137,41 @@ impl Regions {
         Ok(self.regions[at].internal)
     }
 
-    /// An address space was destroyed: every mapping it held is physically
-    /// gone.
+    /// An address space was destroyed: every window **that process** held is
+    /// physically gone.
     ///
     /// **The exact event, not a sweep.** Destroying a tree removes every window
-    /// in it at once, so zeroing this holder's mapping counts is a statement of
-    /// what happened rather than a tidy-up that hides a count nobody kept
-    /// straight. Capability references are *not* touched here: they are lost
-    /// when the process's table is cleared, which is a different event, and a
-    /// region can outlive either one.
-    pub fn mappings_destroyed(&mut self, holder: u32) {
+    /// in it at once, so clearing this process's bit in every region is a
+    /// statement of what happened rather than a tidy-up that hides a count
+    /// nobody kept straight — and it is that process's bit and no other's,
+    /// which is what lets a shared region survive one of its readers dying.
+    ///
+    /// It also gives up that process's ownership of anything affine it still
+    /// held, because a dead process is not a holder. Capability references are
+    /// *not* touched here: they are lost when the process's table is cleared,
+    /// entry by entry, which is a different event, and a region can outlive
+    /// either one.
+    pub fn mappings_destroyed(&mut self, process: u32) {
+        let Some(bit) = bit(process) else {
+            return;
+        };
         for at in 0..MAX_REGIONS {
-            if self.regions[at].live && self.regions[at].holder == holder {
-                self.regions[at].writable_mappings = 0;
-                self.regions[at].readable_mappings = 0;
-                self.settle_region(at);
+            if !self.regions[at].live {
+                continue;
             }
-        }
-    }
-
-    /// A process ended and its table went with it: every capability it held
-    /// over a region stops naming one.
-    pub fn capabilities_destroyed(&mut self, holder: u32) {
-        for at in 0..MAX_REGIONS {
-            if self.regions[at].live && self.regions[at].holder == holder {
-                self.regions[at].capabilities = 0;
-                self.settle_region(at);
+            let held = (self.regions[at].writable_mapped_by | self.regions[at].readable_mapped_by)
+                & bit
+                != 0;
+            let owned = self.regions[at].holder == process;
+            if !held && !owned {
+                continue;
             }
+            self.regions[at].writable_mapped_by &= !bit;
+            self.regions[at].readable_mapped_by &= !bit;
+            if owned {
+                self.regions[at].holder = NOBODY;
+            }
+            self.settle_region(at);
         }
     }
 
@@ -1069,11 +1301,7 @@ impl Regions {
     /// What a region may be done to, for a caller that holds one.
     pub fn mode(&self, region: RegionId) -> Result<Mode, Refusal> {
         let at = self.region(region)?;
-        Ok(if self.regions[at].mutable {
-            Mode::Mutable
-        } else {
-            Mode::Immutable
-        })
+        Ok(self.regions[at].state)
     }
 
     /// The bytes an authority may still spend itself.
@@ -1146,13 +1374,13 @@ impl Regions {
             || region.reclaimable
             || region.capabilities != 0
             || region.internal != 0
-            || region.writable_mappings != 0
-            || region.readable_mappings != 0
+            || region.writable_mapped_by != 0
+            || region.readable_mapped_by != 0
         {
             return;
         }
         self.regions[at].reclaimable = true;
-        self.regions[at].holder = u32::MAX;
+        self.regions[at].holder = NOBODY;
     }
 
     /// Returns reclaimed bytes to the authority that funded them, or past it to

@@ -141,6 +141,70 @@ for name, want in expected_region.items():
         )
     print(f"  region {name}: {made[name]}")
 
+# Operations 18 and 7: the two consuming transitions, on a region this process
+# allocated, wrote and then could no longer write.
+state = [l for l in serial.splitlines() if l.startswith("TOS.RUN.REGION.STATE ")]
+if len(state) != 1:
+    raise SystemExit(f"memory-authority: FAIL: expected one state report, found {len(state)}")
+moved = {name: int(value) for name, value in re.findall(r"(\w+)=(-?\d+)", state[0])}
+expected_state = {
+    # `share` presupposes immutability rather than producing it, so a mutable
+    # region carries no share right and operation 7 refuses it.
+    "share_mutable": E_NO_CAPABILITY,
+    "freeze": OK,
+    # A **different** handle. An operation that changed the rights under the
+    # number the caller already held would leave a process unable to tell a
+    # frozen region from one it wrote a moment ago.
+    "rehandled": 1,
+    # And the presented one is stale, by generation.
+    "stale_mutable": E_NO_CAPABILITY,
+    # The transition has no inverse and cannot be repeated: what it returned
+    # carries no write right.
+    "refreeze": E_NO_CAPABILITY,
+    # Nothing moved. Same backing, same base, one bit of each leaf cleared —
+    # so the bytes written before the freeze are the bytes read after it.
+    "kept": 1,
+    "share": OK,
+    "reshaped": 1,
+    "stale_frozen": E_NO_CAPABILITY,
+    # A shared region carries `read` and nothing else: there is nothing left
+    # for a second share to consume, and nothing to freeze.
+    "reshare": E_NO_CAPABILITY,
+    "freeze_shared": E_NO_CAPABILITY,
+    "after_share": 1,
+    # Generic attenuation refuses an affine region and admits a shared one:
+    # a second name for something that has no owner to duplicate.
+    "alias": OK,
+    "dropped_alias": OK,
+    # Two names, one window. Dropping one of them leaves the memory readable;
+    # only the last one takes the mapping with it.
+    "survived": 1,
+    "last_name": OK,
+}
+for name, want in expected_state.items():
+    if moved.get(name) != want:
+        raise SystemExit(
+            f"memory-authority: FAIL: state {name} was {moved.get(name)}, expected {want}"
+        )
+    print(f"  state {name}: {moved[name]}")
+
+# A full capability table refuses operation 17 before anything moves. A region
+# with no handle naming it is one nobody could use or return, so the slot is
+# found before the authority is charged and the backing laid down.
+table = [l for l in serial.splitlines() if l.startswith("TOS.RUN.REGION.TABLE ")]
+if len(table) != 1:
+    raise SystemExit(f"memory-authority: FAIL: expected one table report, found {len(table)}")
+filled = {name: int(value) for name, value in re.findall(r"(\w+)=(-?\d+)", table[0])}
+if filled.get("aliases", 0) < 1:
+    raise SystemExit("memory-authority: FAIL: the table was never filled")
+for name, want in {"full": E_LIMIT, "freed": OK, "after": OK}.items():
+    if filled.get(name) != want:
+        raise SystemExit(
+            f"memory-authority: FAIL: table {name} was {filled.get(name)}, expected {want}"
+        )
+    print(f"  table {name}: {filled[name]}")
+print("  a full capability table refuses 17, and one freed slot makes it succeed again")
+
 # And everything a region was made of came back: its frames to the pool, its
 # lane's page tables to the reserve. The reserve's baseline is one below its
 # size for the life of the boot — the backing index's root is permanent — so a

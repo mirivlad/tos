@@ -17,12 +17,19 @@
 //! same reason: the process's mapping is a thing the process could in principle
 //! change, and this is the boundary.
 //!
-//! **What this does not implement, said plainly.** Capability and region
-//! transfer (`IPC_V1` §5, §6) are not here, and neither is a blocking receive.
-//! A receive with nothing to take answers `E_WOULD_BLOCK`, which `SYSTEM_ABI_V1`
-//! §4 assigns to exactly that, and a blocking form will arrive with the
-//! cancellation path §6 requires of anything that blocks. Nothing here pretends
-//! either exists.
+//! **Acceptance is a transaction, and this module is split so that it can be.**
+//! A message carries capabilities and regions (`IPC_V1` §5, §6), and delivering
+//! it is not one act but three: find out what the oldest message contains, build
+//! everything it needs in the receiver, and only then take it off the queue.
+//! Doing those in one step is what makes a partial delivery expressible — a
+//! message dequeued and then found unacceptable is a message nobody has and
+//! nobody can retry. So [`peek`] answers what is there without moving it,
+//! the caller commits, and [`take`] copies the payload and pops. If the caller
+//! cannot commit, it never calls [`take`] and the queue is exactly as it was.
+//!
+//! The send side has the same shape for the same reason: [`has_room`] is a pure
+//! question, asked before a linear region is taken away from its sender, so a
+//! full queue can never be discovered after the sender has already lost it.
 
 use tos_frames::FRAME_SIZE;
 
@@ -54,6 +61,8 @@ struct Message {
     length: u64,
     granted: [(Object, u32, u64); MAX_TRANSFERRED as usize],
     granted_count: usize,
+    regions: [Object; MAX_TRANSFERRED_REGIONS as usize],
+    region_count: usize,
 }
 
 impl Message {
@@ -62,11 +71,36 @@ impl Message {
         length: 0,
         granted: [(Object::None, 0, 0); MAX_TRANSFERRED as usize],
         granted_count: 0,
+        regions: [Object::None; MAX_TRANSFERRED_REGIONS as usize],
+        region_count: 0,
     };
+}
+
+/// What is in the oldest message on an endpoint, without taking it.
+///
+/// **Everything a receiver's preflight needs and not one byte of payload.** The
+/// preflight has to decide whether it can build a table entry for each
+/// capability, an address-space window for each region and the page tables both
+/// need; none of those questions is about the 256 bytes, and copying them here
+/// would be a third payload copy for a message `IPC_V1` §8 budgets two.
+#[derive(Clone, Copy)]
+pub struct Pending {
+    pub granted: [(Object, u32, u64); MAX_TRANSFERRED as usize],
+    pub granted_count: usize,
+    pub regions: [Object; MAX_TRANSFERRED_REGIONS as usize],
+    pub region_count: usize,
 }
 
 /// How many capabilities one message may carry (ADR-0057).
 pub const MAX_TRANSFERRED: u64 = tos_launch::MAX_TRANSFERRED_CAPABILITIES;
+
+/// And how many regions, which is a separate bound over a separate area
+/// (`IPC_V1` §3).
+///
+/// Spelled in full rather than as `MAX_REGIONS`, because the region **table**
+/// has a bound of that name and the two are unrelated numbers: this is how many
+/// regions one message may carry, and that is how many exist at once.
+pub const MAX_TRANSFERRED_REGIONS: u64 = tos_launch::MAX_TRANSFERRED_REGIONS;
 
 /// An endpoint: a bounded queue, and the count of what is in it.
 struct Endpoint {
@@ -182,8 +216,12 @@ pub unsafe fn send(
     from: u64,
     length: u64,
     granted: &[(Object, u32, u64)],
+    regions: &[Object],
 ) -> Result<(), Refused> {
-    if length > MAX_INLINE_BYTES || granted.len() as u64 > MAX_TRANSFERRED {
+    if length > MAX_INLINE_BYTES
+        || granted.len() as u64 > MAX_TRANSFERRED
+        || regions.len() as u64 > MAX_TRANSFERRED_REGIONS
+    {
         // Refused, not truncated (`IPC_V1` §9.1). A message shortened to the
         // bound and reported as sent would make the receiver's copy a different
         // message from the sender's.
@@ -219,23 +257,73 @@ pub unsafe fn send(
     message.length = length;
     message.granted_count = granted.len();
     message.granted[..granted.len()].copy_from_slice(granted);
+    message.regions = [Object::None; MAX_TRANSFERRED_REGIONS as usize];
+    message.region_count = regions.len();
+    message.regions[..regions.len()].copy_from_slice(regions);
     slot.count += 1;
     Ok(())
 }
 
-/// Takes the oldest message from an endpoint into a process's message slot, and
-/// returns how many bytes it was.
+/// Whether this endpoint has room for one more message.
+///
+/// **A pure question, and that is its whole purpose.** A send that carries a
+/// linear region takes the region away from its sender before it queues
+/// anything; discovering a full queue *after* that would leave the region
+/// belonging to nobody, and putting it back means rebuilding a mapping, which
+/// needs page tables and can fail on its own. So the room is asked for first,
+/// while nothing has moved.
+pub fn has_room(endpoint: u32) -> Result<(), Refused> {
+    // SAFETY: single-context nucleus; this reads and does not write.
+    let endpoints = unsafe { endpoints() };
+    let slot = endpoints
+        .get(endpoint as usize)
+        .filter(|endpoint| endpoint.live)
+        .ok_or(Refused::BadArgument)?;
+    if slot.count == QUEUE_DEPTH {
+        return Err(Refused::Limit);
+    }
+    Ok(())
+}
+
+/// What the oldest message on an endpoint carries, leaving it where it is.
+///
+/// The first step of an acceptance: the receiver's preflight is answered from
+/// this, and if it cannot be satisfied nothing has been dequeued and the
+/// message is still there for a later attempt.
+pub fn peek(endpoint: u32) -> Result<Pending, Refused> {
+    // SAFETY: single-context nucleus; this reads and does not write.
+    let endpoints = unsafe { endpoints() };
+    let slot = endpoints
+        .get(endpoint as usize)
+        .filter(|endpoint| endpoint.live)
+        .ok_or(Refused::BadArgument)?;
+    if slot.count == 0 {
+        return Err(Refused::WouldBlock);
+    }
+    let message = &slot.queue[slot.head];
+    Ok(Pending {
+        granted: message.granted,
+        granted_count: message.granted_count,
+        regions: message.regions,
+        region_count: message.region_count,
+    })
+}
+
+/// Copies the oldest message's payload into a process's message slot and takes
+/// it off the queue.
+///
+/// The last step of an acceptance, and the only one that changes the queue.
+/// Every grant and every mapping the message needed already exists by the time
+/// this runs, which is what makes "delivered whole or not at all" a property of
+/// the code rather than a claim about it.
 ///
 /// # Safety
 ///
 /// `into` is the physical address of the receiving process's message slot, at
-/// least one frame long, which the launcher mapped.
+/// least one frame long, which the launcher mapped, and the caller has already
+/// committed everything the message carries.
 // SAFETY: as `send`, for the write side.
-pub unsafe fn receive(
-    endpoint: u32,
-    into: u64,
-    granted: &mut [(Object, u32, u64); MAX_TRANSFERRED as usize],
-) -> Result<u64, Refused> {
+pub unsafe fn take(endpoint: u32, into: u64) -> Result<u64, Refused> {
     // SAFETY: single-context nucleus; this is the only writer.
     let endpoints = unsafe { endpoints() };
     let slot = endpoints
@@ -245,11 +333,8 @@ pub unsafe fn receive(
     if slot.count == 0 {
         return Err(Refused::WouldBlock);
     }
-    let message = slot.queue[slot.head];
-    slot.head = (slot.head + 1) % QUEUE_DEPTH;
-    slot.count -= 1;
-    // SAFETY: single-context nucleus; this is the only writer.
-    unsafe { DELIVERIES = DELIVERIES.wrapping_add(1) };
+    let message = &slot.queue[slot.head];
+    let length = message.length;
     // SAFETY: `into` is the launcher's mapping of a whole frame, per the
     // caller's contract, and the length was bounded when the message was
     // queued.
@@ -257,13 +342,18 @@ pub unsafe fn receive(
         core::ptr::copy_nonoverlapping(
             message.bytes.as_ptr(),
             core::ptr::with_exposed_provenance_mut::<u8>(into as usize),
-            message.length as usize,
+            length as usize,
         )
     };
-    // SAFETY: as above; the second of the two copies an inline message costs.
-    unsafe { PAYLOAD_COPIES += 1 };
-    *granted = message.granted;
-    Ok(message.length)
+    slot.head = (slot.head + 1) % QUEUE_DEPTH;
+    slot.count -= 1;
+    // SAFETY: single-context nucleus; this is the only writer. The second of
+    // the two copies an inline message costs.
+    unsafe {
+        DELIVERIES = DELIVERIES.wrapping_add(1);
+        PAYLOAD_COPIES += 1;
+    };
+    Ok(length)
 }
 
 /// Copies a reply's payload straight from one context's argument region into

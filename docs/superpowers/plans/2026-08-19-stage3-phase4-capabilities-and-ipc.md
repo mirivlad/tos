@@ -195,10 +195,32 @@ it. Named here so that it is found on purpose.
     `CAPABILITY_V1` §4 applies to capabilities an interface declares linear, and
     no Stage 3 object type is so declared — a statement about what exists, not a
     relaxation.
-- [ ] Region transfer (`IPC_V1` §5) and the linear unmapping evidence of §9.6.
-  Regions are still not an object this stage builds, so a message naming one is
-  refused by the ordinary resolve — which is the true answer and not yet the
-  §9.1 refusal for the region count.
+- [x] **Region transfer (`IPC_V1` §5) and the linear unmapping evidence of §9.6
+  — done (2026-09-02).** Regions travel in the separate area §3 reserves for
+  them, never in the capability slots: spending a capability slot on a region
+  would let one message consume the other's bound. `r8` carries the region
+  count beside `r10`'s capability count, and a count past two is the §9.1
+  refusal — `E_BAD_ARGUMENT` on a whole message, not a truncation.
+  - An **immutable affine** region moves linearly: the message takes an
+    internal reference first, then the sender's window, ownership and handle go
+    together. Evidence: the sender's handle stops resolving and its next read of
+    that address faults at CPL 3 — `IPC_V1` §9.6, demonstrated rather than
+    asserted.
+  - A **mutable** region is refused whole (ADR-0037: neither shareable nor
+    transferable), and the sender still holds and can still write it.
+  - A **shared** region transfers without being given up: the sender keeps its
+    handle and its window, the queue takes a reference, and the receiver gets a
+    window of its own. Several shared handles in one process are still one
+    window, and it goes when the last of them does.
+  - A **failed** send transfers nothing, and the room in the queue is asked for
+    before anything is consumed — a linear region taken away and then found to
+    have nowhere to go belongs to nobody, and rebuilding its window needs page
+    tables and can fail on its own.
+  - Acceptance is all-or-nothing for capabilities too: `peek → preflight →
+    commit → copy → pop`, with `E_LIMIT` and the message left queued when the
+    receiver cannot be given everything it carries.
+  - Evidence: `source/host-tools/qemu-test/region-transport.sh`,
+    `region-faults.sh`, and `docs/evidence/STAGE3_REGION_ROUND.md`.
 - [x] **`process_create`'s endowment and module name (ADR-0058) — done
   (2026-08-19).** The module is named by **path**: an ordinal fits a register,
   which is its only advantage, and it names a position in a list nobody

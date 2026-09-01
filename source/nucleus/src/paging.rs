@@ -442,11 +442,16 @@ impl AddressSpace {
         (leaf & PRESENT != 0).then_some(leaf & ADDRESS)
     }
 
-    /// Whether one mapped page may be written, if it is mapped at all.
+    /// One leaf entry, whole, when the path to it is four ordinary levels.
     ///
-    /// The leaf's own bit, not the path's: every real permission is stated on
-    /// the leaf here, and the interiors are deliberately permissive.
-    pub fn writable(&self, virt: u64) -> Option<bool> {
+    /// **Every bit, not a summary.** [`AddressSpace::translate`] answers where a
+    /// page is and [`AddressSpace::writable`] answers one flag; the freeze has
+    /// to judge the *whole* entry before it changes any of it — present, user,
+    /// no-execute, the frame — because an entry that disagrees with the region
+    /// index in any of those is one this operation must not touch. Two accessors
+    /// would answer two questions about two reads; this answers all of them
+    /// about one.
+    pub fn leaf(&self, virt: u64) -> Option<u64> {
         let (l4, l3, l2, l1) = indices(virt).ok()?;
         let mut table = self.root;
         for index in [l4, l3, l2] {
@@ -457,7 +462,44 @@ impl AddressSpace {
             table = entry & ADDRESS;
         }
         let leaf = Self::entry(table, l1);
-        (leaf & PRESENT != 0).then_some(leaf & WRITABLE != 0)
+        (leaf & PRESENT != 0).then_some(leaf)
+    }
+
+    /// Clears the write bit of one leaf and leaves every other bit alone.
+    ///
+    /// **In place, and that is the requirement rather than an optimization.**
+    /// The freeze of ADR-0075 §3 turns a window read-only at the same address
+    /// over the same frames; unmapping and remapping would need reserve frames
+    /// for the tables it rebuilt and could therefore fail after the region had
+    /// already been declared immutable, which is the half-frozen state that
+    /// section forbids. Rewriting one bit of an entry that is already there
+    /// cannot fail and needs nothing.
+    ///
+    /// No `invlpg` here. The caller is demoting a whole lane and reloads `CR3`
+    /// once when it has finished, which discards every stale translation at
+    /// once rather than naming half a terabyte of addresses one at a time.
+    ///
+    /// Answers whether there was a leaf to demote. A caller that has already
+    /// preflighted the lane treats `false` as impossible; nothing here assumes
+    /// it did.
+    pub fn demote_leaf(&mut self, virt: u64) -> bool {
+        let Ok((l4, l3, l2, l1)) = indices(virt) else {
+            return false;
+        };
+        let mut table = self.root;
+        for index in [l4, l3, l2] {
+            let entry = Self::entry(table, index);
+            if entry & PRESENT == 0 || entry & HUGE != 0 {
+                return false;
+            }
+            table = entry & ADDRESS;
+        }
+        let leaf = Self::entry(table, l1);
+        if leaf & PRESENT == 0 {
+            return false;
+        }
+        Self::write(table, l1, leaf & !WRITABLE);
+        true
     }
 
     /// Discards every cached translation of the live space.

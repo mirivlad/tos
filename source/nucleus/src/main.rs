@@ -81,7 +81,36 @@
     all(feature = "test-lifecycle", feature = "test-supervisor"),
     all(feature = "test-lifecycle", feature = "test-call-reply"),
     all(feature = "test-lifecycle", feature = "test-process-control"),
-    all(feature = "test-lifecycle", feature = "test-process-terminate")
+    all(feature = "test-lifecycle", feature = "test-process-terminate"),
+    all(feature = "test-region-transport", feature = "test-two-processes"),
+    all(feature = "test-region-transport", feature = "test-supervisor"),
+    all(feature = "test-region-transport", feature = "test-deadlock"),
+    all(feature = "test-region-transport", feature = "test-call-reply"),
+    all(feature = "test-region-transport", feature = "test-deputy"),
+    all(feature = "test-region-transport", feature = "test-second-receiver"),
+    all(feature = "test-region-transport", feature = "test-module-operation"),
+    all(feature = "test-region-transport", feature = "test-wrong-kind"),
+    all(feature = "test-region-transport", feature = "test-process-control"),
+    all(feature = "test-region-transport", feature = "test-process-terminate"),
+    all(feature = "test-region-transport", feature = "test-process-launch"),
+    all(feature = "test-region-transport", feature = "test-lifecycle"),
+    all(feature = "test-region-transport", feature = "test-memory-authority"),
+    all(feature = "test-region-transport", feature = "test-creation-rollback"),
+    all(feature = "test-region-faults", feature = "test-two-processes"),
+    all(feature = "test-region-faults", feature = "test-supervisor"),
+    all(feature = "test-region-faults", feature = "test-deadlock"),
+    all(feature = "test-region-faults", feature = "test-call-reply"),
+    all(feature = "test-region-faults", feature = "test-deputy"),
+    all(feature = "test-region-faults", feature = "test-second-receiver"),
+    all(feature = "test-region-faults", feature = "test-module-operation"),
+    all(feature = "test-region-faults", feature = "test-wrong-kind"),
+    all(feature = "test-region-faults", feature = "test-process-control"),
+    all(feature = "test-region-faults", feature = "test-process-terminate"),
+    all(feature = "test-region-faults", feature = "test-process-launch"),
+    all(feature = "test-region-faults", feature = "test-lifecycle"),
+    all(feature = "test-region-faults", feature = "test-memory-authority"),
+    all(feature = "test-region-faults", feature = "test-creation-rollback"),
+    all(feature = "test-region-faults", feature = "test-region-transport")
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
 
@@ -1225,6 +1254,105 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             | tos_launch::RIGHT_TERMINATE
             | tos_launch::RIGHT_WAIT_CHILD,
     }];
+    // Under the region-transport constant there are two processes and three
+    // capabilities between them. The **worker** is endowed a child of the root
+    // memory authority — so it can make regions at all — the right to send on
+    // an endpoint the peer receives on, and the right to send on a second
+    // endpoint **nobody receives on**. That second one is not a convenience: a
+    // queue that nothing can drain is the only way to ask what a full queue
+    // does to a linear transfer, and asking it on the endpoint the peer is
+    // draining would be asking a question the answer keeps changing.
+    //
+    // The **peer** is endowed the right to receive on the first endpoint and
+    // nothing else. It holds no memory authority, so every region it comes to
+    // hold arrived in a message; it cannot make one, and it cannot send.
+    //
+    // **The peer is built first and the worker second, and the order is not
+    // cosmetic.** The worker's authority is `Remainder` — everything the root
+    // has left once the creation it funds is paid for — so a worker built first
+    // would leave nothing to fund the peer with. Building the peer first also
+    // makes the interleaving the evidence depends on the *ordinary* one: the
+    // peer runs, finds nothing to take, gives up its quantum, and the worker
+    // then runs a script with no blocking call in it from end to end.
+    #[cfg(feature = "test-region-transport")]
+    let (first_endowment, worker_endowment) = {
+        let (Some(endpoint), Some(sink)) = (ipc::create(), ipc::create()) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        (
+            [capability::Endowment::Existing {
+                binding: binding(b"endpoint"),
+                object: capability::Object::Endpoint(endpoint),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            }],
+            [
+                capability::Endowment::Remainder {
+                    binding: binding(b"memory"),
+                    rights: tos_launch::RIGHT_SPEND,
+                },
+                capability::Endowment::Existing {
+                    binding: binding(b"endpoint"),
+                    object: capability::Object::Endpoint(endpoint),
+                    rights: tos_launch::RIGHT_SEND,
+                    scope: 0,
+                },
+                capability::Endowment::Existing {
+                    binding: binding(b"sink"),
+                    object: capability::Object::Endpoint(sink),
+                    rights: tos_launch::RIGHT_SEND,
+                    scope: 0,
+                },
+            ],
+        )
+    };
+    // Under the region-faults constant there are two processes and one
+    // authority between them, and each ends by touching memory it may not
+    // touch — one by executing what it wrote into a region, the other by
+    // reading a region after releasing the only handle to it. The **first**
+    // process is the ordinary boot module and holds nothing, which is why this
+    // constant does not name a `first_endowment` of its own.
+    //
+    // **A child of a fixed size, endowed to both, rather than a remainder.**
+    // `Endowment::Remainder` hands whichever process is built first everything
+    // the root has left, which would leave the second unable to make a region
+    // at all. So the launcher reserves one child here and gives each process a
+    // name for it: two names, one budget, which is what a memory authority is
+    // (ADR-0076 §2b). The maker's own name goes once both are built, so the
+    // count runs 1 → 3 → 2 and never through zero.
+    #[cfg(feature = "test-region-faults")]
+    let (nx_endowment, stale_endowment, allowance) = {
+        let Some(root) = memory::root() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-root-authority\r\n");
+            mem_fail();
+        };
+        // SAFETY: single-context nucleus at boot; nothing else holds the tree.
+        let tree = unsafe { memory::authority() };
+        let Ok(allowance) = tree.attenuate(root, 8 * 1024 * 1024) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-allowance\r\n");
+            mem_fail();
+        };
+        let object = capability::Object::MemoryAuthority {
+            index: allowance.index,
+            generation: allowance.generation,
+        };
+        (
+            [capability::Endowment::Existing {
+                binding: binding(b"nx"),
+                object,
+                rights: tos_launch::RIGHT_SPEND,
+                scope: 0,
+            }],
+            [capability::Endowment::Existing {
+                binding: binding(b"stale"),
+                object,
+                rights: tos_launch::RIGHT_SPEND,
+                scope: 0,
+            }],
+            allowance,
+        )
+    };
     #[cfg(not(any(
         feature = "test-process-launch",
         feature = "test-two-processes",
@@ -1256,7 +1384,11 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     //        -> the process's exact footprint, charged to the root
     //        -> everything the root has left, as a child, endowed explicitly
     // ```
-    #[cfg(not(any(feature = "test-memory-authority", feature = "test-creation-rollback")))]
+    #[cfg(not(any(
+        feature = "test-memory-authority",
+        feature = "test-creation-rollback",
+        feature = "test-region-transport"
+    )))]
     let first_endowment: [capability::Endowment; 0] = [];
     // The same chain, given to a process, so operation 16 can be asked for from
     // ring 3 rather than described.
@@ -1314,6 +1446,39 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         if build(&caller_endowment).is_err() {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
             mem_fail();
+        }
+    }
+    #[cfg(feature = "test-region-transport")]
+    {
+        tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
+        if build(&worker_endowment).is_err() {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
+            mem_fail();
+        }
+    }
+    // **The two faulting processes are the second and the third**, and the
+    // first is the ordinary boot module. Only the first process's ending
+    // decides the boot's result, and both of these end in a fault deliberately:
+    // a boot that failed because its evidence worked would be a gate that could
+    // only ever be red. What the first process proves beside them is the thing
+    // that matters most here — a machine two of whose processes died touching
+    // memory they no longer held still finished the work it was booted for.
+    #[cfg(feature = "test-region-faults")]
+    {
+        tos_serial::puts(b"TOS.TEST.SCHEDULER.SECOND\r\n");
+        if build(&nx_endowment).is_err() || build(&stale_endowment).is_err() {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-second-process\r\n");
+            mem_fail();
+        }
+        // Both processes hold a name for it now, so the launcher's own goes.
+        // Releasing it before the second build would have returned the whole
+        // reservation to the root with a process still to endow out of it.
+        // SAFETY: single-context nucleus at boot; nothing else holds the tree.
+        if unsafe { memory::authority() }
+            .release_name(allowance)
+            .is_err()
+        {
+            memory::note_divergence(b"region-faults-allowance");
         }
     }
     // The second process starts, and starts with **nothing**: the one thing its

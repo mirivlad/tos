@@ -12,17 +12,23 @@
 //!
 //! ```text
 //! allocate -> map writable -> freeze -> writing denied -> transfer
-//!          -> sender gone -> receiver reads -> release -> reclaimed
+//!          -> sender gone -> receiver reads -> share -> a second reader
+//!          -> release -> reclaimed
 //! ```
 
 #[path = "../../../nucleus/src/region.rs"]
 mod region;
 
-use region::{Mode, Refusal, Regions};
+use region::{Mode, Refusal, Regions, MAX_MAPPING_SPACES};
 
 const ROOT: usize = 64 * 1024 * 1024;
-const WORKER: u32 = 7;
-const SUPERVISOR: u32 = 3;
+/// Process slots, because a region records **which** address spaces map it
+/// rather than how many. They are slots of the nucleus's fixed process table,
+/// so they are inside its bound; a number outside it names no address space and
+/// is one of the refusals below.
+const WORKER: u32 = 0;
+const SUPERVISOR: u32 = 1;
+const PEER: u32 = 2;
 
 /// Allocation, and then the handoff every real creation performs.
 ///
@@ -130,30 +136,48 @@ fn a_subtree_cannot_spend_more_than_it_was_given() {
     assert!(regions.accounting_holds());
 }
 
-/// The whole primitive, in the order it will be used.
+/// The whole primitive, in the order it will be used: the three states, and
+/// the two consuming transitions between them.
 #[test]
-fn a_region_is_allocated_frozen_transferred_and_reclaimed() {
+fn a_region_is_allocated_frozen_transferred_shared_and_reclaimed() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
     let bundle = handed_over(&mut regions, authority, 2 * 1024 * 1024, WORKER);
 
-    // Writable while it is being written.
+    // Writable while it is being written, in the one address space that holds
+    // it — and in no other, because a mutable region has exactly one owner.
     regions
-        .map(bundle, true)
-        .expect("a writer maps it writably");
+        .map(bundle, WORKER, true)
+        .expect("its holder maps it writably");
     assert_eq!(regions.writable_aliases(bundle), Ok(2));
+    assert_eq!(
+        regions.map(bundle, SUPERVISOR, true),
+        Err(Refusal::NotTheHolder),
+        "nobody else may map a region with one owner"
+    );
+    assert_eq!(
+        regions.map(bundle, WORKER, true),
+        Err(Refusal::BadArgument),
+        "and one process has one window, not a count of them"
+    );
 
     // Frozen, and the postcondition is the nucleus's.
     regions
         .freeze(bundle, WORKER)
         .expect("the holder freezes it");
+    assert_eq!(regions.mode(bundle), Ok(Mode::Immutable));
     assert_eq!(
         regions.writable_aliases(bundle),
         Ok(0),
         "no writable alias survives the transition"
     );
     assert_eq!(
-        regions.map(bundle, true),
+        regions.mapped_by(bundle, WORKER),
+        Ok(Some(false)),
+        "the writable window became a readable one, in place"
+    );
+    assert_eq!(
+        regions.map(bundle, WORKER, true),
         Err(Refusal::WrongMode),
         "and none can be made afterwards"
     );
@@ -163,25 +187,91 @@ fn a_region_is_allocated_frozen_transferred_and_reclaimed() {
         "the transition has no inverse and cannot be repeated"
     );
 
-    // Handed on: linear, so the sender keeps nothing.
-    regions.map(bundle, false).expect("the worker reads it");
+    // Handed on: linear, so the sender keeps nothing and the receiver gets it
+    // whole. Between the two the region belongs to nobody, and only the
+    // nucleus's own reference keeps it alive — which is exactly the interval a
+    // queued message lives in.
     regions
-        .transfer(bundle, WORKER, SUPERVISOR)
-        .expect("ownership moves");
+        .retain_internal(bundle)
+        .expect("the message becomes a holder first");
+    regions
+        .detach(bundle, WORKER)
+        .expect("the sender gives up ownership and its window");
+    assert_eq!(regions.holder(bundle), Ok(None));
+    assert_eq!(regions.mapped_by(bundle, WORKER), Ok(None));
     assert_eq!(
-        regions.transfer(bundle, WORKER, SUPERVISOR),
+        regions.detach(bundle, WORKER),
         Err(Refusal::NotTheHolder),
         "the sender is not the holder any more"
     );
+    regions
+        .release_capability(bundle)
+        .expect("and its handle goes with it");
+    assert_eq!(
+        regions.allocated(root),
+        Ok(2 * 1024 * 1024),
+        "the message alone keeps the backing while nothing else can reach it"
+    );
 
-    // The receiver reads it, and the last release reclaims the backing.
-    regions.map(bundle, false).expect("the receiver reads it");
+    regions
+        .adopt(bundle, SUPERVISOR)
+        .expect("ownership arrives");
+    regions
+        .map(bundle, SUPERVISOR, false)
+        .expect("the receiver reads it");
+    regions
+        .retain_capability(bundle)
+        .expect("and is given its own name for it");
+    regions
+        .release_internal(bundle)
+        .expect("the message stops being a holder last");
     assert_eq!(regions.allocated(root), Ok(2 * 1024 * 1024));
-    regions.unmap(bundle, false).expect("the mapping goes");
+
+    // Shared: the second consuming transition. What was one owner's becomes
+    // nobody's, and several names for it become admissible.
+    regions
+        .share(bundle, SUPERVISOR)
+        .expect("the holder shares it");
+    assert_eq!(regions.mode(bundle), Ok(Mode::Shared));
+    assert_eq!(regions.holder(bundle), Ok(None), "no exclusive holder left");
+    assert_eq!(
+        regions.mapped_by(bundle, SUPERVISOR),
+        Ok(Some(false)),
+        "and the sharer's own window did not move"
+    );
+    assert_eq!(
+        regions.share(bundle, SUPERVISOR),
+        Err(Refusal::WrongMode),
+        "there is nothing left for a second share to consume"
+    );
+
+    // A second holder: another name, another address space, one backing.
+    regions
+        .retain_capability(bundle)
+        .expect("a second capability is admissible now");
+    regions
+        .map(bundle, PEER, false)
+        .expect("and a second address space may map it");
+    assert_eq!(regions.mappings(bundle), Ok((0, 2)));
+    assert_eq!(regions.capabilities(bundle), Ok(2));
+
+    // The last of everything, and only then does the backing go.
+    regions
+        .release_capability(bundle)
+        .expect("one holder lets go");
+    regions.unmap(bundle, PEER, false).expect("its window goes");
     retire(&mut regions);
+    assert_eq!(
+        regions.allocated(root),
+        Ok(2 * 1024 * 1024),
+        "the other holder still reaches it"
+    );
     regions
         .release_capability(bundle)
         .expect("the last capability goes");
+    regions
+        .unmap(bundle, SUPERVISOR, false)
+        .expect("and the last window");
     retire(&mut regions);
     assert_eq!(
         regions.allocated(root),
@@ -198,7 +288,7 @@ fn a_mapping_keeps_a_region_alive_after_its_last_capability() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 4 * 1024 * 1024).expect("reserved");
     let held = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
-    regions.map(held, false).expect("mapped");
+    regions.map(held, WORKER, true).expect("mapped");
 
     regions
         .release_capability(held)
@@ -210,7 +300,7 @@ fn a_mapping_keeps_a_region_alive_after_its_last_capability() {
         "a mapping still reaches it, so the backing stays"
     );
     regions
-        .unmap(held, false)
+        .unmap(held, WORKER, true)
         .expect("and now the mapping goes");
     retire(&mut regions);
     assert_eq!(regions.allocated(root), Ok(0));
@@ -250,14 +340,23 @@ fn revocation_returns_the_remainder_and_never_the_live_backing() {
 }
 
 /// A process ending takes its handles and its mappings with it.
+///
+/// **Its own, and nobody else's.** The capability references go one entry at a
+/// time, because that is what the table clearing them actually knows; the
+/// mappings go by process slot. A sweep over "regions this process held" could
+/// do neither once a shared region can be held by several.
 #[test]
 fn a_process_ending_reclaims_what_only_it_could_reach() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
     let region = handed_over(&mut regions, authority, 2 * 1024 * 1024, WORKER);
-    regions.map(region, true).expect("mapped writably");
+    regions.map(region, WORKER, true).expect("mapped writably");
 
-    regions.capabilities_destroyed(WORKER);
+    // One decrement per capability entry destroyed, which is what
+    // `capability::clear` performs.
+    regions
+        .release_capability(region)
+        .expect("its one table entry goes");
     regions.mappings_destroyed(WORKER);
     retire(&mut regions);
     assert_eq!(
@@ -269,22 +368,120 @@ fn a_process_ending_reclaims_what_only_it_could_reach() {
     assert!(regions.accounting_holds());
 }
 
+/// One reader of a shared region dying leaves the others reading.
+#[test]
+fn a_shared_region_survives_the_death_of_one_of_its_readers() {
+    let (mut regions, root) = endowed();
+    let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
+    let region = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
+    regions.map(region, WORKER, true).expect("mapped writably");
+    regions.freeze(region, WORKER).expect("frozen");
+    regions.share(region, WORKER).expect("shared");
+    regions.retain_capability(region).expect("a second name");
+    regions.map(region, PEER, false).expect("a second window");
+
+    // One process ends: its entry is cleared and its window destroyed. The
+    // other holder is untouched, and the backing does not move.
+    regions
+        .release_capability(region)
+        .expect("the dying process's entry");
+    regions.mappings_destroyed(PEER);
+    retire(&mut regions);
+    assert_eq!(regions.mappings(region), Ok((0, 1)));
+    assert_eq!(regions.capabilities(region), Ok(1));
+    assert_eq!(
+        regions.allocated(root),
+        Ok(1024 * 1024),
+        "the surviving reader still reaches it"
+    );
+
+    // And when the last one goes, it goes exactly once.
+    regions.release_capability(region).expect("the last name");
+    regions.mappings_destroyed(WORKER);
+    retire(&mut regions);
+    assert_eq!(regions.allocated(root), Ok(0));
+    assert_eq!(regions.remaining(authority), Ok(8 * 1024 * 1024));
+    assert!(regions.accounting_holds());
+}
+
+/// Several handles in one process are still one window.
+#[test]
+fn several_shared_names_in_one_process_are_one_mapping() {
+    let (mut regions, root) = endowed();
+    let authority = regions.attenuate(root, 4 * 1024 * 1024).expect("reserved");
+    let region = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
+    regions.map(region, WORKER, true).expect("mapped");
+    regions.freeze(region, WORKER).expect("frozen");
+    regions.share(region, WORKER).expect("shared");
+
+    regions.retain_capability(region).expect("a second name");
+    regions.retain_capability(region).expect("and a third");
+    assert_eq!(regions.capabilities(region), Ok(3));
+    assert_eq!(
+        regions.mappings(region),
+        Ok((0, 1)),
+        "three names, one address space, one window"
+    );
+    assert_eq!(
+        regions.map(region, WORKER, false),
+        Err(Refusal::BadArgument),
+        "and a second window in the same space is refused, not counted"
+    );
+
+    regions.release_capability(region).expect("one name goes");
+    regions.release_capability(region).expect("another");
+    retire(&mut regions);
+    assert_eq!(
+        regions.allocated(root),
+        Ok(1024 * 1024),
+        "the window and the last name still reach it"
+    );
+    regions.release_capability(region).expect("the last name");
+    regions
+        .unmap(region, WORKER, false)
+        .expect("and the one window");
+    retire(&mut regions);
+    assert_eq!(regions.allocated(root), Ok(0));
+    assert!(regions.accounting_holds());
+}
+
 /// What the primitive refuses.
 #[test]
 fn the_negatives_are_refusals_and_not_surprises() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 4 * 1024 * 1024).expect("reserved");
     let region = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
+    regions.map(region, WORKER, true).expect("mapped writably");
 
     // A mutable region is not transferable at all (ADR-0037).
-    assert_eq!(
-        regions.transfer(region, WORKER, SUPERVISOR),
-        Err(Refusal::WrongMode)
-    );
+    assert_eq!(regions.detach(region, WORKER), Err(Refusal::WrongMode));
+    // Nor shareable: `share` presupposes immutability rather than producing it.
+    assert_eq!(regions.share(region, WORKER), Err(Refusal::WrongMode));
     // Only the sole holder may freeze.
     assert_eq!(
         regions.freeze(region, SUPERVISOR),
         Err(Refusal::NotTheHolder)
+    );
+    // A second capability naming an affine region is the alias the model exists
+    // to rule out.
+    assert_eq!(
+        regions.retain_capability(region),
+        Err(Refusal::NotTheHolder)
+    );
+    // An unmapping by a process that did not map it, or in the wrong mode, is
+    // refused rather than absorbed.
+    assert_eq!(
+        regions.unmap(region, SUPERVISOR, true),
+        Err(Refusal::BadArgument)
+    );
+    assert_eq!(
+        regions.unmap(region, WORKER, false),
+        Err(Refusal::BadArgument)
+    );
+    // A process slot outside the bound names no address space.
+    assert_eq!(
+        regions.map(region, MAX_MAPPING_SPACES as u32, false),
+        Err(Refusal::BadArgument)
     );
     // Zero-sized authority and zero-sized region are authority over nothing.
     assert_eq!(regions.allocate(authority, 0, WORKER), Err(Refusal::Empty));
@@ -293,6 +490,7 @@ fn the_negatives_are_refusals_and_not_surprises() {
     // A stale handle names nothing: the region is released and its id no longer
     // resolves, whatever the generation counter has moved on to.
     regions.release_capability(region).expect("released");
+    regions.unmap(region, WORKER, true).expect("and unmapped");
     retire(&mut regions);
     assert_eq!(regions.release_capability(region), Err(Refusal::NotFound));
     retire(&mut regions);
@@ -411,6 +609,31 @@ fn a_full_table_refuses() {
         assert!(made <= region::MAX_REGIONS, "the table is bounded");
     }
     assert_eq!(made, region::MAX_REGIONS);
+    assert!(regions.accounting_holds());
+
+    // **And the refusal changes nothing.** `MAX_REGIONS` is a nucleus bound
+    // over statically reserved slots, so the sixty-fifth region is refused
+    // rather than made — and the way that goes wrong is a slot found *after*
+    // the authority has been charged, which would leak a region's worth of
+    // budget per refusal. The whole tree is measured on both sides of it.
+    //
+    // Proved here rather than from ring 3: sixty-four simultaneous regions
+    // would need a fixture built to hold them and would prove the same thing
+    // about the same table. What ring 3 does prove, on the real machine, is the
+    // other bound — a full *capability* table, which is what a process actually
+    // runs into first.
+    let free = regions.remaining(root);
+    let committed = regions.committed();
+    let allocated = regions.allocated(root);
+    assert_eq!(
+        regions.allocate(root, 4096, WORKER),
+        Err(Refusal::NoRoom),
+        "the sixty-fifth is refused, not made"
+    );
+    assert_eq!(regions.remaining(root), free, "and nothing was charged");
+    assert_eq!(regions.committed(), committed);
+    assert_eq!(regions.allocated(root), allocated);
+    assert_eq!(regions.live_regions(), region::MAX_REGIONS);
     assert!(regions.accounting_holds());
 }
 
@@ -709,17 +932,35 @@ fn a_death_returns_what_only_the_dead_process_could_reach() {
     // other has been frozen and handed on, so somebody else holds it.
     let private = handed_over(&mut regions, allowance, 4 * 1024 * 1024, WORKER);
     let handed_on = handed_over(&mut regions, allowance, 2 * 1024 * 1024, WORKER);
+    regions.map(handed_on, WORKER, true).expect("mapped");
     regions.freeze(handed_on, WORKER).expect("frozen");
     regions
-        .transfer(handed_on, WORKER, SUPERVISOR)
-        .expect("handed on");
+        .retain_internal(handed_on)
+        .expect("a message becomes its holder");
+    regions.detach(handed_on, WORKER).expect("handed on");
     regions
-        .map(handed_on, false)
+        .release_capability(handed_on)
+        .expect("the sender's handle goes with it");
+    regions.adopt(handed_on, SUPERVISOR).expect("and arrives");
+    regions
+        .map(handed_on, SUPERVISOR, false)
         .expect("the receiver reads it");
+    regions
+        .retain_capability(handed_on)
+        .expect("under its own name");
+    regions
+        .release_internal(handed_on)
+        .expect("the message lets go last");
+    regions
+        .map(private, WORKER, true)
+        .expect("its own is mapped");
     assert_eq!(regions.committed(), 6 * 1024 * 1024);
 
-    // The process dies and its authority goes with it.
-    regions.capabilities_destroyed(WORKER);
+    // The process dies: its table entries go one at a time, and its address
+    // space takes its windows.
+    regions
+        .release_capability(private)
+        .expect("its one entry over its own region");
     regions.mappings_destroyed(WORKER);
     retire(&mut regions);
     regions.revoke(allowance).expect("its authority is revoked");
@@ -748,7 +989,9 @@ fn a_death_returns_what_only_the_dead_process_could_reach() {
 
     // When the surviving holder lets go, the backing follows the lineage that
     // funded it, past the node that no capability names any more.
-    regions.unmap(handed_on, false).expect("the mapping goes");
+    regions
+        .unmap(handed_on, SUPERVISOR, false)
+        .expect("the mapping goes");
     retire(&mut regions);
     regions
         .release_capability(handed_on)
@@ -802,6 +1045,20 @@ fn a_stopped_tree_refuses_to_grow_and_still_gives_back() {
     );
     assert_eq!(regions.attenuate(root, 1024 * 1024), Err(Refusal::Stopped));
     assert_eq!(regions.allocate(root, 1024, WORKER), Err(Refusal::Stopped));
+    // **What ring 3 is told, and why it is not a lie.** `Refusal::Stopped` has
+    // no word in the accepted status space of `SYSTEM_ABI_V1` §4, which is
+    // closed, so operations 16 and 17 answer the nearest accepted resource
+    // refusal: everything but `Empty` and `BadArgument` becomes `E_LIMIT`, and
+    // this is one of them. The caller is refused fail-closed, the nucleus has
+    // already said `TOS.NUCLEUS.INVARIANT … funding-stopped` on the console,
+    // and the refusal is not evidence that the authority's own budget ran out.
+    // A state machine that produced `Stopped` where the syscall maps it to
+    // something else is the only way that could go wrong, so the mapping is
+    // asserted where the state is produced.
+    assert!(matches!(
+        regions.allocate(root, 1024, WORKER),
+        Err(Refusal::Stopped)
+    ));
     assert_eq!(
         regions.remaining(child),
         free,
@@ -917,7 +1174,6 @@ fn an_authority_in_transit_never_returns_to_its_parent() {
     );
 
     // The sender dies before anybody receives. Still nothing comes back.
-    regions.capabilities_destroyed(WORKER);
     regions.mappings_destroyed(WORKER);
     retire(&mut regions);
     assert_eq!(regions.remaining(root), held);
@@ -1040,17 +1296,18 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
     let sent = handed_over(&mut regions, authority, 2 * 1024 * 1024, WORKER);
-    regions.map(sent, true).expect("the sender writes it");
+    regions
+        .map(sent, WORKER, true)
+        .expect("the sender writes it");
     regions.freeze(sent, WORKER).expect("and freezes it");
-    regions.map(sent, false).expect("and reads it");
 
     // The send commits: the message takes its reference before the sender's
     // handle and mapping go, so nothing is ever unreferenced.
     regions.retain_internal(sent).expect("the message names it");
     assert_eq!(regions.internal(sent), Ok(1));
     regions
-        .unmap(sent, false)
-        .expect("the sender's mapping goes");
+        .detach(sent, WORKER)
+        .expect("the sender's window and ownership go");
     retire(&mut regions);
     regions
         .release_capability(sent)
@@ -1063,7 +1320,6 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
     );
 
     // The sender dies before anybody receives. Still there.
-    regions.capabilities_destroyed(WORKER);
     regions.mappings_destroyed(WORKER);
     retire(&mut regions);
     assert_eq!(regions.allocated(root), Ok(2 * 1024 * 1024));
@@ -1071,7 +1327,11 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
 
     // The receiver acquires before the message lets go, so the region never
     // passes through unreachable.
-    regions.map(sent, false).expect("the receiver reads it");
+    regions.adopt(sent, SUPERVISOR).expect("ownership arrives");
+    regions
+        .map(sent, SUPERVISOR, false)
+        .expect("the receiver reads it");
+    regions.retain_capability(sent).expect("under its own name");
     regions
         .release_internal(sent)
         .expect("and the message is done");
@@ -1081,7 +1341,10 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
 
     // And when the last of the three goes, the backing returns.
     regions
-        .unmap(sent, false)
+        .release_capability(sent)
+        .expect("the receiver's handle goes");
+    regions
+        .unmap(sent, SUPERVISOR, false)
         .expect("the receiver's mapping goes");
     retire(&mut regions);
     assert_eq!(regions.allocated(root), Ok(0));
@@ -1138,20 +1401,36 @@ fn an_unmapping_of_nothing_is_a_defect() {
     let region = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
 
     assert_eq!(regions.mappings(region), Ok((0, 0)), "nothing maps it yet");
-    assert_eq!(regions.unmap(region, false), Err(Refusal::BadArgument));
+    assert_eq!(
+        regions.mapped_by(region, WORKER),
+        Ok(None),
+        "and this process is not among them"
+    );
+    assert_eq!(
+        regions.unmap(region, WORKER, false),
+        Err(Refusal::BadArgument)
+    );
     retire(&mut regions);
-    assert_eq!(regions.unmap(region, true), Err(Refusal::BadArgument));
+    assert_eq!(
+        regions.unmap(region, WORKER, true),
+        Err(Refusal::BadArgument)
+    );
     retire(&mut regions);
-    regions.map(region, true).expect("mapped");
+    regions.map(region, WORKER, true).expect("mapped");
     assert_eq!(
         regions.mappings(region),
         Ok((1, 0)),
         "and the counts say which kind, not only how many"
     );
-    regions.unmap(region, true).expect("and unmapped");
+    assert_eq!(
+        regions.mapped_by(region, WORKER),
+        Ok(Some(true)),
+        "and which address space, which is what a count cannot say"
+    );
+    regions.unmap(region, WORKER, true).expect("and unmapped");
     retire(&mut regions);
     assert_eq!(
-        regions.unmap(region, true),
+        regions.unmap(region, WORKER, true),
         Err(Refusal::BadArgument),
         "and not twice"
     );
@@ -1228,12 +1507,29 @@ fn a_region_is_credited_back_only_after_its_backing_is() {
 }
 
 /// The mode is what a caller can observe about a region, and it only goes one
-/// way.
+/// way — through all three states, and never back.
 #[test]
 fn the_mode_is_one_way() {
     let (mut regions, root) = endowed();
     let region = handed_over(&mut regions, root, 4096, WORKER);
     assert_eq!(regions.mode(region), Ok(Mode::Mutable));
+    assert!(regions.mode(region).is_ok_and(|mode| mode.is_affine()));
+
+    // Neither transition may be reached out of order, and each needs the
+    // holder's own window to be exactly what the state says it is: a freeze
+    // that declared a region unwritable while a writable mapping it had not
+    // accounted for stood would be declaring something it had not checked.
+    assert_eq!(regions.freeze(region, WORKER), Err(Refusal::WrongMode));
+    regions.map(region, WORKER, true).expect("mapped writably");
+    assert_eq!(regions.share(region, WORKER), Err(Refusal::WrongMode));
+
     regions.freeze(region, WORKER).expect("frozen");
     assert_eq!(regions.mode(region), Ok(Mode::Immutable));
+    assert!(regions.mode(region).is_ok_and(|mode| mode.is_affine()));
+
+    regions.share(region, WORKER).expect("shared");
+    assert_eq!(regions.mode(region), Ok(Mode::Shared));
+    assert!(!regions.mode(region).is_ok_and(|mode| mode.is_affine()));
+    assert_eq!(regions.freeze(region, WORKER), Err(Refusal::WrongMode));
+    assert_eq!(regions.share(region, WORKER), Err(Refusal::WrongMode));
 }
