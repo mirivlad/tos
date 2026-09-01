@@ -37,6 +37,59 @@ use tos_boot_protocol::{BootInfo, MemoryRange};
 use tos_frames::FRAME_SIZE;
 
 use crate::memory::Tables;
+use tos_frames::Frames;
+
+/// Where a page table's frame comes from.
+///
+/// **Two sources, one at a time, and the reason is the firmware's map.** Until
+/// the nucleus activates its own address space it runs on the one UEFI left
+/// behind, and that map is not ours to describe: some of what the memory map
+/// reports usable — memory that genuinely is ours once boot services have
+/// exited — is still mapped read-only by the firmware. Writing to it faults.
+///
+/// So the nucleus's own space is built from the pool, before anything can
+/// promise those frames, exactly as it always was; the page-table reserve is
+/// taken afterwards, once every admitted frame is mapped writable by a map the
+/// nucleus wrote. Everything after that point — every process space, every
+/// region lane — comes from the reserve and never from the pool (ADR-0076 §2).
+pub trait TableSource {
+    fn take(&mut self) -> Option<u64>;
+
+    /// Gives one back, to whoever it came from. A tree half-built and then
+    /// abandoned returns its frames to the same place it took them.
+    ///
+    /// # Safety
+    ///
+    /// The frame came from this source, nothing maps it, and no page-table
+    /// entry anywhere still points at it.
+    // SAFETY: the caller's promise that the frame is unreachable is the whole
+    // contract; each implementation adds nothing to it.
+    unsafe fn give_back(&mut self, frame: u64);
+}
+
+impl TableSource for Tables {
+    fn take(&mut self) -> Option<u64> {
+        self.allocate_frame()
+    }
+
+    // SAFETY: per the trait's contract.
+    unsafe fn give_back(&mut self, frame: u64) {
+        // SAFETY: as above.
+        unsafe { self.release_frame(frame) }
+    }
+}
+
+impl TableSource for Frames {
+    fn take(&mut self) -> Option<u64> {
+        self.allocate_frame()
+    }
+
+    // SAFETY: per the trait's contract.
+    unsafe fn give_back(&mut self, frame: u64) {
+        // SAFETY: as above.
+        unsafe { self.release_frame(frame) }
+    }
+}
 use tos_runtime::region::Span;
 
 /// Page-table entry bits, as the architecture defines them.
@@ -84,8 +137,8 @@ impl AddressSpace {
     }
 
     /// An empty space: a cleared root table and nothing mapped.
-    pub fn new(tables: &mut Tables) -> Result<AddressSpace, PagingRefused> {
-        let root = tables.allocate_frame().ok_or(PagingRefused::NoFrame)?;
+    pub fn new(tables: &mut dyn TableSource) -> Result<AddressSpace, PagingRefused> {
+        let root = tables.take().ok_or(PagingRefused::NoFrame)?;
         Ok(AddressSpace { root })
     }
 
@@ -127,7 +180,7 @@ impl AddressSpace {
     /// kind of defect that reads as a hang.
     fn descend(
         &self,
-        tables: &mut Tables,
+        tables: &mut dyn TableSource,
         table: u64,
         index: u64,
         interior: u64,
@@ -145,7 +198,7 @@ impl AddressSpace {
             }
             return Ok(existing & ADDRESS);
         }
-        let frame = tables.allocate_frame().ok_or(PagingRefused::NoFrame)?;
+        let frame = tables.take().ok_or(PagingRefused::NoFrame)?;
         Self::write(table, index, frame | PRESENT | WRITABLE | interior);
         Ok(frame)
     }
@@ -166,7 +219,7 @@ impl AddressSpace {
     /// [`build`], which is what makes the second condition true.
     // SAFETY: the caller's promise that this tree is unreachable is what makes
     // handing its frames back sound.
-    pub unsafe fn release_tables(&mut self, tables: &mut Tables) {
+    pub unsafe fn release_tables(&mut self, tables: &mut dyn TableSource) {
         for l4 in 0..ENTRIES {
             let entry = Self::entry(self.root, l4);
             if entry & PRESENT == 0 {
@@ -185,16 +238,16 @@ impl AddressSpace {
                         continue;
                     }
                     // SAFETY: a page table of a tree nothing reaches.
-                    unsafe { tables.release_frame(entry & ADDRESS) };
+                    unsafe { tables.give_back(entry & ADDRESS) };
                 }
                 // SAFETY: as above, and every table under it has gone back.
-                unsafe { tables.release_frame(directory) };
+                unsafe { tables.give_back(directory) };
             }
             // SAFETY: as above.
-            unsafe { tables.release_frame(pdpt) };
+            unsafe { tables.give_back(pdpt) };
         }
         // SAFETY: as above; this was the last frame of the tree.
-        unsafe { tables.release_frame(self.root) };
+        unsafe { tables.give_back(self.root) };
         self.root = 0;
     }
 
@@ -206,7 +259,7 @@ impl AddressSpace {
     /// Maps one 4 KiB page, identity or otherwise.
     pub fn map_page(
         &mut self,
-        tables: &mut Tables,
+        tables: &mut dyn TableSource,
         virt: u64,
         phys: u64,
         flags: u64,
@@ -223,7 +276,7 @@ impl AddressSpace {
     /// Maps one 2 MiB page.
     pub fn map_huge(
         &mut self,
-        tables: &mut Tables,
+        tables: &mut dyn TableSource,
         virt: u64,
         phys: u64,
         flags: u64,
@@ -518,7 +571,7 @@ pub fn build_tables(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
 pub fn build(
     bi: &BootInfo,
     descs: &[MemoryRange],
-    tables: &mut Tables,
+    tables: &mut dyn TableSource,
 ) -> Result<AddressSpace, PagingRefused> {
     let mut space = AddressSpace::new(tables)?;
     match fill(&mut space, bi, descs, tables) {
@@ -541,7 +594,7 @@ fn fill(
     space: &mut AddressSpace,
     bi: &BootInfo,
     descs: &[MemoryRange],
-    tables: &mut Tables,
+    tables: &mut dyn TableSource,
 ) -> Result<(), PagingRefused> {
     let fb = framebuffer(bi);
     let (text, _, data) = image_parts();
