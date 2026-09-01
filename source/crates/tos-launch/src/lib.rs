@@ -291,6 +291,46 @@ pub const CREATE_INSTANCE_ID: u64 = CREATE_MODULE + MAX_MODULE_PATH;
 /// Where `process_wait_child` (14) leaves the lifecycle record (ADR-0067).
 pub const WAIT_CHILD_RECORD: u64 = CREATE_INSTANCE_ID + 64;
 
+/// Where `region_allocate` (17) leaves the region's address and length.
+///
+/// A result rather than an argument, and in the region rather than in a
+/// register: `rdx` already carries the capability handle, and a base and a
+/// length are two more values than the one-value result has room for. Placed
+/// after the wait-child record so no two results overlap — checked by a test
+/// rather than by counting, because two contracts drifting apart is exactly
+/// what a fixed offset is supposed to prevent.
+///
+/// **The nucleus chose the address.** A caller never supplies one and never
+/// supplies a pointer (`SYSTEM_ABI_V1` §3); this is where it is told what it
+/// was given.
+pub const REGION_ALLOCATE_RECORD: u64 = WAIT_CHILD_RECORD + 96;
+
+/// The argument region is one frame, and every fixed result has to fit inside
+/// it without overlapping another. Checked rather than counted: two contracts
+/// drifting apart is exactly what a fixed offset exists to prevent.
+const _: () = {
+    const FRAME: u64 = 4096;
+    assert!(CREATE_INSTANCE_ID + 8 <= WAIT_CHILD_RECORD);
+    assert!(
+        WAIT_CHILD_RECORD + core::mem::size_of::<WaitChildRecord>() as u64
+            <= REGION_ALLOCATE_RECORD
+    );
+    assert!(REGION_ALLOCATE_RECORD + core::mem::size_of::<RegionAllocateRecord>() as u64 <= FRAME);
+    assert!(MESSAGE_REGIONS < REGION_ALLOCATE_RECORD);
+};
+
+/// What `region_allocate` (17) writes there.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RegionAllocateRecord {
+    /// Where the region is mapped in this process, chosen by the nucleus.
+    pub base: u64,
+    /// The **charged and mapped** length, which is the request rounded up to a
+    /// whole number of frames (ADR-0076 §7) — not what was asked for. A caller
+    /// told it has less mapped than it has would be told something false.
+    pub length: u64,
+}
+
 /// How a child ended, as the nucleus asserts it.
 pub const ENDING_EXITED: u64 = 1;
 pub const ENDING_FAULTED: u64 = 2;

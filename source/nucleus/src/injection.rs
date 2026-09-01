@@ -33,6 +33,12 @@ pub enum Case {
     BadHeader,
     /// A funding request larger than the root authority holds.
     OverBudget,
+    /// The pool refuses part-way through a region's backing.
+    RegionPool,
+    /// The reserve refuses part-way through the backing index.
+    RegionBackingTable,
+    /// The reserve refuses while the caller's window is being mapped.
+    RegionMappingTable,
 }
 
 /// The case armed for the next creation, if any.

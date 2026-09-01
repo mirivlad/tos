@@ -203,6 +203,113 @@ impl AddressSpace {
         Ok(frame)
     }
 
+    /// Maps one 4 KiB page where nothing is mapped, and refuses where something
+    /// is.
+    ///
+    /// **The difference from [`AddressSpace::map_page`] is the refusal, and it
+    /// matters for region backing.** The ordinary primitive overwrites a leaf,
+    /// which is right for building a fresh space where the caller knows the
+    /// tree is empty. It is wrong wherever a leaf already naming a physical
+    /// frame would mean the lifecycle has lost track of that frame: replacing
+    /// it silently would strand memory the pool believes is out and hand the
+    /// same address two owners. An occupied leaf here is a nucleus invariant,
+    /// not an invitation.
+    pub fn map_empty_page(
+        &mut self,
+        tables: &mut dyn TableSource,
+        virt: u64,
+        phys: u64,
+        flags: u64,
+    ) -> Result<(), PagingRefused> {
+        let (l4, l3, l2, l1) = indices(virt)?;
+        let interior = Self::interior_for(flags);
+        let pdpt = self.descend(tables, self.root, l4, interior)?;
+        let pd = self.descend(tables, pdpt, l3, interior)?;
+        let pt = self.descend(tables, pd, l2, interior)?;
+        if Self::entry(pt, l1) & PRESENT != 0 {
+            return Err(PagingRefused::Granularity(virt));
+        }
+        Self::write(pt, l1, (phys & ADDRESS) | flags | PRESENT);
+        Ok(())
+    }
+
+    /// Clears one leaf and says what it named, without touching the processor.
+    ///
+    /// For trees that are never loaded into `CR3`: the region backing index is
+    /// metadata, so `invlpg` on its addresses would be flushing a translation
+    /// the processor was never given. [`AddressSpace::unmap_page`] is what a
+    /// live space uses.
+    pub fn clear_leaf(&mut self, virt: u64) -> Option<u64> {
+        let (l4, l3, l2, l1) = indices(virt).ok()?;
+        let mut table = self.root;
+        for index in [l4, l3, l2] {
+            let entry = Self::entry(table, index);
+            if entry & PRESENT == 0 || entry & HUGE != 0 {
+                return None;
+            }
+            table = entry & ADDRESS;
+        }
+        let leaf = Self::entry(table, l1);
+        if leaf & PRESENT == 0 {
+            return None;
+        }
+        Self::write(table, l1, 0);
+        Some(leaf & ADDRESS)
+    }
+
+    /// Returns the page tables under one top-level entry, and the entry itself.
+    ///
+    /// **One region lane is exactly one top-level entry**, which is what makes
+    /// this expressible at all: there is no shared ancestry to prove anything
+    /// about, so clearing the entry detaches the whole subtree at once and
+    /// every table beneath it is unreachable by construction. Leaves are not
+    /// touched — what they name is the pool's or the loader's, and returning it
+    /// here would hand the same frame out twice.
+    ///
+    /// Answers whether a branch was there. An ordinary lifecycle release of a
+    /// lane that is absent is a defect in the caller; a rollback of a
+    /// construction that never got that far is not, which is why this reports
+    /// rather than refusing.
+    ///
+    /// # Safety
+    ///
+    /// Nothing under this branch is mapped in any other space, and no processor
+    /// is using a translation from it — either this space is not live, or the
+    /// caller flushes before returning to ring 3.
+    // SAFETY: the caller's promise that the branch is unshared and unused is
+    // what makes every table below it unreachable.
+    pub unsafe fn release_branch(&mut self, tables: &mut dyn TableSource, virt: u64) -> bool {
+        let Ok((l4, _, _, _)) = indices(virt) else {
+            return false;
+        };
+        let entry = Self::entry(self.root, l4);
+        if entry & PRESENT == 0 || entry & HUGE != 0 {
+            return false;
+        }
+        let pdpt = entry & ADDRESS;
+        Self::write(self.root, l4, 0);
+        for l3 in 0..ENTRIES {
+            let entry = Self::entry(pdpt, l3);
+            if entry & PRESENT == 0 || entry & HUGE != 0 {
+                continue;
+            }
+            let directory = entry & ADDRESS;
+            for l2 in 0..ENTRIES {
+                let entry = Self::entry(directory, l2);
+                if entry & PRESENT == 0 || entry & HUGE != 0 {
+                    continue;
+                }
+                // SAFETY: a page table of a branch nothing reaches.
+                unsafe { tables.give_back(entry & ADDRESS) };
+            }
+            // SAFETY: as above, and every table under it has gone back.
+            unsafe { tables.give_back(directory) };
+        }
+        // SAFETY: as above.
+        unsafe { tables.give_back(pdpt) };
+        true
+    }
+
     /// Returns every page table this space is made of to the reserve.
     ///
     /// **The tables, and never what they map.** A leaf points at memory that is
@@ -333,6 +440,33 @@ impl AddressSpace {
         }
         let leaf = Self::entry(table, l1);
         (leaf & PRESENT != 0).then_some(leaf & ADDRESS)
+    }
+
+    /// Discards every cached translation of the live space.
+    ///
+    /// **One reload rather than an address at a time.** A region lane is half a
+    /// terabyte of address space; naming each of its pages to `invlpg` would be
+    /// a loop the size of the lane, and the entries being discarded are a whole
+    /// top-level branch rather than a page. Reloading `CR3` drops every
+    /// non-global translation at once, which is what a branch disappearing
+    /// actually means.
+    ///
+    /// # Safety
+    ///
+    /// The live space still maps this nucleus at the addresses it is running
+    /// at — which is true of every space this nucleus builds — and the caller
+    /// is between two well-defined points, not part-way through editing the
+    /// tree it is about to be running on.
+    // SAFETY: the caller's promise that the live tree is complete and maps the
+    // nucleus is what makes reloading it safe.
+    pub unsafe fn flush() {
+        // SAFETY: reading and writing `CR3` with the value it already holds
+        // changes no mapping; it discards cached translations.
+        unsafe {
+            let root: u64;
+            core::arch::asm!("mov {}, cr3", out(reg) root, options(nomem, nostack));
+            core::arch::asm!("mov cr3, {}", in(reg) root, options(nostack, preserves_flags));
+        }
     }
 
     /// Makes this space the one the processor is using.

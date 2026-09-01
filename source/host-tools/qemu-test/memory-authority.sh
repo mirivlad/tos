@@ -62,7 +62,7 @@ import sys
 
 serial = open(sys.argv[1], "rb").read().decode("utf-8", "replace").replace("\r", "")
 
-OK, E_BAD_HANDLE, E_BAD_ARGUMENT, E_LIMIT = 0, -2, -3, -6
+OK, E_NO_CAPABILITY, E_BAD_HANDLE, E_BAD_ARGUMENT, E_LIMIT = 0, -1, -2, -3, -6
 
 held = [l for l in serial.splitlines() if l.startswith("TOS.RUN.CAPABILITY held=")]
 if len(held) != 1:
@@ -106,5 +106,72 @@ for name, want in expected.items():
         )
     print(f"  {name}: {got[name]}")
 
-print("MEMORY-AUTHORITY PASS: operation 16 reserves, refuses and shares one budget")
+# Operation 17, on the same boot: a real region, written at both ends, released
+# and made again.
+region = [l for l in serial.splitlines() if l.startswith("TOS.RUN.REGION ")]
+if len(region) != 1:
+    raise SystemExit(f"memory-authority: FAIL: expected one region report, found {len(region)}")
+made = {name: int(value) for name, value in re.findall(r"(\w+)=(-?\d+)", region[0])}
+expected_region = {
+    # A size that is not a whole number of frames comes back rounded up, which
+    # is what was charged and what was mapped (ADR-0076 §7).
+    "allocate": OK,
+    "rounded": 1,
+    # And placed in the lane its slot determines, not anywhere the caller chose.
+    "in_lane": 1,
+    # A fresh region is zero. The pool clears what it hands out, so this is what
+    # says operation 17 did not find frames by some other road.
+    "zeroed": 1,
+    # Writable at both ends of the *rounded* length, not just the requested one.
+    "wrote": 1,
+    "released": OK,
+    "again": OK,
+    # The slot and its lane are reusable once the retirement has finished...
+    "same_lane": 1,
+    # ...and the handle to the region that was there is not. The index is in
+    # range and the generation has moved on, which `CAPABILITY_V1` §2 and
+    # ADR-0056's refusal order make `E_NO_CAPABILITY` rather than a bad handle.
+    "stale": E_NO_CAPABILITY,
+    "freed": OK,
+}
+for name, want in expected_region.items():
+    if made.get(name) != want:
+        raise SystemExit(
+            f"memory-authority: FAIL: region {name} was {made.get(name)}, expected {want}"
+        )
+    print(f"  region {name}: {made[name]}")
+
+# And everything a region was made of came back: its frames to the pool, its
+# lane's page tables to the reserve. The reserve's baseline is one below its
+# size for the life of the boot — the backing index's root is permanent — so a
+# gate expecting the raw size would be reporting a leak that is not one.
+account = dict(
+    re.findall(r"(\w+)=(-?\d+)", next(l for l in serial.splitlines() if l.startswith("TOS.MEM.ACCOUNT ")))
+)
+reserve_line = dict(
+    re.findall(r"(\w+)=(-?\d+)", next(l for l in serial.splitlines() if l.startswith("TOS.MEM.RESERVE ")))
+)
+reclaimed = dict(
+    re.findall(
+        r"(\w+)=(-?\d+)",
+        next(l for l in serial.splitlines() if l.startswith("TOS.RUN.PROCESS_RECLAIMED ")),
+    )
+)
+if int(reclaimed["available"]) != int(account["root_frames"]):
+    raise SystemExit(
+        f"memory-authority: FAIL: the pool came back to {reclaimed['available']}, "
+        f"not the root's {account['root_frames']}"
+    )
+baseline = int(reserve_line["runtime_baseline_frames"])
+if int(reclaimed["tables_free"]) != baseline:
+    raise SystemExit(
+        f"memory-authority: FAIL: the reserve came back to {reclaimed['tables_free']}, "
+        f"not its baseline {baseline}"
+    )
+print(f"  every frame back to {reclaimed['available']}; every table back to {baseline}")
+
+if "TOS.NUCLEUS.INVARIANT" in serial:
+    raise SystemExit("memory-authority: FAIL: an invariant was reported")
+
+print("MEMORY-AUTHORITY PASS: operations 16 and 17 reserve, map, refuse and return")
 PY

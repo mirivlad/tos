@@ -815,6 +815,18 @@ impl Regions {
         Ok(())
     }
 
+    /// How many region objects exist, in any state.
+    pub fn live_regions(&self) -> usize {
+        (0..MAX_REGIONS).filter(|at| self.regions[*at].live).count()
+    }
+
+    /// How many bytes a region was charged and mapped, which is what its
+    /// holder is told rather than what it asked for (ADR-0076 §7).
+    pub fn length(&self, region: RegionId) -> Result<usize, Refusal> {
+        let at = self.region(region)?;
+        Ok(self.regions[at].bytes)
+    }
+
     /// Whether a capability may name this region: only if none does.
     pub fn can_name(&self, region: RegionId) -> bool {
         self.region(region)
@@ -892,13 +904,31 @@ impl Regions {
         Ok(self.regions[at].internal)
     }
 
-    /// A process ended: its handles and its mappings go with it.
-    pub fn process_died(&mut self, holder: u32) {
+    /// An address space was destroyed: every mapping it held is physically
+    /// gone.
+    ///
+    /// **The exact event, not a sweep.** Destroying a tree removes every window
+    /// in it at once, so zeroing this holder's mapping counts is a statement of
+    /// what happened rather than a tidy-up that hides a count nobody kept
+    /// straight. Capability references are *not* touched here: they are lost
+    /// when the process's table is cleared, which is a different event, and a
+    /// region can outlive either one.
+    pub fn mappings_destroyed(&mut self, holder: u32) {
+        for at in 0..MAX_REGIONS {
+            if self.regions[at].live && self.regions[at].holder == holder {
+                self.regions[at].writable_mappings = 0;
+                self.regions[at].readable_mappings = 0;
+                self.settle_region(at);
+            }
+        }
+    }
+
+    /// A process ended and its table went with it: every capability it held
+    /// over a region stops naming one.
+    pub fn capabilities_destroyed(&mut self, holder: u32) {
         for at in 0..MAX_REGIONS {
             if self.regions[at].live && self.regions[at].holder == holder {
                 self.regions[at].capabilities = 0;
-                self.regions[at].writable_mappings = 0;
-                self.regions[at].readable_mappings = 0;
                 self.settle_region(at);
             }
         }

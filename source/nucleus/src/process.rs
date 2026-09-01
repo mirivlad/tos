@@ -1242,6 +1242,11 @@ unsafe fn retire(index: usize) {
     // Its authority ends with it, and the generations advance so that nothing
     // written down about the old occupant addresses the next one.
     crate::capability::clear(index);
+    // Whatever the table held over a region stops naming one. The region does
+    // not go yet: this process's window is still mapped, and it is destroyed
+    // with the address space, which is where the retirement happens.
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    unsafe { crate::memory::authority() }.capabilities_destroyed(index as u32);
 
     match slot.ended {
         // What the nucleus asserts is that the process exited; the status is
@@ -1382,7 +1387,18 @@ unsafe fn retire(index: usize) {
     let tables = unsafe { crate::memory::tables() };
     // SAFETY: this space is not the live one — the scheduler left it before
     // this ran — it is this process's own tree, and nothing will use it again.
+    // Region lane tables go with it; region *backing* frames are leaves and are
+    // not touched here, because the region may still be held elsewhere.
     unsafe { space.release_tables(tables) };
+    // **Then the regions are told, and only then are they retired.** The order
+    // is what the invariant needs: no region's backing goes back to the pool
+    // while a page table that could still be loaded maps it. Its capability
+    // references went earlier, when the process's table was cleared — a region
+    // whose holder had died was kept alive by this mapping until now.
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    let tree = unsafe { crate::memory::authority() };
+    tree.mappings_destroyed(index as u32);
+    crate::syscall::drain_reclaims();
     // And the authority that funded it is told, so what the tree says is
     // committed is what the pool has actually lost.
     if let Some(charge) = charge {
@@ -1403,6 +1419,13 @@ unsafe fn retire(index: usize) {
     tos_serial::put_u32_decimal((held - frames.in_use()) as u32);
     tos_serial::puts(b" available=");
     tos_serial::put_u32_decimal(frames.available() as u32);
+    // And the reserve, so a region's lane tables can be seen to have come back
+    // as well as its frames. The baseline is one below the reserve's size for
+    // the life of the boot: the backing index's root is permanent.
+    tos_serial::puts(b" tables_free=");
+    // SAFETY: single-context nucleus between two processes; nothing else holds
+    // the reserve.
+    tos_serial::put_u32_decimal(unsafe { crate::memory::tables() }.remaining() as u32);
     tos_serial::puts(b"\r\n");
 }
 
@@ -2602,6 +2625,89 @@ struct Furnished {
     record: u64,
     record_span: Span,
     endowment_at: u64,
+}
+
+/// Maps a region into a process, at the lane its slot determines.
+///
+/// **The frames come from the backing index, not from the pool.** A region's
+/// identity is which frames it is made of, and that record outlives every
+/// mapping of it — which is what lets a linear transfer take the sender's
+/// window away and still deliver the same memory, and what will let operation
+/// 18 turn a window read-only in place without rebuilding anything.
+///
+/// Refuses rather than replaces, at every leaf: something already mapped in a
+/// region's lane means the lifecycle lost track of a frame, and overwriting it
+/// would give one address two owners.
+pub fn map_region(process: usize, index: u32, pages: u64, writable: bool) -> Result<u64, ()> {
+    let lane = region_lane(index);
+    let flags = if writable {
+        PRESENT_USER | WRITABLE | NO_EXECUTE
+    } else {
+        PRESENT_USER | NO_EXECUTE
+    };
+    // SAFETY: single-context nucleus; nothing else holds these.
+    let tables = unsafe { crate::memory::tables() };
+    // SAFETY: as above; the index exists from boot.
+    let Some(backing) = (unsafe { crate::memory::backing() }) else {
+        return Err(());
+    };
+    // SAFETY: as above; nothing else touches the table.
+    let table = unsafe { table() };
+    let Some(space) = table.get_mut(process).and_then(|slot| slot.space.as_mut()) else {
+        return Err(());
+    };
+    for page in 0..pages {
+        let Some(frame) = backing.frame_at(lane, page) else {
+            // SAFETY: nothing outside this call reached the partial lane.
+            unsafe { space.release_branch(tables, lane) };
+            return Err(());
+        };
+        if space
+            .map_empty_page(tables, lane + page * FRAME_SIZE, frame, flags)
+            .is_err()
+        {
+            // SAFETY: as above.
+            unsafe { space.release_branch(tables, lane) };
+            return Err(());
+        }
+    }
+    Ok(lane)
+}
+
+/// Takes a region's window away from a process, and its lane's tables with it.
+///
+/// The frames themselves are untouched: they belong to the region, which may
+/// still be held, in flight, or mapped by somebody else.
+///
+/// # Safety
+///
+/// Either this space is not the live one, or the caller flushes the processor's
+/// cached translations before returning to ring 3.
+// SAFETY: the caller's promise about the live space is what makes the branch
+// unreachable at the moment it is detached.
+pub unsafe fn unmap_region(process: usize, index: u32) -> bool {
+    let lane = region_lane(index);
+    // SAFETY: single-context nucleus.
+    let tables = unsafe { crate::memory::tables() };
+    // SAFETY: as above.
+    let table = unsafe { table() };
+    let Some(space) = table.get_mut(process).and_then(|slot| slot.space.as_mut()) else {
+        return false;
+    };
+    // SAFETY: per this function's contract.
+    unsafe { space.release_branch(tables, lane) }
+}
+
+/// Whether a process has an address space of its own to map into.
+///
+/// The borrowed test excursion does not: it runs in the nucleus's space, and a
+/// region mapped into that would be a user window in the nucleus's own tree.
+pub fn owns_space(process: usize) -> bool {
+    // SAFETY: single-context nucleus.
+    let table = unsafe { table() };
+    table
+        .get(process)
+        .is_some_and(|slot| slot.space.is_some() && slot.reclaim.is_some())
 }
 
 /// A capsule path as a module-root-relative one: what docs/42 section 1
