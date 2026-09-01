@@ -604,20 +604,6 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // capsule does. Everything a process is actually *given* is charged; only
     // the tables that map it are not, because a table is the nucleus's own
     // structure and no process can reach one.
-    let bound = process::table_reserve(bi, descs);
-    // SAFETY: boot, immediately after admission and before any address space,
-    // process or memory authority exists.
-    let Some(reserved) = (unsafe { memory::reserve_tables(bound) }) else {
-        tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-table-reserve wanted_frames=");
-        tos_serial::put_u32_decimal(bound as u32);
-        tos_serial::puts(b" pool_frames=");
-        // SAFETY: boot, single-context, nothing else holds the pool.
-        tos_serial::put_u32_decimal(unsafe { memory::frames() }.available() as u32);
-        tos_serial::puts(b"\r\n");
-        console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-table-reserve");
-        mem_fail();
-    };
-
     // The nucleus takes over its own address space here, and not earlier: the
     // tables are frames from the pool, so the pool has to exist first. Until
     // this instruction the machine ran on the firmware's identity map — a map
@@ -628,7 +614,14 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     #[allow(unused_mut)]
     // SAFETY: nucleus entry; nothing else holds the pool, and no process
     // exists yet.
-    let mut space = match paging::build(bi, descs, unsafe { memory::tables() }) {
+    // SAFETY: boot, single-context, nothing else holds the pool.
+    let before_own_space = unsafe { memory::frames() }.available();
+    // Mutable only in a test configuration: the ring-3 excursion maps its own
+    // pages into this space, and the production path only ever reads it.
+    #[allow(unused_mut)]
+    // SAFETY: nucleus entry; nothing else holds the pool, and no process
+    // exists yet.
+    let mut space = match paging::build(bi, descs, unsafe { memory::frames() }) {
         Ok(space) => space,
         Err(_) => {
             tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-address-space\r\n");
@@ -642,6 +635,39 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // this image with its own text executable. Maskable interrupts are off and
     // this is the only context running.
     unsafe { space.activate() };
+
+    // **After the nucleus owns its own map, and not before.** Until this point
+    // the machine runs on the map UEFI left behind, in which some of what the
+    // memory map reports usable — memory that genuinely becomes ours when boot
+    // services exit — is still mapped read-only. Writing to it faults, and
+    // taking a reserve means writing to every frame of it. The nucleus's own
+    // address space came from the pool a moment ago, bounded and before
+    // anything could promise it; everything after this line comes from the
+    // reserve.
+    //
+    // The region aperture has to fit this nucleus's own layout before anything
+    // is sized from it: every lane above every fixed window, the last ending
+    // inside the lower canonical half, and no arithmetic that wraps. A machine
+    // this is not true of is refused rather than given lanes that overlap a
+    // stack.
+    if !process::aperture_fits() {
+        tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-region-aperture\r\n");
+        console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-region-aperture");
+        mem_fail();
+    }
+    let bound = process::table_reserve(bi, descs);
+    // SAFETY: boot, immediately after admission and before any address space,
+    // process or memory authority exists.
+    let Some(reserved) = (unsafe { memory::reserve_tables(bound) }) else {
+        tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-table-reserve wanted_frames=");
+        tos_serial::put_u32_decimal(bound as u32);
+        tos_serial::puts(b" pool_frames=");
+        // SAFETY: boot, single-context, nothing else holds the pool.
+        tos_serial::put_u32_decimal(unsafe { memory::frames() }.available() as u32);
+        tos_serial::puts(b"\r\n");
+        console_failed(&mut console, b"RUNTIME_UNSTARTABLE", b"no-table-reserve");
+        mem_fail();
+    };
 
     // What the machine admitted, what left the pool before anything could
     // promise it, and what the pool has left for the authority tree to be
@@ -662,6 +688,10 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
 
     tos_serial::puts(b"TOS.MEM.ACCOUNT admitted_frames=");
     tos_serial::put_u32_decimal(admission.frames as u32);
+    tos_serial::puts(b" nucleus_space_frames=");
+    // SAFETY: boot, single-context, nothing else holds the pool.
+    let left = unsafe { memory::frames() }.available();
+    tos_serial::put_u32_decimal((before_own_space - left - reserved) as u32);
     tos_serial::puts(b" table_reserve_frames=");
     tos_serial::put_u32_decimal(reserved as u32);
     tos_serial::puts(b" table_reserve_free=");

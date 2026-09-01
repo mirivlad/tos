@@ -43,6 +43,7 @@ use tos_boot_protocol::{BootInfo, MemoryRange};
 use tos_frames::{Frames, FRAME_SIZE};
 
 use crate::memory::Tables;
+use crate::region::MAX_REGIONS;
 use tos_launch::{
     ImageHeader, Launch, LaunchCapability, LaunchUnit, ReportHeader, IMAGE_MAGIC, LAUNCH_VERSION,
 };
@@ -387,6 +388,62 @@ const ARGUMENT_FRAMES: u64 = 1;
 /// Where the top of a process's stack is.
 const STACK_TOP: u64 = STACK + STACK_FRAMES * FRAME_SIZE;
 
+/// Where a process's region windows begin.
+///
+/// **A PML4 branch of its own, above everything else the layout uses.** Every
+/// fixed window above ends below 2 GiB, so all of them share the first
+/// entry of the top-level table; the first address the aperture could start at
+/// without sharing that entry is `1 << 39`. Checked at boot rather than
+/// asserted here — a constant that stopped being true because somebody moved a
+/// window would be a lane overlapping a stack.
+pub const REGION_APERTURE: u64 = 1 << 39;
+
+/// One 512-GiB branch per region slot.
+///
+/// **Virtual alignment only, and it buys three things.** Each lane is a
+/// separate top-level entry, so the tables under it are structurally the
+/// nucleus's to free when the lane empties; an unused lane costs nothing at
+/// all; and no region's placement can ever collide with another's, because the
+/// slot chooses the lane.
+///
+/// It costs nothing physical: this is address space, and a machine has 128 TiB
+/// of the lower canonical half to spend on 64 lanes. What it removes is a
+/// second scarcity — a virtual-address allocator with holes, in which a
+/// reservation the authority tree guaranteed could still be refused because no
+/// span of the right shape was free. A refusal the memory account cannot
+/// explain is worse than an aperture that is merely large.
+pub const REGION_LANE_SPAN: u64 = 1 << 39;
+
+/// Where region slot `index` is mapped, in every address space that maps it.
+///
+/// The same address everywhere. The contract does not promise that two holders
+/// see one region at one address, but it does not forbid it either — and one
+/// address per region makes the mapping record, the transfer, the release and
+/// the page-table bound all simpler than four different answers would.
+pub const fn region_lane(index: u32) -> u64 {
+    REGION_APERTURE + (index as u64) * REGION_LANE_SPAN
+}
+
+/// Whether this nucleus's layout can hold its own region aperture.
+///
+/// Asked at boot, and the machine is refused if it cannot: every lane must be
+/// above every fixed window, the last must end inside the lower canonical half
+/// of a four-level address space, and the arithmetic must not wrap.
+pub fn aperture_fits() -> bool {
+    const CANONICAL_LOW_END: u64 = 1 << 47;
+    let highest_window = ARGUMENTS + ARGUMENT_FRAMES * FRAME_SIZE;
+    // The last lane's end, reached the way a lane's base is reached, so the
+    // check and the placement cannot disagree about where the aperture is.
+    let Some(span) = (MAX_REGIONS as u64).checked_mul(REGION_LANE_SPAN) else {
+        return false;
+    };
+    if REGION_APERTURE.checked_add(span).is_none() {
+        return false;
+    }
+    let end = region_lane(MAX_REGIONS as u32);
+    REGION_APERTURE > highest_window && end <= CANONICAL_LOW_END
+}
+
 /// How many page tables one virtual range can need, at worst.
 ///
 /// Four-level paging puts one table at each level above the leaf, so a range
@@ -423,6 +480,37 @@ fn process_window_tables() -> u64 {
         + tables_over(ARGUMENTS, ARGUMENT_FRAMES * FRAME_SIZE)
 }
 
+/// Page-table frames the region lanes can need, at worst.
+///
+/// Two trees are bounded here and they are bounded the same way.
+///
+/// The **backing index** is the nucleus's own record of which physical frames
+/// make up each region: one page-table-shaped structure, never loaded into
+/// `CR3`, giving no process access to anything. The **mappings** are what each
+/// process's address space holds of the regions it can reach.
+///
+/// ```text
+/// a = ceil(P / 512 GiB)   how many lane-sized units this machine's memory is
+/// b = ceil(P / 1 GiB)     page directories, if it were all one run
+/// c = ceil(P / 2 MiB)     page tables, likewise
+/// ```
+///
+/// where `P` is every byte the boot admitted. **The bound is not the worst
+/// region size times the number of regions**, which would reserve more than the
+/// machine has: the *total* backing alive at once cannot exceed `P`, whatever
+/// it is divided into. What dividing it costs is the boundaries — spreading `P`
+/// across `slots` lanes adds at most one extra table per level per lane after
+/// the first, because each lane starts on a fresh 512-GiB boundary. Hence
+/// `a + slots - 1` and so on, and the root of the backing tree once.
+///
+/// A process is bounded by its capability table rather than by `MAX_REGIONS`:
+/// it cannot reach more distinct regions than it can hold handles for, and its
+/// address-space root is already counted by the windows above.
+fn lane_tables(top: u64, slots: u64) -> u64 {
+    let units = |unit: u64| top.div_ceil(unit) + slots - 1;
+    units(REGION_LANE_SPAN) + units(1 << 30) + units(2 * 1024 * 1024)
+}
+
 /// The whole page-table reserve for this machine (ADR-0076 §2 rule 3).
 ///
 /// ```text
@@ -444,7 +532,17 @@ fn process_window_tables() -> u64 {
 /// single 2 MiB leaf.
 pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
     let identity = paging::build_tables(bi, descs);
-    identity + MAX_PROCESSES as u64 * (identity + process_window_tables())
+    let admitted: u64 = descs
+        .iter()
+        .filter(|range| range.ty == tos_boot_protocol::MEM_USABLE)
+        .map(|range| range.phys_length)
+        .sum();
+    // The backing index, once for the machine; and each process's own region
+    // mappings, bounded by the handles it can hold rather than by how many
+    // regions exist.
+    let backing = 1 + lane_tables(admitted, MAX_REGIONS as u64);
+    let mappings = lane_tables(admitted, crate::capability::MAX_CAPABILITIES as u64);
+    identity + backing + MAX_PROCESSES as u64 * (identity + process_window_tables() + mappings)
 }
 
 /// Page-table flags, from the process's side of the boundary.

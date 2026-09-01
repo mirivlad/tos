@@ -9,8 +9,13 @@
 # three equalities the funding model rests on, and the negative that says a
 # refusal costs nothing.
 #
-#   admitted_frames == table_reserve_frames + pool_frames
-#       the reserve physically left the pool, once, before anything promised it
+#   admitted_frames == nucleus_space + table_reserve_frames + pool_frames
+#       everything that left the pool before the tree existed, and nothing else.
+#       The nucleus's own address space is its own line: it is built before the
+#       reserve, from the pool, because until it is active the machine runs on
+#       the firmware's map and some of what the memory map reports usable is
+#       still mapped read-only there — a reserve taken earlier would fault
+#       writing its own free list
 #
 #   root_frames == pool_frames
 #       the root authority is endowed over exactly what is left, with no second
@@ -62,6 +67,7 @@ charge = one("TOS.RUN.PROCESS_CHARGE ")
 reclaimed = one("TOS.RUN.PROCESS_RECLAIMED ")
 
 admitted = int(account["admitted_frames"])
+own_space = int(account["nucleus_space_frames"])
 reserve = int(account["table_reserve_frames"])
 pool = int(account["pool_frames"])
 root = int(account["root_frames"])
@@ -72,7 +78,7 @@ def check(claim, left, right):
     print(f"  {claim}: {left}")
 
 # The reserve left the pool exactly once.
-check("admitted == reserve + pool", admitted, reserve + pool)
+check("admitted == own space + reserve + pool", admitted, own_space + reserve + pool)
 
 # And the root was endowed over what was left, without subtracting it twice.
 check("root == pool after the reserve", root, pool)
