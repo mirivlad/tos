@@ -93,6 +93,18 @@ const CAPABILITY_ATTENUATE_SCOPED: u64 = 16;
 /// capability, and its base and charged length are written to the caller's
 /// argument region at `REGION_ALLOCATE_RECORD`.
 const REGION_ALLOCATE: u64 = 17;
+/// The consuming mutable-to-immutable transition (ADR-0075 §3). `rdi` = a
+/// mutable region capability with `write`; `rdx` returns a **new** handle to
+/// the same region, carrying `read | share`.
+///
+/// **Consuming, and the handle says so.** ADR-0075 §3 rules out a transition
+/// that leaves the caller's writable authority standing, and it rules out one
+/// whose rights change under a handle the caller already holds — a process
+/// would have no way to tell a frozen region from a mutable one it wrote a
+/// moment ago. So the entry keeps its slot and its generation moves: the old
+/// handle is stale by the same rule that makes any released handle stale, and
+/// the new one is what the caller is answered with.
+const REGION_FREEZE: u64 = 18;
 
 /// The one call flag this contract version has.
 ///
@@ -610,10 +622,205 @@ fn answer_rest(operation: u64, frame: &mut TrapFrame, caller: usize) -> Answer {
                 };
             reply_receive(caller, asked, reply_handle, endpoint, frame)
         }
-        REGION_SHARE => refuse(caller, arguments.first(), ALL_RIGHTS),
+        REGION_SHARE => region_share(caller, arguments.first()),
+        REGION_FREEZE => region_freeze(caller, arguments.first()),
 
         _ => Answer::status(E_NOT_SUPPORTED),
     }
+}
+
+/// Why a send did not happen.
+///
+/// Two shapes rather than one status, because the caller does something
+/// genuinely different with each. A full queue is the only refusal a blocking
+/// sender waits out (`IPC_V1` §7); everything else is an answer to give back,
+/// already in the form the caller will return.
+enum SendRefused {
+    /// The queue is full, and nothing has been consumed.
+    QueueFull,
+    Refused(Answer),
+}
+
+/// One region a send is about to carry, as the sender's side of it resolves.
+#[derive(Clone, Copy)]
+struct Outbound {
+    /// What the queue will hold: the affine form or the shared one.
+    object: Object,
+    /// The sender's handle, which a linear transfer consumes and a shared one
+    /// leaves alone.
+    handle: u64,
+    /// Whether this transfer is the consuming kind.
+    linear: bool,
+}
+
+impl Outbound {
+    const NONE: Outbound = Outbound {
+        object: Object::None,
+        handle: 0,
+        linear: false,
+    };
+}
+
+/// One whole send, from resolving what the sender named to the message being
+/// queued — or nothing at all.
+///
+/// **Everything fallible happens before anything is consumed, and the order is
+/// the argument.** `IPC_V1` §9.3 requires a failed send to transfer nothing,
+/// and once a region can travel that is no longer a statement about capability
+/// handles: a linear transfer takes the sender's window away, and a window
+/// rebuilt after the fact needs page tables from the reserve and can fail on its
+/// own. There is no rollback that is guaranteed to work, so there is no
+/// rollback: the queue's room, the receiver's bound, the region's state, the
+/// sender's ownership and the sender's lane are all established first, and
+/// below the line nothing may refuse.
+///
+/// It is a function rather than the body of `send` because two callers need it:
+/// the operation, and the resumption of a sender that blocked for room. A
+/// blocked sender consumed nothing when it blocked, so what runs when room
+/// appears is this same transaction again rather than a second, thinner one that
+/// forgets what the first was carrying.
+fn send_transaction(
+    sender: usize,
+    endpoint: u32,
+    length: u64,
+    capabilities: u64,
+    regions: u64,
+    reply: Option<(Object, u32, u64)>,
+) -> Result<(), SendRefused> {
+    let refuse = |status: i64| Err(SendRefused::Refused(Answer::status(status)));
+    let from = crate::process::arguments_of(sender);
+    if from == 0 {
+        return refuse(E_BAD_ARGUMENT);
+    }
+    let mut granted = [(Object::None, 0u32, 0u64); ipc::MAX_TRANSFERRED as usize];
+    // A count past the contract's maximum is a **malformed call**, not a
+    // resource condition, and it answers `E_BAD_ARGUMENT` for the same reason
+    // an oversize payload does: the three bounds of `IPC_V1` §3 are constants
+    // the caller knew before it called. `E_LIMIT` is what a *full queue*
+    // answers (§9.2), and a caller that could not tell "retry later" from "this
+    // call can never work" would be told nothing useful by either — which is
+    // exactly the merge `SYSTEM_ABI_V1` §4 forbids for the other pair.
+    //
+    // A call reserves the last capability slot for the answer, so it carries
+    // one fewer of its own than a send does.
+    let reserved = u64::from(reply.is_some());
+    if length > ipc::MAX_INLINE_BYTES
+        || capabilities + reserved > ipc::MAX_TRANSFERRED
+        || regions > ipc::MAX_TRANSFERRED_REGIONS
+    {
+        return refuse(E_BAD_ARGUMENT);
+    }
+    let count = capabilities as usize;
+    if let Err(answer) = resolve_transfers(sender, from, &mut granted[..count]) {
+        return Err(SendRefused::Refused(answer));
+    }
+    if let Some(reply) = reply {
+        // The right to answer this call, made now and belonging to nobody yet.
+        // It goes in the **last** slot, always, so that a receiver knows where
+        // to look without being told how many capabilities the caller chose to
+        // send.
+        granted[ipc::MAX_TRANSFERRED as usize - 1] = reply;
+    }
+    let mut outbound = [Outbound::NONE; ipc::MAX_TRANSFERRED_REGIONS as usize];
+    let region_count = regions as usize;
+    if let Err(answer) = resolve_regions(sender, from, &mut outbound[..region_count]) {
+        return Err(SendRefused::Refused(answer));
+    }
+    // The room, before anything moves. This is the whole reason the transaction
+    // is shaped this way.
+    match ipc::has_room(endpoint) {
+        Ok(()) => {}
+        Err(ipc::Refused::Limit) => return Err(SendRefused::QueueFull),
+        Err(_) => return refuse(E_BAD_ARGUMENT),
+    }
+    // The queue is about to become a holder of everything the message carries,
+    // and it is a holder that outlives this call: the sender may release its
+    // handles, or end, before anybody receives. Taken before anything is
+    // consumed, so a refusal here still leaves the sender with everything.
+    let queued = if reply.is_some() {
+        granted.len()
+    } else {
+        count
+    };
+    if capability::retain_in_transit(&granted[..queued]).is_err() {
+        return refuse(E_LIMIT);
+    }
+    for (taken, entry) in outbound[..region_count].iter().enumerate() {
+        let Some(region) = entry.object.region() else {
+            continue;
+        };
+        if capability::retain_region_in_transit(region).is_err() {
+            for earlier in outbound[..taken].iter() {
+                if let Some(region) = earlier.object.region() {
+                    capability::release_region_from_transit(region);
+                }
+            }
+            capability::release_from_transit(&granted[..queued]);
+            return refuse(E_LIMIT);
+        }
+    }
+
+    // --- committed from here ---
+    // **The message's internal reference is the ownership bridge.** It is taken
+    // above, before the sender loses anything, so a linearly transferred region
+    // is never reachable by nobody — the sender's mapping and handle go while
+    // the queue is already holding it.
+    for entry in outbound[..region_count].iter() {
+        if !entry.linear {
+            continue;
+        }
+        let Some(region) = entry.object.region() else {
+            continue;
+        };
+        // SAFETY: `unmap_region` asks for one of two things, and both hold
+        // here. When the sender is the running process this is the live space
+        // and the flush below follows before ring 3 is reached again; when it
+        // is a blocked sender being resumed by whoever freed the room, this is
+        // not the live space at all. The flush is unconditional rather than
+        // conditional on which, because a translation discarded needlessly
+        // costs a reload and one kept wrongly is a window that outlived its
+        // capability.
+        unsafe { crate::process::unmap_region(sender, region.index) };
+        // SAFETY: single-context nucleus; nothing else holds the tree.
+        let tree = unsafe { crate::memory::authority() };
+        if tree.detach(region, sender as u32).is_err() {
+            crate::memory::note_divergence(b"region-send-detach");
+        }
+        if capability::release(sender, entry.handle).is_err() {
+            crate::memory::note_divergence(b"region-send-handle");
+        }
+    }
+    if outbound[..region_count].iter().any(|entry| entry.linear) {
+        // SAFETY: the live tree is complete and maps this nucleus, and the lane
+        // edits above are finished.
+        unsafe { crate::paging::AddressSpace::flush() };
+    }
+    let mut carried = [Object::None; ipc::MAX_TRANSFERRED_REGIONS as usize];
+    for (slot, entry) in carried.iter_mut().zip(outbound.iter()) {
+        *slot = entry.object;
+    }
+    // SAFETY: `from` is the physical address of the sending process's argument
+    // region, mapped by the launcher and read here through the nucleus's own
+    // identity map.
+    if unsafe {
+        ipc::send(
+            endpoint,
+            from,
+            length,
+            &granted[..queued],
+            &carried[..region_count],
+        )
+    }
+    .is_err()
+    {
+        // Ruled out above: the room was established, the bounds were checked,
+        // and the endpoint resolved a moment ago in a nucleus nothing else runs
+        // in. Reaching here is the queue contradicting its own preflight, and
+        // the region is already the message's.
+        crate::memory::note_divergence(b"send-after-preflight");
+        return refuse(E_LIMIT);
+    }
+    Ok(())
 }
 
 /// Sends the caller's message, waiting for room when there is none.
@@ -623,70 +830,31 @@ fn answer_rest(operation: u64, frame: &mut TrapFrame, caller: usize) -> Answer {
 /// endpoint, it is handed to them here and their call is answered — they do not
 /// wake up to ask again. That is two copies of the payload, sender to queue and
 /// queue to receiver, which is what docs/35 budgets for an inline message.
+///
+/// **A sender that waits for room has given up nothing.** `IPC_V1` §7 lets a
+/// full queue block the sender, and the transaction above is arranged so that
+/// blocking happens before any of the message has been taken from it: the
+/// handles it named are still its own, the regions it named are still mapped in
+/// it, and when room appears the whole transaction runs again.
 fn send(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
-    let from = crate::process::arguments_region();
-    if from == 0 {
-        return Answer::status(E_BAD_ARGUMENT);
-    }
-    let length = frame.rsi;
-    // The authority travelling with the message, resolved **before** anything is
-    // queued. What goes into the queue is the object, not this caller's name for
-    // it: a handle means nothing in another table, and this one may be released
-    // or its owner may end before the message is delivered.
-    let mut granted = [(Object::None, 0u32, 0u64); ipc::MAX_TRANSFERRED as usize];
-    let count = frame.r10 as usize;
-    // A count past the contract's maximum is a **malformed call**, not a
-    // resource condition, and it answers `E_BAD_ARGUMENT` for the same reason
-    // an oversize payload does: the three bounds of `IPC_V1` §3 are constants
-    // the caller knew before it called. `E_LIMIT` is what a *full queue*
-    // answers (§9.2), and a caller that could not tell "retry later" from "this
-    // call can never work" would be told nothing useful by either — which is
-    // exactly the merge `SYSTEM_ABI_V1` §4 forbids for the other pair.
-    if count > granted.len() {
-        return Answer::status(E_BAD_ARGUMENT);
-    }
-    match resolve_transfers(caller, from, &mut granted[..count]) {
-        Ok(()) => {}
-        Err(answer) => return answer,
-    }
-    // The queue is about to become a holder of everything the message carries,
-    // and it is a holder that outlives this call: taken before the message is
-    // queued, so no path exists where the message is committed and its objects
-    // are not counted.
-    if capability::retain_in_transit(&granted[..count]).is_err() {
-        return Answer::status(E_LIMIT);
-    }
-    // SAFETY: `from` is the physical address of this process's argument region,
-    // mapped by the launcher and read here through the nucleus's own identity
-    // map.
-    match unsafe { ipc::send(endpoint, from, length, &granted[..count]) } {
+    match send_transaction(caller, endpoint, frame.rsi, frame.r10, frame.r8, None) {
         Ok(()) => {
             deliver_to_waiter(endpoint);
             Answer::status(OK)
         }
-        // A send that did not happen holds nothing: the message's names go
-        // back before the refusal is answered, including on the blocking path,
-        // where the caller will resolve and retain again when it is resumed.
-        Err(refused) => {
-            capability::release_from_transit(&granted[..count]);
-            match refused {
-                ipc::Refused::BadArgument => Answer::status(E_BAD_ARGUMENT),
-                ipc::Refused::Limit if frame.rdx & NON_BLOCKING != 0 => Answer::status(E_LIMIT),
-                ipc::Refused::Limit => {
-                    // `IPC_V1` §7: the system never grows a queue to accept a
-                    // message, so the sender waits for room rather than the
-                    // queue making some.
-                    // SAFETY: this is the running context's own frame, and the
-                    // handle the wait is on was resolved above.
-                    unsafe {
-                        crate::process::block(
-                            frame,
-                            crate::process::Waiting::Room(endpoint),
-                            ENDPOINT_SEND as u32,
-                        )
-                    }
-                }
-                ipc::Refused::WouldBlock => Answer::status(E_WOULD_BLOCK),
+        Err(SendRefused::Refused(answer)) => answer,
+        Err(SendRefused::QueueFull) if frame.rdx & NON_BLOCKING != 0 => Answer::status(E_LIMIT),
+        Err(SendRefused::QueueFull) => {
+            // `IPC_V1` §7: the system never grows a queue to accept a message,
+            // so the sender waits for room rather than the queue making some.
+            // SAFETY: this is the running context's own frame, and the handle
+            // the wait is on was resolved above.
+            unsafe {
+                crate::process::block(
+                    frame,
+                    crate::process::Waiting::Room(endpoint),
+                    ENDPOINT_SEND as u32,
+                )
             }
         }
     }
@@ -706,25 +874,7 @@ fn send(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
 /// in the nucleus in between — the shape ADR-0058 refused. What a call waits
 /// for is the answer.
 fn call(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
-    let from = crate::process::arguments_region();
-    if from == 0 {
-        return Answer::status(E_BAD_ARGUMENT);
-    }
-    let mut granted = [(Object::None, 0u32, 0u64); ipc::MAX_TRANSFERRED as usize];
-    let count = frame.r10 as usize;
-    if count + 1 > granted.len() {
-        // One place is spoken for by the answer, so a call carries one fewer of
-        // its own than a send does. Malformed rather than limited, as in `send`.
-        return Answer::status(E_BAD_ARGUMENT);
-    }
-    match resolve_transfers(caller, from, &mut granted[..count]) {
-        Ok(()) => {}
-        Err(answer) => return answer,
-    }
-    // The right to answer this call, made now and belonging to nobody yet. It
-    // goes in the **last** slot, always, so that a receiver knows where to look
-    // without being told how many capabilities the caller chose to send.
-    granted[ipc::MAX_TRANSFERRED as usize - 1] = (
+    let reply = (
         Object::Reply {
             caller: caller as u32,
             generation: crate::process::next_reply_token(caller),
@@ -732,13 +882,14 @@ fn call(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
         tos_launch::RIGHT_REPLY,
         0,
     );
-    // As in `send`: the queue becomes a holder of everything the message
-    // carries — the reply capability among them — before it is queued.
-    if capability::retain_in_transit(&granted).is_err() {
-        return Answer::status(E_LIMIT);
-    }
-    // SAFETY: `from` is this process's own argument region.
-    match unsafe { ipc::send(endpoint, from, frame.rsi, &granted) } {
+    match send_transaction(
+        caller,
+        endpoint,
+        frame.rsi,
+        frame.r10,
+        frame.r8,
+        Some(reply),
+    ) {
         Ok(()) => {
             deliver_to_waiter(endpoint);
             // SAFETY: this is the running context's own frame, and the handle
@@ -747,13 +898,8 @@ fn call(caller: usize, endpoint: u32, frame: &mut TrapFrame) -> Answer {
                 crate::process::block(frame, crate::process::Waiting::Reply, ENDPOINT_CALL as u32)
             }
         }
-        Err(refused) => {
-            capability::release_from_transit(&granted);
-            match refused {
-                ipc::Refused::BadArgument => Answer::status(E_BAD_ARGUMENT),
-                _ => Answer::status(E_LIMIT),
-            }
-        }
+        Err(SendRefused::QueueFull) => Answer::status(E_LIMIT),
+        Err(SendRefused::Refused(answer)) => answer,
     }
 }
 
@@ -1009,35 +1155,58 @@ fn release_capability(caller: usize, handle: u64) -> Answer {
         Ok(object) => object,
         Err(refused) => return refused.into(),
     };
-    if let Object::Region { index, generation } = object {
-        let region = crate::region::RegionId { index, generation };
+    if let Some(region) = object.region() {
         // SAFETY: single-context nucleus; nothing else holds the tree.
         let tree = unsafe { crate::memory::authority() };
         let Ok(length) = tree.length(region) else {
             crate::memory::note_divergence(b"region-release-length");
             return Answer::status(E_LIMIT);
         };
+        // **What mode the window is in is the region's answer, not this
+        // operation's.** A mutable region is mapped writable, an immutable or
+        // shared one read-only, and an operation that assumed either would be
+        // right until the first freeze and wrong afterwards. So the expected
+        // mode is read out of the per-process mapping record and the lane is
+        // checked against *that*.
+        let Ok(mapped) = tree.mapped_by(region, caller as u32) else {
+            crate::memory::note_divergence(b"region-release-mapping");
+            return Answer::status(E_LIMIT);
+        };
+        let Some(writable) = mapped else {
+            // A handle to a region this process does not map. Every path that
+            // grants one builds the window first, so this is the table and the
+            // region disagreeing rather than anything the caller did.
+            crate::memory::note_divergence(b"region-release-unmapped");
+            return Answer::status(E_LIMIT);
+        };
+        // **Whether the window goes with the handle depends on how many
+        // handles there are.** One process may hold several shared capabilities
+        // for one region and still have exactly one mapping of it; the mapping
+        // belongs to the process, not to any one of its names for the region,
+        // so it goes when the last of them does and not before. An affine
+        // region has exactly one by construction, so this is always its last.
+        let last = capability::names_held(caller, object) <= 1;
+        let pages = length as u64 / FRAME_SIZE;
         // Everything that could refuse is asked here, while the window, the
         // handle and the region's own counts are all still intact. Below this
         // line nothing can refuse, so there is nothing to roll back — which
         // matters because rebuilding a released lane could itself need reserve
         // frames and fail.
-        let pages = length as u64 / FRAME_SIZE;
-        if !crate::process::lane_matches(caller, index, pages, true)
-            || tree.mappings(region) != Ok((1, 0))
-        {
+        if last && !crate::process::lane_matches(caller, region.index, pages, writable) {
             crate::memory::note_divergence(b"region-release-lane");
             return Answer::status(E_LIMIT);
         }
 
         // --- committed from here ---
-        // SAFETY: the caller's space is the live one, and the flush follows
-        // before this returns to ring 3.
-        unsafe { crate::process::unmap_region(caller, index) };
-        // SAFETY: the tree is complete and maps this nucleus.
-        unsafe { crate::paging::AddressSpace::flush() };
-        if tree.unmap(region, true).is_err() {
-            crate::memory::note_divergence(b"region-mapping-count");
+        if last {
+            // SAFETY: the caller's space is the live one, and the flush follows
+            // before this returns to ring 3.
+            unsafe { crate::process::unmap_region(caller, region.index) };
+            // SAFETY: the tree is complete and maps this nucleus.
+            unsafe { crate::paging::AddressSpace::flush() };
+            if tree.unmap(region, caller as u32, writable).is_err() {
+                crate::memory::note_divergence(b"region-mapping-count");
+            }
         }
     }
     match capability::release(caller, handle) {
@@ -1046,6 +1215,145 @@ fn release_capability(caller: usize, handle: u64) -> Answer {
             Answer::status(OK)
         }
         Err(refused) => refused.into(),
+    }
+}
+
+/// The consuming mutable-to-immutable transition (operation 18, ADR-0075 §3).
+///
+/// **One capability slot, one new generation, and no second name in between.**
+/// The caller's handle stops resolving and a new one naming the same region
+/// takes its place, carrying `read | share` where it carried `read | write`.
+/// Granting a fresh capability and releasing the old one would take a second
+/// reference the affine region refuses and a second table slot a full table may
+/// not have; rewriting the entry where it stands takes neither.
+///
+/// **The whole lane is judged before the first bit of it moves.** ADR-0075 §3
+/// forbids a half-frozen region, so everything that could be wrong — the branch,
+/// the page count, every leaf against the backing index, present, user,
+/// no-execute, currently writable, nothing mapped past the length — is asked
+/// while the region is still completely mutable. Below the line the window is
+/// demoted in place at the same addresses over the same frames, the region's
+/// state moves, and the handle is rewritten; none of those can refuse.
+///
+/// Nothing physical moves: no frame, no page table, no charge. A frozen region
+/// is the same memory under a different rule.
+fn region_freeze(caller: usize, handle: u64) -> Answer {
+    let object = match capability::resolve(caller, handle, tos_launch::RIGHT_WRITE) {
+        Ok(object) => object,
+        Err(refused) => return refused.into(),
+    };
+    // The write right over something that is not an affine region is a right
+    // nobody granted over an object this cannot freeze. A shared region reaches
+    // here only if it somehow carried `write`, which is exactly the state this
+    // refusal exists to keep unreachable.
+    let Object::Region { index, generation } = object else {
+        return Answer::status(E_NO_CAPABILITY);
+    };
+    let region = crate::region::RegionId { index, generation };
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    let tree = unsafe { crate::memory::authority() };
+    if tree.mode(region) != Ok(crate::region::Mode::Mutable) {
+        return Answer::status(E_NO_CAPABILITY);
+    }
+    if tree.holder(region) != Ok(Some(caller as u32)) || tree.capabilities(region) != Ok(1) {
+        crate::memory::note_divergence(b"region-freeze-holder");
+        return Answer::status(E_LIMIT);
+    }
+    let Ok(length) = tree.length(region) else {
+        crate::memory::note_divergence(b"region-freeze-length");
+        return Answer::status(E_LIMIT);
+    };
+    let pages = length as u64 / FRAME_SIZE;
+    if tree.mapped_by(region, caller as u32) != Ok(Some(true))
+        || !crate::process::lane_demotable(caller, index, pages)
+    {
+        crate::memory::note_divergence(b"region-freeze-lane");
+        return Answer::status(E_LIMIT);
+    }
+
+    // --- committed from here ---
+    // SAFETY: the lane preflighted a moment ago and nothing has run since;
+    // `demote_lane` reloads `CR3` itself, so no writable translation survives.
+    if !unsafe { crate::process::demote_lane(caller, index, pages) } {
+        crate::memory::note_divergence(b"region-freeze-demote");
+    }
+    if tree.freeze(region, caller as u32).is_err() {
+        crate::memory::note_divergence(b"region-freeze-state");
+    }
+    match capability::replace_in_place(
+        caller,
+        handle,
+        Object::Region { index, generation },
+        tos_launch::RIGHT_READ | tos_launch::RIGHT_SHARE,
+        0,
+    ) {
+        Ok(named) => Answer::value(named),
+        Err(_) => {
+            // The handle resolved two statements ago in a nucleus nothing else
+            // runs in. Reaching here is the table contradicting itself, and the
+            // region is already immutable — so it is reported rather than
+            // undone, and the caller is refused fail-closed.
+            crate::memory::note_divergence(b"region-freeze-handle");
+            Answer::status(E_LIMIT)
+        }
+    }
+}
+
+/// The consuming immutable-to-shared transition (operation 7, `IPC_V1` §5).
+///
+/// `share` consumes its argument, so this is the same in-place replacement the
+/// freeze performs and for the same reasons: one slot, one new generation, one
+/// capability reference throughout. What changes is the region's state — it
+/// stops having an exclusive holder — and the rights, which become `read` and
+/// nothing else.
+///
+/// **`RIGHT_SHARE` is what the caller presents and never what it receives.**
+/// The share right is the authority to perform this transition once; carrying
+/// it onto the result would make a shared region shareable again, which is a
+/// transition with nothing left to consume.
+///
+/// The caller's mapping does not move. Same frames, same address, same
+/// read-only window; what has changed is that another process may now be given
+/// one of its own.
+fn region_share(caller: usize, handle: u64) -> Answer {
+    let object = match capability::resolve(caller, handle, tos_launch::RIGHT_SHARE) {
+        Ok(object) => object,
+        Err(refused) => return refused.into(),
+    };
+    let Object::Region { index, generation } = object else {
+        return Answer::status(E_NO_CAPABILITY);
+    };
+    let region = crate::region::RegionId { index, generation };
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    let tree = unsafe { crate::memory::authority() };
+    if tree.mode(region) != Ok(crate::region::Mode::Immutable) {
+        return Answer::status(E_NO_CAPABILITY);
+    }
+    if tree.holder(region) != Ok(Some(caller as u32))
+        || tree.capabilities(region) != Ok(1)
+        || tree.mapped_by(region, caller as u32) != Ok(Some(false))
+    {
+        crate::memory::note_divergence(b"region-share-holder");
+        return Answer::status(E_LIMIT);
+    }
+
+    // --- committed from here ---
+    if tree.share(region, caller as u32).is_err() {
+        crate::memory::note_divergence(b"region-share-state");
+        return Answer::status(E_LIMIT);
+    }
+    match capability::replace_in_place(
+        caller,
+        handle,
+        Object::SharedRegion { index, generation },
+        tos_launch::RIGHT_READ,
+        0,
+    ) {
+        Ok(named) => Answer::value(named),
+        Err(_) => {
+            crate::memory::note_divergence(b"region-share-handle");
+            Answer::status(E_LIMIT)
+        }
     }
 }
 
@@ -1201,7 +1509,7 @@ fn region_allocate_inner(caller: usize, handle: u64, bytes: u64) -> Answer {
     }
     // SAFETY: single-context nucleus; nothing else holds the tree.
     let tree = unsafe { crate::memory::authority() };
-    if tree.map(region, true).is_err() {
+    if tree.map(region, caller as u32, true).is_err() {
         return unbuild(caller, region, built, true, E_LIMIT);
     }
     // A reused lane must not answer with what the last one held.
@@ -1231,7 +1539,7 @@ fn region_allocate_inner(caller: usize, handle: u64, bytes: u64) -> Answer {
         // disagreeing rather than a caller asking for too much. Undone whole,
         // and said so.
         crate::memory::note_divergence(b"region-handoff");
-        let _ = tree.unmap(region, true);
+        let _ = tree.unmap(region, caller as u32, true);
         return unbuild(caller, region, built, true, E_LIMIT);
     };
     // Now the caller can name it, the nucleus need not.
@@ -1347,7 +1655,7 @@ pub fn drain_reclaims() {
     }
 }
 
-/// Resolves the handles a message carries, in the caller's table.
+/// Resolves the generic handles a message carries, in the caller's table.
 fn resolve_transfers(
     caller: usize,
     region: u64,
@@ -1368,17 +1676,96 @@ fn resolve_transfers(
         // it is the only right this needs: sending a capability is not an
         // operation *on* the object it names.
         let object = capability::resolve(caller, handle, 0).map_err(Answer::from)?;
-        // **Delegation copies, and an affine object cannot be copied.** The
-        // sender keeps its handle while the receiver is given one, which for a
-        // region is two holders where the type model allows one — and for a
-        // mutable region it is the writable alias the freeze exists to
-        // eliminate. An immutable region *is* transferable, but only linearly,
-        // and this path has no way to consume the sender's handle atomically
-        // with the receiver's acquisition. Refused until it has.
-        if object.is_affine() {
+        // **A region does not travel here, in either of its forms.**
+        // `IPC_V1` §3 gives regions a bound of their own and §5 gives them
+        // rules of their own — a linear transfer for the affine forms, a
+        // mapping in the receiver for both — and neither is expressible as a
+        // delegated capability. Refused rather than quietly accepted into the
+        // generic bound, which would let one message spend the other's.
+        if object.is_region() {
             return Err(Answer::status(E_NO_CAPABILITY));
         }
         *entry = (object, capability::rights_of(caller, handle), 0);
+    }
+    Ok(())
+}
+
+/// Resolves the regions a message carries, and decides which of them the send
+/// will consume.
+///
+/// **Every region is validated before any of them is taken.** One message may
+/// carry two, and a transfer that consumed the first and then discovered the
+/// second was unsendable would be exactly the partial send `IPC_V1` §9.3
+/// forbids.
+///
+/// What each record must be:
+///
+/// - a handle this process holds, naming a region;
+/// - **not** a mutable one. `Region<mut T>` is neither shareable nor
+///   transferable (ADR-0037), so a message naming one is refused whole rather
+///   than having that record dropped;
+/// - if affine: held by this sender, mapped read-only in it, and its lane
+///   exactly what the backing index says — because the commit is going to take
+///   that lane apart and may not discover anything while doing it;
+/// - and named **once**. A linear object cannot be consumed twice, and a
+///   message naming one affine region in both records is asking for exactly
+///   that. Two records naming one *shared* region are two names for something
+///   that has no owner to duplicate, and are admissible.
+fn resolve_regions(caller: usize, area: u64, into: &mut [Outbound]) -> Result<(), Answer> {
+    for index in 0..into.len() {
+        // SAFETY: the region area is at a fixed offset in this process's own
+        // argument region, whose address the nucleus chose, and `index` is
+        // inside the count the caller checked against the contract's maximum.
+        let record = unsafe {
+            core::ptr::with_exposed_provenance::<tos_launch::MessageRegion>(
+                (area + tos_launch::MESSAGE_REGIONS) as usize,
+            )
+            .add(index)
+            .read()
+        };
+        // The base and the length the sender may have written are its own
+        // address and are meaningless anywhere else. Read the handle, ignore
+        // the rest: a nucleus that validated them would be validating a number
+        // it is about to overwrite.
+        let object = capability::resolve(caller, record.handle, 0).map_err(Answer::from)?;
+        let Some(region) = object.region() else {
+            return Err(Answer::status(E_NO_CAPABILITY));
+        };
+        // SAFETY: single-context nucleus; nothing else holds the tree.
+        let tree = unsafe { crate::memory::authority() };
+        let Ok(mode) = tree.mode(region) else {
+            return Err(Answer::status(E_NO_CAPABILITY));
+        };
+        let linear = match mode {
+            crate::region::Mode::Mutable => return Err(Answer::status(E_NO_CAPABILITY)),
+            crate::region::Mode::Immutable => true,
+            crate::region::Mode::Shared => false,
+        };
+        if into[..index]
+            .iter()
+            .any(|earlier| earlier.linear && earlier.object == object)
+        {
+            return Err(Answer::status(E_BAD_ARGUMENT));
+        }
+        let Ok(length) = tree.length(region) else {
+            return Err(Answer::status(E_NO_CAPABILITY));
+        };
+        let pages = length as u64 / FRAME_SIZE;
+        if linear
+            && (tree.holder(region) != Ok(Some(caller as u32))
+                || tree.mapped_by(region, caller as u32) != Ok(Some(false))
+                || !crate::process::lane_matches(caller, region.index, pages, false))
+        {
+            // The sender does not hold what a linear transfer would move, or
+            // its window is not what the region says it is. Refused before
+            // anything is taken apart.
+            return Err(Answer::status(E_NO_CAPABILITY));
+        }
+        into[index] = Outbound {
+            object,
+            handle: record.handle,
+            linear,
+        };
     }
     Ok(())
 }
@@ -1406,14 +1793,20 @@ fn receive(
     if into == 0 {
         return Answer::status(E_BAD_ARGUMENT);
     }
-    let mut granted = [(Object::None, 0u32, 0u64); ipc::MAX_TRANSFERRED as usize];
-    // SAFETY: `into` is this process's own argument region, as above.
-    match unsafe { ipc::receive(endpoint, into, &mut granted) } {
-        Ok(length) => {
-            hand_over(caller, into, &granted);
-            accept_from_waiter(endpoint);
-            Answer::value(length)
-        }
+    match ipc::peek(endpoint) {
+        Ok(pending) => match accept(caller, endpoint, into, &pending) {
+            Some(length) => {
+                accept_from_waiter(endpoint);
+                Answer::value(length)
+            }
+            // **The message is still queued.** The receiver could not be given
+            // everything it carries — a table with no room, a lane already
+            // occupied, a reserve that could not build the window — so nothing
+            // was delivered and nothing was consumed. `E_LIMIT` says a declared
+            // bound would have been exceeded, and a later attempt, after the
+            // receiver has made room, gets the same message.
+            None => Answer::status(E_LIMIT),
+        },
         Err(ipc::Refused::WouldBlock) if flags & NON_BLOCKING != 0 => Answer::status(E_WOULD_BLOCK),
         Err(ipc::Refused::WouldBlock) => {
             // SAFETY: as in `send`.
@@ -1426,18 +1819,235 @@ fn receive(
     }
 }
 
-/// Writes the receiver's own handles for what a message carried.
+/// What one region of a message costs its receiver, once the receiver has been
+/// looked at.
+#[derive(Clone, Copy)]
+struct Inbound {
+    object: Object,
+    pages: u64,
+    length: u64,
+    /// Whether a window has to be built, or one the receiver already has is
+    /// reused. One process holding two shared handles to one region still has
+    /// one window.
+    map: bool,
+}
+
+impl Inbound {
+    const NONE: Inbound = Inbound {
+        object: Object::None,
+        pages: 0,
+        length: 0,
+        map: false,
+    };
+}
+
+/// Whether a receiver can be given everything a message carries, and what each
+/// region will cost it.
+///
+/// **The whole of the acceptance's fallibility, asked in one place.** Below
+/// this the commit writes table entries and page-table leaves and may not
+/// refuse, so everything that could is here: enough capability slots for the
+/// capabilities *and* the regions, the one-receiver rule, every authority's
+/// name count, an address space to map into, each region in the state its
+/// transfer requires, a free lane for each window that has to be built, and
+/// enough reserve to build them.
+fn acceptable(
+    receiver: usize,
+    pending: &ipc::Pending,
+    into: &mut [Inbound; ipc::MAX_TRANSFERRED_REGIONS as usize],
+) -> bool {
+    let granted = &pending.granted[..pending.granted_count];
+    let regions = &pending.regions[..pending.region_count];
+    // **What a message costs in table slots is one per object it carries, not
+    // one per position it occupies.** A call reserves the last capability slot
+    // for its answer whatever else it carries, so its transfer table has gaps;
+    // counting positions would demand four slots of a receiver that is being
+    // given one reply.
+    let named = granted
+        .iter()
+        .filter(|(object, _, _)| *object != Object::None)
+        .count();
+    if capability::room(receiver) < named + pending.region_count {
+        return false;
+    }
+    if !capability::can_grant_all(receiver, granted) {
+        return false;
+    }
+    if pending.region_count > 0 && !crate::process::owns_space(receiver) {
+        return false;
+    }
+    let mut tables_wanted = 0u64;
+    for (index, object) in regions.iter().enumerate() {
+        let Some(region) = object.region() else {
+            return false;
+        };
+        // SAFETY: single-context nucleus; nothing else holds the tree.
+        let tree = unsafe { crate::memory::authority() };
+        let (Ok(mode), Ok(length)) = (tree.mode(region), tree.length(region)) else {
+            return false;
+        };
+        // The queue holds the form the sender's region was in, and the region
+        // must still be in it. An affine one must have arrived by a linear
+        // transfer and be owned by nobody; a shared one must still be shared.
+        let expected_affine = matches!(*object, Object::Region { .. });
+        match mode {
+            crate::region::Mode::Immutable if expected_affine => {
+                if tree.holder(region) != Ok(None) || tree.capabilities(region) != Ok(0) {
+                    return false;
+                }
+            }
+            crate::region::Mode::Shared if !expected_affine => {}
+            _ => return false,
+        }
+        if !tree.can_name(region) {
+            return false;
+        }
+        let Ok(mapped) = tree.mapped_by(region, receiver as u32) else {
+            return false;
+        };
+        // A window this receiver already has, or one an earlier record of this
+        // same message is already going to build: either way it is built once.
+        let already = into[..index]
+            .iter()
+            .any(|earlier| earlier.object.region().map(|r| r.index) == Some(region.index));
+        let map = mapped.is_none() && !already;
+        if map {
+            if !crate::process::lane_free(receiver, region.index) {
+                return false;
+            }
+            tables_wanted += crate::process::lane_table_cost(region.index, length as u64);
+        } else if mapped == Some(true) {
+            // A writable window onto something no longer mutable. Nothing can
+            // produce that, and accepting into it would be accepting into a
+            // state nothing describes.
+            return false;
+        }
+        into[index] = Inbound {
+            object: *object,
+            pages: length as u64 / FRAME_SIZE,
+            length: length as u64,
+            map,
+        };
+    }
+    // SAFETY: single-context nucleus; nothing else holds the reserve.
+    if tables_wanted > unsafe { crate::memory::tables() }.remaining() {
+        return false;
+    }
+    true
+}
+
+/// Accepts the message [`ipc::peek`] found, or leaves it exactly where it is.
+///
+/// The order is the transaction: preflight, commit every grant and every
+/// mapping, copy the payload and pop, write the receiver's results, and only
+/// then let the message stop being a holder. Nothing between the preflight and
+/// the pop may refuse, and a preflight that says no returns before any of it.
+///
+/// Answers how many payload bytes were delivered, or nothing when the message
+/// could not be accepted and is still queued.
+fn accept(receiver: usize, endpoint: u32, into: u64, pending: &ipc::Pending) -> Option<u64> {
+    let mut inbound = [Inbound::NONE; ipc::MAX_TRANSFERRED_REGIONS as usize];
+    if !acceptable(receiver, pending, &mut inbound) {
+        return None;
+    }
+
+    // --- committed from here ---
+    let mut handles = [0u64; ipc::MAX_TRANSFERRED_REGIONS as usize];
+    let mut bases = [0u64; ipc::MAX_TRANSFERRED_REGIONS as usize];
+    let mut mapped_anything = false;
+    for (index, entry) in inbound[..pending.region_count].iter().enumerate() {
+        let Some(region) = entry.object.region() else {
+            continue;
+        };
+        // SAFETY: single-context nucleus; nothing else holds the tree.
+        let tree = unsafe { crate::memory::authority() };
+        // Ownership before the window and before the handle, because both ask
+        // the region who its holder is.
+        if matches!(entry.object, Object::Region { .. })
+            && tree.adopt(region, receiver as u32).is_err()
+        {
+            crate::memory::note_divergence(b"region-receive-adopt");
+        }
+        if entry.map {
+            if crate::process::map_region(receiver, region.index, entry.pages, false).is_err() {
+                crate::memory::note_divergence(b"region-receive-map");
+            }
+            if tree.map(region, receiver as u32, false).is_err() {
+                crate::memory::note_divergence(b"region-receive-mapping");
+            }
+            mapped_anything = true;
+        }
+        let rights = match entry.object {
+            // What comes out of a linear transfer is what went in: the
+            // immutable affine form, `read | share`. The receiver may freeze
+            // nothing — there is nothing left to freeze — and may share it,
+            // which is the transition the rights name.
+            Object::Region { .. } => tos_launch::RIGHT_READ | tos_launch::RIGHT_SHARE,
+            // And a shared region is `read` and nothing else. Not `share`: the
+            // transition that produced it consumed the only thing it could
+            // consume, and a right to repeat it would name no operation.
+            _ => tos_launch::RIGHT_READ,
+        };
+        handles[index] =
+            capability::grant(receiver, entry.object, rights, 0).unwrap_or_else(|_| {
+                crate::memory::note_divergence(b"region-receive-handle");
+                0
+            });
+        bases[index] = crate::process::region_lane(region.index);
+    }
+    if mapped_anything {
+        // SAFETY: the live tree is complete and maps this nucleus, and every
+        // lane edit above is finished.
+        unsafe { crate::paging::AddressSpace::flush() };
+    }
+
+    // The payload, and the message off the queue. Everything the receiver needs
+    // now exists in it.
+    // SAFETY: `into` is the receiving process's own argument region, mapped by
+    // the launcher and written here through the nucleus's own identity map.
+    let length = match unsafe { ipc::take(endpoint, into) } {
+        Ok(length) => length,
+        Err(_) => {
+            // The message was there one statement ago in a nucleus nothing else
+            // runs in.
+            crate::memory::note_divergence(b"receive-after-preflight");
+            0
+        }
+    };
+    hand_over(receiver, into, &pending.granted[..pending.granted_count]);
+    write_regions(into, &inbound[..pending.region_count], &handles, &bases);
+    // The message has stopped being a holder, and it stops **after** the
+    // receiver has become one: the order is what keeps a count from passing
+    // through zero between the two, which for an authority would mean returning
+    // a reservation to its parent and then delivering it, and for a region
+    // would mean reclaiming backing the receiver is already mapping.
+    capability::release_from_transit(&pending.granted[..pending.granted_count]);
+    for entry in inbound[..pending.region_count].iter() {
+        if let Some(region) = entry.object.region() {
+            capability::release_region_from_transit(region);
+        }
+    }
+    Some(length)
+}
+
+/// Writes the receiver's own handles for the capabilities a message carried.
 ///
 /// The receiver gets its own names, in its own table, with their own
 /// generations; nothing about the sender's indices is visible to it
 /// (`CAPABILITY_V1` §4). Slots the message did not fill are zeroed, and a handle
 /// of all zeros names nothing in any table — so a receiver reads the whole table
 /// and needs no count beside it.
+///
+/// Infallible by the time it runs: [`acceptable`] established that every one of
+/// these could be granted before anything was dequeued.
 fn hand_over(receiver: usize, region: u64, granted: &[(Object, u32, u64)]) {
     for index in 0..ipc::MAX_TRANSFERRED as usize {
         let handle = match granted.get(index) {
             Some((object, rights, scope)) if *object != Object::None => {
-                capability::grant(receiver, *object, *rights, *scope).unwrap_or(0)
+                capability::grant(receiver, *object, *rights, *scope).unwrap_or_else(|_| {
+                    crate::memory::note_divergence(b"message-grant-after-preflight");
+                    0
+                })
             }
             _ => 0,
         };
@@ -1452,14 +2062,43 @@ fn hand_over(receiver: usize, region: u64, granted: &[(Object, u32, u64)]) {
             .write(handle)
         };
     }
-    // The message has stopped being a holder, and it stops **after** the
-    // receiver has become one: the order is what keeps a count from passing
-    // through zero between the two, which for an authority would mean returning
-    // a reservation to its parent and then delivering it.
-    capability::release_from_transit(granted);
+}
+
+/// Writes the receiver's record of each region it was given: its own handle,
+/// the address **the nucleus** chose in its address space, and the charged and
+/// mapped length.
+///
+/// Records the message did not fill are zeroed whole, for the reason unfilled
+/// capability slots are: a handle of all zeros names nothing, so a receiver
+/// reads the whole area and needs no count beside it.
+fn write_regions(area: u64, inbound: &[Inbound], handles: &[u64], bases: &[u64]) {
+    for index in 0..ipc::MAX_TRANSFERRED_REGIONS as usize {
+        let record = match inbound.get(index) {
+            Some(entry) if entry.object != Object::None => tos_launch::MessageRegion {
+                handle: handles[index],
+                base: bases[index],
+                length: entry.length,
+            },
+            _ => tos_launch::MessageRegion::default(),
+        };
+        // SAFETY: the region area is at a fixed offset in the receiver's own
+        // argument region, whose address the nucleus chose, and `index` is
+        // inside the contract's maximum.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<tos_launch::MessageRegion>(
+                (area + tos_launch::MESSAGE_REGIONS) as usize,
+            )
+            .add(index)
+            .write(record)
+        };
+    }
 }
 
 /// Hands the message just queued to a context waiting for one, if there is one.
+///
+/// A waiter that cannot accept it stays blocked and the message stays queued:
+/// the wait is for a message it can take, and handing it half of one would be
+/// worse than making it wait.
 fn deliver_to_waiter(endpoint: u32) {
     let Some(waiter) = crate::process::blocked_on(crate::process::Waiting::Message(endpoint))
     else {
@@ -1469,54 +2108,42 @@ fn deliver_to_waiter(endpoint: u32) {
     if into == 0 {
         return;
     }
-    let mut granted = [(Object::None, 0u32, 0u64); ipc::MAX_TRANSFERRED as usize];
-    // SAFETY: `into` is the waiting context's own argument region, which its
-    // own call would have written; the nucleus reaches it through its identity
-    // map exactly as it would have then.
-    if let Ok(length) = unsafe { ipc::receive(endpoint, into, &mut granted) } {
-        hand_over(waiter, into, &granted);
+    let Ok(pending) = ipc::peek(endpoint) else {
+        return;
+    };
+    if let Some(length) = accept(waiter, endpoint, into, &pending) {
         // SAFETY: the context is blocked in the receive this answers.
         unsafe { crate::process::wake(waiter, Answer::value(length)) };
     }
 }
 
-/// Queues the message of a context that was waiting for room, if there is one.
+/// Runs again the whole send transaction of a context that was waiting for
+/// room, if there is one.
+///
+/// **The same transaction, not a thinner one.** A blocked sender gave up
+/// nothing when it blocked — its handles are its own, its regions are still
+/// mapped in it — so what runs here is `send_transaction` with the arguments
+/// the frame still holds. Re-resolving in the sender's table is not resolving
+/// it twice: the sender has not run since, so the table is the one the call was
+/// made against, and the frame *is* the record of what the call was.
 fn accept_from_waiter(endpoint: u32) {
     let Some(waiter) = crate::process::blocked_on(crate::process::Waiting::Room(endpoint)) else {
         return;
     };
-    let from = crate::process::arguments_of(waiter);
-    if from == 0 {
-        return;
-    }
-    let length = crate::process::suspended_argument(waiter);
-    // A blocked sender's message carries no capability: what it named was
-    // resolved when the call was made, and re-resolving it now would be
-    // resolving it in a table that may have changed since. Carrying resolved
-    // objects across a block belongs with the reply-capability work, and is
-    // named as not done rather than guessed at.
-    // SAFETY: as above, for the read side.
-    if unsafe { ipc::send(endpoint, from, length, &[]) }.is_ok() {
-        // SAFETY: the context is blocked in the send this answers.
-        unsafe { crate::process::wake(waiter, Answer::status(OK)) };
-        deliver_to_waiter(endpoint);
-    }
-}
-
-/// Every right of every object kind: what no capability this stage issues can
-/// satisfy, so that an operation whose object does not exist yet refuses
-/// through the ordinary check rather than beside it.
-const ALL_RIGHTS: u32 = u32::MAX;
-
-/// Resolves a handle for an operation this stage does not implement, so that
-/// the caller learns the true reason its call could not proceed.
-fn refuse(caller: usize, handle: u64, rights: u32) -> Answer {
-    match capability::resolve(caller, handle, rights) {
-        Err(refused) => refused.into(),
-        // Unreachable while no capability carries these rights, and correct
-        // rather than convenient if one ever does: an operation that resolved
-        // its capability and then did nothing would be a success that was not
-        // one.
-        Ok(_) => Answer::status(E_NOT_SUPPORTED),
+    let (length, capabilities, regions) = crate::process::suspended_transfer(waiter);
+    match send_transaction(waiter, endpoint, length, capabilities, regions, None) {
+        Ok(()) => {
+            // SAFETY: the context is blocked in the send this answers.
+            unsafe { crate::process::wake(waiter, Answer::status(OK)) };
+            deliver_to_waiter(endpoint);
+        }
+        // Still no room. It goes on waiting, having given up nothing.
+        Err(SendRefused::QueueFull) => {}
+        // Something else refuses it now. The sender is told rather than left
+        // blocked on a wait that has been satisfied and cannot be used.
+        Err(SendRefused::Refused(answer)) => {
+            // SAFETY: as above.
+            unsafe { crate::process::wake(waiter, answer) };
+        }
     }
 }

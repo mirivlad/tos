@@ -38,6 +38,17 @@ test-creation-rollback = []
 # capability request, and ADR-0055 gives a process what its launcher decided
 # rather than what a gate would find convenient.
 test-memory-authority = []
+# The Region transport round (`IPC_V1` §5, §6): a worker endowed a memory
+# authority and `send` on two endpoints — one the peer drains and one nobody
+# receives on at all — and a peer endowed `receive` and nothing else. Two
+# processes, three capabilities, and every region the peer comes to hold
+# arrived in a message because it has no way to make one.
+test-region-transport = []
+# Two processes, each of which ends by touching memory a region no longer
+# authorises: one executes what it wrote into a region, the other reads one
+# after releasing the only handle to it. Dedicated processes, so that neither
+# fault can be mistaken for a defect in a test that was doing something else.
+test-region-faults = []
 # Gives one process the right to receive on an endpoint nobody can send to, so
 # that the state ADR-0059's liveness rule is about is a real state of a real
 # system rather than a description of one.

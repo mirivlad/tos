@@ -71,6 +71,20 @@ test-reply-receive = []
 # delivered.
 test-reply-receive-refusals = []
 
+# The Region transport round (`IPC_V1` §5, §6): a worker that makes regions,
+# freezes them, shares one and hands another over linearly, and a peer that is
+# deliberately unable to accept the first message it is offered. Requires the
+# nucleus built with `test-region-transport`, which is what decides the two
+# endowments the halves are told apart by.
+test-region-transport = []
+
+# The two ways a region stops authorising an access, each in a process of its
+# own: one writes an instruction into a region and jumps to it, the other reads
+# a region after releasing the only handle to it. Both end in a fault, which is
+# why neither shares a process with anything else. Requires the nucleus built
+# with `test-region-faults`.
+test-region-faults = []
+
 [dependencies]
 tos-launch = { path = "../crates/tos-launch" }
 tos-pipeline = { path = "../crates/tos-pipeline" }

@@ -120,13 +120,13 @@ are marked and are exactly those a process can only apply to itself.
 
 | Number | Operation | Requires | Effect |
 |---|---|---|---|
-| 1 | `endpoint_send` | endpoint handle with `send` | `IPC_V1` §3; `rsi` = payload length, `rdx` = flags |
-| 2 | `endpoint_receive` | endpoint handle with `receive` | `IPC_V1` §3; `rsi` = flags, and the length taken is returned in `rdx` |
-| 3 | `endpoint_call` | endpoint handle with `call` | request/reply, `IPC_V1` §4 |
+| 1 | `endpoint_send` | endpoint handle with `send` | `IPC_V1` §3; `rsi` = payload length, `rdx` = flags, `r10` = how many transferred **capabilities**, `r8` = how many transferred **regions**. The handles of both are in the argument region at `MESSAGE_CAPABILITIES` and `MESSAGE_REGIONS` (ADR-0058) |
+| 2 | `endpoint_receive` | endpoint handle with `receive` | `IPC_V1` §3; `rsi` = flags, and the length taken is returned in `rdx`. The receiver's own handles are written to the same two areas of its own argument region, with unfilled entries zeroed |
+| 3 | `endpoint_call` | endpoint handle with `call` | request/reply, `IPC_V1` §4. `rsi` = payload length, `r10` and `r8` as for `endpoint_send`; one capability place is spoken for by the answer, so a call carries at most three of its own |
 | 4 | `endpoint_reply` | reply handle (single use) | `IPC_V1` §4 |
 | 5 | `capability_attenuate` | the capability being attenuated | `CAPABILITY_V1` §4 |
 | 6 | `capability_release` | the capability being released | consumes the handle |
-| 7 | `region_share` | region handle with `share` | `IPC_V1` §5 |
+| 7 | `region_share` | region handle with `share` | `IPC_V1` §5, ADR-0037 §4. **Consuming**: the immutable affine region it names becomes a shared one, the handle presented goes stale, and `rdx` returns a new handle to the same region carrying `read` alone. The caller's mapping does not move — same backing, same address, still read-only. No exclusive holder remains, so a further capability naming it may be made by operation 5 and another process may be given one |
 | 8 | `process_create` | process-authority capability | creates a process. `rsi` = the module name's length, `rdx` = how many capabilities the child is endowed with, `r10` = the rights the child holds over itself. The name and the endowment are in the argument region at `CREATE_MODULE` and `CREATE_ENDOWMENT` (ADR-0058) |
 | 9 | `process_terminate` | process-authority capability for that process | ends it |
 | 10 | `context_yield` | *(self only)* | gives up the rest of the quantum |
@@ -140,10 +140,44 @@ are marked and are exactly those a process can only apply to itself.
 
 | 17 | `region_allocate` | memory-authority capability with `spend` | allocates `rsi` bytes of region backing out of it, maps it into the caller writable and not executable, and returns an **affine** region capability in `rdx` with `read | write`. The region's base and its **charged and mapped** length — the request rounded up to whole frames — are written to the caller's argument region at `REGION_ALLOCATE_RECORD`. The nucleus chooses the address; a caller never supplies one. `E_BAD_ARGUMENT` for a size no budget could serve, `E_LIMIT` for one this budget cannot |
 
-**A region capability is affine.** Exactly one names a region, so operation 5
-refuses to refine one — refinement does not consume its input and could only
-add a second — and neither an endowment nor a delegation may carry one, because
-both copy. A linear transfer is a later operation and is not this one.
+| 18 | `region_freeze` | mutable region capability with `write` | the consuming mutable-to-immutable transition (ADR-0075 §3). The caller's writable window becomes read-only **in place** — same address, same backing, still not executable — the region becomes permanently immutable, the handle presented goes stale, and `rdx` returns a new handle to the same region carrying `read | share`. Base and length do not change and are not reported again. Nothing physical moves and nothing is charged. A failure before the transition leaves the region completely mutable; there is no half-frozen state |
+
+**A region capability is affine while the region is.** Exactly one names a
+mutable or immutable region, so operation 5 refuses to refine one — refinement
+does not consume its input and could only add a second — and neither an
+endowment nor a delegation carries one, because both copy. An immutable region
+travels by the **linear** transfer of `IPC_V1` §5, in a message's region area
+and never in its capability area.
+
+**A shared region is the one copyable form**, and operation 7 is the only way
+to reach it. After it, operation 5 may make a further name in the same process
+and a message may carry it to another without the sender losing anything. A
+process holding several such handles still has exactly one mapping of the
+region, at one address, and that mapping goes when the last of those handles
+does.
+
+**Both forms describe themselves as `OBJECT_REGION`.** The distinction is
+structural — whether a second holder may exist — and a process learns what it
+may do from the rights it was granted, which is where `CAPABILITY_V1` §3 puts
+that question. The public object-kind space is not widened by it.
+
+**Operations 18 and 7 are consuming, and neither reuses the handle it was
+given.** Changing an entry's rights under a numeric handle the caller already
+holds would leave a process unable to tell a frozen region from one it wrote a
+moment ago. So each keeps the capability's table slot and advances its
+generation: the presented handle is stale by exactly the rule that makes any
+released handle stale (`CAPABILITY_V1` §2), the returned one is the only live
+name, and the region's own reference count is one throughout — it never passes
+through zero, and no second table slot is required.
+
+**The two message bounds are separate and are refused separately.** A count in
+`r10` above four capabilities, or in `r8` above two regions, is
+`E_BAD_ARGUMENT` and the whole message is unchanged: the numbers are constants
+of `IPC_V1` §3 that the caller knew before it called, which is not the
+"retry later" that `E_LIMIT` means. A message naming a **mutable** region is
+refused whole for the same reason — `Region<mut T>` is neither shareable nor
+transferable — and so is one naming the same affine region twice, because a
+linear object cannot be consumed twice.
 
 **Operation 16 is not operation 5 with an amount.** Generic attenuation (5)
 refines rights and returns another *name* for the same authority, spending from
@@ -219,7 +253,30 @@ down.
 Operations 12 (`process_exit`, ADR-0054), 13 (`endpoint_reply_receive`,
 ADR-0063), 14 (`process_wait_child`) and 15 (`process_create_with_generation`,
 both ADR-0067) **are** additions, and each was decided by an ADR rather than
-here — this table carries those decisions rather than making them.
+here — this table carries those decisions rather than making them. So are 16
+and 17 (ADR-0076), and so is 18: ADR-0075 §3 decided the consuming
+mutable-to-immutable transition and deliberately left "the name, the operation
+number and the register shape" open, and this table is where a decision of that
+shape is carried. Operation 7 was assigned before any of them and is not an
+addition; what changed is that its row now states the semantics ADR-0037 §4 and
+`IPC_V1` §5 already fixed for it.
+
+**The capability and region counts in `r10` and `r8` are a minor version by the
+rule above, and are safe for exactly the reason `r8` was safe on operation 15.**
+A process built against the earlier set leaves both registers uninitialised, so
+neither may be read from a caller that did not write it. `r10` was already the
+capability count on both operations before this revision and is unchanged; `r8`
+is new on them and was previously unassigned, and a nucleus reading it from an
+older caller would be reading a register nobody wrote. Callers of this contract
+version write both, including zero. `r9` remains unused by every operation.
+
+Nothing is widened on `endpoint_reply` (4) or `endpoint_reply_receive` (13). No
+accepted document requires a reply to carry a capability or a region:
+`IPC_V1` §4 describes the answer to a call and states only that a reply
+capability is single-use, and §5's region transfer is stated over the message
+path. A reply that transferred authority would need its own preflight, its own
+bound and its own refusal semantics, and inventing them here would be this
+contract making a decision rather than carrying one.
 
 **Operation 8 is unchanged by the addition of 15**, and the reason is the rule
 in this section rather than caution: a process built against the earlier set

@@ -81,6 +81,12 @@ extern "C" {
 /// smallest bound that makes "two" an ordinary case rather than the maximum.
 pub const MAX_PROCESSES: usize = 4;
 
+/// The region table records **which** address spaces map each region, as a set
+/// of process slots, and restates this bound so that it can be compiled and
+/// exercised without a process table. The two are one number, and here is where
+/// that is checked rather than assumed.
+const _: () = assert!(MAX_PROCESSES == crate::region::MAX_MAPPING_SPACES);
+
 /// `RFLAGS` a process is entered with: reserved bit 1, and `IF`.
 ///
 /// A process runs interruptible, which is what makes it preemptible. Until the
@@ -952,19 +958,23 @@ pub fn next_reply_token(index: usize) -> u32 {
     table[index].reply_generation
 }
 
-/// The second argument of the call a context is suspended in.
+/// What a suspended `endpoint_send` was carrying: its payload length, its
+/// capability count and its region count.
 ///
-/// A blocked sender's payload length was an argument of its `endpoint_send`,
-/// and the frame it was suspended in is where that argument still is. Reading
-/// it back is not remembering something twice: the frame *is* the record of
-/// what the call was.
-pub fn suspended_argument(index: usize) -> u64 {
+/// **Read back rather than remembered.** They were arguments of the call, the
+/// frame the context was suspended in is where those arguments still are, and
+/// the frame *is* the record of what the call was. A second copy of them beside
+/// the slot would be a second thing to keep in step, and the one thing a
+/// resumed transaction must not do is carry a different message from the one
+/// its caller made.
+pub fn suspended_transfer(index: usize) -> (u64, u64, u64) {
     // SAFETY: single-context nucleus.
     let table = unsafe { table() };
     if index >= MAX_PROCESSES {
-        return 0;
+        return (0, 0, 0);
     }
-    table[index].frame.rsi
+    let frame = &table[index].frame;
+    (frame.rsi, frame.r10, frame.r8)
 }
 
 /// Answers a blocked context's call and makes it runnable again.
@@ -1245,12 +1255,16 @@ unsafe fn retire(index: usize) {
     slot.arguments_phys = 0;
     // Its authority ends with it, and the generations advance so that nothing
     // written down about the old occupant addresses the next one.
+    //
+    // **That call is also what tells every region it named.** `clear` walks the
+    // table entry by entry and drops one reference per entry actually
+    // destroyed, which is the only shape that works once a region can be
+    // shared: a sweep asking "which regions did this process hold?" cannot tell
+    // one alias from three, and cannot tell this process's share of a region
+    // from another process's. The region does not go yet — this process's
+    // window is still mapped, and it is destroyed with the address space, which
+    // is where the retirement happens.
     crate::capability::clear(index);
-    // Whatever the table held over a region stops naming one. The region does
-    // not go yet: this process's window is still mapped, and it is destroyed
-    // with the address space, which is where the retirement happens.
-    // SAFETY: single-context nucleus; nothing else holds the tree.
-    unsafe { crate::memory::authority() }.capabilities_destroyed(index as u32);
 
     match slot.ended {
         // What the nucleus asserts is that the process exited; the status is
@@ -2701,15 +2715,81 @@ pub fn lane_matches(process: usize, index: u32, pages: u64, writable: bool) -> b
     };
     for page in 0..pages {
         let at = lane + page * FRAME_SIZE;
-        let (Some(mapped), Some(backed)) = (space.translate(at), backing.frame_at(lane, page))
-        else {
+        let (Some(leaf), Some(backed)) = (space.leaf(at), backing.frame_at(lane, page)) else {
             return false;
         };
-        if mapped != backed || space.writable(at) != Some(writable) {
+        if !leaf_agrees(leaf, backed, writable) {
             return false;
         }
     }
     space.translate(lane + pages * FRAME_SIZE).is_none()
+}
+
+/// Every bit of one region leaf, judged against what the region says it should
+/// be.
+///
+/// **The mapping flags are a nucleus invariant, so they are asserted rather
+/// than assumed.** A region window is present, user-accessible and never
+/// executable, and its frame is the one the backing index names for that page;
+/// the write bit is the only thing that varies, and it varies with the region's
+/// state rather than with the operation. A leaf failing any of these is a lane
+/// that stopped describing its region, which is the one thing a transition must
+/// discover *before* it changes anything.
+fn leaf_agrees(leaf: u64, frame: u64, writable: bool) -> bool {
+    const ADDRESS: u64 = 0x000f_ffff_ffff_f000;
+    const PRESENT: u64 = 1;
+    const USER: u64 = 1 << 2;
+    leaf & ADDRESS == frame
+        && leaf & PRESENT != 0
+        && leaf & USER != 0
+        && leaf & NO_EXECUTE != 0
+        && (leaf & WRITABLE != 0) == writable
+}
+
+/// Whether a process's region lane is a whole, writable, well-formed window
+/// that the freeze may turn read-only in place.
+///
+/// **The entire lane, before the first entry moves.** ADR-0075 §3 forbids a
+/// half-frozen region, and the only way to promise that of a page-table edit is
+/// to have nothing left to discover once it starts: the branch is there, it has
+/// exactly the committed page count, every leaf names the frame the backing
+/// index names, every leaf is present, user and not executable, every leaf is
+/// currently writable, and nothing at all is mapped past the region's length.
+/// After this answers yes, [`demote_lane`] writes one bit per leaf and cannot
+/// refuse.
+pub fn lane_demotable(process: usize, index: u32, pages: u64) -> bool {
+    pages > 0 && lane_matches(process, index, pages, true)
+}
+
+/// Turns a whole region lane read-only, in place.
+///
+/// Same addresses, same frames, same no-execute bit; one bit cleared per leaf
+/// and one `CR3` reload at the end. No table is taken and none is given back,
+/// so nothing here can fail and nothing here touches an account.
+///
+/// # Safety
+///
+/// [`lane_demotable`] has answered yes for this process, index and page count,
+/// and the caller flushes before returning to ring 3 — which this does itself,
+/// because the whole point is that no window survives the call still writable.
+// SAFETY: the caller's promise that the lane preflighted is what makes every
+// leaf below one this may edit.
+pub unsafe fn demote_lane(process: usize, index: u32, pages: u64) -> bool {
+    let lane = region_lane(index);
+    // SAFETY: single-context nucleus; nothing else touches the table.
+    let table = unsafe { table() };
+    let Some(space) = table.get_mut(process).and_then(|slot| slot.space.as_mut()) else {
+        return false;
+    };
+    let mut demoted = true;
+    for page in 0..pages {
+        demoted &= space.demote_leaf(lane + page * FRAME_SIZE);
+    }
+    // SAFETY: the live tree is complete and maps this nucleus; the edits above
+    // are finished, and a window that is still writable in the processor's
+    // cached translations is the one thing this operation may not leave behind.
+    unsafe { AddressSpace::flush() };
+    demoted
 }
 
 /// Takes a region's window away from a process, and its lane's tables with it.
@@ -2734,6 +2814,34 @@ pub unsafe fn unmap_region(process: usize, index: u32) -> bool {
     };
     // SAFETY: per this function's contract.
     unsafe { space.release_branch(tables, lane) }
+}
+
+/// Whether a process's lane for a region slot is completely empty.
+///
+/// **Asked before a message is accepted, not while it is being built.** A lane
+/// with anything in it means either this process already maps that region — in
+/// which case the mapping is reused rather than made — or the lifecycle lost
+/// track of a window, and building over it would give one address two owners.
+/// Either way it is a question for the preflight, because the commit that
+/// follows may not discover anything.
+pub fn lane_free(process: usize, index: u32) -> bool {
+    let lane = region_lane(index);
+    // SAFETY: single-context nucleus; nothing else touches the table.
+    let table = unsafe { table() };
+    let Some(space) = table.get(process).and_then(|slot| slot.space.as_ref()) else {
+        return false;
+    };
+    space.leaf(lane).is_none() && space.translate(lane).is_none()
+}
+
+/// How many reserve frames mapping one region's lane can cost, at worst.
+///
+/// The same bound [`tables_over`] gives every other window, applied to the lane
+/// a region slot determines. A receiver's preflight asks it against what the
+/// reserve is actually holding, so that a commit which maps page by page cannot
+/// run out half way — the one refusal an acceptance transaction may not have.
+pub fn lane_table_cost(index: u32, length: u64) -> u64 {
+    tables_over(region_lane(index), length)
 }
 
 /// Whether a process has an address space of its own to map into.

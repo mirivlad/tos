@@ -79,6 +79,8 @@ const PROCESS_EXIT: u64 = 12;
 const ENDPOINT_REPLY_RECEIVE: u64 = 13;
 const CAPABILITY_ATTENUATE_SCOPED: u64 = 16;
 const REGION_ALLOCATE: u64 = 17;
+const REGION_SHARE: u64 = 7;
+const REGION_FREEZE: u64 = 18;
 
 /// Statuses, as `SYSTEM_ABI_V1` §4 assigns them. Named here because this image
 /// checks them: a refusal it could not name it could not report.
@@ -86,6 +88,8 @@ const OK: i64 = 0;
 const E_NO_CAPABILITY: i64 = -1;
 const E_BAD_ARGUMENT: i64 = -3;
 const E_CANCELLED: i64 = -5;
+#[cfg(feature = "test-region-transport")]
+const E_WOULD_BLOCK: i64 = -4;
 
 /// The one call flag this ABI version has: ask, do not wait (ADR-0059).
 const NON_BLOCKING: u64 = 1;
@@ -131,7 +135,7 @@ fn monotonic() -> Option<u64> {
 unsafe fn call(operation: u64, first: u64, second: u64) -> (i64, u64) {
     // SAFETY: per this function's contract; a call that transfers nothing says
     // so with a count of zero rather than leaving the register as it found it.
-    unsafe { call_transferring(operation, first, second, 0) }
+    unsafe { call_transferring(operation, first, second, 0, 0) }
 }
 
 /// Makes one system call with four arguments.
@@ -139,10 +143,42 @@ unsafe fn call(operation: u64, first: u64, second: u64) -> (i64, u64) {
 /// SAFETY: `operation` is assigned and every argument is legal for it.
 // SAFETY: the caller names an assigned operation.
 unsafe fn call4(operation: u64, first: u64, second: u64, third: u64, fourth: u64) -> (i64, u64) {
+    // SAFETY: per this function's contract; the fifth argument register is the
+    // region count of this ABI version, and a call that carries no region says
+    // so with a zero rather than leaving the register as it found it.
+    unsafe { call5(operation, first, second, third, fourth, 0) }
+}
+
+/// Makes one system call with all five assigned argument registers.
+///
+/// `rdi`, `rsi`, `rdx`, `r10`, `r8`, in the order `SYSTEM_ABI_V1` §3 fixes.
+/// `r9` is the sixth and no operation of this version uses it, so nothing here
+/// writes it.
+///
+/// **Every register an operation reads is written, including the zeros.** A
+/// caller that left one as it found it would be asking the nucleus to read a
+/// register nobody wrote, which is exactly what the contract's versioning rule
+/// exists to prevent — arriving from the caller's side rather than the
+/// nucleus's.
+///
+/// SAFETY: `operation` is an assigned operation number and every argument is
+/// legal for it.
+// SAFETY: the caller names an assigned operation; the instruction itself
+// touches no memory of this image.
+unsafe fn call5(
+    operation: u64,
+    first: u64,
+    second: u64,
+    third: u64,
+    fourth: u64,
+    fifth: u64,
+) -> (i64, u64) {
     let status: i64;
     let value: u64;
-    // SAFETY: the six argument registers are `rdi, rsi, rdx, r10, r8, r9`, and
-    // `rdx` is the third on the way in and the value's on the way out.
+    // SAFETY: `rdx` is the third argument on the way in and the value's
+    // register on the way out, which is why it is an `inlateout` and not two
+    // operands. `syscall` clobbers `rcx` and `r11`; both are declared, and
+    // every other register is preserved by the contract this is called against.
     unsafe {
         core::arch::asm!(
             "syscall",
@@ -151,6 +187,7 @@ unsafe fn call4(operation: u64, first: u64, second: u64, third: u64, fourth: u64
             in("rsi") second,
             inlateout("rdx") third => value,
             in("r10") fourth,
+            in("r8") fifth,
             out("rcx") _,
             out("r11") _,
             options(nostack),
@@ -159,14 +196,20 @@ unsafe fn call4(operation: u64, first: u64, second: u64, third: u64, fourth: u64
     (status, value)
 }
 
-/// Makes one system call that carries `transferred` capabilities.
+/// Makes one system call that carries `transferred` capabilities and `regions`
+/// regions.
 ///
-/// The handles themselves are in the argument region, at the offset `IPC_V1`
-/// fixes; the register says how many of them to read (ADR-0058). A count is a
-/// value, so it travels in a register; the handles are a list, so they do not.
+/// The handles themselves are in the argument region, at the two offsets
+/// `IPC_V1` fixes; the registers say how many of each to read (ADR-0058). A
+/// count is a value, so it travels in a register; the handles are lists, so
+/// they do not.
+///
+/// The flag register is written as zero, which is what makes these the blocking
+/// forms `SYSTEM_ABI_V1` §3 makes the default.
 ///
 /// SAFETY: `operation` is an assigned operation number, and the argument region
-/// holds `transferred` handles the caller means to send.
+/// holds `transferred` handles and `regions` region records the caller means to
+/// send.
 // SAFETY: the caller names an assigned operation and has written the handles it
 // is counting.
 unsafe fn call_transferring(
@@ -174,31 +217,10 @@ unsafe fn call_transferring(
     first: u64,
     second: u64,
     transferred: u64,
+    regions: u64,
 ) -> (i64, u64) {
-    let status: i64;
-    let value: u64;
-    // The six argument registers are `rdi, rsi, rdx, r10, r8, r9` in that order
-    // (§3), so the second argument is `rsi`. `rdx` is the third argument's
-    // register on the way in and the *value*'s on the way out, which is why it
-    // is an output here and not where `second` goes — a mistake this image made
-    // once, and the nucleus read whatever `rsi` happened to hold as a length.
-    // SAFETY: `syscall` clobbers `rcx` and `r11` and returns a status in `rax`
-    // and a value in `rdx`; all four are declared, and every other register is
-    // preserved by the contract this call is made against.
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            inlateout("rax") operation => status,
-            in("rdi") first,
-            in("rsi") second,
-            in("r10") transferred,
-            out("rdx") value,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        )
-    };
-    (status, value)
+    // SAFETY: per this function's contract.
+    unsafe { call5(operation, first, second, 0, transferred, regions) }
 }
 
 /// Writes a handle into the argument region's transfer table.
@@ -924,7 +946,7 @@ fn memory_authority(launch: &Launch, report: &mut Report, first: &LaunchCapabili
 
     // And what a child held comes back when its last name goes.
     // SAFETY: as above.
-    let (released, _) = unsafe { call(CAPABILITY_RELEASE, grandchild, 0) };
+    let (grandchild_released, _) = unsafe { call(CAPABILITY_RELEASE, grandchild, 0) };
     // SAFETY: as above.
     let (reclaimed, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, child, MIB / 2) };
 
@@ -990,10 +1012,754 @@ zeroed={zeroed} wrote={wrote} released={released} again={again} same_lane={same_
 stale={stale} freed={freed}"
     ));
 
+    region_states(launch, report, parent);
+    region_table_full(report, parent);
+
     report.line(&alloc::format!(
-        "TOS.RUN.AUTHORITY child={child_status} distinct={distinct} grandchild={grandchild_status} over={over} zero={zero} bad_handle={bad_handle} alias={alias_status} through_alias={through_alias} after_alias={after_alias} released={released} reclaimed={reclaimed}"
+        "TOS.RUN.AUTHORITY child={child_status} distinct={distinct} grandchild={grandchild_status} over={over} zero={zero} bad_handle={bad_handle} alias={alias_status} through_alias={through_alias} after_alias={after_alias} released={grandchild_released} reclaimed={reclaimed}"
     ));
     let _ = spent;
+}
+
+/// Reads one 64-bit word out of a region this process has mapped.
+///
+/// One function rather than a `read_volatile` at each site, because each of
+/// those sites is a *claim* — the bytes are still there, the window is still
+/// there, the mode did not change — and the claim is about the mapping rather
+/// than about the read. Stating it once is stating it where it is true.
+///
+/// # Safety
+///
+/// `at` is inside a region the nucleus mapped into this address space and
+/// reported the base and length of, and that mapping is still there.
+// SAFETY: the caller's promise that the window is the nucleus's own and still
+// stands is what makes this a read of mapped memory.
+unsafe fn word_at(at: usize) -> u64 {
+    // SAFETY: per this function's contract.
+    unsafe { core::ptr::with_exposed_provenance::<u64>(at).read_volatile() }
+}
+
+/// The two consuming transitions, asked from CPL 3 (operations 18 and 7).
+///
+/// The claims, in the order they are made:
+///
+/// - a **mutable** region cannot be shared: `share` presupposes immutability
+///   rather than producing it, and the write and share rights never coexist;
+/// - the freeze returns a **different** handle. An operation that changed the
+///   rights under the number the caller already held would leave a process
+///   unable to tell a frozen region from one it wrote a moment ago;
+/// - the presented handle is then stale, refused by generation;
+/// - the transition has no inverse and cannot be repeated: the new handle
+///   carries no write right, so 18 refuses it;
+/// - the **bytes are still there, at the same address**. Nothing moved: same
+///   backing, same base, one bit of each page-table leaf cleared;
+/// - `share` then consumes the immutable form the same way, and what it returns
+///   carries `read` and not `share` — there is nothing left for a second share
+///   to consume;
+/// - several names for one shared region in one process are still **one
+///   window**: releasing one of them leaves the memory readable, and only the
+///   last one takes the mapping with it.
+fn region_states(launch: &Launch, report: &mut Report, parent: u64) {
+    const PATTERN: u64 = 0x4652_4f5a_454e_5f31;
+    // SAFETY: every call below names a capability this process holds, and each
+    // does nothing when it refuses.
+    let (allocated, mutable) = unsafe { call(REGION_ALLOCATE, parent, 2 * 4096) };
+    let record = region_record(launch);
+    if allocated != OK || record.length == 0 {
+        report.line("TOS.RUN.REGION.STATE unstartable=1");
+        return;
+    }
+    let at = record.base as usize;
+    // SAFETY: the nucleus mapped this range writable and not executable in this
+    // address space, and reported its base and length here.
+    unsafe { core::ptr::with_exposed_provenance_mut::<u64>(at).write_volatile(PATTERN) };
+
+    // SAFETY: as above; a region that is still mutable holds no share right.
+    let (share_mutable, _) = unsafe { call(REGION_SHARE, mutable, 0) };
+    // SAFETY: as above.
+    let (freeze_status, frozen) = unsafe { call(REGION_FREEZE, mutable, 0) };
+    let rehandled = u64::from(frozen != mutable && freeze_status == OK);
+    // SAFETY: as above; the presented handle named a generation that has moved.
+    let (stale_mutable, _) = unsafe { call(CAPABILITY_RELEASE, mutable, 0) };
+    // SAFETY: as above; the frozen form carries no write right.
+    let (refreeze, _) = unsafe { call(REGION_FREEZE, frozen, 0) };
+    // SAFETY: read-only now, at the address it was always at.
+    let kept = u64::from(unsafe { word_at(at) } == PATTERN);
+
+    // SAFETY: as above.
+    let (share_status, shared) = unsafe { call(REGION_SHARE, frozen, 0) };
+    let reshaped = u64::from(shared != frozen && share_status == OK);
+    // SAFETY: as above; `share` consumed the affine form.
+    let (stale_frozen, _) = unsafe { call(CAPABILITY_RELEASE, frozen, 0) };
+    // SAFETY: as above; a shared region carries `read` and nothing else.
+    let (reshare, _) = unsafe { call(REGION_SHARE, shared, 0) };
+    // SAFETY: as above.
+    let (freeze_shared, _) = unsafe { call(REGION_FREEZE, shared, 0) };
+    // SAFETY: the window did not move: `share` changes who may name the region
+    // and not where it is.
+    let after_share = u64::from(unsafe { word_at(at) } == PATTERN);
+
+    // A second name in the same process, made by ordinary attenuation — which
+    // an affine region refuses and a shared one does not.
+    // SAFETY: as above.
+    let (alias_status, alias) =
+        unsafe { call(CAPABILITY_ATTENUATE, shared, tos_launch::RIGHT_READ as u64) };
+    // SAFETY: as above.
+    let (dropped_alias, _) = unsafe { call(CAPABILITY_RELEASE, alias, 0) };
+    // Two names, one window: dropping one of them leaves the memory readable.
+    // SAFETY: the other name still holds the mapping open.
+    let survived = u64::from(unsafe { word_at(at) } == PATTERN);
+    // SAFETY: as above; the last name takes the window with it, so nothing
+    // reads this address afterwards.
+    let (last_name, _) = unsafe { call(CAPABILITY_RELEASE, shared, 0) };
+
+    report.line(&alloc::format!(
+        "TOS.RUN.REGION.STATE share_mutable={share_mutable} freeze={freeze_status} \
+rehandled={rehandled} stale_mutable={stale_mutable} refreeze={refreeze} kept={kept} \
+share={share_status} reshaped={reshaped} stale_frozen={stale_frozen} reshare={reshare} \
+freeze_shared={freeze_shared} after_share={after_share} alias={alias_status} \
+dropped_alias={dropped_alias} survived={survived} last_name={last_name}"
+    ));
+}
+
+/// A full capability table refuses operation 17 before anything moves.
+///
+/// **A region with no handle naming it is a region nobody can use or return**,
+/// so the slot is found before the authority is charged and the backing laid
+/// down. The way to ask whether that is true is to fill the table — with
+/// ordinary aliases of an authority this process already holds — and then ask
+/// for a region.
+///
+/// What proves nothing moved is not this line alone: the boot's own account
+/// closes at the end, the pool returns to the root's frame count and the
+/// reserve to its baseline. A charge taken here and not given back, or a lane
+/// built and left, would show up there.
+fn region_table_full(report: &mut Report, parent: u64) {
+    let mut aliases = [0u64; 32];
+    let mut held = 0;
+    while held < aliases.len() {
+        // SAFETY: `capability_attenuate` names a capability this process holds
+        // and does nothing when it refuses.
+        let (status, alias) =
+            unsafe { call(CAPABILITY_ATTENUATE, parent, tos_launch::RIGHT_SPEND as u64) };
+        if status != OK {
+            break;
+        }
+        aliases[held] = alias;
+        held += 1;
+    }
+    // SAFETY: as above; the table is full, so there is no slot for the handle a
+    // region would have to be named by.
+    let (full, _) = unsafe { call(REGION_ALLOCATE, parent, 4096) };
+    // One slot back, and the same request succeeds — which is what says the
+    // refusal was about the table and not about the authority.
+    let mut freed = E_NO_CAPABILITY;
+    if held > 0 {
+        held -= 1;
+        // SAFETY: as above.
+        freed = unsafe { call(CAPABILITY_RELEASE, aliases[held], 0) }.0;
+    }
+    // SAFETY: as above.
+    let (after, region) = unsafe { call(REGION_ALLOCATE, parent, 4096) };
+    if after == OK {
+        // SAFETY: as above.
+        unsafe { call(CAPABILITY_RELEASE, region, 0) };
+    }
+    for alias in aliases[..held].iter() {
+        // SAFETY: as above.
+        unsafe { call(CAPABILITY_RELEASE, *alias, 0) };
+    }
+    report.line(&alloc::format!(
+        "TOS.RUN.REGION.TABLE aliases={held} full={full} freed={freed} after={after}"
+    ));
+}
+
+/// Writes one region record into the argument region's transfer area.
+///
+/// A sender fills in the handle and nothing else: the base and the length it
+/// might write are its own address and mean nothing in another address space,
+/// so the nucleus ignores them.
+///
+/// SAFETY: `area` is this process's argument region and `index` is inside the
+/// contract's maximum.
+// SAFETY: the caller names its own region and an index the contract admits.
+#[cfg(feature = "test-region-transport")]
+unsafe fn set_region_handle(area: u64, index: usize, handle: u64) {
+    // SAFETY: per the caller's contract; the offset is the one `IPC_V1` fixes.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<tos_launch::MessageRegion>(
+            (area + tos_launch::MESSAGE_REGIONS) as usize,
+        )
+        .add(index)
+        .write(tos_launch::MessageRegion {
+            handle,
+            base: 0,
+            length: 0,
+        })
+    };
+}
+
+/// Reads one back: the receiver's own handle, the address the nucleus chose in
+/// this address space, and the charged and mapped length.
+///
+/// SAFETY: as [`set_region_handle`].
+// SAFETY: as above.
+#[cfg(feature = "test-region-transport")]
+unsafe fn region_handed_over(area: u64, index: usize) -> tos_launch::MessageRegion {
+    // SAFETY: per the caller's contract.
+    unsafe {
+        core::ptr::with_exposed_provenance::<tos_launch::MessageRegion>(
+            (area + tos_launch::MESSAGE_REGIONS) as usize,
+        )
+        .add(index)
+        .read()
+    }
+}
+
+/// The capability the launcher bound to `name`, if this process was given one.
+#[cfg(any(feature = "test-region-transport", feature = "test-region-faults"))]
+fn bound<'a>(held: &'a [LaunchCapability], name: &str) -> Option<&'a LaunchCapability> {
+    held.iter().find(|capability| named(capability) == name)
+}
+
+/// The marks each region carries, so that what arrives can be shown to be what
+/// was written rather than merely the right size.
+#[cfg(feature = "test-region-transport")]
+const SHARED_MARK: u64 = 0x5348_4152_4544_5f31;
+#[cfg(feature = "test-region-transport")]
+const SENT_MARK: u64 = 0x4d4f_5645_445f_5f31;
+#[cfg(feature = "test-region-transport")]
+const TAIL_MARK: u64 = 0x4d4f_5645_445f_5f32;
+
+/// How many times a half gives up its quantum waiting for the other before
+/// deciding this is not the boot it was built for.
+///
+/// A bound rather than a spin: a gate that hangs reports nothing, and a half
+/// that gave up says so on the log, where the other half's silence is visible
+/// beside it.
+#[cfg(feature = "test-region-transport")]
+const PATIENCE: u32 = 4096;
+
+/// The region transport round, whichever half this process is (`IPC_V1` §5, §6).
+///
+/// Two processes over one endpoint, and which half this one is follows from
+/// what its launcher gave it — the worker was endowed a memory authority it can
+/// make regions out of, the peer was endowed the right to receive. Neither can
+/// do the other's half, and neither was given anything it could have obtained
+/// on its own.
+///
+/// Answers whether this process was one of the two.
+#[cfg(not(feature = "test-region-transport"))]
+fn region_transport(_launch: &Launch, _report: &mut Report, _held: &[LaunchCapability]) -> bool {
+    false
+}
+
+#[cfg(feature = "test-region-transport")]
+fn region_transport(launch: &Launch, report: &mut Report, held: &[LaunchCapability]) -> bool {
+    match (bound(held, "memory"), bound(held, "endpoint")) {
+        (Some(memory), Some(peer)) => {
+            let sink = bound(held, "sink").map_or(0, |sink| sink.handle);
+            region_worker(launch, report, memory.handle, peer.handle, sink);
+            true
+        }
+        (None, Some(peer)) if peer.rights & tos_launch::RIGHT_RECEIVE != 0 => {
+            region_peer(launch, report, peer.handle);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The sending half: it makes the regions, is refused what must be refused, and
+/// hands one over linearly before dying on the address it no longer owns.
+///
+/// The order is the evidence, and each step is what the one before it makes
+/// possible:
+///
+/// 1. a **shared** region goes first, because it is the non-consuming case: the
+///    sender keeps its handle and its window, and the queue takes a reference
+///    of its own;
+/// 2. a **mutable** region is offered and refused whole. `Region<mut T>` is
+///    neither shareable nor transferable (ADR-0037), so the message does not
+///    travel with that record dropped — it does not travel at all — and the
+///    sender still holds and can still write what it offered;
+/// 3. a region count past the contract's bound is `E_BAD_ARGUMENT` and consumes
+///    nothing, because two is a constant of `IPC_V1` §3 the caller knew before
+///    it called;
+/// 4. a send onto a **full** queue refuses and takes nothing. This is the case
+///    the whole transaction is shaped for: a linear region taken away and then
+///    discovered to have nowhere to go is a region belonging to nobody, and no
+///    rollback can be relied on to put it back — rebuilding the window needs
+///    page tables and can fail on its own;
+/// 5. and the same handle then sends successfully, which is what proves step 4
+///    left it whole.
+///
+/// The last act is a read of the address the region used to be at. It faults,
+/// and it is meant to: `IPC_V1` §9.6 wants the sender's loss of the mapping
+/// demonstrated by a fault on its next access, and this process has said
+/// everything it has to say by then.
+#[cfg(feature = "test-region-transport")]
+fn region_worker(launch: &Launch, report: &mut Report, memory: u64, peer: u64, sink: u64) {
+    let area = launch.arguments_base;
+
+    // --- a message of ordinary capabilities, first ---------------------------
+    // **All-or-nothing is a property of every message, not only of the ones
+    // carrying regions.** The receive path used to grant until something
+    // refused and write a zero handle for the rest, which is a partial delivery
+    // with a success status. So the first thing the peer is offered — while its
+    // table is deliberately full — carries a capability and no region at all,
+    // and what must happen to it is exactly what happens to a region: refused
+    // whole, still queued, delivered when there is room.
+    //
+    // Delegation copies, so this process keeps `sink` and goes on using it
+    // below.
+    // SAFETY: the area is this process's own and index 0 is inside the bound.
+    unsafe { set_transferred(area, 0, sink) };
+    // SAFETY: `endpoint_send` names a capability this process holds and does
+    // nothing when it refuses.
+    let (delegated_sent, _) = unsafe { call_transferring(ENDPOINT_SEND, peer, 0, 1, 0) };
+
+    // --- a shared region, sent without being given up ------------------------
+    // SAFETY: every call below names a capability this process holds, and each
+    // does nothing when it refuses.
+    let (made, mutable) = unsafe { call(REGION_ALLOCATE, memory, 4096) };
+    let shared_record = region_record(launch);
+    if made != OK {
+        report.line("TOS.RUN.REGION.WORKER unstartable=allocate");
+        return;
+    }
+    let shared_at = shared_record.base as usize;
+    // SAFETY: the nucleus mapped this range writable in this address space and
+    // reported its base and length here.
+    unsafe { core::ptr::with_exposed_provenance_mut::<u64>(shared_at).write_volatile(SHARED_MARK) };
+    // SAFETY: as above.
+    let (froze_shared, frozen_shared) = unsafe { call(REGION_FREEZE, mutable, 0) };
+    // SAFETY: as above.
+    let (shared_status, shared) = unsafe { call(REGION_SHARE, frozen_shared, 0) };
+    // A second local name for it, which only a shared region admits.
+    // SAFETY: as above.
+    let (alias_status, alias) =
+        unsafe { call(CAPABILITY_ATTENUATE, shared, tos_launch::RIGHT_READ as u64) };
+    // SAFETY: the area is this process's own and index 0 is inside the bound.
+    unsafe { set_region_handle(area, 0, shared) };
+    // SAFETY: as above.
+    let (shared_sent, _) = unsafe { call_transferring(ENDPOINT_SEND, peer, 0, 0, 1) };
+    // Non-consuming: the sender keeps the handle and the window.
+    // SAFETY: still mapped, still read-only, still this process's.
+    let shared_kept = u64::from(unsafe { word_at(shared_at) } == SHARED_MARK);
+    // SAFETY: as above.
+    let (alias_dropped, _) = unsafe { call(CAPABILITY_RELEASE, alias, 0) };
+    // One window, several names: dropping one of them changes nothing.
+    // SAFETY: as above.
+    let shared_after_alias = u64::from(unsafe { word_at(shared_at) } == SHARED_MARK);
+
+    // --- a mutable region, refused whole -------------------------------------
+    // SAFETY: as above.
+    let (built, movable) = unsafe { call(REGION_ALLOCATE, memory, 2 * 4096) };
+    let record = region_record(launch);
+    if built != OK || record.length < 16 {
+        report.line("TOS.RUN.REGION.WORKER unstartable=second-allocate");
+        return;
+    }
+    let base = record.base as usize;
+    let tail = (record.base + record.length - 8) as usize;
+    // SAFETY: the nucleus mapped this range writable in this address space.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<u64>(base).write_volatile(SENT_MARK);
+        core::ptr::with_exposed_provenance_mut::<u64>(tail).write_volatile(TAIL_MARK);
+    }
+    // SAFETY: the area is this process's own.
+    unsafe { set_region_handle(area, 0, movable) };
+    // SAFETY: as above; a mutable region may not travel at all.
+    let (mutable_refused, _) = unsafe { call_transferring(ENDPOINT_SEND, peer, 0, 0, 1) };
+    // Refused whole means the sender still has it, and still writable.
+    // SAFETY: as above.
+    let still_writable = unsafe {
+        let at = core::ptr::with_exposed_provenance_mut::<u64>(base);
+        at.write_volatile(SENT_MARK);
+        u64::from(at.read_volatile() == SENT_MARK)
+    };
+
+    // --- a count past the bound ----------------------------------------------
+    // SAFETY: as above; three is past `MAX_TRANSFERRED_REGIONS`.
+    let (overcount, _) = unsafe {
+        call_transferring(
+            ENDPOINT_SEND,
+            peer,
+            0,
+            0,
+            tos_launch::MAX_TRANSFERRED_REGIONS + 1,
+        )
+    };
+
+    // --- a full queue --------------------------------------------------------
+    // The sink endpoint has no receiver at all, so what is put on it stays
+    // there: the only way to ask what a full queue does to a linear transfer is
+    // to have a queue nothing can drain.
+    // SAFETY: as above.
+    let (frozen_status, frozen) = unsafe { call(REGION_FREEZE, movable, 0) };
+    let mut filled = 0;
+    let mut queue_full = OK;
+    for _ in 0..8 {
+        // SAFETY: as above; `rdx` carries a send's flags.
+        let (status, _) = unsafe { call5(ENDPOINT_SEND, sink, 0, NON_BLOCKING, 0, 0) };
+        if status != OK {
+            queue_full = status;
+            break;
+        }
+        filled += 1;
+    }
+    // SAFETY: the area is this process's own.
+    unsafe { set_region_handle(area, 0, frozen) };
+    // SAFETY: as above; asked not to wait, onto a queue with no room.
+    let (refused_full, _) = unsafe { call5(ENDPOINT_SEND, sink, 0, NON_BLOCKING, 0, 1) };
+    // The refusal took nothing: the window is still here and still readable.
+    // SAFETY: as above.
+    let intact = u64::from(unsafe { word_at(base) } == SENT_MARK);
+
+    // --- and the same handle sends -------------------------------------------
+    // SAFETY: the area is this process's own; the handle is the one the full
+    // queue refused a moment ago.
+    unsafe { set_region_handle(area, 0, frozen) };
+    // SAFETY: as above.
+    let (sent, _) = unsafe { call_transferring(ENDPOINT_SEND, peer, 0, 0, 1) };
+    // SAFETY: as above; the send consumed the handle, so it names a generation
+    // that has moved on.
+    let (stale, _) = unsafe { call(CAPABILITY_RELEASE, frozen, 0) };
+
+    report.line(&alloc::format!(
+        "TOS.RUN.REGION.WORKER delegated_sent={delegated_sent} froze_shared={froze_shared} shared={shared_status} \
+alias={alias_status} shared_sent={shared_sent} shared_kept={shared_kept} \
+alias_dropped={alias_dropped} after_alias={shared_after_alias} \
+mutable_refused={mutable_refused} still_writable={still_writable} overcount={overcount} \
+frozen={frozen_status} filled={filled} queue_full={queue_full} \
+refused_full={refused_full} intact={intact} sent={sent} stale={stale} \
+base=0x{base:x} length={length}",
+        length = record.length
+    ));
+
+    // The address is not this process's any more. `IPC_V1` §9.6 asks for the
+    // sender's loss of the mapping to be demonstrated by a fault on its next
+    // access, and this is that access — deliberate, last, and after everything
+    // this process had to say is on the log.
+    // SAFETY: nothing about this read is safe, and that is the point: the
+    // nucleus took this window away with the handle, so the fault is the
+    // evidence.
+    let fell = unsafe { word_at(base) };
+    report.line(&alloc::format!(
+        "TOS.RUN.REGION.WORKER.UNREACHED read=0x{fell:x}"
+    ));
+}
+
+/// The receiving half: it proves that acceptance is all-or-nothing before it
+/// proves that a region arrives.
+///
+/// The table is filled first, deliberately, so the first thing this process
+/// asks of a queued message is one it cannot be given. What must happen then is
+/// `E_LIMIT` **and nothing else**: no partial delivery, no zero handle written
+/// where authority should be, and the message still on the queue for the
+/// attempt that follows one freed slot. That is the property `IPC_V1` §3 states
+/// for every message and that a receive granting until something refused could
+/// never have had.
+///
+/// It polls rather than blocks, and the reason is the property above: a
+/// receiver blocked on a message it cannot accept cannot run to make room for
+/// it. Blocking is right for a receiver waiting for *a* message and wrong for
+/// one deliberately unable to take the one that is there.
+#[cfg(feature = "test-region-transport")]
+fn region_peer(launch: &Launch, report: &mut Report, endpoint: u64) {
+    let area = launch.arguments_base;
+
+    // Fill this process's table, so that the message waiting for it cannot be
+    // accepted. Ordinary aliases of the one capability it holds: no authority
+    // is invented, and each is a name for the same endpoint.
+    let mut aliases = [0u64; 32];
+    let mut held = 0;
+    while held < aliases.len() {
+        // SAFETY: `capability_attenuate` names a capability this process holds
+        // and does nothing when it refuses.
+        let (status, alias) = unsafe {
+            call(
+                CAPABILITY_ATTENUATE,
+                endpoint,
+                tos_launch::RIGHT_RECEIVE as u64,
+            )
+        };
+        if status != OK {
+            break;
+        }
+        aliases[held] = alias;
+        held += 1;
+    }
+
+    // Wait for a message to be there, and be refused it. `E_WOULD_BLOCK` says
+    // nothing has arrived; `E_LIMIT` says something has and this process cannot
+    // take it, which is exactly the state the next step undoes.
+    let mut refused = OK;
+    let mut waited = 0;
+    while waited < PATIENCE {
+        // SAFETY: `endpoint_receive` names this process's own capability and
+        // writes only its own argument region; `rsi` carries the flags.
+        let (status, _) = unsafe { call(ENDPOINT_RECEIVE, endpoint, NON_BLOCKING) };
+        if status == E_WOULD_BLOCK {
+            // SAFETY: self-only, and gives up the rest of this quantum.
+            unsafe { call(CONTEXT_YIELD, 0, 0) };
+            waited += 1;
+            continue;
+        }
+        refused = status;
+        break;
+    }
+
+    // One slot back, and the same message arrives — with its capability in it.
+    // This one carries no region at all, which is the point: what was refused
+    // and then delivered whole is an **ordinary** delegation.
+    let mut freed = E_NO_CAPABILITY;
+    if held > 0 {
+        held -= 1;
+        // SAFETY: as above.
+        freed = unsafe { call(CAPABILITY_RELEASE, aliases[held], 0) }.0;
+    }
+    let (delegated_status, _) = receive_when_ready(endpoint);
+    // SAFETY: the area is this process's own and index 0 is inside the bound.
+    let delegated = unsafe { transferred(area, 0) };
+
+    // The second message: the shared region.
+    if held > 0 {
+        held -= 1;
+        // SAFETY: as above.
+        unsafe { call(CAPABILITY_RELEASE, aliases[held], 0) };
+    }
+    let (first_status, first_length) = receive_when_ready(endpoint);
+    // SAFETY: as above.
+    let shared = unsafe { region_handed_over(area, 0) };
+    let shared_read = read_mark(&shared);
+
+    // The third: the affine region, whose sender is gone by the time anything
+    // is read from it.
+    if held > 0 {
+        held -= 1;
+        // SAFETY: as above.
+        unsafe { call(CAPABILITY_RELEASE, aliases[held], 0) };
+    }
+    let (second_status, _) = receive_when_ready(endpoint);
+    // SAFETY: as above.
+    let moved = unsafe { region_handed_over(area, 0) };
+    let moved_read = read_mark(&moved);
+    let moved_tail = if moved.handle != 0 && moved.length >= 16 {
+        // SAFETY: the nucleus mapped this range read-only in this address space
+        // and reported its base and length here.
+        unsafe {
+            core::ptr::with_exposed_provenance::<u64>((moved.base + moved.length - 8) as usize)
+                .read_volatile()
+        }
+    } else {
+        0
+    };
+    // The lanes are the nucleus's choice in *this* address space, and a
+    // region's identity is not an address: two regions arriving here land in
+    // two different lanes because they are two different slots.
+    let distinct = u64::from(shared.base != moved.base && shared.handle != moved.handle);
+
+    // **Waiting for the sender to be gone, by the one mechanism that can say
+    // so.** Nothing lets one process observe another's death, and polling a
+    // tick count would be a guess dressed as a measurement. What is exact is
+    // ADR-0059's liveness rule: a blocking receive is cancelled at the instant
+    // no context is runnable and nothing routed can change that — which, in a
+    // boot of two processes where the other one never blocks, is the instant
+    // the other one has ended. So this blocks on a message that will never come
+    // and reads `E_CANCELLED` as "I am the only one left".
+    //
+    // Everything after it is therefore a statement about a region whose sender
+    // has faulted and been reclaimed: its address space is gone, its handles
+    // are gone, and the bytes are still here.
+    // SAFETY: `endpoint_receive` names this process's own capability; the flags
+    // are zero, which is the blocking form.
+    let (alone, _) = unsafe { call(ENDPOINT_RECEIVE, endpoint, 0) };
+    let shared_after = read_mark(&shared);
+    let moved_after = read_mark(&moved);
+
+    report.line(&alloc::format!(
+        "TOS.RUN.REGION.PEER aliases={held} refused={refused} freed={freed} \
+delegated={delegated_status} handle=0x{delegated:x} \
+first={first_status} first_length={first_length} shared_read=0x{shared_read:x} \
+shared_base=0x{shared_base:x} shared_length={shared_length} second={second_status} \
+moved_read=0x{moved_read:x} moved_tail=0x{moved_tail:x} moved_length={moved_length} \
+distinct={distinct} alone={alone} shared_after=0x{shared_after:x} \
+moved_after=0x{moved_after:x} waited={waited}",
+        shared_base = shared.base,
+        shared_length = shared.length,
+        moved_length = moved.length
+    ));
+
+    // Everything back: the aliases, then both regions. What proves the backing
+    // is reclaimed exactly once is not this line — it is the boot's own account
+    // closing at the end, with the pool back to the root's frame count and the
+    // reserve back to its baseline.
+    for alias in aliases[..held].iter() {
+        // SAFETY: as above.
+        unsafe { call(CAPABILITY_RELEASE, *alias, 0) };
+    }
+    if shared.handle != 0 {
+        // SAFETY: as above.
+        unsafe { call(CAPABILITY_RELEASE, shared.handle, 0) };
+    }
+    if moved.handle != 0 {
+        // SAFETY: as above.
+        unsafe { call(CAPABILITY_RELEASE, moved.handle, 0) };
+    }
+    if delegated != 0 {
+        // SAFETY: as above.
+        unsafe { call(CAPABILITY_RELEASE, delegated, 0) };
+    }
+}
+
+/// Receives when there is something to receive, giving up the quantum until
+/// there is.
+#[cfg(feature = "test-region-transport")]
+fn receive_when_ready(endpoint: u64) -> (i64, u64) {
+    for _ in 0..PATIENCE {
+        // SAFETY: `endpoint_receive` names this process's own capability and
+        // writes only its own argument region.
+        let answer = unsafe { call(ENDPOINT_RECEIVE, endpoint, NON_BLOCKING) };
+        if answer.0 != E_WOULD_BLOCK {
+            return answer;
+        }
+        // SAFETY: self-only.
+        unsafe { call(CONTEXT_YIELD, 0, 0) };
+    }
+    (E_WOULD_BLOCK, 0)
+}
+
+/// The first word of a region this process was handed, or zero when it was
+/// handed none.
+#[cfg(feature = "test-region-transport")]
+fn read_mark(record: &tos_launch::MessageRegion) -> u64 {
+    if record.handle == 0 || record.length < 8 {
+        return 0;
+    }
+    // SAFETY: the nucleus mapped this range read-only and not executable in
+    // this address space, and reported its base and length here.
+    unsafe { word_at(record.base as usize) }
+}
+
+/// The two ways a region stops authorising an access, each in a process of its
+/// own (ADR-0075 §5a, `SYSTEM_ABI_V1` §5).
+///
+/// **Dedicated processes, because both of them end in a fault.** A fault is the
+/// evidence here rather than a failure, and a fault in a process that was also
+/// doing something else would be a fault nobody could attribute. So each of
+/// these does one thing, says what it is about to do, and dies doing it.
+///
+/// Which one this process is follows from the name its launcher bound its
+/// authority to. Both hold a name for the same child authority — two names, one
+/// budget — and neither can reach anything the other made.
+///
+/// Answers whether this process was one of the two.
+#[cfg(not(feature = "test-region-faults"))]
+fn region_faults(_launch: &Launch, _report: &mut Report, _held: &[LaunchCapability]) -> bool {
+    false
+}
+
+#[cfg(feature = "test-region-faults")]
+fn region_faults(launch: &Launch, report: &mut Report, held: &[LaunchCapability]) -> bool {
+    if let Some(memory) = bound(held, "nx") {
+        region_not_executable(launch, report, memory.handle);
+        return true;
+    }
+    if let Some(memory) = bound(held, "stale") {
+        region_after_release(launch, report, memory.handle);
+        return true;
+    }
+    false
+}
+
+/// A region is data, and stays data (`SYSTEM_ABI_V1` §5, operation 17).
+///
+/// Operation 17 maps what it allocates writable and **not executable**, and
+/// that pairing is the whole of it: memory a process may write is memory a
+/// process may not run. A region that could be written and then entered would
+/// be a process able to author its own text, which is the one thing the
+/// verified-image path exists to prevent — and no amount of verification above
+/// matters if the boundary below hands out a page that is both.
+///
+/// So this writes an instruction into a region and jumps to it. What must
+/// happen is a page fault at CPL 3 with the instruction-fetch bit set, at the
+/// address it jumped to, and this process ending there.
+#[cfg(feature = "test-region-faults")]
+fn region_not_executable(launch: &Launch, report: &mut Report, memory: u64) {
+    // SAFETY: `region_allocate` names a capability this process holds and does
+    // nothing when it refuses.
+    let (made, region) = unsafe { call(REGION_ALLOCATE, memory, 4096) };
+    let record = region_record(launch);
+    if made != OK || record.length == 0 {
+        report.line("TOS.RUN.REGION.NX unstartable=1");
+        return;
+    }
+    // `ret` — one byte, valid, and enough to tell "the processor refused to
+    // fetch this" from "the processor fetched rubbish and faulted on that".
+    // SAFETY: the nucleus mapped this range writable in this address space and
+    // reported its base and length here.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<u8>(record.base as usize).write_volatile(0xc3)
+    };
+    let wrote = u64::from(
+        // SAFETY: as above.
+        unsafe { core::ptr::with_exposed_provenance::<u8>(record.base as usize).read_volatile() }
+            == 0xc3,
+    );
+    report.line(&alloc::format!(
+        "TOS.RUN.REGION.NX handle=0x{region:x} base=0x{base:x} length={length} wrote={wrote}",
+        base = record.base,
+        length = record.length
+    ));
+    // SAFETY: nothing about this is safe, and that is the evidence. The bytes
+    // are there and the mapping is there; what is not there is permission to
+    // fetch an instruction from it, which is a fact about the leaf rather than
+    // about this image.
+    let entry: extern "C" fn() =
+        unsafe { core::mem::transmute::<*const (), extern "C" fn()>(record.base as *const ()) };
+    entry();
+    report.line("TOS.RUN.REGION.NX.UNREACHED returned=1");
+}
+
+/// A mapping is derived authority and does not outlive it (ADR-0075 §5a).
+///
+/// Releasing the handle to a region and leaving its window mapped would be the
+/// capability model bypassed in one line: the process would go on reading
+/// memory it holds no authority over at all. So `capability_release` takes the
+/// window with the handle, and the only way to see that from outside the
+/// nucleus is to read the address afterwards.
+#[cfg(feature = "test-region-faults")]
+fn region_after_release(launch: &Launch, report: &mut Report, memory: u64) {
+    const MARK: u64 = 0x5354_414c_455f_5f31;
+    // SAFETY: as above.
+    let (made, region) = unsafe { call(REGION_ALLOCATE, memory, 4096) };
+    let record = region_record(launch);
+    if made != OK || record.length == 0 {
+        report.line("TOS.RUN.REGION.STALE unstartable=1");
+        return;
+    }
+    let at = record.base as usize;
+    // SAFETY: the nucleus mapped this range writable in this address space.
+    let wrote = unsafe {
+        let cell = core::ptr::with_exposed_provenance_mut::<u64>(at);
+        cell.write_volatile(MARK);
+        u64::from(cell.read_volatile() == MARK)
+    };
+    // SAFETY: as above; this is the only handle naming the region.
+    let (released, _) = unsafe { call(CAPABILITY_RELEASE, region, 0) };
+    report.line(&alloc::format!(
+        "TOS.RUN.REGION.STALE base=0x{base:x} length={length} wrote={wrote} released={released}",
+        base = record.base,
+        length = record.length
+    ));
+    // SAFETY: as in the neighbour above — the read is the evidence. The handle
+    // is gone, so the window is gone, so this faults.
+    let read = unsafe { word_at(at) };
+    report.line(&alloc::format!(
+        "TOS.RUN.REGION.STALE.UNREACHED read=0x{read:x}"
+    ));
 }
 
 fn authority(launch: &Launch, report: &mut Report) {
@@ -1054,6 +1820,21 @@ fn authority(launch: &Launch, report: &mut Report) {
     report.line(&alloc::format!(
         "TOS.RUN.CAPABILITY.PROBE out_of_range={out_of_range} in_range_refused={in_range_refused} guessed={guessed}"
     ));
+
+    // The region transport round, when this boot is the one built for it. Asked
+    // before the ordinary halves because its two processes are told apart by
+    // their whole endowment rather than by the kind of their first capability:
+    // the worker holds a memory authority *and* the right to send, which no
+    // other constant grants together.
+    if region_transport(launch, report, held) {
+        return;
+    }
+    // And the two dedicated fault processes, for the same reason: each is told
+    // apart by what its whole endowment is bound to rather than by the kind of
+    // its first capability.
+    if region_faults(launch, report, held) {
+        return;
+    }
 
     // A memory authority: the one kind whose scope is a quantity, and the one
     // whose amount moves. Everything below is done from CPL 3 through the
@@ -1770,7 +2551,7 @@ fn asking(launch: &Launch, report: &mut Report, handle: u64) {
         // the request is in the region the launch record names, and no pointer
         // crosses.
         let (status, length) =
-            unsafe { call_transferring(ENDPOINT_CALL, handle, QUESTION.len() as u64, carried) };
+            unsafe { call_transferring(ENDPOINT_CALL, handle, QUESTION.len() as u64, carried, 0) };
         operations += 1;
         if status == OK && is_answer(launch.arguments_base, length) {
             answered += 1;
@@ -1794,7 +2575,7 @@ fn asking(launch: &Launch, report: &mut Report, handle: u64) {
     // in its bounded argument region, and the zero transfer count reads no
     // capability slots.
     let (prime_status, prime_length) =
-        unsafe { call_transferring(ENDPOINT_CALL, handle, QUESTION.len() as u64, 0) };
+        unsafe { call_transferring(ENDPOINT_CALL, handle, QUESTION.len() as u64, 0, 0) };
     if prime_status != OK || !is_answer(launch.arguments_base, prime_length) {
         report.line("TOS.RUN.MEASURE.IPC.UNSTARTABLE reason=prime-refused");
         return;
@@ -1825,7 +2606,7 @@ fn asking(launch: &Launch, report: &mut Report, handle: u64) {
         // SAFETY: the same endpoint, bounded argument region and zero transfer
         // count as the validated prime are used for every measured call.
         let (status, length) =
-            unsafe { call_transferring(ENDPOINT_CALL, handle, QUESTION.len() as u64, 0) };
+            unsafe { call_transferring(ENDPOINT_CALL, handle, QUESTION.len() as u64, 0, 0) };
         // SAFETY: as above. No work lies between the completed call and CLOSE.
         unsafe { wire_write(protocol::CLOSE | tag) };
         if status == OK && is_answer(launch.arguments_base, length) {
@@ -2116,7 +2897,7 @@ fn client(launch: &Launch, report: &mut Report, handle: u64) {
     unsafe { set_transferred(launch.arguments_base, 0, handle) };
     // SAFETY: as above, with one handle written for the count declared.
     let (with_capability, _) =
-        unsafe { call_transferring(ENDPOINT_CALL, handle, question.len() as u64, 1) };
+        unsafe { call_transferring(ENDPOINT_CALL, handle, question.len() as u64, 1, 0) };
     report.line(&alloc::format!(
         "TOS.RUN.DEPUTY.ASKED named_by_value={status} with_capability={with_capability}"
     ));
@@ -2954,6 +3735,7 @@ fn send_half(launch: &Launch, report: &mut Report, handle: u64) {
             handle,
             0,
             tos_launch::MAX_TRANSFERRED_CAPABILITIES + 1,
+            0,
         )
     };
     // And a transfer of something this process does not hold. `IPC_V1` §9.3
@@ -2965,7 +3747,7 @@ fn send_half(launch: &Launch, report: &mut Report, handle: u64) {
     // process holds.
     unsafe { set_transferred(launch.arguments_base, 0, 0xdead_beef) };
     // SAFETY: as above, declaring the one handle just written.
-    let (unheld, _) = unsafe { call_transferring(ENDPOINT_SEND, handle, 0, 1) };
+    let (unheld, _) = unsafe { call_transferring(ENDPOINT_SEND, handle, 0, 1, 0) };
 
     // No space in the payload: it is reported back as the value of a `text=`
     // field, and a value with a space in it would be two fields to a reader
@@ -2989,7 +3771,7 @@ fn send_half(launch: &Launch, report: &mut Report, handle: u64) {
     unsafe { set_transferred(launch.arguments_base, 0, handle) };
     // SAFETY: as above; the length is the payload's and is inside the bound, and
     // one handle has been written for the count declared.
-    let (sent, _) = unsafe { call_transferring(ENDPOINT_SEND, handle, payload.len() as u64, 1) };
+    let (sent, _) = unsafe { call_transferring(ENDPOINT_SEND, handle, payload.len() as u64, 1, 0) };
     // Holding `send` is not holding `receive` (`IPC_V1` §2): the same handle,
     // the other half, refused by the rights mask rather than by anything this
     // process agreed to.

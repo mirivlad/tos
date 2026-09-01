@@ -129,6 +129,24 @@ the receiver's acquisition. A failed send does not consume; a successful send
 does not leave a copy. There is no window in which both hold it, and none in
 which neither does.
 
+**Whether a second capability may name an object is a property of the object,
+not of the rights on any handle to it.** A region is affine while it is mutable
+and while it is immutable-and-unshared, and copyable once `share` has consumed
+the affine form (ADR-0037 §3–§4, ADR-0075 §3); an immutable affine region and a
+shared one carry the same absence of `write`, so a rule that read affinity off
+the rights mask would treat them as the same thing and let attenuation turn one
+into the other by dropping a bit. An implementation therefore asks the object,
+and an attenuation that narrows rights never changes what may hold the result.
+
+**A consuming transition keeps the capability's slot and advances its
+generation.** Where an accepted decision makes an operation consume a
+capability and return another naming the same object — `share`, and the
+mutable-to-immutable transition of ADR-0075 §3 — the presented handle must go
+stale rather than silently acquire different rights, because a process cannot
+otherwise tell the state it asked for from the state it had. Reusing the slot is
+what keeps the object's reference count at exactly one across the transition,
+and it is why neither operation needs a free slot to succeed.
+
 **Revocation** exists where the object's owning service defines it, as docs/12
 requires. Stage 3 provides the mechanism the owner needs — invalidating derived
 capabilities by generation — and does not invent a global revoke: a system-wide

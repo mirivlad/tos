@@ -80,7 +80,8 @@ pub enum Object {
     /// and the aliases in between are names for one budget rather than several
     /// reservations.
     MemoryAuthority { index: u32, generation: u32 },
-    /// A region of memory, named by its object in the region table.
+    /// A region of memory in one of its two **affine** states, named by its
+    /// object in the region table.
     ///
     /// **Affine, and that is what makes the type model hold.** ADR-0037 gives a
     /// `Region<mut T>` exactly one holder and ADR-0075 §5a makes its transfer
@@ -89,6 +90,21 @@ pub enum Object {
     /// Generic attenuation cannot make one, because generic attenuation does
     /// not consume its input and would therefore leave two.
     Region { index: u32, generation: u32 },
+    /// The same region table, after `share` has consumed the affine form.
+    ///
+    /// **A separate variant rather than a flag, because affinity is structural
+    /// and must not be read off the rights.** A capability's rights say what
+    /// its holder may do; they do not say whether a second holder may exist.
+    /// Deciding "may this be copied?" by testing for the absence of `write`
+    /// would make an attenuation that dropped a right into a change of the
+    /// object's kind — and the two questions genuinely differ, because an
+    /// immutable *affine* region carries no write right either and still may
+    /// not be copied.
+    ///
+    /// Both variants describe themselves to a process as `OBJECT_REGION`: the
+    /// public kind space is not widened by an internal distinction, and a
+    /// process learns what it may do from the rights it was granted.
+    SharedRegion { index: u32, generation: u32 },
 }
 
 impl Object {
@@ -100,7 +116,7 @@ impl Object {
             Object::Process { .. } => tos_launch::OBJECT_PROCESS,
             Object::Reply { .. } => tos_launch::OBJECT_REPLY,
             Object::MemoryAuthority { .. } => tos_launch::OBJECT_MEMORY_AUTHORITY,
-            Object::Region { .. } => tos_launch::OBJECT_REGION,
+            Object::Region { .. } | Object::SharedRegion { .. } => tos_launch::OBJECT_REGION,
         }
     }
 
@@ -112,8 +128,33 @@ impl Object {
     /// impossible (ADR-0037, ADR-0075 §5a). Generic attenuation is refinement
     /// and does not consume its input, so it could only ever *add* a name —
     /// which is why it refuses these rather than narrowing them.
+    ///
+    /// A shared region answers no in the other direction, and it is the variant
+    /// that says so rather than the rights: `share` consumed the affine form to
+    /// produce it, so a second name is a second reader of something that has no
+    /// owner left to duplicate.
     pub fn is_affine(&self) -> bool {
         matches!(self, Object::Region { .. })
+    }
+
+    /// Whether this names a region at all, in either state.
+    ///
+    /// Asked by every path that must refuse both: generic capability transfer,
+    /// which copies, and `Endowment::Existing`, which copies too. A region
+    /// travels in its own bound of two and by its own rules, or it does not
+    /// travel.
+    pub fn is_region(&self) -> bool {
+        matches!(self, Object::Region { .. } | Object::SharedRegion { .. })
+    }
+
+    /// The region this names, whichever state it is in.
+    pub fn region(&self) -> Option<crate::region::RegionId> {
+        match *self {
+            Object::Region { index, generation } | Object::SharedRegion { index, generation } => {
+                Some(crate::region::RegionId { index, generation })
+            }
+            _ => None,
+        }
     }
 }
 
@@ -309,11 +350,13 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
                 .retain(crate::region::AuthorityId { index, generation })
                 .map_err(|_| NotGranted::NoRoom)
         }
-        // Affine, and the object is what says so. Operation 5 refuses to make
-        // a second handle, but an operation that reached `grant` by another
-        // road would too — so the refusal lives in the region rather than in
-        // every path that might one day get here.
-        Object::Region { index, generation } => {
+        // Affine or not, the **region** is what says so. Operation 5 refuses to
+        // make a second handle to an affine one, but an operation that reached
+        // `grant` by another road would too — so the refusal lives in the
+        // region rather than in every path that might one day get here, and the
+        // same call serves the shared form, where a second name is admissible
+        // and is counted.
+        Object::Region { index, generation } | Object::SharedRegion { index, generation } => {
             // SAFETY: single-context nucleus; nothing else holds the tree.
             unsafe { crate::memory::authority() }
                 .retain_capability(crate::region::RegionId { index, generation })
@@ -326,9 +369,9 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
 fn release_capability(object: Object) {
     match object {
         Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
-        // The one capability naming a region goes, which is one of the three
+        // One capability naming a region goes, which is one of the three
         // ways a region can become unreachable (ADR-0075 §6).
-        Object::Region { index, generation } => {
+        Object::Region { index, generation } | Object::SharedRegion { index, generation } => {
             // SAFETY: single-context nucleus; nothing else holds the tree.
             if unsafe { crate::memory::authority() }
                 .release_capability(crate::region::RegionId { index, generation })
@@ -381,7 +424,7 @@ fn object_is_live(object: Object) -> bool {
                 .remaining(crate::region::AuthorityId { index, generation })
                 .is_ok()
         }
-        Object::Region { index, generation } => {
+        Object::Region { index, generation } | Object::SharedRegion { index, generation } => {
             // SAFETY: as above.
             unsafe { crate::memory::authority() }
                 .mode(crate::region::RegionId { index, generation })
@@ -471,6 +514,94 @@ pub fn release(process: usize, handle: u64) -> Result<(), Refused> {
     // same defect.
     release_capability(object);
     Ok(())
+}
+
+/// Replaces one prevalidated affine entry with what it became, in the same
+/// slot, under a new generation.
+///
+/// **The shape a consuming transition needs, and nothing else has it.** A
+/// freeze and a share each take one affine region capability and produce
+/// another naming the same region: the underlying object keeps exactly one
+/// capability reference throughout, the old handle must stop resolving, and the
+/// new one must exist by the time the caller is answered. Doing that with the
+/// operations already here would need a `grant` — which takes a *second*
+/// reference the affine region refuses, and a second table slot a full table
+/// may not have — followed by a `release` that drops the first. Two fallible
+/// steps to express one that cannot fail, with a window in between where the
+/// region is named twice.
+///
+/// So the entry is rewritten where it stands. The generation advances, which is
+/// what makes the caller's old handle detectably stale (`CAPABILITY_V1` §2),
+/// and no reference is taken or dropped, which is what keeps the region's count
+/// at one without it ever passing through zero or two.
+///
+/// **Prevalidated** is part of the contract: the caller has already resolved
+/// this handle, checked the region's state and performed the transition. What
+/// is left here is bookkeeping, and the only refusals are the ones that say the
+/// handle stopped naming what the caller resolved — which, between two
+/// statements of a single-context nucleus, cannot happen.
+pub fn replace_in_place(
+    process: usize,
+    handle: u64,
+    object: Object,
+    rights: u32,
+    scope: u64,
+) -> Result<u64, Refused> {
+    let (index, generation) = parts(handle);
+    if process >= MAX_PROCESSES || index >= MAX_CAPABILITIES {
+        return Err(Refused::BadHandle);
+    }
+    // SAFETY: single-context nucleus; bounds checked immediately above.
+    let entry = unsafe { &mut tables()[process][index] };
+    if entry.generation != generation || entry.object == Object::None {
+        return Err(Refused::NoCapability);
+    }
+    entry.object = object;
+    entry.rights = rights;
+    entry.scope = scope;
+    entry.generation = entry.generation.wrapping_add(1);
+    Ok(self::handle(index, entry.generation))
+}
+
+/// How many of a process's entries name one object.
+///
+/// **A shared region's mapping lives one level above its handles**, and this is
+/// the question that keeps the two in step: a process may hold several shared
+/// capabilities for one region and still have exactly one window onto it, so a
+/// release must know whether the handle going is the last local one before it
+/// decides whether the window goes too.
+///
+/// A scan of a fixed table of sixteen entries, at a release, which is not a
+/// path anything measures. Resolution itself is untouched and remains the
+/// constant-time index-and-generation lookup `IPC_V1` §8 requires.
+pub fn names_held(process: usize, object: Object) -> usize {
+    if process >= MAX_PROCESSES || object == Object::None {
+        return 0;
+    }
+    // SAFETY: single-context nucleus; bounds checked immediately above.
+    let table = unsafe { tables() };
+    table[process]
+        .iter()
+        .filter(|entry| entry.object == object)
+        .count()
+}
+
+/// How many free slots a process's table still has.
+///
+/// The plural of [`has_room`], because a message's preflight has to ask about
+/// everything it carries at once: four capabilities and two regions can need up
+/// to six, and asking "is there room for one?" six times is a different
+/// question that a full-but-one table answers yes to every time.
+pub fn room(process: usize) -> usize {
+    if process >= MAX_PROCESSES {
+        return 0;
+    }
+    // SAFETY: single-context nucleus; bounds checked immediately above.
+    let table = unsafe { tables() };
+    table[process]
+        .iter()
+        .filter(|entry| entry.object == Object::None)
+        .count()
 }
 
 /// Produces a capability whose rights and scope are each a subset of an
@@ -667,11 +798,14 @@ fn retain_transit(object: Object) -> Result<(), NotGranted> {
         }
         // A name like any other: one budget, several ways of reaching it.
         Object::MemoryAuthority { .. } => retain_capability(object),
-        // Not a name. A region in transit has had its sender's handle and
-        // mapping taken from it and its receiver has nothing yet, so this is
-        // the nucleus's own reference and is counted as one (ADR-0075 §6).
-        // Wired when a region can actually be sent; the count exists already.
-        Object::Region { .. } => Ok(()),
+        // Unreachable: a region does not travel in the generic transfer table
+        // at all. It has a bound of its own (`IPC_V1` §3) and a lifecycle of
+        // its own — an internal reference rather than a name (ADR-0075 §6) —
+        // and both `resolve_transfers` and `endowable` refuse it before
+        // anything gets here. Refused rather than quietly counted, so a future
+        // path that reached this by mistake stops rather than making a region
+        // one more delegated capability.
+        Object::Region { .. } | Object::SharedRegion { .. } => Err(NotGranted::NoRoom),
     }
 }
 
@@ -680,7 +814,38 @@ fn release_transit(object: Object) {
     match object {
         Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
         Object::MemoryAuthority { .. } => release_capability(object),
-        Object::Region { .. } => {}
+        // As above: never taken, so never given back.
+        Object::Region { .. } | Object::SharedRegion { .. } => {}
+    }
+}
+
+/// Takes the **internal** reference a queued message holds on a region.
+///
+/// Not a name, and the difference is the whole of why regions do not travel in
+/// the generic table. An affine region in transit has had its sender's handle
+/// and mapping taken from it and its receiver has nothing yet: for that stretch
+/// nothing a process holds names it, and only this keeps it from being
+/// reclaimed out from under the message. A shared one in transit is still named
+/// by its sender, and this is what keeps it alive if the sender releases the
+/// last of its own handles before the receiver has one.
+pub fn retain_region_in_transit(region: crate::region::RegionId) -> Result<(), NotGranted> {
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    unsafe { crate::memory::authority() }
+        .retain_internal(region)
+        .map_err(|_| NotGranted::NoRoom)
+}
+
+/// Drops it: the message was delivered, or it was never queued.
+///
+/// After delivery this runs once the receiver already holds its own capability
+/// and its own mapping, so the region is never unreachable in between.
+pub fn release_region_from_transit(region: crate::region::RegionId) {
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    if unsafe { crate::memory::authority() }
+        .release_internal(region)
+        .is_err()
+    {
+        crate::memory::note_divergence(b"region-transit-release");
     }
 }
 
@@ -743,6 +908,72 @@ pub fn held(process: usize) -> usize {
         .count()
 }
 
+/// Whether every object a delivered message carries could be granted to one
+/// process, asked before any of it is.
+///
+/// **The same all-or-nothing question [`endowable`] asks, for the other way
+/// authority arrives.** A receive used to grant until something refused and
+/// write a zero handle for the rest, which is a partial delivery wearing a
+/// success status: the receiver would be told it had a message and be short of
+/// exactly the authority the message was about. `IPC_V1` §3 says a message is
+/// delivered whole or not at all, and the only way to mean that is to ask
+/// first.
+///
+/// Table room is **not** asked here, because a message's regions need slots
+/// too and one question about the total is not the same as several about the
+/// parts. The caller counts what it needs and asks [`room`] once.
+///
+/// What is checked is exactly what [`grant`] checks, entry by entry, and
+/// nothing more: that no entry claims receive rights on an endpoint **another
+/// process** already receives on (`IPC_V1` §2 is about which context a message
+/// is delivered to, so two handles inside one table do not create the
+/// question), and that every name that will be taken can be — summed, because
+/// one message naming one authority twice costs it two names and asking twice
+/// whether one more fits is a different question.
+///
+/// **Whether the object is still *usable* is deliberately not asked**, because
+/// `grant` does not ask it either. A capability's lifetime is bounded by its
+/// object (`CAPABILITY_V1` §3) and [`resolve`] is where that is enforced, once,
+/// when the holder tries to act through it. Asking here would refuse a message
+/// the commit would have delivered — and one case of that is not hypothetical:
+/// `endpoint_call` hands the receiver the right to answer **before** the caller
+/// blocks, so at the instant of delivery the reply capability names a call that
+/// has not begun to wait yet.
+///
+/// A preflight stricter than its commit refuses legal messages; one looser
+/// fails half way. This is neither.
+pub fn can_grant_all(process: usize, granted: &[(Object, u32, u64)]) -> bool {
+    for (object, rights, _) in granted.iter() {
+        if *object == Object::None {
+            continue;
+        }
+        if let Object::MemoryAuthority { index, generation } = *object {
+            let names = granted
+                .iter()
+                .filter(|(other, _, _)| {
+                    matches!(*other, Object::MemoryAuthority { index: i, generation: g }
+                        if i == index && g == generation)
+                })
+                .count();
+            // SAFETY: single-context nucleus; nothing else holds the tree.
+            let tree = unsafe { crate::memory::authority() };
+            if !tree.can_retain(crate::region::AuthorityId { index, generation }, names) {
+                return false;
+            }
+        }
+        if rights & tos_launch::RIGHT_RECEIVE == 0 {
+            continue;
+        }
+        let Object::Endpoint(endpoint) = *object else {
+            continue;
+        };
+        if receiver_of(endpoint).is_some_and(|holder| holder != process) {
+            return false;
+        }
+    }
+    true
+}
+
 /// Whether a whole endowment can be written, asked before any of it is.
 ///
 /// **All or nothing, and the way to get that is to ask first.** ADR-0055 makes
@@ -784,13 +1015,17 @@ pub fn endowable(endowment: &[Endowment]) -> Result<(), NotGranted> {
         if !object_is_live(object) {
             return Err(NotGranted::NoRoom);
         }
-        // **An endowment copies, and an affine object cannot be copied.** The
-        // parent keeps its handle while the child is given one, which for a
-        // region is two holders where the type model allows one. Moving it
-        // instead would be a consuming transfer inside process creation — a
-        // second form of region handoff, agreed with nobody — so it is refused
-        // until there is a linear one to use.
-        if object.is_affine() {
+        // **An endowment copies, and a region does not arrive by being
+        // copied.** For the affine forms the reason is the type model: the
+        // parent keeps its handle while the child is given one, which is two
+        // holders where exactly one is allowed. For the shared form a copy
+        // would be admissible in principle and is still refused, because the
+        // capability is only half of what a holder needs — the other half is a
+        // mapping in the child's address space, and that space does not exist
+        // when the endowment is decided. Operations 19 and 20 are where a
+        // process is created *with* a region, and until they exist there is no
+        // honest way to say it here.
+        if object.is_region() {
             return Err(NotGranted::ReceiverExists);
         }
         if let Object::MemoryAuthority { index, generation } = object {

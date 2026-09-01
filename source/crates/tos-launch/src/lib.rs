@@ -254,6 +254,30 @@ pub const MESSAGE_REGIONS: u64 = MESSAGE_CAPABILITIES + 8 * MAX_TRANSFERRED_CAPA
 pub const MAX_TRANSFERRED_CAPABILITIES: u64 = 4;
 pub const MAX_TRANSFERRED_REGIONS: u64 = 2;
 
+/// One region travelling in a message (`IPC_V1` §3, §5).
+///
+/// **An area of its own, not a generic capability slot.** `IPC_V1` §3 gives
+/// regions a bound of two beside the four capabilities, and the two bounds are
+/// separate because the things they bound are: a delegated capability costs the
+/// receiver a table slot, and a region costs it a table slot *and* an address
+/// space window *and* the page tables to build it. Spending a capability slot on
+/// a region would make one message able to consume the other's bound.
+///
+/// **Three fields, and each direction reads a different set.** A sender fills
+/// in `handle` and nothing else — the base and the length it might write are the
+/// sender's own address and are meaningless in another address space, so the
+/// nucleus ignores them rather than validating them. A receiver is given all
+/// three: its own new handle, the address the **nucleus** chose in its address
+/// space, and the charged and mapped length. Records the message did not fill
+/// are zeroed, and a handle of all zeros names nothing in any table.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MessageRegion {
+    pub handle: u64,
+    pub base: u64,
+    pub length: u64,
+}
+
 /// Where `process_create`'s arguments sit inside the argument region
 /// (`SYSTEM_ABI_V1` §5, ADR-0058).
 ///
@@ -316,7 +340,17 @@ const _: () = {
             <= REGION_ALLOCATE_RECORD
     );
     assert!(REGION_ALLOCATE_RECORD + core::mem::size_of::<RegionAllocateRecord>() as u64 <= FRAME);
-    assert!(MESSAGE_REGIONS < REGION_ALLOCATE_RECORD);
+    // The message's own parts, end to end: the payload, the capability handles
+    // and the region records, none of them running into the next. The region
+    // area is the newest of the three and the only one whose size is a `struct`
+    // rather than a literal, so it is the one an edit could silently grow past
+    // what follows it.
+    assert!(MESSAGE_PAYLOAD + 256 <= MESSAGE_CAPABILITIES);
+    assert!(MESSAGE_CAPABILITIES + 8 * MAX_TRANSFERRED_CAPABILITIES <= MESSAGE_REGIONS);
+    assert!(
+        MESSAGE_REGIONS + core::mem::size_of::<MessageRegion>() as u64 * MAX_TRANSFERRED_REGIONS
+            <= REGION_ALLOCATE_RECORD
+    );
 };
 
 /// What `region_allocate` (17) writes there.
