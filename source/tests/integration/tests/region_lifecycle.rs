@@ -24,6 +24,32 @@ const ROOT: usize = 64 * 1024 * 1024;
 const WORKER: u32 = 7;
 const SUPERVISOR: u32 = 3;
 
+/// Allocation, and then the handoff every real creation performs.
+///
+/// `allocate` leaves a region the nucleus owns and nobody holds: capabilities
+/// zero, one construction reference. What operation 17 does next — and what
+/// this stands in for — is lay down the backing, map it, hand the caller its
+/// one capability, and only then let the construction reference go.
+fn handed_over(
+    regions: &mut Regions,
+    authority: region::AuthorityId,
+    bytes: usize,
+    holder: u32,
+) -> region::RegionId {
+    let region = regions
+        .allocate(authority, bytes, holder)
+        .expect("allocated");
+    assert_eq!(regions.internal(region), Ok(1), "the nucleus holds it");
+    assert!(regions.can_name(region), "and nobody else does yet");
+    regions
+        .retain_capability(region)
+        .expect("the caller is given its one capability");
+    regions
+        .release_internal(region)
+        .expect("and construction is over");
+    region
+}
+
 /// A root authority, and the accounting checked before anything happens.
 fn endowed() -> (Regions, region::AuthorityId) {
     let mut regions = Regions::new();
@@ -65,9 +91,7 @@ fn a_reservation_moves_budget_down_and_charges_it_once() {
 
     // The allocation debits the grandchild and nothing above it: the ancestors
     // paid when they reserved.
-    let _region = regions
-        .allocate(grandchild, 1024 * 1024, WORKER)
-        .expect("allocated");
+    let _region = handed_over(&mut regions, grandchild, 1024 * 1024, WORKER);
     assert_eq!(regions.remaining(grandchild), Ok(3 * 1024 * 1024));
     assert_eq!(regions.remaining(child), Ok(12 * 1024 * 1024));
     assert_eq!(regions.remaining(root), Ok(ROOT - 16 * 1024 * 1024));
@@ -96,9 +120,7 @@ fn a_subtree_cannot_spend_more_than_it_was_given() {
 fn a_region_is_allocated_frozen_transferred_and_reclaimed() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
-    let bundle = regions
-        .allocate(authority, 2 * 1024 * 1024, WORKER)
-        .expect("allocated");
+    let bundle = handed_over(&mut regions, authority, 2 * 1024 * 1024, WORKER);
 
     // Writable while it is being written.
     regions
@@ -141,7 +163,9 @@ fn a_region_is_allocated_frozen_transferred_and_reclaimed() {
     regions.map(bundle, false).expect("the receiver reads it");
     assert_eq!(regions.allocated(root), Ok(2 * 1024 * 1024));
     regions.unmap(bundle, false).expect("the mapping goes");
-    regions.release(bundle).expect("the last capability goes");
+    regions
+        .release_capability(bundle)
+        .expect("the last capability goes");
     assert_eq!(
         regions.allocated(root),
         Ok(0),
@@ -156,12 +180,12 @@ fn a_region_is_allocated_frozen_transferred_and_reclaimed() {
 fn a_mapping_keeps_a_region_alive_after_its_last_capability() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 4 * 1024 * 1024).expect("reserved");
-    let held = regions
-        .allocate(authority, 1024 * 1024, WORKER)
-        .expect("allocated");
+    let held = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
     regions.map(held, false).expect("mapped");
 
-    regions.release(held).expect("the capability goes");
+    regions
+        .release_capability(held)
+        .expect("the capability goes");
     assert_eq!(
         regions.allocated(root),
         Ok(1024 * 1024),
@@ -179,9 +203,7 @@ fn a_mapping_keeps_a_region_alive_after_its_last_capability() {
 fn revocation_returns_the_remainder_and_never_the_live_backing() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
-    let region = regions
-        .allocate(authority, 3 * 1024 * 1024, WORKER)
-        .expect("allocated");
+    let region = handed_over(&mut regions, authority, 3 * 1024 * 1024, WORKER);
 
     regions.revoke(authority).expect("the authority is revoked");
     assert_eq!(
@@ -200,7 +222,7 @@ fn revocation_returns_the_remainder_and_never_the_live_backing() {
     // The accounting node outlived its capability. When its last allocation
     // drains, what it was still holding travels up the lineage that funded it.
     regions
-        .release(region)
+        .release_capability(region)
         .expect("the region's holder lets go");
     assert_eq!(regions.remaining(root), Ok(ROOT));
     assert_eq!(regions.allocated(root), Ok(0));
@@ -212,9 +234,7 @@ fn revocation_returns_the_remainder_and_never_the_live_backing() {
 fn a_process_ending_reclaims_what_only_it_could_reach() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
-    let region = regions
-        .allocate(authority, 2 * 1024 * 1024, WORKER)
-        .expect("allocated");
+    let region = handed_over(&mut regions, authority, 2 * 1024 * 1024, WORKER);
     regions.map(region, true).expect("mapped writably");
 
     regions.process_died(WORKER);
@@ -232,9 +252,7 @@ fn a_process_ending_reclaims_what_only_it_could_reach() {
 fn the_negatives_are_refusals_and_not_surprises() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 4 * 1024 * 1024).expect("reserved");
-    let region = regions
-        .allocate(authority, 1024 * 1024, WORKER)
-        .expect("allocated");
+    let region = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
 
     // A mutable region is not transferable at all (ADR-0037).
     assert_eq!(
@@ -252,8 +270,8 @@ fn the_negatives_are_refusals_and_not_surprises() {
 
     // A stale handle names nothing: the region is released and its id no longer
     // resolves, whatever the generation counter has moved on to.
-    regions.release(region).expect("released");
-    assert_eq!(regions.release(region), Err(Refusal::NotFound));
+    regions.release_capability(region).expect("released");
+    assert_eq!(regions.release_capability(region), Err(Refusal::NotFound));
     assert_eq!(regions.freeze(region, WORKER), Err(Refusal::NotFound));
     assert!(regions.accounting_holds());
 }
@@ -334,12 +352,14 @@ fn a_charge_is_rounded_to_the_granule() {
     let region = regions
         .allocate_rounded(root, FRAME + 1, FRAME, WORKER)
         .expect("allocated");
+    regions.retain_capability(region).expect("handed over");
+    regions.release_internal(region).expect("construction over");
     assert_eq!(
         regions.allocated(root),
         Ok(4 * FRAME),
         "the grant's two frames and the region's two, all charged"
     );
-    regions.release(region).expect("released");
+    regions.release_capability(region).expect("released");
     assert_eq!(regions.allocated(root), Ok(2 * FRAME));
     assert!(regions.accounting_holds());
 
@@ -606,7 +626,7 @@ fn attenuation_reserves_at_once_and_commits_nothing() {
     assert!(regions.accounting_holds());
 
     // The child spends part of what it holds.
-    let region = regions.allocate(a, SPENT, WORKER).expect("allocated");
+    let region = handed_over(&mut regions, a, SPENT, WORKER);
     assert_eq!(regions.committed(), SPENT);
     assert_eq!(regions.remaining(a), Ok(ALLOWANCE - SPENT));
 
@@ -636,7 +656,9 @@ fn attenuation_reserves_at_once_and_commits_nothing() {
     assert_eq!(regions.committed(), SPENT);
     assert!(regions.accounting_holds());
 
-    regions.release(region).expect("the last capability goes");
+    regions
+        .release_capability(region)
+        .expect("the last capability goes");
     assert_eq!(regions.remaining(root), Ok(ALLOWANCE));
     assert_eq!(regions.committed(), 0);
     assert!(regions.accounting_holds());
@@ -658,12 +680,8 @@ fn a_death_returns_what_only_the_dead_process_could_reach() {
 
     // Two regions out of the dying process's authority. One is its own; the
     // other has been frozen and handed on, so somebody else holds it.
-    let private = regions
-        .allocate(allowance, 4 * 1024 * 1024, WORKER)
-        .expect("allocated");
-    let handed_on = regions
-        .allocate(allowance, 2 * 1024 * 1024, WORKER)
-        .expect("allocated");
+    let private = handed_over(&mut regions, allowance, 4 * 1024 * 1024, WORKER);
+    let handed_on = handed_over(&mut regions, allowance, 2 * 1024 * 1024, WORKER);
     regions.freeze(handed_on, WORKER).expect("frozen");
     regions
         .transfer(handed_on, WORKER, SUPERVISOR)
@@ -702,7 +720,9 @@ fn a_death_returns_what_only_the_dead_process_could_reach() {
     // When the surviving holder lets go, the backing follows the lineage that
     // funded it, past the node that no capability names any more.
     regions.unmap(handed_on, false).expect("the mapping goes");
-    regions.release(handed_on).expect("the capability goes");
+    regions
+        .release_capability(handed_on)
+        .expect("the capability goes");
     assert_eq!(regions.remaining(root), Ok(POOL));
     assert_eq!(regions.committed(), 0);
     assert!(regions.accounting_holds());
@@ -723,9 +743,7 @@ fn a_stopped_tree_refuses_to_grow_and_still_gives_back() {
     let child = regions
         .attenuate(root, 32 * 1024 * 1024)
         .expect("a child the process holds");
-    let region = regions
-        .allocate(child, 4 * 1024 * 1024, WORKER)
-        .expect("something it already spent");
+    let region = handed_over(&mut regions, child, 4 * 1024 * 1024, WORKER);
     let charge = regions
         .charge_grant(child, 8 * 1024 * 1024, FRAME)
         .expect("something it already funded");
@@ -766,7 +784,9 @@ fn a_stopped_tree_refuses_to_grow_and_still_gives_back() {
     regions
         .refund_grant(charge)
         .expect("a charge still returns");
-    regions.release(region).expect("a region still releases");
+    regions
+        .release_capability(region)
+        .expect("a region still releases");
     assert_eq!(regions.committed(), 0);
     regions.revoke(child).expect("an authority still revokes");
     assert_eq!(
@@ -811,9 +831,7 @@ fn only_the_last_name_of_an_authority_returns_its_remainder() {
         Ok(ALLOWANCE),
         "and the other name still resolves"
     );
-    let spent = regions
-        .allocate(allowance, 8 * 1024 * 1024, WORKER)
-        .expect("and can still spend");
+    let spent = handed_over(&mut regions, allowance, 8 * 1024 * 1024, WORKER);
 
     // The last one goes: now the unused remainder returns, and the node lives
     // on only because something it funded is still alive.
@@ -830,7 +848,9 @@ fn only_the_last_name_of_an_authority_returns_its_remainder() {
     );
     assert!(regions.accounting_holds());
 
-    regions.release(spent).expect("the backing is let go");
+    regions
+        .release_capability(spent)
+        .expect("the backing is let go");
     assert_eq!(regions.remaining(root), Ok(POOL));
     assert!(regions.accounting_holds());
 }
@@ -984,9 +1004,7 @@ fn whether_names_can_be_taken_is_answerable_without_taking_them() {
 fn an_internal_reference_keeps_a_region_no_process_can_reach() {
     let (mut regions, root) = endowed();
     let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
-    let sent = regions
-        .allocate(authority, 2 * 1024 * 1024, WORKER)
-        .expect("allocated");
+    let sent = handed_over(&mut regions, authority, 2 * 1024 * 1024, WORKER);
     regions.map(sent, true).expect("the sender writes it");
     regions.freeze(sent, WORKER).expect("and freezes it");
     regions.map(sent, false).expect("and reads it");
@@ -998,7 +1016,9 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
     regions
         .unmap(sent, false)
         .expect("the sender's mapping goes");
-    regions.release(sent).expect("and the sender's handle");
+    regions
+        .release_capability(sent)
+        .expect("and the sender's handle");
     assert_eq!(
         regions.allocated(root),
         Ok(2 * 1024 * 1024),
@@ -1028,10 +1048,62 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
     assert!(regions.accounting_holds());
 
     // Releasing one that is not held is a defect, not a no-op.
-    let other = regions
-        .allocate(authority, 1024 * 1024, WORKER)
-        .expect("allocated");
+    let other = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
     assert_eq!(regions.release_internal(other), Err(Refusal::BadArgument));
+    assert!(regions.accounting_holds());
+}
+
+/// A region has one capability or none, and the object is what enforces it.
+///
+/// Operation 5 refuses to alias a region, but a refusal that lives in one
+/// operation is a refusal every future operation has to remember. This is the
+/// one that does not have to be remembered.
+#[test]
+fn a_region_refuses_a_second_capability() {
+    let (mut regions, root) = endowed();
+    let authority = regions.attenuate(root, 8 * 1024 * 1024).expect("reserved");
+    let region = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
+
+    assert!(!regions.can_name(region), "one holder, and it is taken");
+    assert_eq!(
+        regions.retain_capability(region),
+        Err(Refusal::NotTheHolder),
+        "a second handle is the writable alias the freeze exists to remove"
+    );
+
+    // And giving up one nobody holds is a defect rather than a repeat.
+    regions
+        .release_capability(region)
+        .expect("the holder lets go");
+    assert_eq!(
+        regions.allocated(root),
+        Ok(0),
+        "and the backing went with the last way of reaching it"
+    );
+    assert!(regions.accounting_holds());
+}
+
+/// An impossible unmapping is refused, not absorbed.
+///
+/// The mapping counts decide when backing may be reclaimed, so a count that
+/// clamps an impossible operation to zero is a count that cannot be trusted to
+/// make that decision.
+#[test]
+fn an_unmapping_of_nothing_is_a_defect() {
+    let (mut regions, root) = endowed();
+    let authority = regions.attenuate(root, 4 * 1024 * 1024).expect("reserved");
+    let region = handed_over(&mut regions, authority, 1024 * 1024, WORKER);
+
+    assert_eq!(regions.unmap(region, false), Err(Refusal::BadArgument));
+    assert_eq!(regions.unmap(region, true), Err(Refusal::BadArgument));
+    regions.map(region, true).expect("mapped");
+    regions.unmap(region, true).expect("and unmapped");
+    assert_eq!(
+        regions.unmap(region, true),
+        Err(Refusal::BadArgument),
+        "and not twice"
+    );
+    assert_eq!(regions.allocated(root), Ok(1024 * 1024));
     assert!(regions.accounting_holds());
 }
 
@@ -1040,7 +1112,7 @@ fn an_internal_reference_keeps_a_region_no_process_can_reach() {
 #[test]
 fn the_mode_is_one_way() {
     let (mut regions, root) = endowed();
-    let region = regions.allocate(root, 4096, WORKER).expect("allocated");
+    let region = handed_over(&mut regions, root, 4096, WORKER);
     assert_eq!(regions.mode(region), Ok(Mode::Mutable));
     regions.freeze(region, WORKER).expect("frozen");
     assert_eq!(regions.mode(region), Ok(Mode::Immutable));

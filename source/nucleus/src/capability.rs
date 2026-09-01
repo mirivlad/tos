@@ -112,7 +112,7 @@ impl Object {
     /// impossible (ADR-0037, ADR-0075 §5a). Generic attenuation is refinement
     /// and does not consume its input, so it could only ever *add* a name —
     /// which is why it refuses these rather than narrowing them.
-    fn is_affine(&self) -> bool {
+    pub fn is_affine(&self) -> bool {
         matches!(self, Object::Region { .. })
     }
 }
@@ -309,10 +309,16 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
                 .retain(crate::region::AuthorityId { index, generation })
                 .map_err(|_| NotGranted::NoRoom)
         }
-        // Affine: exactly one capability names a region, and `grant` is
-        // reached for it only by the operation that creates it. Nothing here
-        // counts a second, because there is never a second.
-        Object::Region { .. } => Ok(()),
+        // Affine, and the object is what says so. Operation 5 refuses to make
+        // a second handle, but an operation that reached `grant` by another
+        // road would too — so the refusal lives in the region rather than in
+        // every path that might one day get here.
+        Object::Region { index, generation } => {
+            // SAFETY: single-context nucleus; nothing else holds the tree.
+            unsafe { crate::memory::authority() }
+                .retain_capability(crate::region::RegionId { index, generation })
+                .map_err(|_| NotGranted::NoRoom)
+        }
     }
 }
 
@@ -322,7 +328,17 @@ fn release_capability(object: Object) {
         Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
         // The one capability naming a region goes, which is one of the three
         // ways a region can become unreachable (ADR-0075 §6).
-        Object::Region { .. } => {}
+        Object::Region { index, generation } => {
+            // SAFETY: single-context nucleus; nothing else holds the tree.
+            if unsafe { crate::memory::authority() }
+                .release_capability(crate::region::RegionId { index, generation })
+                .is_err()
+            {
+                // An entry named a region that was not holding a capability,
+                // so a handle existed the object never counted. Fail closed.
+                crate::memory::note_divergence(b"region-capability-release");
+            }
+        }
         Object::MemoryAuthority { index, generation } => {
             // SAFETY: single-context nucleus; nothing else holds the tree.
             if unsafe { crate::memory::authority() }
@@ -767,6 +783,15 @@ pub fn endowable(endowment: &[Endowment]) -> Result<(), NotGranted> {
         };
         if !object_is_live(object) {
             return Err(NotGranted::NoRoom);
+        }
+        // **An endowment copies, and an affine object cannot be copied.** The
+        // parent keeps its handle while the child is given one, which for a
+        // region is two holders where the type model allows one. Moving it
+        // instead would be a consuming transfer inside process creation — a
+        // second form of region handoff, agreed with nobody — so it is refused
+        // until there is a linear one to use.
+        if object.is_affine() {
+            return Err(NotGranted::ReceiverExists);
         }
         if let Object::MemoryAuthority { index, generation } = object {
             let names = endowment
