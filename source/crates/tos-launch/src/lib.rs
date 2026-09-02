@@ -232,6 +232,70 @@ pub struct Launch {
     pub source_set: [u8; 96],
 }
 
+/// The version of the record a **bundle target** is launched with.
+///
+/// **A second record shape, not a second reading of one shape.** A source
+/// bootstrap process is handed a set of units to compile; a bundle target is
+/// handed one immutable artifact to verify and run. Those are different
+/// launches, and a single struct whose fields meant source pointers in one case
+/// and bundle fields in the other would be a record that cannot be read without
+/// already knowing which kind it is.
+///
+/// So the discriminator comes first and decides everything after it. The
+/// runtime reads `version` and nothing else until it knows which record it is
+/// holding. Both shapes may exist in one boot — an op19 source bootstrap and an
+/// op20 target — which is ordinary versioned compatibility rather than
+/// ambiguity.
+pub const BUNDLE_LAUNCH_VERSION: u32 = 5;
+
+/// What a nucleus hands a process launched from a bundle (ADR-0073, ADR-0076).
+///
+/// Everything a runtime process needs, and then the one thing that makes it a
+/// target: **which of its capabilities is the bundle, and where that bundle is
+/// mapped**. There is no unit table, because a target compiles nothing; no
+/// caller-supplied entry, because the bundle declares its own and a second
+/// truth would be one too many; and no verifier receipt, because nothing about
+/// the bundle's origin is evidence and the target verifies it itself.
+///
+/// The bundle capability also appears in the ordinary capability description
+/// below, with an empty binding when it answers no `import capability` the
+/// module declared. It is one capability described in two ways, not two
+/// capabilities: the fields here say *which* of the described ones is the launch
+/// material.
+#[repr(C)]
+pub struct BundleLaunch {
+    /// [`BUNDLE_LAUNCH_VERSION`]. First, and read before anything else.
+    pub version: u32,
+    pub grant_version: u32,
+    /// The one region this process has to allocate out of (ADR-0041, ADR-0050).
+    pub grant_base: u64,
+    pub grant_length: u64,
+    /// Which nucleus build made the grant.
+    pub grant_identity: u64,
+    pub report_base: u64,
+    pub report_length: u64,
+    pub stack_base: u64,
+    pub stack_length: u64,
+    pub arguments_base: u64,
+    pub arguments_length: u64,
+    /// The endowment: `capability_count` × [`LaunchCapability`], in this
+    /// process's address space, read-only.
+    pub capabilities: u64,
+    pub capability_count: u32,
+    pub reserved: u32,
+    /// This process's own handle for the shared region the bundle is in.
+    pub bundle_handle: u64,
+    /// Where that region is mapped here, and how much of it is mapped. The
+    /// **length is the region's**, not the bundle's: how many of those bytes a
+    /// bundle occupies is the bundle's own business, and a total parser is what
+    /// decides it.
+    pub bundle_base: u64,
+    pub bundle_length: u64,
+    /// The declared identity of the source set that produced the bundle, as the
+    /// creator stated it. Carried for the record; it resolves nothing.
+    pub source_set: [u8; 96],
+}
+
 /// The report region's header: the runtime writes `written`, the nucleus reads
 /// it and sets `drained`. One writer per field, and neither ever moves the
 /// other's.
@@ -329,6 +393,39 @@ pub const WAIT_CHILD_RECORD: u64 = CREATE_INSTANCE_ID + 64;
 /// was given.
 pub const REGION_ALLOCATE_RECORD: u64 = WAIT_CHILD_RECORD + 96;
 
+/// Where `process_create_funded` (19) and `process_create_from_bundle` (20)
+/// read the **optional** restart generation (ADR-0067).
+///
+/// A record rather than a register, and a flag rather than a sentinel. Operation
+/// 19 replaces both legacy creation shapes at once: 8 asserted no restart
+/// generation and 15 asserted one, so the operation that replaces them has to
+/// keep "absent" and "present and equal to zero" apart. Encoding absence as zero
+/// would collapse them, and `PROCESS_IDENTITY_V1` §5 states the rule the other
+/// way round — absence is the true value, and a zero would be a claim its caller
+/// never made.
+pub const CREATE_FUNDED_RECORD: u64 = REGION_ALLOCATE_RECORD + 16;
+
+/// What the caller writes there.
+///
+/// **One canonical encoding.** When `HAS_RESTART_GENERATION` is clear the
+/// generation field must be zero, and a caller that leaves rubbish in it is
+/// refused rather than having the rubbish ignored: two byte patterns meaning
+/// the same thing is a contract with a second, undocumented spelling.
+///
+/// `flags` has exactly one bit in this contract version and every other must be
+/// zero. That is what makes a later bit addable: a nucleus that ignored unknown
+/// bits would have already accepted, with different meaning, every message a
+/// later version will send.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct CreateFundedRecord {
+    pub restart_generation: u64,
+    pub flags: u64,
+}
+
+/// The one flag of [`CreateFundedRecord`] in this contract version.
+pub const HAS_RESTART_GENERATION: u64 = 1;
+
 /// The argument region is one frame, and every fixed result has to fit inside
 /// it without overlapping another. Checked rather than counted: two contracts
 /// drifting apart is exactly what a fixed offset exists to prevent.
@@ -339,7 +436,17 @@ const _: () = {
         WAIT_CHILD_RECORD + core::mem::size_of::<WaitChildRecord>() as u64
             <= REGION_ALLOCATE_RECORD
     );
-    assert!(REGION_ALLOCATE_RECORD + core::mem::size_of::<RegionAllocateRecord>() as u64 <= FRAME);
+    assert!(
+        REGION_ALLOCATE_RECORD + core::mem::size_of::<RegionAllocateRecord>() as u64
+            <= CREATE_FUNDED_RECORD
+    );
+    assert!(CREATE_FUNDED_RECORD + core::mem::size_of::<CreateFundedRecord>() as u64 <= FRAME);
+    // The creation argument areas are read by one call and must not run into
+    // each other or into the results a creation writes back.
+    assert!(CREATE_ENDOWMENT + ENDOWMENT_ENTRY_BYTES * MAX_ENDOWMENT <= CREATE_SELF_BINDING);
+    assert!(CREATE_SELF_BINDING + MAX_BINDING <= CREATE_MODULE);
+    assert!(CREATE_MODULE + MAX_MODULE_PATH <= CREATE_INSTANCE_ID);
+    assert!(CREATE_INSTANCE_ID + 8 <= CREATE_FUNDED_RECORD);
     // The message's own parts, end to end: the payload, the capability handles
     // and the region records, none of them running into the next. The region
     // area is the newest of the three and the only one whose size is a `struct`

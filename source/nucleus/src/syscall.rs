@@ -105,6 +105,18 @@ const REGION_ALLOCATE: u64 = 17;
 /// handle is stale by the same rule that makes any released handle stale, and
 /// the new one is what the caller is answered with.
 const REGION_FREEZE: u64 = 18;
+/// Create a process and charge its whole footprint to a `MemoryAuthority` the
+/// caller presents (ADR-0076 §3, §4). `rdi` = process authority with `create`,
+/// `rsi` = the authority with `spend`, `rdx` = the module path's length,
+/// `r10` = how many capabilities the child is endowed with, `r8` = the rights
+/// the child holds over itself, `r9` = the runtime arena it asks for.
+///
+/// **It replaces 8 and 15 together**, which is why the optional restart
+/// generation moved out of a register: 8 asserted none and 15 asserted one, and
+/// an operation that replaces both has to tell "absent" from "present and zero".
+/// It travels in `CreateFundedRecord`, with a flag, because a register cannot
+/// carry the difference.
+const PROCESS_CREATE_FUNDED: u64 = 19;
 
 /// The one call flag this contract version has.
 ///
@@ -390,18 +402,24 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
         REGION_ALLOCATE => region_allocate(caller, arguments.first(), arguments.second()),
         CAPABILITY_RELEASE => release_capability(caller, arguments.first()),
 
+        // **Retired, and refused before their arguments are read**
+        // (ADR-0076 §4). Both spent the boot's accounting anchor without any
+        // caller presenting a `MemoryAuthority`, which is the ambient funding
+        // that decision retires; operation 19 replaces both. `SYSTEM_ABI_V1` §7
+        // keeps their numbers assigned forever rather than recycling them, and
+        // a retired operation answers `E_NOT_SUPPORTED` — the same status a
+        // caller of a *later* version would get, which is exactly right: from
+        // this contract version on, neither exists.
+        //
+        // Nothing about the call is examined. A refusal that first resolved a
+        // handle would be reporting on authority for an operation that is not
+        // there to need it.
+        PROCESS_CREATE | PROCESS_CREATE_WITH_GENERATION => Answer::status(E_NOT_SUPPORTED),
         // A process is created under the authority of a process, never under an
         // authority meaning "processes" — `CAPABILITY_V1` §3 admits an object
-        // and rules out a class. The caller names the process the child is
-        // created under, which in every case this stage can express is its own,
-        // and it can only do that because its launcher gave it that authority.
-        PROCESS_CREATE => create_process(caller, frame, None),
-        // ADR-0067: the same creation, with the restart generation its caller
-        // asserts. A separate number rather than an argument on operation 8,
-        // because an old caller leaves `r8` uninitialised and `rdx` already
-        // carries the child's capability handle — extending 8 in place would
-        // break the minor-version rule §7 states.
-        PROCESS_CREATE_WITH_GENERATION => create_process(caller, frame, Some(frame.r8)),
+        // and rules out a class — and it is paid for out of a `MemoryAuthority`
+        // the caller presents beside it.
+        PROCESS_CREATE_FUNDED => create_funded(caller, frame),
 
         // The endings of a process object's direct children (ADR-0067). The
         // authority is over a *process*, and what it scopes is that process's
@@ -438,121 +456,237 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
     }
 }
 
-/// `process_create` (8) and `process_create_with_generation` (15).
+/// What a funded creation was asked to make, once every argument has been read
+/// and judged and before anything has been built.
 ///
-/// One body, because the two differ in exactly one thing: whether a supervisor
-/// asserted a restart generation. Operation 8 passes `None` and the child then
-/// has no generation at all — not zero, which would be a claim nobody made.
-fn create_process(caller: usize, frame: &mut TrapFrame, restart_generation: Option<u64>) -> Answer {
-    let arguments = &*frame;
-    {
-        {
-            match capability::resolve(caller, arguments.first(), tos_launch::RIGHT_CREATE) {
-                Err(refused) => refused.into(),
-                Ok(Object::Process { .. }) => {
-                    let Some(entry) = module_of(frame) else {
-                        return Answer::status(E_BAD_ARGUMENT);
-                    };
-                    let mut endowment = [capability::Endowment::Own {
-                        binding: capability::Binding::NONE,
-                        rights: 0,
-                    };
-                        tos_launch::MAX_ENDOWMENT as usize + 1];
-                    let held = capability::rights_of(caller, frame.rdi);
-                    // What the child may do to *itself*, decided by its parent
-                    // and bounded by the authority the parent used. It cannot be
-                    // one of the entries below, because those name capabilities
-                    // the parent holds and this one names a process that does not
-                    // exist until the instant it is granted — the same reason
-                    // only a launcher could issue the first one.
-                    let mut count = 0;
-                    if frame.r10 != 0 {
-                        // The name the child bound its own process authority
-                        // to, which the parent wrote beside the rights: the
-                        // rights are a value and travel in a register, the name
-                        // is not and does not (ADR-0058, ADR-0061).
-                        let Some(binding) = self_binding() else {
-                            return Answer::status(E_BAD_ARGUMENT);
-                        };
-                        endowment[0] = capability::Endowment::Own {
-                            binding,
-                            rights: frame.r10 as u32 & held,
-                        };
-                        count = 1;
-                    }
-                    match child_endowment(caller, frame, &mut endowment[count..]) {
-                        Ok(given) => count += given,
-                        Err(answer) => return answer,
-                    }
-                    let parent = crate::process::instance(caller);
-                    // SAFETY: the template was established at boot from validated
-                    // inputs, and no process is running: this call is the nucleus.
-                    match unsafe {
-                        crate::process::create(
-                            entry,
-                            &endowment[..count],
-                            parent,
-                            restart_generation,
-                        )
-                    } {
-                        Ok(child) => {
-                            // The caller gets authority over what it made, carrying
-                            // exactly the rights the authority it used carried.
-                            // More would be authority nobody granted it; less would
-                            // be the nucleus deciding how a supervisor supervises.
-                            let over_child = crate::process::generation(child).map(|generation| {
-                                Object::Process {
-                                    slot: child as u32,
-                                    generation,
-                                }
-                            });
-                            match over_child.and_then(|object| {
-                                capability::grant(
-                                    caller,
-                                    object,
-                                    capability::rights_of(caller, arguments.first()),
-                                    0,
-                                )
-                                .ok()
-                            }) {
-                                Some(handle) => {
-                                    // The identity, where the caller asked for
-                                    // the form that reports one. `rdx` carries
-                                    // the handle either way, and a handle is not
-                                    // an identity (ADR-0067 §7).
-                                    if restart_generation.is_some()
-                                        && !crate::process::write_created_instance(caller, child)
-                                    {
-                                        // The caller cannot be told which child
-                                        // it made, so it does not get one.
-                                        // SAFETY: the child was just created and
-                                        // has never run.
-                                        unsafe { crate::process::terminate(caller, child) };
-                                        return Answer::status(E_BAD_ARGUMENT);
-                                    }
-                                    Answer::value(handle)
-                                }
-                                // The child exists and the caller cannot name it.
-                                // Ending it is the only honest response: a process
-                                // nobody holds authority over is a process nobody
-                                // can stop.
-                                None => {
-                                    // SAFETY: the child was just created by this
-                                    // call and has never run.
-                                    unsafe { crate::process::terminate(caller, child) };
-                                    Answer::status(E_LIMIT)
-                                }
-                            }
-                        }
-                        Err(crate::process::Unlaunchable::NoSuchModule) => {
-                            Answer::status(E_BAD_ARGUMENT)
-                        }
-                        Err(_) => Answer::status(E_LIMIT),
-                    }
-                }
-                Ok(_) => Answer::status(E_NO_CAPABILITY),
-            }
+/// It exists so that the reading and the judging happen in one place and the
+/// construction in another. Operation 19 and operation 20 differ in where the
+/// program comes from and in nothing else — the same funding, the same
+/// endowment, the same self-rights, the same optional restart generation — and
+/// two copies of that argument handling would be two places for it to drift.
+struct FundedCreation {
+    funding: crate::process::Funding,
+    restart_generation: Option<u64>,
+    self_rights: u32,
+    endowment_count: u64,
+    child_rights: u32,
+}
+
+/// Reads the optional restart generation operations 19 and 20 carry
+/// (ADR-0067, `CreateFundedRecord`).
+///
+/// **Absence has one representation, and it is checked rather than assumed.**
+/// Operation 19 replaces both legacy creation shapes at once, so it has to keep
+/// "no restart generation" and "a restart generation that happens to be zero"
+/// apart; a sentinel would collapse them. The flag says which, and when it is
+/// clear the generation field must be zero — a caller that leaves rubbish there
+/// is refused rather than having the rubbish ignored, because two byte patterns
+/// meaning the same thing is a contract with an undocumented second spelling.
+///
+/// Unknown flag bits are refused for the same reason `SYSTEM_ABI_V1` §7 makes
+/// operation numbers permanent: a nucleus that ignored them would have already
+/// accepted, with a different meaning, every record a later version will write.
+fn restart_generation_of(region: u64) -> Result<Option<u64>, Answer> {
+    // SAFETY: the record is at a fixed offset in this process's own argument
+    // region, whose address the nucleus chose, and it is a plain-data struct of
+    // two integers.
+    let record = unsafe {
+        core::ptr::with_exposed_provenance::<tos_launch::CreateFundedRecord>(
+            (region + tos_launch::CREATE_FUNDED_RECORD) as usize,
+        )
+        .read()
+    };
+    if record.flags & !tos_launch::HAS_RESTART_GENERATION != 0 {
+        return Err(Answer::status(E_BAD_ARGUMENT));
+    }
+    if record.flags & tos_launch::HAS_RESTART_GENERATION == 0 {
+        if record.restart_generation != 0 {
+            return Err(Answer::status(E_BAD_ARGUMENT));
         }
+        return Ok(None);
+    }
+    Ok(Some(record.restart_generation))
+}
+
+/// The two capabilities a funded creation requires, in the order §5's row
+/// assigns them, and the arguments that follow.
+///
+/// **The first failed capability decides the answer, and the second is not
+/// looked at.** `SYSTEM_ABI_V1` §3 assigns the positions and §4 fixes the
+/// refusal order within one handle; between two handles the order is the row's
+/// own. A caller holding no authority to create must not learn, from the status
+/// it gets back, anything about the memory authority it also named — the answer
+/// is a fact about the call, and the call failed at its first argument.
+fn funded_arguments(
+    caller: usize,
+    process_handle: u64,
+    authority_handle: u64,
+    grant: u64,
+    endowment_count: u64,
+    self_rights: u64,
+) -> Result<FundedCreation, Answer> {
+    let child_rights = match capability::resolve(caller, process_handle, tos_launch::RIGHT_CREATE) {
+        Err(refused) => return Err(refused.into()),
+        Ok(Object::Process { .. }) => capability::rights_of(caller, process_handle),
+        Ok(_) => return Err(Answer::status(E_NO_CAPABILITY)),
+    };
+    let authority = match capability::resolve(caller, authority_handle, tos_launch::RIGHT_SPEND) {
+        Err(refused) => return Err(refused.into()),
+        Ok(Object::MemoryAuthority { index, generation }) => {
+            crate::region::AuthorityId { index, generation }
+        }
+        // `spend` over something that is not an authority is a right nobody
+        // granted over an object this cannot be funded from.
+        Ok(_) => return Err(Answer::status(E_NO_CAPABILITY)),
+    };
+    let region = crate::process::arguments_region();
+    if region == 0 {
+        return Err(Answer::status(E_BAD_ARGUMENT));
+    }
+    let restart_generation = restart_generation_of(region)?;
+    if endowment_count > tos_launch::MAX_ENDOWMENT {
+        return Err(Answer::status(E_BAD_ARGUMENT));
+    }
+    Ok(FundedCreation {
+        funding: crate::process::Funding { authority, grant },
+        restart_generation,
+        // What the child may do to *itself*, bounded by the authority the parent
+        // used. It cannot be an endowment entry, because those name capabilities
+        // the parent holds and this one names a process that does not exist
+        // until the instant it is granted.
+        self_rights: self_rights as u32 & child_rights,
+        endowment_count,
+        child_rights,
+    })
+}
+
+/// Assembles the endowment a funded creation was asked for: the child's rights
+/// over itself, then every entry the parent named.
+fn funded_endowment(
+    caller: usize,
+    asked: &FundedCreation,
+    into: &mut [capability::Endowment],
+) -> Result<usize, Answer> {
+    let mut count = 0;
+    if asked.self_rights != 0 {
+        // The name the child bound its own process authority to, which the
+        // parent wrote beside the rights: the rights are a value and travel in
+        // a register, the name is not and does not (ADR-0058, ADR-0061).
+        let Some(binding) = self_binding() else {
+            return Err(Answer::status(E_BAD_ARGUMENT));
+        };
+        into[0] = capability::Endowment::Own {
+            binding,
+            rights: asked.self_rights,
+        };
+        count = 1;
+    }
+    count += child_endowment(caller, asked.endowment_count, &mut into[count..])?;
+    Ok(count)
+}
+
+/// Hands the creator authority over what it made, and tells it which child that
+/// is.
+///
+/// The rights are exactly the ones the authority the creator used carried. More
+/// would be authority nobody granted it; less would be the nucleus deciding how
+/// a supervisor supervises.
+///
+/// **The instance identity is written unconditionally**, because operation 19
+/// replaces operation 15 as well as operation 8 and a supervisor cannot restart
+/// what it cannot name. `rdx` carries the handle, and a handle is not an
+/// identity: it is an index in one table and means nothing in another
+/// (ADR-0067 §7).
+fn funded_result(caller: usize, child: usize, rights: u32) -> Answer {
+    let Some(generation) = crate::process::generation(child) else {
+        // SAFETY: the child was created by this call and has never run.
+        unsafe { crate::process::terminate(caller, child) };
+        crate::memory::note_divergence(b"funded-child-generation");
+        return Answer::status(E_LIMIT);
+    };
+    let object = Object::Process {
+        slot: child as u32,
+        generation,
+    };
+    let Ok(handle) = capability::grant(caller, object, rights, 0) else {
+        // The child exists and the caller cannot name it. Ending it is the only
+        // honest response: a process nobody holds authority over is a process
+        // nobody can stop.
+        // SAFETY: as above.
+        unsafe { crate::process::terminate(caller, child) };
+        return Answer::status(E_LIMIT);
+    };
+    if !crate::process::write_created_instance(caller, child) {
+        // The caller cannot be told which child it made, so it does not get one.
+        // SAFETY: as above.
+        unsafe { crate::process::terminate(caller, child) };
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    Answer::value(handle)
+}
+
+/// What a creation that could not happen answers.
+///
+/// A size no `RuntimeMemoryGrant` could ever serve and a module this boot does
+/// not have are malformed calls; everything else is a bound that would have been
+/// exceeded (ADR-0076 §7).
+fn unlaunchable(refused: crate::process::Unlaunchable) -> Answer {
+    match refused {
+        crate::process::Unlaunchable::NoSuchModule | crate::process::Unlaunchable::BadGrant => {
+            Answer::status(E_BAD_ARGUMENT)
+        }
+        _ => Answer::status(E_LIMIT),
+    }
+}
+
+/// `process_create_funded` (19).
+///
+/// **Two capabilities and no ambient anything.** The creator presents authority
+/// over a process and a `MemoryAuthority` with `spend`, and the whole of the
+/// child's user-memory footprint — writable data, the rounded runtime arena, the
+/// stack, the report region, the argument region and the launch record — is
+/// charged to that authority before a frame moves. There is no root to fall back
+/// to: the creation core does not know what one is.
+///
+/// **The authority is not consumed and nothing is inherited.** A creation places
+/// a charge against an accounting node; it does not take the capability, and the
+/// child receives no name for it. A parent that wants its child to be able to
+/// spend from the same node says so, by naming that capability in
+/// `CREATE_ENDOWMENT` like any other — which under ADR-0076 §2b gives the child
+/// another name for one budget rather than a second reservation.
+fn create_funded(caller: usize, frame: &mut TrapFrame) -> Answer {
+    let asked = match funded_arguments(caller, frame.rdi, frame.rsi, frame.r9, frame.r10, frame.r8)
+    {
+        Ok(asked) => asked,
+        Err(answer) => return answer,
+    };
+    // The module, named by path. An ordinal would have fitted a register, which
+    // is its only advantage: it names a position in a list nobody published.
+    let Some(entry) = module_of(frame.rdx) else {
+        return Answer::status(E_BAD_ARGUMENT);
+    };
+    let mut endowment = [capability::Endowment::Own {
+        binding: capability::Binding::NONE,
+        rights: 0,
+    }; tos_launch::MAX_ENDOWMENT as usize + 1];
+    let count = match funded_endowment(caller, &asked, &mut endowment) {
+        Ok(count) => count,
+        Err(answer) => return answer,
+    };
+    let parent = crate::process::instance(caller);
+    // SAFETY: the template was established at boot from validated inputs, and
+    // no process is running: this call is the nucleus.
+    match unsafe {
+        crate::process::create_funded(
+            entry,
+            asked.funding,
+            &endowment[..count],
+            parent,
+            asked.restart_generation,
+        )
+    } {
+        Ok(child) => funded_result(caller, child, asked.child_rights),
+        Err(refused) => unlaunchable(refused),
     }
 }
 
@@ -979,9 +1113,8 @@ fn reply_receive(
 /// The path is in the argument region and its length in a register (ADR-0058),
 /// because a name is not a value and does not travel in one. An ordinal would
 /// have fitted a register and named a position in a list nobody published.
-fn module_of(frame: &TrapFrame) -> Option<usize> {
+fn module_of(length: u64) -> Option<usize> {
     let region = crate::process::arguments_region();
-    let length = frame.rsi;
     if region == 0 || length == 0 || length > tos_launch::MAX_MODULE_PATH {
         return None;
     }
@@ -1035,11 +1168,11 @@ fn self_binding() -> Option<capability::Binding> {
 /// is the same rule.
 fn child_endowment(
     parent: usize,
-    frame: &TrapFrame,
+    count: u64,
     into: &mut [capability::Endowment],
 ) -> Result<usize, Answer> {
     let region = crate::process::arguments_region();
-    let count = frame.rdx as usize;
+    let count = count as usize;
     if count > into.len() || count > tos_launch::MAX_ENDOWMENT as usize {
         return Err(Answer::status(E_LIMIT));
     }

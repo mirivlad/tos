@@ -167,21 +167,23 @@ pub const ACCEPTED: &[Interface] = &[
                 parameters: &[],
                 result: "i64",
             },
-            // The module name is a value of variable length, so it declares its
-            // maximum here (§4.1). The number is `MAX_MODULE_PATH`'s, which is
-            // the bound the nucleus already reads that argument under — stated
-            // in the schema rather than borrowed from the ABI's constants,
-            // because a module is refused against the contract it was written
-            // to and not against a number in another crate.
-            Operation {
-                name: "process_create",
-                capabilities: &[Requirement::of("system.process.Control", "create")],
-                parameters: &[Parameter {
-                    ty: "string",
-                    maximum: Some(256),
-                }],
-                result: "i64",
-            },
+            // **`process_create` is withdrawn, and nothing replaces it here
+            // yet.** It bound to `SYSTEM_ABI_V1` operation 8, which ADR-0076 §4
+            // retires: it funded a process out of the boot's accounting anchor
+            // with no caller presenting a `MemoryAuthority`. Operation 19 is
+            // what creates a process now, and it cannot be declared here as it
+            // stands — it requires two capabilities, an explicit runtime grant
+            // and an endowment, and it returns a *capability* in `rdx` rather
+            // than only a status. §4.1 admits no list and this schema's every
+            // result is `i64`, so a wrapper would hand a textual supervisor a
+            // number where a child capability should be, and no way to say what
+            // the child is endowed with.
+            //
+            // A schema that advertised an operation the ABI answers
+            // `E_NOT_SUPPORTED` would be worse than one that admits it does not
+            // carry it yet. What the typed bridge has to look like is a decision
+            // rather than an omission, and it is written up as one in
+            // `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
         ],
     },
 ];

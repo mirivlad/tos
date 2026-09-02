@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `1210a960dc36fdc1b1761a25f512842636bcd3d405cb7795414b2e81a0411cab`\
+Source-manifest SHA-256: `e11f391515caa229f16fe0ec7bd13fbfc4e7f720b997f7762862a3a35f959fef`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2391,20 +2391,58 @@ are marked and are exactly those a process can only apply to itself.
 | 5 | `capability_attenuate` | the capability being attenuated | `CAPABILITY_V1` §4 |
 | 6 | `capability_release` | the capability being released | consumes the handle |
 | 7 | `region_share` | region handle with `share` | `IPC_V1` §5, ADR-0037 §4. **Consuming**: the immutable affine region it names becomes a shared one, the handle presented goes stale, and `rdx` returns a new handle to the same region carrying `read` alone. The caller's mapping does not move — same backing, same address, still read-only. No exclusive holder remains, so a further capability naming it may be made by operation 5 and another process may be given one |
-| 8 | `process_create` | process-authority capability | creates a process. `rsi` = the module name's length, `rdx` = how many capabilities the child is endowed with, `r10` = the rights the child holds over itself. The name and the endowment are in the argument region at `CREATE_MODULE` and `CREATE_ENDOWMENT` (ADR-0058) |
+| 8 | `process_create` | — | **retired; always `E_NOT_SUPPORTED`** (ADR-0076 §4). It created a process funded from the boot's accounting anchor with no caller presenting a `MemoryAuthority`, which is the ambient spending that decision retires. Replaced by 19. The number stays assigned forever and is never reused |
 | 9 | `process_terminate` | process-authority capability for that process | ends it |
 | 10 | `context_yield` | *(self only)* | gives up the rest of the quantum |
 | 11 | `time_monotonic` | *(self only)* | reads the monotonic tick |
 | 12 | `process_exit` | *(self only)* | ends the calling process. `rdi` = the status it claims for itself; does not return (ADR-0054) |
 | 13 | `endpoint_reply_receive` | **two**: `rdi` = reply handle (single use), `rsi` = endpoint handle with `receive` | answers the call the reply names, then waits for the next message on the endpoint, without returning to CPL 3 in between. `rdx` = the answer's length, `r10` = flags. The length taken is returned in `rdx`, as for `endpoint_receive` (ADR-0063) |
 | 14 | `process_wait_child` | process capability with `wait_child` | the earliest pending ending among that process object's **direct children** (ADR-0067). `rsi` = flags. `rdx` returns the ended child's instance id, and the record is written to the caller's argument region at `WAIT_CHILD_RECORD`. Blocks with no pending ending; `E_WOULD_BLOCK` when asked not to; `E_CANCELLED` when the relation it watches ends or the liveness rule fires |
-| 15 | `process_create_with_generation` | process-authority capability | `process_create` (8) plus `r8` = the **supervisor-asserted restart generation**, recorded and never computed. `rdx` returns the child's capability handle as for 8; the child's instance id is written to the argument region at `CREATE_INSTANCE_ID` (ADR-0067) |
+| 15 | `process_create_with_generation` | — | **retired; always `E_NOT_SUPPORTED`**, with 8 and for the same reason. Its one addition — the supervisor-asserted restart generation of ADR-0067 — is carried by 19 in `CreateFundedRecord`. The number stays assigned forever and is never reused |
 
 | 16 | `capability_attenuate_scoped` | memory-authority capability with `spend` | reserves `rsi` bytes of it as a **child** authority and returns a capability naming that child. The parent's remaining amount falls by exactly what the child may spend; no physical memory moves, and the pool is untouched (ADR-0076 §2b). `E_BAD_ARGUMENT` for a size no budget could serve, `E_LIMIT` for one this budget cannot |
 
 | 17 | `region_allocate` | memory-authority capability with `spend` | allocates `rsi` bytes of region backing out of it, maps it into the caller writable and not executable, and returns an **affine** region capability in `rdx` with `read | write`. The region's base and its **charged and mapped** length — the request rounded up to whole frames — are written to the caller's argument region at `REGION_ALLOCATE_RECORD`. The nucleus chooses the address; a caller never supplies one. `E_BAD_ARGUMENT` for a size no budget could serve, `E_LIMIT` for one this budget cannot |
 
 | 18 | `region_freeze` | mutable region capability with `write` | the consuming mutable-to-immutable transition (ADR-0075 §3). The caller's writable window becomes read-only **in place** — same address, same backing, still not executable — the region becomes permanently immutable, the handle presented goes stale, and `rdx` returns a new handle to the same region carrying `read | share`. Base and length do not change and are not reported again. Nothing physical moves and nothing is charged. A failure before the transition leaves the region completely mutable; there is no half-frozen state |
+
+| 19 | `process_create_funded` | **two**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend` | creates a process and charges its **whole** user-memory footprint to that authority (ADR-0076 §3). `rdx` = the module path's length, `r10` = how many capabilities the child is endowed with, `r8` = the rights the child holds over itself, `r9` = the runtime arena it asks for. The path, the endowment and the child's self-binding are in the argument region at `CREATE_MODULE`, `CREATE_ENDOWMENT` and `CREATE_SELF_BINDING`; the **optional** restart generation is at `CREATE_FUNDED_RECORD`. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. `E_BAD_ARGUMENT` for an arena outside the accepted `RuntimeMemoryGrant` domain or a non-canonical restart record, `E_LIMIT` for a footprint this authority cannot pay for |
+
+**Operation 19 replaces 8 and 15 together, and that is why the restart
+generation moved out of a register.** Operation 8 asserted no restart generation
+and 15 asserted one, so the operation that replaces both has to keep *absent*
+and *present and equal to zero* apart — `PROCESS_IDENTITY_V1` §5's rule that
+absence is the true value and a zero would be a claim nobody made. A register
+cannot carry that difference, so `CreateFundedRecord` carries a generation and a
+flag, with one canonical encoding: when the flag is clear the field must be
+zero, and every other flag bit must be zero in this contract version.
+
+**The memory authority is presented, not consumed, and nothing is inherited.**
+A creation places a charge against an accounting node; the capability is
+untouched and the child receives no name for it. A parent that means its child
+to spend from the same node names that capability in `CREATE_ENDOWMENT` like any
+other, which under ADR-0076 §2b gives the child another name for one budget
+rather than a second reservation. There is no automatic remainder for a funded
+child.
+
+**The arena is a policy figure the caller states, and never a share of what is
+free.** `r9` is validated against the accepted `RuntimeMemoryGrant` bounds and
+rounded up to whole frames, and what is charged is the rounded figure. There is
+no `min(requested, available)`, no "what is left" and no percentage of a parent:
+a size chosen from the pool is the second counter ADR-0076 §1 describes. What
+the authority cannot pay for is `E_LIMIT`; what no authority could ever pay for
+is `E_BAD_ARGUMENT`.
+
+**The charge is the whole footprint and not the arena alone.** Writable data,
+the rounded arena, the stack, the report region, the argument region and the
+launch record are all charged to the presented authority before a frame moves.
+Page tables stay outside the tree, in the proved reserve (ADR-0076 §2).
+
+**Two capabilities, and the first failure decides.** §3 assigns their positions;
+the refusal order *between* them is the row's own order, so a caller that does
+not hold authority to create is answered from `rdi` alone and learns nothing
+about the authority it also named. Within each handle the order is §4's: index
+bounds, generation, type, rights.
 
 **A region capability is affine while the region is.** Exactly one names a
 mutable or immutable region, so operation 5 refuses to refine one — refinement
@@ -2513,6 +2551,16 @@ contract when the first implementation of the edge was written, because a rule
 about numbers that never states the numbers cannot be conformed to. Neither was a
 new decision: no operation, status, right or guarantee changed by writing them
 down.
+
+**Retirement is what §7 was written for, and 8 and 15 are the first to use it.**
+A retired operation returns `E_NOT_SUPPORTED` forever rather than being recycled
+into a different meaning, and its number is never reassigned. The status is the
+right one rather than a convenient one: `E_NOT_SUPPORTED` says "the operation
+exists in another version of this ABI", which is exactly true of an operation
+this version has removed. A process built against the earlier set is told so and
+is not terminated for asking. Neither is examined before it is refused — a
+refusal that first resolved a handle would be reporting on authority for an
+operation that is not there to need it.
 
 Operations 12 (`process_exit`, ADR-0054), 13 (`endpoint_reply_receive`,
 ADR-0063), 14 (`process_wait_child`) and 15 (`process_create_with_generation`,
@@ -2743,13 +2791,22 @@ decided rather than described:
 | Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
 |---|---|---|---|---|
 | `process_terminate` | `system.process.Control` with `terminate` | *(none)* | `i64` | 9 |
-| `process_create` | `system.process.Control` with `create` | `path: string` (≤ 256) | `i64` | 8 |
 
-`process_create` creates a child running the named module **with no endowment**.
-An endowment is a list, and §4.1 admits no list; a child endowed nothing is a
-child that can do nothing, which is a real and useful thing for a supervisor to
-make and is the whole of what this version declares. Endowing one is the next
-version's, and arrives with a typed way to say what a list is rather than before.
+**`process_create` is withdrawn from this schema and nothing replaces it yet.**
+It bound to `SYSTEM_ABI_V1` operation 8, which ADR-0076 §4 retires: it funded a
+process out of the boot's accounting anchor with no caller presenting a
+`MemoryAuthority`. Creation is now operation 19, and this schema cannot carry it
+as it stands — 19 requires **two** capabilities, an explicit runtime grant and an
+endowment, and it returns the child's *capability* in `rdx` rather than only a
+status. §4.1 admits no list and every result declared here is `i64`, so a wrapper
+would hand a textual supervisor a number where a child capability belongs, and no
+way to say what the child is endowed with.
+
+A schema that advertised an operation the ABI answers `E_NOT_SUPPORTED` for would
+be worse than one that says plainly it does not carry this yet. What the typed
+bridge has to look like — typed results that can carry a capability, and a way to
+express a heterogeneous endowment — is a decision rather than an omission, and it
+is written up as one in `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
 
 ## 4.1 What a parameter may be
 

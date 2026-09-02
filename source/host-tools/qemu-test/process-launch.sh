@@ -1,26 +1,31 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# A TOS Core module launches a process.
+# The source-level creation operation is withdrawn, and the ABI operations it
+# bound to are retired.
 #
-# This is the act a supervisor is made of, and until now no module could perform
-# it. `SYSTEM_INTERFACE_V1` §4 left `process_create` out with a reason: it takes
-# a module name, "and TOS Core V1 has no way to write into that region, because
-# it has no pointers and this schema admits none".
+# This gate used to prove that a TOS Core module could launch a process, through
+# `SYSTEM_INTERFACE_V1` §4's `process_create` over `SYSTEM_ABI_V1` operation 8.
+# ADR-0076 §4 retires that operation: it funded a process out of the boot's
+# accounting anchor with nobody presenting a `MemoryAuthority`, which is the
+# ambient spending that decision exists to end. Creation is operation 19 now, and
+# it cannot be declared in this schema as it stands — it requires two
+# capabilities, an explicit runtime grant and an explicit endowment, and it
+# returns the child's *capability* rather than only a status.
 #
-# §4.1 answers that without contradicting a word of it. The name is a **value**,
-# which §3 already said an operation's parameters after the capability are, and
-# the host places its bytes where the ABI already reads them — at an offset the
-# nucleus chose and mapped (ADR-0058). The module names a value and never an
-# address; the nucleus still walks nothing a process picked. What is new is a
-# declared maximum, because `SYSTEM_ABI_V1` §3 bounds every read by a constant of
-# the contract rather than by a number a caller chose.
+# **A withdrawal is only real if a module that assumes otherwise cannot run.** So
+# the fixture still declares `process_create`, and what this asserts is that the
+# module is refused at the boundary check, before its first instruction, with a
+# reason naming exactly what is wrong — and that nothing was created.
 #
-# **The evidence is the difference between two answers.** One module of this
-# capsule exists and one does not; both names go through the same operation, on
-# the same capability, under the same authority. A module that had faked either
-# could not produce two. And the value it returns is composed so that neither
-# answer alone yields it: refusing both gives 0, accepting both gives 0, and only
-# the declared pair gives 3.
+# The other half is the ABI itself: the same boot has a Rust process ask for
+# selectors 8 and 15 directly and be answered `E_NOT_SUPPORTED`, which is what
+# §7 reserves for an operation of another version of this contract. Their
+# numbers stay assigned and are never reused.
+#
+# What is **not** proved here any more is that a textual supervisor can create a
+# process. Nothing can, until the typed bridge exists; that is written up as a
+# decision rather than left as an omission, in
+# `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
 #
 #   bash host-tools/qemu-test/process-launch.sh [OUT_DIR]
 set -euo pipefail
@@ -37,10 +42,9 @@ TOOL="$ROOT/target/release/tos-capsule-tool"
 PRODUCTION="$ROOT/target/x86_64-unknown-none/release/tos-nucleus"
 TARGET="$ROOT/target/test-process-launch"
 
-OK=0
 E_BAD_ARGUMENT=-3
-# `OK - E_BAD_ARGUMENT`, which no single answer produces.
-EXPECTED_VALUE="i64:3"
+E_LIMIT=-6
+E_NOT_SUPPORTED=-7
 
 fail() {
     echo "process-launch: FAIL: $*" >&2
@@ -71,42 +75,51 @@ bash "$HERE/run.sh" \
     --out "$OUT" \
     --capsule "$OUT/process-launch.bin" \
     --nucleus "$TARGET/x86_64-unknown-none/release/tos-nucleus" \
-    --expect 33 \
-    --require "TOS.NUCLEUS.ENTRY TOS.RUN.REQUEST TOS.RUN.INTERFACE TOS.RUN.COMPLETED TOS.HALT" \
-    --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE" \
+    --expect 75 \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.DIAGNOSTIC TOS.RUN.REFUSED TOS.BOOTMODULE.FAIL" \
+    --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE TOS.RUN.COMPLETED" \
     > /dev/null
 
 LOG="$OUT/events.log"
 count() { grep -c "$1" "$LOG" || true; }
 
-# --- the module asked for process authority, and got it ------------------------
-[ "$(count '^TOS\.RUN\.REQUEST binding=control interface=system\.process\.Control object=3 wanted=3$')" = 1 ] ||
-    fail "the module's request for process authority was not answered by name and kind"
+# --- the declaration is refused, by name and by reason -------------------------
+# **Before the capability request is even answered.** `TOS.RUN.REQUEST` does not
+# appear at all: the boundary check runs at `check`, and a module naming an
+# operation the schema does not declare never reaches the point where its
+# endowment would be handed to it. The refusal is about the operation's name,
+# not about authority — the interface resolves and the capability would have.
+[ "$(count '^TOS\.RUN\.DIAGNOSTIC E1801_FFI_NOT_AVAILABLE .*item=process_create reason=the interface declares no operation of this name$')" -ge 1 ] ||
+    fail "the withdrawn operation was not refused with the reason that it is not declared"
+[ "$(count '^TOS\.RUN\.REFUSED stage=check count=1$')" -ge 1 ] ||
+    fail "the module was not refused at the boundary check"
+[ "$(count '^TOS\.RUN\.REQUEST ')" = 0 ] ||
+    fail "the module reached its capability request despite being refused at check"
 
-# --- one name made a process, and one did not ---------------------------------
-# Same operation, same capability, same authority; only the value differs. That
-# is what makes the pair evidence about the *argument* having crossed rather than
-# about the call having been made.
-[ "$(count "^TOS\\.RUN\\.INTERFACE operation=process_create status=$OK\$")" = 1 ] ||
-    fail "naming a module the capsule carries did not create a process"
-[ "$(count "^TOS\\.RUN\\.INTERFACE operation=process_create status=$E_BAD_ARGUMENT\$")" = 1 ] ||
-    fail "naming a module the capsule does not carry was not refused"
+# --- the ABI half: both retired selectors, asked and refused -------------------
+# By a Rust process holding the very authority the retired operations required,
+# so the answer is about the operation rather than about what the caller holds.
+[ "$(count "^TOS\.RUN\.PROCESS\.RETIRED create=$E_NOT_SUPPORTED with_generation=$E_NOT_SUPPORTED\$")" = 1 ] ||
+    fail "selectors 8 and 15 did not both answer E_NOT_SUPPORTED"
 
-# --- and the module computed from what came back -------------------------------
-[ "$(count "^TOS\\.RUN\\.COMPLETED value=$EXPECTED_VALUE\$")" = 1 ] ||
-    fail "the module did not return the value only the declared pair of answers gives"
+# --- and operation 19 tells its three refusals apart ---------------------------
+# An arena no `RuntimeMemoryGrant` could serve and a non-canonical restart record
+# are malformed calls; an arena a *particular* authority cannot pay for is a
+# bound. A caller told "limit" for the first would retry it forever.
+[ "$(count "^TOS\.RUN\.PROCESS\.FUNDING reserved=0 impossible=$E_BAD_ARGUMENT unaffordable=$E_LIMIT malformed=$E_BAD_ARGUMENT distinguished=1\$")" = 1 ] ||
+    fail "operation 19 did not distinguish an impossible grant from an unaffordable one"
 
-# --- the child is real ---------------------------------------------------------
-# A status is a claim; a process that ran and ended is the thing itself. The
-# child is endowed nothing (§4 declares no endowment), so it asks for `control`,
-# nothing answers, and it is refused at startup — which is exactly what a child
-# that can do nothing looks like from outside.
-[ "$(count '^TOS\.RUN\.PROCESS_EXIT process=1 ')" = 1 ] ||
-    fail "no second process ran, so the successful call created nothing"
-[ "$(count '^TOS\.RUN\.REFUSED stage=execute reason=capability-denied binding=control interface=system\.process\.Control$')" -ge 1 ] ||
-    fail "the child was endowed something, or did not report being endowed nothing"
+# --- nothing ran ---------------------------------------------------------------
+[ "$(count '^TOS\.RUN\.COMPLETED ')" = 0 ] ||
+    fail "the module executed despite declaring an operation the schema does not have"
 
-echo "PROCESS-LAUNCH PASS: a TOS Core module created a process"
-echo "  its module name crossed as a value, at the offset the ABI already reads"
-echo "  a name the capsule carries returned $OK; one it does not, $E_BAD_ARGUMENT"
-echo "  and the child ran, endowed nothing, exactly as section 4 declares"
+# --- and the boot says so, by the code it exits with ---------------------------
+# A boot module that cannot run is a boot that failed, and the launcher reports
+# it as one rather than halting as though the work had been done.
+[ "$(count '^TOS\.BOOTMODULE\.FAIL stage=process$')" = 1 ] ||
+    fail "the boot did not report its module as having failed"
+
+echo "PROCESS-LAUNCH PASS: the withdrawn creation operation is refused before it runs"
+echo "  the interface and the capability resolve; the operation name does not"
+echo "  no module executed, and the boot reported the failure rather than halting ok"
+echo "  selectors 8 and 15 answered $E_NOT_SUPPORTED; operation 19 told its refusals apart"
