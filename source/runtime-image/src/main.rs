@@ -70,6 +70,7 @@ const ENDPOINT_REPLY: u64 = 4;
 /// Retired, and named only so that a process can ask for them and be refused
 /// (`SYSTEM_ABI_V1` §7, ADR-0076 §4). Neither is called except by the evidence
 /// that they answer `E_NOT_SUPPORTED`.
+#[cfg(any(feature = "test-funding-lifecycle", feature = "test-build-topology"))]
 #[cfg(feature = "test-funding-lifecycle")]
 const PROCESS_CREATE: u64 = 8;
 const PROCESS_WAIT_CHILD: u64 = 14;
@@ -80,7 +81,7 @@ const PROCESS_CREATE_WITH_GENERATION: u64 = 15;
 /// explicit runtime grant and a sealed launch plan (ADR-0076 §3, ADR-0077 §5).
 const PROCESS_CREATE_FUNDED: u64 = 19;
 /// The same creation, over a program the nucleus does not read (ADR-0073).
-#[cfg(feature = "test-bundle-launch")]
+#[cfg(any(feature = "test-bundle-launch", feature = "test-build-topology"))]
 const PROCESS_CREATE_FROM_BUNDLE: u64 = 20;
 /// Launch policy as an object (ADR-0077): made, written entry by entry through
 /// the authority each entry delegates, and sealed once.
@@ -97,13 +98,15 @@ const REGION_ALLOCATE: u64 = 17;
 #[cfg(any(
     feature = "test-memory-authority",
     feature = "test-region-transport",
-    feature = "test-bundle-launch"
+    feature = "test-bundle-launch",
+    feature = "test-build-topology"
 ))]
 const REGION_SHARE: u64 = 7;
 #[cfg(any(
     feature = "test-memory-authority",
     feature = "test-region-transport",
-    feature = "test-bundle-launch"
+    feature = "test-bundle-launch",
+    feature = "test-build-topology"
 ))]
 const REGION_FREEZE: u64 = 18;
 
@@ -297,10 +300,14 @@ unsafe fn call_transferring(
 /// SAFETY: `process` names a process capability this process holds with
 /// `create`, `memory` a memory authority with `spend`, and the argument region
 /// holds the module name and the endowment entries the counts declare.
+#[allow(clippy::too_many_arguments)]
+#[cfg(any(
+    feature = "test-build-topology",
+    feature = "test-funding-lifecycle",
+    feature = "test-lifecycle"
+))]
 // SAFETY: the caller's promise about the two handles and the argument region is
 // what makes this an ordinary call rather than a guess.
-#[allow(clippy::too_many_arguments)]
-#[cfg(any(feature = "test-funding-lifecycle", feature = "test-lifecycle"))]
 unsafe fn create_funded(
     arguments: u64,
     process: u64,
@@ -356,6 +363,7 @@ unsafe fn create_funded(
 /// SAFETY: `process` names a process capability this process holds with
 /// `create`.
 #[cfg(any(
+    feature = "test-build-topology",
     feature = "test-funding-lifecycle",
     feature = "test-lifecycle",
     feature = "test-bundle-launch"
@@ -374,6 +382,7 @@ unsafe fn launch_plan_create(process: u64) -> (i64, u64) {
 /// SAFETY: `held` names a capability this process holds and `plan` a launch
 /// plan builder it holds.
 #[cfg(any(
+    feature = "test-build-topology",
     feature = "test-funding-lifecycle",
     feature = "test-lifecycle",
     feature = "test-bundle-launch"
@@ -394,13 +403,21 @@ unsafe fn launch_plan_endow(arguments: u64, held: u64, plan: u64, rights: u32, n
     let status: i64;
     // SAFETY: operation 22 takes the capability being delegated in `rdi`, the
     // builder in `rsi`, the binding's length in `rdx` and the rights in `r10`.
+    //
+    // **`rdx` is an `inlateout` and not an `in`**, because every operation
+    // answers in `rax` and `rdx` (`SYSTEM_ABI_V1` §3) — including the ones whose
+    // value is zero. Declared as an input alone, the compiler is entitled to
+    // believe the length is still there afterwards and to reuse it; the second
+    // entry of a plan then gets whatever the nucleus returned, which is a
+    // binding of length zero. Two entries is the smallest case that shows it,
+    // and it is the case a build worker's endowment actually is.
     unsafe {
         core::arch::asm!(
             "syscall",
             inlateout("rax") LAUNCH_PLAN_ENDOW => status,
             in("rdi") held,
             in("rsi") plan,
-            in("rdx") name.len() as u64,
+            inlateout("rdx") name.len() as u64 => _,
             in("r10") u64::from(rights),
             out("rcx") _,
             out("r11") _,
@@ -415,6 +432,7 @@ unsafe fn launch_plan_endow(arguments: u64, held: u64, plan: u64, rights: u32, n
 /// SAFETY: `process` names a process capability with `create` and `plan` a
 /// builder this process holds.
 #[cfg(any(
+    feature = "test-build-topology",
     feature = "test-funding-lifecycle",
     feature = "test-lifecycle",
     feature = "test-bundle-launch"
@@ -431,6 +449,7 @@ unsafe fn launch_plan_seal(process: u64, plan: u64) -> (i64, u64) {
 /// Three calls and no shortcut: even an endowment of nothing is a plan that was
 /// made and sealed, because a creation takes a decision and "nothing" is one.
 #[cfg(any(
+    feature = "test-build-topology",
     feature = "test-funding-lifecycle",
     feature = "test-lifecycle",
     feature = "test-bundle-launch"
@@ -454,10 +473,24 @@ fn sealed_plan(arguments: u64, process: u64, entries: &[(u64, u32, &[u8])]) -> (
     unsafe { launch_plan_seal(process, builder) }
 }
 
+/// The arena a **build worker** is given.
+///
+/// ADR-0069 §2a admits a funded, special-purpose process with a different fixed
+/// policy grant, and the build workspace measurements put a worker's need far
+/// above the ordinary runtime figure. It is still a fixed policy value: not a
+/// share of what remains, not `min(available, …)`, and not derived from how much
+/// another allocation happened to leave.
+#[cfg(feature = "test-build-topology")]
+const WORKER_GRANT: u64 = 96 * 1024 * 1024;
+
 /// The runtime arena an ordinary process is given, as the reference platform
 /// fixes it (ADR-0069). Named by the creator rather than chosen by the nucleus:
 /// operation 19 has no default and will not pick one.
-#[cfg(any(feature = "test-funding-lifecycle", feature = "test-bundle-launch"))]
+#[cfg(any(
+    feature = "test-funding-lifecycle",
+    feature = "test-bundle-launch",
+    feature = "test-build-topology"
+))]
 const RUNTIME_GRANT: u64 = 54 * 1024 * 1024;
 
 /// Writes a handle into the argument region's transfer table.
@@ -1766,7 +1799,7 @@ unsafe fn word_at(at: usize) -> u64 {
 /// region capability with `read`, and `plan` a sealed launch plan.
 // SAFETY: the caller's promise about the four handles is what makes this an
 // ordinary call.
-#[cfg(feature = "test-bundle-launch")]
+#[cfg(any(feature = "test-bundle-launch", feature = "test-build-topology"))]
 #[allow(clippy::too_many_arguments)]
 unsafe fn create_from_bundle(
     arguments: u64,
@@ -1822,7 +1855,7 @@ unsafe fn create_from_bundle(
 /// A number this process states rather than one it discovers: the artifact is
 /// the boot's own single-module closure, and a backing that grew to fit whatever
 /// was produced would be a build with no bound.
-#[cfg(feature = "test-bundle-launch")]
+#[cfg(any(feature = "test-bundle-launch", feature = "test-build-topology"))]
 const BUNDLE_REGION_BYTES: u64 = 256 * 1024;
 
 /// Writes a bundle over this boot's own source set into a region, and returns
@@ -1838,7 +1871,7 @@ const BUNDLE_REGION_BYTES: u64 = 256 * 1024;
 /// The region goes through the whole state machine on the way out: allocated
 /// mutable, written, frozen, shared. That is the lifecycle ADR-0075 §4 names,
 /// performed rather than described.
-#[cfg(feature = "test-bundle-launch")]
+#[cfg(any(feature = "test-bundle-launch", feature = "test-build-topology"))]
 fn bundle_region(
     launch: &Launch,
     report: &mut Report,
@@ -1916,6 +1949,215 @@ share={shared_status} base=0x{:x} length={}",
     (shared_status, shared, record.base)
 }
 
+/// Whether this process is ADR-0074's build worker, and if so, its whole life.
+#[cfg(not(feature = "test-build-topology"))]
+fn build_role(_launch: &Launch, _report: &mut Report, _held: &[LaunchCapability]) -> bool {
+    false
+}
+
+#[cfg(feature = "test-build-topology")]
+fn build_role(launch: &Launch, report: &mut Report, held: &[LaunchCapability]) -> bool {
+    // A worker holds an authority to spend and the right to send, **and no
+    // authority over any process**. A supervisor holds the opposite half of the
+    // same channel under a different name and creation authority besides, so
+    // neither can be mistaken for the other by what it was given.
+    if held
+        .iter()
+        .any(|capability| capability.object == tos_launch::OBJECT_PROCESS)
+    {
+        return false;
+    }
+    let named_as = |name: &str| held.iter().find(|capability| named(capability) == name);
+    let (Some(memory), Some(outbox)) = (named_as("memory"), named_as("outbox")) else {
+        return false;
+    };
+    let Some((units, entry)) = launched_set(launch) else {
+        report.line("TOS.RUN.TOPOLOGY.UNBUILT reason=no-entry-unit");
+        return true;
+    };
+    let entry_path = units[entry].path;
+    let source_set = launched_source_set(launch);
+    build_worker(
+        launch,
+        report,
+        memory.handle,
+        outbox.handle,
+        &units[..],
+        &source_set[..],
+        entry_path,
+    );
+    true
+}
+
+/// ADR-0074's T1 topology, from the side that builds.
+///
+/// A **transient build worker**: it is created by a resident supervisor, builds
+/// a real `TOSBUNDLE/v1` over this boot's own canonical source into a region it
+/// allocated out of the authority it was endowed with, freezes it, shares it,
+/// hands it to the supervisor over the endpoint it was given, and exits.
+///
+/// Everything it needs it was given, and nothing more: an authority to spend and
+/// one endpoint to send on. It cannot create a process, cannot terminate one,
+/// and never learns what the bundle it built is for.
+#[cfg(feature = "test-build-topology")]
+fn build_worker(
+    launch: &Launch,
+    report: &mut Report,
+    memory: u64,
+    outbox: u64,
+    units: &[Unit<'_>],
+    source_set: &str,
+    entry_path: &str,
+) {
+    let (shared, bundle, _) =
+        bundle_region(launch, report, memory, units, source_set, entry_path, false);
+    if shared != OK {
+        report.line("TOS.RUN.TOPOLOGY.UNBUILT reason=no-shared-region");
+        return;
+    }
+    // The handoff. A shared region travels in its own area of the message with
+    // its own bound (`IPC_V1` §3, §5): the sender writes only the handle,
+    // because a base is an address in *this* address space and means nothing in
+    // the supervisor's.
+    // SAFETY: the argument region is this process's own and index 0 is inside
+    // the contract's maximum.
+    unsafe { set_region_handle(launch.arguments_base, 0, bundle) };
+    // SAFETY: `endpoint_send` names an endpoint this process holds with `send`,
+    // and declares the one region just written.
+    let (handed, _) = unsafe { call_transferring(ENDPOINT_SEND, outbox, 0, 0, 1) };
+    report.line(&alloc::format!(
+        "TOS.RUN.TOPOLOGY.HANDED status={handed} asserted_by=worker"
+    ));
+}
+
+/// ADR-0074's T1 topology, from the side that decides.
+///
+/// The order is the whole claim, and each step is refused until the one before
+/// it happened:
+///
+///   1. the supervisor creates a **transient** worker and funds it from the
+///      authority it holds. The worker's grant is its own role's policy figure
+///      (ADR-0069 §2a), not the ordinary runtime grant;
+///   2. the worker builds and hands over one shared region;
+///   3. the supervisor **collects the worker's ending** before it does anything
+///      with the artifact. That is what makes the worker transient rather than
+///      merely finished: its memory is back, its slot is back, and the
+///      supervisor knows so from `process_wait_child` rather than from a delay;
+///   4. and only then is a target created from the bundle.
+///
+/// What the boot's own account then shows is the point of the topology: how
+/// much of the machine is left for bundle backing once a supervisor and a
+/// worker are both resident.
+#[cfg(feature = "test-build-topology")]
+fn build_supervisor(launch: &Launch, report: &mut Report, handle: u64, memory: u64, inbox: u64) {
+    // The worker's endowment: an authority to spend, and the endpoint to hand
+    // the artifact back on. Not `create`, not `terminate` — a build worker that
+    // could start processes would be a supervisor.
+    let (sealed, plan) = sealed_plan(
+        launch.arguments_base,
+        handle,
+        &[
+            (memory, tos_launch::RIGHT_SPEND, b"memory"),
+            (inbox, tos_launch::RIGHT_SEND, b"outbox"),
+        ],
+    );
+    if sealed != OK {
+        report.line(&alloc::format!(
+            "TOS.RUN.TOPOLOGY.UNSTARTABLE reason=no-plan status={sealed}"
+        ));
+        return;
+    }
+    let module = b"system/boot/init.tos";
+    write_module_name(launch, module);
+    // SAFETY: `handle` names this process's own authority with `create`,
+    // `memory` an authority with `spend`, and `plan` the plan just sealed.
+    let (started, worker_handle) = unsafe {
+        create_funded(
+            launch.arguments_base,
+            handle,
+            memory,
+            plan,
+            module.len() as u64,
+            0,
+            WORKER_GRANT,
+            None,
+        )
+    };
+    let worker_instance = created_instance(launch);
+    report.line(&alloc::format!(
+        "TOS.RUN.TOPOLOGY.WORKER status={started} instance={worker_instance} grant={WORKER_GRANT}"
+    ));
+    if started != OK {
+        return;
+    }
+    // The supervisor holds authority over the worker and lets it go at once:
+    // this worker ends on its own, and a supervisor that kept a handle per
+    // build would fill its table. What it supervises by is the ending.
+    // SAFETY: the handle names the worker this process just created.
+    unsafe { call(CAPABILITY_RELEASE, worker_handle, 0) };
+
+    // The artifact, received. A region arrives with a capability of the
+    // receiver's own and a window the **nucleus** chose in this address space.
+    let mut base = 0;
+    let mut bundle = 0;
+    let mut received = 0;
+    let mut attempts = 0;
+    while bundle == 0 && attempts < 8 {
+        // SAFETY: `endpoint_receive` names an endpoint this process holds with
+        // `receive`; the nucleus writes the region record into this process's
+        // own argument region.
+        let (status, _) = unsafe { call(ENDPOINT_RECEIVE, inbox, 0) };
+        received = status;
+        if status == OK {
+            // SAFETY: as above, at the offset `IPC_V1` fixes.
+            let handed = unsafe { region_handed_over(launch.arguments_base, 0) };
+            bundle = handed.handle;
+            base = handed.base;
+        }
+        attempts += 1;
+    }
+
+    // **The worker ends before the target begins.** Collected rather than
+    // waited out: `process_wait_child` is how a supervisor learns a child is
+    // over, and everything below happens after it answered.
+    let collected = wait_child(launch, handle, false);
+    report.line(&alloc::format!(
+        "TOS.RUN.TOPOLOGY.RECEIVED status={received} bundle=0x{bundle:x} base=0x{base:x} \
+collected={} ended={} kind={}",
+        collected.0,
+        collected.1.child_instance,
+        collected.1.ending_kind
+    ));
+    if bundle == 0 {
+        report.line("TOS.RUN.TOPOLOGY.UNSTARTABLE reason=no-bundle");
+        return;
+    }
+
+    // Only now. The worker's frames are back in the pool and its slot is free,
+    // which is what the account below is measured against.
+    // SAFETY: as above, with the bundle the worker handed over.
+    let (target, _) = unsafe {
+        create_from_bundle(
+            launch.arguments_base,
+            handle,
+            memory,
+            bundle,
+            plan,
+            0,
+            Some(1),
+        )
+    };
+    settle();
+    settle();
+    let target_ended = wait_child(launch, handle, true).0;
+    // SAFETY: the region is still mapped read-only in this address space: the
+    // supervisor kept its own window through the target's whole life.
+    let kept = unsafe { word_at(base as usize) };
+    report.line(&alloc::format!(
+        "TOS.RUN.TOPOLOGY.TARGET status={target} collected={target_ended} kept=0x{kept:x}"
+    ));
+}
+
 /// ADR-0073's handoff, from the side that produces the artifact.
 ///
 /// One supervisor, one bundle, and the whole of what operation 20 is for:
@@ -1933,11 +2175,16 @@ share={shared_status} base=0x{:x} length={}",
 ///     is the only thing that has any business deciding;
 ///   - and the negatives: an affine region is not a shared one, and neither is a
 ///     handle nobody holds.
-#[cfg(feature = "test-bundle-launch")]
-fn bundle_supervisor(launch: &Launch, report: &mut Report, handle: u64, memory: u64) {
-    // The set this process was launched over, read back out of its own record.
-    // A build's input is what the launcher gave it, so there is nowhere else it
-    // could come from and nothing here to choose.
+/// The canonical source set this process was launched over, read back out of
+/// its own launch record.
+///
+/// **A build's input is what the launcher gave it.** There is nowhere else it
+/// could come from and nothing here to choose: the units are the capsule's, the
+/// entry is the one the record names, and the source set identity travels with
+/// them (`PROCESS_IDENTITY_V1`). A worker that assembled its own input would be
+/// a worker building something the capsule does not contain.
+#[cfg(any(feature = "test-bundle-launch", feature = "test-build-topology"))]
+fn launched_set<'a>(launch: &'a Launch) -> Option<(alloc::vec::Vec<Unit<'a>>, usize)> {
     let mut units = alloc::vec::Vec::with_capacity(launch.unit_count as usize);
     for index in 0..launch.unit_count as usize {
         // SAFETY: the record declares `unit_count` units at `units`, mapped
@@ -1958,22 +2205,31 @@ fn bundle_supervisor(launch: &Launch, report: &mut Report, handle: u64, memory: 
                 ),
             )
         };
-        let Ok(path) = core::str::from_utf8(path) else {
-            report.line("TOS.RUN.BUNDLE.UNSTARTABLE reason=unit-path-not-text");
-            return;
-        };
+        let path = core::str::from_utf8(path).ok()?;
         units.push(Unit { path, bytes });
     }
-    let Some(entry_unit) = units.get(launch.entry_index as usize) else {
-        report.line("TOS.RUN.BUNDLE.UNSTARTABLE reason=no-entry-unit");
-        return;
-    };
-    let entry_path = entry_unit.path;
-    let source_set = alloc::string::String::from(
+    let entry = launch.entry_index as usize;
+    (entry < units.len()).then_some((units, entry))
+}
+
+/// The declared source-set identity of this process's own launch.
+#[cfg(any(feature = "test-bundle-launch", feature = "test-build-topology"))]
+fn launched_source_set(launch: &Launch) -> alloc::string::String {
+    alloc::string::String::from(
         core::str::from_utf8(&launch.source_set)
             .unwrap_or("")
             .trim_end_matches('\0'),
-    );
+    )
+}
+
+#[cfg(feature = "test-bundle-launch")]
+fn bundle_supervisor(launch: &Launch, report: &mut Report, handle: u64, memory: u64) {
+    let Some((units, entry)) = launched_set(launch) else {
+        report.line("TOS.RUN.BUNDLE.UNSTARTABLE reason=no-entry-unit");
+        return;
+    };
+    let entry_path = units[entry].path;
+    let source_set = launched_source_set(launch);
     let units = &units[..];
     let source_set = &source_set[..];
 
@@ -2285,8 +2541,8 @@ fn region_table_full(report: &mut Report, parent: u64) {
 ///
 /// SAFETY: `area` is this process's argument region and `index` is inside the
 /// contract's maximum.
+#[cfg(any(feature = "test-region-transport", feature = "test-build-topology"))]
 // SAFETY: the caller names its own region and an index the contract admits.
-#[cfg(feature = "test-region-transport")]
 unsafe fn set_region_handle(area: u64, index: usize, handle: u64) {
     // SAFETY: per the caller's contract; the offset is the one `IPC_V1` fixes.
     unsafe {
@@ -2305,9 +2561,11 @@ unsafe fn set_region_handle(area: u64, index: usize, handle: u64) {
 /// Reads one back: the receiver's own handle, the address the nucleus chose in
 /// this address space, and the charged and mapped length.
 ///
-/// SAFETY: as [`set_region_handle`].
+/// # Safety
+///
+/// As [`set_region_handle`].
+#[cfg(any(feature = "test-region-transport", feature = "test-build-topology"))]
 // SAFETY: as above.
-#[cfg(feature = "test-region-transport")]
 unsafe fn region_handed_over(area: u64, index: usize) -> tos_launch::MessageRegion {
     // SAFETY: per the caller's contract.
     unsafe {
@@ -2932,6 +3190,12 @@ fn authority(launch: &Launch, report: &mut Report) {
     if region_transport(launch, report, held) {
         return;
     }
+    // ADR-0074's build worker, told apart the same way: it holds an authority to
+    // spend and the right to send, and no authority over any process. A
+    // supervisor holds the opposite, and neither can be mistaken for the other.
+    if build_role(launch, report, held) {
+        return;
+    }
     // And the two dedicated fault processes, for the same reason: each is told
     // apart by what its whole endowment is bound to rather than by the kind of
     // its first capability.
@@ -3008,6 +3272,17 @@ fn authority(launch: &Launch, report: &mut Report) {
         // different numbers of live processes out of the same four slots.
         #[cfg(feature = "test-bundle-launch")]
         bundle_supervisor(launch, report, first.handle, memory);
+        // ADR-0074's T1: this process holds authority over a process, so it is
+        // the supervisor. The worker holds no such thing and takes the other
+        // branch below.
+        #[cfg(feature = "test-build-topology")]
+        {
+            let inbox = held
+                .iter()
+                .find(|capability| capability.object == tos_launch::OBJECT_ENDPOINT)
+                .map_or(0, |capability| capability.handle);
+            build_supervisor(launch, report, first.handle, memory, inbox);
+        }
         #[cfg(feature = "test-funding-lifecycle")]
         supervise(launch, report, first.handle, memory, first.rights);
         #[cfg(not(any(
@@ -3132,9 +3407,9 @@ mod protocol {
 ///
 /// The TSS I/O bitmap of the measurement nucleus permits CPL 3 exactly these
 /// ports; every other port still faults.
+#[cfg(feature = "test-measurement-port")]
 // SAFETY: the caller runs only under the measurement feature whose nucleus
 // permits exactly COM1 through the TSS I/O bitmap.
-#[cfg(feature = "test-measurement-port")]
 unsafe fn wire_read() -> u8 {
     loop {
         let status: u8;
@@ -3161,8 +3436,8 @@ unsafe fn wire_read() -> u8 {
 /// # Safety
 ///
 /// As `wire_read`.
-// SAFETY: as `wire_read`; every access is confined to COM1.
 #[cfg(feature = "test-measurement-port")]
+// SAFETY: as `wire_read`; every access is confined to COM1.
 unsafe fn wire_drain() {
     loop {
         let status: u8;
@@ -3192,8 +3467,8 @@ unsafe fn wire_drain() {
 /// # Safety
 ///
 /// As `wire_read`.
-// SAFETY: as `wire_read`; every access is confined to COM1.
 #[cfg(feature = "test-measurement-port")]
+// SAFETY: as `wire_read`; every access is confined to COM1.
 unsafe fn wire_write(byte: u8) {
     loop {
         let status: u8;
@@ -4204,8 +4479,8 @@ fn lifecycle_watcher(launch: &Launch, report: &mut Report, handle: u64) {
     ));
 }
 
-/// Puts a module name where `process_create` reads one.
-#[cfg(feature = "test-lifecycle-delegate")]
+/// Puts a module name where a funded creation reads one.
+#[cfg(any(feature = "test-lifecycle-delegate", feature = "test-build-topology"))]
 fn write_module_name(launch: &Launch, module: &[u8]) {
     for (offset, byte) in module.iter().enumerate() {
         // SAFETY: `arguments_base` names a writable mapping the launcher made,
@@ -4586,7 +4861,8 @@ status_present={} generation_present={} generation={}",
 #[cfg(any(
     feature = "test-lifecycle",
     feature = "test-funding-lifecycle",
-    feature = "test-bundle-launch"
+    feature = "test-bundle-launch",
+    feature = "test-build-topology"
 ))]
 fn settle() {
     let start = monotonic().unwrap_or(0);
@@ -4611,7 +4887,8 @@ fn settle() {
 #[cfg(any(
     feature = "test-lifecycle",
     feature = "test-funding-lifecycle",
-    feature = "test-bundle-launch"
+    feature = "test-bundle-launch",
+    feature = "test-build-topology"
 ))]
 const LIFECYCLE_SETTLE_TICKS: u64 = 150;
 
@@ -4721,7 +4998,11 @@ fn create_child(
 }
 
 /// The instance id operation 15 left in this process's argument region.
-#[cfg(any(feature = "test-lifecycle", feature = "test-bundle-launch"))]
+#[cfg(any(
+    feature = "test-build-topology",
+    feature = "test-lifecycle",
+    feature = "test-bundle-launch"
+))]
 fn created_instance(launch: &Launch) -> u64 {
     // SAFETY: the region is the launcher's own mapping and the offset is the
     // one the contract fixes.
@@ -4734,7 +5015,11 @@ fn created_instance(launch: &Launch) -> u64 {
 }
 
 /// `process_wait_child`, and the record it left behind.
-#[cfg(any(feature = "test-lifecycle", feature = "test-bundle-launch"))]
+#[cfg(any(
+    feature = "test-build-topology",
+    feature = "test-lifecycle",
+    feature = "test-bundle-launch"
+))]
 fn wait_child(
     launch: &Launch,
     handle: u64,

@@ -304,6 +304,10 @@ qemu_process_control() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/process-control.sh \
         target/preflight-qemu/process-control)
 }
+qemu_build_topology() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/build-topology.sh \
+        target/preflight-qemu/build-topology)
+}
 qemu_supervision() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/supervision.sh \
         target/preflight-qemu/supervision)
@@ -482,6 +486,7 @@ gate qemu       full-only "QEMU a module launches a process"           qemu_proc
 gate qemu       full-only "QEMU a supervisor collects endings"          qemu_lifecycle
 gate qemu       full-only "QEMU runtime-obtained authority"             qemu_runtime_authority
 gate qemu       full-only "QEMU textual service supervision"            qemu_supervision
+gate qemu       full-only "QEMU T1 build topology"                     qemu_build_topology
 gate qemu       full-only "QEMU a textual supervisor starts services"  qemu_supervisor_text
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
