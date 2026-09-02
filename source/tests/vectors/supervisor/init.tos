@@ -8,14 +8,13 @@
 // that answers the operation.
 //
 // **It used to start them.** `SYSTEM_INTERFACE_V1` §4 declared `process_create`
-// over `SYSTEM_ABI_V1` operation 8, and ADR-0076 §4 retires that operation:
-// creation is funded now, and this schema cannot yet carry an operation that
-// takes two capabilities, an explicit grant and an explicit endowment and
-// returns a capability. So what a textual supervisor can still do is what this
-// does — read a policy it does not contain and reach a real capability contract
-// once per entry — and what it cannot yet do is the creation itself. That gap is
-// a decision rather than an omission, and it is written up as one in
-// `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
+// over `SYSTEM_ABI_V1` operation 8, and ADR-0076 §4 retires that operation.
+// Creation is funded now, and the schema carries it again: `process_create_funded`
+// takes two capabilities, a sealed launch plan and an explicit grant, and returns
+// the child's capability (ADR-0077). What this module does is the half that was
+// never in question — read a policy it does not contain and reach a real
+// capability contract once per entry — and it is left that way deliberately, so
+// that the policy-reading claim is evidenced by a module that does nothing else.
 //
 // That is docs/37's Stage 3 identity question answered for the system's own
 // structure, and not just for one operation: "do textual processes exercise real

@@ -68,7 +68,10 @@ kinds_in_table=$(sed -n \
     -e 's/^ *object: ObjectKind::\([A-Za-z]*\),$/\1/p' "$TABLE" |
     paste - - |
     sed -e 's/Endpoint$/endpoint/' -e 's/Reply$/reply/' -e 's/Process$/process/' \
-        -e 's/Region$/region/' -e 's/InterfacePublication$/interface publication/' |
+        -e 's/Region$/region/' -e 's/InterfacePublication$/interface publication/' \
+        -e 's/MemoryAuthority$/memory authority/' \
+        -e 's/LaunchPlanBuilder$/launch plan builder/' \
+        -e 's/LaunchPlan$/launch plan/' |
     tr '\t' ' ' | sort)
 
 [ -n "$kinds_in_doc" ] || fail "section 4 declares no interface-to-object-kind pairing"
@@ -90,9 +93,15 @@ kinds_in_table=$(sed -n \
 HOST="$ROOT/source/runtime-image/src/main.rs"
 abi_in_doc=$(sed -n '/^### /,/^## 4.1/p' "$DOC" |
     sed -n 's/^| `\([a-z_]*\)` |.*| \([0-9]*\) |$/\1 \2/p' | sort)
+#
+# The table is a list of `Performed` records, and what is wanted from each is the
+# operation's name beside the `SYSTEM_ABI_V1` constant that performs it. They are
+# two adjacent fields, so they are read as a pair rather than by a single
+# pattern — one operation may be declared by several interfaces
+# (`endow_for_launch` is), so the pairing is many-to-one on purpose.
 abi_in_host=$(sed -n '/^const PERFORMED/,/^];$/p' "$HOST" |
-    tr -d ' \n' | tr '(' '\n' |
-    sed -n 's/^"[a-zA-Z.]*","\([a-z_]*\)",\([A-Z_]*\),Shape::[A-Za-z]*,\?).*$/\1 \2/p' | sort)
+    sed -n -e 's/^ *name: "\([a-z_]*\)",$/\1/p' -e 's/^ *operation: \([A-Z_]*\),$/\1/p' |
+    awk '/^[a-z_]+$/ { name = $0; next } { print name, $0 }' | sort)
 # The host names each call by its `SYSTEM_ABI_V1` constant, so resolve those to
 # the numbers the document assigns before comparing.
 while IFS= read -r pair; do
@@ -126,7 +135,9 @@ requirements_in_doc=$(sed -n 's/^| `\([a-z_]*\)` | \(`system[^|]*\) | .* | [0-9]
 requirements_in_table=$(sed -n \
     -e 's/^ *name: "\([a-z_]*\)",$/OP \1/p' \
     -e 's/^ *capabilities: &\[Requirement::of("\([a-zA-Z.]*\)", "\([a-z]*\)")\],$/REQ \1 \2/p' \
-    -e 's/^ *Requirement::of("\([a-zA-Z.]*\)", "\([a-z]*\)"),$/REQ \1 \2/p' "$TABLE" |
+    -e 's/^ *Requirement::of("\([a-zA-Z.]*\)", "\([a-z]*\)"),$/REQ \1 \2/p' \
+    -e 's/^ *capabilities: &\[Requirement::held("\([a-zA-Z.]*\)")\],$/REQ \1 none/p' \
+    -e 's/^ *Requirement::held("\([a-zA-Z.]*\)"),$/REQ \1 none/p' "$TABLE" |
     awk '$1 == "OP" { if (name != "") print line; name = $2; line = $2; next }
          $1 == "REQ" { line = line " " $2 " " $3 }
          END { if (name != "") print line }' |

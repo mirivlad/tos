@@ -406,7 +406,15 @@ impl<'source> TypeResolver<'source> {
     /// the name is decided by the source-set slice.
     fn resolves(&self, path: &'source [crate::parser::Span], spelled: &str) -> bool {
         if path.len() > 1 {
-            return self.capability_interfaces.contains(spelled)
+            // An interface an accepted schema declares is a type wherever it is
+            // written, and not only in the module that imported it. Naming a
+            // type is not holding one: an operation whose result is
+            // `Result<system.process.LaunchPlanBuilder, i64>` has to write that
+            // path down, and a module forced to `import capability` it in order
+            // to spell it would be requesting authority it never uses — which
+            // `docs/42` §2 would then have to answer, or deny at startup.
+            return crate::interfaces::interface(spelled).is_some()
+                || self.capability_interfaces.contains(spelled)
                 || self.imports.contains(path[0].text(self.source));
         }
         PRIMITIVE_TYPES.contains(&spelled)

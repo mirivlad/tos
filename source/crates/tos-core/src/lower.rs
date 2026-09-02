@@ -581,9 +581,23 @@ impl<'source> Lowerer<'source> {
                         if let Some(&(id, _)) = self.nominals.get(&spelled) {
                             return Ok(id);
                         }
-                        // A type from another module, or a capability
-                        // interface: its identity is the path, and its shape
-                        // belongs to the module that declares it.
+                        // A capability interface written as a type is the
+                        // capability type, and `tos-ir/v1` has had a
+                        // constructor for it since it was written. Until an
+                        // operation returned one it was reachable only from an
+                        // `import capability`, and a path written in a
+                        // signature fell through to the nominal case below —
+                        // which named the interface correctly and said nothing
+                        // about what kind of thing it was. An operation whose
+                        // result is authority has to say so in the artifact,
+                        // so a reader learns from the type table that a value
+                        // of this type is a capability rather than a record
+                        // some module elsewhere declares.
+                        if crate::interfaces::interface(&spelled).is_some() {
+                            return Ok(self.intern(TypeDef::Capability(spelled)));
+                        }
+                        // A type from another module: its identity is the path,
+                        // and its shape belongs to the module that declares it.
                         return Ok(self.intern(TypeDef::Nominal {
                             module_content_id: String::new(),
                             export_name: spelled,
@@ -3040,11 +3054,19 @@ impl<'source> Lowerer<'source> {
         // How many the schema says this operation takes. The checker has already
         // refused a declaration that does not match one, so this is the number
         // the source's arguments were checked against.
-        let required = self
-            .extern_operation(name)
+        let arguments = expression.arguments();
+        // Resolved through the first argument, which is the operation's own
+        // capability: the checker has already refused a declaration that does
+        // not match one, so this is the entry the source's arguments were
+        // checked against.
+        let required = arguments
+            .first()
+            .map(|argument| argument.value())
+            .filter(|written| written.form() == ExpressionForm::Name)
+            .and_then(|written| self.operation_through(name, written.span().text(self.source)))
+            .or_else(|| self.extern_operation(name))
             .map(|operation| operation.capabilities.len())
             .unwrap_or(1);
-        let arguments = expression.arguments();
         if arguments.len() < required {
             return Err(self.gap(
                 "interface operation without its capabilities",
@@ -3105,6 +3127,22 @@ impl<'source> Lowerer<'source> {
     /// declaration that disagreed was already refused by the checker.
     fn extern_operation(&self, name: &str) -> Option<&'static crate::interfaces::Operation> {
         let interface = self.externs.get(name)?;
+        crate::interfaces::interface(interface)?.operation(name)
+    }
+
+    /// The same, resolved through the interface a *call site* reaches it by.
+    ///
+    /// One operation may be declared by several interfaces — `endow_for_launch`
+    /// is, because it is reached through the capability being delegated
+    /// (ADR-0077 §3) — so the name alone does not decide which entry a call
+    /// uses. The first argument does, and §4.1 makes it the operation's own
+    /// capability.
+    fn operation_through(
+        &self,
+        name: &str,
+        binding: &str,
+    ) -> Option<&'static crate::interfaces::Operation> {
+        let interface = self.capability_interfaces.get(binding)?;
         crate::interfaces::interface(interface)?.operation(name)
     }
 

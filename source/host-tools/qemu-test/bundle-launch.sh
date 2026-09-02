@@ -12,6 +12,9 @@
 #
 # What is asserted, and why each one is a claim somebody could get wrong:
 #
+#   unsealed            a launch plan that has not been sealed is refused as an
+#                       input to a creation: a decision still being written is
+#                       not one anything may be created from
 #   not_shared          an immutable **affine** region is refused. A target gets
 #                       a window of its own and its creator keeps one, which is
 #                       two holders; `share` (7) is what makes a region able to
@@ -136,6 +139,12 @@ expect(
         # holds names nothing. Both refused before anything is built.
         "not_shared": E_NO_CAPABILITY,
         "unheld": E_BAD_HANDLE,
+        # And a plan that has not been sealed is a decision still being
+        # written. It is made successfully and refused as an input: creating
+        # from a builder would create from whatever happened to have been
+        # added by the time the call was made (ADR-0077 §5).
+        "unsealed_plan": OK,
+        "unsealed": E_NO_CAPABILITY,
         # Two targets from one capability over one backing.
         "first": OK,
         "second": OK,
@@ -203,4 +212,5 @@ if int(last["tables_free"]) != baseline:
 print(f"  every frame back to {last['available']}; every table back to {baseline}")
 
 print("BUNDLE-LAUNCH PASS: one bundle, two targets, and a corrupt one refused by its own")
+print("  and one sealed launch plan behind all three, unchanged by any of them")
 PY

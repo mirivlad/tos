@@ -77,13 +77,17 @@ const PROCESS_WAIT_CHILD: u64 = 14;
 #[cfg(not(feature = "test-lifecycle"))]
 #[cfg(any(feature = "test-funding-lifecycle", feature = "test-lifecycle"))]
 const PROCESS_CREATE_WITH_GENERATION: u64 = 15;
-/// The one creation this ABI version has: two capabilities, an explicit runtime
-/// grant and an explicit endowment (ADR-0076 §3).
-#[cfg(any(feature = "test-funding-lifecycle", feature = "test-lifecycle"))]
+/// The one creation from source this ABI version has: two capabilities, an
+/// explicit runtime grant and a sealed launch plan (ADR-0076 §3, ADR-0077 §5).
 const PROCESS_CREATE_FUNDED: u64 = 19;
 /// The same creation, over a program the nucleus does not read (ADR-0073).
 #[cfg(feature = "test-bundle-launch")]
 const PROCESS_CREATE_FROM_BUNDLE: u64 = 20;
+/// Launch policy as an object (ADR-0077): made, written entry by entry through
+/// the authority each entry delegates, and sealed once.
+const LAUNCH_PLAN_CREATE: u64 = 21;
+const LAUNCH_PLAN_ENDOW: u64 = 22;
+const LAUNCH_PLAN_SEAL: u64 = 23;
 const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
@@ -108,7 +112,6 @@ const REGION_FREEZE: u64 = 18;
 /// checks them: a refusal it could not name it could not report.
 const OK: i64 = 0;
 const E_NO_CAPABILITY: i64 = -1;
-#[cfg(feature = "test-funding-lifecycle")]
 const E_BAD_ARGUMENT: i64 = -3;
 const E_CANCELLED: i64 = -5;
 #[cfg(feature = "test-region-transport")]
@@ -163,7 +166,12 @@ unsafe fn call(operation: u64, first: u64, second: u64) -> (i64, u64) {
 
 /// Makes one system call with four arguments.
 ///
+/// Reached only by the evidence workloads that name a raw operation directly.
+/// The typed bridge does not use it: an operation there is performed from the
+/// register table `PERFORMED` declares for it, which writes all six.
+///
 /// SAFETY: `operation` is assigned and every argument is legal for it.
+#[allow(dead_code)]
 // SAFETY: the caller names an assigned operation.
 unsafe fn call4(operation: u64, first: u64, second: u64, third: u64, fourth: u64) -> (i64, u64) {
     // SAFETY: per this function's contract; the fifth argument register is the
@@ -196,6 +204,31 @@ unsafe fn call5(
     fourth: u64,
     fifth: u64,
 ) -> (i64, u64) {
+    // SAFETY: per this function's contract; the sixth register is written with
+    // a zero rather than left as it was found, for the reason the fifth is.
+    unsafe { call6(operation, first, second, third, fourth, fifth, 0) }
+}
+
+/// Makes one system call with all six assigned argument registers.
+///
+/// `rdi`, `rsi`, `rdx`, `r10`, `r8`, `r9`, in the order `SYSTEM_ABI_V1` §3
+/// fixes. The sixth is the runtime grant of operations 19 and 20 and nothing
+/// else in this version.
+///
+/// SAFETY: `operation` is an assigned operation number and every argument is
+/// legal for it.
+// SAFETY: the caller names an assigned operation; the instruction itself
+// touches no memory of this image.
+#[allow(clippy::too_many_arguments)]
+unsafe fn call6(
+    operation: u64,
+    first: u64,
+    second: u64,
+    third: u64,
+    fourth: u64,
+    fifth: u64,
+    sixth: u64,
+) -> (i64, u64) {
     let status: i64;
     let value: u64;
     // SAFETY: `rdx` is the third argument on the way in and the value's
@@ -211,6 +244,7 @@ unsafe fn call5(
             inlateout("rdx") third => value,
             in("r10") fourth,
             in("r8") fifth,
+            in("r9") sixth,
             out("rcx") _,
             out("r11") _,
             options(nostack),
@@ -272,8 +306,8 @@ unsafe fn create_funded(
     arguments: u64,
     process: u64,
     memory: u64,
+    plan: u64,
     name_length: u64,
-    endowed: u64,
     own_rights: u64,
     grant: u64,
     generation: Option<u64>,
@@ -297,17 +331,17 @@ unsafe fn create_funded(
     let status: i64;
     let value: u64;
     // SAFETY: operation 19 takes the process authority in `rdi`, the memory
-    // authority in `rsi`, the module name's length in `rdx`, the endowment count
-    // in `r10`, the child's rights over itself in `r8` and the runtime grant it
-    // asks for in `r9`.
+    // authority in `rsi`, the sealed launch plan in `rdx`, the module name's
+    // length in `r10`, the child's rights over itself in `r8` and the runtime
+    // grant it asks for in `r9`.
     unsafe {
         core::arch::asm!(
             "syscall",
             inlateout("rax") PROCESS_CREATE_FUNDED => status,
             in("rdi") process,
             in("rsi") memory,
-            inlateout("rdx") name_length => value,
-            in("r10") endowed,
+            inlateout("rdx") plan => value,
+            in("r10") name_length,
             in("r8") own_rights,
             in("r9") grant,
             out("rcx") _,
@@ -316,6 +350,109 @@ unsafe fn create_funded(
         )
     };
     (status, value)
+}
+
+/// Makes an empty launch plan (21).
+///
+/// SAFETY: `process` names a process capability this process holds with
+/// `create`.
+#[cfg(any(
+    feature = "test-funding-lifecycle",
+    feature = "test-lifecycle",
+    feature = "test-bundle-launch"
+))]
+// SAFETY: the caller's promise about the handle is what makes this an ordinary
+// call.
+unsafe fn launch_plan_create(process: u64) -> (i64, u64) {
+    // SAFETY: operation 21 takes the process authority in `rdi` and nothing
+    // else, and answers with the builder's handle in `rdx`.
+    unsafe { call(LAUNCH_PLAN_CREATE, process, 0) }
+}
+
+/// Adds one entry to a builder (22): a capability this process holds, the
+/// rights the child is to have over it, and the name the child knows it by.
+///
+/// SAFETY: `held` names a capability this process holds and `plan` a launch
+/// plan builder it holds.
+#[cfg(any(
+    feature = "test-funding-lifecycle",
+    feature = "test-lifecycle",
+    feature = "test-bundle-launch"
+))]
+// SAFETY: as above; the binding is written into this process's own argument
+// region before the call.
+unsafe fn launch_plan_endow(arguments: u64, held: u64, plan: u64, rights: u32, name: &[u8]) -> i64 {
+    let mut binding = [0u8; tos_launch::MAX_BINDING as usize];
+    binding[..name.len()].copy_from_slice(name);
+    // SAFETY: the slot is at a fixed offset in this process's own argument
+    // region, which the launcher mapped writable.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<[u8; tos_launch::MAX_BINDING as usize]>(
+            (arguments + tos_launch::LAUNCH_ENDOW_BINDING) as usize,
+        )
+        .write(binding)
+    };
+    let status: i64;
+    // SAFETY: operation 22 takes the capability being delegated in `rdi`, the
+    // builder in `rsi`, the binding's length in `rdx` and the rights in `r10`.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") LAUNCH_PLAN_ENDOW => status,
+            in("rdi") held,
+            in("rsi") plan,
+            in("rdx") name.len() as u64,
+            in("r10") u64::from(rights),
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        )
+    };
+    status
+}
+
+/// Seals a builder (23), consuming it and answering with the sealed plan.
+///
+/// SAFETY: `process` names a process capability with `create` and `plan` a
+/// builder this process holds.
+#[cfg(any(
+    feature = "test-funding-lifecycle",
+    feature = "test-lifecycle",
+    feature = "test-bundle-launch"
+))]
+// SAFETY: the caller's promise about the two handles.
+unsafe fn launch_plan_seal(process: u64, plan: u64) -> (i64, u64) {
+    // SAFETY: operation 23 takes the process authority in `rdi` and the builder
+    // in `rsi`, and answers with the sealed plan's handle in `rdx`.
+    unsafe { call(LAUNCH_PLAN_SEAL, process, plan) }
+}
+
+/// A sealed plan carrying these entries, built the only way one can be.
+///
+/// Three calls and no shortcut: even an endowment of nothing is a plan that was
+/// made and sealed, because a creation takes a decision and "nothing" is one.
+#[cfg(any(
+    feature = "test-funding-lifecycle",
+    feature = "test-lifecycle",
+    feature = "test-bundle-launch"
+))]
+fn sealed_plan(arguments: u64, process: u64, entries: &[(u64, u32, &[u8])]) -> (i64, u64) {
+    // SAFETY: `process` names this process's own authority over itself, with
+    // `create`.
+    let (created, builder) = unsafe { launch_plan_create(process) };
+    if created != OK {
+        return (created, 0);
+    }
+    for (held, rights, name) in entries {
+        // SAFETY: each handle names a capability this process holds, and
+        // `builder` the plan just made.
+        let placed = unsafe { launch_plan_endow(arguments, *held, builder, *rights, name) };
+        if placed != OK {
+            return (placed, 0);
+        }
+    }
+    // SAFETY: as above.
+    unsafe { launch_plan_seal(process, builder) }
 }
 
 /// The runtime arena an ordinary process is given, as the reference platform
@@ -569,6 +706,7 @@ unsafe fn bundle_entry(launch: &tos_launch::BundleLaunch) -> ! {
     };
     let mut endowment = Endowment {
         held,
+        arguments: launch.arguments_base,
         report: Report {
             base: launch.report_base,
             capacity: launch.report_length,
@@ -740,7 +878,11 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
             launch.capability_count as usize,
         )
     };
-    let mut endowment = Endowment { held, report };
+    let mut endowment = Endowment {
+        held,
+        arguments: launch.arguments_base,
+        report,
+    };
     let run = match prepare_from_source(&request, &mut trace, RESIDENCY) {
         Ok(Preparation::Ready(mut prepared)) => {
             trace.entering(PipelineStage::Execute);
@@ -867,67 +1009,225 @@ fn hold_direction_flag(report: &mut Report) {
 #[cfg(not(feature = "test-direction-flag"))]
 fn hold_direction_flag(_report: &mut Report) {}
 
-/// Every operation of `SYSTEM_INTERFACE_V1` §4, and the `SYSTEM_ABI_V1` call
-/// that performs it.
-///
-/// The schema's last column, in the one party that has to act on it. The
-/// frontend deliberately does not carry these numbers — a frontend that knew the
-/// system ABI would be a second place it is declared, and `docs/42` §5 keeps the
-/// two separately versioned. A gate holds this table against §4.
-///
-/// `length` says whether the operation's declared parameter after the capability
-/// is a payload length. It is not a guess about arity: §4 declares which
-/// operations take one, and an operation whose declaration says otherwise is a
-/// disagreement the gate catches rather than a call this table improvises.
-/// How an operation's value crosses (`SYSTEM_INTERFACE_V1` §4.1).
-enum Shape {
-    /// Two capabilities and a length: the reply in `rdi`, the endpoint in
-    /// `rsi`, the answer's length in `rdx` (ADR-0063). The only shape of this
-    /// version whose second register is a capability rather than a value.
-    ReplyThenReceive,
-    /// No value after the capability.
-    Nothing,
-    /// One `u64`, in the register `SYSTEM_ABI_V1` §5 assigns the operation.
-    Length,
+// Every operation of `SYSTEM_INTERFACE_V1` §4, and how each one crosses.
+//
+// The schema's last three columns, in the one party that has to act on them.
+// The frontend deliberately does not carry these numbers — a frontend that knew
+// the system ABI would be a second place it is declared, and `docs/42` §5 keeps
+// the two separately versioned. A gate holds this table against §4.
+//
+// **This is where the ABI stops.** Above it a module names an operation and
+// receives a value; below it there are registers, an argument region and fixed
+// offsets. Nothing of the second kind is visible in TOS Core, which is what
+// §5's "an operation returns the value it produced" costs: one table saying,
+// per operation, which register each argument goes in and where each result
+// comes from.
+
+/// One of the six argument registers `SYSTEM_ABI_V1` §3 assigns.
+#[derive(Clone, Copy)]
+enum Reg {
+    Rdi,
+    Rsi,
+    Rdx,
+    R10,
+    R8,
+    R9,
 }
 
-const PERFORMED: &[(&str, &str, u64, Shape)] = &[
-    (
-        "system.ipc.Endpoint",
-        "endpoint_send",
-        ENDPOINT_SEND,
-        Shape::Length,
-    ),
-    (
-        "system.ipc.Endpoint",
-        "endpoint_receive",
-        ENDPOINT_RECEIVE,
-        Shape::Nothing,
-    ),
-    (
-        "system.ipc.Endpoint",
-        "endpoint_call",
-        ENDPOINT_CALL,
-        Shape::Length,
-    ),
-    (
-        "system.ipc.Reply",
-        "endpoint_reply",
-        ENDPOINT_REPLY,
-        Shape::Length,
-    ),
-    (
-        "system.process.Control",
-        "process_terminate",
-        PROCESS_TERMINATE,
-        Shape::Nothing,
-    ),
-    (
-        "system.ipc.Reply",
-        "endpoint_reply_receive",
-        ENDPOINT_REPLY_RECEIVE,
-        Shape::ReplyThenReceive,
-    ),
+/// How one declared value of an operation reaches the nucleus (§4.1).
+#[derive(Clone, Copy)]
+enum Slot {
+    /// A `u64`, in the register the operation assigns it.
+    Number(Reg),
+    /// A capability **value** — one an operation produced, rather than one an
+    /// `import capability` was answered with — in the register the operation
+    /// assigns it.
+    ///
+    /// The engine carried it without reading it, exactly as it carries the
+    /// operation's own capability, and this is the only place it becomes a
+    /// number (`docs/42` §2).
+    Held(Reg),
+    /// A `string`: its bytes at a fixed offset of the argument region, its
+    /// length in a register.
+    ///
+    /// The bound is the schema's, not this host's: `SYSTEM_ABI_V1` §3 bounds
+    /// every read by a constant of the contract rather than by a number a
+    /// caller chose, so a value past its declared maximum is refused **before
+    /// the call is made** with the status §4.1 assigns.
+    Text {
+        length: Reg,
+        at: u64,
+        maximum: usize,
+    },
+}
+
+/// What an operation produces, in the shape the schema declares (§5).
+#[derive(Clone, Copy)]
+enum Produced {
+    /// `i64`: the status, unchanged and unwrapped.
+    Status,
+    /// `Result<C, i64>` for a nominal capability `C`: the handle `rdx` carries
+    /// on success, the status otherwise.
+    Authority,
+}
+
+struct Performed {
+    interface: &'static str,
+    name: &'static str,
+    operation: u64,
+    /// Where each capability supplied from an `import capability` goes, in the
+    /// order §4 declares them.
+    capabilities: &'static [Reg],
+    /// Where each declared value goes, in the order §4 declares them.
+    values: &'static [Slot],
+    result: Produced,
+}
+
+const PERFORMED: &[Performed] = &[
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_send",
+        operation: ENDPOINT_SEND,
+        capabilities: &[Reg::Rdi],
+        // §5 rows 1, 3 and 4: the length goes where a one-capability
+        // operation's first value goes, which is `rsi`.
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_receive",
+        operation: ENDPOINT_RECEIVE,
+        capabilities: &[Reg::Rdi],
+        values: &[],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_call",
+        operation: ENDPOINT_CALL,
+        capabilities: &[Reg::Rdi],
+        // §5 rows 1, 3 and 4: the length goes where a one-capability
+        // operation's first value goes, which is `rsi`.
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Status,
+    },
+    // One selector for every kind of authority there is (ADR-0077 §3). The
+    // capability being delegated is the one the call is reached through, so
+    // this row is declared once per interface in §4 and performed once here.
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endow_for_launch",
+        operation: LAUNCH_PLAN_ENDOW,
+        capabilities: &[Reg::Rdi],
+        values: &[
+            Slot::Held(Reg::Rsi),
+            Slot::Number(Reg::R10),
+            Slot::Text {
+                length: Reg::Rdx,
+                at: tos_launch::LAUNCH_ENDOW_BINDING,
+                maximum: tos_launch::MAX_BINDING as usize,
+            },
+        ],
+        result: Produced::Status,
+    },
+    // The same operation, declared by every interface whose capabilities may be
+    // a startup endowment. One ABI selector, three rows: what differs is the
+    // nominal type of the capability the call is reached through, which is the
+    // caller's and not this contract's.
+    Performed {
+        interface: "system.memory.Authority",
+        name: "endow_for_launch",
+        operation: LAUNCH_PLAN_ENDOW,
+        capabilities: &[Reg::Rdi],
+        values: &[
+            Slot::Held(Reg::Rsi),
+            Slot::Number(Reg::R10),
+            Slot::Text {
+                length: Reg::Rdx,
+                at: tos_launch::LAUNCH_ENDOW_BINDING,
+                maximum: tos_launch::MAX_BINDING as usize,
+            },
+        ],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "system.process.Control",
+        name: "endow_for_launch",
+        operation: LAUNCH_PLAN_ENDOW,
+        capabilities: &[Reg::Rdi],
+        values: &[
+            Slot::Held(Reg::Rsi),
+            Slot::Number(Reg::R10),
+            Slot::Text {
+                length: Reg::Rdx,
+                at: tos_launch::LAUNCH_ENDOW_BINDING,
+                maximum: tos_launch::MAX_BINDING as usize,
+            },
+        ],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "system.ipc.Reply",
+        name: "endpoint_reply",
+        operation: ENDPOINT_REPLY,
+        capabilities: &[Reg::Rdi],
+        // §5 rows 1, 3 and 4: the length goes where a one-capability
+        // operation's first value goes, which is `rsi`.
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Status,
+    },
+    // The second capability is an argument like the first and is read like the
+    // first: the engine carried both without looking at either (ADR-0063).
+    Performed {
+        interface: "system.ipc.Reply",
+        name: "endpoint_reply_receive",
+        operation: ENDPOINT_REPLY_RECEIVE,
+        capabilities: &[Reg::Rdi, Reg::Rsi],
+        values: &[Slot::Number(Reg::Rdx)],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "system.process.Control",
+        name: "process_terminate",
+        operation: PROCESS_TERMINATE,
+        capabilities: &[Reg::Rdi],
+        values: &[],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "system.process.Control",
+        name: "launch_plan_create",
+        operation: LAUNCH_PLAN_CREATE,
+        capabilities: &[Reg::Rdi],
+        values: &[],
+        result: Produced::Authority,
+    },
+    Performed {
+        interface: "system.process.Control",
+        name: "launch_plan_seal",
+        operation: LAUNCH_PLAN_SEAL,
+        capabilities: &[Reg::Rdi],
+        values: &[Slot::Held(Reg::Rsi)],
+        result: Produced::Authority,
+    },
+    Performed {
+        interface: "system.process.Control",
+        name: "process_create_funded",
+        operation: PROCESS_CREATE_FUNDED,
+        capabilities: &[Reg::Rdi, Reg::Rsi],
+        values: &[
+            Slot::Held(Reg::Rdx),
+            Slot::Text {
+                length: Reg::R10,
+                at: tos_launch::CREATE_MODULE,
+                maximum: tos_launch::MAX_MODULE_PATH as usize,
+            },
+            Slot::Number(Reg::R9),
+            Slot::Number(Reg::R8),
+        ],
+        result: Produced::Authority,
+    },
 ];
 
 /// What this process holds, as the thing a run reaches through.
@@ -939,6 +1239,14 @@ const PERFORMED: &[(&str, &str, u64, Shape)] = &[
 /// before this process ran, and this reports what that decision was.
 struct Endowment<'a> {
     held: &'a [LaunchCapability],
+    /// Where this process's argument region begins, because a `string` value
+    /// parameter travels in it (`SYSTEM_INTERFACE_V1` §4.1).
+    ///
+    /// The nucleus chose the address and the launch record reported it. Nothing
+    /// above this struct knows there is a region at all: a module names a value,
+    /// and this is the thing that puts its bytes where the ABI already reads
+    /// them.
+    arguments: u64,
     /// Its own copy, not a borrow: see [`Report`]. The trace holds one too, and
     /// both write to the one region the launcher named.
     report: Report,
@@ -966,6 +1274,9 @@ impl System for Endowment<'_> {
                 interfaces::ObjectKind::Process => tos_launch::OBJECT_PROCESS,
                 interfaces::ObjectKind::InterfacePublication => tos_launch::OBJECT_INTERFACE,
                 interfaces::ObjectKind::Reply => tos_launch::OBJECT_REPLY,
+                interfaces::ObjectKind::MemoryAuthority => tos_launch::OBJECT_MEMORY_AUTHORITY,
+                interfaces::ObjectKind::LaunchPlanBuilder => tos_launch::OBJECT_LAUNCH_PLAN_BUILDER,
+                interfaces::ObjectKind::LaunchPlan => tos_launch::OBJECT_LAUNCH_PLAN,
             })?;
         let capability = answer?;
         self.report.line(&alloc::format!(
@@ -979,9 +1290,10 @@ impl System for Endowment<'_> {
     }
 
     fn reach(&mut self, call: Reach<'_>) -> Result<Value, Trap> {
-        let Some((_, _, operation, shape)) = PERFORMED.iter().find(|(interface, name, _, _)| {
-            *interface == call.interface && *name == call.operation
-        }) else {
+        let Some(performed) = PERFORMED
+            .iter()
+            .find(|entry| entry.interface == call.interface && entry.name == call.operation)
+        else {
             // An accepted schema declared it and this host cannot perform it.
             // That is a disagreement between two documents, not a program error,
             // and it ends the run rather than returning a status the module
@@ -992,78 +1304,122 @@ impl System for Endowment<'_> {
                 call.source,
             ));
         };
-        let Some(Value::Capability(held)) = call.arguments.first() else {
+        // Every register an operation reads is written, including the zeros. A
+        // caller that left one as it found it would be asking the nucleus to
+        // read a register nobody wrote.
+        let mut registers = [0u64; 6];
+        let capabilities = performed.capabilities.len();
+        if call.arguments.len() != capabilities + performed.values.len() {
             return Err(Trap::new(
                 "RUNTIME_TYPE_CONFUSION",
-                "an operation reached without a capability first",
+                "an operation was reached with the wrong number of arguments",
                 call.source,
             ));
-        };
-        let status = match shape {
-            Shape::Nothing => {
-                // SAFETY: `operation` is one of the assigned numbers in the
-                // table above and takes only the capability.
-                unsafe { self::call(*operation, held.get(), 0) }.0
-            }
-            Shape::Length => {
-                let Some(Value::Int(_, bytes)) = call.arguments.get(1) else {
+        }
+        // The capabilities the schema declares, in the order it declares them,
+        // each from its own `import capability` binding (ADR-0056, ADR-0063).
+        for (register, argument) in performed.capabilities.iter().zip(call.arguments) {
+            let Value::Capability(held) = argument else {
+                return Err(Trap::new(
+                    "RUNTIME_TYPE_CONFUSION",
+                    "an operation was reached without the capability it requires",
+                    call.source,
+                ));
+            };
+            registers[*register as usize] = held.get();
+        }
+        for (slot, argument) in performed.values.iter().zip(&call.arguments[capabilities..]) {
+            match (slot, argument) {
+                (Slot::Number(register), Value::Int(_, number)) => {
+                    if *number < 0 {
+                        return Err(Trap::new(
+                            "RUNTIME_TYPE_CONFUSION",
+                            "an operation was reached with a negative value",
+                            call.source,
+                        ));
+                    }
+                    registers[*register as usize] = *number as u64;
+                }
+                // A capability the module *holds as a value*, because an
+                // operation produced it: a launch plan, or a child. It is
+                // carried exactly as an import-supplied one is — the engine
+                // never read it, and this is where it becomes a number.
+                (Slot::Held(register), Value::Capability(held)) => {
+                    registers[*register as usize] = held.get();
+                }
+                (
+                    Slot::Text {
+                        length,
+                        at,
+                        maximum,
+                    },
+                    Value::Text(text),
+                ) => {
+                    // Past the declared maximum is refused before the call is
+                    // made, with the status §4.1 assigns — the same one an
+                    // inline payload past its own bound receives, because both
+                    // are constants the caller knew before it called.
+                    if text.len() > *maximum {
+                        return Ok(Value::Int(IntKind::I64, i128::from(E_BAD_ARGUMENT)));
+                    }
+                    // SAFETY: the argument region is this process's own writable
+                    // mapping, the offset is a constant of the contract, and the
+                    // length is bounded by the schema's maximum immediately
+                    // above.
+                    unsafe {
+                        core::ptr::copy_nonoverlapping(
+                            text.as_ptr(),
+                            core::ptr::with_exposed_provenance_mut::<u8>(
+                                (self.arguments + at) as usize,
+                            ),
+                            text.len(),
+                        )
+                    };
+                    registers[*length as usize] = text.len() as u64;
+                }
+                _ => {
                     return Err(Trap::new(
                         "RUNTIME_TYPE_CONFUSION",
-                        "an operation that takes a length was reached without one",
-                        call.source,
-                    ));
-                };
-                if *bytes < 0 {
-                    return Err(Trap::new(
-                        "RUNTIME_TYPE_CONFUSION",
-                        "an operation was reached with a negative length",
+                        "an operation was reached with a value of the wrong kind",
                         call.source,
                     ));
                 }
-                // SAFETY: as above, with the length this call's own declaration
-                // says it takes.
-                unsafe { self::call(*operation, held.get(), *bytes as u64) }.0
             }
-            Shape::ReplyThenReceive => {
-                // The second capability is an argument like the first, and is
-                // read like the first: the engine carried both without looking
-                // at either, and this is the only place either becomes a number
-                // (ADR-0061, ADR-0063).
-                let Some(Value::Capability(endpoint)) = call.arguments.get(1) else {
-                    return Err(Trap::new(
-                        "RUNTIME_TYPE_CONFUSION",
-                        "an operation requiring two capabilities was reached with one",
-                        call.source,
-                    ));
-                };
-                let Some(Value::Int(_, bytes)) = call.arguments.get(2) else {
-                    return Err(Trap::new(
-                        "RUNTIME_TYPE_CONFUSION",
-                        "an operation that takes a length was reached without one",
-                        call.source,
-                    ));
-                };
-                if *bytes < 0 {
-                    return Err(Trap::new(
-                        "RUNTIME_TYPE_CONFUSION",
-                        "an operation was reached with a negative length",
-                        call.source,
-                    ));
-                }
-                // SAFETY: `SYSTEM_ABI_V1` §5 row 13 — the reply in `rdi`, the
-                // endpoint in `rsi`, the answer's length in `rdx`, flags in
-                // `r10`; both handles were granted to this process.
-                unsafe { call4(*operation, held.get(), endpoint.get(), *bytes as u64, 0) }.0
-            }
+        }
+        // SAFETY: `operation` is one of the assigned numbers in the table above,
+        // and every register it reads has been written from the arguments the
+        // schema declares for it.
+        let (status, value) = unsafe {
+            call6(
+                performed.operation,
+                registers[0],
+                registers[1],
+                registers[2],
+                registers[3],
+                registers[4],
+                registers[5],
+            )
         };
         // What a module asked the system for and what the system answered, on
-        // the audit record. The module sees only the status; a reader of the
-        // boot log sees which operation, under which request, produced it.
+        // the audit record. The module sees the result; a reader of the boot log
+        // sees which operation, under which request, produced it.
         self.report.line(&alloc::format!(
             "TOS.RUN.INTERFACE operation={} status={status}",
             call.operation
         ));
-        Ok(Value::Int(IntKind::I64, status.into()))
+        Ok(match performed.result {
+            Produced::Status => Value::Int(IntKind::I64, status.into()),
+            // `Result` is variant 0 for `Ok` and 1 for `Err`, which is the
+            // language's representation and not this host's invention.
+            Produced::Authority if status == OK => Value::Variant {
+                index: 0,
+                payload: alloc::vec![Value::Capability(Handle::new(value))],
+            },
+            Produced::Authority => Value::Variant {
+                index: 1,
+                payload: alloc::vec![Value::Int(IntKind::I64, status.into())],
+            },
+        })
     }
 }
 
@@ -1253,20 +1609,22 @@ unsafe fn word_at(at: usize) -> u64 {
 
 /// Makes one creation from a bundle (`SYSTEM_ABI_V1` §5, operation 20).
 ///
-/// Three capabilities and no module name: the bundle declares its own entry, so
+/// Four capabilities and no module name: the bundle declares its own entry, so
 /// there is nothing for a caller to name and nowhere for it to disagree.
 ///
 /// SAFETY: `process` names a process capability this process holds with
-/// `create`, `memory` a memory authority with `spend`, and `bundle` a **shared**
-/// region capability with `read`.
-// SAFETY: the caller's promise about the three handles is what makes this an
+/// `create`, `memory` a memory authority with `spend`, `bundle` a **shared**
+/// region capability with `read`, and `plan` a sealed launch plan.
+// SAFETY: the caller's promise about the four handles is what makes this an
 // ordinary call.
 #[cfg(feature = "test-bundle-launch")]
+#[allow(clippy::too_many_arguments)]
 unsafe fn create_from_bundle(
     arguments: u64,
     process: u64,
     memory: u64,
     bundle: u64,
+    plan: u64,
     own_rights: u64,
     generation: Option<u64>,
 ) -> (i64, u64) {
@@ -1289,7 +1647,7 @@ unsafe fn create_from_bundle(
     let status: i64;
     let value: u64;
     // SAFETY: operation 20 takes the process authority in `rdi`, the memory
-    // authority in `rsi`, the shared region in `rdx`, the endowment count in
+    // authority in `rsi`, the shared region in `rdx`, the sealed launch plan in
     // `r10`, the child's rights over itself in `r8` and the runtime grant in
     // `r9`.
     unsafe {
@@ -1299,7 +1657,7 @@ unsafe fn create_from_bundle(
             in("rdi") process,
             in("rsi") memory,
             inlateout("rdx") bundle => value,
-            in("r10") 0u64,
+            in("r10") plan,
             in("r8") own_rights,
             in("r9") RUNTIME_GRANT,
             out("rcx") _,
@@ -1470,6 +1828,25 @@ fn bundle_supervisor(launch: &Launch, report: &mut Report, handle: u64, memory: 
     let units = &units[..];
     let source_set = &source_set[..];
 
+    // --- one plan, for every target this supervisor will ever make ------------
+    // Made once, sealed once, and reused: a restart is the same policy applied
+    // to a new process instance, and a plan a creation consumed would make the
+    // second launch a second decision. It carries a name for the same memory
+    // authority this supervisor funds out of, which is what a target needs to
+    // allocate anything of its own — an alias for one budget, never a second
+    // reservation (ADR-0076 §2b).
+    let (sealed, plan) = sealed_plan(
+        launch.arguments_base,
+        handle,
+        &[(memory, tos_launch::RIGHT_SPEND, b"memory")],
+    );
+    if sealed != OK {
+        report.line(&alloc::format!(
+            "TOS.RUN.BUNDLE.UNSTARTABLE reason=no-plan status={sealed}"
+        ));
+        return;
+    }
+
     // --- an affine region is refused ------------------------------------------
     // Before anything is shared, so what is being asked is exactly "is the
     // shared form required?" and not "was this region ready?".
@@ -1484,13 +1861,40 @@ fn bundle_supervisor(launch: &Launch, report: &mut Report, handle: u64, memory: 
             handle,
             memory,
             frozen_affine,
+            plan,
             0,
             None,
         )
     };
     // SAFETY: as above; a handle nobody holds names nothing.
-    let (unheld, _) =
-        unsafe { create_from_bundle(launch.arguments_base, handle, memory, 0xdead_beef, 0, None) };
+    let (unheld, _) = unsafe {
+        create_from_bundle(
+            launch.arguments_base,
+            handle,
+            memory,
+            0xdead_beef,
+            plan,
+            0,
+            None,
+        )
+    };
+    // SAFETY: as above; a plan that has not been sealed is a decision still
+    // being written, and nothing may be created from one.
+    let (unsealed_plan, builder) = unsafe { launch_plan_create(handle) };
+    // SAFETY: as above.
+    let (unsealed, _) = unsafe {
+        create_from_bundle(
+            launch.arguments_base,
+            handle,
+            memory,
+            0xdead_beef,
+            builder,
+            0,
+            None,
+        )
+    };
+    // SAFETY: as above.
+    unsafe { call(CAPABILITY_RELEASE, builder, 0) };
     // SAFETY: as above.
     unsafe { call(CAPABILITY_RELEASE, frozen_affine, 0) };
 
@@ -1504,8 +1908,17 @@ fn bundle_supervisor(launch: &Launch, report: &mut Report, handle: u64, memory: 
 
     // --- the first target -----------------------------------------------------
     // SAFETY: as above, with the shared bundle.
-    let (first, first_child) =
-        unsafe { create_from_bundle(launch.arguments_base, handle, memory, bundle, 0, Some(1)) };
+    let (first, first_child) = unsafe {
+        create_from_bundle(
+            launch.arguments_base,
+            handle,
+            memory,
+            bundle,
+            plan,
+            0,
+            Some(1),
+        )
+    };
     let first_instance = created_instance(launch);
     // The supervisor kept everything: the same handle still resolves, and the
     // same window still reads.
@@ -1518,8 +1931,17 @@ fn bundle_supervisor(launch: &Launch, report: &mut Report, handle: u64, memory: 
     // --- and another, from the same capability and the same backing -----------
     // No rebuild, no refreeze, no copy: a restart is one bundle used twice.
     // SAFETY: as above.
-    let (second, second_child) =
-        unsafe { create_from_bundle(launch.arguments_base, handle, memory, bundle, 0, Some(2)) };
+    let (second, second_child) = unsafe {
+        create_from_bundle(
+            launch.arguments_base,
+            handle,
+            memory,
+            bundle,
+            plan,
+            0,
+            Some(2),
+        )
+    };
     let second_instance = created_instance(launch);
     settle();
     settle();
@@ -1532,7 +1954,8 @@ fn bundle_supervisor(launch: &Launch, report: &mut Report, handle: u64, memory: 
     );
 
     report.line(&alloc::format!(
-        "TOS.RUN.BUNDLE.TARGETS not_shared={not_shared} unheld={unheld} first={first} \
+        "TOS.RUN.BUNDLE.TARGETS not_shared={not_shared} unheld={unheld} \
+unsealed_plan={unsealed_plan} unsealed={unsealed} first={first} \
 second={second} distinct={distinct_targets} kept=0x{kept:x} collected={collected_first}/\
 {collected_second}"
     ));
@@ -1547,7 +1970,15 @@ second={second} distinct={distinct_targets} kept=0x{kept:x} collected={collected
     let hostile_created = if hostile_status == OK {
         // SAFETY: as above.
         let (created, _) = unsafe {
-            create_from_bundle(launch.arguments_base, handle, memory, hostile, 0, Some(3))
+            create_from_bundle(
+                launch.arguments_base,
+                handle,
+                memory,
+                hostile,
+                plan,
+                0,
+                Some(3),
+            )
         };
         settle();
         settle();
@@ -3595,7 +4026,7 @@ fn lifecycle_parent(
         settle();
         settle();
         let (created, _) =
-            create_child_endowed(launch, handle, memory, module.len() as u64, 0, 0, None);
+            create_child_endowed(launch, handle, memory, module.len() as u64, &[], 0, None);
         report.line(&alloc::format!("TOS.RUN.LIFECYCLE.PARENT child={created}"));
     }
     #[cfg(not(feature = "test-lifecycle-collector"))]
@@ -3669,13 +4100,12 @@ fn lifecycle_arrangement(launch: &Launch, report: &mut Report, handle: u64, memo
     // funded from an authority receives no name for it unless its creator says
     // so — and this creator says so, because a parent that cannot fund cannot
     // create.
-    write_endowment(launch, memory, tos_launch::RIGHT_SPEND, b"memory");
     let (parent_status, parent_handle) = create_child_endowed(
         launch,
         handle,
         memory,
         name_length,
-        1,
+        &[(memory, tos_launch::RIGHT_SPEND, b"memory")],
         u64::from(
             tos_launch::RIGHT_CREATE | tos_launch::RIGHT_TERMINATE | tos_launch::RIGHT_WAIT_CHILD,
         ),
@@ -3696,7 +4126,6 @@ fn lifecycle_arrangement(launch: &Launch, report: &mut Report, handle: u64, memo
             u64::from(tos_launch::RIGHT_WAIT_CHILD),
         )
     };
-    write_endowment(launch, watch_handle, tos_launch::RIGHT_WAIT_CHILD, b"watch");
     // No rights over itself: this child is an observer, and an observer that
     // could end things would be something else.
     let (watcher_status, _) = create_child_endowed(
@@ -3704,7 +4133,7 @@ fn lifecycle_arrangement(launch: &Launch, report: &mut Report, handle: u64, memo
         handle,
         memory,
         name_length,
-        1,
+        &[(watch_handle, tos_launch::RIGHT_WAIT_CHILD, b"watch")],
         0,
         Some(LIFECYCLE_FIRST_GENERATION),
     );
@@ -3771,30 +4200,6 @@ fn write_self_binding(launch: &Launch, name: &[u8]) {
             (launch.arguments_base + tos_launch::CREATE_SELF_BINDING) as usize,
         )
         .write(binding)
-    };
-}
-
-/// Writes one endowment entry: a capability this process holds, the rights the
-/// child is to have over it, and the name the child knows it by.
-#[cfg(any(
-    feature = "test-lifecycle-delegate",
-    feature = "test-funding-lifecycle"
-))]
-fn write_endowment(launch: &Launch, handle: u64, rights: u32, name: &[u8]) {
-    let mut binding = [0u8; tos_launch::MAX_BINDING as usize];
-    binding[..name.len()].copy_from_slice(name);
-    // SAFETY: the endowment table is at a fixed offset in this process's own
-    // argument region.
-    unsafe {
-        core::ptr::with_exposed_provenance_mut::<tos_launch::CreateEndowment>(
-            (launch.arguments_base + tos_launch::CREATE_ENDOWMENT) as usize,
-        )
-        .write(tos_launch::CreateEndowment {
-            handle,
-            rights,
-            binding_length: name.len() as u32,
-            binding,
-        })
     };
 }
 
@@ -3990,7 +4395,8 @@ kind={} after_one={after_one} full_again={full_again}",
     // Four children is what a boot affords: each grant takes the largest
     // contiguous run there is, so the runs get smaller and the fourth is the
     // last that fits. The nucleus says which bound it hit, in its own log.
-    let (legacy_status, _) = create_child_endowed(launch, handle, memory, name_length, 0, 0, None);
+    let (legacy_status, _) =
+        create_child_endowed(launch, handle, memory, name_length, &[], 0, None);
     settle();
     let legacy = wait_child(launch, handle, true);
     report.line(&alloc::format!(
@@ -4105,31 +4511,44 @@ const LIFECYCLE_THIRD_GENERATION: u64 = 11;
 #[cfg(feature = "test-lifecycle")]
 const LIFECYCLE_GRANT: u64 = 16 * 1024 * 1024;
 
+/// A child created from a plan carrying these entries.
+///
+/// The plan is made, written and sealed for this creation and released after
+/// it. That is the *worst* case for a supervisor and the right one for a test:
+/// a plan that survives a creation is the interesting property, and reusing one
+/// here would prove it by accident rather than where it is asserted.
 #[cfg(feature = "test-lifecycle")]
 fn create_child_endowed(
     launch: &Launch,
     handle: u64,
     memory: u64,
     name_length: u64,
-    endowed: u64,
+    entries: &[(u64, u32, &[u8])],
     own_rights: u64,
     generation: Option<u64>,
 ) -> (i64, u64) {
+    let (sealed, plan) = sealed_plan(launch.arguments_base, handle, entries);
+    if sealed != OK {
+        return (sealed, 0);
+    }
     // SAFETY: `handle` names a process capability this process holds with
-    // `create`, `memory` a memory authority with `spend`, and the module name
-    // and endowment entries are already in the argument region.
-    unsafe {
+    // `create`, `memory` a memory authority with `spend`, `plan` the plan just
+    // sealed, and the module name is already in the argument region.
+    let created = unsafe {
         create_funded(
             launch.arguments_base,
             handle,
             memory,
+            plan,
             name_length,
-            endowed,
             own_rights,
             LIFECYCLE_GRANT,
             generation,
         )
-    }
+    };
+    // SAFETY: the plan is this process's own and the creation is over.
+    unsafe { call(CAPABILITY_RELEASE, plan, 0) };
+    created
 }
 
 /// The same, with no endowment and no rights over itself.
@@ -4141,7 +4560,15 @@ fn create_child(
     name_length: u64,
     generation: u64,
 ) -> (i64, u64) {
-    create_child_endowed(launch, handle, memory, name_length, 0, 0, Some(generation))
+    create_child_endowed(
+        launch,
+        handle,
+        memory,
+        name_length,
+        &[],
+        0,
+        Some(generation),
+    )
 }
 
 /// The instance id operation 15 left in this process's argument region.
@@ -4236,41 +4663,20 @@ fn supervise(launch: &Launch, report: &mut Report, handle: u64, memory: u64, rig
         };
     }
 
-    // First, an endowment naming a capability this process does not hold. The
-    // whole creation must fail: a child half-endowed would be a child holding
-    // authority nobody decided to give it.
-    // SAFETY: the endowment table is at a fixed offset in this process's own
-    // argument region.
-    unsafe {
-        core::ptr::with_exposed_provenance_mut::<tos_launch::CreateEndowment>(
-            (launch.arguments_base + tos_launch::CREATE_ENDOWMENT) as usize,
-        )
-        .write(tos_launch::CreateEndowment {
-            handle: 0xdead_beef,
-            rights: u32::MAX,
-            // The name this grant would have answered, had the handle named
-            // anything (ADR-0061). It does not, so the creation is refused
-            // before the name matters — which is the order that makes a
-            // half-endowed child impossible rather than merely unlikely.
-            binding_length: 0,
-            binding: [0; tos_launch::MAX_BINDING as usize],
-        })
-    };
-    // SAFETY: operation 19 names the process a child is created under, the
-    // memory authority that pays for it, the module name's length, the
-    // endowment count and the rights the child is to hold over itself.
-    let (forged, _) = unsafe {
-        create_funded(
-            launch.arguments_base,
-            handle,
-            memory,
-            module.len() as u64,
-            1,
-            0,
-            RUNTIME_GRANT,
-            None,
-        )
-    };
+    // First, a plan entry naming a capability this process does not hold. It is
+    // refused **when it is written**, not when a child is created from it: a
+    // plan is the decision, and a decision that could record authority its
+    // author never held would be one whose sealing proved nothing.
+    // SAFETY: `handle` names this process's authority over itself with
+    // `create`, and the handle being delegated is deliberately not one it
+    // holds.
+    let (_, forging) = unsafe { launch_plan_create(handle) };
+    // SAFETY: as above.
+    let forged =
+        unsafe { launch_plan_endow(launch.arguments_base, 0xdead_beef, forging, u32::MAX, b"x") };
+    // SAFETY: as above; a builder nothing was written into is still released
+    // like anything else.
+    unsafe { call(CAPABILITY_RELEASE, forging, 0) };
     report.line(&alloc::format!(
         "TOS.RUN.PROCESS.REFUSED reason=endowment-not-held status={forged}"
     ));
@@ -4278,14 +4684,15 @@ fn supervise(launch: &Launch, report: &mut Report, handle: u64, memory: u64, rig
     // Then a child that may end itself and nothing more. This process holds
     // `create` and `terminate`; the child is given only the second, which is
     // attenuation at the moment of creation rather than after it.
-    // SAFETY: as above, with no endowment entries.
+    let (_, empty) = sealed_plan(launch.arguments_base, handle, &[]);
+    // SAFETY: as above, with an endowment of nothing.
     let (created, child) = unsafe {
         create_funded(
             launch.arguments_base,
             handle,
             memory,
+            empty,
             module.len() as u64,
-            0,
             u64::from(tos_launch::RIGHT_TERMINATE),
             RUNTIME_GRANT,
             None,
@@ -4343,8 +4750,8 @@ fn supervise(launch: &Launch, report: &mut Report, handle: u64, memory: u64, rig
             launch.arguments_base,
             handle,
             memory,
+            empty,
             absent.len() as u64,
-            0,
             0,
             RUNTIME_GRANT,
             None,
@@ -4399,8 +4806,8 @@ fn supervise(launch: &Launch, report: &mut Report, handle: u64, memory: u64, rig
             launch.arguments_base,
             handle,
             memory,
+            empty,
             module.len() as u64,
-            0,
             0,
             u64::MAX / 2,
             None,
@@ -4420,8 +4827,8 @@ fn supervise(launch: &Launch, report: &mut Report, handle: u64, memory: u64, rig
             launch.arguments_base,
             handle,
             small,
+            empty,
             module.len() as u64,
-            0,
             0,
             RUNTIME_GRANT,
             None,
@@ -4442,14 +4849,15 @@ fn supervise(launch: &Launch, report: &mut Report, handle: u64, memory: u64, rig
         })
     };
     // SAFETY: as above; the record is deliberately malformed and `create_funded`
-    // is bypassed so that it stays that way.
+    // is bypassed so that it stays that way. `rdx` is the sealed plan and `r10`
+    // the module name's length, which is the row's own order.
     let (malformed, _) = unsafe {
         call4(
             PROCESS_CREATE_FUNDED,
             handle,
             memory,
+            empty,
             module.len() as u64,
-            0,
         )
     };
     // Composed so that no single answer produces it: a system that refused all
@@ -4516,18 +4924,26 @@ fn funding_lifecycle(
     let (reserved, funding) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, memory, ONE_CHILD) };
 
     // C — the child is given a name for the **same** node, because its creator
-    // names that capability in the endowment like any other. Two names, one
-    // budget; not a second reservation, and not something the child inherited.
-    write_endowment(launch, funding, tos_launch::RIGHT_SPEND, b"memory");
-    // SAFETY: both handles are this process's, and the endowment entry names
-    // the capability just written.
+    // placed that capability in a plan like any other. Two names, one budget;
+    // not a second reservation, and not something the child inherited.
+    //
+    // One plan for all four creations below. Its entry holds a reference of its
+    // own on the funding node, which is what lets the creator release its
+    // *last* handle later on while the decision goes on naming what it named.
+    let (sealed, plan) = sealed_plan(
+        launch.arguments_base,
+        handle,
+        &[(funding, tos_launch::RIGHT_SPEND, b"memory")],
+    );
+    // SAFETY: both handles are this process's, and the plan entry names the
+    // capability just placed in it.
     let (first, first_child) = unsafe {
         create_funded(
             launch.arguments_base,
             handle,
             funding,
+            plan,
             name_length,
-            1,
             0,
             RUNTIME_GRANT,
             None,
@@ -4550,8 +4966,8 @@ fn funding_lifecycle(
             launch.arguments_base,
             handle,
             funding,
+            plan,
             name_length,
-            0,
             0,
             RUNTIME_GRANT,
             None,
@@ -4568,38 +4984,73 @@ fn funding_lifecycle(
             launch.arguments_base,
             handle,
             funding,
+            plan,
             name_length,
-            0,
             0,
             RUNTIME_GRANT,
             None,
         )
     };
 
-    // B — the creator lets go of the funding node while the child it paid for
-    // is still running. Nothing comes back yet: a live child's memory is not
-    // free budget, and the accounting node outlives the capability that named
-    // it precisely so that the bytes have somewhere to return to.
+    // B — the creator lets go of its own handle for the funding node while the
+    // child it paid for is still running. Nothing comes back yet: a live
+    // child's memory is not free budget, and the accounting node outlives the
+    // capability that named it precisely so that the bytes have somewhere to
+    // return to.
     // SAFETY: as above.
     let (released, _) = unsafe { call(CAPABILITY_RELEASE, funding, 0) };
-    // SAFETY: as above; the handle named a node nothing names any more.
+    // SAFETY: as above; the handle named a node this process no longer names.
     let (stale, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, funding, 4096) };
     // SAFETY: as above.
     unsafe { call(PROCESS_TERMINATE, again_child, 0) };
     settle();
-    // And now it is back — past the node no capability names, up the lineage
-    // that funded it, so the parent authority can reserve the same amount
-    // again. That is the whole of "process funding is an allocation held by the
-    // accounting rather than by the continued existence of a handle".
+
+    // **And the node is still there, because the creator's handle was not the
+    // last name.** The plan took a reference of its own when the entry was
+    // written (ADR-0077 §3), so a supervisor that released its handle has
+    // *handed* the authority to the plan rather than dropped it.
+    //
+    // Making that observable takes one step, because "did 60 MiB come back?"
+    // is not a question a parent with room to spare can answer: it would say
+    // yes either way. So the parent is first drained to less than one
+    // reservation's worth, in reservations of exactly that size, until it
+    // refuses. After that the parent has room for nothing, and the only thing
+    // that can make room is the funding node returning — which happens when its
+    // **last** name goes, and the plan is holding it.
+    let mut drained = 0;
+    for _ in 0..8 {
+        // SAFETY: `capability_attenuate_scoped` names an authority this process
+        // holds and the bytes to reserve out of it.
+        let (status, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, memory, ONE_CHILD) };
+        if status != OK {
+            break;
+        }
+        drained += 1;
+    }
+    // Nothing left: the parent cannot reserve while the plan holds the node.
+    // SAFETY: as above.
+    let (held_by_plan, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, memory, ONE_CHILD) };
+    // SAFETY: as above; the plan is this process's own, and releasing it is the
+    // loss of the last name for the node its one entry describes.
+    unsafe { call(CAPABILITY_RELEASE, plan, 0) };
+
+    // And now it is back — past the node no capability and no plan names, up
+    // the lineage that funded it, so the parent authority can reserve that
+    // amount once more where a moment ago it could not. That is the whole of
+    // "process funding is an allocation held by the accounting rather than by
+    // the continued existence of a handle", with the plan counted as one of the
+    // things that can hold it.
     // SAFETY: as above.
     let (returned, back) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, memory, ONE_CHILD) };
     // SAFETY: as above; nothing else needs it, and a reservation nobody spends
     // should not outlive the evidence it was made for.
     unsafe { call(CAPABILITY_RELEASE, back, 0) };
+    let _ = drained;
 
     report.line(&alloc::format!(
-        "TOS.RUN.PROCESS.LIFECYCLE reserved={reserved} first={first} still_held={still_held} \
-second={second} again={again} released={released} stale={stale} returned={returned}"
+        "TOS.RUN.PROCESS.LIFECYCLE sealed={sealed} reserved={reserved} first={first} \
+still_held={still_held} second={second} again={again} released={released} stale={stale} \
+held_by_plan={held_by_plan} returned={returned}"
     ));
 }
 

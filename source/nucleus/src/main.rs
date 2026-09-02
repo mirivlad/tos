@@ -150,6 +150,7 @@ mod launch;
 mod memory;
 mod msr;
 mod paging;
+mod plan;
 mod process;
 /// Memory authority and region objects (ADR-0075). Not reachable from ring 3
 /// yet: the state machine is proved before the operations that would drive it.

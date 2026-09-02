@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `3e863d55d7f36dedf722ce103d93eb7275635fcb0368c48a069561fdf41c730f`\
+Source-manifest SHA-256: `2b35ce92a8a33ebbea2f98c23b538143a7e2dc1373cb23585500fc6f08d76695`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2406,18 +2406,24 @@ are marked and are exactly those a process can only apply to itself.
 
 | 18 | `region_freeze` | mutable region capability with `write` | the consuming mutable-to-immutable transition (ADR-0075 §3). The caller's writable window becomes read-only **in place** — same address, same backing, still not executable — the region becomes permanently immutable, the handle presented goes stale, and `rdx` returns a new handle to the same region carrying `read | share`. Base and length do not change and are not reported again. Nothing physical moves and nothing is charged. A failure before the transition leaves the region completely mutable; there is no half-frozen state |
 
-| 19 | `process_create_funded` | **two**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend` | creates a process and charges its **whole** user-memory footprint to that authority (ADR-0076 §3). `rdx` = the module path's length, `r10` = how many capabilities the child is endowed with, `r8` = the rights the child holds over itself, `r9` = the runtime arena it asks for. The path, the endowment and the child's self-binding are in the argument region at `CREATE_MODULE`, `CREATE_ENDOWMENT` and `CREATE_SELF_BINDING`; the **optional** restart generation is at `CREATE_FUNDED_RECORD`. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. `E_BAD_ARGUMENT` for an arena outside the accepted `RuntimeMemoryGrant` domain or a non-canonical restart record, `E_LIMIT` for a footprint this authority cannot pay for |
+| 19 | `process_create_funded` | **three**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend`, `rdx` = a **sealed** launch plan | creates a process, charges its **whole** user-memory footprint to that authority (ADR-0076 §3), and endows it from the plan (ADR-0077 §5). `r10` = the module path's length, `r8` = the rights the child holds over itself, `r9` = the runtime arena it asks for. The path and the child's self-binding are in the argument region at `CREATE_MODULE` and `CREATE_SELF_BINDING`; the **optional** restart generation is at `CREATE_FUNDED_RECORD`. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. **The plan is not consumed.** `E_NO_CAPABILITY` for a builder where a sealed plan belongs, `E_BAD_ARGUMENT` for an arena outside the accepted `RuntimeMemoryGrant` domain or a non-canonical restart record, `E_LIMIT` for a footprint this authority cannot pay for |
 
-| 20 | `process_create_from_bundle` | **three**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend`, `rdx` = a **shared** region capability with `read` holding the bundle | creates a process from the bundle that region carries, funded as operation 19 funds one. `r10`, `r8`, `r9` and `CREATE_FUNDED_RECORD` are 19's. There is **no** module path, ordinal or entry: the bundle declares its own entry, and a caller-supplied one would be a second truth about which program this is. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. The target is given its **own** capability for the same region and its own read-only mapping of the same backing; the creator keeps everything it had |
+| 20 | `process_create_from_bundle` | **four**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend`, `rdx` = a **shared** region capability with `read` holding the bundle, `r10` = a **sealed** launch plan | creates a process from the bundle that region carries, funded and endowed as operation 19 funds and endows one. `r8`, `r9` and `CREATE_FUNDED_RECORD` are 19's. There is **no** module path, ordinal or entry: the bundle declares its own entry, and a caller-supplied one would be a second truth about which program this is. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. The target is given its **own** capability for the same region and its own read-only mapping of the same backing; the creator keeps everything it had, plan included |
+
+| 21 | `launch_plan_create` | process-authority capability with `create` | makes an empty, affine launch-plan **builder** and returns its handle in `rdx` (ADR-0077 §2). A plan is bounded nucleus metadata and grants access to nothing; creation authority is required anyway, so that a process which may not create children cannot accumulate launch policy for them. `E_LIMIT` when the plan table or the caller's capability table is full |
+
+| 22 | `launch_plan_endow` | **two**: `rdi` = **the capability being delegated**, at no particular right, `rsi` = a launch-plan builder | adds one entry to the builder (ADR-0077 §3). `rdx` = the binding's length, whose bytes are at `LAUNCH_ENDOW_BINDING` in the argument region; `r10` = the rights asked for, intersected with what the caller holds over `rdi`. The plan takes a reference of its own on what the entry names, so a creator may release its own handle afterwards and the plan goes on holding it. `E_NO_CAPABILITY` for a region, a reply, another plan, or a sealed plan where a builder belongs; `E_LIMIT` when the plan is full |
+
+| 23 | `launch_plan_seal` | **two**: `rdi` = process-authority capability with `create`, `rsi` = a launch-plan builder | **consuming**: the entries become final, the handle presented goes stale, and `rdx` returns a new handle to the same object as a sealed plan (ADR-0077 §4). The same capability slot at an advanced generation, exactly as `region_freeze` does to a region — the object is one object throughout, and no reference is taken or dropped |
 
 **The third capability must be the shared form, and an immutable affine region
 is refused.** A target receives a window of its own and its creator keeps one,
 which is two holders — exactly what an affine region exists to rule out. `share`
 (7) is the operation that makes a region able to be in two places, and 20 is the
-operation that puts it there. This is also why the bundle does not travel in
-`CREATE_ENDOWMENT`: that path copies a handle and cannot build the mapping a
-region needs in an address space that does not exist yet, so it refuses regions
-and is right to.
+operation that puts it there. This is also why the bundle is not a plan
+entry: an entry copies a handle and cannot build the mapping a region needs in
+an address space that does not exist yet, so operation 22 refuses regions and is
+right to.
 
 **The bundle is opaque to the nucleus, and that is the trust boundary rather
 than an omission.** Ring 0 checks capability and lifecycle facts only — the
@@ -2429,6 +2435,40 @@ itself** before its first instruction: creation succeeding and admission failing
 are two different outcomes of two different components, and ADR-0073 owns the
 second. Turning a target's verdict into this operation's status would move that
 decision into the nucleus.
+
+**A launch plan is an object, and that is what makes a restart the same
+decision twice.** Before ADR-0077 the endowment was a table a caller wrote into
+its own argument region immediately before a creation: valid for that one call,
+held by nobody in between, and read at the instant the child was built. A
+restart therefore re-decided the endowment from whatever its author could still
+reach. A plan is decided once, at whatever moment its author chooses; it holds a
+reference of its own on everything it names, so those references outlive the
+handles the author used to place them; and it survives the creation that reads
+it, so the second launch applies the same policy rather than a new one.
+
+**Nothing in a plan can be wider than what its author held.** Operation 22
+intersects the rights asked for with the rights the caller holds over the
+capability it is delegating, and the capability itself is the first argument —
+so the operation is reached *through* the authority being delegated, and there
+is no general "may endow" right anybody was granted. A plan cannot name what its
+author cannot name, cannot carry rights its author does not hold, and cannot be
+widened after it is sealed.
+
+**Three kinds of capability are refused as plan entries**, each for its own
+reason. A **region** is refused because a capability is only half of what a
+holder needs and the other half is a mapping in an address space that does not
+exist when the entry is written; operation 20 is where a process is created
+*with* a region. A **reply** is refused because it names one call of one caller
+and is single-use, and no accepted contract makes one a startup endowment. A
+**plan** is refused because an entry naming another plan would hand a child a
+decision its parent is still holding, with two holders of one affine object at
+the end of it.
+
+**A plan ends exactly once.** It is affine in both states, so exactly one
+capability names it, and the loss of that name — an explicit release, or the
+clearing of a dead process's table — destroys the plan and releases every
+reference its entries took. There is no path by which a plan is destroyed twice
+and none by which it outlives its holder.
 
 **Operation 19 replaces 8 and 15 together, and that is why the restart
 generation moved out of a register.** Operation 8 asserted no restart generation
@@ -2442,7 +2482,7 @@ zero, and every other flag bit must be zero in this contract version.
 **The memory authority is presented, not consumed, and nothing is inherited.**
 A creation places a charge against an accounting node; the capability is
 untouched and the child receives no name for it. A parent that means its child
-to spend from the same node names that capability in `CREATE_ENDOWMENT` like any
+to spend from the same node places that capability in a launch plan like any
 other, which under ADR-0076 §2b gives the child another name for one budget
 rather than a second reservation. There is no automatic remainder for a funded
 child.
@@ -2594,6 +2634,22 @@ number and the register shape" open, and this table is where a decision of that
 shape is carried. Operation 7 was assigned before any of them and is not an
 addition; what changed is that its row now states the semantics ADR-0037 §4 and
 `IPC_V1` §5 already fixed for it.
+
+Operations 21, 22 and 23 (ADR-0077) are additions of the same kind. They were
+decided by that ADR, which fixed the object, its two states and its lifetime and
+left the numbers and the register shape to be carried here.
+
+**Operations 19 and 20 changed shape in the same revision that added them a
+plan, and that is a change to unreleased operations rather than a break.**
+Neither was ever declared by `SYSTEM_INTERFACE_V1` and neither has a caller
+outside this repository's own runtime image, so the revision is free in a way it
+will never be again: `r10` on 19 stopped being an endowment count and became the
+module path's length, `rdx` on 19 stopped being that length and became the
+sealed plan, and `r10` on 20 stopped being an endowment count and became the
+plan. After this revision the shapes are fixed under §7's ordinary rule, and the
+`CREATE_ENDOWMENT` area of the argument region is gone rather than deprecated:
+a table that is still read is a second way to endow a child, and two ways to
+decide one thing is what ADR-0077 exists to remove.
 
 **The capability and region counts in `r10` and `r8` are a minor version by the
 rule above, and are safe for exactly the reason `r8` was safe on operation 15.**
@@ -2752,6 +2808,9 @@ because two imports of one interface are legal and a kind cannot tell them apart
 |---|---|
 | `system.ipc.Endpoint` | endpoint |
 | `system.ipc.Reply` | reply |
+| `system.memory.Authority` | memory authority |
+| `system.process.LaunchPlanBuilder` | launch plan builder |
+| `system.process.LaunchPlan` | launch plan |
 | `system.process.Control` | process |
 
 **Every operation declares the right each capability it takes must carry**
@@ -2770,6 +2829,7 @@ all of them.
 | `endpoint_send` | `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
 | `endpoint_receive` | `system.ipc.Endpoint` with `receive` | *(none)* | `i64` | 2 |
 | `endpoint_call` | `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
+| `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 
 ### `system.ipc.Reply`
 
@@ -2813,22 +2873,73 @@ decided rather than described:
 | Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
 |---|---|---|---|---|
 | `process_terminate` | `system.process.Control` with `terminate` | *(none)* | `i64` | 9 |
+| `launch_plan_create` | `system.process.Control` with `create` | *(none)* | `Result<system.process.LaunchPlanBuilder, i64>` | 21 |
+| `launch_plan_seal` | `system.process.Control` with `create` | `plan: system.process.LaunchPlanBuilder` | `Result<system.process.LaunchPlan, i64>` | 23 |
+| `process_create_funded` | `system.process.Control` with `create`, then `system.memory.Authority` with `spend` | `plan: system.process.LaunchPlan`, `entry: string` (≤ 256), `grant: u64`, `self_rights: u64` | `Result<system.process.Control, i64>` | 19 |
+| `endow_for_launch` | `system.process.Control` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 
-**`process_create` is withdrawn from this schema and nothing replaces it yet.**
-It bound to `SYSTEM_ABI_V1` operation 8, which ADR-0076 §4 retires: it funded a
-process out of the boot's accounting anchor with no caller presenting a
-`MemoryAuthority`. Creation is now operation 19, and this schema cannot carry it
-as it stands — 19 requires **two** capabilities, an explicit runtime grant and an
-endowment, and it returns the child's *capability* in `rdx` rather than only a
-status. §4.1 admits no list and every result declared here is `i64`, so a wrapper
-would hand a textual supervisor a number where a child capability belongs, and no
-way to say what the child is endowed with.
+### `system.memory.Authority`
 
-A schema that advertised an operation the ABI answers `E_NOT_SUPPORTED` for would
-be worse than one that says plainly it does not carry this yet. What the typed
-bridge has to look like — typed results that can carry a capability, and a way to
-express a heterogeneous endowment — is a decision rather than an omission, and it
-is written up as one in `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `endow_for_launch` | `system.memory.Authority` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+
+### `system.process.LaunchPlanBuilder` and `system.process.LaunchPlan`
+
+Two capability **types** with no operations of their own, and that is the shape
+rather than an omission. Everything done to a plan is done *through* another
+authority: 22 writes an entry through the capability being delegated, 23 seals
+one through the creation authority that was required to make it, and 19 and 20
+create from one through the same. There is no operation whose own interface is
+either of these, so neither declares any.
+
+Declaring the types is still this schema's job. They are what an operation's
+result and a value parameter name, and a path no schema declares is not a type —
+so a module could not write `Result<system.process.LaunchPlanBuilder, i64>` if
+this section did not say what that path is. They also carry the object kind a
+launcher checks a grant against (§4), which is why they are **two** kinds and
+not one with a flag: a builder and a sealed plan declare different operations,
+and answering a request for a decision that has been made with one that has not
+is exactly the startup mistake that check exists to refuse.
+
+**`endow_for_launch` is one operation declared by several interfaces**, and the
+declarations differ only in the interface of their first parameter. That is what
+`SYSTEM_ABI_V1` operation 22 is: **one** ABI selector for every kind of
+authority there is, reached through the capability being delegated. The
+alternative — one selector per interface — would make a finite ABI grow a number
+every time an interface was added, and an interface set is open-ended while an
+ABI is not.
+
+It is declared on every interface whose capabilities may be a startup endowment,
+and on no others. Regions, replies and plans themselves are refused by the
+nucleus for the reasons `SYSTEM_ABI_V1` §5 gives, so there is no
+`endow_for_launch` on `system.ipc.Reply`: declaring an operation the ABI always
+refuses would be advertising something that does not work.
+
+A module that endows two kinds of authority declares **two** `extern` items of
+this name, differing in their first parameter's interface and in the binding
+their `uses` names. Which one a call reaches is decided by the interface of its
+first argument, which §4.1 already makes the operation's own capability — so a
+call site and the instruction it becomes agree about which interface was
+reached, and no capability value is ever erased to a common type.
+
+**`process_create` is withdrawn from this schema, and `process_create_funded`
+is what replaces it.**
+`process_create` bound to `SYSTEM_ABI_V1` operation 8, which ADR-0076 §4
+retires: it funded a process out of the boot's accounting anchor with no caller
+presenting a `MemoryAuthority`. This schema could not carry its replacement for
+one revision, and the reason was recorded rather than hidden: 19 requires two
+capabilities and returns the child's *capability*, and every result this schema
+declared was `i64`, so a wrapper would have handed a textual supervisor a number
+where a child capability belongs.
+
+Both halves of that gap are closed here. §5 admits a semantic result, so an
+operation returns the authority it produced; and a heterogeneous endowment is
+expressed by a launch plan, which is itself a capability an operation produced
+and a later operation takes. Neither needed a new `tos-ir/v1` variant or a new
+TOS Core type constructor: the IR has had `Capability` and `Result` since it was
+written, and what was missing was the frontend admitting a constructed type in an
+`extern` result and resolving an interface path to the capability type it is.
 
 ## 4.1 What a parameter may be
 
@@ -2856,6 +2967,15 @@ A verifier proves, per capability parameter, that the binding named is an import
 of the declared interface and that the enclosing function declares it — the check
 it already made for one capability, made for each.
 
+**A requirement may declare no right**, written `none`, and exactly one
+operation does: `endow_for_launch` places a capability into a plan at rights the
+caller asks for, and the nucleus intersects those with what the caller holds.
+There is no right that could be declared — the honest answer would be "the ones
+being delegated", which is an argument rather than a requirement, and any fixed
+choice would be either too strong (refusing a delegation of `read` because the
+caller lacks `write`) or a fiction. What is required is that the caller *hold*
+the capability, which resolving it proves.
+
 **They stay separate.** No capability is derived from another, no operation
 merges two rights into one object, and an operation requiring two is refused
 unless *both* were granted with the rights it declares. `CAPABILITY_V1` §3 admits
@@ -2870,12 +2990,39 @@ order, and this schema does not repeat it.
 ### Value parameters
 
 An operation's parameters after the capabilities are **values** (§3), and a value
-of TOS Core V1 is what `docs/40` says it is. This version admits two:
+of TOS Core V1 is what `docs/40` says it is. This version admits three:
 
 | Declared type | How it crosses |
 |---|---|
 | `u64` | in the register `SYSTEM_ABI_V1` §5 assigns the operation |
 | `string` | in the argument region, at the offset that ABI fixes, with its length in the register |
+| a nominal capability type | in the register that ABI assigns, exactly as a capability parameter crosses |
+
+**The third is new, and it is what a capability-valued result is for.** A
+capability an operation *produced* — a launch plan, a child — is a value of the
+module's, held in an ordinary binding, matched on like any other `Result`. It is
+not an `import capability` and cannot be one: nothing granted it at startup,
+because it did not exist at startup. So it is written where a value is written,
+and it crosses the boundary the way a capability crosses, which is the same act
+the host already performs on an import-supplied handle.
+
+**Nothing about it is erased.** Its declared type is the exact nominal interface
+— `system.process.LaunchPlan`, never a common capability type — so a plan cannot
+be passed where a child belongs, the artifact records which interface each value
+is of, and there is no `AnyCapability` anywhere in TOS Core. The engine carries
+it without reading it, exactly as it carries an import-supplied one, and the only
+place it becomes a number is the host's own table (`docs/42` §2).
+
+**The operation's own capability is still an import.** A capability value may be
+a value parameter; it may not be the first parameter, which §4's tables make the
+interface the operation is reached through. That is the boundary of this
+version: an operation acting on a capability of *its own* interface that was
+obtained at runtime cannot be declared here, because `tos-ir/v1`'s
+`Op::Capability` names the operation's own capability as an import index and
+nothing else. Every operation above is shaped so that the question does not
+arise — a plan is written and sealed through the authority that made it, and a
+child is created through the parent's own authority — and widening it is a
+decision about the IR rather than about this schema.
 
 **A variable-length parameter declares its maximum, and the maximum is part of
 this contract.** `SYSTEM_ABI_V1` §3 bounds every read by a constant of the
@@ -2893,15 +3040,31 @@ capability handle, over a longer argument.
 
 ## 5. Results, and what a module may conclude from one
 
-Every operation returns `i64`: the status `SYSTEM_ABI_V1` §4 assigns, unchanged
-and unwrapped. A module reads a number the system produced, and this schema adds
-no interpretation of its own — a status renamed on the way through would be this
-document asserting something about a call it did not make.
+An operation returns **the value it produced**, and `Result<T, i64>` is the
+refusal model. The error is the status `SYSTEM_ABI_V1` §4 assigns, unchanged and
+unwrapped: a status renamed on the way through would be this document asserting
+something about a call it did not make.
 
-Values a call returns beyond its status are **not** available to a module in
-this version. `SYSTEM_ABI_V1` returns a second value in `rdx`, and a module has
-no second result to receive it into; a tuple result would be a type-surface
-change, and this schema does not make one.
+An operation that produces nothing but a status returns `i64` and always did.
+One that produces a value returns it: `launch_plan_create` returns the plan it
+made, `process_create_funded` returns authority over the child. What a module
+receives is a TOS Core value it can match on, not a number it would have to
+interpret against a register convention this schema does not describe.
+
+**`T` is the semantic result, not whatever was in `rdx`.** The raw ABI splits a
+result across a status register, a value register and fixed offsets in an
+argument region; none of that is visible here, and the host bridge is where it
+stops. A module names an operation and receives what the operation is *for*.
+
+**This needed nothing new in the language.** `tos-ir/v1` has carried a
+capability type and a result type since it was written, the image format encodes
+and decodes both, and the engine's boundary has always returned a value rather
+than an integer. What changed is the frontend: an `extern` result may now be a
+constructed type, and an interface path written as a type resolves to the
+capability type it is rather than to a nominal record that merely shares its
+name. A reader of the artifact learns from the type table that a value is
+authority — which is what `docs/42` §2 admits into provenance, the interface and
+never the handle.
 
 ## 6. Determinism, and what it costs
 
@@ -2944,11 +3107,20 @@ The target ABI is `SYSTEM_ABI_V1` and nothing else: one mechanism, one path to
 audit. This schema adds no calling convention of its own — it names which of
 that ABI's operations a module may reach and under what authority.
 
-**Ownership.** No parameter transfers ownership. A capability passed to an
+**Ownership.** Most parameters transfer nothing: a capability passed to an
 operation is borrowed for the call and is still the caller's afterwards, which
-is what makes an operation an operation rather than a consumption. Linear
-transfer, where an interface declares it, is `CAPABILITY_V1` §4's case and no
-operation here declares it.
+is what makes an operation an operation rather than a consumption.
+
+**One operation consumes, and says so.** `launch_plan_seal` takes a builder and
+gives back a sealed plan naming the same object; the handle passed in stops
+resolving, and a module that used it again would be refused rather than acting
+on something stale. That is `CAPABILITY_V1` §4's linear case, declared here
+because an interface is where it must be declared — a caller cannot see from the
+ABI alone that a handle it still holds has gone.
+
+**A creation does not consume its plan.** `process_create_funded` reads the
+sealed plan and leaves it whole, which is what makes a restart the same decision
+rather than a second one.
 
 **Regions.** No operation of this version takes or returns a region.
 `docs/42` §2 requires a region grant to originate through an operation whose
@@ -21453,17 +21625,47 @@ at a time and nothing but a fixed-size record survives each one, so the question
 of what "every lowered module at once" costs no longer arises. **No lower
 conformance cap was introduced.**
 
-## 7. Four processes, and what binds next
+## 7. How many processes, and what binds next
 
-Measured on the reference platform: the pool holds `58 839` frames — about
-`229.8 MiB` — after the nucleus takes its own. A process costs `14 356` frames,
-`56.08 MiB`: the `54 MiB` grant plus about `2.08 MiB` of stack, report,
-arguments, launch record and page tables.
+Measured on the reference platform at the build this ADR was written against:
+the pool holds `58 839` frames — about `229.8 MiB` — after the nucleus takes its
+own. A process cost `14 356` frames, `56.08 MiB`: the `54 MiB` grant plus about
+`2.08 MiB` of stack, report, arguments, launch record and page tables.
 
-Four of them is `224.3 MiB`, inside the pool with about `5.5 MiB` to spare, and
-that is not arithmetic on paper — the ADR-0067 lifecycle gate now reaches
+Four of them was `224.3 MiB`, inside the pool with about `5.5 MiB` to spare, and
+that was not arithmetic on paper — the ADR-0067 lifecycle gate reached
 `TOS.RUN.PROCESS_REFUSED reason=no-slot uncollected=3`, which is only reachable
 when the fourth slot is occupied rather than unaffordable.
+
+**That measurement is evidence about one build, and it is not an invariant.**
+The Project Architect fixed this on 2026-09-03, and the wording here is amended
+to carry the decision:
+
+> `MAX_PROCESSES = 4` is the bounded number of process **slots**, not a
+> reservation guaranteeing that four simultaneous processes each with the
+> ordinary `54 MiB` arena can always be funded. Process slots and memory
+> authority are independent finite resources. A creation may therefore see a
+> free slot **and** an authority that cannot pay, and `E_LIMIT` is the correct
+> answer — ordinary resource behaviour, not a failure of this ADR.
+
+The reason the distinction had to be drawn is concrete: with the four-process
+sum asserted as an invariant, **every page of code growth in the runtime image
+was an architecture STOP**, because the image is charged to the same pool the
+processes are funded from. The per-process charge has since moved from `14 356`
+frames to `14 357`, and the root from `57 424` to `57 415`; four ordinary
+processes no longer fit, and nothing is wrong.
+
+`RUNTIME_GRANT` stays at `54 MiB`, `MAX_PROCESSES` stays at 4, and the reference
+machine is not enlarged. What changed is what the gate asserts. The unified
+memory account gate now **reports** how many ordinary processes one root can
+fund, and asserts the topologies the system is actually built to run:
+
+- a supervisor and one target — the floor, below which no topology is left;
+- a resident supervisor and a transient build worker, with the remainder
+  reported as the headroom a bundle may occupy.
+
+Both hold at the current build, with `112.11 MiB` left for bundle backing after
+two ordinary processes.
 
 **Memory is what binds next, through the process table.** At a grant of roughly
 `55 MiB` or more the fourth process stops fitting, and the refusal changes from
@@ -21474,6 +21676,8 @@ grant is itself a function of the grant, and the crossing point moves with it.
 `MAX_PROCESSES` and the grant size are therefore **jointly constrained by the
 ADR-0040 memory budget** — neither can be raised without lowering the other on
 this platform, and neither number means anything without the other beside it.
+That constraint is on what can be *simultaneously funded*, which §7's amendment
+above separates from what can be simultaneously *slotted*.
 
 **A note the residency decision will need.** Process-grant memory and the
 physical residency of images or caches are **counted separately** — they are
@@ -24457,6 +24661,256 @@ from a register budget:
   entry the bundle declares and verifies the bundle itself (ADR-0073).
 
 <!-- END docs/adr/0076-unified-memory-funding.md -->
+
+---
+
+<!-- BEGIN docs/adr/0077-launch-plans.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0077: A launch plan is an object, and it outlives the creation that reads it
+
+- Status: **Accepted**
+- Date: 2026-09-03
+- Decision level: 2 — it adds three `SYSTEM_ABI_V1` operations, two capability
+  object kinds and one nucleus table, and it changes the input shape of
+  operations 19 and 20. It changes no TOS Core semantics, no accepted ceiling
+  and no physical accounting rule
+- Project Architect approval: **given, 2026-09-03**, in the round instruction
+  that reserved operation numbers 21, 22 and 23, accepted the LaunchPlan
+  concept, rejected the packet's E1 formulation for conflating a finite set of
+  nucleus object kinds with an open-ended set of nominal capability interfaces,
+  and required 19 and 20 to take the sealed plan as input rather than maintain a
+  second endowment mechanism beside it
+- Related: ADR-0055 (Accepted) — what an endowment is. ADR-0061 (Accepted) — how
+  an endowment binds to a module. ADR-0063 (Accepted) — an operation that
+  requires two capabilities. ADR-0067 (Accepted) — restart generations and how a
+  supervisor learns a service ended. ADR-0075 (Accepted) — the consuming
+  transition this is shaped after. ADR-0076 (Accepted) — the funding this is
+  the endowment half of. `SYSTEM_INTERFACE_V1` §4, §4.1, §5
+
+## 1. An endowment that belonged to nobody
+
+Before this, a child's endowment was a table in the creator's own argument
+region. A parent wrote up to four entries at `CREATE_ENDOWMENT`, said how many
+in a register, and called operation 19; the nucleus read the table at the
+instant of creation and built the child from it.
+
+Three things follow from that shape, and all three are wrong for a supervisor.
+
+**It is valid for one call.** The table is the caller's scratch memory. Any
+other operation that writes the argument region overwrites it, so the endowment
+has to be rewritten immediately before every creation — and "immediately before"
+is a property nothing checks.
+
+**It is held by nobody.** Between the moment a parent decides what a child will
+hold and the moment the child is built, the decision exists only as bytes in a
+page. If the parent releases one of the capabilities it named, the entry now
+names nothing; if the parent is restarted, the decision is gone.
+
+**A restart is therefore a second decision, not the same one.** ADR-0067 gives a
+supervisor a restart generation so that a replacement is recognisably a
+replacement. But what the replacement is *endowed with* was re-derived, at
+restart time, from whatever the supervisor could still reach. Two launches of
+one service under one policy could differ, and nothing in the system would say
+so.
+
+The problem is not that the mechanism is unsafe. It is that launch policy had no
+object. Everything else in this system that persists a decision is a capability
+naming a nucleus object with a lifetime; this alone was a page of bytes.
+
+## 2. The decision: a launch plan is a capability
+
+A **launch plan** is bounded nucleus metadata naming up to `MAX_ENDOWMENT`
+capabilities, each with the rights it carries and the binding it answers
+(ADR-0061). It has two public states and one lifetime.
+
+`launch_plan_create` (operation 21) makes an empty **builder**. It requires
+process authority with `create`.
+
+**Creation authority is required for a thing that creates nothing**, and that is
+deliberate. A plan grants access to no object and can reach nothing its author
+could not reach by calling directly; requiring `create` is not about what a plan
+can do, it is about who may hold one. A process that may not create children has
+no business accumulating launch policy for them, and — since the plan table is
+bounded — no business occupying it with decisions nothing will ever apply.
+
+**A plan capability carries no rights.** Holding it is the authority over it.
+Every operation on a plan is decided by the object's *kind*, which is its state,
+and by the creation authority that operation separately requires. A rights field
+would be a second place the same decision is made, and two such places
+eventually disagree.
+
+## 3. Writing one: one selector, every kind of authority
+
+`launch_plan_endow` (operation 22) adds one entry. Its first capability is **the
+one being delegated**; the builder is second.
+
+That ordering is the whole design. The operation is reached *through* the
+authority it delegates, so:
+
+- the right to place an endpoint in a plan is holding that endpoint. There is no
+  general "may endow" right that anybody was granted, and therefore none that
+  could be over-granted;
+- the rights recorded are the intersection of what was asked for with what the
+  caller holds. A caller asking for more receives less, so widening is not
+  refused so much as unexpressible;
+- and there is **one** ABI selector for every kind of authority there is. An ABI
+  is finite; an interface set is open-ended. A number per interface would make
+  the first grow with the second, which is the formulation this ADR was directed
+  to reject.
+
+`SYSTEM_INTERFACE_V1` declares this as one operation on each interface whose
+capabilities may be a startup endowment, differing only in the interface of the
+first parameter. The exact nominal type is therefore retained at every call
+site: there is no `AnyCapability`, no integer handle and no erased capability
+value anywhere in TOS Core. A module that endows two kinds of authority declares
+two `extern` items of the same name, and which one a call reaches is decided by
+the interface of its first argument — the same rule `SYSTEM_INTERFACE_V1` §4.1
+already used to decide which interface an operation is performed under.
+
+**The plan takes a reference of its own on what each entry names.** This is what
+makes it a holder rather than a note. A creator may place a capability in a plan
+and then release its own handle; the plan goes on naming it, because the plan is
+now the thing that holds it. That is the opposite of inheritance: nothing is held
+implicitly, and what a plan holds is exactly what somebody wrote into it.
+
+**Three kinds are refused**, each for its own reason and none of them
+incidental:
+
+- a **region**, because a capability is half of what a holder needs and the
+  other half is a mapping in an address space that does not exist when the entry
+  is written. Operation 20 is where a process is created *with* a region;
+- a **reply**, because it names one call of one caller and is single-use. No
+  accepted contract makes one a startup endowment, and inventing that here would
+  be this ADR deciding something `IPC_V1` has not;
+- a **plan**, because an entry naming another plan hands a child a decision its
+  parent is still holding, leaving two holders of one affine object.
+
+## 4. Sealing: the shape a region already established
+
+`launch_plan_seal` (operation 23) consumes the builder and replaces it **in the
+same capability slot at an advanced generation** with a sealed plan. It is the
+transition `region_freeze` performs, applied to a different kind: one object
+throughout, no reference taken or dropped, no free table slot required, and the
+old handle detectably stale.
+
+After sealing the entries cannot change. That is what makes a plan a decision
+rather than a buffer.
+
+Sealing requires the same creation authority that making one required, for the
+same reason: the two operations bracket one activity, and a process that may
+hold an unfinished plan and not a finished one would be a distinction with
+nothing behind it.
+
+## 5. Creating from one, and why it survives
+
+Operations 19 and 20 take the **sealed** plan as an input capability and derive
+the child's endowment from it, atomically, as part of the one transaction that
+already charges the child's footprint. A builder is refused: a decision still
+being written is not one anything may be created from.
+
+**The plan is not consumed by a successful creation.** This is the point of the
+whole ADR. A restart is the same service policy applied to a new process
+instance, and a plan a creation took would make the second launch a second
+decision. So:
+
+```text
+same sealed plan
+same shared bundle
+new process instance
+```
+
+There is deliberately no second endowment mechanism beside it. The raw
+`CREATE_ENDOWMENT` area of the argument region is **removed**, not deprecated: a
+table that is still read is a second way to endow a child, and two ways to decide
+one thing is what this ADR exists to remove. Operations 19 and 20 have never been
+declared by `SYSTEM_INTERFACE_V1` and have no caller outside this repository, so
+the register reshuffle that follows is a change to unreleased operations rather
+than a compatibility break — and it is the last one either will get.
+
+Failure preserves everything: the plan, the funding capability, the bundle
+capability, and every derived reference the plan holds. There is no partial
+child, which is ADR-0055's rule unchanged.
+
+**No plan entry grants a reservation of its own.** An endowment of a memory
+authority is another *name* for one budget (ADR-0076 §2b). A plan that reserved
+on its own account would be a way to spend a supervisor's funding by writing
+policy, which is exactly the ambient spending ADR-0076 retired.
+
+## 6. Lifetime: exactly one death
+
+A plan is **affine in both states**, so exactly one capability names it at any
+time. The loss of that name — an explicit `capability_release`, or the clearing
+of a dead process's table — destroys the plan and releases every reference its
+entries took, once each.
+
+Affinity here is not the region's argument. A region is affine because a second
+handle to a mutable one is a second writer. A plan is affine because it is the
+*holder* of the references its entries describe, and an object whose destruction
+releases references must have exactly one death. A copyable plan would release
+each entry as many times as it had been copied.
+
+For the same reason a plan is refused by generic capability transfer, by IPC
+delegation and by `Endowment::Existing`: every one of those copies, and a copy
+would produce a second holder of one decision.
+
+## 7. Two object kinds, not one with a flag
+
+`CAPABILITY_V1` gives a region's two affine states **one** public object kind,
+on the ground that the public kind space should not be widened by an internal
+distinction and that a process learns what it may do from its rights.
+
+A plan's two states get **two** kinds, and the difference is about interfaces
+rather than about objects. A region's two forms declare the same operations; a
+builder and a sealed plan declare different ones — a builder is written to and
+sealed, a sealed plan is created from, and neither may be used where the other
+belongs. A launcher answering `import capability system.process.LaunchPlan` with
+a builder would be answering a request for a decision that has been made with
+one that has not, and the object-kind check at startup (ADR-0061) exists exactly
+to refuse that.
+
+The nucleus decides state from the *variant*, never from the rights. That is
+ADR-0075's rule about structural affinity, applied to a second kind.
+
+## 8. What this does not decide
+
+**It does not make an endowment reachable from text for capabilities obtained at
+runtime.** `SYSTEM_INTERFACE_V1` §4.1 admits a capability *value* parameter — a
+plan produced by operation 21 travels to 22, 23 and 19 as an ordinary module
+value — but the operation's own first capability is still supplied from an
+`import capability`. That boundary is `tos-ir/v1`'s: `Op::Capability` names the
+operation's own capability as an import index and nothing else. Every operation
+in this ADR is shaped so the question does not arise; widening it is a decision
+about the IR, and this ADR does not take it.
+
+**It does not change what a child does with what it holds.** A plan decides what
+a process is given. ADR-0061 still decides how each grant binds to the child's
+`import capability` requests, and the child still reports `CapabilityDenied` for
+a request nothing answered.
+
+**It does not add restart policy.** A plan makes a restart able to be the same
+decision; *when* to restart, how often, and when to stop is service supervision
+policy and belongs in canonical text, not in the nucleus.
+
+## 9. Conformance evidence
+
+1. A plan is made, written through two different nominal capability interfaces,
+   sealed, and used to create a funded process — from TOS Core text, with the
+   plan travelling between five calls as a typed value and no raw handle
+   anywhere in the source or the artifact.
+2. A builder is refused where a sealed plan belongs.
+3. An entry naming a capability its author does not hold is refused **when the
+   entry is written**, not when a child is created from it.
+4. One sealed plan creates two processes; the second creation is the same
+   decision as the first, and the plan is unchanged by either.
+5. A creator releases its own handle to a capability it placed in a plan, and
+   the plan goes on holding it — evidenced as the same reservation refused and
+   then granted, with only the plan's release in between.
+6. Every plan is destroyed by the end of a boot: the nucleus reports the live
+   plan count beside the frames and page tables it reclaims, and it is zero.
+
+<!-- END docs/adr/0077-launch-plans.md -->
 
 ---
 

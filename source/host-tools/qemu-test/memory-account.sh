@@ -39,8 +39,22 @@
 #       needed. This is the check that would catch it if boot ordering moves
 #       again
 #
-#   root >= MAX_PROCESSES × the ordinary process charge
-#       the reference platform can still fund every process its table can hold
+#   the topologies this system actually runs are affordable, measured
+#       **Not** `root >= MAX_PROCESSES × the ordinary charge.** That assertion
+#       stood while it was true and stopped being an invariant when the Project
+#       Architect fixed what `MAX_PROCESSES` means (ADR-0069 §7, 2026-09-03):
+#       it is the bounded number of process **slots**, not a reservation
+#       guaranteeing that four simultaneous 54 MiB processes can always be
+#       funded. Process slots and memory authority are independent finite
+#       resources, and a creation that finds a free slot and an authority that
+#       cannot pay is answered `E_LIMIT` — which is correct behaviour, not a
+#       failure. Keeping the old assertion would have made every future code
+#       page an architecture STOP.
+#
+#       What replaces it is measured rather than assumed: this prints the
+#       ordinary charge and how many of them the root can fund, and asserts the
+#       two topologies the system is actually built to run — a supervisor with
+#       one child, and a supervisor with a transient build worker beside it.
 #
 set -euo pipefail
 
@@ -139,15 +153,42 @@ if own_space > identity:
         f"more than the {identity} one process's identity mappings are bounded by"
     )
 
-# And the platform can still fund every process its table can hold.
+# And the topologies this system runs are affordable.
+#
+# The number that matters is how many ordinary processes one root can fund, and
+# it is *reported* rather than assumed to be the table's size. `MAX_PROCESSES`
+# bounds the slots; the authority bounds the money; they are independent, and a
+# creation that finds a free slot and an authority that cannot pay is answered
+# `E_LIMIT` (ADR-0069 §7).
 ordinary = int(charge["total"]) // FRAME
-needed = processes * ordinary
-if root < needed:
+affordable = root // ordinary
+print(f"  one ordinary process costs {ordinary} frames; the root funds {affordable}")
+
+# Two live processes is the floor, and it is the one this system cannot fall
+# below without ceasing to work at all: a supervisor and the thing it
+# supervises. Below this there is no topology left.
+SUPERVISED = 2
+if affordable < SUPERVISED:
     raise SystemExit(
-        f"memory-account: FAIL: {processes} processes need {needed} frames "
-        f"and the root holds {root}"
+        f"memory-account: FAIL: a supervisor and one child need "
+        f"{SUPERVISED * ordinary} frames and the root holds {root}"
     )
-print(f"  {processes} ordinary processes need {needed}; margin {root - needed}")
+print(f"  supervisor + target: {SUPERVISED * ordinary} frames, margin {root - SUPERVISED * ordinary}")
+
+# And the build topology ADR-0074 describes: a resident supervisor, a transient
+# build worker, and the bundle backing between them. The worker's arena is the
+# same ordinary grant; what is left over after both is what a bundle may occupy,
+# and it is reported so that a Capsule-v1 artifact's size can be held against a
+# measured number rather than an assumed one.
+bundle_frames = root - SUPERVISED * ordinary
+print(
+    f"  build worker topology: {bundle_frames} frames "
+    f"({bundle_frames * FRAME / (1024 * 1024):.2f} MiB) left for bundle backing"
+)
+if bundle_frames <= 0:
+    raise SystemExit(
+        "memory-account: FAIL: a supervisor and a build worker leave nothing for a bundle"
+    )
 
 print(f"MEMORY-ACCOUNT PASS: {admitted} admitted, {reserve} reserved, {root} funded")
 PY

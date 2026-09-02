@@ -105,6 +105,25 @@ pub enum Object {
     /// public kind space is not widened by an internal distinction, and a
     /// process learns what it may do from the rights it was granted.
     SharedRegion { index: u32, generation: u32 },
+    /// A launch plan still being written (`SYSTEM_ABI_V1` §5 operations 21, 22).
+    ///
+    /// **Affine, like the two things it is shaped after.** A plan is a decision
+    /// about a child, and a second holder of a builder is a second author of one
+    /// decision — with no rule about which of them the seal catches. It is also
+    /// the *holder* of every reference its entries describe, and an object whose
+    /// destruction releases references must have exactly one death.
+    LaunchPlanBuilder { index: u32, generation: u32 },
+    /// The same plan after operation 23 consumed the builder.
+    ///
+    /// A separate variant for the reason `SharedRegion` is one — the state is
+    /// structural and is not read off the rights — and a separate **public**
+    /// kind, which the region deliberately is not. The difference is that a
+    /// region's two forms declare the same operations while these two declare
+    /// different ones: a builder is written to and sealed, a sealed plan is
+    /// created from, and neither may be used where the other belongs. A launcher
+    /// answering a request for one with the other would be answering a request
+    /// for a decision that has been made with one that has not.
+    LaunchPlan { index: u32, generation: u32 },
 }
 
 impl Object {
@@ -117,6 +136,8 @@ impl Object {
             Object::Reply { .. } => tos_launch::OBJECT_REPLY,
             Object::MemoryAuthority { .. } => tos_launch::OBJECT_MEMORY_AUTHORITY,
             Object::Region { .. } | Object::SharedRegion { .. } => tos_launch::OBJECT_REGION,
+            Object::LaunchPlanBuilder { .. } => tos_launch::OBJECT_LAUNCH_PLAN_BUILDER,
+            Object::LaunchPlan { .. } => tos_launch::OBJECT_LAUNCH_PLAN,
         }
     }
 
@@ -133,8 +154,25 @@ impl Object {
     /// that says so rather than the rights: `share` consumed the affine form to
     /// produce it, so a second name is a second reader of something that has no
     /// owner left to duplicate.
+    /// A launch plan answers no in both states, and for a third reason: it is
+    /// the holder of the references its entries took, so a second name for one
+    /// would be a second release of every authority it describes.
     pub fn is_affine(&self) -> bool {
-        matches!(self, Object::Region { .. })
+        matches!(
+            self,
+            Object::Region { .. } | Object::LaunchPlanBuilder { .. } | Object::LaunchPlan { .. }
+        )
+    }
+
+    /// The plan this names, in either state.
+    pub fn plan(&self) -> Option<crate::plan::PlanId> {
+        match *self {
+            Object::LaunchPlanBuilder { index, generation }
+            | Object::LaunchPlan { index, generation } => {
+                Some(crate::plan::PlanId { index, generation })
+            }
+            _ => None,
+        }
     }
 
     /// Whether this names a region at all, in either state.
@@ -362,7 +400,27 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
                 .retain_capability(crate::region::RegionId { index, generation })
                 .map_err(|_| NotGranted::NoRoom)
         }
+        // Affine in both states, so there is never a second name to count. The
+        // one name is made by the operation that made the plan and moved in
+        // place by the one that seals it; the plan's own death is the loss of
+        // that name, which `release_capability` performs.
+        Object::LaunchPlanBuilder { .. } | Object::LaunchPlan { .. } => Ok(()),
     }
+}
+
+/// The reference a plan entry holds on the object it names.
+///
+/// The same door as a capability entry's, deliberately: a plan entry and a
+/// capability entry are both *names* for one object, and an accounting that
+/// counted them differently would be one where releasing a plan and releasing a
+/// handle mean different things to the object they released.
+pub(crate) fn retain_for_plan(object: Object) -> Result<(), NotGranted> {
+    retain_capability(object)
+}
+
+/// And the release of it, once, when the plan is destroyed.
+pub(crate) fn release_for_plan(object: Object) {
+    release_capability(object)
 }
 
 /// Drops the reference a destroyed capability entry held.
@@ -393,6 +451,14 @@ fn release_capability(object: Object) {
                 // rather than go on funding from a tree that is a reference out.
                 crate::memory::note_divergence(b"authority-name-release");
             }
+        }
+        // The one name for a plan goes, so the plan goes — and with it, exactly
+        // once, every reference its entries took. This is the only path by
+        // which a plan ends: an explicit release, or `clear` walking a dead
+        // process's table, and both arrive here.
+        Object::LaunchPlanBuilder { index, generation }
+        | Object::LaunchPlan { index, generation } => {
+            crate::plan::destroy(crate::plan::PlanId { index, generation });
         }
     }
 }
@@ -429,6 +495,10 @@ fn object_is_live(object: Object) -> bool {
             unsafe { crate::memory::authority() }
                 .mode(crate::region::RegionId { index, generation })
                 .is_ok()
+        }
+        Object::LaunchPlanBuilder { index, generation }
+        | Object::LaunchPlan { index, generation } => {
+            crate::plan::is_live(crate::plan::PlanId { index, generation })
         }
     }
 }
@@ -805,7 +875,15 @@ fn retain_transit(object: Object) -> Result<(), NotGranted> {
         // anything gets here. Refused rather than quietly counted, so a future
         // path that reached this by mistake stops rather than making a region
         // one more delegated capability.
-        Object::Region { .. } | Object::SharedRegion { .. } => Err(NotGranted::NoRoom),
+        //
+        // A launch plan is refused here for the same shape of reason and a
+        // different one underneath: it is affine, so a delegation that copied
+        // it would produce a second holder of the decision *and* a second
+        // release of every reference its entries took.
+        Object::Region { .. }
+        | Object::SharedRegion { .. }
+        | Object::LaunchPlanBuilder { .. }
+        | Object::LaunchPlan { .. } => Err(NotGranted::NoRoom),
     }
 }
 
@@ -815,7 +893,10 @@ fn release_transit(object: Object) {
         Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
         Object::MemoryAuthority { .. } => release_capability(object),
         // As above: never taken, so never given back.
-        Object::Region { .. } | Object::SharedRegion { .. } => {}
+        Object::Region { .. }
+        | Object::SharedRegion { .. }
+        | Object::LaunchPlanBuilder { .. }
+        | Object::LaunchPlan { .. } => {}
     }
 }
 
@@ -1026,6 +1107,14 @@ pub fn endowable(endowment: &[Endowment]) -> Result<(), NotGranted> {
         // process is created *with* a region, and until they exist there is no
         // honest way to say it here.
         if object.is_region() {
+            return Err(NotGranted::ReceiverExists);
+        }
+        // And a plan is refused because a plan is what this *is*. An entry
+        // naming another plan would give a child a decision its parent is still
+        // holding, with two holders of one affine object at the end of it; the
+        // way to give a child launch policy is to create it from a plan, not to
+        // hand it one.
+        if object.plan().is_some() {
             return Err(NotGranted::ReceiverExists);
         }
         if let Object::MemoryAuthority { index, generation } = object {

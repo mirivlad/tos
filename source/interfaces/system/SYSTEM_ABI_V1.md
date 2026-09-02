@@ -142,18 +142,24 @@ are marked and are exactly those a process can only apply to itself.
 
 | 18 | `region_freeze` | mutable region capability with `write` | the consuming mutable-to-immutable transition (ADR-0075 §3). The caller's writable window becomes read-only **in place** — same address, same backing, still not executable — the region becomes permanently immutable, the handle presented goes stale, and `rdx` returns a new handle to the same region carrying `read | share`. Base and length do not change and are not reported again. Nothing physical moves and nothing is charged. A failure before the transition leaves the region completely mutable; there is no half-frozen state |
 
-| 19 | `process_create_funded` | **two**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend` | creates a process and charges its **whole** user-memory footprint to that authority (ADR-0076 §3). `rdx` = the module path's length, `r10` = how many capabilities the child is endowed with, `r8` = the rights the child holds over itself, `r9` = the runtime arena it asks for. The path, the endowment and the child's self-binding are in the argument region at `CREATE_MODULE`, `CREATE_ENDOWMENT` and `CREATE_SELF_BINDING`; the **optional** restart generation is at `CREATE_FUNDED_RECORD`. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. `E_BAD_ARGUMENT` for an arena outside the accepted `RuntimeMemoryGrant` domain or a non-canonical restart record, `E_LIMIT` for a footprint this authority cannot pay for |
+| 19 | `process_create_funded` | **three**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend`, `rdx` = a **sealed** launch plan | creates a process, charges its **whole** user-memory footprint to that authority (ADR-0076 §3), and endows it from the plan (ADR-0077 §5). `r10` = the module path's length, `r8` = the rights the child holds over itself, `r9` = the runtime arena it asks for. The path and the child's self-binding are in the argument region at `CREATE_MODULE` and `CREATE_SELF_BINDING`; the **optional** restart generation is at `CREATE_FUNDED_RECORD`. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. **The plan is not consumed.** `E_NO_CAPABILITY` for a builder where a sealed plan belongs, `E_BAD_ARGUMENT` for an arena outside the accepted `RuntimeMemoryGrant` domain or a non-canonical restart record, `E_LIMIT` for a footprint this authority cannot pay for |
 
-| 20 | `process_create_from_bundle` | **three**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend`, `rdx` = a **shared** region capability with `read` holding the bundle | creates a process from the bundle that region carries, funded as operation 19 funds one. `r10`, `r8`, `r9` and `CREATE_FUNDED_RECORD` are 19's. There is **no** module path, ordinal or entry: the bundle declares its own entry, and a caller-supplied one would be a second truth about which program this is. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. The target is given its **own** capability for the same region and its own read-only mapping of the same backing; the creator keeps everything it had |
+| 20 | `process_create_from_bundle` | **four**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend`, `rdx` = a **shared** region capability with `read` holding the bundle, `r10` = a **sealed** launch plan | creates a process from the bundle that region carries, funded and endowed as operation 19 funds and endows one. `r8`, `r9` and `CREATE_FUNDED_RECORD` are 19's. There is **no** module path, ordinal or entry: the bundle declares its own entry, and a caller-supplied one would be a second truth about which program this is. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. The target is given its **own** capability for the same region and its own read-only mapping of the same backing; the creator keeps everything it had, plan included |
+
+| 21 | `launch_plan_create` | process-authority capability with `create` | makes an empty, affine launch-plan **builder** and returns its handle in `rdx` (ADR-0077 §2). A plan is bounded nucleus metadata and grants access to nothing; creation authority is required anyway, so that a process which may not create children cannot accumulate launch policy for them. `E_LIMIT` when the plan table or the caller's capability table is full |
+
+| 22 | `launch_plan_endow` | **two**: `rdi` = **the capability being delegated**, at no particular right, `rsi` = a launch-plan builder | adds one entry to the builder (ADR-0077 §3). `rdx` = the binding's length, whose bytes are at `LAUNCH_ENDOW_BINDING` in the argument region; `r10` = the rights asked for, intersected with what the caller holds over `rdi`. The plan takes a reference of its own on what the entry names, so a creator may release its own handle afterwards and the plan goes on holding it. `E_NO_CAPABILITY` for a region, a reply, another plan, or a sealed plan where a builder belongs; `E_LIMIT` when the plan is full |
+
+| 23 | `launch_plan_seal` | **two**: `rdi` = process-authority capability with `create`, `rsi` = a launch-plan builder | **consuming**: the entries become final, the handle presented goes stale, and `rdx` returns a new handle to the same object as a sealed plan (ADR-0077 §4). The same capability slot at an advanced generation, exactly as `region_freeze` does to a region — the object is one object throughout, and no reference is taken or dropped |
 
 **The third capability must be the shared form, and an immutable affine region
 is refused.** A target receives a window of its own and its creator keeps one,
 which is two holders — exactly what an affine region exists to rule out. `share`
 (7) is the operation that makes a region able to be in two places, and 20 is the
-operation that puts it there. This is also why the bundle does not travel in
-`CREATE_ENDOWMENT`: that path copies a handle and cannot build the mapping a
-region needs in an address space that does not exist yet, so it refuses regions
-and is right to.
+operation that puts it there. This is also why the bundle is not a plan
+entry: an entry copies a handle and cannot build the mapping a region needs in
+an address space that does not exist yet, so operation 22 refuses regions and is
+right to.
 
 **The bundle is opaque to the nucleus, and that is the trust boundary rather
 than an omission.** Ring 0 checks capability and lifecycle facts only — the
@@ -165,6 +171,40 @@ itself** before its first instruction: creation succeeding and admission failing
 are two different outcomes of two different components, and ADR-0073 owns the
 second. Turning a target's verdict into this operation's status would move that
 decision into the nucleus.
+
+**A launch plan is an object, and that is what makes a restart the same
+decision twice.** Before ADR-0077 the endowment was a table a caller wrote into
+its own argument region immediately before a creation: valid for that one call,
+held by nobody in between, and read at the instant the child was built. A
+restart therefore re-decided the endowment from whatever its author could still
+reach. A plan is decided once, at whatever moment its author chooses; it holds a
+reference of its own on everything it names, so those references outlive the
+handles the author used to place them; and it survives the creation that reads
+it, so the second launch applies the same policy rather than a new one.
+
+**Nothing in a plan can be wider than what its author held.** Operation 22
+intersects the rights asked for with the rights the caller holds over the
+capability it is delegating, and the capability itself is the first argument —
+so the operation is reached *through* the authority being delegated, and there
+is no general "may endow" right anybody was granted. A plan cannot name what its
+author cannot name, cannot carry rights its author does not hold, and cannot be
+widened after it is sealed.
+
+**Three kinds of capability are refused as plan entries**, each for its own
+reason. A **region** is refused because a capability is only half of what a
+holder needs and the other half is a mapping in an address space that does not
+exist when the entry is written; operation 20 is where a process is created
+*with* a region. A **reply** is refused because it names one call of one caller
+and is single-use, and no accepted contract makes one a startup endowment. A
+**plan** is refused because an entry naming another plan would hand a child a
+decision its parent is still holding, with two holders of one affine object at
+the end of it.
+
+**A plan ends exactly once.** It is affine in both states, so exactly one
+capability names it, and the loss of that name — an explicit release, or the
+clearing of a dead process's table — destroys the plan and releases every
+reference its entries took. There is no path by which a plan is destroyed twice
+and none by which it outlives its holder.
 
 **Operation 19 replaces 8 and 15 together, and that is why the restart
 generation moved out of a register.** Operation 8 asserted no restart generation
@@ -178,7 +218,7 @@ zero, and every other flag bit must be zero in this contract version.
 **The memory authority is presented, not consumed, and nothing is inherited.**
 A creation places a charge against an accounting node; the capability is
 untouched and the child receives no name for it. A parent that means its child
-to spend from the same node names that capability in `CREATE_ENDOWMENT` like any
+to spend from the same node places that capability in a launch plan like any
 other, which under ADR-0076 §2b gives the child another name for one budget
 rather than a second reservation. There is no automatic remainder for a funded
 child.
@@ -330,6 +370,22 @@ number and the register shape" open, and this table is where a decision of that
 shape is carried. Operation 7 was assigned before any of them and is not an
 addition; what changed is that its row now states the semantics ADR-0037 §4 and
 `IPC_V1` §5 already fixed for it.
+
+Operations 21, 22 and 23 (ADR-0077) are additions of the same kind. They were
+decided by that ADR, which fixed the object, its two states and its lifetime and
+left the numbers and the register shape to be carried here.
+
+**Operations 19 and 20 changed shape in the same revision that added them a
+plan, and that is a change to unreleased operations rather than a break.**
+Neither was ever declared by `SYSTEM_INTERFACE_V1` and neither has a caller
+outside this repository's own runtime image, so the revision is free in a way it
+will never be again: `r10` on 19 stopped being an endowment count and became the
+module path's length, `rdx` on 19 stopped being that length and became the
+sealed plan, and `r10` on 20 stopped being an endowment count and became the
+plan. After this revision the shapes are fixed under §7's ordinary rule, and the
+`CREATE_ENDOWMENT` area of the argument region is gone rather than deprecated:
+a table that is still read is a second way to endow a child, and two ways to
+decide one thing is what ADR-0077 exists to remove.
 
 **The capability and region counts in `r10` and `r8` are a minor version by the
 rule above, and are safe for exactly the reason `r8` was safe on operation 15.**
