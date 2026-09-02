@@ -72,7 +72,6 @@ const ENDPOINT_REPLY: u64 = 4;
 /// that they answer `E_NOT_SUPPORTED`.
 #[cfg(feature = "test-funding-lifecycle")]
 const PROCESS_CREATE: u64 = 8;
-#[cfg(any(feature = "test-lifecycle", feature = "test-bundle-launch"))]
 const PROCESS_WAIT_CHILD: u64 = 14;
 #[cfg(not(feature = "test-lifecycle"))]
 #[cfg(any(feature = "test-funding-lifecycle", feature = "test-lifecycle"))]
@@ -1069,6 +1068,20 @@ enum Produced {
     /// `Result<C, i64>` for a nominal capability `C`: the handle `rdx` carries
     /// on success, the status otherwise.
     Authority,
+    /// `Result<system.process.CreatedProcess, i64>`: the child's capability
+    /// from `rdx`, and its instance identity from the argument region. Two
+    /// facts, because neither is derivable from the other — a handle is an
+    /// index in one table, and an instance identity is not authority.
+    CreatedProcess,
+    /// `Result<system.process.ChildEnding, i64>`: the record operation 14 wrote
+    /// at `WAIT_CHILD_RECORD`, as the value it describes.
+    ///
+    /// **This is where a flag beside a value becomes an `Option`.** The ABI
+    /// carries `has_ended_by` next to `ended_by` because a register-and-offset
+    /// contract has no other way to say "absent"; the schema says it in the
+    /// type, and the translation happens here, once, rather than in every
+    /// supervisor that reads one.
+    ChildEnding,
 }
 
 struct Performed {
@@ -1092,6 +1105,21 @@ const PERFORMED: &[Performed] = &[
         // §5 rows 1, 3 and 4: the length goes where a one-capability
         // operation's first value goes, which is `rsi`.
         values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_send_text",
+        operation: ENDPOINT_SEND,
+        capabilities: &[Reg::Rdi],
+        // The payload where `IPC_V1` §3 puts one, and its length where §5 row 1
+        // puts that. The bound is the schema's 256, which is §3's inline bound:
+        // a longer message is refused before the call is made, not truncated.
+        values: &[Slot::Text {
+            length: Reg::Rsi,
+            at: tos_launch::MESSAGE_PAYLOAD,
+            maximum: MAX_INLINE_BYTES as usize,
+        }],
         result: Produced::Status,
     },
     Performed {
@@ -1262,9 +1290,56 @@ const PERFORMED: &[Performed] = &[
             Slot::Number(Reg::R9),
             Slot::Number(Reg::R8),
         ],
-        result: Produced::Authority,
+        result: Produced::CreatedProcess,
+    },
+    Performed {
+        interface: "system.process.Control",
+        name: "process_wait_child",
+        operation: PROCESS_WAIT_CHILD,
+        capabilities: &[Reg::Rdi],
+        // §5 row 14 puts this operation's flags in `rsi`.
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::ChildEnding,
     },
 ];
+
+/// One optional `u64` of the wait record, as the `Option` the schema declares.
+///
+/// `None` is variant 0 and `Some` is variant 1 — the language's own
+/// representation. The flag decides, and the value beside it is **not** read
+/// when the flag is clear: a zero a caller never asserted is exactly what
+/// ADR-0067 keeps out, and reading it here would put it back.
+fn optional(present: u64, value: u64) -> Value {
+    match present {
+        0 => Value::Variant {
+            index: 0,
+            payload: alloc::vec![],
+        },
+        _ => Value::Variant {
+            index: 1,
+            payload: alloc::vec![Value::Int(IntKind::U64, u128::from(value) as i128)],
+        },
+    }
+}
+
+/// The wait record as a `system.process.ChildEnding`, field by field in the
+/// order the schema declares them.
+///
+/// A record's fields are matched to their names by position, so this order is
+/// the contract rather than a convenience, and a gate holds it against §4.2.
+fn ending_value(record: tos_launch::WaitChildRecord) -> Value {
+    let number = |value: u64| Value::Int(IntKind::U64, u128::from(value) as i128);
+    Value::Aggregate(alloc::vec![
+        number(record.child_instance),
+        number(record.parent_instance),
+        number(record.ending_kind),
+        optional(record.has_self_reported_status, record.self_reported_status),
+        optional(record.has_ended_by, record.ended_by),
+        optional(record.has_restart_generation, record.restart_generation),
+        number(record.ending_order),
+        number(record.ended_tick),
+    ])
+}
 
 /// What this process holds, as the thing a run reaches through.
 ///
@@ -1344,6 +1419,8 @@ impl System for Endowment<'_> {
         // caller that left one as it found it would be asking the nucleus to
         // read a register nobody wrote.
         let mut registers = [0u64; 6];
+        // The one `string` an operation carried, kept for the audit record.
+        let mut said: Option<&str> = None;
         let capabilities = performed.capabilities.len();
         if call.arguments.len() != capabilities + performed.values.len() {
             return Err(Trap::new(
@@ -1412,6 +1489,7 @@ impl System for Endowment<'_> {
                         )
                     };
                     registers[*length as usize] = text.len() as u64;
+                    said = Some(text.as_str());
                 }
                 _ => {
                     return Err(Trap::new(
@@ -1439,22 +1517,63 @@ impl System for Endowment<'_> {
         // What a module asked the system for and what the system answered, on
         // the audit record. The module sees the result; a reader of the boot log
         // sees which operation, under which request, produced it.
-        self.report.line(&alloc::format!(
-            "TOS.RUN.INTERFACE operation={} status={status}",
-            call.operation
-        ));
-        Ok(match performed.result {
-            Produced::Status => Value::Int(IntKind::I64, status.into()),
-            // `Result` is variant 0 for `Ok` and 1 for `Err`, which is the
-            // language's representation and not this host's invention.
-            Produced::Authority if status == OK => Value::Variant {
-                index: 0,
-                payload: alloc::vec![Value::Capability(Handle::new(value))],
-            },
-            Produced::Authority => Value::Variant {
+        //
+        // **A `string` argument is rendered with it**, because it is the only
+        // thing a TOS Core module can put into the world in its own words. The
+        // module composed it; this writes it down. Nothing here interprets it —
+        // a journal record is text the supervisor decided on, and the edge is
+        // the thing that can make text visible, not the thing that decides what
+        // it says.
+        match said {
+            Some(text) => self.report.line(&alloc::format!(
+                "TOS.RUN.INTERFACE operation={} status={status} said={text}",
+                call.operation
+            )),
+            None => self.report.line(&alloc::format!(
+                "TOS.RUN.INTERFACE operation={} status={status}",
+                call.operation
+            )),
+        }
+        if let Produced::Status = performed.result {
+            return Ok(Value::Int(IntKind::I64, status.into()));
+        }
+        // `Result` is variant 0 for `Ok` and 1 for `Err`, which is the
+        // language's representation and not this host's invention.
+        if status != OK {
+            return Ok(Value::Variant {
                 index: 1,
                 payload: alloc::vec![Value::Int(IntKind::I64, status.into())],
-            },
+            });
+        }
+        let produced = match performed.result {
+            Produced::Status => unreachable!("answered above"),
+            Produced::Authority => Value::Capability(Handle::new(value)),
+            Produced::CreatedProcess => {
+                // SAFETY: the nucleus wrote the instance id at the fixed offset
+                // of this process's own argument region, and only on success —
+                // which is the branch this is.
+                let instance =
+                    unsafe { word_at((self.arguments + tos_launch::CREATE_INSTANCE_ID) as usize) };
+                Value::Aggregate(alloc::vec![
+                    Value::Capability(Handle::new(value)),
+                    Value::Int(IntKind::U64, u128::from(instance) as i128),
+                ])
+            }
+            Produced::ChildEnding => {
+                // SAFETY: as above, for the record operation 14 writes at its
+                // own fixed offset of the same region.
+                let record = unsafe {
+                    core::ptr::with_exposed_provenance::<tos_launch::WaitChildRecord>(
+                        (self.arguments + tos_launch::WAIT_CHILD_RECORD) as usize,
+                    )
+                    .read_unaligned()
+                };
+                ending_value(record)
+            }
+        };
+        Ok(Value::Variant {
+            index: 0,
+            payload: alloc::vec![produced],
         })
     }
 }
@@ -1630,12 +1749,6 @@ stale={stale} freed={freed}"
 ///
 /// `at` is inside a region the nucleus mapped into this address space and
 /// reported the base and length of, and that mapping is still there.
-#[cfg(any(
-    feature = "test-memory-authority",
-    feature = "test-region-transport",
-    feature = "test-region-faults",
-    feature = "test-bundle-launch"
-))]
 // SAFETY: the caller's promise that the window is the nucleus's own and still
 // stands is what makes this a read of mapped memory.
 unsafe fn word_at(at: usize) -> u64 {

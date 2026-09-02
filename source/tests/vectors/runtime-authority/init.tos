@@ -62,7 +62,7 @@ extern fn process_create_funded(
     entry: string,
     grant: u64,
     self_rights: u64
-) -> Result<system.process.Control, i64> uses [process, memory];
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
 
 extern fn capability_attenuate(
     cap: system.process.Control,
@@ -95,7 +95,12 @@ pub fn main() -> i64 uses [process, memory] {
                                 process, scoped, plan,
                                 "system/boot/worker.tos", 56623104u64, 0u64
                             )) {
-                                Ok(child) => {
+                                Ok(created) => {
+                                    // The child's authority is a field of the
+                                    // record the creation produced, and a
+                                    // capability field is a capability value
+                                    // like any other (ADR-0078).
+                                    let child: system.process.Control = created.control;
                                     match (capability_attenuate(child, 16u64)) {
                                         Ok(weaker) => {
                                             // The wider handle goes while the

@@ -1,0 +1,314 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A supervisor, in TOS Core.
+//
+// It reads a policy it does not contain, creates the services that policy
+// names, observes their endings through `process_wait_child`, and decides what
+// to do about each one against a restart budget and a window the policy states.
+// Every number it acts on comes from `/system/policy/services.tos`; every
+// capability it acts through after the first two is one an operation produced.
+//
+// **The state machine is here, not in a host script.** What a test outside this
+// module may do is watch: read the journal this module writes, and the
+// nucleus's own account of what actually happened. It cannot supply the
+// decisions, because the decisions are below.
+//
+// Four states, and the difference between them is the whole point:
+//
+//   STARTABLE  no instance running, and nothing preventing one
+//   RUNNING    an instance exists and has not been observed to end
+//   BLOCKED    no instance running **and** a required dependency prevents a
+//              fair launch. Not "ended", not "failed", not "the supervisor did
+//              not get round to it": a service that would be started now if its
+//              dependency were usable
+//   FAILED     the restart policy is exhausted. Terminal, and it latches: an
+//              event that would have caused a restart before does not cause one
+//              after, and nothing here can leave this state
+//
+// The restart rule is failure **density**, not a running total (ADR-0067 gives
+// the clock): on each own failure, drop the recorded failures older than the
+// window relative to this ending's tick, record this one, and compare what is
+// left against the budget. Old failures expire lazily, when another one
+// happens. Terminal failure never expires.
+
+module system.boot.init version 1.0 profile full;
+
+import system.policy.services as policy;
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability system.ipc.Endpoint as journal;
+
+resource [
+    fuel: 262144,
+    stack: 32KiB,
+    allocation: 16KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 8
+]
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.memory.Authority,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [memory];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+extern fn process_wait_child(
+    cap: system.process.Control,
+    flags: u64
+) -> Result<system.process.ChildEnding, i64> uses [process];
+
+extern fn capability_release(
+    cap: system.process.Control
+) -> i64 uses [process];
+
+extern fn endpoint_send_text(
+    cap: system.ipc.Endpoint,
+    message: string
+) -> i64 uses [journal];
+
+extern fn endpoint_receive(cap: system.ipc.Endpoint) -> i64 uses [journal];
+
+// One journal record: what happened, in this supervisor's own words.
+//
+// The record is written here and rendered by the runtime edge; **it is not a
+// host log.** What the nucleus observed is on the nucleus's own lines, with the
+// instance identities only ring 0 can assert; what this module inferred,
+// decided, attempted and got back is here.
+//
+// The endpoint is drained immediately, because `IPC_V1` §3 bounds a queue at
+// four messages and a journal that filled its sink would stop being a journal.
+// That bound is the resource model's, and this respects it rather than asking
+// for a larger one.
+fn note(entry: string) -> i64 uses [journal] {
+    let sent: i64 = endpoint_send_text(journal, entry);
+    let drained: i64 = endpoint_receive(journal);
+    return sent + drained;
+}
+
+pub fn main() -> i64 uses [process, memory, journal] {
+    // **One plan, for every service and every restart.** ADR-0077 §5 makes a
+    // sealed plan survive the creation that reads it, and that is exactly what
+    // a supervisor needs: a restart is the same policy applied to a new process
+    // instance, so a plan built per launch would make the second launch a
+    // second decision — and would exhaust the plan table in `MAX_PLANS`
+    // restarts, which is how this was found.
+    //
+    // Every service of this policy is endowed alike, so one plan says all of
+    // it. A policy whose services differed would need one plan each, which is
+    // the same mechanism a few more times.
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            let placed: i64 = endow_for_launch(memory, builder, 128u64, "memory");
+            if (placed != 0i64) {
+                note("supervisor.result.refused");
+                return placed;
+            }
+            match (launch_plan_seal(process, builder)) {
+                Ok(plan) => {
+                    return supervise(plan);
+                }
+                Err(unsealed) => {
+                    note("supervisor.result.refused");
+                    return unsealed;
+                }
+            }
+        }
+        Err(unplanned) => {
+            note("supervisor.result.refused");
+            return unplanned;
+        }
+    }
+}
+
+// The supervision loop, over a plan that is already sealed.
+//
+// A function of its own because the plan has to be made before it and reused
+// inside it, and a `match` wrapping the whole machine would put the machine
+// eight levels deep for no reason a reader benefits from.
+fn supervise(plan: system.process.LaunchPlan) -> i64 uses [process, memory, journal] {
+    let services: size = policy.count();
+    // STARTABLE for every service, until the first round decides otherwise.
+    let mut state: array<u64, 3> = [0u64, 0u64, 0u64];
+    // The instance identity of the child each service is currently running, and
+    // whether there is one. An identity is what ADR-0067 makes a child by, and
+    // a handle is not one.
+    let mut instance: array<u64, 3> = [0u64, 0u64, 0u64];
+    // Recent **own** failures, as the ticks they happened at: four per service,
+    // oldest first, with a count.
+    let mut failures: array<u64, 12> = [
+        0u64, 0u64, 0u64, 0u64,
+        0u64, 0u64, 0u64, 0u64,
+        0u64, 0u64, 0u64, 0u64,
+    ];
+    let mut recorded: array<size, 3> = [0B, 0B, 0B];
+    let mut created: i64 = 0i64;
+    let mut latched: i64 = 0i64;
+    let mut blocked: i64 = 0i64;
+
+    let mut round: u64 = 0u64;
+    let mut running: i64 = 0i64;
+    while (round < policy.rounds()) {
+        // --- start whatever should be running and is not --------------------
+        let mut at: size = 0B;
+        while (at < services) {
+            // A blocked service is reconsidered every round, because BLOCKED is
+            // a statement about *now*: a dependency that has come back makes it
+            // startable again, and nothing else has to happen for that. A
+            // latched one is not reconsidered, and that is the difference
+            // between the two — one is waiting on the world, the other is over.
+            let mut considering: bool = false;
+            if (state[at] == 0u64) {
+                considering = true;
+            }
+            if (state[at] == 2u64) {
+                considering = true;
+            }
+            if (considering) {
+                // A dependency that is not running prevents a fair launch, and
+                // that is BLOCKED. It consumes no restart budget: nothing about
+                // this service failed.
+                let mut startable: bool = true;
+                if (policy.has_requirement(at)) {
+                    if (state[policy.requires(at)] != 1u64) {
+                        startable = false;
+                    }
+                }
+                if (startable) {
+                    note("supervisor.policy.start-permitted");
+                    note(policy.program(at));
+                    note("supervisor.action.create");
+                    match (process_create_funded(
+                        process, memory, plan,
+                        policy.program(at), policy.grant(at), 0u64
+                    )) {
+                        Ok(child) => {
+                            instance[at] = child.instance;
+                            state[at] = 1u64;
+                            running = running + 1i64;
+                            created = created + 1i64;
+                            note("supervisor.result.created");
+                            // The child's own authority is a value this
+                            // operation produced, and it is let go at once. A
+                            // supervisor that kept one per launch would fill
+                            // its capability table in `MAX_CAPABILITIES`
+                            // restarts and stop being able to start anything —
+                            // so releasing it is part of the machine, not
+                            // tidiness. What it supervises by is the ending.
+                            capability_release(child.control);
+                        }
+                        Err(refused) => {
+                            note("supervisor.result.refused");
+                        }
+                    }
+                } else {
+                    state[at] = 2u64;
+                    blocked = blocked + 1i64;
+                    note("supervisor.policy.dependency-unavailable");
+                    note(policy.program(at));
+                    note("supervisor.state.blocked");
+                }
+            } else {
+                if (state[at] == 3u64) {
+                    // The latch, asked the question that would have started it.
+                    note("supervisor.policy.latched-no-start");
+                }
+            }
+            at = at + 1B;
+        }
+
+        // --- observe one ending, and decide about it ------------------------
+        //
+        // Blocking, because a supervisor with nothing running and nothing
+        // startable has nothing to do: ADR-0059's liveness rule cancels a wait
+        // that can gain no member, and that cancellation is how this loop
+        // learns the machine is at rest.
+        if (running > 0i64) {
+            match (process_wait_child(process, 0u64)) {
+                Ok(ending) => {
+                    note("supervisor.observed.ending");
+                    let mut which: size = 0B;
+                    let mut found: bool = false;
+                    let mut scan: size = 0B;
+                    while (scan < services) {
+                        if (state[scan] == 1u64) {
+                            if (instance[scan] == ending.child_instance) {
+                                which = scan;
+                                found = true;
+                            }
+                        }
+                        scan = scan + 1B;
+                    }
+                    if (found) {
+                        state[which] = 0u64;
+                        running = running - 1i64;
+                        note("supervisor.inferred.own-failure");
+                        note(policy.program(which));
+                        // Failure **density**: drop what is older than the
+                        // window relative to *this* ending, then record this
+                        // one, then compare.
+                        let window: u64 = policy.window(which);
+                        let base: size = which * 4B;
+                        let mut kept: size = 0B;
+                        let mut slot: size = 0B;
+                        while (slot < recorded[which]) {
+                            let happened: u64 = failures[base + slot];
+                            if (ending.ended_tick - happened < window) {
+                                failures[base + kept] = happened;
+                                kept = kept + 1B;
+                            }
+                            slot = slot + 1B;
+                        }
+                        if (kept < 4B) {
+                            failures[base + kept] = ending.ended_tick;
+                            kept = kept + 1B;
+                        }
+                        recorded[which] = kept;
+                        if (kept < policy.max_attempts(which)) {
+                            note("supervisor.policy.restart-permitted");
+                        } else {
+                            state[which] = 3u64;
+                            latched = latched + 1i64;
+                            note("supervisor.policy.budget-exhausted");
+                            note("supervisor.state.failed");
+                        }
+                    } else {
+                        note("supervisor.inferred.unknown-child");
+                    }
+                }
+                Err(cancelled) => {
+                    note("supervisor.observed.no-ending");
+                }
+            }
+        }
+        round = round + 1u64;
+    }
+
+    note("supervisor.report");
+    // Composed so no single outcome produces it: services created, services
+    // latched terminal, and services blocked, each weighed differently.
+    return 1000i64 + created * 10i64 + latched * 100i64 + blocked;
+}

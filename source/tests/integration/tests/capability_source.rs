@@ -88,7 +88,7 @@ extern fn process_create_funded(
     entry: string,
     grant: u64,
     self_rights: u64
-) -> Result<system.process.Control, i64> uses [process, memory];
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
 
 extern fn capability_attenuate(
     cap: system.process.Control,
@@ -122,8 +122,13 @@ pub fn main() -> i64 uses [process, inbox, memory] {
                             match (process_create_funded(
                                 process, scoped, plan, \"system/boot/init.tos\", 56623104u64, 0u64
                             )) {
-                                Ok(child) => {
-                                    // 6 — refinement of a runtime capability.
+                                Ok(created) => {
+                                    // 6 — refinement of a runtime capability,
+                                    // taken out of the record the creation
+                                    // produced: a capability field of a
+                                    // schema-declared record is a capability
+                                    // value like any other.
+                                    let child: system.process.Control = created.control;
                                     match (capability_attenuate(child, 16u64)) {
                                         Ok(weaker) => {
                                             // 2 — a runtime capability as the
@@ -312,8 +317,19 @@ fn a_runtime_capability_is_the_operations_own_capability() {
         }
         panic!("{name} is in the artifact")
     };
+    // The creation's result is the record §4.2 declares, and its first field is
+    // the child's authority — the value `process_terminate` later acts through.
+    let TypeDef::Nominal {
+        export_name,
+        fields,
+        ..
+    } = result_of("process_create_funded")
+    else {
+        panic!("a creation does not return a record");
+    };
+    assert_eq!(export_name, "system.process.CreatedProcess");
     assert_eq!(
-        result_of("process_create_funded"),
+        module.types[fields[0]],
         TypeDef::Capability(String::from("system.process.Control"))
     );
     assert_eq!(
@@ -396,6 +412,18 @@ impl tos_engine::System for Runtime {
         Ok(match call.operation {
             "endow_for_launch" | "process_terminate" | "capability_release" => {
                 tos_engine::Value::Int(tos_ir::IntKind::I64, 0)
+            }
+            // A creation produces the record §4.2 declares: the child's
+            // authority and its instance identity, in that order.
+            "process_create_funded" => {
+                self.next += 1;
+                tos_engine::Value::Variant {
+                    index: 0,
+                    payload: vec![tos_engine::Value::Aggregate(vec![
+                        tos_engine::Value::Capability(tos_engine::Handle::new(0x100 + self.next)),
+                        tos_engine::Value::Int(tos_ir::IntKind::U64, i128::from(self.next)),
+                    ])],
+                }
             }
             _ => {
                 self.next += 1;

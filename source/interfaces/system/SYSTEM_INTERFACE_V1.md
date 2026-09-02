@@ -119,6 +119,7 @@ all of them.
 | `endpoint_send` | `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
 | `endpoint_receive` | `system.ipc.Endpoint` with `receive` | *(none)* | `i64` | 2 |
 | `endpoint_call` | `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
+| `endpoint_send_text` | `system.ipc.Endpoint` with `send` | `message: string` (≤ 256) | `i64` | 1 |
 | `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 
 ### `system.ipc.Reply`
@@ -163,9 +164,10 @@ decided rather than described:
 | Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
 |---|---|---|---|---|
 | `process_terminate` | `system.process.Control` with `terminate` | *(none)* | `i64` | 9 |
+| `process_wait_child` | `system.process.Control` with `wait_child` | `flags: u64` | `Result<system.process.ChildEnding, i64>` | 14 |
 | `launch_plan_create` | `system.process.Control` with `create` | *(none)* | `Result<system.process.LaunchPlanBuilder, i64>` | 21 |
 | `launch_plan_seal` | `system.process.Control` with `create` | `plan: system.process.LaunchPlanBuilder` | `Result<system.process.LaunchPlan, i64>` | 23 |
-| `process_create_funded` | `system.process.Control` with `create`, then `system.memory.Authority` with `spend` | `plan: system.process.LaunchPlan`, `entry: string` (≤ 256), `grant: u64`, `self_rights: u64` | `Result<system.process.Control, i64>` | 19 |
+| `process_create_funded` | `system.process.Control` with `create`, then `system.memory.Authority` with `spend` | `plan: system.process.LaunchPlan`, `entry: string` (≤ 256), `grant: u64`, `self_rights: u64` | `Result<system.process.CreatedProcess, i64>` | 19 |
 | `endow_for_launch` | `system.process.Control` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 | `capability_attenuate` | `system.process.Control` with `none` | `rights: u64` | `Result<system.process.Control, i64>` | 5 |
 | `capability_release` | `system.process.Control` with `none` | *(none)* | `i64` | 6 |
@@ -234,6 +236,69 @@ and a later operation takes. Neither needed a new `tos-ir/v1` variant or a new
 TOS Core type constructor: the IR has had `Capability` and `Result` since it was
 written, and what was missing was the frontend admitting a constructed type in an
 `extern` result and resolving an interface path to the capability type it is.
+
+**Two rows may share one `SYSTEM_ABI_V1` operation.** `endpoint_send` and
+`endpoint_send_text` are both operation 1, and differ in how the payload is
+declared: one takes a length over bytes the caller placed itself, the other
+takes the message as a `string` and lets §4.1's mechanism place it. That is not
+two operations wearing one number — it is one operation with two declared
+shapes, and a module picks the one whose parameters it actually has. It is also
+the only way a TOS Core module can put text into the world in its own words,
+which is what a supervisor's journal is made of.
+
+## 4.2 The records this version declares
+
+An operation returns the value it produced (§5), and some of what this system
+produces has more than one part. A schema **record** is how those parts are
+named.
+
+**Not a new record ABI and not a language change.** A schema record is an
+ordinary TOS Core nominal record type — the same type constructor a module's own
+`record` declaration produces, carried in the artifact the same way and checked
+by a verifier the same way. What is new is only *who declares it*: this schema
+rather than a module, exactly as this schema already declares the interfaces and
+operations a module may name.
+
+**A module cannot construct one.** Nothing in the language names a schema
+record's constructor, so the only way to hold one is to have been given it by
+the operation that produces it. TOS Core V1's visibility rules are unchanged;
+every field is readable, because a record declared to be returned exists to be
+read.
+
+**Field order is part of the contract.** A value's parts are matched to their
+names by position, so the order below is what a host builds and what a module
+reads, and a gate holds the two together.
+
+### `system.process.CreatedProcess`
+
+| Field | Type |
+|---|---|
+| `control` | `system.process.Control` |
+| `instance` | `u64` |
+
+Two facts, because neither is derivable from the other: a handle is an index in
+one table and means nothing in another, and an instance identity is not
+authority (ADR-0067 §7).
+
+### `system.process.ChildEnding`
+
+| Field | Type |
+|---|---|
+| `child_instance` | `u64` |
+| `parent_instance` | `u64` |
+| `ending_kind` | `u64` |
+| `self_reported_status` | `Option<u64>` |
+| `ended_by` | `Option<u64>` |
+| `restart_generation` | `Option<u64>` |
+| `ending_order` | `u64` |
+| `ended_tick` | `u64` |
+
+**The three optional facts are `Option`, not a value beside a flag.** ADR-0067
+states the rule the other way round from a register-and-offset contract: absence
+is the true value, and a zero would be a claim its caller never made. A record
+carrying `status` and `has_status` side by side puts that rule in the reader's
+hands; `Option<u64>` puts it in the type, and the translation happens once, at
+the boundary, rather than in every supervisor that reads one.
 
 ## 4.1 What a parameter may be
 

@@ -1286,6 +1286,40 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             rights: tos_launch::RIGHT_SPEND,
         },
     ];
+    // Section H: everything a supervisor is made of. `create` to start a
+    // service, `terminate` because a supervisor that could not stop one would
+    // be an observer, `wait_child` because an ending is how it learns anything,
+    // the root's remainder to pay with, and one endpoint for its journal.
+    //
+    // The endpoint carries **both halves** deliberately: `IPC_V1` §3 bounds a
+    // queue at four messages, and a journal whose sink filled would stop being
+    // a journal — so the supervisor drains its own. Who consumes an operator
+    // journal is not a question Stage 3 answers, and this does not invent one.
+    #[cfg(feature = "test-supervision")]
+    let first_endowment = {
+        let Some(journal) = ipc::create() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        [
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE
+                    | tos_launch::RIGHT_TERMINATE
+                    | tos_launch::RIGHT_WAIT_CHILD,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"journal"),
+                object: capability::Object::Endpoint(journal),
+                rights: tos_launch::RIGHT_SEND | tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+        ]
+    };
     // ADR-0078: everything a supervisor is made of, and nothing more. `create`
     // and `terminate` over itself, and the root's remainder to spend. Every
     // other capability that boot reaches is one an operation produced — the
@@ -1465,6 +1499,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-second-receiver",
         feature = "test-deputy",
         feature = "test-runtime-authority",
+        feature = "test-supervision",
         feature = "test-lifecycle"
     )))]
     // **Nothing, because the module asks for nothing.** ADR-0055 makes an
@@ -1489,6 +1524,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-creation-rollback",
         feature = "test-region-transport",
         feature = "test-runtime-authority",
+        feature = "test-supervision",
         feature = "test-bundle-launch"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];

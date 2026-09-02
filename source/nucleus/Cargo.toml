@@ -33,6 +33,10 @@ test-lifecycle = []
 # Deterministic failure injection for the creation transaction, so the rollback
 # is proved against real refusals rather than asserted.
 test-creation-rollback = []
+# Section H: a textual supervisor holds what supervision is made of — `create`,
+# `terminate` and `wait_child` over itself, the root's remainder to spend, and
+# one endpoint it both sends its journal on and drains.
+test-supervision = []
 # ADR-0078: the boot process holds `create` and `terminate` over itself and the
 # root's remainder, which is everything a supervisor needs to scope a budget,
 # plan a child, create it, refine its authority and end it — every step after

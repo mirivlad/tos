@@ -1,0 +1,118 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// What the system supervises, and under what policy — as canonical text.
+//
+// ADR-0051 §3 puts supervision policy in `/system/policy/` as "canonical source
+// keyed by module name … canonical text like any other component; not a binary
+// configuration database". This is that: a TOS Core module the supervisor reads
+// the way any module reads any other.
+//
+// **It is separate from the supervisor on purpose.** The supervisor decides
+// *how* to supervise; this decides *what*, *how hard to try*, and *what depends
+// on what*. A supervisor carrying both would be a component that grants itself
+// its own workload, which docs/37 names as a Stage 3 failure — and none of the
+// numbers below appears anywhere in the supervisor's text.
+//
+// The three services are chosen so that the three interesting outcomes are all
+// reachable in one bounded boot, and so that no two of them can be confused:
+//
+//   0  dependent    requires service 2. It is considered **before** its
+//                   dependency each round, so in the first round service 2 is
+//                   not running yet and this one is BLOCKED — and in the next
+//                   round it is, so this one starts. That pair is the whole of
+//                   what BLOCKED means: not ended, not failed, not skipped, but
+//                   *not fairly launchable at this moment*. It also has a
+//                   budget of two and a wide window, so it eventually latches;
+//                   after that its dependency goes on coming back and it does
+//                   not
+//   1  latching     no dependency, a window wider than the boot, and a budget
+//                   of two. The second failure inside that window latches it,
+//                   with nothing else in the picture
+//   2  forgiving    no dependency and a window of one tick. Starting a process
+//                   takes far more than one tick, so each failure is alone in
+//                   its window and a budget of two is never reached
+
+module system.policy.services version 1.0 profile bootstrap;
+
+resource [
+    fuel: 4096,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 0
+]
+
+// How many services this policy names.
+pub fn count() -> size {
+    return 3B;
+}
+
+// The module each service runs, by capsule-relative path.
+pub fn program(at: size) -> string {
+    let paths: array<string, 3> = [
+        "system/boot/worker.tos",
+        "system/boot/worker.tos",
+        "system/boot/worker.tos",
+    ];
+    return paths[at];
+}
+
+// The runtime arena each service is given. A fixed policy figure per service,
+// never a share of what is free (ADR-0069 §2).
+pub fn grant(at: size) -> u64 {
+    let arenas: array<u64, 3> = [56623104u64, 56623104u64, 56623104u64];
+    return arenas[at];
+}
+
+// How many of its **own** failures a service may have inside its window before
+// the supervisor stops replacing it.
+pub fn max_attempts(at: size) -> size {
+    let budgets: array<size, 3> = [2B, 2B, 2B];
+    return budgets[at];
+}
+
+// How wide that window is, in the boot-monotonic ticks `ChildEnding.ended_tick`
+// counts.
+//
+// The two figures are the whole of the restart contract's boundary. The first
+// two windows are wider than a whole boot, so nothing ever leaves them. The
+// third is one tick, and starting a process takes hundreds — so a failure is
+// always alone in its window, and a budget of two is never reached.
+pub fn window(at: size) -> u64 {
+    let windows: array<u64, 3> = [1000000u64, 1000000u64, 1u64];
+    return windows[at];
+}
+
+// Whether this service requires another, and which.
+//
+// Two functions rather than one `Option`, because "has no dependency at all" and
+// "has one, and it is service zero" are different facts and a policy that could
+// not tell them apart would make service zero everybody's dependency by
+// accident.
+pub fn has_requirement(at: size) -> bool {
+    let required: array<bool, 3> = [true, false, false];
+    return required[at];
+}
+
+// Read only where `has_requirement` is true; where it is false this answers
+// zero, and zero is not a dependency.
+pub fn requires(at: size) -> size {
+    let dependencies: array<size, 3> = [2B, 0B, 0B];
+    return dependencies[at];
+}
+
+// How many supervision rounds the supervisor runs before it reports.
+//
+// A bound, and the policy's rather than the supervisor's: a TOS Core module
+// declares its fuel envelope up front (docs/41), so a supervision loop that ran
+// until nothing changed would be one whose cost no declaration bounds. Six is
+// enough for every transition this policy can produce, and the evidence shows
+// the machine at rest before it is reached.
+pub fn rounds() -> u64 {
+    return 10u64;
+}

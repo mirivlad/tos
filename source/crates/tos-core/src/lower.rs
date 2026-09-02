@@ -596,6 +596,15 @@ impl<'source> Lowerer<'source> {
                         if crate::interfaces::interface(&spelled).is_some() {
                             return Ok(self.intern(TypeDef::Capability(spelled)));
                         }
+                        // A **record** an accepted schema declares. It is an
+                        // ordinary nominal record type — the same constructor a
+                        // module's own `record` produces — differing only in
+                        // who declared it, which is the same difference the
+                        // schema's interfaces already have from a module's own
+                        // types.
+                        if crate::interfaces::record(&spelled).is_some() {
+                            return self.schema_record(&spelled, *span);
+                        }
                         // A type from another module: its identity is the path,
                         // and its shape belongs to the module that declares it.
                         return Ok(self.intern(TypeDef::Nominal {
@@ -679,6 +688,81 @@ impl<'source> Lowerer<'source> {
                 Ok(self.intern(TypeDef::Function(lowered, result)))
             }
         }
+    }
+
+    /// Interns a record an accepted schema declares, once per module.
+    ///
+    /// Registered in `nominals` beside a module's own records, so that field
+    /// access resolves a field's position exactly as it does for a declared
+    /// one. There is no second mechanism: what the schema supplies is the
+    /// declaration, and everything after it is the language's.
+    fn schema_record(&mut self, path: &str, at: crate::parser::Span) -> Result<TypeId, Gap> {
+        if let Some(&(id, _)) = self.nominals.get(path) {
+            return Ok(id);
+        }
+        let Some(declared) = crate::interfaces::record(path) else {
+            return Err(self.gap("record no accepted schema declares", at));
+        };
+        // Interned empty first, so a record naming itself — which none does
+        // today — terminates rather than recursing.
+        let id = self.intern(TypeDef::Nominal {
+            module_content_id: String::new(),
+            export_name: String::from(path),
+            kind: NominalKind::Record,
+            fields: Vec::new(),
+            variants: Vec::new(),
+        });
+        self.nominals.insert(
+            String::from(path),
+            (
+                id,
+                declared
+                    .fields
+                    .iter()
+                    .map(|field| String::from(field.name))
+                    .collect(),
+            ),
+        );
+        let mut fields = Vec::with_capacity(declared.fields.len());
+        for field in declared.fields {
+            fields.push(self.schema_field_type(field.ty, at)?);
+        }
+        self.types[id] = TypeDef::Nominal {
+            module_content_id: String::new(),
+            export_name: String::from(path),
+            kind: NominalKind::Record,
+            fields,
+            variants: Vec::new(),
+        };
+        Ok(id)
+    }
+
+    /// One schema field's declared type, from the canonical spelling.
+    ///
+    /// The spellings a schema may use are the ones `boundary::type_text`
+    /// produces, and this admits exactly the ones a record actually declares:
+    /// a `u64`, an `Option` of one, and a capability of an accepted interface.
+    /// Anything else is a gap rather than a guess — a schema that grew a field
+    /// type nothing here can build would be a contract this frontend claims to
+    /// carry and does not.
+    fn schema_field_type(&mut self, spelled: &str, at: crate::parser::Span) -> Result<TypeId, Gap> {
+        if let Some(kind) = IntKind::parse(spelled) {
+            return Ok(self.intern(TypeDef::Int(kind)));
+        }
+        if let Some(inner) = spelled
+            .strip_prefix("Option<")
+            .and_then(|rest| rest.strip_suffix('>'))
+        {
+            let inner = self.schema_field_type(inner, at)?;
+            return Ok(self.intern(TypeDef::Option(inner)));
+        }
+        if crate::interfaces::interface(spelled).is_some() {
+            return Ok(self.intern(TypeDef::Capability(String::from(spelled))));
+        }
+        if crate::interfaces::record(spelled).is_some() {
+            return self.schema_record(spelled, at);
+        }
+        Err(self.gap("schema record field type", at))
     }
 
     /// The dotted module name a local import binding points at.

@@ -320,7 +320,7 @@ extern fn process_create_funded(
     entry: string,
     grant: u64,
     self_rights: u64
-) -> Result<system.process.Control, i64> uses [process, memory];
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
 
 pub fn main() -> i64 uses [process, inbox, memory] {
     match (launch_plan_create(process)) {
@@ -338,7 +338,7 @@ pub fn main() -> i64 uses [process, inbox, memory] {
                     match (process_create_funded(
                         process, memory, plan, \"system/boot/init.tos\", 56623104u64, 0u64
                     )) {
-                        Ok(child) => {
+                        Ok(created) => {
                             return 1i64;
                         }
                         Err(status) => {
