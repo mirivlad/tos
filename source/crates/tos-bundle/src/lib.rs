@@ -397,6 +397,43 @@ impl<'a> Bundle<'a> {
         Ok(bundle)
     }
 
+    /// Validates the bundle at the **start of a container that may be larger
+    /// than it**, and returns a view over exactly the bundle.
+    ///
+    /// **A region is a container; an artifact is a prefix of one.** A bundle
+    /// arrives in whole frames because that is what memory is handed out in,
+    /// and the bytes after it are the region's rather than the bundle's. A
+    /// reader handed the whole region cannot simply call [`Bundle::parse`]:
+    /// that requires the declared total to equal the slice, which is the right
+    /// rule for a caller that already knows where the artifact ends and the
+    /// wrong question to ask of a container.
+    ///
+    /// So the declared total is read first and **bounded by what was actually
+    /// handed over** before anything is indexed. A bundle claiming more than
+    /// the container holds is refused here, with the same
+    /// [`BundleError::LengthMismatch`] a short slice produces — the hostile
+    /// case is a bundle that says it is bigger than it is, and it is refused by
+    /// comparison rather than by trust. Everything after that bound is
+    /// [`Bundle::parse`] over the prefix, unchanged: same magic check, same
+    /// version check, same total walk of the table.
+    ///
+    /// This adds no field and changes no byte of `TOSBUNDLE/v1`. What it adds is
+    /// a way to *read* one out of a container, which the format already
+    /// describes and had no entry point for.
+    pub fn parse_prefix(bytes: &'a [u8]) -> Result<Bundle<'a>, BundleError> {
+        if bytes.len() < HEADER_BYTES {
+            return Err(BundleError::TooShort);
+        }
+        let declared = u64_at(bytes, 16);
+        if declared < HEADER_BYTES as u64 || declared > bytes.len() as u64 {
+            return Err(BundleError::LengthMismatch {
+                declared,
+                actual: bytes.len() as u64,
+            });
+        }
+        Bundle::parse(&bytes[..declared as usize])
+    }
+
     /// How many modules the declared closure has.
     pub fn modules(&self) -> usize {
         self.modules

@@ -787,6 +787,30 @@ fn grant_bytes(wanted: u64) -> Option<u64> {
         .filter(|rounded| *rounded <= tos_runtime::region::MAX_GRANT as u64)
 }
 
+/// What a process is built to run.
+///
+/// **Two launches, not one launch with an option.** A source bootstrap process
+/// is handed a set of units to compile and verify; a bundle target is handed one
+/// immutable artifact it verifies for itself. They map different things, they
+/// are charged for different launch records, and they are told what they are by
+/// two different record shapes (`LAUNCH_VERSION` and `BUNDLE_LAUNCH_VERSION`).
+/// Everything else about building a process — the funding, the address space,
+/// the grant, the stack, the report region, the endowment, the publication — is
+/// the same, which is why this is one parameter rather than two functions.
+#[derive(Clone, Copy, Debug)]
+pub enum Program {
+    /// A unit of the boot's own source set, by index.
+    Source(usize),
+    /// A bundle in a shared region.
+    ///
+    /// **Opaque here and everywhere below here.** The nucleus maps these bytes
+    /// read-only into the target and knows nothing else about them: not the
+    /// format, not the entry, not whether the images inside are modules. A
+    /// corrupt bundle produces a target that starts and then refuses itself
+    /// (ADR-0073), which is a process failure and not a system-call refusal.
+    Bundle(crate::region::RegionId),
+}
+
 /// What pays for a process, and how much runtime arena it is to have.
 ///
 /// **Both are the caller's, and neither has a default.** A creation core that
@@ -1990,24 +2014,52 @@ pub unsafe fn admit_borrowed(
 // SAFETY: the caller's promise that the image and capsule ranges are what they
 // say makes the mappings below name the bytes the identity record claims.
 pub unsafe fn create_funded(
-    entry_index: usize,
+    program: Program,
     funding: Funding,
     endowment: &[crate::capability::Endowment],
     parent: u64,
     restart_generation: Option<u64>,
 ) -> Result<usize, Unlaunchable> {
     let template = crate::launch::template().ok_or(Unlaunchable::NoRuntimeImage)?;
-    if !template.holds(entry_index) {
-        // A module index this boot does not have. Refused rather than clamped:
-        // a process launched over a different module than the one asked for is
-        // a process nobody asked for.
-        return Err(Unlaunchable::NoSuchModule);
-    }
+    let entry_index = match program {
+        Program::Source(entry_index) => {
+            if !template.holds(entry_index) {
+                // A module index this boot does not have. Refused rather than
+                // clamped: a process launched over a different module than the
+                // one asked for is a process nobody asked for.
+                return Err(Unlaunchable::NoSuchModule);
+            }
+            entry_index
+        }
+        // A target compiles nothing and reads no unit of this boot's set. The
+        // index is not a claim about anything; it is what the source form needs
+        // and the bundle form does not have.
+        Program::Bundle(_) => 0,
+    };
     let (bi, descs) = (template.bi, template.descs);
     let (image, capsule) = (template.image, template.capsule);
-    let units = template.units();
+    // A bundle target is handed no source set at all: it has one artifact, and
+    // what is inside it is the artifact's business.
+    let units: &[(&[u8], &[u8])] = match program {
+        Program::Source(_) => template.units(),
+        Program::Bundle(_) => &[],
+    };
     let identity = template.identity;
     let source_set = template.source_set();
+    // The bundle's own facts, read once: how much of it is mapped, and how many
+    // pages that is. Nothing about its *contents* is read, here or anywhere in
+    // the nucleus.
+    let bundle = match program {
+        Program::Source(_) => None,
+        Program::Bundle(region) => {
+            // SAFETY: single-context nucleus; nothing else holds the tree.
+            let tree = unsafe { crate::memory::authority() };
+            let Ok(length) = tree.length(region) else {
+                return Err(Unlaunchable::NoSuchModule);
+            };
+            Some((region, length as u64))
+        }
+    };
     if image.length() == 0 {
         return Err(Unlaunchable::NoRuntimeImage);
     }
@@ -2058,9 +2110,20 @@ pub unsafe fn create_funded(
     // Room for the endowment's description, sized by what the launcher decided
     // to give rather than by what a process may hold: a record that reserved
     // sixteen entries for an endowment of one would be describing capabilities
-    // nobody granted.
-    let endowment_bytes = endowment.len() * size_of::<LaunchCapability>();
-    let record_bytes = (size_of::<Launch>() + table_bytes + paths_bytes + endowment_bytes) as u64;
+    // nobody granted. A bundle target is described one more: its own handle for
+    // the artifact it was launched from, which its creator did not put in the
+    // endowment because that path cannot map a region.
+    let described_extra = usize::from(bundle.is_some());
+    let endowment_bytes = (endowment.len() + described_extra) * size_of::<LaunchCapability>();
+    // **The price is the record the selected form actually needs.** The two
+    // shapes are different sizes, and charging the source form's while writing
+    // the bundle form's would be a frame outside the authority tree — the
+    // hidden second counter, one launch at a time.
+    let header_bytes = match program {
+        Program::Source(_) => size_of::<Launch>(),
+        Program::Bundle(_) => size_of::<tos_launch::BundleLaunch>(),
+    };
+    let record_bytes = (header_bytes + table_bytes + paths_bytes + endowment_bytes) as u64;
     #[cfg(feature = "test-creation-rollback")]
     let record_bytes = if crate::injection::armed(crate::injection::Case::RecordTooLarge) {
         MAX_RECORD_BYTES + 1
@@ -2257,13 +2320,44 @@ pub unsafe fn create_funded(
         // added back when each unit's address is computed, below.
         let capsule_frame = capsule.start & !(FRAME_SIZE - 1);
         let skew = capsule.start - capsule_frame;
-        map_range(
-            &mut space,
-            tables,
-            SOURCE,
-            Span::new(capsule_frame, capsule.end),
-            PRESENT_USER | NO_EXECUTE,
-        )?;
+        if bundle.is_none() {
+            map_range(
+                &mut space,
+                tables,
+                SOURCE,
+                Span::new(capsule_frame, capsule.end),
+                PRESENT_USER | NO_EXECUTE,
+            )?;
+        }
+        // **The bundle instead, and read-only.** Same backing as its supervisor's,
+        // at the lane the region's slot determines, from the nucleus's own index
+        // rather than from anything the supervisor's page tables say. Not
+        // executable and not writable: a target verifies an artifact, it does not
+        // edit one and it does not run one directly.
+        //
+        // Inside the transaction, so a failure here is undone by the same
+        // `discard` as everything else — the lane's tables go back with the rest
+        // of the tree, and the bundle's own frames are leaves nothing here owns.
+        if let Some((region, length)) = bundle {
+            let lane = region_lane(region.index);
+            // SAFETY: single-context nucleus; the index exists from boot.
+            let Some(backing) = (unsafe { crate::memory::backing() }) else {
+                return Err(Unlaunchable::OutOfFrames);
+            };
+            let mut page = 0;
+            while page * FRAME_SIZE < length {
+                let Some(frame) = backing.frame_at(lane, page) else {
+                    return Err(Unlaunchable::OutOfFrames);
+                };
+                space.map_empty_page(
+                    tables,
+                    lane + page * FRAME_SIZE,
+                    frame,
+                    PRESENT_USER | NO_EXECUTE,
+                )?;
+                page += 1;
+            }
+        }
 
         // The grant. One region, contiguous, mapped writable and not executable —
         // ADR-0041's property, one address space further out.
@@ -2338,11 +2432,58 @@ pub unsafe fn create_funded(
         // bytes from the end of the frame and the first path walks straight out of
         // it — which it did, into a page table, and the fault it produced named a
         // missing mapping rather than the write that removed it.
-        let unit_table = RECORD + size_of::<Launch>() as u64;
-        let tail = size_of::<Launch>() as u64 + table_bytes as u64;
+        let unit_table = RECORD + header_bytes as u64;
+        let tail = header_bytes as u64 + table_bytes as u64;
         // The endowment's description goes after the paths, so that the two
         // variable-length parts are laid out in the order they were sized in.
         let endowment_at = tail + paths_bytes as u64;
+        // **The target's record, which is a different shape rather than the same
+        // shape read differently.** The discriminator is first and decides
+        // everything after it; the fields a target does not have — a unit table,
+        // an entry index, a caller-supplied entry — are absent rather than
+        // zeroed, because a zero in a field that means something is a claim.
+        if let Some((region, length)) = bundle {
+            let mut launch = tos_launch::BundleLaunch {
+                version: tos_launch::BUNDLE_LAUNCH_VERSION,
+                grant_version: tos_runtime::GRANT_VERSION,
+                grant_base: GRANT,
+                grant_length,
+                grant_identity: identity,
+                report_base: REPORT,
+                report_length: REPORT_FRAMES * FRAME_SIZE,
+                stack_base: STACK,
+                stack_length: STACK_FRAMES * FRAME_SIZE,
+                arguments_base: ARGUMENTS,
+                arguments_length: ARGUMENT_FRAMES * FRAME_SIZE,
+                capabilities: RECORD + endowment_at,
+                // Patched once the process has a table to hold them in, as for
+                // the source form.
+                capability_count: 0,
+                reserved: 0,
+                // And this, once the capability exists. A handle written before
+                // the grant would name a table entry the nucleus had not made.
+                bundle_handle: 0,
+                bundle_base: region_lane(region.index),
+                bundle_length: length,
+                source_set: [0; 96],
+            };
+            let named = source_set.len().min(launch.source_set.len());
+            launch.source_set[..named].copy_from_slice(&source_set[..named]);
+            // SAFETY: `record` is a cleared run this pool just handed out;
+            // nothing else references it, and it is identity-mapped for the
+            // nucleus.
+            unsafe {
+                core::ptr::with_exposed_provenance_mut::<tos_launch::BundleLaunch>(record as usize)
+                    .write(launch)
+            };
+            return Ok(Furnished {
+                report,
+                message,
+                record,
+                record_span,
+                endowment_at,
+            });
+        }
         let mut launch = Launch {
             version: LAUNCH_VERSION,
             unit_count: units.len() as u32,
@@ -2541,9 +2682,79 @@ pub unsafe fn create_funded(
             core::ptr::with_exposed_provenance_mut::<LaunchCapability>(
                 (record + endowment_at) as usize,
             ),
-            endowment.len(),
+            endowment.len() + described_extra,
         );
-        crate::capability::endow(index, endowment, out)
+        crate::capability::endow(index, endowment, &mut out[..endowment.len()])
+    };
+    // **The bundle is the target's own capability, and it is granted here.**
+    // Not through `Endowment::Existing`, which correctly refuses a region: that
+    // path copies a handle and cannot build the mapping a region needs in the
+    // address space of a process that does not exist yet. This operation can,
+    // because it is the one that built that address space — the window went in
+    // with the rest of the furnishing, and what is left is the name for it.
+    //
+    // The supervisor keeps everything it had. One more capability reference and
+    // one more process mapping bit; no copy of the region, and no consumption of
+    // anything the creator holds.
+    let described = match bundle {
+        None => described,
+        Some((region, _)) => {
+            // SAFETY: single-context nucleus; nothing else holds the tree.
+            let tree = unsafe { crate::memory::authority() };
+            if tree.map(region, index as u32, false).is_err() {
+                crate::memory::note_divergence(b"bundle-target-mapping");
+            }
+            let object = crate::capability::Object::SharedRegion {
+                index: region.index,
+                generation: region.generation,
+            };
+            match crate::capability::grant(index, object, tos_launch::RIGHT_READ, 0) {
+                Ok(handle) => {
+                    // SAFETY: the record was carved with room for one more
+                    // entry than the endowment has, cleared, and is
+                    // identity-mapped for the nucleus.
+                    unsafe {
+                        core::ptr::with_exposed_provenance_mut::<LaunchCapability>(
+                            (record + endowment_at) as usize,
+                        )
+                        .add(described as usize)
+                        .write(LaunchCapability {
+                            handle,
+                            object: tos_launch::OBJECT_REGION,
+                            rights: tos_launch::RIGHT_READ,
+                            scope: 0,
+                            // It answers no `import capability` the module
+                            // declared: it is the launch material rather than a
+                            // request somebody made (ADR-0061). An empty binding
+                            // is what a launcher writes for a grant that answers
+                            // nothing, and a module simply never looks at it.
+                            binding: [0; tos_launch::MAX_BINDING as usize],
+                            binding_length: 0,
+                            reserved: 0,
+                        })
+                    };
+                    // SAFETY: `record` addresses the `BundleLaunch` written
+                    // above, and this is the field the target reads to know
+                    // which of its capabilities is the bundle.
+                    unsafe {
+                        (&raw mut (*core::ptr::with_exposed_provenance_mut::<
+                            tos_launch::BundleLaunch,
+                        >(record as usize))
+                        .bundle_handle)
+                            .write(handle)
+                    };
+                    described + 1
+                }
+                Err(_) => {
+                    // The child's table was empty a moment ago and the region is
+                    // shared, so neither refusal `grant` has can be reached. It
+                    // is a backstop rather than a path: reported, and the target
+                    // is left describing what it actually holds.
+                    crate::memory::note_divergence(b"bundle-target-handoff");
+                    described
+                }
+            }
+        }
     };
     // The allowance now has two names: the one `attenuate` gave its maker and
     // the one the endowment just wrote. The maker's goes, leaving the process
@@ -2558,12 +2769,22 @@ pub unsafe fn create_funded(
             crate::memory::note_divergence(b"allowance-handover");
         }
     }
-    // SAFETY: `record` addresses the `Launch` written above, in the nucleus's
-    // own identity map, and this field is the only one changed.
+    // SAFETY: `record` addresses the record written above, in the nucleus's own
+    // identity map, and this field is the only one changed. Which record it is
+    // decides where the field is: the two shapes are laid out differently, and
+    // patching one at the other's offset would write a count into whatever
+    // happened to be there.
     unsafe {
-        (&raw mut (*core::ptr::with_exposed_provenance_mut::<Launch>(record as usize))
+        match bundle {
+            None => (&raw mut (*core::ptr::with_exposed_provenance_mut::<Launch>(record as usize))
+                .capability_count)
+                .write(described),
+            Some(_) => (&raw mut (*core::ptr::with_exposed_provenance_mut::<
+                tos_launch::BundleLaunch,
+            >(record as usize))
             .capability_count)
-            .write(described)
+                .write(described),
+        }
     };
     // The launcher's decision, on the record, named as a decision. A grant
     // nobody can attribute is ambient authority with a handle in front of it
@@ -2603,7 +2824,7 @@ pub unsafe fn create_bootstrap(
     // SAFETY: per this function's contract.
     unsafe {
         create_funded(
-            entry_index,
+            Program::Source(entry_index),
             Funding::runtime(root),
             endowment,
             parent,

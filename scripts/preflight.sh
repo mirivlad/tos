@@ -239,6 +239,10 @@ qemu_region_faults() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/region-faults.sh \
         target/preflight-qemu/region-faults)
 }
+qemu_bundle_launch() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/bundle-launch.sh \
+        target/preflight-qemu/bundle-launch)
+}
 qemu_exception_ud2() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/exception-injection.sh ud2)
 }
@@ -448,6 +452,7 @@ gate qemu       full-only "QEMU creation rollback"                     qemu_crea
 gate qemu       full-only "QEMU memory authority at CPL 3"              qemu_memory_authority
 gate qemu       full-only "QEMU a region crosses between processes"     qemu_region_transport
 gate qemu       full-only "QEMU a region is data, and a released one is nothing" qemu_region_faults
+gate qemu       full-only "QEMU a process is created from a bundle"     qemu_bundle_launch
 gate qemu       full-only "QEMU exception #UD"                         qemu_exception_ud2
 gate qemu       full-only "QEMU exception #GP"                         qemu_exception_gp
 gate qemu       full-only "QEMU unmapped page faults"                  qemu_paging_unmapped

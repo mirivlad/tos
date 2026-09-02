@@ -85,6 +85,28 @@ test-region-transport = []
 # with `test-region-faults`.
 test-region-faults = []
 
+# The supervision probes: a process that creates a child, ends it, is refused an
+# endowment it does not hold, asks for the two retired creation operations, and
+# then exercises what a funded creation does to the authority that paid for it
+# over the whole life of a child (ADR-0076 §3).
+#
+# **Evidence only, and out of the production image on purpose.** None of it is
+# reachable on a canonical boot — `system.boot.init` is endowed nothing, so no
+# process ever holds the authority these probes need — and code a canonical boot
+# carries and cannot reach is memory every process pays for. The physical
+# account is exact enough that it shows: four ordinary processes need every
+# frame the root holds.
+test-funding-lifecycle = []
+# Operations 18 and 7 asked from CPL 3, and a full capability table refusing
+# operation 17. Evidence only, for the same reason: a canonical boot's process
+# is endowed nothing and would never reach any of it.
+test-memory-authority = []
+# ADR-0073's handoff: a supervisor that builds a `TOSBUNDLE/v1` into a region,
+# freezes and shares it, and creates targets from it — twice from one artifact,
+# and once from a corrupt one that the target refuses for itself. Requires the
+# nucleus built with `test-bundle-launch`.
+test-bundle-launch = []
+
 [dependencies]
 tos-launch = { path = "../crates/tos-launch" }
 tos-pipeline = { path = "../crates/tos-pipeline" }

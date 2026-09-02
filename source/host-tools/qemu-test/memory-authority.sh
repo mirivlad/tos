@@ -45,12 +45,20 @@ fail() { echo "memory-authority: FAIL: $*" >&2; exit 1; }
 # the end of it that asked.
 # Built into its own directory, so the ordinary nucleus at the shared path is
 # not replaced by a feature build that a later gate would then boot.
+#
+# The **image** is a feature build too, and that is not a convenience: operations
+# 18 and 7 asked from CPL 3 are evidence, and evidence compiled into the image a
+# canonical boot runs is a page of that image every ordinary process pays for.
 BUILD="$ROOT/target/evidence/memory-authority"
 (cd "$ROOT" && cargo build --release -p tos-nucleus \
     --target x86_64-unknown-none --features test-memory-authority --target-dir "$BUILD") \
     > "$OUT/build.log" 2>&1 || { cat "$OUT/build.log" >&2; fail "the build did not"; }
+(cd "$ROOT" && cargo build --release -p tos-runtime-image \
+    --target x86_64-unknown-none --features test-memory-authority --target-dir "$BUILD") \
+    >> "$OUT/build.log" 2>&1 || { cat "$OUT/build.log" >&2; fail "the image did not build"; }
 
 bash "$HERE/run.sh" --nucleus "$BUILD/x86_64-unknown-none/release/tos-nucleus" \
+    --runtime-image "$BUILD/x86_64-unknown-none/release/tos-runtime-image" \
     --out "$OUT/boot" --expect 33 > "$OUT/boot.log" 2>&1 || {
     cat "$OUT/boot.log" >&2
     fail "the boot did not pass"

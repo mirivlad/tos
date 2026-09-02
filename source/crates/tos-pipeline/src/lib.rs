@@ -57,6 +57,12 @@ use tos_core::{
 /// cannot name them would have to depend on the frontend directly in order to
 /// read a value this crate gave it, which is a dependency on the stage that
 /// produced the result rather than on the result.
+/// The bundle format itself, for a caller that has to read one.
+///
+/// Re-exported rather than depended on separately: `admit_bundle` takes a
+/// parsed bundle, so anything that calls it needs the parser, and two crates
+/// naming one format is two places for a version to drift.
+pub use tos_bundle as bundle;
 pub use tos_core::{Diagnostic, Position, Severity};
 // The host side of the boundary an accepted interface schema defines. Re-exported
 // here because this crate is the reference path's facade: a caller assembling a
