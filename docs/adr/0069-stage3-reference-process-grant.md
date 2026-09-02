@@ -205,17 +205,47 @@ at a time and nothing but a fixed-size record survives each one, so the question
 of what "every lowered module at once" costs no longer arises. **No lower
 conformance cap was introduced.**
 
-## 7. Four processes, and what binds next
+## 7. How many processes, and what binds next
 
-Measured on the reference platform: the pool holds `58 839` frames — about
-`229.8 MiB` — after the nucleus takes its own. A process costs `14 356` frames,
-`56.08 MiB`: the `54 MiB` grant plus about `2.08 MiB` of stack, report,
-arguments, launch record and page tables.
+Measured on the reference platform at the build this ADR was written against:
+the pool holds `58 839` frames — about `229.8 MiB` — after the nucleus takes its
+own. A process cost `14 356` frames, `56.08 MiB`: the `54 MiB` grant plus about
+`2.08 MiB` of stack, report, arguments, launch record and page tables.
 
-Four of them is `224.3 MiB`, inside the pool with about `5.5 MiB` to spare, and
-that is not arithmetic on paper — the ADR-0067 lifecycle gate now reaches
+Four of them was `224.3 MiB`, inside the pool with about `5.5 MiB` to spare, and
+that was not arithmetic on paper — the ADR-0067 lifecycle gate reached
 `TOS.RUN.PROCESS_REFUSED reason=no-slot uncollected=3`, which is only reachable
 when the fourth slot is occupied rather than unaffordable.
+
+**That measurement is evidence about one build, and it is not an invariant.**
+The Project Architect fixed this on 2026-09-03, and the wording here is amended
+to carry the decision:
+
+> `MAX_PROCESSES = 4` is the bounded number of process **slots**, not a
+> reservation guaranteeing that four simultaneous processes each with the
+> ordinary `54 MiB` arena can always be funded. Process slots and memory
+> authority are independent finite resources. A creation may therefore see a
+> free slot **and** an authority that cannot pay, and `E_LIMIT` is the correct
+> answer — ordinary resource behaviour, not a failure of this ADR.
+
+The reason the distinction had to be drawn is concrete: with the four-process
+sum asserted as an invariant, **every page of code growth in the runtime image
+was an architecture STOP**, because the image is charged to the same pool the
+processes are funded from. The per-process charge has since moved from `14 356`
+frames to `14 357`, and the root from `57 424` to `57 415`; four ordinary
+processes no longer fit, and nothing is wrong.
+
+`RUNTIME_GRANT` stays at `54 MiB`, `MAX_PROCESSES` stays at 4, and the reference
+machine is not enlarged. What changed is what the gate asserts. The unified
+memory account gate now **reports** how many ordinary processes one root can
+fund, and asserts the topologies the system is actually built to run:
+
+- a supervisor and one target — the floor, below which no topology is left;
+- a resident supervisor and a transient build worker, with the remainder
+  reported as the headroom a bundle may occupy.
+
+Both hold at the current build, with `112.11 MiB` left for bundle backing after
+two ordinary processes.
 
 **Memory is what binds next, through the process table.** At a grant of roughly
 `55 MiB` or more the fourth process stops fitting, and the refusal changes from
@@ -226,6 +256,8 @@ grant is itself a function of the grant, and the crossing point moves with it.
 `MAX_PROCESSES` and the grant size are therefore **jointly constrained by the
 ADR-0040 memory budget** — neither can be raised without lowering the other on
 this platform, and neither number means anything without the other beside it.
+That constraint is on what can be *simultaneously funded*, which §7's amendment
+above separates from what can be simultaneously *slotted*.
 
 **A note the residency decision will need.** Process-grant memory and the
 physical residency of images or caches are **counted separately** — they are

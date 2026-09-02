@@ -67,26 +67,45 @@ pub(crate) fn check_boundary(source: &SourceUnit, schema: &Schema) -> Vec<Diagno
             );
         }
     }
-    // Which `extern` items are operations of an accepted schema, by name, so a
-    // call site can be checked against the operation it reaches.
-    let mut operations: BTreeMap<String, &'static interfaces::Operation> = BTreeMap::new();
+    // Which `extern` items are operations of an accepted schema, so a call site
+    // can be checked against the operation it reaches.
+    //
+    // **Keyed by name *and* interface**, because one operation may be declared
+    // by several interfaces. `endow_for_launch` is (ADR-0077 §3): it is reached
+    // through the capability being delegated, so a module that endows an
+    // endpoint and a memory authority declares two `extern` items of that name,
+    // differing in the interface of their first parameter. Keying by name alone
+    // would make the second declaration silently take the first's schema entry,
+    // and a call would be checked against the wrong interface's requirements.
+    let mut operations: BTreeMap<(String, String), &'static interfaces::Operation> =
+        BTreeMap::new();
+    let mut declared: BTreeMap<String, &'static interfaces::Operation> = BTreeMap::new();
     for signature in schema.extern_functions() {
         let name = signature.name().text(source);
         let Some(first) = signature.effects().first() else {
             continue;
         };
-        let Some(operation) = requested
-            .get(first.text(source))
-            .and_then(|path| interfaces::interface(path))
-            .and_then(|interface| interface.operation(name))
+        let Some(path) = requested.get(first.text(source)) else {
+            continue;
+        };
+        let Some(operation) =
+            interfaces::interface(path).and_then(|interface| interface.operation(name))
         else {
             continue;
         };
-        operations.insert(name.to_string(), operation);
+        operations.insert((name.to_string(), path.clone()), operation);
+        // And by name alone, for a call whose first argument is not of any
+        // interface declaring this operation. That call is wrong, and the
+        // reason it is wrong is the check below — so it has to find *a*
+        // declaration to be checked against. Which one does not matter: every
+        // declaration of one name agrees about the first parameter's position,
+        // and the diagnostic reports that position.
+        declared.entry(name.to_string()).or_insert(operation);
     }
     let sites = Sites {
         requested: &requested,
         operations: &operations,
+        declared: &declared,
     };
     for function in schema.functions() {
         check_block(source, &sites, function.body(), &mut diagnostics);
@@ -181,16 +200,50 @@ fn unavailable(
     None
 }
 
-/// A written type as its dotted text, for the forms an interface may name.
+/// A written type as its canonical text, for the forms an interface may name.
 ///
-/// Only `Name` forms: an operation's parameters are a capability of a named
-/// interface and primitive values, and a schema that admitted a constructed or
-/// function type here would be admitting a shape nothing declares.
+/// `Name` and `Constructed`, and no others. A name is a capability interface or
+/// a primitive; a construction is how a *semantic result* is written, which
+/// `SYSTEM_INTERFACE_V1` §5 now requires — an operation returns the value it
+/// produced and `Result<T, i64>` is the refusal model, so a schema that admitted
+/// only names could declare no operation that can fail and return something.
+///
+/// Array, tuple and function types stay out. Nothing declares one, and a schema
+/// that admitted them would be admitting a shape no operation has.
+///
+/// The text is canonical rather than the source's own: one space after each
+/// comma and none inside the angle brackets, so that a declaration written
+/// across three lines and one written on one compare equal to the same schema
+/// entry. What is compared is a type, and whitespace is not part of one.
 fn type_text(source: &SourceUnit, ty: &TypeSyntax) -> Option<String> {
     match ty {
         TypeSyntax::Name { path, .. } => {
             let segments: Vec<&str> = path.iter().map(|segment| segment.text(source)).collect();
             Some(segments.join("."))
+        }
+        TypeSyntax::Constructed {
+            name,
+            arguments,
+            mutable,
+            ..
+        } => {
+            let mut written = String::new();
+            for (position, argument) in arguments.iter().enumerate() {
+                if position > 0 {
+                    written.push_str(", ");
+                }
+                // ADR-0037: the granted mode is part of the type, so it is part
+                // of the text. A schema entry that could not tell `Region<u8>`
+                // from `Region<mut u8>` would be one that could not say which
+                // of the two an operation returns. The grammar admits `mut` for
+                // the one-argument region constructors only, so it belongs to
+                // the element and is written there.
+                if *mutable && position == 0 {
+                    written.push_str("mut ");
+                }
+                written.push_str(&type_text(source, argument)?);
+            }
+            Some(alloc::format!("{}<{written}>", name.text(source)))
         }
         _ => None,
     }
@@ -200,7 +253,10 @@ fn type_text(source: &SourceUnit, ty: &TypeSyntax) -> Option<String> {
 /// accepted operation each `extern` name reaches.
 struct Sites<'a> {
     requested: &'a BTreeMap<String, String>,
-    operations: &'a BTreeMap<String, &'static interfaces::Operation>,
+    operations: &'a BTreeMap<(String, String), &'static interfaces::Operation>,
+    /// The same, by name alone: the entry a call reaches when its first
+    /// argument is of no interface that declares the operation.
+    declared: &'a BTreeMap<String, &'static interfaces::Operation>,
 }
 
 fn check_block(source: &SourceUnit, sites: &Sites<'_>, block: &Block, out: &mut Vec<Diagnostic>) {
@@ -279,7 +335,21 @@ fn inspect(
     // capability binding used as a value has no type the checker infers.
     if let Some(callee) = expression.callee() {
         if callee.form() == ExpressionForm::Name {
-            if let Some(operation) = sites.operations.get(callee.span().text(source)) {
+            // Which declaration this call reaches is decided by the interface of
+            // its **first** argument, which §4.1 makes the operation's own. That
+            // is the same rule the lowerer applies, so a call site and the
+            // instruction it becomes agree about which interface was reached.
+            let through = expression
+                .arguments()
+                .first()
+                .map(|argument| argument.value())
+                .filter(|written| written.form() == ExpressionForm::Name)
+                .and_then(|written| sites.requested.get(written.span().text(source)));
+            let name = callee.span().text(source);
+            if let Some(operation) = through
+                .and_then(|path| sites.operations.get(&(name.to_string(), path.clone())))
+                .or_else(|| sites.declared.get(name))
+            {
                 for (required, argument) in
                     operation.capabilities.iter().zip(expression.arguments())
                 {

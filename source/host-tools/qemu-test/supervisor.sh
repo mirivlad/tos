@@ -161,6 +161,9 @@ exactly 1 "^TOS\\.RUN\\.PROCESS\\.FUNDING reserved=$OK impossible=$E_BAD_ARGUMEN
     "operation 19 did not distinguish an impossible grant from an unaffordable one"
 
 # --- and the funding lifecycle holds over the whole life of a child ------------
+#   sealed           one plan, made and sealed once, and used for all four
+#                    creations below. A creation does not consume it, so the
+#                    fourth is the same decision as the first (ADR-0077 §5)
 #   reserved/first   a child funded from a reserved authority, endowed a name
 #                    for that same authority — two names, one budget
 #   still_held       the creation placed a charge and did not consume the
@@ -169,16 +172,22 @@ exactly 1 "^TOS\\.RUN\\.PROCESS\\.FUNDING reserved=$OK impossible=$E_BAD_ARGUMEN
 #                    bytes are spent rather than promised
 #   again            the child ends, is retired, and the same request works
 #                    again: the exact charge came back to the node that paid
-#   released/stale   the creator lets go of its last name for that node while a
-#                    child it funded is still running, and the node stops being
-#                    nameable
-#   returned         when that child ends, the bytes travel up the lineage past
-#                    the node nothing names, so the parent authority can reserve
-#                    the same amount again
+#   released/stale   the creator lets go of its own handle for that node while a
+#                    child it funded is still running, and that handle stops
+#                    resolving
+#   held_by_plan     with the parent drained to less than one reservation, it
+#                    still cannot reserve: the handle was not the last name,
+#                    because the plan took one of its own when the entry was
+#                    written (ADR-0077 §3)
+#   returned         and releasing the plan — the loss of the **last** name —
+#                    sends the bytes up the lineage, so the parent can reserve
+#                    that amount once more where a moment ago it could not.
+#                    The pair is the evidence: the same request, refused and
+#                    then granted, with only the plan's release in between
 #
 # That is the claim in one line: process funding is an allocation held by the
 # accounting, not by the continued existence of the funding capability.
-exactly 1 "^TOS\\.RUN\\.PROCESS\\.LIFECYCLE reserved=$OK first=$OK still_held=$OK second=$E_LIMIT again=$OK released=$OK stale=$E_NO_CAPABILITY returned=$OK\$" \
+exactly 1 "^TOS\\.RUN\\.PROCESS\\.LIFECYCLE sealed=$OK reserved=$OK first=$OK still_held=$OK second=$E_LIMIT again=$OK released=$OK stale=$E_NO_CAPABILITY held_by_plan=$E_LIMIT returned=$OK\$" \
     "the funding lifecycle did not hold across a child's whole life"
 
 echo "SUPERVISOR PASS: a process created a process and ended it, on authority it was given"
@@ -188,3 +197,6 @@ echo "  an endowment naming a capability the parent lacks refused the whole crea
 echo "  the handle over the dead child refused afterwards; an unknown module name was refused"
 echo "  selectors 8 and 15 answered $E_NOT_SUPPORTED; 19 told its three refusals apart"
 echo "  and the funding charge outlived the capability that placed it, then came back"
+echo "  one sealed launch plan served every creation, and none of them consumed it"
+echo "  the same reservation was refused and then granted with only the plan's"
+echo "  release in between: the plan, not the handle, was holding that authority"

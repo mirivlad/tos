@@ -206,10 +206,19 @@ fn no_accepted_interface_admits_a_region() {
                     parameter.ty
                 );
             }
-            assert_eq!(
-                operation.result, "i64",
-                "{}::{} returns something other than the status §5 fixes",
-                interface.path, operation.name
+            // §5 no longer fixes every result at `i64` — an operation returns
+            // the semantic value it produced, and `Result<T, i64>` is the
+            // refusal model. What is still fixed is that a region is not one of
+            // those values, for the same reason it is not a parameter: the
+            // seven facts `docs/42` §2 requires a region grant's interface to
+            // declare are declared nowhere in this schema.
+            assert!(
+                !operation.result.contains("Region") && !operation.result.contains("region"),
+                "{}::{} returns {}, so a region originates through an interface that \
+                 declares no rules for one",
+                interface.path,
+                operation.name,
+                operation.result
             );
         }
     }

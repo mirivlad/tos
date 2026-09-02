@@ -60,6 +60,17 @@ pub const OBJECT_REPLY: u32 = 5;
 /// same one. They are names for one budget, never several budgets
 /// (ADR-0076 §2b).
 pub const OBJECT_MEMORY_AUTHORITY: u32 = 6;
+/// A launch plan being written, and a launch plan that has been sealed
+/// (`SYSTEM_ABI_V1` §5 operations 21–23).
+///
+/// **Two kinds rather than one with a flag**, which is the opposite of the
+/// choice a region's two affine states made. A region's forms declare the same
+/// operations and differ in what the holder may do, so the rights say it; these
+/// two declare *different* operations — a builder is written to and sealed, a
+/// sealed plan is created from — and a process that was handed the wrong one
+/// would be holding a decision at a stage nothing in its rights distinguishes.
+pub const OBJECT_LAUNCH_PLAN_BUILDER: u32 = 7;
+pub const OBJECT_LAUNCH_PLAN: u32 = 8;
 
 /// The one right a reply capability has: `endpoint_reply` (4) is the only
 /// operation that names one.
@@ -342,25 +353,30 @@ pub struct MessageRegion {
     pub length: u64,
 }
 
-/// Where `process_create`'s arguments sit inside the argument region
+/// How many capabilities a launch plan may carry, and therefore how many a
+/// parent may hand a child at creation (ADR-0077 §2).
+pub const MAX_ENDOWMENT: u64 = 4;
+
+/// Where a funded creation's arguments sit inside the argument region
 /// (`SYSTEM_ABI_V1` §5, ADR-0058).
 ///
 /// Fixed offsets, for the reason the message's are fixed: the nucleus reads each
 /// part at an address it knew before it read anything.
-pub const CREATE_ENDOWMENT: u64 = 0;
-/// How many capabilities a parent may hand a child at creation.
-pub const MAX_ENDOWMENT: u64 = 4;
-/// One entry of that table, in bytes. Named rather than written as a literal
-/// because two things are laid out from it and a literal would let them drift.
-pub const ENDOWMENT_ENTRY_BYTES: u64 = 16 + MAX_BINDING;
-/// Which request the child's authority over **itself** answers (ADR-0061).
 ///
-/// The rights travel in a register, because they are a value (ADR-0058); the
-/// name cannot, so it is here. It is a slot of its own rather than an endowment
-/// entry for the reason `Endowment::Own` is a variant of its own: an endowment
-/// entry names a capability the parent holds, and this one names a process that
-/// does not exist until the instant it is granted.
-pub const CREATE_SELF_BINDING: u64 = ENDOWMENT_ENTRY_BYTES * MAX_ENDOWMENT;
+/// **There is no endowment table here any more.** Operations 19 and 20 read the
+/// child's endowment from a sealed launch plan, which is an object with an
+/// owner and a lifetime rather than a table a caller wrote immediately before
+/// the call. What is left in this region is what genuinely belongs to *one*
+/// call: the name the child binds its own authority to, the module path, and
+/// the results a creation writes back.
+///
+/// Which request the child's authority over **itself** answers (ADR-0061). The
+/// rights travel in a register, because they are a value (ADR-0058); the name
+/// cannot, so it is here. It is a slot of its own rather than a plan entry for
+/// the reason `Endowment::Own` is a variant of its own: a plan entry names a
+/// capability its author holds, and this one names a process that does not
+/// exist until the instant it is granted.
+pub const CREATE_SELF_BINDING: u64 = 0;
 pub const CREATE_MODULE: u64 = CREATE_SELF_BINDING + MAX_BINDING;
 /// The longest module path `process_create` will read. A bound of this contract
 /// rather than of the region: the nucleus must not size a read from a number a
@@ -426,6 +442,20 @@ pub struct CreateFundedRecord {
 /// The one flag of [`CreateFundedRecord`] in this contract version.
 pub const HAS_RESTART_GENERATION: u64 = 1;
 
+/// Where `launch_plan_endow` (22) reads the binding an entry answers
+/// (ADR-0061, `SYSTEM_INTERFACE_V1` §4.1).
+///
+/// A `string` value parameter, which §4.1 places "in the argument region, at
+/// the offset that ABI fixes, with its length in the register". The rights are
+/// a number and travel in one; a name is not, and does not.
+///
+/// It is a slot of its own rather than a reuse of `CREATE_SELF_BINDING`,
+/// because operations 19 and 22 are now different calls at different times: a
+/// creation reads the name a child binds its *own* authority to, and an
+/// endowment reads the name one delegated entry answers. Two meanings sharing
+/// one offset is how a sequence of calls silently overwrites its own arguments.
+pub const LAUNCH_ENDOW_BINDING: u64 = CREATE_FUNDED_RECORD + 16;
+
 /// The argument region is one frame, and every fixed result has to fit inside
 /// it without overlapping another. Checked rather than counted: two contracts
 /// drifting apart is exactly what a fixed offset exists to prevent.
@@ -440,10 +470,13 @@ const _: () = {
         REGION_ALLOCATE_RECORD + core::mem::size_of::<RegionAllocateRecord>() as u64
             <= CREATE_FUNDED_RECORD
     );
-    assert!(CREATE_FUNDED_RECORD + core::mem::size_of::<CreateFundedRecord>() as u64 <= FRAME);
+    assert!(
+        CREATE_FUNDED_RECORD + core::mem::size_of::<CreateFundedRecord>() as u64
+            <= LAUNCH_ENDOW_BINDING
+    );
+    assert!(LAUNCH_ENDOW_BINDING + MAX_BINDING <= FRAME);
     // The creation argument areas are read by one call and must not run into
     // each other or into the results a creation writes back.
-    assert!(CREATE_ENDOWMENT + ENDOWMENT_ENTRY_BYTES * MAX_ENDOWMENT <= CREATE_SELF_BINDING);
     assert!(CREATE_SELF_BINDING + MAX_BINDING <= CREATE_MODULE);
     assert!(CREATE_MODULE + MAX_MODULE_PATH <= CREATE_INSTANCE_ID);
     assert!(CREATE_INSTANCE_ID + 8 <= CREATE_FUNDED_RECORD);
@@ -514,28 +547,6 @@ pub struct WaitChildRecord {
     pub ending_order: u64,
     /// The tick the ending was recorded at.
     pub ended_tick: u64,
-}
-
-/// One entry of the endowment a parent gives a child.
-///
-/// The parent names a capability **it holds**, the rights it wants the child to
-/// have, and **which of the child's capability requests this answers**
-/// (ADR-0061). What the child gets is the intersection of the rights: a parent
-/// cannot give what it does not hold, so widening is not refused so much as
-/// unexpressible.
-///
-/// The binding is the parent's statement about the *child's* source, not about
-/// its own. A parent granting authority to a name the child never requested has
-/// granted something the child cannot use, which is a policy mistake the child
-/// reports rather than a refusal the nucleus makes: the nucleus does not read
-/// the child's module.
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct CreateEndowment {
-    pub handle: u64,
-    pub rights: u32,
-    pub binding_length: u32,
-    pub binding: [u8; MAX_BINDING as usize],
 }
 
 /// The header a runtime image carries in its first bytes.

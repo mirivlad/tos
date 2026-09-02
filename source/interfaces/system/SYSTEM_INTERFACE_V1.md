@@ -98,6 +98,9 @@ because two imports of one interface are legal and a kind cannot tell them apart
 |---|---|
 | `system.ipc.Endpoint` | endpoint |
 | `system.ipc.Reply` | reply |
+| `system.memory.Authority` | memory authority |
+| `system.process.LaunchPlanBuilder` | launch plan builder |
+| `system.process.LaunchPlan` | launch plan |
 | `system.process.Control` | process |
 
 **Every operation declares the right each capability it takes must carry**
@@ -116,6 +119,7 @@ all of them.
 | `endpoint_send` | `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
 | `endpoint_receive` | `system.ipc.Endpoint` with `receive` | *(none)* | `i64` | 2 |
 | `endpoint_call` | `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
+| `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 
 ### `system.ipc.Reply`
 
@@ -159,22 +163,73 @@ decided rather than described:
 | Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
 |---|---|---|---|---|
 | `process_terminate` | `system.process.Control` with `terminate` | *(none)* | `i64` | 9 |
+| `launch_plan_create` | `system.process.Control` with `create` | *(none)* | `Result<system.process.LaunchPlanBuilder, i64>` | 21 |
+| `launch_plan_seal` | `system.process.Control` with `create` | `plan: system.process.LaunchPlanBuilder` | `Result<system.process.LaunchPlan, i64>` | 23 |
+| `process_create_funded` | `system.process.Control` with `create`, then `system.memory.Authority` with `spend` | `plan: system.process.LaunchPlan`, `entry: string` (≤ 256), `grant: u64`, `self_rights: u64` | `Result<system.process.Control, i64>` | 19 |
+| `endow_for_launch` | `system.process.Control` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 
-**`process_create` is withdrawn from this schema and nothing replaces it yet.**
-It bound to `SYSTEM_ABI_V1` operation 8, which ADR-0076 §4 retires: it funded a
-process out of the boot's accounting anchor with no caller presenting a
-`MemoryAuthority`. Creation is now operation 19, and this schema cannot carry it
-as it stands — 19 requires **two** capabilities, an explicit runtime grant and an
-endowment, and it returns the child's *capability* in `rdx` rather than only a
-status. §4.1 admits no list and every result declared here is `i64`, so a wrapper
-would hand a textual supervisor a number where a child capability belongs, and no
-way to say what the child is endowed with.
+### `system.memory.Authority`
 
-A schema that advertised an operation the ABI answers `E_NOT_SUPPORTED` for would
-be worse than one that says plainly it does not carry this yet. What the typed
-bridge has to look like — typed results that can carry a capability, and a way to
-express a heterogeneous endowment — is a decision rather than an omission, and it
-is written up as one in `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `endow_for_launch` | `system.memory.Authority` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+
+### `system.process.LaunchPlanBuilder` and `system.process.LaunchPlan`
+
+Two capability **types** with no operations of their own, and that is the shape
+rather than an omission. Everything done to a plan is done *through* another
+authority: 22 writes an entry through the capability being delegated, 23 seals
+one through the creation authority that was required to make it, and 19 and 20
+create from one through the same. There is no operation whose own interface is
+either of these, so neither declares any.
+
+Declaring the types is still this schema's job. They are what an operation's
+result and a value parameter name, and a path no schema declares is not a type —
+so a module could not write `Result<system.process.LaunchPlanBuilder, i64>` if
+this section did not say what that path is. They also carry the object kind a
+launcher checks a grant against (§4), which is why they are **two** kinds and
+not one with a flag: a builder and a sealed plan declare different operations,
+and answering a request for a decision that has been made with one that has not
+is exactly the startup mistake that check exists to refuse.
+
+**`endow_for_launch` is one operation declared by several interfaces**, and the
+declarations differ only in the interface of their first parameter. That is what
+`SYSTEM_ABI_V1` operation 22 is: **one** ABI selector for every kind of
+authority there is, reached through the capability being delegated. The
+alternative — one selector per interface — would make a finite ABI grow a number
+every time an interface was added, and an interface set is open-ended while an
+ABI is not.
+
+It is declared on every interface whose capabilities may be a startup endowment,
+and on no others. Regions, replies and plans themselves are refused by the
+nucleus for the reasons `SYSTEM_ABI_V1` §5 gives, so there is no
+`endow_for_launch` on `system.ipc.Reply`: declaring an operation the ABI always
+refuses would be advertising something that does not work.
+
+A module that endows two kinds of authority declares **two** `extern` items of
+this name, differing in their first parameter's interface and in the binding
+their `uses` names. Which one a call reaches is decided by the interface of its
+first argument, which §4.1 already makes the operation's own capability — so a
+call site and the instruction it becomes agree about which interface was
+reached, and no capability value is ever erased to a common type.
+
+**`process_create` is withdrawn from this schema, and `process_create_funded`
+is what replaces it.**
+`process_create` bound to `SYSTEM_ABI_V1` operation 8, which ADR-0076 §4
+retires: it funded a process out of the boot's accounting anchor with no caller
+presenting a `MemoryAuthority`. This schema could not carry its replacement for
+one revision, and the reason was recorded rather than hidden: 19 requires two
+capabilities and returns the child's *capability*, and every result this schema
+declared was `i64`, so a wrapper would have handed a textual supervisor a number
+where a child capability belongs.
+
+Both halves of that gap are closed here. §5 admits a semantic result, so an
+operation returns the authority it produced; and a heterogeneous endowment is
+expressed by a launch plan, which is itself a capability an operation produced
+and a later operation takes. Neither needed a new `tos-ir/v1` variant or a new
+TOS Core type constructor: the IR has had `Capability` and `Result` since it was
+written, and what was missing was the frontend admitting a constructed type in an
+`extern` result and resolving an interface path to the capability type it is.
 
 ## 4.1 What a parameter may be
 
@@ -202,6 +257,15 @@ A verifier proves, per capability parameter, that the binding named is an import
 of the declared interface and that the enclosing function declares it — the check
 it already made for one capability, made for each.
 
+**A requirement may declare no right**, written `none`, and exactly one
+operation does: `endow_for_launch` places a capability into a plan at rights the
+caller asks for, and the nucleus intersects those with what the caller holds.
+There is no right that could be declared — the honest answer would be "the ones
+being delegated", which is an argument rather than a requirement, and any fixed
+choice would be either too strong (refusing a delegation of `read` because the
+caller lacks `write`) or a fiction. What is required is that the caller *hold*
+the capability, which resolving it proves.
+
 **They stay separate.** No capability is derived from another, no operation
 merges two rights into one object, and an operation requiring two is refused
 unless *both* were granted with the rights it declares. `CAPABILITY_V1` §3 admits
@@ -216,12 +280,39 @@ order, and this schema does not repeat it.
 ### Value parameters
 
 An operation's parameters after the capabilities are **values** (§3), and a value
-of TOS Core V1 is what `docs/40` says it is. This version admits two:
+of TOS Core V1 is what `docs/40` says it is. This version admits three:
 
 | Declared type | How it crosses |
 |---|---|
 | `u64` | in the register `SYSTEM_ABI_V1` §5 assigns the operation |
 | `string` | in the argument region, at the offset that ABI fixes, with its length in the register |
+| a nominal capability type | in the register that ABI assigns, exactly as a capability parameter crosses |
+
+**The third is new, and it is what a capability-valued result is for.** A
+capability an operation *produced* — a launch plan, a child — is a value of the
+module's, held in an ordinary binding, matched on like any other `Result`. It is
+not an `import capability` and cannot be one: nothing granted it at startup,
+because it did not exist at startup. So it is written where a value is written,
+and it crosses the boundary the way a capability crosses, which is the same act
+the host already performs on an import-supplied handle.
+
+**Nothing about it is erased.** Its declared type is the exact nominal interface
+— `system.process.LaunchPlan`, never a common capability type — so a plan cannot
+be passed where a child belongs, the artifact records which interface each value
+is of, and there is no `AnyCapability` anywhere in TOS Core. The engine carries
+it without reading it, exactly as it carries an import-supplied one, and the only
+place it becomes a number is the host's own table (`docs/42` §2).
+
+**The operation's own capability is still an import.** A capability value may be
+a value parameter; it may not be the first parameter, which §4's tables make the
+interface the operation is reached through. That is the boundary of this
+version: an operation acting on a capability of *its own* interface that was
+obtained at runtime cannot be declared here, because `tos-ir/v1`'s
+`Op::Capability` names the operation's own capability as an import index and
+nothing else. Every operation above is shaped so that the question does not
+arise — a plan is written and sealed through the authority that made it, and a
+child is created through the parent's own authority — and widening it is a
+decision about the IR rather than about this schema.
 
 **A variable-length parameter declares its maximum, and the maximum is part of
 this contract.** `SYSTEM_ABI_V1` §3 bounds every read by a constant of the
@@ -239,15 +330,31 @@ capability handle, over a longer argument.
 
 ## 5. Results, and what a module may conclude from one
 
-Every operation returns `i64`: the status `SYSTEM_ABI_V1` §4 assigns, unchanged
-and unwrapped. A module reads a number the system produced, and this schema adds
-no interpretation of its own — a status renamed on the way through would be this
-document asserting something about a call it did not make.
+An operation returns **the value it produced**, and `Result<T, i64>` is the
+refusal model. The error is the status `SYSTEM_ABI_V1` §4 assigns, unchanged and
+unwrapped: a status renamed on the way through would be this document asserting
+something about a call it did not make.
 
-Values a call returns beyond its status are **not** available to a module in
-this version. `SYSTEM_ABI_V1` returns a second value in `rdx`, and a module has
-no second result to receive it into; a tuple result would be a type-surface
-change, and this schema does not make one.
+An operation that produces nothing but a status returns `i64` and always did.
+One that produces a value returns it: `launch_plan_create` returns the plan it
+made, `process_create_funded` returns authority over the child. What a module
+receives is a TOS Core value it can match on, not a number it would have to
+interpret against a register convention this schema does not describe.
+
+**`T` is the semantic result, not whatever was in `rdx`.** The raw ABI splits a
+result across a status register, a value register and fixed offsets in an
+argument region; none of that is visible here, and the host bridge is where it
+stops. A module names an operation and receives what the operation is *for*.
+
+**This needed nothing new in the language.** `tos-ir/v1` has carried a
+capability type and a result type since it was written, the image format encodes
+and decodes both, and the engine's boundary has always returned a value rather
+than an integer. What changed is the frontend: an `extern` result may now be a
+constructed type, and an interface path written as a type resolves to the
+capability type it is rather than to a nominal record that merely shares its
+name. A reader of the artifact learns from the type table that a value is
+authority — which is what `docs/42` §2 admits into provenance, the interface and
+never the handle.
 
 ## 6. Determinism, and what it costs
 
@@ -290,11 +397,20 @@ The target ABI is `SYSTEM_ABI_V1` and nothing else: one mechanism, one path to
 audit. This schema adds no calling convention of its own — it names which of
 that ABI's operations a module may reach and under what authority.
 
-**Ownership.** No parameter transfers ownership. A capability passed to an
+**Ownership.** Most parameters transfer nothing: a capability passed to an
 operation is borrowed for the call and is still the caller's afterwards, which
-is what makes an operation an operation rather than a consumption. Linear
-transfer, where an interface declares it, is `CAPABILITY_V1` §4's case and no
-operation here declares it.
+is what makes an operation an operation rather than a consumption.
+
+**One operation consumes, and says so.** `launch_plan_seal` takes a builder and
+gives back a sealed plan naming the same object; the handle passed in stops
+resolving, and a module that used it again would be refused rather than acting
+on something stale. That is `CAPABILITY_V1` §4's linear case, declared here
+because an interface is where it must be declared — a caller cannot see from the
+ABI alone that a handle it still holds has gone.
+
+**A creation does not consume its plan.** `process_create_funded` reads the
+sealed plan and leaves it whole, which is what makes a restart the same decision
+rather than a second one.
 
 **Regions.** No operation of this version takes or returns a region.
 `docs/42` §2 requires a region grant to originate through an operation whose

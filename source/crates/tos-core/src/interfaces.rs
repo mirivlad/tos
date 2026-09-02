@@ -48,6 +48,23 @@ impl Requirement {
     const fn of(interface: &'static str, right: &'static str) -> Requirement {
         Requirement { interface, right }
     }
+
+    /// A capability an operation requires and needs **no particular right**
+    /// over, because holding it is what the operation is reached through.
+    ///
+    /// One operation has this shape and it is deliberate: `endow_for_launch`
+    /// places a capability into a launch plan at rights the caller asks for,
+    /// and the nucleus intersects those with what the caller holds. There is no
+    /// right that could be declared here — the answer would have to be "the
+    /// ones being delegated", which is an argument rather than a requirement,
+    /// and any fixed choice would be either too strong (refusing a delegation
+    /// of `read` because the caller lacks `write`) or a fiction.
+    const fn held(interface: &'static str) -> Requirement {
+        Requirement {
+            interface,
+            right: "none",
+        }
+    }
 }
 
 /// One value an operation takes (`SYSTEM_INTERFACE_V1` §4.1).
@@ -69,6 +86,15 @@ impl Parameter {
     /// A value whose type fixes its size.
     const fn fixed(ty: &'static str) -> Parameter {
         Parameter { ty, maximum: None }
+    }
+
+    /// A value whose type does not fix its size, and the bound this contract
+    /// puts on it.
+    const fn bounded(ty: &'static str, maximum: u64) -> Parameter {
+        Parameter {
+            ty,
+            maximum: Some(maximum),
+        }
     }
 }
 
@@ -101,6 +127,20 @@ pub enum ObjectKind {
     Process,
     InterfacePublication,
     Reply,
+    MemoryAuthority,
+    /// A launch plan still being written.
+    LaunchPlanBuilder,
+    /// The same object after `launch_plan_seal` consumed the builder.
+    ///
+    /// **Two kinds rather than one with a flag**, which is the opposite of the
+    /// choice `CAPABILITY_V1` §4 made for a region — and for a reason that is
+    /// about interfaces rather than about objects. A region's two forms declare
+    /// the same operations, so a process learns what it may do from its rights;
+    /// a builder and a sealed plan declare *different* operations, and a
+    /// launcher answering `import capability system.process.LaunchPlan` with a
+    /// builder would be answering a request for something that has been decided
+    /// with something that has not.
+    LaunchPlan,
 }
 
 /// Every interface `SYSTEM_INTERFACE_V1` §4 declares, and no others.
@@ -131,6 +171,21 @@ pub const ACCEPTED: &[Interface] = &[
                 parameters: &[Parameter::fixed("u64")],
                 result: "i64",
             },
+            // The standard operation family (ADR-0077 §3). It is declared once
+            // per interface, with the same name and the same ABI selector, and
+            // the first capability is **the one being delegated** — so the
+            // exact nominal type is retained at every call site and no erased
+            // capability value exists anywhere in TOS Core.
+            Operation {
+                name: "endow_for_launch",
+                capabilities: &[Requirement::held("system.ipc.Endpoint")],
+                parameters: &[
+                    Parameter::fixed("system.process.LaunchPlanBuilder"),
+                    Parameter::fixed("u64"),
+                    Parameter::bounded("string", 64),
+                ],
+                result: "i64",
+            },
         ],
     },
     Interface {
@@ -158,6 +213,37 @@ pub const ACCEPTED: &[Interface] = &[
         ],
     },
     Interface {
+        path: "system.memory.Authority",
+        object: ObjectKind::MemoryAuthority,
+        operations: &[Operation {
+            name: "endow_for_launch",
+            capabilities: &[Requirement::held("system.memory.Authority")],
+            parameters: &[
+                Parameter::fixed("system.process.LaunchPlanBuilder"),
+                Parameter::fixed("u64"),
+                Parameter::bounded("string", 64),
+            ],
+            result: "i64",
+        }],
+    },
+    Interface {
+        path: "system.process.LaunchPlanBuilder",
+        object: ObjectKind::LaunchPlanBuilder,
+        // A capability type with no operations of its own. Everything done to a
+        // builder is done *through* the authority that made it — 22 endows one
+        // through the capability being delegated, 23 seals one through the
+        // creation authority that was required to make it — so there is no
+        // operation whose own interface this is. Declaring the type is still
+        // this schema's job: it is what an operation's result and a value
+        // parameter name, and a path no schema declares is not a type.
+        operations: &[],
+    },
+    Interface {
+        path: "system.process.LaunchPlan",
+        object: ObjectKind::LaunchPlan,
+        operations: &[],
+    },
+    Interface {
         path: "system.process.Control",
         object: ObjectKind::Process,
         operations: &[
@@ -167,23 +253,66 @@ pub const ACCEPTED: &[Interface] = &[
                 parameters: &[],
                 result: "i64",
             },
-            // **`process_create` is withdrawn, and nothing replaces it here
-            // yet.** It bound to `SYSTEM_ABI_V1` operation 8, which ADR-0076 §4
-            // retires: it funded a process out of the boot's accounting anchor
-            // with no caller presenting a `MemoryAuthority`. Operation 19 is
-            // what creates a process now, and it cannot be declared here as it
-            // stands — it requires two capabilities, an explicit runtime grant
-            // and an endowment, and it returns a *capability* in `rdx` rather
-            // than only a status. §4.1 admits no list and this schema's every
-            // result is `i64`, so a wrapper would hand a textual supervisor a
-            // number where a child capability should be, and no way to say what
-            // the child is endowed with.
-            //
-            // A schema that advertised an operation the ABI answers
-            // `E_NOT_SUPPORTED` would be worse than one that admits it does not
-            // carry it yet. What the typed bridge has to look like is a decision
-            // rather than an omission, and it is written up as one in
-            // `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
+            // The first operation of this schema whose result is **authority**
+            // rather than a number (§5). It is what makes the endowment of a
+            // child expressible in text at all: a plan is written entry by
+            // entry and sealed, and every step of that needs a value naming the
+            // plan that the previous step produced.
+            Operation {
+                name: "launch_plan_create",
+                capabilities: &[Requirement::of("system.process.Control", "create")],
+                parameters: &[],
+                result: "Result<system.process.LaunchPlanBuilder, i64>",
+            },
+            // Consuming: the builder passed in stops resolving, and what comes
+            // back names the same object at an advanced generation. The
+            // creation authority is required for the reason it is required to
+            // make one — a process that may not create children has no business
+            // holding launch policy for them, finished or otherwise.
+            Operation {
+                name: "launch_plan_seal",
+                capabilities: &[Requirement::of("system.process.Control", "create")],
+                parameters: &[Parameter::fixed("system.process.LaunchPlanBuilder")],
+                result: "Result<system.process.LaunchPlan, i64>",
+            },
+            // Two capabilities and no ambient anything: authority over the
+            // process a child is created under, and the `MemoryAuthority` its
+            // whole footprint is charged to. The endowment is the sealed plan,
+            // which is a value rather than a capability requirement because it
+            // is a thing this module *made* — the first argument of this schema
+            // that an operation produced rather than a launcher granted.
+            Operation {
+                name: "process_create_funded",
+                capabilities: &[
+                    Requirement::of("system.process.Control", "create"),
+                    Requirement::of("system.memory.Authority", "spend"),
+                ],
+                parameters: &[
+                    Parameter::fixed("system.process.LaunchPlan"),
+                    Parameter::bounded("string", 256),
+                    Parameter::fixed("u64"),
+                    Parameter::fixed("u64"),
+                ],
+                result: "Result<system.process.Control, i64>",
+            },
+            Operation {
+                name: "endow_for_launch",
+                capabilities: &[Requirement::held("system.process.Control")],
+                parameters: &[
+                    Parameter::fixed("system.process.LaunchPlanBuilder"),
+                    Parameter::fixed("u64"),
+                    Parameter::bounded("string", 64),
+                ],
+                result: "i64",
+            },
+            // **`process_create` stays withdrawn**, and
+            // `process_create_funded` above is what replaces it. It bound to
+            // `SYSTEM_ABI_V1` operation 8, which ADR-0076 §4 retires: it funded
+            // a process out of the boot's accounting anchor with no caller
+            // presenting a `MemoryAuthority`. The number is never reused, and a
+            // schema that advertised an operation the ABI answers
+            // `E_NOT_SUPPORTED` would be advertising something that does not
+            // work.
         ],
     },
 ];

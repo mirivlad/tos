@@ -127,6 +127,38 @@ const PROCESS_CREATE_FUNDED: u64 = 19;
 /// second truth about which program this is.
 const PROCESS_CREATE_FROM_BUNDLE: u64 = 20;
 
+/// Make an empty launch plan (ADR-0077 §2). `rdi` = process authority with
+/// `create`; `rdx` carries the builder's handle back.
+///
+/// **Creation authority is required for a thing that creates nothing.** A plan
+/// is bounded nucleus metadata and grants no access to anything; what requiring
+/// `create` buys is that a process which may not create children cannot
+/// accumulate launch policy for them, and cannot occupy the plan table by
+/// writing decisions nothing will ever apply.
+const LAUNCH_PLAN_CREATE: u64 = 21;
+/// Add one entry to a builder (ADR-0077 §3). `rdi` = **the capability being
+/// delegated**, `rsi` = the builder, `rdx` = the rights asked for, `r10` = the
+/// length of the binding at `LAUNCH_ENDOW_BINDING`.
+///
+/// **One selector for every kind of authority there is.** The capability comes
+/// first because that is the authority the call is made under: a process may
+/// place into a plan exactly what it holds, at rights no wider than it holds
+/// them, and the operation is reached *through* the thing being delegated
+/// rather than through a general "endowment" authority nobody was granted. That
+/// is also why there is one number rather than one per interface — the ABI is
+/// finite and the nominal type of what is delegated is the caller's, not this
+/// contract's.
+const LAUNCH_PLAN_ENDOW: u64 = 22;
+/// Seal a builder (ADR-0077 §4). `rdi` = process authority with `create`,
+/// `rsi` = the builder; `rdx` carries the sealed plan's handle back.
+///
+/// Consuming, in the shape `region_freeze` established: the same capability
+/// slot, the generation advanced, and the same underlying object. After it the
+/// entries cannot change, which is what makes a plan a decision rather than a
+/// buffer — and what makes the *second* launch from it the same decision as the
+/// first.
+const LAUNCH_PLAN_SEAL: u64 = 23;
+
 /// The one call flag this contract version has.
 ///
 /// Blocking is the default because it is what `IPC_V1` describes — §4's
@@ -432,6 +464,13 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
         // The same creation, over a program this nucleus does not read.
         PROCESS_CREATE_FROM_BUNDLE => create_from_bundle(caller, frame),
 
+        // Launch policy, as an object with an owner (ADR-0077). Three
+        // operations and one lifecycle: made empty, written entry by entry
+        // through the authority each entry delegates, and sealed once.
+        LAUNCH_PLAN_CREATE => launch_plan_create(caller, arguments.first()),
+        LAUNCH_PLAN_ENDOW => launch_plan_endow(caller, frame),
+        LAUNCH_PLAN_SEAL => launch_plan_seal(caller, frame),
+
         // The endings of a process object's direct children (ADR-0067). The
         // authority is over a *process*, and what it scopes is that process's
         // child relation: this is not a wait-for-anything, it is a wait on the
@@ -479,7 +518,14 @@ struct FundedCreation {
     funding: crate::process::Funding,
     restart_generation: Option<u64>,
     self_rights: u32,
-    endowment_count: u64,
+    /// The sealed plan the child's endowment comes from.
+    ///
+    /// **Not consumed by the creation that reads it.** A plan is launch policy,
+    /// and a restart is that policy applied again: a creation that took the plan
+    /// would make the second launch a second decision, written by whatever the
+    /// supervisor could still reach at the time. The plan survives, its entries
+    /// are unchanged, and every reference it holds is still held.
+    plan: crate::plan::PlanId,
     child_rights: u32,
 }
 
@@ -532,8 +578,8 @@ fn funded_arguments(
     caller: usize,
     process_handle: u64,
     authority_handle: u64,
+    plan_handle: u64,
     grant: u64,
-    endowment_count: u64,
     self_rights: u64,
 ) -> Result<FundedCreation, Answer> {
     let child_rights = match capability::resolve(caller, process_handle, tos_launch::RIGHT_CREATE) {
@@ -550,31 +596,43 @@ fn funded_arguments(
         // granted over an object this cannot be funded from.
         Ok(_) => return Err(Answer::status(E_NO_CAPABILITY)),
     };
+    // The endowment, as a **sealed** decision. A builder is refused: it is a
+    // decision still being written, and creating from one would create from
+    // whatever happened to have been added by the time the call was made.
+    let plan = match capability::resolve(caller, plan_handle, 0) {
+        Err(refused) => return Err(refused.into()),
+        Ok(Object::LaunchPlan { index, generation }) => crate::plan::PlanId { index, generation },
+        Ok(_) => return Err(Answer::status(E_NO_CAPABILITY)),
+    };
     let region = crate::process::arguments_region();
     if region == 0 {
         return Err(Answer::status(E_BAD_ARGUMENT));
     }
     let restart_generation = restart_generation_of(region)?;
-    if endowment_count > tos_launch::MAX_ENDOWMENT {
-        return Err(Answer::status(E_BAD_ARGUMENT));
-    }
     Ok(FundedCreation {
         funding: crate::process::Funding { authority, grant },
         restart_generation,
         // What the child may do to *itself*, bounded by the authority the parent
-        // used. It cannot be an endowment entry, because those name capabilities
-        // the parent holds and this one names a process that does not exist
-        // until the instant it is granted.
+        // used. It cannot be a plan entry, because those name capabilities the
+        // parent holds and this one names a process that does not exist until
+        // the instant it is granted.
         self_rights: self_rights as u32 & child_rights,
-        endowment_count,
+        plan,
         child_rights,
     })
 }
 
 /// Assembles the endowment a funded creation was asked for: the child's rights
-/// over itself, then every entry the parent named.
+/// over itself, then every entry of the sealed plan.
+///
+/// **Nothing here is read out of the caller's argument region**, which is the
+/// whole change ADR-0077 made to creation. The endowment used to be a table a
+/// caller wrote immediately before the call, valid for that call only, held by
+/// nobody in between and read at the instant of creation. It is now an object
+/// with an owner, a lifetime and a reference of its own on everything it names,
+/// decided at whatever earlier moment its author chose — which is what makes a
+/// restart able to be the *same* decision rather than a second one.
 fn funded_endowment(
-    caller: usize,
     asked: &FundedCreation,
     into: &mut [capability::Endowment],
 ) -> Result<usize, Answer> {
@@ -592,8 +650,166 @@ fn funded_endowment(
         };
         count = 1;
     }
-    count += child_endowment(caller, asked.endowment_count, &mut into[count..])?;
+    let Ok(entries) = crate::plan::entries(asked.plan) else {
+        // The handle resolved a moment ago, so this is not a caller's mistake.
+        return Err(Answer::status(E_BAD_ARGUMENT));
+    };
+    if count + entries.len() > into.len() {
+        return Err(Answer::status(E_LIMIT));
+    }
+    for entry in entries {
+        // The rights are re-intersected with what the plan recorded and nothing
+        // else: the plan already narrowed them against what its author held when
+        // the entry was written, and the plan is the holder of that reference
+        // now. Asking the author again would make a decision depend on what its
+        // author still happens to hold, which is exactly what sealing removed.
+        into[count] = capability::Endowment::Existing {
+            binding: entry.binding,
+            object: entry.object,
+            rights: entry.rights,
+            scope: entry.scope,
+        };
+        count += 1;
+    }
     Ok(count)
+}
+
+/// `launch_plan_create` (21).
+fn launch_plan_create(caller: usize, handle: u64) -> Answer {
+    match capability::resolve(caller, handle, tos_launch::RIGHT_CREATE) {
+        Err(refused) => return refused.into(),
+        Ok(Object::Process { .. }) => {}
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+    }
+    // The slot the plan will be named by, found before the plan is made. A plan
+    // nobody can name is a plan nobody can seal, create from or release, and
+    // the references it would go on to hold would be held by nothing.
+    if !capability::has_room(caller) {
+        return Answer::status(E_LIMIT);
+    }
+    let Ok(plan) = crate::plan::create() else {
+        return Answer::status(E_LIMIT);
+    };
+    let object = Object::LaunchPlanBuilder {
+        index: plan.index,
+        generation: plan.generation,
+    };
+    // **No rights.** Holding a plan capability *is* the authority over it, and
+    // every operation that touches one is decided by the object's kind — which
+    // is its state — and by the creation authority that operation separately
+    // requires. A rights field here would be a second place the same decision
+    // is made, and the two would eventually disagree.
+    match capability::grant(caller, object, 0, 0) {
+        Ok(handle) => Answer::value(handle),
+        Err(_) => {
+            crate::plan::destroy(plan);
+            Answer::status(E_LIMIT)
+        }
+    }
+}
+
+/// `launch_plan_endow` (22).
+///
+/// **The capability being delegated comes first**, and that is what makes one
+/// selector serve every kind of authority: the operation is reached through the
+/// thing being delegated, so the authority to place an endpoint in a plan is
+/// holding that endpoint, and there is no general "may endow" right anybody was
+/// granted. The rights are intersected with what the caller holds, so asking
+/// for more produces less rather than more.
+fn launch_plan_endow(caller: usize, frame: &TrapFrame) -> Answer {
+    // Resolved with no required right: what is being delegated may be anything
+    // the caller holds, and *which* rights travel is the third argument.
+    let object = match capability::resolve(caller, frame.rdi, 0) {
+        Ok(object) => object,
+        Err(refused) => return refused.into(),
+    };
+    // A region does not arrive by being copied — the capability is half of what
+    // a holder needs and the other half is a mapping in an address space that
+    // does not exist yet — and a plan is what this is. A reply names one call of
+    // one caller and is single-use; no accepted contract makes one a startup
+    // endowment, so it is refused rather than quietly admitted here.
+    if object.is_region() || object.plan().is_some() || matches!(object, Object::Reply { .. }) {
+        return Answer::status(E_NO_CAPABILITY);
+    }
+    let plan = match capability::resolve(caller, frame.rsi, 0) {
+        Ok(Object::LaunchPlanBuilder { index, generation }) => {
+            crate::plan::PlanId { index, generation }
+        }
+        // A sealed plan is a decision that has been made.
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+        Err(refused) => return refused.into(),
+    };
+    let region = crate::process::arguments_region();
+    if region == 0 {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    // The length is the caller's, so it is bounded before it is used: a number
+    // a caller chose must not size a read (`SYSTEM_ABI_V1` §3).
+    let length = frame.rdx.min(tos_launch::MAX_BINDING) as usize;
+    // SAFETY: the slot is at a fixed offset in this process's own argument
+    // region, whose address the nucleus chose, and the length is bounded by a
+    // constant of the contract immediately above.
+    let named = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<u8>(
+                (region + tos_launch::LAUNCH_ENDOW_BINDING) as usize,
+            ),
+            length,
+        )
+    };
+    let Some(binding) = capability::Binding::new(named) else {
+        return Answer::status(E_BAD_ARGUMENT);
+    };
+    let entry = crate::plan::Entry {
+        binding,
+        object,
+        rights: frame.r10 as u32 & capability::rights_of(caller, frame.rdi),
+        scope: 0,
+    };
+    match crate::plan::endow(plan, entry) {
+        Ok(()) => Answer::status(OK),
+        Err(crate::plan::Refusal::Full) => Answer::status(E_LIMIT),
+        Err(_) => Answer::status(E_BAD_ARGUMENT),
+    }
+}
+
+/// `launch_plan_seal` (23).
+///
+/// Consuming, in the shape `region_freeze` established: the same capability
+/// slot, the generation advanced, the same object underneath, and no second
+/// name in between. The caller's old handle stops resolving, which is what says
+/// the builder is gone rather than merely finished with.
+fn launch_plan_seal(caller: usize, frame: &TrapFrame) -> Answer {
+    match capability::resolve(caller, frame.rdi, tos_launch::RIGHT_CREATE) {
+        Err(refused) => return refused.into(),
+        Ok(Object::Process { .. }) => {}
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+    }
+    let plan = match capability::resolve(caller, frame.rsi, 0) {
+        Ok(Object::LaunchPlanBuilder { index, generation }) => {
+            crate::plan::PlanId { index, generation }
+        }
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+        Err(refused) => return refused.into(),
+    };
+    // Everything fallible first. After this there is one write to the plan and
+    // one to the capability slot, and neither can refuse.
+    let Ok(sealed) = crate::plan::seal(plan) else {
+        return Answer::status(E_BAD_ARGUMENT);
+    };
+    let object = Object::LaunchPlan {
+        index: sealed.index,
+        generation: sealed.generation,
+    };
+    match capability::replace_in_place(caller, frame.rsi, object, 0, 0) {
+        Ok(handle) => Answer::value(handle),
+        Err(_) => {
+            // The entry stopped naming what was resolved two statements ago,
+            // between two statements of a single-context nucleus.
+            crate::memory::note_divergence(b"plan-seal-replace");
+            Answer::status(E_LIMIT)
+        }
+    }
 }
 
 /// Hands the creator authority over what it made, and tells it which child that
@@ -668,14 +884,16 @@ fn unlaunchable(refused: crate::process::Unlaunchable) -> Answer {
 /// turning a target's verdict into this call's status would move it into the
 /// nucleus.
 fn create_from_bundle(caller: usize, frame: &mut TrapFrame) -> Answer {
-    let asked = match funded_arguments(caller, frame.rdi, frame.rsi, frame.r9, frame.r10, frame.r8)
+    // `r10` is the sealed plan for this operation, because `rdx` carries the
+    // bundle: the row's own order, which §5 fixes and this reads.
+    let asked = match funded_arguments(caller, frame.rdi, frame.rsi, frame.r10, frame.r9, frame.r8)
     {
         Ok(asked) => asked,
         Err(answer) => return answer,
     };
-    // The third capability, after the two the row assigns first. Refusal order
-    // is the row's: a caller that may not create, or may not spend, is answered
-    // from those and learns nothing about the artifact it also named.
+    // The bundle, after the three the row assigns first. Refusal order is the
+    // row's: a caller that may not create, may not spend, or named no sealed
+    // plan is answered from those and learns nothing about the artifact.
     let object = match capability::resolve(caller, frame.rdx, tos_launch::RIGHT_READ) {
         Ok(object) => object,
         Err(refused) => return refused.into(),
@@ -699,7 +917,7 @@ fn create_from_bundle(caller: usize, frame: &mut TrapFrame) -> Answer {
         binding: capability::Binding::NONE,
         rights: 0,
     }; tos_launch::MAX_ENDOWMENT as usize + 1];
-    let count = match funded_endowment(caller, &asked, &mut endowment) {
+    let count = match funded_endowment(&asked, &mut endowment) {
         Ok(count) => count,
         Err(answer) => return answer,
     };
@@ -736,21 +954,23 @@ fn create_from_bundle(caller: usize, frame: &mut TrapFrame) -> Answer {
 /// `CREATE_ENDOWMENT` like any other — which under ADR-0076 §2b gives the child
 /// another name for one budget rather than a second reservation.
 fn create_funded(caller: usize, frame: &mut TrapFrame) -> Answer {
-    let asked = match funded_arguments(caller, frame.rdi, frame.rsi, frame.r9, frame.r10, frame.r8)
+    let asked = match funded_arguments(caller, frame.rdi, frame.rsi, frame.rdx, frame.r9, frame.r8)
     {
         Ok(asked) => asked,
         Err(answer) => return answer,
     };
-    // The module, named by path. An ordinal would have fitted a register, which
-    // is its only advantage: it names a position in a list nobody published.
-    let Some(entry) = module_of(frame.rdx) else {
+    // The module, named by path, whose length is in `r10` — the register the
+    // endowment count vacated when the endowment became an object. An ordinal
+    // would have fitted a register, which is its only advantage: it names a
+    // position in a list nobody published.
+    let Some(entry) = module_of(frame.r10) else {
         return Answer::status(E_BAD_ARGUMENT);
     };
     let mut endowment = [capability::Endowment::Own {
         binding: capability::Binding::NONE,
         rights: 0,
     }; tos_launch::MAX_ENDOWMENT as usize + 1];
-    let count = match funded_endowment(caller, &asked, &mut endowment) {
+    let count = match funded_endowment(&asked, &mut endowment) {
         Ok(count) => count,
         Err(answer) => return answer,
     };
@@ -1239,49 +1459,6 @@ fn self_binding() -> Option<capability::Binding> {
         .position(|byte| *byte == 0)
         .unwrap_or(named.len());
     capability::Binding::new(&named[..length])
-}
-
-/// The endowment a parent gives a child, attenuated from what the parent holds.
-///
-/// Every entry names a capability the parent holds and the rights it wants the
-/// child to have; what the child gets is the intersection. Widening is not
-/// refused so much as unexpressible — the same shape attenuation has, because it
-/// is the same rule.
-fn child_endowment(
-    parent: usize,
-    count: u64,
-    into: &mut [capability::Endowment],
-) -> Result<usize, Answer> {
-    let region = crate::process::arguments_region();
-    let count = count as usize;
-    if count > into.len() || count > tos_launch::MAX_ENDOWMENT as usize {
-        return Err(Answer::status(E_LIMIT));
-    }
-    for (index, slot) in into[..count].iter_mut().enumerate() {
-        // SAFETY: the table is at a fixed offset in the parent's own argument
-        // region, and `index` is inside the count bounded above.
-        let asked = unsafe {
-            core::ptr::with_exposed_provenance::<tos_launch::CreateEndowment>(
-                (region + tos_launch::CREATE_ENDOWMENT) as usize,
-            )
-            .add(index)
-            .read()
-        };
-        let object = capability::resolve(parent, asked.handle, 0).map_err(Answer::from)?;
-        // The length is the parent's, so it is bounded before it is used: a
-        // number a caller chose must not size a read (`SYSTEM_ABI_V1` §3).
-        let length = (asked.binding_length as u64).min(tos_launch::MAX_BINDING) as usize;
-        let Some(binding) = capability::Binding::new(&asked.binding[..length]) else {
-            return Err(Answer::status(E_BAD_ARGUMENT));
-        };
-        *slot = capability::Endowment::Existing {
-            binding,
-            object,
-            rights: asked.rights & capability::rights_of(parent, asked.handle),
-            scope: 0,
-        };
-    }
-    Ok(count)
 }
 
 /// Reserves part of a memory authority as a child of it (operation 16).

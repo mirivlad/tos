@@ -1518,6 +1518,12 @@ unsafe fn retire(index: usize) {
     // SAFETY: single-context nucleus between two processes; nothing else holds
     // the reserve.
     tos_serial::put_u32_decimal(unsafe { crate::memory::tables() }.remaining() as u32);
+    // And the launch plans, which are the other bounded table a process can
+    // occupy. A plan is destroyed by the loss of the one capability naming it,
+    // and clearing a dead process's table is one of the two ways that happens —
+    // so a boot that ends with plans still live has leaked a decision.
+    tos_serial::puts(b" plans_live=");
+    tos_serial::put_u32_decimal(crate::plan::live() as u32);
     tos_serial::puts(b"\r\n");
 }
 
