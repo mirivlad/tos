@@ -167,12 +167,16 @@ decided rather than described:
 | `launch_plan_seal` | `system.process.Control` with `create` | `plan: system.process.LaunchPlanBuilder` | `Result<system.process.LaunchPlan, i64>` | 23 |
 | `process_create_funded` | `system.process.Control` with `create`, then `system.memory.Authority` with `spend` | `plan: system.process.LaunchPlan`, `entry: string` (≤ 256), `grant: u64`, `self_rights: u64` | `Result<system.process.Control, i64>` | 19 |
 | `endow_for_launch` | `system.process.Control` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+| `capability_attenuate` | `system.process.Control` with `none` | `rights: u64` | `Result<system.process.Control, i64>` | 5 |
+| `capability_release` | `system.process.Control` with `none` | *(none)* | `i64` | 6 |
 
 ### `system.memory.Authority`
 
 | Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
 |---|---|---|---|---|
 | `endow_for_launch` | `system.memory.Authority` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+| `capability_attenuate_scoped` | `system.memory.Authority` with `spend` | `bytes: u64` | `Result<system.memory.Authority, i64>` | 16 |
+| `capability_release` | `system.memory.Authority` with `none` | *(none)* | `i64` | 6 |
 
 ### `system.process.LaunchPlanBuilder` and `system.process.LaunchPlan`
 
@@ -303,16 +307,35 @@ is of, and there is no `AnyCapability` anywhere in TOS Core. The engine carries
 it without reading it, exactly as it carries an import-supplied one, and the only
 place it becomes a number is the host's own table (`docs/42` §2).
 
-**The operation's own capability is still an import.** A capability value may be
-a value parameter; it may not be the first parameter, which §4's tables make the
-interface the operation is reached through. That is the boundary of this
-version: an operation acting on a capability of *its own* interface that was
-obtained at runtime cannot be declared here, because `tos-ir/v1`'s
-`Op::Capability` names the operation's own capability as an import index and
-nothing else. Every operation above is shaped so that the question does not
-arise — a plan is written and sealed through the authority that made it, and a
-child is created through the parent's own authority — and widening it is a
-decision about the IR rather than about this schema.
+**Every capability position may be supplied either way** (ADR-0078). A
+capability parameter is filled from an `import capability` binding, or from a
+value of that interface's capability type — one an operation produced. This
+holds of the operation's *own* capability as much as of any later one, and it
+holds of a schema entry without the schema saying which: what a position
+declares is an interface and a right, and where the capability came from is the
+call site's.
+
+This section recorded the opposite boundary for one revision, and the record is
+worth keeping: an operation acting on a capability of its own interface obtained
+at runtime could not be declared here, because `tos-ir/v1`'s `Op::Capability`
+named the operation's own capability as an import index and nothing else. That
+was the *representation* narrowing accepted TOS Core V1 semantics, which already
+admitted capability values and capability-derived authority — not a rule this
+schema had chosen. ADR-0078 repaired the representation; this paragraph is the
+schema no longer having to work around it.
+
+**A runtime-supplied capability is checked, not trusted.** Its declared type is
+the exact nominal interface the position requires; the artifact records that
+type; and a verifier proves it against the artifact before anything runs. A
+scalar, a constant, a value of a nominal record type, or a capability of a
+*different* interface in a capability position is refused there — not by the
+frontend that emitted it, which is the point of checking it twice.
+
+**No import is required to license it.** A capability a module obtained at
+runtime is reached through itself, not through some other authority declared for
+the purpose. There is no capability parameter this schema declares that the ABI
+does not act on, and no position filled by one object while another one licenses
+it.
 
 **A variable-length parameter declares its maximum, and the maximum is part of
 this contract.** `SYSTEM_ABI_V1` §3 bounds every read by a constant of the

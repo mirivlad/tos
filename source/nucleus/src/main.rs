@@ -1286,6 +1286,22 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             rights: tos_launch::RIGHT_SPEND,
         },
     ];
+    // ADR-0078: everything a supervisor is made of, and nothing more. `create`
+    // and `terminate` over itself, and the root's remainder to spend. Every
+    // other capability that boot reaches is one an operation produced — the
+    // scoped budget, the plan, the child — and none of them is here, because
+    // none of them existed when this constant was written.
+    #[cfg(feature = "test-runtime-authority")]
+    let first_endowment = [
+        capability::Endowment::Own {
+            binding: binding(b"process"),
+            rights: tos_launch::RIGHT_CREATE | tos_launch::RIGHT_TERMINATE,
+        },
+        capability::Endowment::Remainder {
+            binding: binding(b"memory"),
+            rights: tos_launch::RIGHT_SPEND,
+        },
+    ];
     // Under the launch constant the process holds `create` over itself, under
     // the name a module asks for process authority by. What it does with it is
     // the module's business, and here the module launches something.
@@ -1448,6 +1464,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-call-reply",
         feature = "test-second-receiver",
         feature = "test-deputy",
+        feature = "test-runtime-authority",
         feature = "test-lifecycle"
     )))]
     // **Nothing, because the module asks for nothing.** ADR-0055 makes an
@@ -1471,6 +1488,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-memory-authority",
         feature = "test-creation-rollback",
         feature = "test-region-transport",
+        feature = "test-runtime-authority",
         feature = "test-bundle-launch"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];

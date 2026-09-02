@@ -17,12 +17,13 @@ use super::*;
 
 /// Reads untrusted bytes into a module value the semantic verifier can check.
 pub fn parse(image: &[u8], limits: &ParseLimits) -> Result<Module, ImageError> {
-    let payload = unframe(image)?;
+    let (payload, encoding) = unframe(image)?;
     let mut input = In {
         bytes: payload,
         at: 0,
         limits: *limits,
         strings: Vec::new(),
+        encoding,
     };
     let module = input.module()?;
     if input.at != input.bytes.len() {
@@ -36,6 +37,9 @@ struct In<'a> {
     at: usize,
     limits: ParseLimits,
     strings: Vec<String>,
+    /// Which container version these bytes are, so the one instruction whose
+    /// encoding ADR-0078 changed can be read in the form it was written.
+    encoding: u32,
 }
 
 /// A decoded span endpoint, refused when it is not one an index may hold.
@@ -578,6 +582,42 @@ impl In<'_> {
         Ok(operands)
     }
 
+    /// The capability sources of one interface operation (ADR-0078).
+    ///
+    /// **Two encodings, one meaning for the older of them.** A version-4 image
+    /// writes a count and then one tagged source per position. A version-3
+    /// image wrote an index and then a count of further indices, because an
+    /// import was the only source the representation had — so every position of
+    /// one is `Import`, decoded one for one with nothing invented. Anything
+    /// that is neither version never reaches here: `unframe` refuses it.
+    fn capability_sources(&mut self) -> Result<Vec<CapabilitySource>, ImageError> {
+        if self.encoding < 4 {
+            let first = self.index()?;
+            let count = self.count("further imports", self.limits.modules)?;
+            let mut sources = Vec::with_capacity(count + 1);
+            sources.push(CapabilitySource::Import(first));
+            for _ in 0..count {
+                sources.push(CapabilitySource::Import(self.index()?));
+            }
+            return Ok(sources);
+        }
+        let count = self.count("capability sources", self.limits.modules)?;
+        let mut sources = Vec::with_capacity(count);
+        for _ in 0..count {
+            sources.push(match self.byte("CapabilitySource")? {
+                0 => CapabilitySource::Import(self.index()?),
+                1 => CapabilitySource::Value(self.operand()?),
+                other => {
+                    return Err(ImageError::UnknownTag {
+                        family: "CapabilitySource",
+                        tag: other,
+                    })
+                }
+            });
+        }
+        Ok(sources)
+    }
+
     fn place(&mut self) -> Result<Place, ImageError> {
         let root = self.index()?;
         let count = self.count("place path", MAX_OPERANDS)?;
@@ -721,20 +761,11 @@ impl In<'_> {
                     failure_order,
                 }
             }
-            17 => {
-                let import = self.index()?;
-                let count = self.count("further imports", self.limits.modules)?;
-                let mut further_imports = Vec::with_capacity(count);
-                for _ in 0..count {
-                    further_imports.push(self.index()?);
-                }
-                Op::Capability {
-                    import,
-                    further_imports,
-                    right: self.strref()?,
-                    operands: self.operands()?,
-                }
-            }
+            17 => Op::Capability {
+                capabilities: self.capability_sources()?,
+                right: self.strref()?,
+                operands: self.operands()?,
+            },
             18 => Op::Resource {
                 kind: resource_kind(self.byte("ResourceKind")?)?,
                 amount: self.operand()?,

@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A supervisor that acts on authority it was given **at runtime** (ADR-0078).
+//
+// Every capability after the first two is one an operation produced. The
+// scoped budget came from operation 16; the plan from 21 and 23; the child from
+// 19; the refined child from 5. None of them existed when this process started,
+// so none of them is an `import capability` and none could have been.
+//
+// Before ADR-0078 this module could not be lowered at all — not because TOS
+// Core forbade it, but because `Op::Capability` named an operation's
+// capabilities only as import indices. The accepted V1 semantics already
+// admitted capability values; the representation did not, and that mismatch is
+// what the repair closed.
+//
+// It runs against the real nucleus, so every status below is one ring 0
+// produced.
+
+module system.boot.init version 1.0 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+
+resource [
+    fuel: 65536,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn capability_attenuate_scoped(
+    cap: system.memory.Authority,
+    bytes: u64
+) -> Result<system.memory.Authority, i64> uses [memory];
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.memory.Authority,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [memory];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.Control, i64> uses [process, memory];
+
+extern fn capability_attenuate(
+    cap: system.process.Control,
+    rights: u64
+) -> Result<system.process.Control, i64> uses [process];
+
+extern fn process_terminate(cap: system.process.Control) -> i64 uses [process];
+
+extern fn capability_release(cap: system.process.Control) -> i64 uses [process];
+
+// Composed so that no single answer produces it: every step must have
+// succeeded, and the two statuses that are added in are the nucleus's own.
+pub fn main() -> i64 uses [process, memory] {
+    match (capability_attenuate_scoped(memory, 62914560u64)) {
+        Ok(scoped) => {
+            match (launch_plan_create(process)) {
+                Ok(builder) => {
+                    // Reached **through the scoped budget**, which no import
+                    // answers and no `uses` names as a binding.
+                    let placed: i64 = endow_for_launch(scoped, builder, 128u64, "memory");
+                    if (placed != 0i64) {
+                        return placed - 100i64;
+                    }
+                    match (launch_plan_seal(process, builder)) {
+                        Ok(plan) => {
+                            // The **second** capability position is the scoped
+                            // budget: a runtime source at a position that is
+                            // not the operation's own.
+                            match (process_create_funded(
+                                process, scoped, plan,
+                                "system/boot/worker.tos", 56623104u64, 0u64
+                            )) {
+                                Ok(child) => {
+                                    match (capability_attenuate(child, 16u64)) {
+                                        Ok(weaker) => {
+                                            // The wider handle goes while the
+                                            // child is still running: a
+                                            // supervisor narrowing its own
+                                            // authority over something it made.
+                                            // Released **before** the end,
+                                            // because `CAPABILITY_V1` §3 bounds
+                                            // a capability's lifetime by its
+                                            // object — a handle to a process
+                                            // that has ended resolves to
+                                            // nothing, so there is nothing left
+                                            // to release.
+                                            let dropped: i64 = capability_release(child);
+                                            // And the refined authority is this
+                                            // operation's own capability.
+                                            let ended: i64 = process_terminate(weaker);
+                                            return ended + dropped + 1i64;
+                                        }
+                                        Err(status) => {
+                                            return status - 400i64;
+                                        }
+                                    }
+                                }
+                                Err(status) => {
+                                    return status - 300i64;
+                                }
+                            }
+                        }
+                        Err(status) => {
+                            return status - 200i64;
+                        }
+                    }
+                }
+                Err(status) => {
+                    return status - 500i64;
+                }
+            }
+        }
+        Err(status) => {
+            return status - 600i64;
+        }
+    }
+}

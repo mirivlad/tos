@@ -1,0 +1,24 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The thing that gets created. It asks for nothing and does nothing, on
+// purpose: what is under test is the supervisor's authority, and a child with
+// requests of its own would put a second question in the same boot.
+
+module system.boot.worker version 1.0 profile bootstrap;
+
+resource [
+    fuel: 1024,
+    stack: 4KiB,
+    allocation: 1KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 4,
+    imports: 0
+]
+
+pub fn main() -> i64 {
+    return 7i64;
+}

@@ -357,6 +357,24 @@ fn inspect(
                     let held = (written.form() == ExpressionForm::Name)
                         .then(|| sites.requested.get(written.span().text(source)))
                         .flatten();
+                    // **Only an import supplied at the wrong position is
+                    // reported here.** Since ADR-0078 a capability position may
+                    // also be filled by a capability *value* — one an operation
+                    // produced — and this pass has no types with which to tell
+                    // one of those from an ordinary local. What it can still
+                    // tell, and what it exists for, is an import of the wrong
+                    // interface: that is how "reply here and wait there" became
+                    // "wait here and reply there" by writing the arguments the
+                    // other way round, and it is caught unchanged.
+                    //
+                    // A value's exact interface is checked where the types are:
+                    // by the lowerer, which refuses to build an instruction from
+                    // a value that is not a capability of the required
+                    // interface, and by the verifier, which checks the artifact
+                    // rather than trusting either.
+                    if held.is_none() {
+                        continue;
+                    }
                     if held.map(String::as_str) != Some(required.interface) {
                         out.push(
                             Diagnostic::new(

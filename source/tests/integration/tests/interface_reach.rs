@@ -192,16 +192,22 @@ fn the_capability_is_the_import_and_is_nowhere_in_the_artifact() {
         .iter()
         .flat_map(|block| &block.instructions)
         .filter_map(|instruction| match &instruction.op {
-            Op::Capability { import, right, .. } => {
-                Some((*import, right.clone(), instruction.unsafe_interface.clone()))
-            }
+            Op::Capability {
+                capabilities,
+                right,
+                ..
+            } => Some((
+                capabilities.clone(),
+                right.clone(),
+                instruction.unsafe_interface.clone(),
+            )),
             _ => None,
         })
         .collect();
     assert_eq!(
         reaching,
         vec![(
-            0,
+            vec![tos_ir::CapabilitySource::Import(0)],
             String::from("endpoint_send"),
             Some(String::from("system.ipc.Endpoint"))
         )]

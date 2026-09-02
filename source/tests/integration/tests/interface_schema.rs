@@ -148,7 +148,10 @@ fn an_operation_that_names_one_interface_and_acts_under_another_is_refused() {
     let finding = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect_err("an operation naming one interface and acting under another is refused");
     assert_eq!(finding.code, "V2013_CAPABILITY");
-    assert!(finding.detail.contains("is performed under"), "{finding:?}");
+    assert!(
+        finding.detail.contains("is performed through"),
+        "{finding:?}"
+    );
 }
 
 #[test]
@@ -163,10 +166,10 @@ fn reaching_an_interface_the_function_never_declared_is_refused() {
     let finding = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect_err("an interface reached without being declared is refused");
     assert_eq!(finding.code, "V2033_UNSAFE");
-    assert!(
-        finding.detail.contains("without being declared"),
-        "{finding:?}"
-    );
+    // Reported per capability position since ADR-0078: the rule is about every
+    // authority an operation acts through, not only the first, so the finding
+    // says which position failed it.
+    assert!(finding.detail.contains("does not declare"), "{finding:?}");
 }
 
 #[test]
@@ -269,11 +272,10 @@ fn an_operation_may_require_two_capabilities_named_separately() {
         .flat_map(|block| &block.instructions)
         .filter_map(|instruction| match &instruction.op {
             Op::Capability {
-                import,
-                further_imports,
+                capabilities,
                 right,
                 ..
-            } => Some((*import, further_imports.clone(), right.clone())),
+            } => Some((capabilities.clone(), right.clone())),
             _ => None,
         })
         .collect();
@@ -283,7 +285,13 @@ fn an_operation_may_require_two_capabilities_named_separately() {
     // is an operand: there is no capability anywhere in the artifact.
     assert_eq!(
         reaching,
-        vec![(0, vec![1], String::from("endpoint_reply_receive"))]
+        vec![(
+            vec![
+                tos_ir::CapabilitySource::Import(0),
+                tos_ir::CapabilitySource::Import(1)
+            ],
+            String::from("endpoint_reply_receive")
+        )]
     );
     assert_eq!(module.capability_imports[0].binding, "answer");
     assert_eq!(module.capability_imports[0].interface, "system.ipc.Reply");
@@ -330,13 +338,9 @@ fn one_capability_cannot_stand_in_for_two() {
     for function in &mut module.functions {
         for block in &mut function.blocks {
             for instruction in &mut block.instructions {
-                if let Op::Capability {
-                    import,
-                    further_imports,
-                    ..
-                } = &mut instruction.op
-                {
-                    *further_imports = alloc_vec(*import);
+                if let Op::Capability { capabilities, .. } = &mut instruction.op {
+                    let first = capabilities[0].clone();
+                    capabilities[1] = first;
                 }
             }
         }
@@ -345,8 +349,4 @@ fn one_capability_cannot_stand_in_for_two() {
         .expect_err("one import standing in for two is refused");
     assert_eq!(finding.code, "V2013_CAPABILITY");
     assert!(finding.detail.contains("more than once"), "{finding:?}");
-}
-
-fn alloc_vec(value: usize) -> Vec<usize> {
-    vec![value]
 }

@@ -68,10 +68,11 @@ use alloc::string::String;
 use alloc::vec::Vec;
 
 use tos_ir::{
-    AtomicOp, BinaryOp, Block, BorrowKind, CallTarget, CapabilityImport, CleanupCall, Constant,
-    Function, FunctionOrigin, Header, Import, Instruction, IntKind, LockMode, MemoryOrder, Module,
-    NominalKind, Op, Operand, Parameter, PassMode, Place, PlaceStep, Profile, ResourceEnvelope,
-    ResourceKind, Signature, SourceMapEntry, Terminator, TypeDef, UnaryOp, Variant, Visibility,
+    AtomicOp, BinaryOp, Block, BorrowKind, CallTarget, CapabilityImport, CapabilitySource,
+    CleanupCall, Constant, Function, FunctionOrigin, Header, Import, Instruction, IntKind,
+    LockMode, MemoryOrder, Module, NominalKind, Op, Operand, Parameter, PassMode, Place, PlaceStep,
+    Profile, ResourceEnvelope, ResourceKind, Signature, SourceMapEntry, Terminator, TypeDef,
+    UnaryOp, Variant, Visibility,
 };
 
 mod parse;
@@ -85,7 +86,25 @@ pub const MAGIC: [u8; 8] = *b"TOSIMAGE";
 
 /// The container's own version. Independent of the semantic schema: a new
 /// spelling of the same modules raises this and leaves identity alone.
-pub const ENCODING_VERSION: u32 = 3;
+///
+/// **4 is ADR-0078's repair.** `Op::Capability` used to encode its capabilities
+/// as one index and a list of indices; it now encodes one explicit source per
+/// position, either an import index or an operand. The bytes changed, so the
+/// version changed — an older reader given a version-4 image refuses it rather
+/// than reading an operand tag as an index, which is what "fail closed on an
+/// unknown version" is for.
+pub const ENCODING_VERSION: u32 = 4;
+
+/// The container versions this reader still decodes.
+///
+/// **3 is readable and is decoded as the explicit `Import` case**, which is
+/// exactly what it meant: every capability position of a version-3 artifact
+/// came from an import, because that was the only source the representation
+/// had. The decoding is bounded and canonical — an index becomes
+/// `CapabilitySource::Import(index)`, one for one, with nothing invented — so
+/// admitting it adds no way for an old image to mean something new. Anything
+/// else is refused by [`ImageError::UnknownEncodingVersion`].
+pub const READABLE_ENCODING_VERSIONS: &[u32] = &[3, ENCODING_VERSION];
 
 /// Which semantic schema the payload claims. `1` is `tos-ir/v1`.
 pub const SCHEMA_VERSION: u32 = 1;
@@ -228,7 +247,7 @@ pub fn reseal(image: &mut [u8]) {
 }
 
 /// The payload of a framed image, after the frame's own checks.
-fn unframe(image: &[u8]) -> Result<&[u8], ImageError> {
+fn unframe(image: &[u8]) -> Result<(&[u8], u32), ImageError> {
     if image.len() < FRAME_HEADER + DIGEST_BYTES {
         return Err(ImageError::Truncated("frame"));
     }
@@ -236,7 +255,7 @@ fn unframe(image: &[u8]) -> Result<&[u8], ImageError> {
         return Err(ImageError::BadMagic);
     }
     let encoding = u32::from_be_bytes([image[8], image[9], image[10], image[11]]);
-    if encoding != ENCODING_VERSION {
+    if !READABLE_ENCODING_VERSIONS.contains(&encoding) {
         return Err(ImageError::UnknownEncodingVersion(encoding));
     }
     let schema = u32::from_be_bytes([image[12], image[13], image[14], image[15]]);
@@ -263,7 +282,7 @@ fn unframe(image: &[u8]) -> Result<&[u8], ImageError> {
     if tos_hash::sha256(&image[..split]) != image[split..split + DIGEST_BYTES] {
         return Err(ImageError::WrongDigest);
     }
-    Ok(&image[FRAME_HEADER..split])
+    Ok((&image[FRAME_HEADER..split], encoding))
 }
 
 // ------------------------------------------------------------- closed families

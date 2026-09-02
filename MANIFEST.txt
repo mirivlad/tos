@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 442
+- files in the release package: 443
 - active system invariants: 21
-- architecture decision records: 77 (40 accepted)
+- architecture decision records: 78 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -121,6 +121,7 @@ Architecture decision records
 - docs/adr/0075-region-object-lifecycle.md — ADR-0075: Region object lifecycle, the mutable-to-immutable transition, and reclamation [**Accepted**]
 - docs/adr/0076-unified-memory-funding.md — ADR-0076: One physical account — frames, memory authority, process grants and region backing [**Accepted**]
 - docs/adr/0077-launch-plans.md — ADR-0077: A launch plan is an object, and it outlives the creation that reads it [**Accepted**]
+- docs/adr/0078-capability-sources.md — ADR-0078: Every capability position says where its capability came from [**Accepted**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

@@ -188,8 +188,12 @@ pub fn every_variant() -> Module {
             task: Operand::Value(0),
         },
         Op::Capability {
-            import: 0,
-            further_imports: vec![0, 0],
+            // Both sources, so a fixture that exercises "every variant" covers
+            // the runtime-value case as well as the import case (ADR-0078).
+            capabilities: vec![
+                crate::CapabilitySource::Import(0),
+                crate::CapabilitySource::Value(Operand::Value(0)),
+            ],
             right: String::from("read"),
             operands: vec![Operand::Constant(0)],
         },

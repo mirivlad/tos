@@ -144,3 +144,4 @@ docs/adr/0074-build-workspace-and-launch-bundle.md
 docs/adr/0075-region-object-lifecycle.md
 docs/adr/0076-unified-memory-funding.md
 docs/adr/0077-launch-plans.md
+docs/adr/0078-capability-sources.md

@@ -33,8 +33,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_ir::{
-    AtomicOp, Block, CallTarget, Constant, Function, Instruction, MemoryOrder, Module, Op, Operand,
-    Profile, SourceMapEntry, Terminator, TypeDef, TypeId,
+    AtomicOp, Block, CallTarget, CapabilitySource, Constant, Function, Instruction, MemoryOrder,
+    Module, Op, Operand, Profile, SourceMapEntry, Terminator, TypeDef, TypeId,
 };
 
 mod image;
@@ -1158,56 +1158,107 @@ fn check_instruction(
                 ));
             }
         }
-        Op::Capability {
-            import,
-            further_imports,
-            ..
-        } if *import >= module.capability_imports.len()
-            || further_imports
-                .iter()
-                .any(|further| *further >= module.capability_imports.len()) =>
-        {
-            return Err(Finding::new(
-                "V2013_CAPABILITY",
-                at(),
-                "a capability operation names an import outside the table",
-            ));
-        }
-        // The instruction says two things about which interface it reaches: the
-        // import it is performed under, and the accepted interface ID docs/43
-        // §3 asks it to carry. They are checked against each other because an
-        // artifact that named one interface while acting under a capability of
-        // another would pass every other check here — the import is in range,
-        // the interface was imported, the function declared it — and still be
-        // performing an operation on authority of the wrong type.
-        Op::Capability {
-            import,
-            further_imports,
-            ..
-        } => {
-            if let Some(interface) = &instruction.unsafe_interface {
-                if &module.capability_imports[*import].interface != interface {
+        Op::Capability { capabilities, .. } => {
+            if capabilities.is_empty() {
+                return Err(Finding::new(
+                    "V2013_CAPABILITY",
+                    at(),
+                    "a capability operation names no capability at all",
+                ));
+            }
+            // **Every position, not only the first.** ADR-0078 makes the source
+            // of each capability explicit, and the checks below are per
+            // position for the reason that decision gives: a rule that held of
+            // the operation's own capability and not of the second would move
+            // the hole one position along rather than close it.
+            for (position, source) in capabilities.iter().enumerate() {
+                let interface = match source {
+                    // An import is an index into a table this module declared,
+                    // and its interface is that declaration's.
+                    CapabilitySource::Import(index) => {
+                        let Some(import) = module.capability_imports.get(*index) else {
+                            return Err(Finding::new(
+                                "V2013_CAPABILITY",
+                                at(),
+                                "a capability operation names an import outside the table",
+                            ));
+                        };
+                        import.interface.clone()
+                    }
+                    // A value's interface is **its own type**, checked against
+                    // the artifact rather than taken from a frontend's word.
+                    // A scalar, a constant of any kind, a value of a nominal
+                    // record type or one outside the table is refused here: it
+                    // is not a capability, so it cannot fill a capability
+                    // position.
+                    CapabilitySource::Value(operand) => {
+                        let ty = operand_type(module, function, operand);
+                        match ty.and_then(|ty| module.type_of(ty)) {
+                            Some(TypeDef::Capability(interface)) => interface.clone(),
+                            _ => {
+                                return Err(Finding::new(
+                                    "V2013_CAPABILITY",
+                                    at(),
+                                    alloc::format!(
+                                        "capability position {position} is filled by a value \
+                                         that is not of any capability type"
+                                    ),
+                                ))
+                            }
+                        }
+                    }
+                };
+                // The instruction says two things about which interface it
+                // reaches: the source at position zero, and the accepted
+                // interface ID docs/43 §3 asks it to carry. They are checked
+                // against each other because an artifact that named one
+                // interface while acting through a capability of another would
+                // pass every other check here — the source resolves, the
+                // interface was imported, the function declared it — and still
+                // be performing an operation on authority of the wrong type.
+                if position == 0 {
+                    if let Some(declared) = &instruction.unsafe_interface {
+                        if &interface != declared {
+                            return Err(Finding::new(
+                                "V2013_CAPABILITY",
+                                at(),
+                                alloc::format!(
+                                    "an operation declares {declared} and is performed \
+                                     through {interface}"
+                                ),
+                            ));
+                        }
+                    }
+                }
+                // And the enclosing function admits reaching that interface.
+                // `docs/42` §2 requires the enclosing `uses` effect to match,
+                // and it requires it of every authority the operation acts
+                // through — which is what makes this the per-position exact
+                // interface check for a runtime-sourced capability, where there
+                // is no import declaration to compare against.
+                if !function.signature.effects.iter().any(|e| e == &interface) {
                     return Err(Finding::new(
-                        "V2013_CAPABILITY",
+                        "V2033_UNSAFE",
                         at(),
                         alloc::format!(
-                            "an operation declares {interface} and is performed under {}",
-                            module.capability_imports[*import].interface
+                            "capability position {position} acts through {interface}, \
+                             which this function does not declare"
                         ),
                     ));
                 }
-            }
-            // Every capability an operation requires is a separate authority
-            // (ADR-0063), so each is named separately and none may be the same
-            // one twice. A repeat would be one grant standing in for two, which
-            // is how "reply here and wait there" becomes "reply here and wait
-            // here" without anything in the artifact saying so.
-            for (position, further) in further_imports.iter().enumerate() {
-                if further == import || further_imports[..position].contains(further) {
+                // Every capability an operation requires is a separate
+                // authority (ADR-0063), so each is named separately and none
+                // may be the same one twice. A repeat would be one grant
+                // standing in for two, which is how "reply here and wait there"
+                // becomes "reply here and wait here" without anything in the
+                // artifact saying so. It is the *source* that is compared, so
+                // one runtime value used twice is refused exactly as one import
+                // used twice is.
+                if capabilities[..position].contains(source) {
                     return Err(Finding::new(
                         "V2013_CAPABILITY",
                         at(),
-                        "an operation names one capability import more than once",
+                        "an operation names one capability more than once",
                     ));
                 }
             }

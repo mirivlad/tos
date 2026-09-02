@@ -36,9 +36,9 @@ use alloc::vec::Vec;
 
 use crate::LockMode as tos_ir_lock_mode;
 use crate::{
-    AtomicOp, BinaryOp, Block, BorrowKind, CallTarget, Constant, Function, Import, Instruction,
-    Module, Op, Operand, Place, PlaceStep, ResourceKind, Signature, SourceMapEntry, Terminator,
-    TypeDef, UnaryOp, Variant,
+    AtomicOp, BinaryOp, Block, BorrowKind, CallTarget, CapabilitySource, Constant, Function,
+    Import, Instruction, Module, Op, Operand, Place, PlaceStep, ResourceKind, Signature,
+    SourceMapEntry, Terminator, TypeDef, UnaryOp, Variant,
 };
 
 /// The digest of a module, as `sha256:<hex>`.
@@ -648,20 +648,29 @@ fn write_op<S: Sink>(out: &mut Writer<S>, op: &Op) {
             }
         }
         Op::Capability {
-            import,
-            further_imports,
+            capabilities,
             right,
             operands,
         } => {
             out.tag(17);
-            out.count(*import);
             // Every capability the operation requires is in the digest, in
-            // order. An artifact that required a second one would otherwise
-            // hash the same as one that did not, and two modules with different
-            // authority would share an identity.
-            out.count(further_imports.len());
-            for import in further_imports {
-                out.count(*import);
+            // order, **and so is where each one came from**. An artifact that
+            // required a second one would otherwise hash the same as one that
+            // did not, and one acting on a runtime value the same as one acting
+            // on an import — two modules with different authority sharing an
+            // identity, which is exactly what a digest exists to prevent.
+            out.count(capabilities.len());
+            for source in capabilities {
+                match source {
+                    CapabilitySource::Import(index) => {
+                        out.tag(0);
+                        out.count(*index);
+                    }
+                    CapabilitySource::Value(operand) => {
+                        out.tag(1);
+                        write_operand(out, operand);
+                    }
+                }
             }
             out.text(right);
             write_operands(out, operands);
