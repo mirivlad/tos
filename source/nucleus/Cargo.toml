@@ -44,6 +44,10 @@ test-memory-authority = []
 # processes, three capabilities, and every region the peer comes to hold
 # arrived in a message because it has no way to make one.
 test-region-transport = []
+# ADR-0073's handoff: a supervisor that may create, terminate and collect, and
+# that holds a memory authority — enough to build a `TOSBUNDLE/v1` into a region
+# of its own, freeze it, share it, and create targets from it with operation 20.
+test-bundle-launch = []
 # Two processes, each of which ends by touching memory a region no longer
 # authorises: one executes what it wrote into a region, the other reads one
 # after releasing the only handle to it. Dedicated processes, so that neither

@@ -144,6 +144,28 @@ are marked and are exactly those a process can only apply to itself.
 
 | 19 | `process_create_funded` | **two**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend` | creates a process and charges its **whole** user-memory footprint to that authority (ADR-0076 §3). `rdx` = the module path's length, `r10` = how many capabilities the child is endowed with, `r8` = the rights the child holds over itself, `r9` = the runtime arena it asks for. The path, the endowment and the child's self-binding are in the argument region at `CREATE_MODULE`, `CREATE_ENDOWMENT` and `CREATE_SELF_BINDING`; the **optional** restart generation is at `CREATE_FUNDED_RECORD`. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. `E_BAD_ARGUMENT` for an arena outside the accepted `RuntimeMemoryGrant` domain or a non-canonical restart record, `E_LIMIT` for a footprint this authority cannot pay for |
 
+| 20 | `process_create_from_bundle` | **three**: `rdi` = process-authority capability with `create`, `rsi` = memory-authority capability with `spend`, `rdx` = a **shared** region capability with `read` holding the bundle | creates a process from the bundle that region carries, funded as operation 19 funds one. `r10`, `r8`, `r9` and `CREATE_FUNDED_RECORD` are 19's. There is **no** module path, ordinal or entry: the bundle declares its own entry, and a caller-supplied one would be a second truth about which program this is. `rdx` returns the child's capability handle and its instance id is written to `CREATE_INSTANCE_ID`. The target is given its **own** capability for the same region and its own read-only mapping of the same backing; the creator keeps everything it had |
+
+**The third capability must be the shared form, and an immutable affine region
+is refused.** A target receives a window of its own and its creator keeps one,
+which is two holders — exactly what an affine region exists to rule out. `share`
+(7) is the operation that makes a region able to be in two places, and 20 is the
+operation that puts it there. This is also why the bundle does not travel in
+`CREATE_ENDOWMENT`: that path copies a handle and cannot build the mapping a
+region needs in an address space that does not exist yet, so it refuses regions
+and is right to.
+
+**The bundle is opaque to the nucleus, and that is the trust boundary rather
+than an omission.** Ring 0 checks capability and lifecycle facts only — the
+object is live, it is shared, it has a length, the target can be given a name and
+a window — and reads not one byte of the artifact. It does not parse the format,
+inspect the entry, verify an image or trust a build receipt. **A corrupt bundle
+therefore produces a process that is successfully created and then refuses
+itself** before its first instruction: creation succeeding and admission failing
+are two different outcomes of two different components, and ADR-0073 owns the
+second. Turning a target's verdict into this operation's status would move that
+decision into the nucleus.
+
 **Operation 19 replaces 8 and 15 together, and that is why the restart
 generation moved out of a register.** Operation 8 asserted no restart generation
 and 15 asserted one, so the operation that replaces both has to keep *absent*

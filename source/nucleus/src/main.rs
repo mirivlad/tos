@@ -110,7 +110,23 @@
     all(feature = "test-region-faults", feature = "test-lifecycle"),
     all(feature = "test-region-faults", feature = "test-memory-authority"),
     all(feature = "test-region-faults", feature = "test-creation-rollback"),
-    all(feature = "test-region-faults", feature = "test-region-transport")
+    all(feature = "test-region-faults", feature = "test-region-transport"),
+    all(feature = "test-bundle-launch", feature = "test-two-processes"),
+    all(feature = "test-bundle-launch", feature = "test-supervisor"),
+    all(feature = "test-bundle-launch", feature = "test-deadlock"),
+    all(feature = "test-bundle-launch", feature = "test-call-reply"),
+    all(feature = "test-bundle-launch", feature = "test-deputy"),
+    all(feature = "test-bundle-launch", feature = "test-second-receiver"),
+    all(feature = "test-bundle-launch", feature = "test-module-operation"),
+    all(feature = "test-bundle-launch", feature = "test-wrong-kind"),
+    all(feature = "test-bundle-launch", feature = "test-process-control"),
+    all(feature = "test-bundle-launch", feature = "test-process-terminate"),
+    all(feature = "test-bundle-launch", feature = "test-process-launch"),
+    all(feature = "test-bundle-launch", feature = "test-lifecycle"),
+    all(feature = "test-bundle-launch", feature = "test-memory-authority"),
+    all(feature = "test-bundle-launch", feature = "test-creation-rollback"),
+    all(feature = "test-bundle-launch", feature = "test-region-transport"),
+    all(feature = "test-bundle-launch", feature = "test-region-faults")
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
 
@@ -1354,6 +1370,25 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             ],
         )
     };
+    // Under the bundle-launch constant one process is a supervisor of the shape
+    // ADR-0073 describes: it may create, terminate and collect endings, and it
+    // holds a memory authority to fund what it creates and to make the region
+    // its artifact goes in. It builds the bundle itself — that is not the
+    // canonical build worker, which ADR-0074 has not settled, it is the smallest
+    // thing that produces a real artifact for operation 20 to be asked about.
+    #[cfg(feature = "test-bundle-launch")]
+    let first_endowment = [
+        capability::Endowment::Own {
+            binding: binding(b"control"),
+            rights: tos_launch::RIGHT_CREATE
+                | tos_launch::RIGHT_TERMINATE
+                | tos_launch::RIGHT_WAIT_CHILD,
+        },
+        capability::Endowment::Remainder {
+            binding: binding(b"memory"),
+            rights: tos_launch::RIGHT_SPEND,
+        },
+    ];
     // Under the region-faults constant there are two processes and one
     // authority between them, and each ends by touching memory it may not
     // touch — one by executing what it wrote into a region, the other by
@@ -1434,7 +1469,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     #[cfg(not(any(
         feature = "test-memory-authority",
         feature = "test-creation-rollback",
-        feature = "test-region-transport"
+        feature = "test-region-transport",
+        feature = "test-bundle-launch"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];
     // The same chain, given to a process, so operation 16 can be asked for from

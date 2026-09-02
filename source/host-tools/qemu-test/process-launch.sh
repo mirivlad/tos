@@ -59,6 +59,10 @@ fail() {
 before="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
 (cd "$ROOT" && CARGO_TARGET_DIR="$TARGET" cargo build --release \
     -p tos-nucleus --target x86_64-unknown-none --features test-process-launch)
+# The supervision probes — the two retired selectors and operation 19's three
+# refusals — are evidence, so they are not in the image a canonical boot runs.
+(cd "$ROOT" && CARGO_TARGET_DIR="$TARGET" cargo build --release \
+    -p tos-runtime-image --target x86_64-unknown-none --features test-funding-lifecycle)
 after="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
 [ "$before" = "$after" ] || {
     echo "production nucleus changed while building the isolated test artifact" >&2
@@ -75,6 +79,7 @@ bash "$HERE/run.sh" \
     --out "$OUT" \
     --capsule "$OUT/process-launch.bin" \
     --nucleus "$TARGET/x86_64-unknown-none/release/tos-nucleus" \
+    --runtime-image "$TARGET/x86_64-unknown-none/release/tos-runtime-image" \
     --expect 75 \
     --require "TOS.NUCLEUS.ENTRY TOS.RUN.DIAGNOSTIC TOS.RUN.REFUSED TOS.BOOTMODULE.FAIL" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE TOS.RUN.COMPLETED" \

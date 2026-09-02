@@ -117,6 +117,15 @@ const REGION_FREEZE: u64 = 18;
 /// It travels in `CreateFundedRecord`, with a flag, because a register cannot
 /// carry the difference.
 const PROCESS_CREATE_FUNDED: u64 = 19;
+/// Create a process from an immutable bundle a **shared** region carries
+/// (ADR-0073, ADR-0076). `rdi` = process authority with `create`, `rsi` = the
+/// memory authority with `spend`, `rdx` = the shared region holding the bundle;
+/// `r10`, `r8` and `r9` as for 19, and the same `CreateFundedRecord`.
+///
+/// **There is no module path, no ordinal and no entry.** ADR-0076 is explicit
+/// that the bundle declares its own entry, and a caller-supplied one would be a
+/// second truth about which program this is.
+const PROCESS_CREATE_FROM_BUNDLE: u64 = 20;
 
 /// The one call flag this contract version has.
 ///
@@ -420,6 +429,8 @@ fn answer(operation: u64, frame: &mut TrapFrame) -> Answer {
         // and rules out a class — and it is paid for out of a `MemoryAuthority`
         // the caller presents beside it.
         PROCESS_CREATE_FUNDED => create_funded(caller, frame),
+        // The same creation, over a program this nucleus does not read.
+        PROCESS_CREATE_FROM_BUNDLE => create_from_bundle(caller, frame),
 
         // The endings of a process object's direct children (ADR-0067). The
         // authority is over a *process*, and what it scopes is that process's
@@ -639,6 +650,76 @@ fn unlaunchable(refused: crate::process::Unlaunchable) -> Answer {
     }
 }
 
+/// `process_create_from_bundle` (20).
+///
+/// **Three capabilities, and the third must be the shared form.** An immutable
+/// *affine* region is not sufficient and is refused: a target gets a mapping of
+/// its own and its creator keeps one, which is two holders — exactly what the
+/// affine form exists to rule out. `share` is the operation that makes a region
+/// able to be in two places, and this is the operation that puts it there.
+///
+/// **The bundle is opaque, and that is the trust boundary rather than an
+/// omission.** Ring 0 checks capability and lifecycle facts — the object is
+/// live, it is shared, it has a length, the target can be given its own name and
+/// window — and reads not one byte of the artifact. It does not parse the
+/// format, inspect the entry, verify an image or trust a receipt. A corrupt
+/// bundle therefore produces a process that is *successfully created* and then
+/// refuses itself before its first instruction; ADR-0073 owns that decision, and
+/// turning a target's verdict into this call's status would move it into the
+/// nucleus.
+fn create_from_bundle(caller: usize, frame: &mut TrapFrame) -> Answer {
+    let asked = match funded_arguments(caller, frame.rdi, frame.rsi, frame.r9, frame.r10, frame.r8)
+    {
+        Ok(asked) => asked,
+        Err(answer) => return answer,
+    };
+    // The third capability, after the two the row assigns first. Refusal order
+    // is the row's: a caller that may not create, or may not spend, is answered
+    // from those and learns nothing about the artifact it also named.
+    let object = match capability::resolve(caller, frame.rdx, tos_launch::RIGHT_READ) {
+        Ok(object) => object,
+        Err(refused) => return refused.into(),
+    };
+    let Object::SharedRegion { index, generation } = object else {
+        return Answer::status(E_NO_CAPABILITY);
+    };
+    let region = crate::region::RegionId { index, generation };
+    // SAFETY: single-context nucleus; nothing else holds the tree.
+    let tree = unsafe { crate::memory::authority() };
+    if tree.mode(region) != Ok(crate::region::Mode::Shared) {
+        return Answer::status(E_NO_CAPABILITY);
+    }
+    // A region with nothing in it is not an artifact, and a length that is not
+    // whole frames is a region this nucleus did not make.
+    match tree.length(region) {
+        Ok(length) if length > 0 && (length as u64).is_multiple_of(FRAME_SIZE) => {}
+        _ => return Answer::status(E_BAD_ARGUMENT),
+    }
+    let mut endowment = [capability::Endowment::Own {
+        binding: capability::Binding::NONE,
+        rights: 0,
+    }; tos_launch::MAX_ENDOWMENT as usize + 1];
+    let count = match funded_endowment(caller, &asked, &mut endowment) {
+        Ok(count) => count,
+        Err(answer) => return answer,
+    };
+    let parent = crate::process::instance(caller);
+    // SAFETY: the template was established at boot from validated inputs, and
+    // no process is running: this call is the nucleus.
+    match unsafe {
+        crate::process::create_funded(
+            crate::process::Program::Bundle(region),
+            asked.funding,
+            &endowment[..count],
+            parent,
+            asked.restart_generation,
+        )
+    } {
+        Ok(child) => funded_result(caller, child, asked.child_rights),
+        Err(refused) => unlaunchable(refused),
+    }
+}
+
 /// `process_create_funded` (19).
 ///
 /// **Two capabilities and no ambient anything.** The creator presents authority
@@ -678,7 +759,7 @@ fn create_funded(caller: usize, frame: &mut TrapFrame) -> Answer {
     // no process is running: this call is the nucleus.
     match unsafe {
         crate::process::create_funded(
-            entry,
+            crate::process::Program::Source(entry),
             asked.funding,
             &endowment[..count],
             parent,

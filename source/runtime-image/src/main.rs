@@ -70,14 +70,20 @@ const ENDPOINT_REPLY: u64 = 4;
 /// Retired, and named only so that a process can ask for them and be refused
 /// (`SYSTEM_ABI_V1` §7, ADR-0076 §4). Neither is called except by the evidence
 /// that they answer `E_NOT_SUPPORTED`.
+#[cfg(feature = "test-funding-lifecycle")]
 const PROCESS_CREATE: u64 = 8;
-#[cfg(feature = "test-lifecycle")]
+#[cfg(any(feature = "test-lifecycle", feature = "test-bundle-launch"))]
 const PROCESS_WAIT_CHILD: u64 = 14;
 #[cfg(not(feature = "test-lifecycle"))]
+#[cfg(any(feature = "test-funding-lifecycle", feature = "test-lifecycle"))]
 const PROCESS_CREATE_WITH_GENERATION: u64 = 15;
 /// The one creation this ABI version has: two capabilities, an explicit runtime
 /// grant and an explicit endowment (ADR-0076 §3).
+#[cfg(any(feature = "test-funding-lifecycle", feature = "test-lifecycle"))]
 const PROCESS_CREATE_FUNDED: u64 = 19;
+/// The same creation, over a program the nucleus does not read (ADR-0073).
+#[cfg(feature = "test-bundle-launch")]
+const PROCESS_CREATE_FROM_BUNDLE: u64 = 20;
 const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
@@ -85,13 +91,24 @@ const PROCESS_EXIT: u64 = 12;
 const ENDPOINT_REPLY_RECEIVE: u64 = 13;
 const CAPABILITY_ATTENUATE_SCOPED: u64 = 16;
 const REGION_ALLOCATE: u64 = 17;
+#[cfg(any(
+    feature = "test-memory-authority",
+    feature = "test-region-transport",
+    feature = "test-bundle-launch"
+))]
 const REGION_SHARE: u64 = 7;
+#[cfg(any(
+    feature = "test-memory-authority",
+    feature = "test-region-transport",
+    feature = "test-bundle-launch"
+))]
 const REGION_FREEZE: u64 = 18;
 
 /// Statuses, as `SYSTEM_ABI_V1` §4 assigns them. Named here because this image
 /// checks them: a refusal it could not name it could not report.
 const OK: i64 = 0;
 const E_NO_CAPABILITY: i64 = -1;
+#[cfg(feature = "test-funding-lifecycle")]
 const E_BAD_ARGUMENT: i64 = -3;
 const E_CANCELLED: i64 = -5;
 #[cfg(feature = "test-region-transport")]
@@ -250,6 +267,7 @@ unsafe fn call_transferring(
 // SAFETY: the caller's promise about the two handles and the argument region is
 // what makes this an ordinary call rather than a guess.
 #[allow(clippy::too_many_arguments)]
+#[cfg(any(feature = "test-funding-lifecycle", feature = "test-lifecycle"))]
 unsafe fn create_funded(
     arguments: u64,
     process: u64,
@@ -303,6 +321,7 @@ unsafe fn create_funded(
 /// The runtime arena an ordinary process is given, as the reference platform
 /// fixes it (ADR-0069). Named by the creator rather than chosen by the nucleus:
 /// operation 19 has no default and will not pick one.
+#[cfg(any(feature = "test-funding-lifecycle", feature = "test-bundle-launch"))]
 const RUNTIME_GRANT: u64 = 54 * 1024 * 1024;
 
 /// Writes a handle into the argument region's transfer table.
@@ -442,6 +461,154 @@ impl Trace for ReportTrace {
     }
 }
 
+/// The target half of ADR-0073: a process handed one immutable artifact, which
+/// it verifies for itself before it runs a single instruction of it.
+///
+/// **Nothing about the bundle's origin is evidence.** That a build wrote it,
+/// that it arrived read-only, that a nucleus mapped it, that a supervisor
+/// vouched for it — none of that admits an instruction. What admits one is this
+/// process parsing the artifact with a total parser, rebuilding the declared
+/// closure from what the bundle itself says, and holding every image to that
+/// declaration through its own verifier. No build receipt crosses, no host
+/// verdict crosses, and no nucleus verdict crosses, because none was made.
+///
+/// **The entry is the bundle's.** Its declared entry position is the program;
+/// this process supplies only the exported function name every runtime process
+/// runs, which is a property of the runtime rather than of the artifact. A
+/// caller-chosen entry would be a second truth about which program this is.
+///
+/// A malformed header, offset, closure declaration, image or entry relation
+/// fails here — before the first source instruction — and the process ends
+/// saying so. That is the correct outcome of a hostile bundle and not a defect:
+/// the creation succeeded, and the admission did not.
+///
+/// # Safety
+///
+/// As [`runtime_entry`], for the record shape the version selected.
+// SAFETY: the caller has read the discriminator and this is the shape it named.
+unsafe fn bundle_entry(launch: &tos_launch::BundleLaunch) -> ! {
+    let report = Report {
+        base: launch.report_base,
+        capacity: launch.report_length,
+    };
+    let grant = tos_runtime::RuntimeMemoryGrant {
+        version: launch.grant_version,
+        base: launch.grant_base as usize,
+        length: launch.grant_length as usize,
+        alignment: 4096,
+        identity: launch.grant_identity,
+    };
+    // SAFETY: as in `runtime_entry`; the grant is this process's alone.
+    if unsafe { HEAP.adopt(&grant) }.is_err() {
+        report.line("TOS.RUN.UNSTARTABLE reason=heap-rejected-grant");
+        exit(EXIT_UNSTARTABLE);
+    }
+    let stack_region =
+        tos_runtime::region::Span::new(launch.stack_base, launch.stack_base + launch.stack_length);
+    // SAFETY: as in `runtime_entry`.
+    let painted = unsafe { stack::paint(stack_region) };
+
+    if launch.bundle_handle == 0 || launch.bundle_length == 0 {
+        report.line("TOS.RUN.UNSTARTABLE reason=no-bundle");
+        exit(EXIT_UNSTARTABLE);
+    }
+    let source_set = core::str::from_utf8(&launch.source_set)
+        .unwrap_or("")
+        .trim_end_matches('\0');
+    report.line(&alloc::format!(
+        "TOS.RUN.BUNDLE.BEGIN handle=0x{:x} base=0x{:x} length={} grant_length={} set={source_set}",
+        launch.bundle_handle,
+        launch.bundle_base,
+        launch.bundle_length,
+        launch.grant_length,
+    ));
+
+    // The artifact, as bytes and nothing more. The **region's** length, because
+    // that is what the nucleus mapped; how many of those bytes are a bundle is
+    // the bundle's own claim, and the parser is what holds it to it.
+    // SAFETY: the launcher mapped this range read-only and not executable in
+    // this address space and reported its base and length here.
+    let bytes = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<u8>(launch.bundle_base as usize),
+            launch.bundle_length as usize,
+        )
+    };
+    // The **region's** bytes, of which the artifact is a prefix: a bundle
+    // arrives in whole frames because that is what memory is handed out in, and
+    // it declares its own total. A bundle claiming more than the region holds is
+    // refused by comparison rather than trusted.
+    let parsed = match tos_pipeline::bundle::Bundle::parse_prefix(bytes) {
+        Ok(parsed) => parsed,
+        Err(refused) => {
+            report.line(&alloc::format!(
+                "TOS.RUN.BUNDLE.REFUSED stage=parse reason={}",
+                refused.symbol()
+            ));
+            exit(EXIT_REFUSED);
+        }
+    };
+    report.line(&alloc::format!(
+        "TOS.RUN.BUNDLE.PARSED bytes={} modules={} entry_position={} entry_path={}",
+        parsed.bytes().len(),
+        parsed.modules(),
+        parsed.entry_position(),
+        parsed.entry_path(),
+    ));
+
+    let began = monotonic();
+    let mut trace = ReportTrace { report };
+    let prepared = tos_pipeline::admit_bundle(&parsed, ENTRY, &mut trace, RESIDENCY);
+    // SAFETY: the launcher states the record holds `capability_count` entries
+    // at `capabilities`, mapped readable in this address space.
+    let held = unsafe {
+        core::slice::from_raw_parts(
+            core::ptr::with_exposed_provenance::<LaunchCapability>(launch.capabilities as usize),
+            launch.capability_count as usize,
+        )
+    };
+    let mut endowment = Endowment {
+        held,
+        report: Report {
+            base: launch.report_base,
+            capacity: launch.report_length,
+        },
+    };
+    let run = match prepared {
+        Preparation::Ready(mut prepared) => {
+            run_prepared(&mut prepared, alloc::vec::Vec::new(), &mut endowment)
+        }
+        Preparation::Refused(run) => run,
+    };
+    let ended = monotonic();
+    let report = trace.report;
+    for line in render::events(&run) {
+        report.line(&line);
+    }
+    let (committed, peak) = HEAP.usage();
+    let (blocks, free) = HEAP.block_census();
+    report.line(&alloc::format!(
+        "TOS.RUN.MEMORY granted={} peak={peak} committed={committed} blocks={blocks} free={free}",
+        launch.grant_length,
+    ));
+    if let Some(floor) = painted {
+        // SAFETY: `stack_region` and `floor` came from the matching `paint`
+        // above, on the stack this frame is still running on.
+        let used = unsafe { stack::peak(stack_region, floor) };
+        report.line(&alloc::format!(
+            "TOS.RUN.STACK used={used} capacity={}",
+            launch.stack_length
+        ));
+    }
+    if let (Some(began), Some(ended)) = (began, ended) {
+        report.line(&alloc::format!("TOS.RUN.TICKS begin={began} end={ended}"));
+    }
+    exit(match run {
+        tos_pipeline::Run::Completed(_) => EXIT_COMPLETED,
+        _ => EXIT_REFUSED,
+    });
+}
+
 /// The process's entry point: the nucleus enters here at CPL 3 with the launch
 /// record's address in `rdi`.
 ///
@@ -455,6 +622,19 @@ impl Trace for ReportTrace {
 #[no_mangle]
 #[link_section = ".text.runtime_entry"]
 pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
+    // **The discriminator first, and nothing else until it is read.** Both
+    // record shapes begin with their version, and which one this is decides
+    // what every byte after it means. A record read as the wrong shape is not a
+    // record with wrong values in it — it is a set of pointers into whatever
+    // happened to be laid out there.
+    // SAFETY: the caller's contract makes the first word of the record readable
+    // and aligned; the version is that word in both shapes.
+    let version = unsafe { core::ptr::with_exposed_provenance::<u32>(launch as usize).read() };
+    if version == tos_launch::BUNDLE_LAUNCH_VERSION {
+        // SAFETY: the version says this is a `BundleLaunch`, and the launcher's
+        // contract covers the whole of the record it wrote.
+        unsafe { bundle_entry(&*core::ptr::with_exposed_provenance(launch as usize)) };
+    }
     // SAFETY: the caller's contract makes this a live, aligned record.
     let launch = unsafe { &*launch };
     if launch.version != LAUNCH_VERSION {
@@ -1035,8 +1215,11 @@ zeroed={zeroed} wrote={wrote} released={released} again={again} same_lane={same_
 stale={stale} freed={freed}"
     ));
 
-    region_states(launch, report, parent);
-    region_table_full(report, parent);
+    #[cfg(feature = "test-memory-authority")]
+    {
+        region_states(launch, report, parent);
+        region_table_full(report, parent);
+    }
 
     report.line(&alloc::format!(
         "TOS.RUN.AUTHORITY child={child_status} distinct={distinct} grandchild={grandchild_status} over={over} zero={zero} bad_handle={bad_handle} alias={alias_status} through_alias={through_alias} after_alias={after_alias} released={grandchild_released} reclaimed={reclaimed}"
@@ -1055,11 +1238,326 @@ stale={stale} freed={freed}"
 ///
 /// `at` is inside a region the nucleus mapped into this address space and
 /// reported the base and length of, and that mapping is still there.
+#[cfg(any(
+    feature = "test-memory-authority",
+    feature = "test-region-transport",
+    feature = "test-region-faults",
+    feature = "test-bundle-launch"
+))]
 // SAFETY: the caller's promise that the window is the nucleus's own and still
 // stands is what makes this a read of mapped memory.
 unsafe fn word_at(at: usize) -> u64 {
     // SAFETY: per this function's contract.
     unsafe { core::ptr::with_exposed_provenance::<u64>(at).read_volatile() }
+}
+
+/// Makes one creation from a bundle (`SYSTEM_ABI_V1` §5, operation 20).
+///
+/// Three capabilities and no module name: the bundle declares its own entry, so
+/// there is nothing for a caller to name and nowhere for it to disagree.
+///
+/// SAFETY: `process` names a process capability this process holds with
+/// `create`, `memory` a memory authority with `spend`, and `bundle` a **shared**
+/// region capability with `read`.
+// SAFETY: the caller's promise about the three handles is what makes this an
+// ordinary call.
+#[cfg(feature = "test-bundle-launch")]
+unsafe fn create_from_bundle(
+    arguments: u64,
+    process: u64,
+    memory: u64,
+    bundle: u64,
+    own_rights: u64,
+    generation: Option<u64>,
+) -> (i64, u64) {
+    let record = tos_launch::CreateFundedRecord {
+        restart_generation: generation.unwrap_or(0),
+        flags: if generation.is_some() {
+            tos_launch::HAS_RESTART_GENERATION
+        } else {
+            0
+        },
+    };
+    // SAFETY: the record is at a fixed offset in this process's own argument
+    // region, which the launcher mapped writable.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<tos_launch::CreateFundedRecord>(
+            (arguments + tos_launch::CREATE_FUNDED_RECORD) as usize,
+        )
+        .write(record)
+    };
+    let status: i64;
+    let value: u64;
+    // SAFETY: operation 20 takes the process authority in `rdi`, the memory
+    // authority in `rsi`, the shared region in `rdx`, the endowment count in
+    // `r10`, the child's rights over itself in `r8` and the runtime grant in
+    // `r9`.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") PROCESS_CREATE_FROM_BUNDLE => status,
+            in("rdi") process,
+            in("rsi") memory,
+            inlateout("rdx") bundle => value,
+            in("r10") 0u64,
+            in("r8") own_rights,
+            in("r9") RUNTIME_GRANT,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        )
+    };
+    (status, value)
+}
+
+/// How large a region the evidence bundle is written into.
+///
+/// A number this process states rather than one it discovers: the artifact is
+/// the boot's own single-module closure, and a backing that grew to fit whatever
+/// was produced would be a build with no bound.
+#[cfg(feature = "test-bundle-launch")]
+const BUNDLE_REGION_BYTES: u64 = 256 * 1024;
+
+/// Writes a bundle over this boot's own source set into a region, and returns
+/// the shared capability for it.
+///
+/// **This is not the canonical build worker.** ADR-0074 is a Draft and the
+/// build/supervisor lifecycle it proposes is not settled; what this is, is the
+/// smallest thing that produces a *real* `TOSBUNDLE/v1` over a real closure so
+/// that operation 20 can be asked a real question. The topology it belongs in is
+/// a decision, and it is written up as one in
+/// `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
+///
+/// The region goes through the whole state machine on the way out: allocated
+/// mutable, written, frozen, shared. That is the lifecycle ADR-0075 §4 names,
+/// performed rather than described.
+#[cfg(feature = "test-bundle-launch")]
+fn bundle_region(
+    launch: &Launch,
+    report: &mut Report,
+    memory: u64,
+    units: &[Unit<'_>],
+    source_set: &str,
+    entry_path: &str,
+    corrupt: bool,
+) -> (i64, u64, u64) {
+    // SAFETY: `region_allocate` names an authority this process holds.
+    let (allocated, region) = unsafe { call(REGION_ALLOCATE, memory, BUNDLE_REGION_BYTES) };
+    let record = region_record(launch);
+    if allocated != OK || record.length == 0 {
+        return (allocated, 0, 0);
+    }
+    // SAFETY: the nucleus mapped this range writable and not executable in this
+    // address space, and reported its base and length here. Nothing else in
+    // this process refers to it.
+    let backing_bytes = unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::with_exposed_provenance_mut::<u8>(record.base as usize),
+            record.length as usize,
+        )
+    };
+    let provider = tos_pipeline::SliceSourceProvider::new(units);
+    let mut backing = tos_pipeline::bundle::SliceBacking::new(backing_bytes);
+    let mut trace = ReportTrace { report: *report };
+    let written = match tos_pipeline::build_into_bundle(
+        &provider,
+        source_set,
+        entry_path,
+        &mut backing,
+        &mut trace,
+    ) {
+        Ok(tos_pipeline::BuildIntoBundle::Written { bytes, modules }) => {
+            report.line(&alloc::format!(
+                "TOS.RUN.BUNDLE.WRITTEN bytes={bytes} modules={modules} corrupt={}",
+                u64::from(corrupt)
+            ));
+            bytes
+        }
+        Ok(tos_pipeline::BuildIntoBundle::OutOfRoom(full)) => {
+            report.line(&alloc::format!(
+                "TOS.RUN.BUNDLE.UNWRITTEN reason=out-of-room needed={} capacity={}",
+                full.needed,
+                full.capacity
+            ));
+            return (allocated, 0, 0);
+        }
+        _ => {
+            report.line("TOS.RUN.BUNDLE.UNWRITTEN reason=refused");
+            return (allocated, 0, 0);
+        }
+    };
+    let _ = written;
+    if corrupt {
+        // One byte of the magic, so that what arrives is a **legal shared
+        // region** carrying bytes that are not a bundle. The region is real, the
+        // mapping is real, the capability is real; only the artifact is not.
+        // SAFETY: the region is this process's own and still writable.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u8>(record.base as usize).write_volatile(b'X')
+        };
+    }
+    // SAFETY: the handle names the region just written.
+    let (frozen_status, frozen) = unsafe { call(REGION_FREEZE, region, 0) };
+    // SAFETY: as above; `share` consumes the affine form.
+    let (shared_status, shared) = unsafe { call(REGION_SHARE, frozen, 0) };
+    report.line(&alloc::format!(
+        "TOS.RUN.BUNDLE.SHARED allocate={allocated} freeze={frozen_status} \
+share={shared_status} base=0x{:x} length={}",
+        record.base,
+        record.length
+    ));
+    (shared_status, shared, record.base)
+}
+
+/// ADR-0073's handoff, from the side that produces the artifact.
+///
+/// One supervisor, one bundle, and the whole of what operation 20 is for:
+///
+///   - the artifact is built into a region, frozen and shared, and the
+///     supervisor keeps it;
+///   - a target is created from it. The supervisor's handle and window are
+///     untouched — the target gets its **own** capability and its own read-only
+///     mapping of the same backing, and nothing is copied;
+///   - the target ends, and the **same** capability creates another one. No
+///     rebuild, no refreeze, no second artifact: a restart is one bundle used
+///     twice;
+///   - a target created from a corrupt bundle is created *successfully* and then
+///     refuses itself, because the nucleus never read the bytes and the target
+///     is the only thing that has any business deciding;
+///   - and the negatives: an affine region is not a shared one, and neither is a
+///     handle nobody holds.
+#[cfg(feature = "test-bundle-launch")]
+fn bundle_supervisor(launch: &Launch, report: &mut Report, handle: u64, memory: u64) {
+    // The set this process was launched over, read back out of its own record.
+    // A build's input is what the launcher gave it, so there is nowhere else it
+    // could come from and nothing here to choose.
+    let mut units = alloc::vec::Vec::with_capacity(launch.unit_count as usize);
+    for index in 0..launch.unit_count as usize {
+        // SAFETY: the record declares `unit_count` units at `units`, mapped
+        // readable, exactly as `runtime_entry` reads them.
+        let unit = unsafe {
+            &*core::ptr::with_exposed_provenance::<LaunchUnit>(launch.units as usize).add(index)
+        };
+        // SAFETY: as above, for the path and the bytes each unit names.
+        let (path, bytes) = unsafe {
+            (
+                core::slice::from_raw_parts(
+                    core::ptr::with_exposed_provenance::<u8>(unit.path as usize),
+                    unit.path_length as usize,
+                ),
+                core::slice::from_raw_parts(
+                    core::ptr::with_exposed_provenance::<u8>(unit.bytes as usize),
+                    unit.bytes_length as usize,
+                ),
+            )
+        };
+        let Ok(path) = core::str::from_utf8(path) else {
+            report.line("TOS.RUN.BUNDLE.UNSTARTABLE reason=unit-path-not-text");
+            return;
+        };
+        units.push(Unit { path, bytes });
+    }
+    let Some(entry_unit) = units.get(launch.entry_index as usize) else {
+        report.line("TOS.RUN.BUNDLE.UNSTARTABLE reason=no-entry-unit");
+        return;
+    };
+    let entry_path = entry_unit.path;
+    let source_set = alloc::string::String::from(
+        core::str::from_utf8(&launch.source_set)
+            .unwrap_or("")
+            .trim_end_matches('\0'),
+    );
+    let units = &units[..];
+    let source_set = &source_set[..];
+
+    // --- an affine region is refused ------------------------------------------
+    // Before anything is shared, so what is being asked is exactly "is the
+    // shared form required?" and not "was this region ready?".
+    // SAFETY: every call below names a capability this process holds.
+    let (_, affine) = unsafe { call(REGION_ALLOCATE, memory, 4096) };
+    // SAFETY: as above.
+    let (_, frozen_affine) = unsafe { call(REGION_FREEZE, affine, 0) };
+    // SAFETY: as above; an immutable **affine** region is not the shared form.
+    let (not_shared, _) = unsafe {
+        create_from_bundle(
+            launch.arguments_base,
+            handle,
+            memory,
+            frozen_affine,
+            0,
+            None,
+        )
+    };
+    // SAFETY: as above; a handle nobody holds names nothing.
+    let (unheld, _) =
+        unsafe { create_from_bundle(launch.arguments_base, handle, memory, 0xdead_beef, 0, None) };
+    // SAFETY: as above.
+    unsafe { call(CAPABILITY_RELEASE, frozen_affine, 0) };
+
+    // --- the artifact ---------------------------------------------------------
+    let (shared_status, bundle, base) =
+        bundle_region(launch, report, memory, units, source_set, entry_path, false);
+    if shared_status != OK {
+        report.line("TOS.RUN.BUNDLE.UNSTARTABLE reason=no-shared-region");
+        return;
+    }
+
+    // --- the first target -----------------------------------------------------
+    // SAFETY: as above, with the shared bundle.
+    let (first, first_child) =
+        unsafe { create_from_bundle(launch.arguments_base, handle, memory, bundle, 0, Some(1)) };
+    let first_instance = created_instance(launch);
+    // The supervisor kept everything: the same handle still resolves, and the
+    // same window still reads.
+    // SAFETY: the region is still mapped read-only in this address space.
+    let kept = unsafe { word_at(base as usize) };
+    settle();
+    settle();
+    let collected_first = wait_child(launch, handle, true).0;
+
+    // --- and another, from the same capability and the same backing -----------
+    // No rebuild, no refreeze, no copy: a restart is one bundle used twice.
+    // SAFETY: as above.
+    let (second, second_child) =
+        unsafe { create_from_bundle(launch.arguments_base, handle, memory, bundle, 0, Some(2)) };
+    let second_instance = created_instance(launch);
+    settle();
+    settle();
+    let collected_second = wait_child(launch, handle, true).0;
+    let distinct_targets = u64::from(
+        first == OK
+            && second == OK
+            && first_child != second_child
+            && first_instance != second_instance,
+    );
+
+    report.line(&alloc::format!(
+        "TOS.RUN.BUNDLE.TARGETS not_shared={not_shared} unheld={unheld} first={first} \
+second={second} distinct={distinct_targets} kept=0x{kept:x} collected={collected_first}/\
+{collected_second}"
+    ));
+
+    // --- a corrupt artifact ---------------------------------------------------
+    // The region is legal in every way a nucleus can check. What is wrong is the
+    // one thing it never looks at.
+    // SAFETY: as above.
+    unsafe { call(CAPABILITY_RELEASE, bundle, 0) };
+    let (hostile_status, hostile, _) =
+        bundle_region(launch, report, memory, units, source_set, entry_path, true);
+    let hostile_created = if hostile_status == OK {
+        // SAFETY: as above.
+        let (created, _) = unsafe {
+            create_from_bundle(launch.arguments_base, handle, memory, hostile, 0, Some(3))
+        };
+        settle();
+        settle();
+        created
+    } else {
+        hostile_status
+    };
+    report.line(&alloc::format!(
+        "TOS.RUN.BUNDLE.HOSTILE shared={hostile_status} created={hostile_created}"
+    ));
 }
 
 /// The two consuming transitions, asked from CPL 3 (operations 18 and 7).
@@ -1082,6 +1580,7 @@ unsafe fn word_at(at: usize) -> u64 {
 /// - several names for one shared region in one process are still **one
 ///   window**: releasing one of them leaves the memory readable, and only the
 ///   last one takes the mapping with it.
+#[cfg(feature = "test-memory-authority")]
 fn region_states(launch: &Launch, report: &mut Report, parent: u64) {
     const PATTERN: u64 = 0x4652_4f5a_454e_5f31;
     // SAFETY: every call below names a capability this process holds, and each
@@ -1157,6 +1656,7 @@ dropped_alias={dropped_alias} survived={survived} last_name={last_name}"
 /// closes at the end, the pool returns to the root's frame count and the
 /// reserve to its baseline. A charge taken here and not given back, or a lane
 /// built and left, would show up there.
+#[cfg(feature = "test-memory-authority")]
 fn region_table_full(report: &mut Report, parent: u64) {
     let mut aliases = [0u64; 32];
     let mut held = 0;
@@ -1900,11 +2400,17 @@ fn authority(launch: &Launch, report: &mut Report) {
         // generation is right, and the answer is still a refusal — which is
         // `SYSTEM_ABI_V1` §8.1's harder half: a handle of a *different type*
         // supplied at the same index.
-        // SAFETY: `process_create` names the process a child is created under
-        // and an entry index; this handle names neither.
-        let (wrong_type, _) = unsafe { call(PROCESS_CREATE, first.handle, 0) };
+        //
+        // **Asked of a live operation.** This used to name `process_create`
+        // (8), which is now retired and answers `E_NOT_SUPPORTED` whatever
+        // handle it is given — so the probe would have passed without the type
+        // ever being compared. `process_terminate` (9) names a process object,
+        // this handle names an endpoint, and the refusal is the comparison.
+        // SAFETY: `process_terminate` names the process it ends; this handle
+        // names no process.
+        let (wrong_type, _) = unsafe { call(PROCESS_TERMINATE, first.handle, 0) };
         report.line(&alloc::format!(
-            "TOS.RUN.CAPABILITY.TYPE operation=8 status={wrong_type}"
+            "TOS.RUN.CAPABILITY.TYPE operation=9 status={wrong_type}"
         ));
     }
     if first.object == tos_launch::OBJECT_PROCESS {
@@ -1916,14 +2422,26 @@ fn authority(launch: &Launch, report: &mut Report) {
             .iter()
             .find(|capability| capability.object == tos_launch::OBJECT_MEMORY_AUTHORITY)
             .map_or(0, |capability| capability.handle);
-        #[cfg(not(feature = "test-lifecycle"))]
+        // ADR-0073's handoff has its own supervisor: it builds an artifact,
+        // shares it, and creates targets from it. A boot built for that is not
+        // also the boot that exercises ordinary creation, because the two need
+        // different numbers of live processes out of the same four slots.
+        #[cfg(feature = "test-bundle-launch")]
+        bundle_supervisor(launch, report, first.handle, memory);
+        #[cfg(feature = "test-funding-lifecycle")]
         supervise(launch, report, first.handle, memory, first.rights);
+        #[cfg(not(any(
+            feature = "test-funding-lifecycle",
+            feature = "test-lifecycle",
+            feature = "test-bundle-launch"
+        )))]
+        let _ = (launch, memory);
         // ADR-0067's arrangement has three roles and one image. Which one this
         // process is, is the name its authority was bound to (ADR-0061): the
         // supervisor was given "control", the middle parent "parent", and the
         // delegated observer "watch". A role read from a binding is a role
         // somebody granted; a role read from a slot index would be a guess.
-        #[cfg(feature = "test-lifecycle")]
+        #[cfg(all(feature = "test-lifecycle", not(feature = "test-bundle-launch")))]
         match named(first) {
             "parent" => lifecycle_parent(launch, report, first.handle, memory),
             "watch" => lifecycle_watcher(launch, report, first.handle),
@@ -3258,6 +3776,10 @@ fn write_self_binding(launch: &Launch, name: &[u8]) {
 
 /// Writes one endowment entry: a capability this process holds, the rights the
 /// child is to have over it, and the name the child knows it by.
+#[cfg(any(
+    feature = "test-lifecycle-delegate",
+    feature = "test-funding-lifecycle"
+))]
 fn write_endowment(launch: &Launch, handle: u64, rights: u32, name: &[u8]) {
     let mut binding = [0u8; tos_launch::MAX_BINDING as usize];
     binding[..name.len()].copy_from_slice(name);
@@ -3506,6 +4028,11 @@ status_present={} generation_present={} generation={}",
 /// (`time_monotonic`, operation 11), which counts timer interrupts: ticks
 /// rather than iterations, because an iteration count is a guess about a
 /// machine's speed and a tick is not.
+#[cfg(any(
+    feature = "test-lifecycle",
+    feature = "test-funding-lifecycle",
+    feature = "test-bundle-launch"
+))]
 fn settle() {
     let start = monotonic().unwrap_or(0);
     loop {
@@ -3526,6 +4053,11 @@ fn settle() {
 /// to reach its own exit, so this is that with room. Too small a number does
 /// not make the test flaky in the dangerous direction — it makes the next
 /// creation fail for want of memory the previous child still holds, loudly.
+#[cfg(any(
+    feature = "test-lifecycle",
+    feature = "test-funding-lifecycle",
+    feature = "test-bundle-launch"
+))]
 const LIFECYCLE_SETTLE_TICKS: u64 = 150;
 
 /// Collects every ending already recorded, without blocking for one that is not.
@@ -3556,6 +4088,23 @@ const LIFECYCLE_THIRD_GENERATION: u64 = 11;
 /// restart lineage is asserted is a **record** rather than a second operation
 /// number, and the endowment count and the child's rights over itself were
 /// always arguments.
+/// The arena this supervisor gives the children it creates.
+///
+/// **Named by the creator, which is what operation 19 made possible.** These
+/// children start, run the boot module and end; the measured peak of that run is
+/// under 128 KiB, and `RUNTIME_GRANT`'s 54 MiB is the reference *runtime*
+/// policy rather than a floor anything needs. Sixteen megabytes is two orders of
+/// magnitude of headroom over what they use and it keeps this arrangement about
+/// the lifecycle rather than about arena size — the reference platform funds
+/// exactly four 54 MiB processes and not one frame more, so a boot that needs
+/// four of them is a boot one byte of code growth can break.
+///
+/// It is a policy figure and not a share of what is free: no `min(requested,
+/// available)`, no remainder, no percentage. What it will not pay for is
+/// `E_LIMIT`, which is what the exhaustion scenario below asks for on purpose.
+#[cfg(feature = "test-lifecycle")]
+const LIFECYCLE_GRANT: u64 = 16 * 1024 * 1024;
+
 #[cfg(feature = "test-lifecycle")]
 fn create_child_endowed(
     launch: &Launch,
@@ -3577,7 +4126,7 @@ fn create_child_endowed(
             name_length,
             endowed,
             own_rights,
-            RUNTIME_GRANT,
+            LIFECYCLE_GRANT,
             generation,
         )
     }
@@ -3596,7 +4145,7 @@ fn create_child(
 }
 
 /// The instance id operation 15 left in this process's argument region.
-#[cfg(feature = "test-lifecycle")]
+#[cfg(any(feature = "test-lifecycle", feature = "test-bundle-launch"))]
 fn created_instance(launch: &Launch) -> u64 {
     // SAFETY: the region is the launcher's own mapping and the offset is the
     // one the contract fixes.
@@ -3609,7 +4158,7 @@ fn created_instance(launch: &Launch) -> u64 {
 }
 
 /// `process_wait_child`, and the record it left behind.
-#[cfg(feature = "test-lifecycle")]
+#[cfg(any(feature = "test-lifecycle", feature = "test-bundle-launch"))]
 fn wait_child(
     launch: &Launch,
     handle: u64,
@@ -3668,6 +4217,7 @@ status_present={} ended_by={}/{} generation={}/{} order={}",
 /// it. It is not ended before it can run — see the note below — which makes the
 /// evidence stronger rather than weaker: what was ended had been on the
 /// processor.
+#[cfg(feature = "test-funding-lifecycle")]
 fn supervise(launch: &Launch, report: &mut Report, handle: u64, memory: u64, rights: u32) {
     // The module by **name**, written where `SYSTEM_ABI_V1` §5 says a name goes.
     // An ordinal would have fitted a register and named a position in a list
@@ -3919,9 +4469,12 @@ unaffordable={unaffordable} malformed={malformed} distinguished={distinguished}"
     // launched under — would leave processes running that nothing could stop.
     // A boot with no memory authority cannot create at all, and says so by not
     // trying.
+    #[cfg(feature = "test-funding-lifecycle")]
     if memory != 0 && rights & tos_launch::RIGHT_TERMINATE != 0 {
         funding_lifecycle(launch, report, handle, memory, module);
     }
+    #[cfg(not(feature = "test-funding-lifecycle"))]
+    let _ = rights;
 }
 
 /// What a funded creation does to the authority that paid for it, over the whole
@@ -3944,6 +4497,7 @@ unaffordable={unaffordable} malformed={malformed} distinguished={distinguished}"
 /// The authority is sized to hold exactly one child, so "the charge came back"
 /// is observable as "the same request works again" rather than as a number this
 /// process would have to be told.
+#[cfg(feature = "test-funding-lifecycle")]
 fn funding_lifecycle(
     launch: &Launch,
     report: &mut Report,

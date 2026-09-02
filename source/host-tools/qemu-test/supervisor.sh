@@ -65,6 +65,12 @@ before="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
 
 (cd "$ROOT" && CARGO_TARGET_DIR="$TEST_TARGET" cargo build --release \
     -p tos-nucleus --target x86_64-unknown-none --features "$FEATURE")
+# The image is a feature build too. The funding-lifecycle probes create and end
+# processes, which is evidence rather than anything a canonical boot does, and
+# evidence compiled into the image every process runs is memory every process
+# pays for.
+(cd "$ROOT" && CARGO_TARGET_DIR="$TEST_TARGET" cargo build --release \
+    -p tos-runtime-image --target x86_64-unknown-none --features test-funding-lifecycle)
 after="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
 [ "$before" = "$after" ] || {
     echo "production nucleus changed while building isolated test artifact" >&2
@@ -74,6 +80,7 @@ after="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
 bash "$ROOT/host-tools/qemu-test/run.sh" \
     --out "$OUT" \
     --nucleus "$TEST_NUCLEUS" \
+    --runtime-image "$TEST_TARGET/x86_64-unknown-none/release/tos-runtime-image" \
     --expect 33 \
     --require "TOS.NUCLEUS.ENTRY TOS.RUN.PROCESS_ENDOWED TOS.HALT" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE"

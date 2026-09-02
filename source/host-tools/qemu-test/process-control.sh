@@ -64,8 +64,15 @@ before="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
 build() {
     (cd "$ROOT" && CARGO_TARGET_DIR="$ROOT/target/$1" cargo build --release \
         -p tos-nucleus --target x86_64-unknown-none --features "$1")
+    # And the image, with the supervision probes this gate's second half needs.
+    # They are evidence — a canonical boot's process is endowed nothing and can
+    # reach none of them — so they are not in the production image.
+    (cd "$ROOT" && CARGO_TARGET_DIR="$ROOT/target/$1" cargo build --release \
+        -p tos-runtime-image --target x86_64-unknown-none \
+        --features test-funding-lifecycle) >&2
     echo "$ROOT/target/$1/x86_64-unknown-none/release/tos-nucleus"
 }
+image() { echo "$ROOT/target/$1/x86_64-unknown-none/release/tos-runtime-image"; }
 REFUSING="$(build test-process-control)"
 ENDING="$(build test-process-terminate)"
 after="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
@@ -98,6 +105,7 @@ bash "$HERE/run.sh" \
     --out "$OUT/refused" \
     --capsule "$OUT/process-control.bin" \
     --nucleus "$REFUSING" \
+    --runtime-image "$(image test-process-control)" \
     --expect 33 \
     --require "TOS.NUCLEUS.ENTRY TOS.RUN.REQUEST TOS.RUN.INTERFACE TOS.RUN.COMPLETED TOS.HALT" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE" \
@@ -132,6 +140,7 @@ bash "$HERE/run.sh" \
     --out "$OUT/ended" \
     --capsule "$OUT/process-control.bin" \
     --nucleus "$ENDING" \
+    --runtime-image "$(image test-process-terminate)" \
     --expect "$REFUSED_EXIT" \
     --require "TOS.NUCLEUS.ENTRY TOS.RUN.REQUEST TOS.RUN.PROCESS_TERMINATED" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE TOS.RUN.COMPLETED" \
