@@ -143,6 +143,112 @@ pub enum ObjectKind {
     LaunchPlan,
 }
 
+/// One field of a record an accepted schema declares.
+pub struct Field {
+    pub name: &'static str,
+    /// The type, in the canonical spelling `boundary::type_text` produces.
+    pub ty: &'static str,
+}
+
+/// A **record** an accepted schema declares (`SYSTEM_INTERFACE_V1` §4.2).
+///
+/// An operation returns the value it produced (§5), and some of what this
+/// system produces has more than one part: an ending is an identity, a kind, a
+/// tick and three things that may not be there. A schema that could only return
+/// one number would push a supervisor into reconstructing those from an
+/// argument-region layout it has no business knowing.
+///
+/// **Not a new record ABI and not a language change.** A schema record is an
+/// ordinary TOS Core nominal record type — `TypeDef::Nominal` with declared
+/// fields, the same constructor a module's own `record` declaration produces,
+/// carried in the artifact the same way and read by a verifier the same way.
+/// What is new is only *who declares it*: the schema rather than a module,
+/// exactly as the schema already declares the interfaces and operations a
+/// module may name.
+///
+/// **Every field is public**, because a schema record exists to be read. TOS
+/// Core V1's visibility rules are unchanged: a module cannot construct one —
+/// nothing in the language names a schema record's constructor — so the only
+/// way to hold one is to have been given it by the operation that produces it.
+pub struct Record {
+    /// The path a module writes to name the type.
+    pub path: &'static str,
+    /// The fields, in the order an operation's result carries them. The order
+    /// is part of the contract: a field's position is how a value's parts are
+    /// matched to their names, in the artifact and at the boundary.
+    pub fields: &'static [Field],
+}
+
+/// Every record `SYSTEM_INTERFACE_V1` §4.2 declares, and no others.
+pub const RECORDS: &[Record] = &[
+    // What a creation produced: authority over the child, and which child it
+    // is. Two facts that are not derivable from each other — a handle is an
+    // index in one table and means nothing in another, and an instance
+    // identity is not authority (ADR-0067 §7).
+    Record {
+        path: "system.process.CreatedProcess",
+        fields: &[
+            Field {
+                name: "control",
+                ty: "system.process.Control",
+            },
+            Field {
+                name: "instance",
+                ty: "u64",
+            },
+        ],
+    },
+    // What a wait observed, as `PROCESS_IDENTITY_V1` and ADR-0067 record it.
+    //
+    // **The three optional facts are `Option`, not a value beside a flag.**
+    // ADR-0067 states the rule the other way round from a C struct: absence is
+    // the true value, and a zero would be a claim its caller never made. A
+    // record carrying `status: u64` and `has_status: u64` puts that rule in the
+    // reader's hands; `Option<u64>` puts it in the type.
+    Record {
+        path: "system.process.ChildEnding",
+        fields: &[
+            Field {
+                name: "child_instance",
+                ty: "u64",
+            },
+            Field {
+                name: "parent_instance",
+                ty: "u64",
+            },
+            Field {
+                name: "ending_kind",
+                ty: "u64",
+            },
+            Field {
+                name: "self_reported_status",
+                ty: "Option<u64>",
+            },
+            Field {
+                name: "ended_by",
+                ty: "Option<u64>",
+            },
+            Field {
+                name: "restart_generation",
+                ty: "Option<u64>",
+            },
+            Field {
+                name: "ending_order",
+                ty: "u64",
+            },
+            Field {
+                name: "ended_tick",
+                ty: "u64",
+            },
+        ],
+    },
+];
+
+/// The record with this path, if an accepted schema declares one.
+pub fn record(path: &str) -> Option<&'static Record> {
+    RECORDS.iter().find(|record| record.path == path)
+}
+
 /// Every interface `SYSTEM_INTERFACE_V1` §4 declares, and no others.
 ///
 /// An `extern` item naming anything absent from this table is rejected exactly
@@ -169,6 +275,22 @@ pub const ACCEPTED: &[Interface] = &[
                 name: "endpoint_call",
                 capabilities: &[Requirement::of("system.ipc.Endpoint", "call")],
                 parameters: &[Parameter::fixed("u64")],
+                result: "i64",
+            },
+            // The same ABI operation, with the payload declared as the value it
+            // is rather than as a length over bytes the module cannot write.
+            //
+            // **Two schema rows over one ABI selector**, which is what §4.1's
+            // `string` mechanism was for: the bytes go to the offset the ABI
+            // fixes and the length to the register it assigns, and the caller
+            // names a value. `endpoint_send` stays exactly as it was, because a
+            // module that composes its payload elsewhere still needs it; what
+            // this adds is the ability to *say something* from TOS Core, which
+            // is what a journal is made of.
+            Operation {
+                name: "endpoint_send_text",
+                capabilities: &[Requirement::of("system.ipc.Endpoint", "send")],
+                parameters: &[Parameter::bounded("string", 256)],
                 result: "i64",
             },
             // The standard operation family (ADR-0077 §3). It is declared once
@@ -271,6 +393,16 @@ pub const ACCEPTED: &[Interface] = &[
                 parameters: &[],
                 result: "i64",
             },
+            // The ending of one of this process object's direct children, as
+            // the fact it is rather than as an argument-region layout. A
+            // supervisor reads a record; where its parts were is the bridge's
+            // business (ADR-0067).
+            Operation {
+                name: "process_wait_child",
+                capabilities: &[Requirement::of("system.process.Control", "wait_child")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<system.process.ChildEnding, i64>",
+            },
             // The first operation of this schema whose result is **authority**
             // rather than a number (§5). It is what makes the endowment of a
             // child expressible in text at all: a plan is written entry by
@@ -311,7 +443,7 @@ pub const ACCEPTED: &[Interface] = &[
                     Parameter::fixed("u64"),
                     Parameter::fixed("u64"),
                 ],
-                result: "Result<system.process.Control, i64>",
+                result: "Result<system.process.CreatedProcess, i64>",
             },
             Operation {
                 name: "endow_for_launch",

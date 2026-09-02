@@ -414,6 +414,7 @@ impl<'source> TypeResolver<'source> {
             // to spell it would be requesting authority it never uses — which
             // `docs/42` §2 would then have to answer, or deny at startup.
             return crate::interfaces::interface(spelled).is_some()
+                || crate::interfaces::record(spelled).is_some()
                 || self.capability_interfaces.contains(spelled)
                 || self.imports.contains(path[0].text(self.source));
         }

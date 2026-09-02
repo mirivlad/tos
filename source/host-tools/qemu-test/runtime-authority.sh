@@ -102,7 +102,9 @@ exactly 1 '^TOS\.RUN\.REQUEST binding=memory interface=system\.memory\.Authority
 for operation in capability_attenuate_scoped launch_plan_create endow_for_launch \
     launch_plan_seal process_create_funded capability_attenuate process_terminate \
     capability_release; do
-    exactly 1 "^TOS\\.RUN\\.INTERFACE operation=$operation status=$OK\$" \
+    # A trailing `said=` is the text a `string` argument carried: the operations
+    # that take one are rendered with it, and the rest are not.
+    exactly 1 "^TOS\\.RUN\\.INTERFACE operation=$operation status=$OK\\( said=.*\\)\\?\$" \
         "$operation did not reach the nucleus and answer OK"
 done
 
