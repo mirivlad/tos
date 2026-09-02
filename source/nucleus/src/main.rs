@@ -1286,6 +1286,41 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             rights: tos_launch::RIGHT_SPEND,
         },
     ];
+    // ADR-0074's T1: a resident supervisor that may create, terminate and
+    // collect, holds the root's remainder to fund a worker out of, and holds
+    // one endpoint it **receives** the built artifact on. The worker it creates
+    // is endowed by the supervisor and holds neither creation authority nor a
+    // receiver — it can build and hand over, and nothing else.
+    #[cfg(feature = "test-build-topology")]
+    let first_endowment = {
+        let Some(handback) = ipc::create() else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        [
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE
+                    | tos_launch::RIGHT_TERMINATE
+                    | tos_launch::RIGHT_WAIT_CHILD,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            // One endpoint, two names. The supervisor receives on its
+            // **inbox**; the worker it creates is given `send` on the same
+            // object under the name **outbox**. ADR-0061 makes the binding the
+            // identity of a request, so the two roles ask for different things
+            // and are answered with different halves of one channel.
+            capability::Endowment::Existing {
+                binding: binding(b"inbox"),
+                object: capability::Object::Endpoint(handback),
+                rights: tos_launch::RIGHT_SEND | tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+        ]
+    };
     // Section H: everything a supervisor is made of. `create` to start a
     // service, `terminate` because a supervisor that could not stop one would
     // be an observer, `wait_child` because an ending is how it learns anything,
@@ -1500,6 +1535,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-deputy",
         feature = "test-runtime-authority",
         feature = "test-supervision",
+        feature = "test-build-topology",
         feature = "test-lifecycle"
     )))]
     // **Nothing, because the module asks for nothing.** ADR-0055 makes an
@@ -1525,6 +1561,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-region-transport",
         feature = "test-runtime-authority",
         feature = "test-supervision",
+        feature = "test-build-topology",
         feature = "test-bundle-launch"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];

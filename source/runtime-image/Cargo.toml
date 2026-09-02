@@ -105,6 +105,10 @@ test-memory-authority = []
 # freezes and shares it, and creates targets from it — twice from one artifact,
 # and once from a corrupt one that the target refuses for itself. Requires the
 # nucleus built with `test-bundle-launch`.
+# ADR-0074's T1 topology: a resident supervisor, a transient build worker it
+# creates and funds, one shared bundle handed back over an endpoint, and a
+# target created only after the worker's ending has been collected.
+test-build-topology = []
 test-bundle-launch = []
 
 [dependencies]
