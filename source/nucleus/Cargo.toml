@@ -33,6 +33,11 @@ test-lifecycle = []
 # Deterministic failure injection for the creation transaction, so the rollback
 # is proved against real refusals rather than asserted.
 test-creation-rollback = []
+# ADR-0078: the boot process holds `create` and `terminate` over itself and the
+# root's remainder, which is everything a supervisor needs to scope a budget,
+# plan a child, create it, refine its authority and end it — every step after
+# the first acting on a capability the step before it produced.
+test-runtime-authority = []
 # A boot whose process is endowed the root's remainder, so operation 16 can be
 # asked for from ring 3. Not the canonical boot: `system.boot.init` declares no
 # capability request, and ADR-0055 gives a process what its launcher decided

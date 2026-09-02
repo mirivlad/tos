@@ -1187,6 +1187,42 @@ const PERFORMED: &[Performed] = &[
         values: &[Slot::Number(Reg::Rdx)],
         result: Produced::Status,
     },
+    // Refinement and release act on **the capability given to them**, which
+    // since ADR-0078 may be one an operation produced: a child's authority, or a
+    // scoped budget. Nothing about the ABI row changed — `rdi` is the capability
+    // and `rsi` is the rights mask — only where the capability may come from.
+    Performed {
+        interface: "system.memory.Authority",
+        name: "capability_attenuate_scoped",
+        operation: CAPABILITY_ATTENUATE_SCOPED,
+        capabilities: &[Reg::Rdi],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Authority,
+    },
+    Performed {
+        interface: "system.memory.Authority",
+        name: "capability_release",
+        operation: CAPABILITY_RELEASE,
+        capabilities: &[Reg::Rdi],
+        values: &[],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "system.process.Control",
+        name: "capability_attenuate",
+        operation: CAPABILITY_ATTENUATE,
+        capabilities: &[Reg::Rdi],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Authority,
+    },
+    Performed {
+        interface: "system.process.Control",
+        name: "capability_release",
+        operation: CAPABILITY_RELEASE,
+        capabilities: &[Reg::Rdi],
+        values: &[],
+        result: Produced::Status,
+    },
     Performed {
         interface: "system.process.Control",
         name: "process_terminate",

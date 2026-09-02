@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `2b35ce92a8a33ebbea2f98c23b538143a7e2dc1373cb23585500fc6f08d76695`\
+Source-manifest SHA-256: `13087dacdf20f74dbdb10effa2d006b6431390bbdb75ed401d06ba178f0a7d46`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2877,12 +2877,16 @@ decided rather than described:
 | `launch_plan_seal` | `system.process.Control` with `create` | `plan: system.process.LaunchPlanBuilder` | `Result<system.process.LaunchPlan, i64>` | 23 |
 | `process_create_funded` | `system.process.Control` with `create`, then `system.memory.Authority` with `spend` | `plan: system.process.LaunchPlan`, `entry: string` (≤ 256), `grant: u64`, `self_rights: u64` | `Result<system.process.Control, i64>` | 19 |
 | `endow_for_launch` | `system.process.Control` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+| `capability_attenuate` | `system.process.Control` with `none` | `rights: u64` | `Result<system.process.Control, i64>` | 5 |
+| `capability_release` | `system.process.Control` with `none` | *(none)* | `i64` | 6 |
 
 ### `system.memory.Authority`
 
 | Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
 |---|---|---|---|---|
 | `endow_for_launch` | `system.memory.Authority` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+| `capability_attenuate_scoped` | `system.memory.Authority` with `spend` | `bytes: u64` | `Result<system.memory.Authority, i64>` | 16 |
+| `capability_release` | `system.memory.Authority` with `none` | *(none)* | `i64` | 6 |
 
 ### `system.process.LaunchPlanBuilder` and `system.process.LaunchPlan`
 
@@ -3013,16 +3017,35 @@ is of, and there is no `AnyCapability` anywhere in TOS Core. The engine carries
 it without reading it, exactly as it carries an import-supplied one, and the only
 place it becomes a number is the host's own table (`docs/42` §2).
 
-**The operation's own capability is still an import.** A capability value may be
-a value parameter; it may not be the first parameter, which §4's tables make the
-interface the operation is reached through. That is the boundary of this
-version: an operation acting on a capability of *its own* interface that was
-obtained at runtime cannot be declared here, because `tos-ir/v1`'s
-`Op::Capability` names the operation's own capability as an import index and
-nothing else. Every operation above is shaped so that the question does not
-arise — a plan is written and sealed through the authority that made it, and a
-child is created through the parent's own authority — and widening it is a
-decision about the IR rather than about this schema.
+**Every capability position may be supplied either way** (ADR-0078). A
+capability parameter is filled from an `import capability` binding, or from a
+value of that interface's capability type — one an operation produced. This
+holds of the operation's *own* capability as much as of any later one, and it
+holds of a schema entry without the schema saying which: what a position
+declares is an interface and a right, and where the capability came from is the
+call site's.
+
+This section recorded the opposite boundary for one revision, and the record is
+worth keeping: an operation acting on a capability of its own interface obtained
+at runtime could not be declared here, because `tos-ir/v1`'s `Op::Capability`
+named the operation's own capability as an import index and nothing else. That
+was the *representation* narrowing accepted TOS Core V1 semantics, which already
+admitted capability values and capability-derived authority — not a rule this
+schema had chosen. ADR-0078 repaired the representation; this paragraph is the
+schema no longer having to work around it.
+
+**A runtime-supplied capability is checked, not trusted.** Its declared type is
+the exact nominal interface the position requires; the artifact records that
+type; and a verifier proves it against the artifact before anything runs. A
+scalar, a constant, a value of a nominal record type, or a capability of a
+*different* interface in a capability position is refused there — not by the
+frontend that emitted it, which is the point of checking it twice.
+
+**No import is required to license it.** A capability a module obtained at
+runtime is reached through itself, not through some other authority declared for
+the purpose. There is no capability parameter this schema declares that the ABI
+does not act on, and no position filled by one object while another one licenses
+it.
 
 **A variable-length parameter declares its maximum, and the maximum is part of
 this contract.** `SYSTEM_ABI_V1` §3 bounds every read by a constant of the
@@ -6405,13 +6428,32 @@ The semantic operation families are:
 | arithmetic/comparison/control | typed operands/results, checked/trap behavior, complete branch targets |
 | move/borrow/drop | affine state, borrow exclusivity, bounded cleanup/drop contract |
 | Result/error | declared `Ok`/`Err` construction and `?` propagation edge |
-| capability | declared imported capability, effect/right/interface match, no construction from scalar data |
+| capability | declared capability **source** per position, effect/right/interface match, no construction from scalar data |
 | region/DMA | typed grant, rights, checked range/alignment, transfer/share rule, no physical-address exposure |
 | resource | reserve/release/check fuel, stack, allocation, task, worker, sync, shared, cleanup, recursion/import bounds |
 | async/parallel | scoped spawn, typed captures, affine `Task<T>` token, `TaskResult<T>` await/join result, cancellation request, and scope completion |
 | synchronization | typed mutex/RW/channel/event/barrier/latch operation and guard lifetime |
 | atomic | exact atomic type, legal operation/order, source map and memory-order contract |
 | unsafe/extern | explicit unsafe marker, accepted interface ID, capability/effect/resource contract |
+
+**Every capability position of a capability operation carries an explicit
+source** (ADR-0078, an Architect-approved consistency repair). It is either a
+declared capability import, or a value of the exact nominal capability type that
+an earlier operation produced or a message delivered. This wording replaces
+"declared imported capability", which described the only source the *v1
+representation* had rather than what V1 semantics admit: TOS Core V1 has always
+had capability values and capability-derived authority, and an operation acting
+on one could not be written down. The repair is to the representation; the
+required verifier-visible properties are unchanged and are now required of every
+position rather than of the first alone.
+
+"No construction from scalar data" is unchanged and is what the source
+discriminator makes checkable: an import is an index into a table the module
+declared, a value is an SSA value whose type must independently verify as the
+capability type of the exact interface that position requires, and neither is a
+number a nucleus would accept as authority. A scalar, a constant, a value of a
+nominal record type, or a capability of a different interface in a capability
+position is rejected before execution.
 
 An operation that lowers to a runtime call carries a versioned typed runtime
 contract ID and all semantic operands: capability/effect, ownership transfer,
@@ -24911,6 +24953,190 @@ policy and belongs in canonical text, not in the nucleus.
    plan count beside the frames and page tables it reclaims, and it is zero.
 
 <!-- END docs/adr/0077-launch-plans.md -->
+
+---
+
+<!-- BEGIN docs/adr/0078-capability-sources.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0078: Every capability position says where its capability came from
+
+- Status: **Accepted**
+- Date: 2026-09-03
+- Decision level: 2 — it repairs the `tos-ir/v1` representation of one
+  instruction and bumps the TOSIMAGE storage encoding version. It changes **no**
+  TOS Core V1 semantics, no language version, no type constructor, no ABI
+  operation and no accepted ceiling
+- Project Architect approval: **given, 2026-09-03**, as a narrow consistency
+  correction, with the mechanism fixed (`CapabilitySource::Import(index) |
+  CapabilitySource::Value(value)`), the two alternatives of
+  `STAGE3_LAUNCH_PLANS.md` §6 explicitly re-rejected, and the requirement that
+  it be general for **all** capability positions rather than the first
+- Related: ADR-0056 (Accepted) — the capability is the first argument. ADR-0060
+  (Accepted) — the interface schema. ADR-0061 (Accepted) — how an endowment
+  binds to a module. ADR-0063 (Accepted) — an operation requiring two
+  capabilities. ADR-0070 (Accepted) — the versioned storage encoding this bumps.
+  ADR-0077 (Accepted) — launch plans, whose evidence exposed this.
+  `docs/43` §3, `SYSTEM_INTERFACE_V1` §4.1
+
+## 1. A representation narrower than the semantics it represents
+
+`Op::Capability` named the capabilities of an interface operation as import
+indices: one `import`, then a list of `further_imports`, each an index into the
+module's `capability_imports`. Nothing else could fill a capability position.
+
+That was written when an import was the only way a module could come to hold
+authority, and it was true then. It stopped being true when operations began to
+*return* capabilities — a refined one from operation 5, a scoped budget from 16,
+a region from 17, a child from 19, a launch plan from 21. Each of those is a
+capability a module holds and none of them answers an `import capability`
+request, because none of them existed when the module started.
+
+So an operation acting on one could not be written down. Concretely, and these
+are the cases that surfaced it:
+
+- `process_terminate` on a **child**, whose authority operation 19 produced;
+- `capability_release` and `capability_attenuate` on anything obtained at
+  runtime;
+- `endow_for_launch` through a **scoped** `MemoryAuthority` from operation 16.
+
+**The mismatch was in the representation, not in the language.** TOS Core V1
+already has a capability type constructor; `tos-ir/v1` already has
+`TypeDef::Capability`; the image format already encodes it; the engine's
+boundary already returns a value rather than an integer. A capability value was
+a thing V1 admitted and `Op::Capability` could not consume. That is a
+representation below its own accepted semantics, and this ADR is the repair of
+the representation.
+
+## 2. The decision: an explicit source per position
+
+`Op::Capability` carries, per capability position, one of:
+
+```text
+CapabilitySource::Import(index)   the capability answering one of the module's
+                                  `import capability` requests (ADR-0061)
+CapabilitySource::Value(operand)  a capability the module holds as a value,
+                                  because an operation produced it
+```
+
+**An explicit discriminator, never a sentinel.** There is no reserved index
+meaning "not an import": a reader that had to know one number was special is a
+reader that can mistake a real index for it. The two cases are two cases.
+
+**General over every position.** The first capability of an operation is not a
+special case of this rule, and neither is the second. A repair that had applied
+only to the operation's own capability would have moved the same contradiction
+one position along — the second capability of operation 19 is a memory
+authority, and a supervisor's is scoped at runtime.
+
+**Existing operations are unchanged.** An import-supplied position is the
+explicit `Import` case and means exactly what it meant: the same index, the same
+table, the same request. Nothing about the import path's semantics moved.
+
+## 3. What is not in it, and why each was rejected
+
+The `STAGE3_LAUNCH_PLANS.md` §6 alternatives stay rejected, and are recorded
+here so that they are rejected somewhere permanent:
+
+**Reinterpreting `import` as "the authority that licensed the reach"** while an
+operand names the object acted upon. It needs no shape change, and that is
+precisely what makes it dangerous: it silently changes the meaning of an
+existing encoded field, so an older verifier reading a newer artifact would
+misread which capability an operation acts on and report that it had checked it.
+
+**A second, import-anchored capability the ABI does not use**, declared only to
+license reach. It puts an authority in a schema that the system never checks,
+which is a contract describing a system that does not exist — and it makes
+runtime-obtained authority depend on an otherwise unused startup import.
+
+Also not in it: no `AnyCapability`, no raw or scalar handle in the IR or in TOS
+Core, no implicit derivation of one authority from another, and no `tos-ir/v2`.
+The schema version stays `1` because the semantics did not change; what changed
+is that they became representable.
+
+## 4. What a verifier proves
+
+Per capability position, against the artifact and never on the frontend's word:
+
+- an `Import` names an index inside the module's own capability import table;
+- a `Value` names an operand whose type is `TypeDef::Capability` — a scalar, a
+  constant, or a value of a nominal record type is refused here, which is
+  `docs/43`'s "no construction from scalar data" made checkable;
+- the interface at position zero is the accepted interface ID the instruction
+  carries, so an artifact naming one interface and acting through another is
+  refused as it always was;
+- the interface at **every** position is one the enclosing function declares as
+  an effect, which is `docs/42` §2's "enclosing `uses` effect" requirement
+  applied per position — and, for a runtime-sourced capability, the exact
+  nominal interface check that has no import declaration to compare against;
+- and no source appears twice. ADR-0063's rule held of imports and now holds of
+  sources: one grant may not stand in for two, whichever kind each is.
+
+The interface and the required right still come from the accepted interface
+schema. The source says only *which thing* fills a position that schema already
+described. Runtime rights and object validity remain the nucleus's, unchanged:
+`CAPABILITY_V1` §3 still bounds a capability's lifetime by its object, and a
+handle to something that has ended still resolves to nothing.
+
+## 5. The storage encoding
+
+`TOSIMAGE` encoding version **4**. The bytes of one instruction changed, so the
+version changed: an older reader given a version-4 image must refuse it rather
+than read a source tag as an index, which is what ADR-0070's fail-closed
+unknown-version rule is for.
+
+A version-**3** image is still readable, and every capability position of one
+decodes as `Import`. That is bounded and canonical rather than a guess: an
+import index was the only source version 3 could write, so the mapping is one
+for one with nothing invented. No existing encoded field changed meaning; a
+field was replaced by a tagged one under a new version.
+
+The schema version stays `1`. The module digest changes for any module that
+encodes a capability operation, because the source is part of the canonical
+stream — deliberately, since an artifact acting on a runtime value must not
+share an identity with one acting on an import.
+
+## 6. What this does not decide
+
+**It does not admit an interface a module never requested.** The verifier still
+requires the interface an operation reaches to be one the module imported and
+the enclosing function declared. Every case this ADR unblocks satisfies that
+already, and genuinely rather than by contrivance: a module obtains a child
+authority by *calling* operation 19 through its own process import, and a scoped
+budget by calling 16 through its own authority import. The import is used, not
+manufactured. A capability of an interface a module never imports — one
+delivered by a message, say — is a separate question and is not answered here.
+
+**It does not change what a capability is at runtime.** The nucleus checks
+rights, object kind and object liveness exactly as before. A module can hold
+only capabilities the nucleus gave it, and the source discriminator says where a
+module got one, not what it may do with it.
+
+## 7. Conformance evidence
+
+`source/tests/integration/tests/capability_source.rs` and
+`source/host-tools/qemu-test/runtime-authority.sh`:
+
+1. operation 19 returns a child `system.process.Control`, typed as that exact
+   nominal capability in the artifact's type table;
+2. that runtime capability is the **own** capability of `process_terminate`;
+3. lower → TOSIMAGE → decode → independent verifier → engine → **ABI**, with the
+   verifier run over the decoded artifact and the last step against the real
+   nucleus in QEMU;
+4. operation 16 returns a scoped `system.memory.Authority`;
+5. `endow_for_launch` acts *through* that scoped authority, and the interface
+   recorded on the instruction is the value's own;
+6. attenuation and release of runtime-obtained authority are representable and
+   are performed;
+7. a forged scalar in a capability position, and a capability of the wrong
+   interface, are both refused by the verifier;
+8. the **second** capability position of operation 19 is runtime-sourced, so the
+   hole is not left one position along;
+9. an unknown container version is refused, and version 3 reads as `Import`;
+10. every existing import-only gate is unchanged and green.
+
+<!-- END docs/adr/0078-capability-sources.md -->
 
 ---
 

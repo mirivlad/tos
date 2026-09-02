@@ -2644,8 +2644,7 @@ impl<'source> Lowerer<'source> {
                 result: Some(value),
                 ty,
                 op: Op::Capability {
-                    import,
-                    further_imports: Vec::new(),
+                    capabilities: alloc::vec![tos_ir::CapabilitySource::Import(import)],
                     right: operation,
                     operands,
                 },
@@ -3074,24 +3073,48 @@ impl<'source> Lowerer<'source> {
             ));
         }
         let (capabilities, values) = arguments.split_at(required);
-        let mut imports = Vec::with_capacity(required);
+        let mut sources = Vec::with_capacity(required);
+        let mut interface = None;
         for capability in capabilities {
             let named = capability.value();
-            if named.form() != ExpressionForm::Name {
+            // An `import capability` binding, which is what every capability
+            // position was before ADR-0078 and what most of them still are.
+            if named.form() == ExpressionForm::Name {
+                let binding = named.span().text(self.source);
+                if let Some(import) = self.capability_import_index.get(binding).copied() {
+                    if interface.is_none() {
+                        interface = Some(self.capability_imports[import].clone());
+                    }
+                    sources.push(tos_ir::CapabilitySource::Import(import));
+                    continue;
+                }
+            }
+            // Otherwise a capability the module **holds as a value**, because
+            // an operation produced it. Its interface is its own type, and it
+            // must be exactly the one this position requires — a value of some
+            // other interface, or of no capability type at all, is not a
+            // capability of this position and is refused here rather than
+            // lowered into an artifact for a verifier to catch.
+            let operand = self.lower_expression(named, builder)?;
+            let ty = builder.type_of(&operand);
+            let Some(TypeDef::Capability(path)) = self.types.get(ty).cloned() else {
                 return Err(self.gap(
-                    "interface operation on something other than a capability import",
+                    "interface operation on something that is neither a capability import \
+                     nor a capability value",
                     named.span(),
                 ));
-            }
-            let binding = named.span().text(self.source);
-            let Some(import) = self.capability_import_index.get(binding).copied() else {
-                return Err(self.gap("interface operation on an unimported name", named.span()));
             };
-            imports.push(import);
+            if interface.is_none() {
+                interface = Some(path);
+            }
+            sources.push(tos_ir::CapabilitySource::Value(operand));
         }
-        let (import, further_imports) = imports.split_first().expect("at least one capability");
-        let (import, further_imports) = (*import, further_imports.to_vec());
-        let interface = self.capability_imports[import].clone();
+        let Some(interface) = interface else {
+            return Err(self.gap(
+                "interface operation without its capabilities",
+                expression.span(),
+            ));
+        };
         let mut operands = Vec::new();
         for argument in values {
             operands.push(self.lower_expression(argument.value(), builder)?);
@@ -3102,8 +3125,7 @@ impl<'source> Lowerer<'source> {
             result: Some(value),
             ty,
             op: Op::Capability {
-                import,
-                further_imports,
+                capabilities: sources,
                 right: name.to_string(),
                 operands,
             },

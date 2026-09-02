@@ -493,6 +493,31 @@ pub enum Operand {
     Constant(ConstId),
 }
 
+/// Where one capability of an interface operation came from (ADR-0078).
+///
+/// **An explicit discriminator, not a sentinel.** There is no reserved index
+/// meaning "not an import", because a reader that had to know one number was
+/// special would be a reader that could mistake a real index for it. The two
+/// cases are two cases.
+///
+/// The interface and the required right still come from the accepted interface
+/// schema — this says only *which thing* fills a position the schema already
+/// described. A value's exact nominal interface is its own type, so nothing
+/// here is erased and no capability crosses as a scalar.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum CapabilitySource {
+    /// The capability answering one of the module's `import capability`
+    /// requests, by index into `Module::capability_imports` (ADR-0061).
+    Import(usize),
+    /// A capability an operation produced or a message delivered, held as an
+    /// ordinary value of the module's.
+    ///
+    /// Its type must be `TypeDef::Capability` of the exact interface the
+    /// position requires, which a verifier checks against the artifact rather
+    /// than taking a frontend's word for.
+    Value(Operand),
+}
+
 /// One semantic operation (docs/43 section 3).
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Op {
@@ -607,27 +632,34 @@ pub enum Op {
         order: MemoryOrder,
         failure_order: Option<MemoryOrder>,
     },
-    /// An operation on a declared imported capability.
+    /// An operation on one or more capabilities, each with an explicit source.
     ///
-    /// `import` is the capability the operation is performed *under* — the one
-    /// whose interface the instruction records and whose effect the enclosing
-    /// function declares. `further_imports` are the other capabilities the
-    /// operation requires, in the order its interface declares them
-    /// (`SYSTEM_INTERFACE_V1` §4.1, ADR-0063).
+    /// `capabilities` are the capabilities the operation requires, in the order
+    /// its interface declares them (`SYSTEM_INTERFACE_V1` §4.1, ADR-0063). The
+    /// first is the one the operation is performed *under* — the one whose
+    /// interface the instruction records and whose effect the enclosing function
+    /// declares.
     ///
-    /// They are import indices and not operands, for the reason there is no
-    /// capability operand anywhere in an artifact: `docs/42` §2 keeps a handle's
-    /// representation out of provenance, and a representation that is never in
-    /// the IR cannot leak from it. What the instruction carries is *which
-    /// request* each capability answers, which is a name the module wrote.
+    /// **Every position says where its capability came from** (ADR-0078). It is
+    /// either a declared capability import, or a value of the exact nominal
+    /// capability type that an earlier operation produced. Before ADR-0078 the
+    /// field was an import index and nothing else, which made an operation
+    /// acting on authority obtained *at runtime* unrepresentable — while TOS
+    /// Core V1 already admitted capability values and capability-derived
+    /// authority. That was a narrowing of the representation below the accepted
+    /// semantics, and this is the repair.
+    ///
+    /// **Neither case is a handle.** An import is a *request index*, a value is
+    /// an SSA value id, and `docs/42` §2's rule that a handle's representation
+    /// appears nowhere in provenance holds of both: there is no number in an
+    /// artifact that a nucleus would accept as authority.
     ///
     /// docs/43's operation table already required this instruction to carry
     /// "effect/right/interface match" and "all semantic operands:
-    /// capability/effect" — several capabilities is that requirement met, not a
-    /// change to what it asks for.
+    /// capability/effect" — several capabilities, from either source, is that
+    /// requirement met rather than a change to what it asks for.
     Capability {
-        import: usize,
-        further_imports: Vec<usize>,
+        capabilities: Vec<CapabilitySource>,
         right: String,
         operands: Vec<Operand>,
     },

@@ -48,8 +48,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_ir::{
-    BinaryOp, CallTarget, Constant, Instruction, IntKind, Module, Op, Operand, Place, PlaceStep,
-    SourceRef, Terminator, UnaryOp,
+    BinaryOp, CallTarget, CapabilitySource, Constant, Instruction, IntKind, Module, Op, Operand,
+    Place, PlaceStep, SourceRef, Terminator, UnaryOp,
 };
 use tos_residency::{
     Failure, ModuleProvider, Residency, VerifiedClosureManifest, VerifiedModuleRecord,
@@ -1843,50 +1843,79 @@ impl Engine<'_> {
             // module a description of what it needs rather than of what it was
             // given.
             Op::Capability {
-                import,
-                further_imports,
+                capabilities,
                 right,
                 operands,
             } => {
-                let Some(interface) = module
-                    .capability_imports
-                    .get(*import)
-                    .map(|import| import.interface.as_str())
-                else {
+                // ADR-0056, ADR-0063 and ADR-0078: the capabilities first, in
+                // the order the schema declares them, then the operation's
+                // values. Each position says where its capability comes from,
+                // and both cases end in the same place — a `Value::Capability`
+                // the engine carries without reading.
+                let mut arguments = Vec::with_capacity(capabilities.len() + operands.len());
+                let mut first = None;
+                for source_of in capabilities {
+                    let (interface, held) = match source_of {
+                        CapabilitySource::Import(index) => {
+                            let Some(declared) = module
+                                .capability_imports
+                                .get(*index)
+                                .map(|import| import.interface.as_str())
+                            else {
+                                return Err(Trap::new(
+                                    "RUNTIME_TYPE_CONFUSION",
+                                    "an operation names a capability import this module                                      does not declare",
+                                    source,
+                                ));
+                            };
+                            // Every request was answered before the run started,
+                            // so this cannot be absent for a module of the
+                            // entry's own set; it can for a *cross-module* call,
+                            // whose imports are that module's and are not this
+                            // run's. Refusing says so rather than reaching for
+                            // the wrong module's authority.
+                            let Some(held) = self.imports.get(*index).cloned() else {
+                                return Err(Trap::new(
+                                    "RUNTIME_CAPABILITY_DENIED",
+                                    alloc::format!("{declared} was requested and not granted"),
+                                    source,
+                                ));
+                            };
+                            (declared, held)
+                        }
+                        // A capability the module holds as a value, because an
+                        // operation produced it. The engine has carried it since
+                        // it arrived without looking at it, and does not look
+                        // now: what it checks is that it *is* one, because a
+                        // scalar in a capability position is a program the
+                        // verifier should have refused.
+                        CapabilitySource::Value(operand) => {
+                            let value = self.operand(module, operand, values, source)?;
+                            if !matches!(value, Value::Capability(_)) {
+                                return Err(Trap::new(
+                                    "RUNTIME_TYPE_CONFUSION",
+                                    "a capability position is filled by a value that is not                                      a capability",
+                                    source,
+                                ));
+                            }
+                            // The interface is the instruction's own, which the
+                            // verifier proved is this value's type.
+                            let declared = instruction.unsafe_interface.as_deref().unwrap_or("");
+                            (declared, value)
+                        }
+                    };
+                    if first.is_none() {
+                        first = Some(interface);
+                    }
+                    arguments.push(held);
+                }
+                let Some(interface) = first else {
                     return Err(Trap::new(
                         "RUNTIME_TYPE_CONFUSION",
-                        "an operation names a capability import this module does not declare",
+                        "an operation names no capability at all",
                         source,
                     ));
                 };
-                // Every request was answered before the run started, so this
-                // cannot be absent for a module of the entry's own set; it can
-                // for a *cross-module* call, whose imports are that module's
-                // and are not this run's. Refusing says so rather than reaching
-                // for the wrong module's authority.
-                let Some(held) = self.imports.get(*import).cloned() else {
-                    return Err(Trap::new(
-                        "RUNTIME_CAPABILITY_DENIED",
-                        alloc::format!("{interface} was requested and not granted"),
-                        source,
-                    ));
-                };
-                // ADR-0056 and ADR-0063: the capabilities first, in the order
-                // the schema declares them, then the operation's values. Each
-                // further one is looked up the same way as the first — by the
-                // import it answers — so the host receives separate authorities
-                // and never one standing in for two.
-                let mut arguments = alloc::vec![held];
-                for further in further_imports {
-                    let Some(also) = self.imports.get(*further).cloned() else {
-                        return Err(Trap::new(
-                            "RUNTIME_CAPABILITY_DENIED",
-                            "an operation names a capability import this run does not hold",
-                            source,
-                        ));
-                    };
-                    arguments.push(also);
-                }
                 for operand in operands {
                     arguments.push(self.operand(module, operand, values, source)?);
                 }

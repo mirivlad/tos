@@ -359,12 +359,13 @@ fn op_bytes(op: &Op) -> usize {
             failure_order: _,
         } => operand_bytes(target) + operands_bytes(operands),
         Op::Capability {
-            import: _,
-            further_imports,
+            capabilities,
             right,
             operands,
         } => {
-            flat::<usize>(further_imports.capacity()) + text_bytes(right) + operands_bytes(operands)
+            flat::<crate::CapabilitySource>(capabilities.capacity())
+                + text_bytes(right)
+                + operands_bytes(operands)
         }
         Op::Resource {
             kind: _,
@@ -625,16 +626,16 @@ mod tests {
                 }
             }
         }));
-        cases.push(("capability right and further imports", |module| {
+        cases.push(("capability right and sources", |module| {
             for instruction in &mut module.functions[0].blocks[0].instructions {
                 if let Op::Capability {
                     right,
-                    further_imports,
+                    capabilities,
                     ..
                 } = &mut instruction.op
                 {
                     right.push_str("-longer");
-                    further_imports.push(0);
+                    capabilities.push(crate::CapabilitySource::Import(0));
                 }
             }
         }));

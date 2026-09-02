@@ -882,19 +882,28 @@ fn write_op(out: &mut Out<'_>, op: &Op) {
             }
         }
         Op::Capability {
-            import,
-            further_imports,
+            capabilities,
             right,
             operands,
         } => {
             out.tag(17);
-            out.count(*import);
-            // Every capability the operation requires is written, in order: an
-            // artifact that required a second one must not encode the same as
-            // one that did not.
-            out.count(further_imports.len());
-            for import in further_imports {
-                out.count(*import);
+            // Every capability the operation requires is written, in order, and
+            // each one says where it came from (ADR-0078): an artifact that
+            // required a second one must not encode the same as one that did
+            // not, and one acting on a runtime value must not encode the same
+            // as one acting on an import.
+            out.count(capabilities.len());
+            for source in capabilities {
+                match source {
+                    CapabilitySource::Import(index) => {
+                        out.tag(0);
+                        out.count(*index);
+                    }
+                    CapabilitySource::Value(operand) => {
+                        out.tag(1);
+                        write_operand(out, operand);
+                    }
+                }
             }
             out.strref(right);
             write_operands(out, operands);

@@ -215,16 +215,34 @@ pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "system.memory.Authority",
         object: ObjectKind::MemoryAuthority,
-        operations: &[Operation {
-            name: "endow_for_launch",
-            capabilities: &[Requirement::held("system.memory.Authority")],
-            parameters: &[
-                Parameter::fixed("system.process.LaunchPlanBuilder"),
-                Parameter::fixed("u64"),
-                Parameter::bounded("string", 64),
-            ],
-            result: "i64",
-        }],
+        operations: &[
+            Operation {
+                name: "endow_for_launch",
+                capabilities: &[Requirement::held("system.memory.Authority")],
+                parameters: &[
+                    Parameter::fixed("system.process.LaunchPlanBuilder"),
+                    Parameter::fixed("u64"),
+                    Parameter::bounded("string", 64),
+                ],
+                result: "i64",
+            },
+            // Reserving out of an authority produces a **child** authority, and
+            // the child is a value of the module's rather than an answer to any
+            // request it made. Everything a supervisor does with a bounded
+            // budget starts here.
+            Operation {
+                name: "capability_attenuate_scoped",
+                capabilities: &[Requirement::of("system.memory.Authority", "spend")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<system.memory.Authority, i64>",
+            },
+            Operation {
+                name: "capability_release",
+                capabilities: &[Requirement::held("system.memory.Authority")],
+                parameters: &[],
+                result: "i64",
+            },
+        ],
     },
     Interface {
         path: "system.process.LaunchPlanBuilder",
@@ -303,6 +321,23 @@ pub const ACCEPTED: &[Interface] = &[
                     Parameter::fixed("u64"),
                     Parameter::bounded("string", 64),
                 ],
+                result: "i64",
+            },
+            // Refinement and release, declared on the interface whose
+            // capabilities a supervisor actually refines: a child's authority,
+            // which it received as a value from a creation. Both are
+            // `CAPABILITY_V1` §4 operations that name no right of their own —
+            // what they need is the capability itself.
+            Operation {
+                name: "capability_attenuate",
+                capabilities: &[Requirement::held("system.process.Control")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<system.process.Control, i64>",
+            },
+            Operation {
+                name: "capability_release",
+                capabilities: &[Requirement::held("system.process.Control")],
+                parameters: &[],
                 result: "i64",
             },
             // **`process_create` stays withdrawn**, and

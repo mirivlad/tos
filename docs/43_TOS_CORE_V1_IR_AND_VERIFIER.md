@@ -120,13 +120,32 @@ The semantic operation families are:
 | arithmetic/comparison/control | typed operands/results, checked/trap behavior, complete branch targets |
 | move/borrow/drop | affine state, borrow exclusivity, bounded cleanup/drop contract |
 | Result/error | declared `Ok`/`Err` construction and `?` propagation edge |
-| capability | declared imported capability, effect/right/interface match, no construction from scalar data |
+| capability | declared capability **source** per position, effect/right/interface match, no construction from scalar data |
 | region/DMA | typed grant, rights, checked range/alignment, transfer/share rule, no physical-address exposure |
 | resource | reserve/release/check fuel, stack, allocation, task, worker, sync, shared, cleanup, recursion/import bounds |
 | async/parallel | scoped spawn, typed captures, affine `Task<T>` token, `TaskResult<T>` await/join result, cancellation request, and scope completion |
 | synchronization | typed mutex/RW/channel/event/barrier/latch operation and guard lifetime |
 | atomic | exact atomic type, legal operation/order, source map and memory-order contract |
 | unsafe/extern | explicit unsafe marker, accepted interface ID, capability/effect/resource contract |
+
+**Every capability position of a capability operation carries an explicit
+source** (ADR-0078, an Architect-approved consistency repair). It is either a
+declared capability import, or a value of the exact nominal capability type that
+an earlier operation produced or a message delivered. This wording replaces
+"declared imported capability", which described the only source the *v1
+representation* had rather than what V1 semantics admit: TOS Core V1 has always
+had capability values and capability-derived authority, and an operation acting
+on one could not be written down. The repair is to the representation; the
+required verifier-visible properties are unchanged and are now required of every
+position rather than of the first alone.
+
+"No construction from scalar data" is unchanged and is what the source
+discriminator makes checkable: an import is an index into a table the module
+declared, a value is an SSA value whose type must independently verify as the
+capability type of the exact interface that position requires, and neither is a
+number a nucleus would accept as authority. A scalar, a constant, a value of a
+nominal record type, or a capability of a different interface in a capability
+position is rejected before execution.
 
 An operation that lowers to a runtime call carries a versioned typed runtime
 contract ID and all semantic operands: capability/effect, ownership transfer,

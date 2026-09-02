@@ -139,10 +139,12 @@ fn the_result_is_a_capability_in_the_type_table() {
         .expect("the entry is in the artifact");
     for instruction in entry.blocks.iter().flat_map(|block| &block.instructions) {
         if let Op::Capability {
-            import, operands, ..
+            capabilities,
+            operands,
+            ..
         } = &instruction.op
         {
-            assert_eq!(*import, 0);
+            assert_eq!(capabilities, &vec![tos_ir::CapabilitySource::Import(0)]);
             assert!(operands.is_empty(), "the operation takes no values");
         }
     }
