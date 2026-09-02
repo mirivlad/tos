@@ -608,6 +608,14 @@ pub enum Unlaunchable {
     /// not written at all (ADR-0055): a child holding some of what it was given
     /// is a child nobody decided on.
     Unendowable,
+    /// The runtime arena asked for is outside the accepted `RuntimeMemoryGrant`
+    /// domain, or its rounding overflows.
+    ///
+    /// Distinct from [`Unlaunchable::OutOfFrames`] on purpose (ADR-0076 §7): a
+    /// size no authority could ever serve and one this authority cannot are
+    /// different facts, and telling the first to retry later would have it
+    /// retry forever.
+    BadGrant,
 }
 
 impl From<PagingRefused> for Unlaunchable {
@@ -762,11 +770,53 @@ pub fn entries() -> u64 {
 /// answers. Asking `frames.available()` here was the second counter ADR-0076 §1
 /// describes — a size that fit the pool at the moment it was measured and could
 /// be gone by the time it was spent.
-fn grant_bytes() -> u64 {
-    let wanted = tos_runtime::region::RUNTIME_GRANT as u64;
-    debug_assert!(wanted <= tos_runtime::region::MAX_GRANT as u64);
-    debug_assert!(wanted >= tos_runtime::region::MIN_GRANT as u64);
+fn grant_bytes(wanted: u64) -> Option<u64> {
+    if wanted < tos_runtime::region::MIN_GRANT as u64
+        || wanted > tos_runtime::region::MAX_GRANT as u64
+    {
+        return None;
+    }
+    // Charged and mapped is the request rounded up to whole frames
+    // (ADR-0076 §7): charging the request while spending a frame is the hidden
+    // overcommit that rule exists to refuse. An overflow is a refusal rather
+    // than a wrap, and the bound above already puts it far out of reach — the
+    // check is here because a domain that depends on another constant staying
+    // small is not a domain.
     wanted
+        .checked_next_multiple_of(FRAME_SIZE)
+        .filter(|rounded| *rounded <= tos_runtime::region::MAX_GRANT as u64)
+}
+
+/// What pays for a process, and how much runtime arena it is to have.
+///
+/// **Both are the caller's, and neither has a default.** A creation core that
+/// could find an authority on its own is a creation core that spends memory
+/// nobody authorised (ADR-0076 §4), and a grant chosen from what happens to be
+/// free is the second counter §1 describes — a size that fitted the pool at the
+/// moment it was measured and may be gone by the time it is spent. So the
+/// funding node is named by whoever asked, and the arena is a **policy** figure
+/// that caller states: `RUNTIME_GRANT` for an ordinary runtime process, and
+/// whatever a build policy says for a special-purpose one.
+///
+/// There is deliberately no `min(requested, available)`, no `what_is_left()`
+/// and no share of a parent. What the authority cannot pay for is `E_LIMIT`,
+/// and what no authority could ever pay for — a size outside the accepted
+/// `RuntimeMemoryGrant` domain — is `E_BAD_ARGUMENT`. Collapsing the two would
+/// tell a caller to retry something that can never work.
+#[derive(Clone, Copy, Debug)]
+pub struct Funding {
+    pub authority: crate::region::AuthorityId,
+    pub grant: u64,
+}
+
+impl Funding {
+    /// The ordinary runtime arena, funded by a named authority.
+    pub fn runtime(authority: crate::region::AuthorityId) -> Funding {
+        Funding {
+            authority,
+            grant: tos_runtime::region::RUNTIME_GRANT as u64,
+        }
+    }
 }
 
 /// The next runnable context after this one, wrapping.
@@ -1939,8 +1989,9 @@ pub unsafe fn admit_borrowed(
 /// the live one.
 // SAFETY: the caller's promise that the image and capsule ranges are what they
 // say makes the mappings below name the bytes the identity record claims.
-pub unsafe fn create(
+pub unsafe fn create_funded(
     entry_index: usize,
+    funding: Funding,
     endowment: &[crate::capability::Endowment],
     parent: u64,
     restart_generation: Option<u64>,
@@ -2019,7 +2070,9 @@ pub unsafe fn create(
     if record_bytes > MAX_RECORD_BYTES {
         return Err(Unlaunchable::TooManyUnits);
     }
-    let grant_length = grant_bytes();
+    let Some(grant_length) = grant_bytes(funding.grant) else {
+        return Err(Unlaunchable::BadGrant);
+    };
     // The whole endowment, checked before the process exists rather than
     // written into it afterwards. ADR-0055 makes a half-endowed child invalid,
     // and until now `endow` ran after `admit`: a refusal on the third entry
@@ -2064,18 +2117,17 @@ pub unsafe fn create(
         record: record_bytes.div_ceil(FRAME_SIZE) * FRAME_SIZE,
     };
 
-    // The footprint is charged before anything is allocated, and to a
-    // `MemoryAuthority` rather than to the pool. This is the funded creation of
-    // ADR-0076 §3 in its internal form: the boot's own root pays, because the
-    // boot is what asked. When operation 19 exists the authority becomes an
-    // argument and this call is what it reaches.
+    // The footprint is charged before anything is allocated, and to the
+    // `MemoryAuthority` **the caller named** (ADR-0076 §3). This function does
+    // not know what the root is and has no way to reach it: the funding is an
+    // argument, and the only path that may pass the boot's own anchor is the
+    // one named [`create_bootstrap`], which receives it from the boot rather
+    // than fetching it. A `funding.unwrap_or(root)` anywhere below would be the
+    // ambient spending ADR-0076 §4 retires, wearing an argument in front of it.
     //
     // Refused here, the machine is untouched — which is the whole reason the
     // price is known this early.
-    let Some(root) = crate::memory::root() else {
-        tos_serial::puts(b"TOS.RUN.PROCESS_REFUSED reason=no-authority asserted_by=nucleus\r\n");
-        return Err(Unlaunchable::OutOfFrames);
-    };
+    let root = funding.authority;
     // SAFETY: single-context nucleus; nothing else holds the tree.
     let tree = unsafe { crate::memory::authority() };
     #[cfg(feature = "test-creation-rollback")]
@@ -2523,6 +2575,41 @@ pub unsafe fn create(
     tos_serial::put_u32_decimal(described);
     tos_serial::puts(b" policy=launcher-constant asserted_by=launcher\r\n");
     Ok(index)
+}
+
+/// The one creation path permitted to spend the boot's own accounting anchor.
+///
+/// **Named, and given the root rather than reaching for it.** ADR-0076 §4
+/// retires ambient spending, and the structural form of that is: no
+/// ring-3-reachable creation path can allocate a user frame without an explicit
+/// `MemoryAuthority` argument. The boot is not ring 3 — it is what makes the
+/// anchor in the first place — but it still passes the node it selected, so that
+/// the anchor appears in exactly one argument list and a reader can find every
+/// use of it by searching for this function.
+///
+/// Everything below it is [`create_funded`], which does not know what a root is.
+///
+/// # Safety
+///
+/// As [`create_funded`].
+// SAFETY: this only chooses the funding; the construction below it is the same.
+pub unsafe fn create_bootstrap(
+    entry_index: usize,
+    root: crate::region::AuthorityId,
+    endowment: &[crate::capability::Endowment],
+    parent: u64,
+    restart_generation: Option<u64>,
+) -> Result<usize, Unlaunchable> {
+    // SAFETY: per this function's contract.
+    unsafe {
+        create_funded(
+            entry_index,
+            Funding::runtime(root),
+            endowment,
+            parent,
+            restart_generation,
+        )
+    }
 }
 
 /// Returns every frame a range of a process's space is mapped to.

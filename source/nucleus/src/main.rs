@@ -903,7 +903,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             injection::arm(case);
             // SAFETY: the template was established above and the nucleus's own
             // address space is the live one.
-            let refused = unsafe { process::create(entry_index, &[], 0, None) }.is_err();
+            let refused =
+                unsafe { process::create_bootstrap(entry_index, root, &[], 0, None) }.is_err();
             injection::disarm();
             let _ = &case;
 
@@ -985,7 +986,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         let held_before = capability::held(0);
 
         // SAFETY: as above.
-        let refused = unsafe { process::create(entry_index, &endowment, 0, None) }.is_err();
+        let refused =
+            unsafe { process::create_bootstrap(entry_index, root, &endowment, 0, None) }.is_err();
 
         // SAFETY: as above.
         let (pool_after, tables_after) =
@@ -1025,12 +1027,22 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // that separation is visible: every process this boot has is built here,
     // out of the same pool and into its own address space, before the scheduler
     // gives the processor to any of them.
+    // **The one place the boot's anchor is spent, and it is named.** Every
+    // process this boot builds is built here, through `create_bootstrap`, which
+    // takes the root as an argument; the creation core below it has no way to
+    // reach an authority nobody handed it. After this closure there is no path
+    // from ring 3 to a user frame that does not present a `MemoryAuthority`.
+    let Some(boot_root) = memory::root() else {
+        tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-root-authority\r\n");
+        mem_fail();
+    };
     let build = |endowment: &[capability::Endowment]| {
         // SAFETY: the template was established immediately above from validated
         // inputs, and the nucleus's own address space is the live one.
         // The boot process is created by the nucleus, not by a supervisor: it
         // has no parent instance, and nobody asserted a restart lineage for it.
-        let built = unsafe { process::create(entry_index, endowment, 0, None) };
+        let built =
+            unsafe { process::create_bootstrap(entry_index, boot_root, endowment, 0, None) };
         // Announced once the process exists and by the slot it occupies, so
         // that every later event about it names the same process this one does.
         // A launch announced before it succeeded would be a claim about a
@@ -1086,11 +1098,22 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // only capability nobody but a launcher can issue: it names a process that
     // does not exist until the instant it is granted, which is why a process
     // cannot obtain one and cannot spawn without having been given one.
+    // **A creator needs two capabilities now** (ADR-0076 §4): authority over a
+    // process to say it may create, and a `MemoryAuthority` to pay for what it
+    // creates. Operation 19 takes both and there is no root to fall back to, so
+    // a constant that granted only the first would be launching a supervisor
+    // that can create nothing.
     #[cfg(feature = "test-supervisor")]
-    let first_endowment = [capability::Endowment::Own {
-        binding: binding(b"self"),
-        rights: tos_launch::RIGHT_CREATE | tos_launch::RIGHT_TERMINATE,
-    }];
+    let first_endowment = [
+        capability::Endowment::Own {
+            binding: binding(b"self"),
+            rights: tos_launch::RIGHT_CREATE | tos_launch::RIGHT_TERMINATE,
+        },
+        capability::Endowment::Remainder {
+            binding: binding(b"memory"),
+            rights: tos_launch::RIGHT_SPEND,
+        },
+    ];
     // Under the deadlock constant one process is given the right to receive on
     // an endpoint **nobody can send to**: no other process exists, and no
     // operation creates an endpoint. So the wait it enters is one nothing in
@@ -1225,35 +1248,59 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // authority over this process, and what it lacks is the one operation the
     // module calls.
     #[cfg(feature = "test-process-control")]
-    let first_endowment = [capability::Endowment::Own {
-        binding: binding(b"control"),
-        rights: tos_launch::RIGHT_CREATE,
-    }];
+    let first_endowment = [
+        capability::Endowment::Own {
+            binding: binding(b"control"),
+            rights: tos_launch::RIGHT_CREATE,
+        },
+        capability::Endowment::Remainder {
+            binding: binding(b"memory"),
+            rights: tos_launch::RIGHT_SPEND,
+        },
+    ];
     #[cfg(feature = "test-process-terminate")]
-    let first_endowment = [capability::Endowment::Own {
-        binding: binding(b"control"),
-        rights: tos_launch::RIGHT_TERMINATE,
-    }];
+    let first_endowment = [
+        capability::Endowment::Own {
+            binding: binding(b"control"),
+            rights: tos_launch::RIGHT_TERMINATE,
+        },
+        capability::Endowment::Remainder {
+            binding: binding(b"memory"),
+            rights: tos_launch::RIGHT_SPEND,
+        },
+    ];
     // Under the launch constant the process holds `create` over itself, under
     // the name a module asks for process authority by. What it does with it is
     // the module's business, and here the module launches something.
     #[cfg(feature = "test-process-launch")]
-    let first_endowment = [capability::Endowment::Own {
-        binding: binding(b"control"),
-        rights: tos_launch::RIGHT_CREATE,
-    }];
+    let first_endowment = [
+        capability::Endowment::Own {
+            binding: binding(b"control"),
+            rights: tos_launch::RIGHT_CREATE,
+        },
+        capability::Endowment::Remainder {
+            binding: binding(b"memory"),
+            rights: tos_launch::RIGHT_SPEND,
+        },
+    ];
     // ADR-0067's supervisor: it creates children, ends them, and collects what
     // the nucleus recorded about how they ended. Three rights, because those are
     // the three operations `SYSTEM_ABI_V1` §5 names over a process — and a
     // supervisor that could not end what it started could not produce the
     // endings it then waits for.
     #[cfg(feature = "test-lifecycle")]
-    let first_endowment = [capability::Endowment::Own {
-        binding: binding(b"control"),
-        rights: tos_launch::RIGHT_CREATE
-            | tos_launch::RIGHT_TERMINATE
-            | tos_launch::RIGHT_WAIT_CHILD,
-    }];
+    let first_endowment = [
+        capability::Endowment::Own {
+            binding: binding(b"control"),
+            rights: tos_launch::RIGHT_CREATE
+                | tos_launch::RIGHT_TERMINATE
+                | tos_launch::RIGHT_WAIT_CHILD,
+        },
+        capability::Endowment::Remainder {
+            binding: binding(b"memory"),
+            rights: tos_launch::RIGHT_SPEND,
+        },
+    ];
     // Under the region-transport constant there are two processes and three
     // capabilities between them. The **worker** is endowed a child of the root
     // memory authority — so it can make regions at all — the right to send on

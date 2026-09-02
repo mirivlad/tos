@@ -42,7 +42,7 @@ OUT="$(cd "$OUT" && pwd)"
 FIXTURE="$ROOT/tests/vectors/supervisor"
 TOOL="$ROOT/target/release/tos-capsule-tool"
 PRODUCTION="$ROOT/target/x86_64-unknown-none/release/tos-nucleus"
-TARGET="$ROOT/target/test-process-launch"
+TARGET="$ROOT/target/test-supervisor-text"
 
 OK=0
 E_BAD_ARGUMENT=-3
@@ -64,7 +64,7 @@ before="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
 # process carrying `create`, under the name a module asks for it. Nothing about
 # the nucleus is specific to a supervisor — what makes this one is the text.
 (cd "$ROOT" && CARGO_TARGET_DIR="$TARGET" cargo build --release \
-    -p tos-nucleus --target x86_64-unknown-none --features test-process-launch)
+    -p tos-nucleus --target x86_64-unknown-none --features test-module-operation)
 after="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
 [ "$before" = "$after" ] || {
     echo "production nucleus changed while building the isolated test artifact" >&2
@@ -97,33 +97,31 @@ grep -q '^TOS\.RUN\.BEGIN .* modules=2$' "$LOG" ||
     fail "the boot did not run a set of two modules"
 
 # --- the supervisor asked for the authority it uses, by name -------------------
-[ "$(count '^TOS\.RUN\.REQUEST binding=control interface=system\.process\.Control object=3 wanted=3$')" = 1 ] ||
-    fail "the supervisor's request for process authority was not answered by name and kind"
+[ "$(count '^TOS\.RUN\.REQUEST binding=endpoint interface=system\.ipc\.Endpoint object=1 wanted=1$')" = 1 ] ||
+    fail "the supervisor's request for endpoint authority was not answered by name and kind"
 
 # --- it looped over the policy's count, not its own ----------------------------
 # Two calls means `policy.count()` returned two, and that number is in the policy
 # module alone. One call, or three, would mean the supervisor was not reading it.
-[ "$(count '^TOS\.RUN\.INTERFACE operation=process_create ')" = 2 ] ||
+[ "$(count '^TOS\.RUN\.INTERFACE operation=endpoint_send ')" = 2 ] ||
     fail "the supervisor did not make one call per component the policy names"
 
-# --- and used the policy's names --------------------------------------------
-# One name this capsule carries and one it does not. The pair is what shows the
-# names came from somewhere: a supervisor with a name of its own would produce
-# two of the same answer.
-[ "$(count "^TOS\\.RUN\\.INTERFACE operation=process_create status=$OK\$")" = 1 ] ||
-    fail "the component the capsule carries was not started"
-[ "$(count "^TOS\\.RUN\\.INTERFACE operation=process_create status=$E_BAD_ARGUMENT\$")" = 1 ] ||
-    fail "the component the capsule does not carry was not refused"
+# --- and used the policy's own figures -----------------------------------------
+# One announcement inside `IPC_V1` §3's inline bound and one past it. The pair is
+# what shows the figures came from somewhere: a supervisor with a number of its
+# own would produce two of the same answer.
+[ "$(count "^TOS\\.RUN\\.INTERFACE operation=endpoint_send status=$OK\$")" = 1 ] ||
+    fail "the announcement inside the inline bound was not accepted"
+[ "$(count "^TOS\\.RUN\\.INTERFACE operation=endpoint_send status=$E_BAD_ARGUMENT\$")" = 1 ] ||
+    fail "the announcement past the inline bound was not refused"
 
 # --- the number it returns is in neither module --------------------------------
 [ "$(count "^TOS\\.RUN\\.COMPLETED value=$EXPECTED_VALUE\$")" = 1 ] ||
-    fail "the supervisor did not report how many of the policy's components started"
+    fail "the supervisor did not report how many of the policy's components it announced"
 
-# --- and the one that started is a process, not a status -----------------------
-[ "$(count '^TOS\.RUN\.PROCESS_EXIT process=1 ')" = 1 ] ||
-    fail "no second process ran, so the successful call started nothing"
-
-echo "SUPERVISOR-TEXT PASS: the thing that starts the services is text"
-echo "  a policy module named two components; the supervisor read its count and its names"
-echo "  one started ($OK) and one was refused ($E_BAD_ARGUMENT); it reported $EXPECTED_VALUE"
-echo "  a number neither module contains, and a process the second one ran as"
+echo "SUPERVISOR-TEXT PASS: the thing that reads the policy and acts on it is text"
+echo "  a policy module named two components; the supervisor read its count and its figures"
+echo "  one was accepted ($OK) and one refused ($E_BAD_ARGUMENT); it reported $EXPECTED_VALUE"
+echo "  a number neither module contains"
+echo "  it can no longer *create* them: operation 8 is retired and no typed bridge"
+echo "  to operation 19 exists yet — see docs/evidence/STAGE3_CLOSURE_DECISIONS.md"

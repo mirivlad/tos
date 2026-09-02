@@ -32,6 +32,16 @@ pub fn count() -> size {
     return 2B;
 }
 
+// How large a request each one is announced with.
+//
+// The second is past `IPC_V1` §3's inline bound and the first is far inside it,
+// so a supervisor that reads this policy gets one accepted announcement and one
+// refused. The numbers are the policy's; the supervisor contains neither.
+pub fn announcement(at: size) -> u64 {
+    let sizes: array<u64, 2> = [8u64, 300u64];
+    return sizes[at];
+}
+
 // The module each one runs, by capsule-relative path.
 //
 // The second names nothing this capsule carries, and that is deliberate: a

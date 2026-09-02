@@ -159,13 +159,22 @@ decided rather than described:
 | Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
 |---|---|---|---|---|
 | `process_terminate` | `system.process.Control` with `terminate` | *(none)* | `i64` | 9 |
-| `process_create` | `system.process.Control` with `create` | `path: string` (≤ 256) | `i64` | 8 |
 
-`process_create` creates a child running the named module **with no endowment**.
-An endowment is a list, and §4.1 admits no list; a child endowed nothing is a
-child that can do nothing, which is a real and useful thing for a supervisor to
-make and is the whole of what this version declares. Endowing one is the next
-version's, and arrives with a typed way to say what a list is rather than before.
+**`process_create` is withdrawn from this schema and nothing replaces it yet.**
+It bound to `SYSTEM_ABI_V1` operation 8, which ADR-0076 §4 retires: it funded a
+process out of the boot's accounting anchor with no caller presenting a
+`MemoryAuthority`. Creation is now operation 19, and this schema cannot carry it
+as it stands — 19 requires **two** capabilities, an explicit runtime grant and an
+endowment, and it returns the child's *capability* in `rdx` rather than only a
+status. §4.1 admits no list and every result declared here is `i64`, so a wrapper
+would hand a textual supervisor a number where a child capability belongs, and no
+way to say what the child is endowed with.
+
+A schema that advertised an operation the ABI answers `E_NOT_SUPPORTED` for would
+be worse than one that says plainly it does not carry this yet. What the typed
+bridge has to look like — typed results that can carry a capability, and a way to
+express a heterogeneous endowment — is a decision rather than an omission, and it
+is written up as one in `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
 
 ## 4.1 What a parameter may be
 

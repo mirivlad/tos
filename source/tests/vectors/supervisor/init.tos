@@ -2,25 +2,35 @@
 //
 // A supervisor, in TOS Core.
 //
-// It reads a policy module and starts what that policy names. Both halves are
+// It reads a policy module and announces what that policy names. Both halves are
 // canonical text: the policy is a module of this capsule, and this is a module
 // of this capsule, and the only privileged thing in the picture is the nucleus
-// that answers `process_create`.
+// that answers the operation.
+//
+// **It used to start them.** `SYSTEM_INTERFACE_V1` §4 declared `process_create`
+// over `SYSTEM_ABI_V1` operation 8, and ADR-0076 §4 retires that operation:
+// creation is funded now, and this schema cannot yet carry an operation that
+// takes two capabilities, an explicit grant and an explicit endowment and
+// returns a capability. So what a textual supervisor can still do is what this
+// does — read a policy it does not contain and reach a real capability contract
+// once per entry — and what it cannot yet do is the creation itself. That gap is
+// a decision rather than an omission, and it is written up as one in
+// `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
 //
 // That is docs/37's Stage 3 identity question answered for the system's own
 // structure, and not just for one operation: "do textual processes exercise real
 // capability/IPC contracts rather than running as decorative scripts around
-// privileged binary services?" The thing that starts the services is text.
+// privileged binary services?" The thing that reads the policy and acts on it is
+// text.
 //
 // It holds exactly one capability, and it is the one it asks for by name. What
-// it may do with it is `create` and nothing else — it cannot terminate what it
-// started, because nobody gave it that, and a supervisor that could is a
-// different decision than this launcher constant made.
+// it may do with it is `send` and nothing else — it cannot receive what it
+// announced, because nobody gave it that.
 
 module system.boot.init version 1.0 profile full;
 
 import system.policy.services as policy;
-import capability system.process.Control as control;
+import capability system.ipc.Endpoint as endpoint;
 
 resource [
     fuel: 65536,
@@ -35,23 +45,24 @@ resource [
     imports: 4
 ]
 
-extern fn process_create(cap: system.process.Control, path: string) -> i64 uses [control];
+extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 uses [endpoint];
 
-// How many of the policy's components started.
+// How many of the policy's components were announced successfully.
 //
-// The loop is over the policy's own count, and each name is the policy's own —
-// this module contains neither. So the number it returns is a fact about two
-// modules together, and a supervisor that had ignored the policy could not
-// produce it.
-pub fn main() -> i64 uses [control] {
-    let mut started: i64 = 0i64;
+// The loop is over the policy's own count and each size is the policy's own —
+// this module contains neither. One size is inside `IPC_V1` §3's inline bound
+// and one is past it, so exactly one announcement is accepted; a supervisor that
+// had ignored the policy could not have looped twice, and one that had faked the
+// calls could not have got two different answers.
+pub fn main() -> i64 uses [endpoint] {
+    let mut announced: i64 = 0i64;
     let mut at: size = 0B;
     while (at < policy.count()) {
-        let status: i64 = process_create(control, policy.name(at));
+        let status: i64 = endpoint_send(endpoint, policy.announcement(at));
         if (status == 0i64) {
-            started = started + 1i64;
+            announced = announced + 1i64;
         }
         at = at + 1B;
     }
-    return started;
+    return announced;
 }

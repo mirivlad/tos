@@ -42,9 +42,12 @@ TEST_TARGET="$ROOT/target/test-supervisor"
 TEST_NUCLEUS="$TEST_TARGET/x86_64-unknown-none/release/tos-nucleus"
 
 # `SYSTEM_ABI_V1` §4 statuses, by the numbers the contract assigns.
+OK=0
 E_NO_CAPABILITY=-1
 E_BAD_ARGUMENT=-3
 E_BAD_HANDLE=-2
+E_LIMIT=-6
+E_NOT_SUPPORTED=-7
 # `RIGHT_CREATE | RIGHT_TERMINATE`, and `OBJECT_PROCESS`.
 RIGHTS=24
 OBJECT=3
@@ -85,9 +88,9 @@ exactly() {
 }
 
 # --- the launcher put the root of the chain in exactly one place -------------
-exactly 1 "^TOS\\.RUN\\.PROCESS_ENDOWED process=0 capabilities=1 policy=launcher-constant asserted_by=launcher\$" \
-    "the launcher did not endow the first process with exactly one capability"
-exactly 1 "^TOS\\.RUN\\.CAPABILITY held=1 handle=0x[0-9a-f]* object=$OBJECT rights=$RIGHTS binding=self\$" \
+exactly 1 "^TOS\\.RUN\\.PROCESS_ENDOWED process=0 capabilities=2 policy=launcher-constant asserted_by=launcher\$" \
+    "the launcher did not endow the first process with authority over itself and a memory authority"
+exactly 1 "^TOS\\.RUN\\.CAPABILITY held=2 handle=0x[0-9a-f]* object=$OBJECT rights=$RIGHTS binding=self\$" \
     "the first process does not hold authority over a process with both rights"
 
 # --- it created a child, and the child was given nothing ---------------------
@@ -103,8 +106,10 @@ exactly 1 "^TOS\\.RUN\\.PROCESS_ENDOWED process=1 capabilities=1 policy=launcher
 exactly 1 "^TOS\\.RUN\\.PROCESS\\.REFUSED reason=endowment-not-held status=$E_BAD_HANDLE\$" \
     "an endowment naming a capability the parent does not hold was not refused"
 # The whole creation failed: a child half-endowed would hold authority nobody
-# decided to give it. Exactly two processes were ever announced.
-exactly 2 '^TOS\.RUN\.PROCESS_ENDOWED ' \
+# decided to give it. Four processes were announced — this one and the three the
+# funding-lifecycle evidence below creates — and the refused creation is not one
+# of them.
+exactly 4 '^TOS\.RUN\.PROCESS_ENDOWED ' \
     "a refused creation left a process behind"
 
 # --- and ended it, attributably ----------------------------------------------
@@ -124,12 +129,55 @@ exactly 1 "^TOS\\.RUN\\.PROCESS\\.REFUSED reason=no-such-module status=$E_BAD_AR
 # could finish, which is what "ended by authority" has to mean.
 exactly 1 '^TOS\.RUN\.COMPLETED value=i32:240$' \
     "the wrong number of runs completed"
-# Both processes gave their memory back.
-exactly 2 '^TOS\.RUN\.PROCESS_RECLAIMED ' \
+# Every process gave its memory back — the supervisor and each of the three
+# children it created.
+exactly 4 '^TOS\.RUN\.PROCESS_RECLAIMED ' \
     "not every process returned its memory"
+
+
+# --- the two retired creation operations answer E_NOT_SUPPORTED ----------------
+# Asked by a process holding the very authority they used to require, so the
+# refusal is about the operation rather than about what the caller holds
+# (ADR-0076 §4, `SYSTEM_ABI_V1` §7). Their numbers stay assigned and are never
+# reused.
+exactly 1 "^TOS\\.RUN\\.PROCESS\\.RETIRED create=$E_NOT_SUPPORTED with_generation=$E_NOT_SUPPORTED\$" \
+    "selectors 8 and 15 did not both answer E_NOT_SUPPORTED"
+
+# --- operation 19 tells its three refusals apart --------------------------------
+# An arena no `RuntimeMemoryGrant` could serve and a non-canonical restart record
+# are malformed calls; an arena a *particular* authority cannot pay for is a
+# bound (ADR-0076 §7). The unaffordable one is funded from a megabyte reserved
+# out of what this process holds, so the same request through the parent
+# authority succeeding a moment earlier is what says the charge follows the
+# authority that was presented.
+exactly 1 "^TOS\\.RUN\\.PROCESS\\.FUNDING reserved=$OK impossible=$E_BAD_ARGUMENT unaffordable=$E_LIMIT malformed=$E_BAD_ARGUMENT distinguished=1\$" \
+    "operation 19 did not distinguish an impossible grant from an unaffordable one"
+
+# --- and the funding lifecycle holds over the whole life of a child ------------
+#   reserved/first   a child funded from a reserved authority, endowed a name
+#                    for that same authority — two names, one budget
+#   still_held       the creation placed a charge and did not consume the
+#                    capability: the creator can still spend through it
+#   second           and cannot fund a second child, because the first one's
+#                    bytes are spent rather than promised
+#   again            the child ends, is retired, and the same request works
+#                    again: the exact charge came back to the node that paid
+#   released/stale   the creator lets go of its last name for that node while a
+#                    child it funded is still running, and the node stops being
+#                    nameable
+#   returned         when that child ends, the bytes travel up the lineage past
+#                    the node nothing names, so the parent authority can reserve
+#                    the same amount again
+#
+# That is the claim in one line: process funding is an allocation held by the
+# accounting, not by the continued existence of the funding capability.
+exactly 1 "^TOS\\.RUN\\.PROCESS\\.LIFECYCLE reserved=$OK first=$OK still_held=$OK second=$E_LIMIT again=$OK released=$OK stale=$E_NO_CAPABILITY returned=$OK\$" \
+    "the funding lifecycle did not hold across a child's whole life"
 
 echo "SUPERVISOR PASS: a process created a process and ended it, on authority it was given"
 echo "  the launcher endowed one process with authority over itself; nothing else could have"
 echo "  the child was given only what its parent chose of what its parent held"
 echo "  an endowment naming a capability the parent lacks refused the whole creation"
 echo "  the handle over the dead child refused afterwards; an unknown module name was refused"
+echo "  selectors 8 and 15 answered $E_NOT_SUPPORTED; 19 told its three refusals apart"
+echo "  and the funding charge outlived the capability that placed it, then came back"

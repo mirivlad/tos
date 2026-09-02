@@ -67,11 +67,17 @@ const CAPABILITY_ATTENUATE: u64 = 5;
 const CAPABILITY_RELEASE: u64 = 6;
 const ENDPOINT_CALL: u64 = 3;
 const ENDPOINT_REPLY: u64 = 4;
+/// Retired, and named only so that a process can ask for them and be refused
+/// (`SYSTEM_ABI_V1` §7, ADR-0076 §4). Neither is called except by the evidence
+/// that they answer `E_NOT_SUPPORTED`.
 const PROCESS_CREATE: u64 = 8;
 #[cfg(feature = "test-lifecycle")]
 const PROCESS_WAIT_CHILD: u64 = 14;
-#[cfg(feature = "test-lifecycle")]
+#[cfg(not(feature = "test-lifecycle"))]
 const PROCESS_CREATE_WITH_GENERATION: u64 = 15;
+/// The one creation this ABI version has: two capabilities, an explicit runtime
+/// grant and an explicit endowment (ADR-0076 §3).
+const PROCESS_CREATE_FUNDED: u64 = 19;
 const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
@@ -222,6 +228,82 @@ unsafe fn call_transferring(
     // SAFETY: per this function's contract.
     unsafe { call5(operation, first, second, 0, transferred, regions) }
 }
+
+/// Makes one funded creation (`SYSTEM_ABI_V1` §5, operation 19).
+///
+/// **Everything the operation reads is written here, including the zeros.** The
+/// module name is already at `CREATE_MODULE` when this is called; what this puts
+/// in place is the optional restart generation, in the record the contract fixes
+/// for it. A caller that left that record as it found it would be asking the
+/// nucleus to read whatever the last operation left in the argument region —
+/// which is the mistake the canonical encoding exists to make detectable.
+///
+/// `generation` is `None` for a creation whose caller asserts no restart
+/// lineage, which is what the retired operation 8 meant, and `Some(n)` for what
+/// 15 meant. They are different records rather than different numbers, so a
+/// child of the first has no generation at all rather than a zero nobody
+/// claimed.
+///
+/// SAFETY: `process` names a process capability this process holds with
+/// `create`, `memory` a memory authority with `spend`, and the argument region
+/// holds the module name and the endowment entries the counts declare.
+// SAFETY: the caller's promise about the two handles and the argument region is
+// what makes this an ordinary call rather than a guess.
+#[allow(clippy::too_many_arguments)]
+unsafe fn create_funded(
+    arguments: u64,
+    process: u64,
+    memory: u64,
+    name_length: u64,
+    endowed: u64,
+    own_rights: u64,
+    grant: u64,
+    generation: Option<u64>,
+) -> (i64, u64) {
+    let record = tos_launch::CreateFundedRecord {
+        restart_generation: generation.unwrap_or(0),
+        flags: if generation.is_some() {
+            tos_launch::HAS_RESTART_GENERATION
+        } else {
+            0
+        },
+    };
+    // SAFETY: the record is at a fixed offset in this process's own argument
+    // region, which the launcher mapped writable.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<tos_launch::CreateFundedRecord>(
+            (arguments + tos_launch::CREATE_FUNDED_RECORD) as usize,
+        )
+        .write(record)
+    };
+    let status: i64;
+    let value: u64;
+    // SAFETY: operation 19 takes the process authority in `rdi`, the memory
+    // authority in `rsi`, the module name's length in `rdx`, the endowment count
+    // in `r10`, the child's rights over itself in `r8` and the runtime grant it
+    // asks for in `r9`.
+    unsafe {
+        core::arch::asm!(
+            "syscall",
+            inlateout("rax") PROCESS_CREATE_FUNDED => status,
+            in("rdi") process,
+            in("rsi") memory,
+            inlateout("rdx") name_length => value,
+            in("r10") endowed,
+            in("r8") own_rights,
+            in("r9") grant,
+            out("rcx") _,
+            out("r11") _,
+            options(nostack),
+        )
+    };
+    (status, value)
+}
+
+/// The runtime arena an ordinary process is given, as the reference platform
+/// fixes it (ADR-0069). Named by the creator rather than chosen by the nucleus:
+/// operation 19 has no default and will not pick one.
+const RUNTIME_GRANT: u64 = 54 * 1024 * 1024;
 
 /// Writes a handle into the argument region's transfer table.
 ///
@@ -478,11 +560,7 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
             launch.capability_count as usize,
         )
     };
-    let mut endowment = Endowment {
-        held,
-        arguments: launch.arguments_base,
-        report,
-    };
+    let mut endowment = Endowment { held, report };
     let run = match prepare_from_source(&request, &mut trace, RESIDENCY) {
         Ok(Preparation::Ready(mut prepared)) => {
             trace.entering(PipelineStage::Execute);
@@ -631,10 +709,6 @@ enum Shape {
     Nothing,
     /// One `u64`, in the register `SYSTEM_ABI_V1` §5 assigns the operation.
     Length,
-    /// One `text`, at the argument region's fixed offset for a module name, with
-    /// its length in the register. The bytes go where the ABI already reads
-    /// them; the module named a value and never an address.
-    ModuleName,
 }
 
 const PERFORMED: &[(&str, &str, u64, Shape)] = &[
@@ -669,12 +743,6 @@ const PERFORMED: &[(&str, &str, u64, Shape)] = &[
         Shape::Nothing,
     ),
     (
-        "system.process.Control",
-        "process_create",
-        PROCESS_CREATE,
-        Shape::ModuleName,
-    ),
-    (
         "system.ipc.Reply",
         "endpoint_reply_receive",
         ENDPOINT_REPLY_RECEIVE,
@@ -691,9 +759,6 @@ const PERFORMED: &[(&str, &str, u64, Shape)] = &[
 /// before this process ran, and this reports what that decision was.
 struct Endowment<'a> {
     held: &'a [LaunchCapability],
-    /// Where a value too big for a register goes: the region the launcher
-    /// mapped and the nucleus reads, at the offsets the ABI fixes (ADR-0058).
-    arguments: u64,
     /// Its own copy, not a borrow: see [`Report`]. The trace holds one too, and
     /// both write to the one region the launcher named.
     report: Report,
@@ -809,48 +874,6 @@ impl System for Endowment<'_> {
                 // endpoint in `rsi`, the answer's length in `rdx`, flags in
                 // `r10`; both handles were granted to this process.
                 unsafe { call4(*operation, held.get(), endpoint.get(), *bytes as u64, 0) }.0
-            }
-            Shape::ModuleName => {
-                let Some(Value::Text(name)) = call.arguments.get(1) else {
-                    return Err(Trap::new(
-                        "RUNTIME_TYPE_CONFUSION",
-                        "an operation that takes a module name was reached without one",
-                        call.source,
-                    ));
-                };
-                // The declared maximum, refused **before the call is made**
-                // (`SYSTEM_INTERFACE_V1` §4.1). The bound is the schema's, read
-                // from the schema, so a module is refused against the contract
-                // it was written to rather than against a number in this image.
-                let declared = tos_pipeline::interfaces::interface(call.interface)
-                    .and_then(|interface| interface.operation(call.operation))
-                    .and_then(|operation| operation.parameters.first())
-                    .and_then(|parameter| parameter.maximum);
-                if declared.is_some_and(|maximum| name.len() as u64 > maximum) {
-                    self.report.line(&alloc::format!(
-                        "TOS.RUN.INTERFACE operation={} status={E_BAD_ARGUMENT} refused=too-long",
-                        call.operation
-                    ));
-                    return Ok(Value::Int(IntKind::I64, E_BAD_ARGUMENT.into()));
-                }
-                for (offset, byte) in name.as_bytes().iter().enumerate() {
-                    // SAFETY: `arguments_base` names a writable mapping the
-                    // launcher made; the offset is the one ADR-0058 fixed for a
-                    // module name and the length is inside the bound just
-                    // checked.
-                    unsafe {
-                        core::ptr::with_exposed_provenance_mut::<u8>(
-                            (self.arguments + tos_launch::CREATE_MODULE) as usize,
-                        )
-                        .add(offset)
-                        .write(*byte)
-                    };
-                }
-                // SAFETY: `process_create` names the process a child is created
-                // under, the module name's length, how many capabilities the
-                // child is endowed with — none, which is all §4 declares — and
-                // the rights it holds over itself, also none.
-                unsafe { call4(*operation, held.get(), name.len() as u64, 0, 0) }.0
             }
         };
         // What a module asked the system for and what the system answered, on
@@ -1885,8 +1908,16 @@ fn authority(launch: &Launch, report: &mut Report) {
         ));
     }
     if first.object == tos_launch::OBJECT_PROCESS {
+        // **Creation is funded, so a creator needs two capabilities.** The
+        // authority over a process says it may create; the memory authority
+        // pays for what it creates. A process holding only the first can create
+        // nothing, which is the whole of ADR-0076 §4 seen from ring 3.
+        let memory = held
+            .iter()
+            .find(|capability| capability.object == tos_launch::OBJECT_MEMORY_AUTHORITY)
+            .map_or(0, |capability| capability.handle);
         #[cfg(not(feature = "test-lifecycle"))]
-        supervise(launch, report, first.handle);
+        supervise(launch, report, first.handle, memory, first.rights);
         // ADR-0067's arrangement has three roles and one image. Which one this
         // process is, is the name its authority was bound to (ADR-0061): the
         // supervisor was given "control", the middle parent "parent", and the
@@ -1894,12 +1925,12 @@ fn authority(launch: &Launch, report: &mut Report) {
         // somebody granted; a role read from a slot index would be a guess.
         #[cfg(feature = "test-lifecycle")]
         match named(first) {
-            "parent" => lifecycle_parent(launch, report, first.handle),
+            "parent" => lifecycle_parent(launch, report, first.handle, memory),
             "watch" => lifecycle_watcher(launch, report, first.handle),
             #[cfg(feature = "test-lifecycle-delegate")]
-            _ => lifecycle_arrangement(launch, report, first.handle),
+            _ => lifecycle_arrangement(launch, report, first.handle, memory),
             #[cfg(not(feature = "test-lifecycle-delegate"))]
-            _ => lifecycle(launch, report, first.handle),
+            _ => lifecycle(launch, report, first.handle, memory),
         }
     }
 
@@ -3024,7 +3055,12 @@ fn deputy(launch: &Launch, report: &mut Report, own: u64) {
 /// receiver left — ADR-0067 §10 — and the nucleus says so on the log rather
 /// than letting a slot become eternal.
 #[cfg(feature = "test-lifecycle")]
-fn lifecycle_parent(launch: &Launch, report: &mut Report, handle: u64) {
+fn lifecycle_parent(
+    launch: &Launch,
+    report: &mut Report,
+    handle: u64,
+    #[cfg_attr(not(feature = "test-lifecycle-collector"), allow(unused_variables))] memory: u64,
+) {
     // Two scenarios need a middle parent and they need opposite things of it.
     //
     // The cancellation one needs it childless: an ending delivered to the
@@ -3040,7 +3076,8 @@ fn lifecycle_parent(launch: &Launch, report: &mut Report, handle: u64) {
         // ends on its own while that wait is blocked.
         settle();
         settle();
-        let (created, _) = create_child_endowed(handle, module.len() as u64, 0, 0);
+        let (created, _) =
+            create_child_endowed(launch, handle, memory, module.len() as u64, 0, 0, None);
         report.line(&alloc::format!("TOS.RUN.LIFECYCLE.PARENT child={created}"));
     }
     #[cfg(not(feature = "test-lifecycle-collector"))]
@@ -3101,7 +3138,7 @@ fn write_module_name(launch: &Launch, module: &[u8]) {
 /// processes at once, and each memory grant takes the largest contiguous run
 /// there is.
 #[cfg(feature = "test-lifecycle-delegate")]
-fn lifecycle_arrangement(launch: &Launch, report: &mut Report, handle: u64) {
+fn lifecycle_arrangement(launch: &Launch, report: &mut Report, handle: u64, memory: u64) {
     let module = b"system/boot/init.tos";
     write_module_name(launch, module);
     let name_length = module.len() as u64;
@@ -3109,13 +3146,22 @@ fn lifecycle_arrangement(launch: &Launch, report: &mut Report, handle: u64) {
     // The middle parent, told by its binding which role it is, and given the
     // three rights a parent needs over itself.
     write_self_binding(launch, b"parent");
-    let (parent_status, parent_handle) = create_child_with_rights(
+    // It is given one capability of its own: a name for the **same** memory
+    // authority this process is funding out of. Nothing is inherited — a child
+    // funded from an authority receives no name for it unless its creator says
+    // so — and this creator says so, because a parent that cannot fund cannot
+    // create.
+    write_endowment(launch, memory, tos_launch::RIGHT_SPEND, b"memory");
+    let (parent_status, parent_handle) = create_child_endowed(
+        launch,
         handle,
+        memory,
         name_length,
-        LIFECYCLE_FIRST_GENERATION,
+        1,
         u64::from(
             tos_launch::RIGHT_CREATE | tos_launch::RIGHT_TERMINATE | tos_launch::RIGHT_WAIT_CHILD,
         ),
+        Some(LIFECYCLE_FIRST_GENERATION),
     );
     let parent_instance = created_instance(launch);
     settle();
@@ -3135,7 +3181,15 @@ fn lifecycle_arrangement(launch: &Launch, report: &mut Report, handle: u64) {
     write_endowment(launch, watch_handle, tos_launch::RIGHT_WAIT_CHILD, b"watch");
     // No rights over itself: this child is an observer, and an observer that
     // could end things would be something else.
-    let (watcher_status, _) = create_child_endowed(handle, name_length, 1, 0);
+    let (watcher_status, _) = create_child_endowed(
+        launch,
+        handle,
+        memory,
+        name_length,
+        1,
+        0,
+        Some(LIFECYCLE_FIRST_GENERATION),
+    );
     report.line(&alloc::format!(
         "TOS.RUN.LIFECYCLE.ARRANGED parent={parent_status}/{parent_instance} \
 attenuate={attenuated} watcher={watcher_status}"
@@ -3204,7 +3258,6 @@ fn write_self_binding(launch: &Launch, name: &[u8]) {
 
 /// Writes one endowment entry: a capability this process holds, the rights the
 /// child is to have over it, and the name the child knows it by.
-#[cfg(feature = "test-lifecycle-delegate")]
 fn write_endowment(launch: &Launch, handle: u64, rights: u32, name: &[u8]) {
     let mut binding = [0u8; tos_launch::MAX_BINDING as usize];
     binding[..name.len()].copy_from_slice(name);
@@ -3230,7 +3283,7 @@ fn write_endowment(launch: &Launch, handle: u64, rights: u32, name: &[u8]) {
 /// exist at a time — which is what makes the exhaustion phase a real bound
 /// rather than a simulated one.
 #[cfg(all(feature = "test-lifecycle", not(feature = "test-lifecycle-delegate")))]
-fn lifecycle(launch: &Launch, report: &mut Report, handle: u64) {
+fn lifecycle(launch: &Launch, report: &mut Report, handle: u64, memory: u64) {
     let module = b"system/boot/init.tos";
     for (offset, byte) in module.iter().enumerate() {
         // SAFETY: `arguments_base` names a writable mapping the launcher made,
@@ -3251,11 +3304,21 @@ fn lifecycle(launch: &Launch, report: &mut Report, handle: u64) {
     // process, and only then is anything collected. Neither record may be lost
     // and their order is the order they ended in, not the order of the slots
     // they happened to occupy.
-    let (first_status, first_handle) =
-        create_child(handle, name_length, LIFECYCLE_FIRST_GENERATION);
+    let (first_status, first_handle) = create_child(
+        launch,
+        handle,
+        memory,
+        name_length,
+        LIFECYCLE_FIRST_GENERATION,
+    );
     let first_instance = created_instance(launch);
-    let (second_status, second_handle) =
-        create_child(handle, name_length, LIFECYCLE_SECOND_GENERATION);
+    let (second_status, second_handle) = create_child(
+        launch,
+        handle,
+        memory,
+        name_length,
+        LIFECYCLE_SECOND_GENERATION,
+    );
     let second_instance = created_instance(launch);
     report.line(&alloc::format!(
         "TOS.RUN.LIFECYCLE.CREATED first={first_status}/{first_instance} \
@@ -3292,8 +3355,13 @@ second={second_status}/{second_instance}"
     // takes that slot is a different process, and the handle this supervisor
     // still holds over the ended child must refuse rather than name the new
     // occupant (ADR-0067 §7).
-    let (reused_status, reused_handle) =
-        create_child(handle, name_length, LIFECYCLE_THIRD_GENERATION);
+    let (reused_status, reused_handle) = create_child(
+        launch,
+        handle,
+        memory,
+        name_length,
+        LIFECYCLE_THIRD_GENERATION,
+    );
     let reused_instance = created_instance(launch);
     // SAFETY: the handle named a process that has ended; what it names now is
     // the question this asks.
@@ -3340,19 +3408,43 @@ second={second_status}/{second_instance}"
     // says which bound it hit rather than leaving `E_LIMIT` to be guessed at.
     let mut filled = 0;
     for _ in 0..3 {
-        let (status, _) = create_child(handle, name_length, LIFECYCLE_FIRST_GENERATION);
+        let (status, _) = create_child(
+            launch,
+            handle,
+            memory,
+            name_length,
+            LIFECYCLE_FIRST_GENERATION,
+        );
         if status != OK {
             break;
         }
         filled += 1;
         settle();
     }
-    let (full, _) = create_child(handle, name_length, LIFECYCLE_FIRST_GENERATION);
+    let (full, _) = create_child(
+        launch,
+        handle,
+        memory,
+        name_length,
+        LIFECYCLE_FIRST_GENERATION,
+    );
     // One collection frees one slot, and exactly one: the other two records
     // still hold theirs.
     let collected = wait_child(launch, handle, true);
-    let (after_one, _) = create_child(handle, name_length, LIFECYCLE_FIRST_GENERATION);
-    let (full_again, _) = create_child(handle, name_length, LIFECYCLE_FIRST_GENERATION);
+    let (after_one, _) = create_child(
+        launch,
+        handle,
+        memory,
+        name_length,
+        LIFECYCLE_FIRST_GENERATION,
+    );
+    let (full_again, _) = create_child(
+        launch,
+        handle,
+        memory,
+        name_length,
+        LIFECYCLE_FIRST_GENERATION,
+    );
     report.line(&alloc::format!(
         "TOS.RUN.LIFECYCLE.EXHAUSTED filled={filled} full={full} collected={} \
 kind={} after_one={after_one} full_again={full_again}",
@@ -3362,10 +3454,12 @@ kind={} after_one={after_one} full_again={full_again}",
     settle();
     drain(launch, handle);
 
-    // Phase 4 — a legacy child, which asserts no generation and ends itself.
+    // Phase 4 — a child whose creator asserts **no** restart generation, and
+    // which ends itself.
     //
-    // One child answers two questions. It comes from `process_create` (8),
-    // which carries no generation at all, so its record must report absence
+    // One child answers two questions. Its `CreateFundedRecord` carries the
+    // flag clear, which is what the retired operation 8 meant and what
+    // operation 19 has to keep expressible: the record must report absence
     // rather than a zero its caller never asserted. And it is left to reach its
     // own `process_exit` instead of being ended, so the same record carries the
     // other ending kind and the self-reported status that goes with it — the
@@ -3374,10 +3468,7 @@ kind={} after_one={after_one} full_again={full_again}",
     // Four children is what a boot affords: each grant takes the largest
     // contiguous run there is, so the runs get smaller and the fourth is the
     // last that fits. The nucleus says which bound it hit, in its own log.
-    // SAFETY: `process_create` names the process the child is created under,
-    // the module name's length, an endowment count and the child's rights over
-    // itself. It takes no generation, which is the point.
-    let (legacy_status, _) = unsafe { call4(PROCESS_CREATE, handle, name_length, 0, 0) };
+    let (legacy_status, _) = create_child_endowed(launch, handle, memory, name_length, 0, 0, None);
     settle();
     let legacy = wait_child(launch, handle, true);
     report.line(&alloc::format!(
@@ -3415,7 +3506,6 @@ status_present={} generation_present={} generation={}",
 /// (`time_monotonic`, operation 11), which counts timer interrupts: ticks
 /// rather than iterations, because an iteration count is a guess about a
 /// machine's speed and a tick is not.
-#[cfg(feature = "test-lifecycle")]
 fn settle() {
     let start = monotonic().unwrap_or(0);
     loop {
@@ -3436,7 +3526,6 @@ fn settle() {
 /// to reach its own exit, so this is that with room. Too small a number does
 /// not make the test flaky in the dangerous direction — it makes the next
 /// creation fail for want of memory the previous child still holds, loudly.
-#[cfg(feature = "test-lifecycle")]
 const LIFECYCLE_SETTLE_TICKS: u64 = 150;
 
 /// Collects every ending already recorded, without blocking for one that is not.
@@ -3460,72 +3549,50 @@ const LIFECYCLE_SECOND_GENERATION: u64 = 9;
 #[cfg(all(feature = "test-lifecycle", not(feature = "test-lifecycle-delegate")))]
 const LIFECYCLE_THIRD_GENERATION: u64 = 11;
 
-/// `process_create_with_generation`: a child, and the generation its creator
-/// asserts for it.
-#[cfg(all(feature = "test-lifecycle", not(feature = "test-lifecycle-delegate")))]
-fn create_child(handle: u64, name_length: u64, generation: u64) -> (i64, u64) {
-    let status: i64;
-    let value: u64;
-    // SAFETY: operation 15 takes the authority in `rdi`, the module name's
-    // length in `rsi`, the endowment count in `rdx`, the child's rights over
-    // itself in `r10` and the asserted generation in `r8`.
-    unsafe {
-        core::arch::asm!(
-            "syscall",
-            inlateout("rax") PROCESS_CREATE_WITH_GENERATION => status,
-            in("rdi") handle,
-            in("rsi") name_length,
-            inlateout("rdx") 0u64 => value,
-            in("r10") 0u64,
-            in("r8") generation,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
-        )
-    };
-    (status, value)
-}
-
-/// `process_create_with_generation`, with the rights the child holds over
-/// itself and the number of endowment entries spelled out.
-#[cfg(feature = "test-lifecycle-delegate")]
+/// A child, funded from an authority this process holds, with the generation
+/// its creator asserts for it (operation 19).
+///
+/// The three shapes the retired operations needed are one call now: whether a
+/// restart lineage is asserted is a **record** rather than a second operation
+/// number, and the endowment count and the child's rights over itself were
+/// always arguments.
+#[cfg(feature = "test-lifecycle")]
 fn create_child_endowed(
+    launch: &Launch,
     handle: u64,
+    memory: u64,
     name_length: u64,
     endowed: u64,
     own_rights: u64,
+    generation: Option<u64>,
 ) -> (i64, u64) {
-    let status: i64;
-    let value: u64;
-    // SAFETY: operation 15 takes the authority in `rdi`, the module name's
-    // length in `rsi`, the endowment count in `rdx`, the child's rights over
-    // itself in `r10` and the asserted generation in `r8`.
+    // SAFETY: `handle` names a process capability this process holds with
+    // `create`, `memory` a memory authority with `spend`, and the module name
+    // and endowment entries are already in the argument region.
     unsafe {
-        core::arch::asm!(
-            "syscall",
-            inlateout("rax") PROCESS_CREATE_WITH_GENERATION => status,
-            in("rdi") handle,
-            in("rsi") name_length,
-            inlateout("rdx") endowed => value,
-            in("r10") own_rights,
-            in("r8") LIFECYCLE_FIRST_GENERATION,
-            out("rcx") _,
-            out("r11") _,
-            options(nostack),
+        create_funded(
+            launch.arguments_base,
+            handle,
+            memory,
+            name_length,
+            endowed,
+            own_rights,
+            RUNTIME_GRANT,
+            generation,
         )
-    };
-    (status, value)
+    }
 }
 
-/// The same, with no endowment and the child's own rights chosen.
-#[cfg(feature = "test-lifecycle-delegate")]
-fn create_child_with_rights(
+/// The same, with no endowment and no rights over itself.
+#[cfg(all(feature = "test-lifecycle", not(feature = "test-lifecycle-delegate")))]
+fn create_child(
+    launch: &Launch,
     handle: u64,
+    memory: u64,
     name_length: u64,
-    _generation: u64,
-    own_rights: u64,
+    generation: u64,
 ) -> (i64, u64) {
-    create_child_endowed(handle, name_length, 0, own_rights)
+    create_child_endowed(launch, handle, memory, name_length, 0, 0, Some(generation))
 }
 
 /// The instance id operation 15 left in this process's argument region.
@@ -3601,7 +3668,7 @@ status_present={} ended_by={}/{} generation={}/{} order={}",
 /// it. It is not ended before it can run — see the note below — which makes the
 /// evidence stronger rather than weaker: what was ended had been on the
 /// processor.
-fn supervise(launch: &Launch, report: &mut Report, handle: u64) {
+fn supervise(launch: &Launch, report: &mut Report, handle: u64, memory: u64, rights: u32) {
     // The module by **name**, written where `SYSTEM_ABI_V1` §5 says a name goes.
     // An ordinal would have fitted a register and named a position in a list
     // nobody published; two boots whose capsules differ would give the same
@@ -3639,10 +3706,21 @@ fn supervise(launch: &Launch, report: &mut Report, handle: u64) {
             binding: [0; tos_launch::MAX_BINDING as usize],
         })
     };
-    // SAFETY: `process_create` names the process a child is created under, the
-    // module name's length, the endowment count and the rights the child is to
-    // hold over itself.
-    let (forged, _) = unsafe { call4(PROCESS_CREATE, handle, module.len() as u64, 1, 0) };
+    // SAFETY: operation 19 names the process a child is created under, the
+    // memory authority that pays for it, the module name's length, the
+    // endowment count and the rights the child is to hold over itself.
+    let (forged, _) = unsafe {
+        create_funded(
+            launch.arguments_base,
+            handle,
+            memory,
+            module.len() as u64,
+            1,
+            0,
+            RUNTIME_GRANT,
+            None,
+        )
+    };
     report.line(&alloc::format!(
         "TOS.RUN.PROCESS.REFUSED reason=endowment-not-held status={forged}"
     ));
@@ -3652,12 +3730,15 @@ fn supervise(launch: &Launch, report: &mut Report, handle: u64) {
     // attenuation at the moment of creation rather than after it.
     // SAFETY: as above, with no endowment entries.
     let (created, child) = unsafe {
-        call4(
-            PROCESS_CREATE,
+        create_funded(
+            launch.arguments_base,
             handle,
+            memory,
             module.len() as u64,
             0,
             u64::from(tos_launch::RIGHT_TERMINATE),
+            RUNTIME_GRANT,
+            None,
         )
     };
     if created == OK {
@@ -3707,9 +3788,264 @@ fn supervise(launch: &Launch, report: &mut Report, handle: u64) {
         };
     }
     // SAFETY: as above, with a name the set does not hold.
-    let (no_module, _) = unsafe { call4(PROCESS_CREATE, handle, absent.len() as u64, 0, 0) };
+    let (no_module, _) = unsafe {
+        create_funded(
+            launch.arguments_base,
+            handle,
+            memory,
+            absent.len() as u64,
+            0,
+            0,
+            RUNTIME_GRANT,
+            None,
+        )
+    };
     report.line(&alloc::format!(
         "TOS.RUN.PROCESS.REFUSED reason=no-such-module status={no_module}"
+    ));
+
+    // **The two retired operations, asked for and refused** (ADR-0076 §4,
+    // `SYSTEM_ABI_V1` §7). Both funded a process out of the boot's accounting
+    // anchor with nobody presenting a `MemoryAuthority`; both now answer
+    // `E_NOT_SUPPORTED` forever, and their numbers are never reused. Asked with
+    // the same authority that just created a process, so the refusal is about
+    // the operation and not about what this process holds.
+    // SAFETY: an unassigned-to-this-version operation number; nothing is read.
+    let (legacy_create, _) = unsafe { call4(PROCESS_CREATE, handle, module.len() as u64, 0, 0) };
+    // SAFETY: as above.
+    let (legacy_generation, _) = unsafe {
+        call4(
+            PROCESS_CREATE_WITH_GENERATION,
+            handle,
+            module.len() as u64,
+            0,
+            0,
+        )
+    };
+    report.line(&alloc::format!(
+        "TOS.RUN.PROCESS.RETIRED create={legacy_create} with_generation={legacy_generation}"
+    ));
+
+    // The module name again: the probe above deliberately left a name the set
+    // does not carry where the next call would read one.
+    for (offset, byte) in module.iter().enumerate() {
+        // SAFETY: as above.
+        unsafe {
+            core::ptr::with_exposed_provenance_mut::<u8>(
+                (launch.arguments_base + tos_launch::CREATE_MODULE) as usize,
+            )
+            .add(offset)
+            .write(*byte)
+        };
+    }
+
+    // **A size no authority could ever serve, told apart from one this
+    // authority cannot** (ADR-0076 §7). A caller answered `E_LIMIT` for the
+    // first would retry it forever, and one answered `E_BAD_ARGUMENT` for the
+    // second would give up on something that will work when memory frees.
+    // SAFETY: as above, with a grant far past the accepted `MAX_GRANT`.
+    let (impossible, _) = unsafe {
+        create_funded(
+            launch.arguments_base,
+            handle,
+            memory,
+            module.len() as u64,
+            0,
+            0,
+            u64::MAX / 2,
+            None,
+        )
+    };
+    // An ordinary arena, funded from an authority that cannot pay for it: a
+    // megabyte reserved out of what this process holds. The size is legal and
+    // the node is real; what is missing is the memory. **This is also what says
+    // the charge goes to the authority that was presented** — the same request
+    // through the parent authority succeeded a moment ago.
+    // SAFETY: `capability_attenuate_scoped` names an authority this process
+    // holds and the bytes to reserve out of it.
+    let (reserved, small) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, memory, 1024 * 1024) };
+    // SAFETY: as above, funded from the small child.
+    let (unaffordable, _) = unsafe {
+        create_funded(
+            launch.arguments_base,
+            handle,
+            small,
+            module.len() as u64,
+            0,
+            0,
+            RUNTIME_GRANT,
+            None,
+        )
+    };
+    let _ = reserved;
+    // A restart record that is not canonical: absence spelled with a generation
+    // left in the field. One byte pattern per meaning, or none.
+    // SAFETY: the record is at a fixed offset in this process's own argument
+    // region.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<tos_launch::CreateFundedRecord>(
+            (launch.arguments_base + tos_launch::CREATE_FUNDED_RECORD) as usize,
+        )
+        .write(tos_launch::CreateFundedRecord {
+            restart_generation: 7,
+            flags: 0,
+        })
+    };
+    // SAFETY: as above; the record is deliberately malformed and `create_funded`
+    // is bypassed so that it stays that way.
+    let (malformed, _) = unsafe {
+        call4(
+            PROCESS_CREATE_FUNDED,
+            handle,
+            memory,
+            module.len() as u64,
+            0,
+        )
+    };
+    // Composed so that no single answer produces it: a system that refused all
+    // three the same way gives 0, and only the declared trio — a domain
+    // refusal, a bound refusal, a domain refusal — gives this.
+    let distinguished = u64::from(
+        impossible == E_BAD_ARGUMENT && malformed == E_BAD_ARGUMENT && unaffordable != impossible,
+    );
+    report.line(&alloc::format!(
+        "TOS.RUN.PROCESS.FUNDING reserved={reserved} impossible={impossible} \
+unaffordable={unaffordable} malformed={malformed} distinguished={distinguished}"
+    ));
+
+    // **The rest needs both halves of what a supervisor is.** These probes
+    // create children and end them again, so a grant carrying `create` and not
+    // `terminate` — which is a real and deliberate endowment this image is also
+    // launched under — would leave processes running that nothing could stop.
+    // A boot with no memory authority cannot create at all, and says so by not
+    // trying.
+    if memory != 0 && rights & tos_launch::RIGHT_TERMINATE != 0 {
+        funding_lifecycle(launch, report, handle, memory, module);
+    }
+}
+
+/// What a funded creation does to the authority that paid for it, over the whole
+/// life of the child (ADR-0076 §3).
+///
+/// **A creation is an allocation held by the accounting, not by the capability.**
+/// Three claims, and each is a way that could go wrong:
+///
+///   A. the creator **keeps** its funding authority. A creation places a charge;
+///      it does not consume the handle, and it grants the child no name for it —
+///      nothing is inherited.
+///   B. the charge outlives the capability. A creator that releases its last
+///      name for the funding node while a child it paid for is still running has
+///      not freed anything; when that child ends, the bytes travel back up the
+///      lineage that funded it and the node settles.
+///   C. a child *may* be given a name for the same node, by its creator naming
+///      that capability in the endowment like any other — two names for one
+///      budget (ADR-0076 §2b), never a second reservation.
+///
+/// The authority is sized to hold exactly one child, so "the charge came back"
+/// is observable as "the same request works again" rather than as a number this
+/// process would have to be told.
+fn funding_lifecycle(
+    launch: &Launch,
+    report: &mut Report,
+    handle: u64,
+    memory: u64,
+    module: &[u8],
+) {
+    let name_length = module.len() as u64;
+    // Room for one child and not two: `RUNTIME_GRANT` plus the rest of a
+    // process's footprint, with a little over. Sized so that "the charge came
+    // back" is observable as "the same request works again" rather than as a
+    // number this process would have to be told.
+    const ONE_CHILD: u64 = 60 * 1024 * 1024;
+    // SAFETY: `capability_attenuate_scoped` names an authority this process
+    // holds and the bytes to reserve out of it.
+    let (reserved, funding) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, memory, ONE_CHILD) };
+
+    // C — the child is given a name for the **same** node, because its creator
+    // names that capability in the endowment like any other. Two names, one
+    // budget; not a second reservation, and not something the child inherited.
+    write_endowment(launch, funding, tos_launch::RIGHT_SPEND, b"memory");
+    // SAFETY: both handles are this process's, and the endowment entry names
+    // the capability just written.
+    let (first, first_child) = unsafe {
+        create_funded(
+            launch.arguments_base,
+            handle,
+            funding,
+            name_length,
+            1,
+            0,
+            RUNTIME_GRANT,
+            None,
+        )
+    };
+
+    // A — the creator keeps what it paid with. The capability is untouched by
+    // the creation: still resolvable, still spendable.
+    // SAFETY: as above.
+    let (still_held, alias) = unsafe { call(CAPABILITY_ATTENUATE, funding, u64::from(u32::MAX)) };
+    // Released again at once, so that the release below really is the creator's
+    // *last* name for the node.
+    // SAFETY: as above.
+    unsafe { call(CAPABILITY_RELEASE, alias, 0) };
+    // And a second child does not fit: the first one's bytes are spent, not
+    // merely promised.
+    // SAFETY: as above.
+    let (second, _) = unsafe {
+        create_funded(
+            launch.arguments_base,
+            handle,
+            funding,
+            name_length,
+            0,
+            0,
+            RUNTIME_GRANT,
+            None,
+        )
+    };
+    // The child ends, and the scheduler retires it. Only then are the bytes
+    // back — physical first, accounting second.
+    // SAFETY: `process_terminate` names the child this process created.
+    unsafe { call(PROCESS_TERMINATE, first_child, 0) };
+    settle();
+    // SAFETY: as above.
+    let (again, again_child) = unsafe {
+        create_funded(
+            launch.arguments_base,
+            handle,
+            funding,
+            name_length,
+            0,
+            0,
+            RUNTIME_GRANT,
+            None,
+        )
+    };
+
+    // B — the creator lets go of the funding node while the child it paid for
+    // is still running. Nothing comes back yet: a live child's memory is not
+    // free budget, and the accounting node outlives the capability that named
+    // it precisely so that the bytes have somewhere to return to.
+    // SAFETY: as above.
+    let (released, _) = unsafe { call(CAPABILITY_RELEASE, funding, 0) };
+    // SAFETY: as above; the handle named a node nothing names any more.
+    let (stale, _) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, funding, 4096) };
+    // SAFETY: as above.
+    unsafe { call(PROCESS_TERMINATE, again_child, 0) };
+    settle();
+    // And now it is back — past the node no capability names, up the lineage
+    // that funded it, so the parent authority can reserve the same amount
+    // again. That is the whole of "process funding is an allocation held by the
+    // accounting rather than by the continued existence of a handle".
+    // SAFETY: as above.
+    let (returned, back) = unsafe { call(CAPABILITY_ATTENUATE_SCOPED, memory, ONE_CHILD) };
+    // SAFETY: as above; nothing else needs it, and a reservation nobody spends
+    // should not outlive the evidence it was made for.
+    unsafe { call(CAPABILITY_RELEASE, back, 0) };
+
+    report.line(&alloc::format!(
+        "TOS.RUN.PROCESS.LIFECYCLE reserved={reserved} first={first} still_held={still_held} \
+second={second} again={again} released={released} stale={stale} returned={returned}"
     ));
 }
 
