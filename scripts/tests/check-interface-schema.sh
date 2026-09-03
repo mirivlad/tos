@@ -12,6 +12,12 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 DOC="$ROOT/source/interfaces/system/SYSTEM_INTERFACE_V1.md"
+# The second accepted schema (ADR-0079). `SYSTEM_INTERFACE_V1` §2 says a schema
+# is a class of document rather than one document, and the frontend keeps one
+# table for all of them — a checker asks "is this path an interface?" once. So
+# this gate reads both and compares the union: a second document with a gate of
+# its own would be a second answer to the same question.
+PLATFORM="$ROOT/source/interfaces/platform/PLATFORM_INTERFACE_V1.md"
 TABLE="$ROOT/source/crates/tos-core/src/interfaces.rs"
 HOST="$ROOT/source/runtime-image/src/main.rs"
 
@@ -22,13 +28,32 @@ fail() {
 
 # Every operation the document declares, from the tables of section 4: the first
 # cell of a row whose last cell is a `SYSTEM_ABI_V1` operation number.
-declared=$(sed -n '/^### /,/^## 4.1/p' "$DOC" |
+declared=$( { sed -n '/^### /,/^## 4.1/p' "$DOC"; sed -n '/^### /,/^## 4.1/p' "$PLATFORM"; } |
     sed -n 's/^| `\([a-z_]*\)` |.*| [0-9]* |$/\1/p' | sort -u)
 # Every operation the table names. Scoped to `ACCEPTED`, because §4.2's records
 # are declared in the same file and their fields carry a `name` too — a field
 # is not an operation, and a gate that could not tell them apart would report
 # every record field as an operation the document forgot.
-operations_in_table=$(sed -n '/^pub const ACCEPTED/,/^];$/p' "$TABLE")
+# Normalised so that a requirement is one line whatever `cargo fmt` decided.
+# A long interface path pushes `Requirement::of("...", "...")` onto three lines,
+# and a gate that read only the one-line form would silently stop checking the
+# requirements that happened to be long — which is every platform one.
+operations_in_table=$(sed -n '/^pub const ACCEPTED/,/^];$/p' "$TABLE" |
+    awk '{
+        line = $0
+        if (pending != "") {
+            sub(/^ +/, "", line)
+            pending = pending line
+            if (index(line, ")") == 0) next
+            gsub(/, *\)/, ")", pending)
+            gsub(/","/, "\", \"", pending)
+            print pending
+            pending = ""
+            next
+        }
+        if (line ~ /Requirement::(of|held)\($/) { pending = line; next }
+        print line
+    }')
 tabled=$(printf '%s\n' "$operations_in_table" | sed -n 's/^ *name: "\([a-z_]*\)",$/\1/p' | sort -u)
 # And the declared maximum of every variable-length parameter (§4.1). The bound
 # is part of the contract, not the host's choice, so a document and a table that
@@ -37,7 +62,7 @@ tabled=$(printf '%s\n' "$operations_in_table" | sed -n 's/^ *name: "\([a-z_]*\)"
 #
 # Read per row rather than per cell: an operation may take more than one bounded
 # value, and a check that only saw the first would let the second drift.
-bounds_in_doc=$(sed -n '/^### /,/^## 4.2/p' "$DOC" |
+bounds_in_doc=$( { sed -n '/^### /,/^## 4.2/p' "$DOC"; sed -n '/^### /,/^## 4.1/p' "$PLATFORM"; } |
     awk -F'|' '/^\| `[a-z_]+` \|/ {
         name = $2; gsub(/[` ]/, "", name);
         line = $4;
@@ -71,8 +96,8 @@ bounds_in_table=$(printf '%s\n' "$operations_in_table" |
 # Every interface path the table names must appear in the document, so a table
 # cannot admit an interface nobody accepted.
 while IFS= read -r path; do
-    grep -Fq "\`$path\`" "$DOC" ||
-        fail "the frontend's table names an interface the document does not: $path"
+    grep -Fq "\`$path\`" "$DOC" || grep -Fq "\`$path\`" "$PLATFORM" ||
+        fail "the frontend's table names an interface no accepted document does: $path"
 done < <(sed -n 's/^ *path: "\([a-z.A-Z]*\)",$/\1/p' "$TABLE")
 
 # --- and §4.2's records, field by field, in order -----------------------------
@@ -116,7 +141,8 @@ ending_fields=$(sed -n '/path: "system.process.ChildEnding"/,/^    },$/p' "$TABL
 # agreed on which interfaces exist while disagreeing on what kind of object each
 # one names would let a grant of the wrong kind through the startup check that
 # exists to refuse it.
-kinds_in_doc=$(sed -n 's/^| `\(system\.[a-zA-Z.]*\)` | \([a-z ]*\) |$/\1 \2/p' "$DOC" | sort)
+kinds_in_doc=$( { sed -n 's/^| `\(system\.[a-zA-Z.]*\)` | \([a-z ]*\) |$/\1 \2/p' "$DOC";
+    sed -n 's/^| `\(platform\.[a-zA-Z.]*\)` | \([a-z ]*\) |$/\1 \2/p' "$PLATFORM"; } | sort)
 kinds_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
     -e 's/^ *path: "\([a-z.A-Z]*\)",$/\1/p' \
     -e 's/^ *object: ObjectKind::\([A-Za-z]*\),$/\1/p' |
@@ -125,7 +151,8 @@ kinds_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
         -e 's/Region$/region/' -e 's/InterfacePublication$/interface publication/' \
         -e 's/MemoryAuthority$/memory authority/' \
         -e 's/LaunchPlanBuilder$/launch plan builder/' \
-        -e 's/LaunchPlan$/launch plan/' |
+        -e 's/LaunchPlan$/launch plan/' \
+        -e 's/PciBus$/pci bus/' -e 's/PciFunction$/pci function/' |
     tr '\t' ' ' | sort)
 
 [ -n "$kinds_in_doc" ] || fail "section 4 declares no interface-to-object-kind pairing"
@@ -144,7 +171,7 @@ kinds_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
 # declared, and `docs/42` §5 keeps the language and the ABI separately
 # versioned. So the host that performs them carries the numbers, and this holds
 # them against the document that assigns them.
-abi_in_doc=$(sed -n '/^### /,/^## 4.1/p' "$DOC" |
+abi_in_doc=$( { sed -n '/^### /,/^## 4.1/p' "$DOC"; sed -n '/^### /,/^## 4.1/p' "$PLATFORM"; } |
     sed -n 's/^| `\([a-z_]*\)` |.*| \([0-9]*\) |$/\1 \2/p' | sort)
 #
 # The table is a list of `Performed` records, and what is wanted from each is the
@@ -183,7 +210,8 @@ rm -f "${TMPDIR:-/tmp}/tos-abi-host.$$"
 # (ADR-0063). The right is half of a requirement: a document and a table that
 # agreed on the interface while disagreeing on the right would let an operation
 # be declared reachable with authority the system will refuse it for.
-requirements_in_doc=$(sed -n 's/^| `\([a-z_]*\)` | \(`system[^|]*\) | .* | [0-9]* |$/\1 \2/p' "$DOC" |
+requirements_in_doc=$( { sed -n 's/^| `\([a-z_]*\)` | \(`system[^|]*\) | .* | [0-9]* |$/\1 \2/p' "$DOC";
+    sed -n 's/^| `\([a-z_]*\)` | \(`platform[^|]*\) | .* | [0-9]* |$/\1 \2/p' "$PLATFORM"; } |
     sed -e 's/`//g' -e 's/ with / /g' -e 's/, then / + /' | sort)
 requirements_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
     -e 's/^ *name: "\([a-z_]*\)",$/OP \1/p' \

@@ -330,6 +330,14 @@ qemu_process_launch() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/process-launch.sh \
         target/preflight-qemu/process-launch)
 }
+# Stage 4A (ADR-0079): a textual module holds the platform root and takes an
+# exclusive assignment of a real PCI function. `full-only` because it needs the
+# Stage 4 device profile, which is an extension of the ADR-0040 base platform
+# rather than part of it.
+qemu_pci_discovery() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/pci-discovery.sh \
+        target/preflight-qemu/pci-discovery)
+}
 qemu_supervisor_text() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/supervisor-text.sh \
         target/preflight-qemu/supervisor-text)
@@ -496,6 +504,7 @@ gate qemu       full-only "QEMU runtime-obtained authority"             qemu_run
 gate qemu       full-only "QEMU textual service supervision"            qemu_supervision
 gate qemu       full-only "QEMU T1 build topology"                     qemu_build_topology
 gate qemu       full-only "QEMU a textual supervisor starts services"  qemu_supervisor_text
+gate qemu       full-only "QEMU textual PCI function claim"            qemu_pci_discovery
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0026 performance conformance"   qemu_performance_conformance

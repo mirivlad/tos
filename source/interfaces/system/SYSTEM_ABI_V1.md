@@ -33,6 +33,39 @@ transport, and the small amount of time a scheduler needs. Filesystems, devices,
 repositories, networks and consoles are services reached through IPC, not
 operations added here. **If an operation could be a service, it is a service.**
 
+### 2.1 Hardware mechanism primitives (ADR-0079 §6)
+
+The sentence above is about **services**, and Stage 4 is where the difference
+between a device service and a device *access primitive* had to be stated
+rather than inferred. Device discovery policy, matching, class behaviour and
+device services remain textual user-space services reached through IPC. Beneath
+them there are operations no service can perform, because performing them at
+CPL 3 is what the isolation boundary exists to prevent.
+
+The nucleus **MAY** expose a narrowly capability-gated hardware mechanism
+primitive when the operation:
+
+1. cannot safely be performed directly at CPL 3 under the accepted isolation
+   boundary;
+2. operates only on an exact object and scope already named by a capability the
+   caller holds;
+3. does not choose devices, drivers, matching policy or service behaviour;
+4. does not grant authority the caller did not already obtain through a
+   normative origin;
+5. is the minimum mechanism required for a textual service to perform the real
+   work.
+
+**A rule rather than a precedent.** It is stated generally so that the next
+device class is judged against five conditions instead of against "PCI got
+one". An operation failing any of them is a service, and §2's sentence decides
+it exactly as before.
+
+**What this does not admit.** It is not a door for device policy: the nucleus
+knows how to perform a privileged configuration transaction and does not know
+which device is a VirtIO block device or what should drive it. Operations 24–26
+are this version's only instances, and each is checked against the five
+conditions in its own row.
+
 ## 3. Entry
 
 | Property | Value |
@@ -151,6 +184,53 @@ are marked and are exactly those a process can only apply to itself.
 | 22 | `launch_plan_endow` | **two**: `rdi` = **the capability being delegated**, at no particular right, `rsi` = a launch-plan builder | adds one entry to the builder (ADR-0077 §3). `rdx` = the binding's length, whose bytes are at `LAUNCH_ENDOW_BINDING` in the argument region; `r10` = the rights asked for, intersected with what the caller holds over `rdi`. The plan takes a reference of its own on what the entry names, so a creator may release its own handle afterwards and the plan goes on holding it. `E_NO_CAPABILITY` for a region, a reply, another plan, or a sealed plan where a builder belongs; `E_LIMIT` when the plan is full |
 
 | 23 | `launch_plan_seal` | **two**: `rdi` = process-authority capability with `create`, `rsi` = a launch-plan builder | **consuming**: the entries become final, the handle presented goes stale, and `rdx` returns a new handle to the same object as a sealed plan (ADR-0077 §4). The same capability slot at an advanced generation, exactly as `region_freeze` does to a region — the object is one object throughout, and no reference is taken or dropped |
+
+| 24 | `pci_function_claim` | PCI bus capability with `claim` | claims the function `rsi`:`rdx`:`r10` (bus, device, function) **within that capability's segment and bus range**, and returns a handle to the assignment in `rdx` (ADR-0079 §10). The segment is the capability's and is never a caller argument. `E_BAD_ARGUMENT` for a bus, device or function outside its architectural range; `E_NO_CAPABILITY` for one outside the capability's scope; `E_LIMIT` when the function is already assigned or the assignment table is full |
+
+| 25 | `pci_config_read` | PCI function capability with `config_read` | reads `rdx` bytes of conventional configuration space at offset `rsi` of the function **that capability names**, and returns the value in `rdx`. `E_BAD_ARGUMENT` for a width that is not 1, 2 or 4, an offset not a multiple of the width, or an access reaching past byte 256 |
+
+| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25 |
+
+**Operations 24–26 are hardware mechanism primitives under §2.1, and each meets
+the five conditions.** They cannot be performed at CPL 3: the configuration
+address and data ports are unreachable from ring 3 and stay so — no IOPL, no
+process-visible I/O bitmap, no mapping. They act only on the object a presented
+capability names. They choose nothing: which functions exist is the hardware's
+answer, which one is claimed is the caller's, and which driver should own it is
+a question this contract cannot express. They produce authority only from the
+bus authority presented, bounded by its scope. And they are the minimum: without
+them no textual service can read a device at all.
+
+**The BDF is in the object, never in an argument to 25 or 26.** A configuration
+operation names an offset and a width and nothing else, so a holder of a
+function capability cannot address a different function — not by policy but
+because there is no parameter for one. Operation 24 is where a bus and a device
+number are named, and the authority to name them is the bus capability itself.
+
+**Assignment is exclusive; the capability is not affine.** At most one live
+assignment exists for a function under one root, so a second claim is refused
+while the first lives. Several capabilities may name one assignment — operation
+5 makes another name, which is what a later split between a manager and a driver
+needs — so the exclusivity is a property of the claim and not of the capability
+model.
+
+**The assignment carries a generation.** Releasing a function and claiming the
+same one again produces a new assignment at a new generation, so a handle kept
+across that gap resolves to nothing rather than to the new occupant. Three
+lifetimes stay separate and none implies another: the device exists whether or
+not anything names it; the assignment lasts from a claim to the loss of its last
+name; a handle is one process's name for it.
+
+**A BAR is data.** Operation 25 over offsets `0x10`–`0x27` returns the numbers
+the device reports. No operation of this contract accepts one, so a BAR value is
+not a mapping, not physical memory access and not presentable where authority is
+required. Address-space mapping of device memory is not in this contract version.
+
+**Conventional configuration space only** — the first 256 bytes. That is what
+this version's mechanism reaches and what it therefore promises; an offset past
+it is `E_BAD_ARGUMENT` rather than a truncated or wrapped access. Extended
+configuration space needs a different mechanism and would be a later version of
+this contract, and the capability model above does not change when it arrives.
 
 **The third capability must be the shared form, and an immutable affine region
 is refused.** A target receives a window of its own and its creator keeps one,
@@ -374,6 +454,15 @@ addition; what changed is that its row now states the semantics ADR-0037 §4 and
 Operations 21, 22 and 23 (ADR-0077) are additions of the same kind. They were
 decided by that ADR, which fixed the object, its two states and its lifetime and
 left the numbers and the register shape to be carried here.
+
+Operations 24, 25 and 26 (ADR-0079) are additions of the same kind, and are the
+first admitted under §2.1. That ADR fixed the authority model — a platform root,
+an exclusive assignment, separate read and write rights, a BDF held in the object
+— and left the names, the numbers and the register shape to be carried here.
+**Three operations rather than two**: deriving a function from a bus is its own
+operation and is deliberately not folded into `capability_attenuate_scoped` (16),
+which is a memory reservation with accounting semantics that a PCI function must
+not inherit by sharing a number with it.
 
 **Operations 19 and 20 changed shape in the same revision that added them a
 plan, and that is a change to unreleased operations rather than a break.**

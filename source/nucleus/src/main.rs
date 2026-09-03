@@ -150,6 +150,12 @@ mod launch;
 mod memory;
 mod msr;
 mod paging;
+/// The PCI configuration mechanism (ADR-0079, `SYSTEM_ABI_V1` §2.1).
+///
+/// Mechanism and no policy: it performs a configuration transaction against the
+/// function a capability names, and it cannot enumerate, match a driver or tell
+/// one device class from another.
+mod pci;
 mod plan;
 mod process;
 /// Memory authority and region objects (ADR-0075). Not reachable from ring 3
@@ -1150,6 +1156,41 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             scope: 0,
         }]
     };
+    // Under the Stage 4A constant the boot process is given the **root PCI bus
+    // authority** and nothing else (ADR-0079 §5, §9).
+    //
+    // **This is a mint, not a derivation**, and it is the only place in the
+    // system that performs one. Every other endowment names something the
+    // launcher already had — an endpoint it made, the process it is about to
+    // create, a remainder of the memory it was given. A bus is none of those: it
+    // exists because the machine has one, so its authority cannot come from
+    // attenuating anything, and `pci::endow_root` is reachable from here and
+    // from no dispatcher. A process cannot ask for one.
+    //
+    // The scope is the whole segment the accepted mechanism reaches, and it is
+    // **named in the record rather than implied**, because a root whose extent
+    // nobody stated is a root nobody decided.
+    //
+    // What this constant deliberately does *not* grant is a function. Which
+    // device is worth claiming is policy, and a launcher that picked one would
+    // be the nucleus choosing a device — the arrangement ADR-0079 §5 names to be
+    // rejected. The holder claims what it decides to claim, out of the scope it
+    // was given.
+    #[cfg(feature = "test-pci-discovery")]
+    let first_endowment = {
+        let Some(bus) = pci::endow_root(0, 0, 255) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-pci-root\r\n");
+            mem_fail();
+        };
+        tos_serial::puts(b"TOS.RUN.PCI_ROOT segment=0 first_bus=0 last_bus=255 rights=claim");
+        tos_serial::puts(b" asserted_by=launcher\r\n");
+        [capability::Endowment::Existing {
+            binding: binding(b"bus"),
+            object: capability::Object::PciBus(bus),
+            rights: tos_launch::RIGHT_CLAIM,
+            scope: 0,
+        }]
+    };
     // Under the request/reply constant the first process may **receive** on an
     // endpoint and the second may **call** on it. Neither can do the other's
     // half, and the right to answer a call is not in either endowment: it is
@@ -1536,6 +1577,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-runtime-authority",
         feature = "test-supervision",
         feature = "test-build-topology",
+        feature = "test-pci-discovery",
         feature = "test-lifecycle"
     )))]
     // **Nothing, because the module asks for nothing.** ADR-0055 makes an
@@ -1562,6 +1604,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-runtime-authority",
         feature = "test-supervision",
         feature = "test-build-topology",
+        feature = "test-pci-discovery",
         feature = "test-bundle-launch"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];

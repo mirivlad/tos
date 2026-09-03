@@ -36,7 +36,28 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   блокирующих, 4 вынесены за Stage 3 принятым решением; P2 observer
   qualification и P2 абсолютная задержка IPC `p99 = 39.147 мкс` при бюджете
   `<= 200 мкс`. Текст ниже описывает Stage 3 как он строился.
-- **Stage 4A открыт и остановлен на архитектурном STOP** (2026-09-03).
+- **Stage 4A — половина построена и зелёная, вторая половина упёрлась во второй
+  STOP** (2026-09-04). ADR-0079 **Accepted** (Vladimir Tomashevskiy,
+  2026-09-03). Построено и закрыто гейтом *QEMU textual PCI function claim*:
+  platform root `platform.pci.Bus` (минтится launcher'ом, scope в записи),
+  вывод `PciFunction` через операцию 24 с эксклюзивной привязкой и generation,
+  механизм в ring 0 на CAM (`0xCF8`/`0xCFC`, из CPL 3 недостижим),
+  `PLATFORM_INTERFACE_V1`, операции `SYSTEM_ABI_V1` 24–26, §2.1 — общее правило
+  для hardware mechanism primitive. Канонический текстовый модуль держит root,
+  забирает две реальные функции машины (00:04.0 и 00:05.0) и получает три
+  разных отказа, которые сам решить не может: `TOS.RUN.COMPLETED value=i64:15`.
+  **Не достигнуто:** чтение configuration space из текста. Операции есть и
+  нуклеус их выполняет, но модуль не может их *объявить*:
+  `SYSTEM_INTERFACE_V1` §4.1 требует, чтобы `uses` называл `import capability`
+  модуля, а импорт `platform.pci.FunctionConfig` некому ответить на старте —
+  единственный законный производитель это операция 24, которая выполняется
+  позже. Это ровно тот вопрос, который ADR-0078 §6 оставил открытым.
+  Поверхность решения — `docs/evidence/STAGE4A_HARDWARE_BOUNDARY.md` §7.
+  Побочная находка: `LAUNCH_VERSION` и `BUNDLE_LAUNCH_VERSION` — одно
+  пространство дискриминатора; версия 5 конфликтовала, поэтому `LAUNCH_VERSION`
+  теперь 6.
+- **Stage 4A: первый архитектурный STOP** (2026-09-03), снятый решением
+  Архитектора того же дня.
   Раунд — hardware boundary и PCI discovery; цель была узкой: канонический
   текстовый процесс читает configuration space реального `virtio-blk-pci` под
   capability. Железо не тронуто, ни один контракт не изменён, ни один gate

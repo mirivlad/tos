@@ -36,7 +36,20 @@
 /// the endowment (ADR-0055) and that slot; version 1 carried memory and text and
 /// no authority at all, which is the state in which no process could ever hold a
 /// capability.
-pub const LAUNCH_VERSION: u32 = 4;
+/// Version 6 adds the two platform object kinds and the three rights over them
+/// (ADR-0079). A record naming a PCI bus or function means nothing to a nucleus
+/// that has no such kind, and a nucleus that has them would misread an older
+/// record's rights mask as carrying them — so the version moves, and an image
+/// and a nucleus that disagree do not run together.
+///
+/// **It skips 5, and the reason is a trap worth naming.** This constant and
+/// [`BUNDLE_LAUNCH_VERSION`] are **one** discriminator space, not two: the
+/// runtime entry reads the first word of the record and decides *which shape it
+/// is holding* from that word alone. Two shapes sharing a number is not a
+/// version disagreement that fails closed — it is an ordinary launch record read
+/// as a bundle, which is a set of pointers into whatever happened to be laid out
+/// there. A number here must therefore be free in **both** sequences.
+pub const LAUNCH_VERSION: u32 = 6;
 
 /// What kind of object a capability names (`CAPABILITY_V1` §3).
 ///
@@ -71,6 +84,24 @@ pub const OBJECT_MEMORY_AUTHORITY: u32 = 6;
 /// would be holding a decision at a stage nothing in its rights distinguishes.
 pub const OBJECT_LAUNCH_PLAN_BUILDER: u32 = 7;
 pub const OBJECT_LAUNCH_PLAN: u32 = 8;
+/// A PCI bus scope: a segment, and the bus numbers within it whose functions
+/// the holder may address (ADR-0079 §5, `PLATFORM_INTERFACE_V1` §4).
+///
+/// **A platform root, and the first object kind that is not made by anything.**
+/// Every other kind here is produced by an operation or by a launcher out of
+/// something it already held. A bus exists because the machine has one, so
+/// authority over it can only originate at the boot/platform boundary — which
+/// is the third origin class `CAPABILITY_V1` §2 admits, and is why no operation
+/// of any contract returns one.
+pub const OBJECT_PCI_BUS: u32 = 9;
+/// One **assignment** of one PCI function (ADR-0079 §10).
+///
+/// Not the device, and not the handle: the device is there whether or not
+/// anything names it, and a handle is one process's name for the assignment.
+/// What this kind names is the middle fact — a claim, exclusive under its root
+/// for as long as it lives, carrying a generation so that releasing a function
+/// and claiming it again does not revive a handle to the first claim.
+pub const OBJECT_PCI_FUNCTION: u32 = 10;
 
 /// The one right a reply capability has: `endpoint_reply` (4) is the only
 /// operation that names one.
@@ -127,6 +158,32 @@ pub const RIGHT_SPEND: u32 = 1 << 7;
 pub const RIGHT_READ: u32 = 1 << 8;
 pub const RIGHT_WRITE: u32 = 1 << 9;
 pub const RIGHT_SHARE: u32 = 1 << 10;
+
+/// The one right a PCI bus capability has: to turn its scope into an assignment
+/// of one function (`SYSTEM_ABI_V1` operation 24).
+///
+/// **Possession is the authority to address; this right is the authority to
+/// claim.** They are separated for the same reason a memory authority's name is
+/// separate from its `spend`: a holder without this keeps the bus reachable and
+/// may delegate or release it, and cannot take a function out of it. That is
+/// what lets a supervisor hold the root and hand a service the ability to use
+/// it, rather than the two being one indivisible thing.
+pub const RIGHT_CLAIM: u32 = 1 << 11;
+
+/// What a holder may do to an assigned PCI function's configuration space
+/// (ADR-0079 §10, `PLATFORM_INTERFACE_V1` §4).
+///
+/// **Separate, and the separation is the point.** A capability carrying
+/// `config_read` alone refuses operation 26, so "may look at this device" and
+/// "may change what it does" are two grants rather than one — which is the
+/// attenuation a bus manager performs before handing a function to something
+/// that should only inspect it.
+///
+/// There is deliberately **no reset right**. No operation performs a reset, and
+/// a right with no operation would be a contract describing a system that does
+/// not exist.
+pub const RIGHT_CONFIG_READ: u32 = 1 << 12;
+pub const RIGHT_CONFIG_WRITE: u32 = 1 << 13;
 
 /// One capability the launcher endowed this process with, described to the
 /// process that holds it.
@@ -257,6 +314,10 @@ pub struct Launch {
 /// holding. Both shapes may exist in one boot — an op19 source bootstrap and an
 /// op20 target — which is ordinary versioned compatibility rather than
 /// ambiguity.
+///
+/// **One space with [`LAUNCH_VERSION`], and every future number must be free in
+/// both.** A shape is chosen by this word before anything else is read, so a
+/// collision does not fail closed — it makes one record be read as the other.
 pub const BUNDLE_LAUNCH_VERSION: u32 = 5;
 
 /// What a nucleus hands a process launched from a bundle (ADR-0073, ADR-0076).

@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `1e7c351fc1a2680ba39b667a69eb535a377e660cc1929ae81aca89c8402f1e84`\
+Source-manifest SHA-256: `17769c7f2f206cef3af0e92bd37f017bb7f471e564e86eb76c0e2c5316519b12`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2548,6 +2548,39 @@ transport, and the small amount of time a scheduler needs. Filesystems, devices,
 repositories, networks and consoles are services reached through IPC, not
 operations added here. **If an operation could be a service, it is a service.**
 
+### 2.1 Hardware mechanism primitives (ADR-0079 §6)
+
+The sentence above is about **services**, and Stage 4 is where the difference
+between a device service and a device *access primitive* had to be stated
+rather than inferred. Device discovery policy, matching, class behaviour and
+device services remain textual user-space services reached through IPC. Beneath
+them there are operations no service can perform, because performing them at
+CPL 3 is what the isolation boundary exists to prevent.
+
+The nucleus **MAY** expose a narrowly capability-gated hardware mechanism
+primitive when the operation:
+
+1. cannot safely be performed directly at CPL 3 under the accepted isolation
+   boundary;
+2. operates only on an exact object and scope already named by a capability the
+   caller holds;
+3. does not choose devices, drivers, matching policy or service behaviour;
+4. does not grant authority the caller did not already obtain through a
+   normative origin;
+5. is the minimum mechanism required for a textual service to perform the real
+   work.
+
+**A rule rather than a precedent.** It is stated generally so that the next
+device class is judged against five conditions instead of against "PCI got
+one". An operation failing any of them is a service, and §2's sentence decides
+it exactly as before.
+
+**What this does not admit.** It is not a door for device policy: the nucleus
+knows how to perform a privileged configuration transaction and does not know
+which device is a VirtIO block device or what should drive it. Operations 24–26
+are this version's only instances, and each is checked against the five
+conditions in its own row.
+
 ## 3. Entry
 
 | Property | Value |
@@ -2666,6 +2699,53 @@ are marked and are exactly those a process can only apply to itself.
 | 22 | `launch_plan_endow` | **two**: `rdi` = **the capability being delegated**, at no particular right, `rsi` = a launch-plan builder | adds one entry to the builder (ADR-0077 §3). `rdx` = the binding's length, whose bytes are at `LAUNCH_ENDOW_BINDING` in the argument region; `r10` = the rights asked for, intersected with what the caller holds over `rdi`. The plan takes a reference of its own on what the entry names, so a creator may release its own handle afterwards and the plan goes on holding it. `E_NO_CAPABILITY` for a region, a reply, another plan, or a sealed plan where a builder belongs; `E_LIMIT` when the plan is full |
 
 | 23 | `launch_plan_seal` | **two**: `rdi` = process-authority capability with `create`, `rsi` = a launch-plan builder | **consuming**: the entries become final, the handle presented goes stale, and `rdx` returns a new handle to the same object as a sealed plan (ADR-0077 §4). The same capability slot at an advanced generation, exactly as `region_freeze` does to a region — the object is one object throughout, and no reference is taken or dropped |
+
+| 24 | `pci_function_claim` | PCI bus capability with `claim` | claims the function `rsi`:`rdx`:`r10` (bus, device, function) **within that capability's segment and bus range**, and returns a handle to the assignment in `rdx` (ADR-0079 §10). The segment is the capability's and is never a caller argument. `E_BAD_ARGUMENT` for a bus, device or function outside its architectural range; `E_NO_CAPABILITY` for one outside the capability's scope; `E_LIMIT` when the function is already assigned or the assignment table is full |
+
+| 25 | `pci_config_read` | PCI function capability with `config_read` | reads `rdx` bytes of conventional configuration space at offset `rsi` of the function **that capability names**, and returns the value in `rdx`. `E_BAD_ARGUMENT` for a width that is not 1, 2 or 4, an offset not a multiple of the width, or an access reaching past byte 256 |
+
+| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25 |
+
+**Operations 24–26 are hardware mechanism primitives under §2.1, and each meets
+the five conditions.** They cannot be performed at CPL 3: the configuration
+address and data ports are unreachable from ring 3 and stay so — no IOPL, no
+process-visible I/O bitmap, no mapping. They act only on the object a presented
+capability names. They choose nothing: which functions exist is the hardware's
+answer, which one is claimed is the caller's, and which driver should own it is
+a question this contract cannot express. They produce authority only from the
+bus authority presented, bounded by its scope. And they are the minimum: without
+them no textual service can read a device at all.
+
+**The BDF is in the object, never in an argument to 25 or 26.** A configuration
+operation names an offset and a width and nothing else, so a holder of a
+function capability cannot address a different function — not by policy but
+because there is no parameter for one. Operation 24 is where a bus and a device
+number are named, and the authority to name them is the bus capability itself.
+
+**Assignment is exclusive; the capability is not affine.** At most one live
+assignment exists for a function under one root, so a second claim is refused
+while the first lives. Several capabilities may name one assignment — operation
+5 makes another name, which is what a later split between a manager and a driver
+needs — so the exclusivity is a property of the claim and not of the capability
+model.
+
+**The assignment carries a generation.** Releasing a function and claiming the
+same one again produces a new assignment at a new generation, so a handle kept
+across that gap resolves to nothing rather than to the new occupant. Three
+lifetimes stay separate and none implies another: the device exists whether or
+not anything names it; the assignment lasts from a claim to the loss of its last
+name; a handle is one process's name for it.
+
+**A BAR is data.** Operation 25 over offsets `0x10`–`0x27` returns the numbers
+the device reports. No operation of this contract accepts one, so a BAR value is
+not a mapping, not physical memory access and not presentable where authority is
+required. Address-space mapping of device memory is not in this contract version.
+
+**Conventional configuration space only** — the first 256 bytes. That is what
+this version's mechanism reaches and what it therefore promises; an offset past
+it is `E_BAD_ARGUMENT` rather than a truncated or wrapped access. Extended
+configuration space needs a different mechanism and would be a later version of
+this contract, and the capability model above does not change when it arrives.
 
 **The third capability must be the shared form, and an immutable affine region
 is refused.** A target receives a window of its own and its creator keeps one,
@@ -2889,6 +2969,15 @@ addition; what changed is that its row now states the semantics ADR-0037 §4 and
 Operations 21, 22 and 23 (ADR-0077) are additions of the same kind. They were
 decided by that ADR, which fixed the object, its two states and its lifetime and
 left the numbers and the register shape to be carried here.
+
+Operations 24, 25 and 26 (ADR-0079) are additions of the same kind, and are the
+first admitted under §2.1. That ADR fixed the authority model — a platform root,
+an exclusive assignment, separate read and write rights, a BDF held in the object
+— and left the names, the numbers and the register shape to be carried here.
+**Three operations rather than two**: deriving a function from a bus is its own
+operation and is deliberately not folded into `capability_attenuate_scoped` (16),
+which is a memory reservation with accounting semantics that a PCI function must
+not inherit by sharing a number with it.
 
 **Operations 19 and 20 changed shape in the same revision that added them a
 plan, and that is a change to unreleased operations rather than a break.**
@@ -3550,12 +3639,30 @@ implementation nothing to honour: a process cannot construct a handle, because
 constructing one would mean writing into a table it cannot address. A guessed
 index either misses, or hits an entry the process was already given.
 
-**Where the entries come from** (ADR-0055, ADR-0075 §5). `SYSTEM_ABI_V1` creates
-no ambient authority. A capability an operation returns must have an explicitly
-defined normative origin: either authority the caller presented to that
-operation, which bounds what is produced, or an explicitly accepted bounded
-self-only creation rule. No operation creates authority over a pre-existing
-external object out of nothing, and no operation widens what its caller held.
+**Where the entries come from** (ADR-0055, ADR-0075 §5, ADR-0079 §9).
+`SYSTEM_ABI_V1` creates no ambient authority. A capability an operation returns
+must have an explicitly defined normative origin: either authority the caller
+presented to that operation, which bounds what is produced, or an explicitly
+accepted bounded self-only creation rule. No operation creates authority over a
+pre-existing external object out of nothing, and no operation widens what its
+caller held.
+
+**A third origin class, and it is not an operation** (ADR-0079 §9). A pre-existing
+*platform* resource — a PCI bus, and in later stages whatever else the machine
+already has — cannot satisfy either rule above: it is not derived from anything a
+process holds, and it is emphatically not something only its creator can name.
+Authority over one may therefore originate **only at the boot/platform boundary**,
+under an accepted platform contract, with explicit finite scope and identity and
+an attributable launch and audit record.
+
+The rule it is an addition to is unchanged: **an ordinary operation cannot
+manufacture authority over a pre-existing external object.** No process
+operation creates a platform root. What this admits is a root minted where every
+other root is minted — at the launch boundary, by whoever decided it, named in
+the record — and not a licence to mint hardware capabilities later or elsewhere.
+Every authority derived from such a root is bounded by it and traces back to it,
+which is what makes a device capability attributable in the same way a memory
+one is.
 An operation reachable *without* a capability that creates authority would be
 ambient authority with a handle in front of it, and there is none. A process's table is written by the nucleus **before the process is
 entered**, from the endowment the party that launched it decided. The endowment
@@ -3589,7 +3696,12 @@ capability = object + rights + scope + lifetime + generation
   `share`, which is what ADR-0037's accepted type model requires — a
   `Region<mut T>` is readable and writable and is neither shareable nor
   transferable, so `write` and `share` never appear together, and a
-  `DmaRegion` is granted neither `share` nor transfer in V1;
+  `DmaRegion` is granted neither `share` nor transfer in V1; for a **PCI bus**
+  `claim`, and for a **PCI function** `config_read` and `config_write`
+  (ADR-0079 §10, `PLATFORM_INTERFACE_V1`), which are separate for the reason
+  every pair here is separate — a holder of `config_read` alone cannot mutate a
+  device's configuration, and that is a fact about the handle rather than about
+  what its holder is trusted to attempt;
 - **scope**: the range, subset **or finite resource amount** the rights apply
   to, where the object has one. An amount never widens, so a derived authority
   may spend at most what its parent had.
@@ -4116,6 +4228,241 @@ identifier. A reader must never have to guess which kind of claim it is holding.
    a test that no field is written from two sources.
 
 <!-- END source/interfaces/system/PROCESS_IDENTITY_V1.md -->
+
+---
+
+<!-- BEGIN source/interfaces/platform/PLATFORM_INTERFACE_V1.md -->
+
+<!-- SPDX-License-Identifier: Apache-2.0 -->
+
+# TOS Platform Interface Schema — Version 1
+
+Status: **Accepted Tier 2 interface contract.**
+
+Accepted by ADR-0079 (Project Architect-approved, 2026-09-03), which fixes the
+authority model this schema declares operations over.
+
+Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
+contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
+the language half of the model fixed by
+`docs/42_TOS_CORE_V1_MODULES_CAPABILITIES_AND_VERSIONING.md` §2 under ADR-0028.
+
+## 1. Role
+
+`SYSTEM_INTERFACE_V1` §2 said this document would exist before it did:
+
+> A Stage 4 driver interface is another instance of these rules, not a special
+> case of this document.
+
+This is that instance. Every rule of `SYSTEM_INTERFACE_V1` §3–§9 applies here
+unchanged — how a module reaches an operation, what a parameter may be, what a
+result means, determinism, blocking, provenance — and this document repeats none
+of them. What it adds is a second set of **interfaces**, over platform objects
+rather than system ones.
+
+It is not an FFI and admits none of the things `SYSTEM_INTERFACE_V1` §1 refuses.
+Its target ABI is `SYSTEM_ABI_V1`, operations 24–26, and nothing else.
+
+## 2. What this version declares, and why so little
+
+Two interfaces. `docs/11_DRIVER_MODEL.md` illustrates four more —
+`platform.mmio.RegionMap`, `platform.irq.Binding`, `platform.dma.Allocator` and
+a class publisher — and **none of them is declared here.** ADR-0079 §11 leaves
+MMIO, interrupts and DMA open, and `SYSTEM_INTERFACE_V1` §4's rule applies to
+this schema as much as to that one:
+
+> Nothing speculative: an interface that declared an operation the system does
+> not perform would be a contract describing a system that does not exist.
+
+An interface arrives here when its mechanism is decided, not when a document
+first shows its name.
+
+| Interface | Object kind |
+|---|---|
+| `platform.pci.Bus` | pci bus |
+| `platform.pci.FunctionConfig` | pci function |
+
+## 3. Where a capability of these comes from
+
+**Not from any operation of this schema, and that is the point.** A
+`platform.pci.Bus` capability is a **platform root** in the sense
+`CAPABILITY_V1` §2 admits: minted at the boot/platform boundary under this
+contract, with explicit scope and identity, on the launch and audit record. No
+operation creates one, here or anywhere.
+
+What a module holds is therefore always something somebody decided to give it:
+
+```text
+boot/platform
+    ↓  minted once, scope and identity in the launch record
+root platform.pci.Bus
+    ↓  retained by the canonical textual boot supervisor
+    ↓  delegated under /system/policy/ by launch_plan_endow
+platform.pci.Bus, at the rights the supervisor chose
+    ↓  held by the canonical textual PCI bus service
+    ↓  pci_function_claim
+platform.pci.FunctionConfig, one per assigned function
+    ↓  delegated to a driver
+```
+
+**There is no rule in this contract, and none in the nucleus, naming which
+module may hold a bus capability.** That would be service policy in a place
+that has no business knowing a module name (ADR-0048 §2, ADR-0079 §5). What
+constrains the flow is the flow itself: explicit delegation, textual launch
+policy, source identity and the audit record.
+
+The root survives a PCI service that crashes, because the supervisor holds it
+and the service holds a delegated name for it. Restarting the service is the
+ordinary Stage 3 lifecycle and re-delegation, not a re-mint.
+
+## 4. The interfaces this version declares
+
+Two, and each declares which kind of object a capability of it names, exactly as
+`SYSTEM_INTERFACE_V1` §4 does — so a launcher answering a module's request can
+refuse a grant of the wrong kind at startup rather than letting the module
+discover it at its first call.
+
+### `platform.pci.Bus`
+
+A capability naming one PCI bus scope: a segment, and the range of bus numbers
+within it that the holder may address.
+
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `pci_function_claim` | `platform.pci.Bus` with `claim` | `bus: u64`, `device: u64`, `function: u64` | `Result<platform.pci.FunctionConfig, i64>` | 24 |
+| `endow_for_launch` | `platform.pci.Bus` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+| `capability_attenuate` | `platform.pci.Bus` with `none` | `rights: u64` | `Result<platform.pci.Bus, i64>` | 5 |
+| `capability_release` | `platform.pci.Bus` with `none` | *(none)* | `i64` | 6 |
+
+**The segment is the capability's, not a parameter.** A holder names a bus, a
+device and a function within the scope it was granted; it cannot name a segment,
+because the segment is part of what it was granted rather than part of what it
+asks for.
+
+**`claim` is one right and it is the whole of what a bus capability is for.**
+Possession of a bus capability *is* the authority to address functions within
+its scope, which is why operation 24 takes a BDF and no other operation does.
+
+**Delegation is by `endow_for_launch`, and it copies.** The supervisor keeps its
+capability; the child receives its own name for the same bus at the intersection
+of the rights asked for and the rights held (`SYSTEM_ABI_V1` §5 operation 22).
+Nothing about the supervisor's authority is spent by delegating it.
+
+**One boundary this version does not close, stated rather than left to be
+discovered.** `capability_attenuate` refines *rights* and leaves scope exactly as
+it was (`CAPABILITY_V1` §3), so V1 has no way to narrow a bus capability's
+**range**: a delegate receives the granting capability's scope with at most its
+rights. That is sufficient while one root covers one segment and one service
+manages it, and it is honest about what a delegation currently means. Narrowing a
+range needs an operation that makes a new object rather than a new name — the
+distinction `CAPABILITY_V1` §3 draws between generic and scoped attenuation — and
+that operation is not declared here because nothing needs it yet.
+
+### `platform.pci.FunctionConfig`
+
+A capability naming one **assignment** of one PCI function: a segment, a bus, a
+device, a function and the generation of the assignment, all held in
+nucleus-owned state.
+
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `pci_config_read` | `platform.pci.FunctionConfig` with `config_read` | `offset: u64`, `width: u64` | `Result<u64, i64>` | 25 |
+| `pci_config_write` | `platform.pci.FunctionConfig` with `config_write` | `offset: u64`, `width: u64`, `value: u64` | `i64` | 26 |
+| `endow_for_launch` | `platform.pci.FunctionConfig` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+| `capability_attenuate` | `platform.pci.FunctionConfig` with `none` | `rights: u64` | `Result<platform.pci.FunctionConfig, i64>` | 5 |
+| `capability_release` | `platform.pci.FunctionConfig` with `none` | *(none)* | `i64` | 6 |
+
+**No operation here takes a BDF.** A configuration access names an offset and a
+width; which function it reaches is decided by the capability. So a holder
+cannot address a different function — not because it is forbidden to, but
+because there is no parameter through which to say so, and a fabricated device
+number is a value with nowhere to go.
+
+**`config_read` and `config_write` are separate rights.** A capability carrying
+only `config_read` refuses operation 26 with `E_NO_CAPABILITY`. This is the
+attenuation a manager performs before handing a function to something that
+should only look at it.
+
+**Conventional configuration space only.** `offset + width` must lie within the
+first **256** bytes, `width` must be 1, 2 or 4, and `offset` must be a multiple
+of `width`. Every violation is `E_BAD_ARGUMENT`; nothing wraps, nothing is
+truncated, and a refused access reads and writes nothing.
+
+That bound is this version's honest promise rather than a temporary limitation
+dressed as one: it is what the accepted mechanism reaches, and it is what Stage
+4A needs — the VIRTIO PCI capability list is reached through the capability
+pointer at `0x34` and lives in standard configuration space. Extended
+configuration space is a later version of this contract with a different
+mechanism underneath it, and **the capability model above does not change when
+that happens**: a `FunctionConfig` names a function, not a way of reaching one.
+
+**What a value read here is, and is not.**
+
+A configuration read returns a number the **device** reported. Two consequences
+worth stating, because both are places a reader might assume otherwise:
+
+- **A BAR is data.** Offsets `0x10`–`0x27` return base-address registers. No
+  operation of any accepted schema takes one, so a BAR value grants no mapping,
+  no physical memory access, and cannot be presented where authority is
+  required. Mapping device memory is not in this contract version.
+- **Nothing read here is authority.** A vendor identifier, a class code and a
+  capability pointer are facts about hardware. Deciding which driver should own
+  a function is policy, evaluated by a bus manager, and ADR-0051 deliberately
+  leaves it open.
+
+## 4.1 Assignment, and the three lifetimes it is not
+
+**At most one live assignment exists for a function under one root.** A claim of
+a function that is already assigned is refused with `E_LIMIT` while the first
+assignment lives. The exclusivity is a property of the **claim**, not of the
+capability: several capabilities may name one assignment, because
+`capability_attenuate` makes another name and a later split between a manager
+and a driver needs exactly that.
+
+Three facts, none of which implies another:
+
+| | |
+|---|---|
+| the device exists | true whether or not anything names it; this contract never asserts it |
+| the assignment lives | from a successful claim to the loss of its last name |
+| a handle resolves | one process's name for the assignment, with its own handle generation |
+
+**The assignment carries a generation.** Releasing a function and claiming the
+same one again produces a new assignment at a new generation, so a handle held
+across that gap resolves to nothing rather than to the new occupant — the same
+rule `CAPABILITY_V1` §2 states for every other object, applied to the one thing
+here that can be released and re-made.
+
+## 5. What this version does not declare
+
+No MMIO interface, no interrupt interface, no DMA interface, no reset operation
+and no device-class publisher. Each is open under ADR-0079 §11 and arrives when
+its mechanism is decided.
+
+**No reset right is allocated.** A right with no operation would be exactly the
+speculative declaration §2 refuses, one layer down.
+
+## 6. Conformance evidence
+
+1. An `extern fn` matching an operation declared here is accepted by checker and
+   verifier; one differing in name, arity, parameter type, result type or effect
+   is `E1801_FFI_NOT_AVAILABLE` with the reason named — the same rule
+   `SYSTEM_INTERFACE_V1` §10 states, over this schema's table.
+2. A module importing `platform.pci.Bus` without being granted one fails at
+   startup with `CapabilityDenied` and never reaches a call.
+3. A textual module reads a real device's vendor, device, class and capability
+   pointer through `pci_config_read`, and the values are the device's.
+4. A capability with `config_read` and not `config_write` refuses operation 26.
+5. A function capability cannot reach another function: there is no parameter,
+   and a claim of a second function requires a bus capability.
+6. A claim of an already-assigned function is refused while the assignment
+   lives, and a handle from a released assignment refuses by generation.
+7. `offset`, `width` and their sum are bounded as §4 states, and each violation
+   is `E_BAD_ARGUMENT` with nothing read and nothing written.
+8. The interface paths a verified module uses are readable from its IR without
+   executing it, and match the `uses` effects of its declared operations.
+
+<!-- END source/interfaces/platform/PLATFORM_INTERFACE_V1.md -->
 
 ---
 
@@ -8240,12 +8587,31 @@ module drivers.virtio.net version 1.0 profile bootstrap;
 resource [fuel: 4000000, stack: 128KiB, allocation: 64KiB, tasks: 4, workers: 1,
           sync: 2, shared: 0B, cleanup: 32, recursion: 16, imports: 4]
 
-import capability platform.pci.FunctionConfig as pci;
-import capability platform.mmio.RegionMap as mmio;
-import capability platform.irq.Binding as irq;
-import capability platform.dma.Allocator as dma;
-import capability net.adapter.V1Publisher as publisher;
+import capability platform.pci.FunctionConfig as pci;   // accepted
+import capability platform.mmio.RegionMap as mmio;      // ILLUSTRATIVE — not accepted
+import capability platform.irq.Binding as irq;          // ILLUSTRATIVE — not accepted
+import capability platform.dma.Allocator as dma;        // ILLUSTRATIVE — not accepted
+import capability net.adapter.V1Publisher as publisher; // ILLUSTRATIVE — not accepted
 ```
+
+> **Only the paths marked `accepted` are interfaces.** The others are names for
+> mechanisms that have not been decided, shown here because the shape of a
+> driver's request is worth seeing whole. A module writing one today is rejected
+> — `types.rs` resolves an interface path only against the accepted schema
+> tables, and an `extern` reaching an undeclared interface is
+> `E1801_FFI_NOT_AVAILABLE`.
+>
+> The accepted platform interfaces are exactly those in
+> `source/interfaces/platform/PLATFORM_INTERFACE_V1.md`, which as of Stage 4A is
+> `platform.pci.Bus` and `platform.pci.FunctionConfig` and nothing else. MMIO,
+> interrupts and DMA are open under ADR-0079 §11 and are added when their
+> mechanisms are decided, not when this example first showed a plausible name.
+>
+> This warning exists because the previous revision of this passage was mistaken
+> for a settled interface set during the Stage 4A audit: valid V1 syntax,
+> plausible paths, a Tier 2 document, and nothing anywhere saying which of them
+> a checker would accept. ADR-0051 §4 corrected an earlier version of the same
+> passage for a related reason.
 
 Three things are worth reading twice.
 
@@ -25637,15 +26003,17 @@ module got one, not what it may do with it.
 
 # ADR-0079: Where hardware authority comes from, and how a textual process reaches PCI configuration space
 
-- Status: **Proposed** — the Stage 4A decision surface. Nothing here is
-  implemented, and no contract is amended by this file's existence
+- Status: **Accepted (Project Architect-approved)**
 - Date: 2026-09-03
-- Decision level: **3** — it moves a trust boundary. It introduces a root of
-  authority that is not memory, not a process, not an endpoint and not derived
-  from any of them, and under §5's D2 it also decides whether device access is
-  an ABI mechanism or a region class. Requires an ADR and Project Architect
-  approval (`docs/21` §Level 3)
-- Project Architect approval: **not given; this is the request for it**
+- Decision level: **3** — it moves a trust boundary. It admits a root of
+  authority that is not memory, not a process and not an endpoint and is derived
+  from none of them, and it fixes the general rule under which the nucleus may
+  expose a hardware mechanism primitive
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-03
+- **What the approval covers**: the reconciled decision in §5–§10 below. The
+  alternatives in §5 are retained as history because a decision is not readable
+  without the options it was taken against; **they are not approved**, and none
+  of them is revived by being written down here.
 - Related: ADR-0003 (user-space drivers), ADR-0037 §2 (the DMA region facts),
   ADR-0048 §2 (mechanism, not service policy), ADR-0049 (the interrupt
   baseline, and what it deliberately withheld), ADR-0051 §"What this
@@ -25654,21 +26022,21 @@ module got one, not what it may do with it.
   §2, §5, §6 (region origins, the origin rule, the `RegionObject`), ADR-0076
   (one physical account), ADR-0077 (launch plans), ADR-0078 (capability
   sources). `CAPABILITY_V1` §2–§4, `SYSTEM_ABI_V1` §2, §5, §6,
-  `SYSTEM_INTERFACE_V1` §2, §4, `IPC_V1` §5, `BOOT_ABI_V1`, `docs/11`,
-  `docs/37` §Stage 4
+  `SYSTEM_INTERFACE_V1` §2, §4, `PLATFORM_INTERFACE_V1`, `IPC_V1` §5,
+  `BOOT_ABI_V1`, `docs/11`, `docs/37` §Stage 4
 
 ## 1. The question, stated once
 
 Stage 4's identity gate asks whether "a canonical textual user-space driver
 actually move[s] persistent data through final-style MMIO/interrupt/DMA/IPC
-boundaries" (`docs/37` §Stage 4). Every step of that rests on something that
-does not exist yet and cannot be derived from anything that does: **a root of
-hardware authority**.
+boundaries" (`docs/37` §Stage 4). Every step of that rests on something that did
+not exist and could not be derived from anything that did: **a root of hardware
+authority**.
 
 Stage 4A does not need a block driver, a queue, a BAR, an interrupt or a DMA
 buffer. It needs one textual process to read one real device's configuration
 space under a capability. That is the narrowest hardware-facing act there is,
-and it is already unreachable.
+and it was unreachable.
 
 ## 2. The smallest unreachable operation
 
@@ -25677,14 +26045,15 @@ and it is already unreachable.
 > `virtio-blk-pci`, and receives `0x1042_1AF4` — the device and vendor IDs the
 > real device reports — without holding authority over any other function.
 
-Nothing smaller than this is a hardware-facing act at all, and nothing in the
-accepted corpus makes it expressible.
+Nothing smaller than this is a hardware-facing act at all.
 
-## 3. Why no accepted mechanism reaches it
+## 3. Why no accepted mechanism reached it
 
-Five doors, each closed by a clause rather than by an implementation gap.
+Four doors, each closed by a clause rather than by an implementation gap. This
+section is the STOP that produced this decision, and it is retained because the
+decision below is only justified by it.
 
-### 3a. There is no origin for a capability naming a device
+### 3a. There was no origin for a capability naming a device
 
 `CAPABILITY_V1` §2, as amended by ADR-0075 §5:
 
@@ -25694,61 +26063,50 @@ Five doors, each closed by a clause rather than by an implementation gap.
 > No operation creates authority over a pre-existing external object out of
 > nothing.
 
-A PCI function is a **pre-existing external object**. It cannot come from
+A PCI function is a **pre-existing external object**. It could not come from
 attenuating what a process holds: ADR-0055 terminates the chain at the boot
-process, whose endowment is the launcher's stated constant, and that constant is
-empty on a canonical boot (`nucleus/src/main.rs`, the `test-*` constants grant
-endpoints, self-authority and memory and nothing else). And it cannot be
-ADR-0055's Option B self-only creation, because Option B's whole justification
-is that "creating something nobody else can reach confers no authority over
-anyone" — which is false of a device that exists whether or not anybody names
-it.
+process, whose endowment is the launcher's stated constant. And it was not
+ADR-0055's Option B self-only creation, whose justification — creating something
+nobody else can reach confers no authority over anyone — is false of a device
+that exists whether or not anybody names it.
 
-**So a new legitimate origin is required.** That is the sixth item of the Stage
-4A STOP list, and it is the load-bearing one: D1 below.
+**§9 closes this by admitting a third origin class.**
 
 ### 3b. Configuration space cannot be read from CPL 3
 
-Both architectural paths are shut, and each by a different clause.
+`exception.rs` keeps one TSS for the machine with `io_map_base` pointing past
+the segment limit, and IOPL stays 0. The one exception,
+`IoBitmap::ALLOWING_COM1` under `feature = "test-measurement-port"`, proves the
+constraint rather than relieving it: with one TSS a cleared bit is a property of
+the machine, not of a process. And the CAM address/data pair is a single global
+window, so exposing it would be arbitrary access to every function's
+configuration space.
 
-**Port I/O.** `exception.rs` keeps one TSS for the machine with
-`io_map_base` pointing past the segment limit — "how the architecture spells
-'no port is permitted at CPL 3'" — and IOPL stays 0. The one exception is
-`IoBitmap::ALLOWING_COM1` under `feature = "test-measurement-port"`, and it
-proves the constraint rather than relieving it: there is **one** TSS, so a bit
-cleared in that map is a property of the machine and not of a process. A CAM
-path (`0xCF8`/`0xCFC`) opened that way would be ambient for every process that
-runs, and because CAM is a single global address/data window, holding it *is*
-arbitrary access to every function's configuration space — the first item of the
-STOP list, and the thing Stage 4A's brief forbids in terms.
-
-**A memory window.** No accepted operation maps a caller-named physical range.
+No accepted operation maps a caller-named physical range either.
 `SYSTEM_ABI_V1` operation 17 states the opposite — "The nucleus chooses the
 address; a caller never supplies one" — and ADR-0075 §6 makes a region's
-placement private: "backing — the pages; nothing about where they are is
-public". Confirmed against the implementation: nothing in `region.rs` accepts a
-physical address from anywhere.
+placement private.
+
+**§6's mechanism operations close this without exposing either.**
 
 ### 3c. A device region is not a region ADR-0075 or ADR-0076 describes
 
-Even granted an operation that mapped one, ECAM frames are not what the accepted
-region model is about:
-
-| Accepted clause | What a device window would need |
+| Accepted clause | What a device window would have needed |
 |---|---|
-| ADR-0076: one physical account, every region charged to a `MemoryAuthority` | MMIO frames are not pool bytes; there is nothing to charge and nothing to reclaim |
+| ADR-0076: one physical account, every region charged to a `MemoryAuthority` | MMIO frames are not pool bytes; nothing to charge, nothing to reclaim |
 | ADR-0075 §2 B: allocation "reserve[s] unique backing pages" out of the pool | the pages already exist and belong to a device |
 | ADR-0075 §6: `charged to — the MemoryAuthority the allocation spent from` | no authority funded it |
 | operation 17: the nucleus chooses the address | the address *is* the identity of the thing |
-| nothing in the corpus | device memory must be mapped uncacheable on x86_64; no accepted clause mentions caching at all |
+| nothing in the corpus | device memory must be mapped uncacheable on x86_64 |
 
-So a device-memory region is a **new region class with a new origin**, not a use
-of the existing one. That is the second item of the STOP list.
+**This is not closed by this ADR and is deliberately left to Stage 4B.** No
+device-memory region is introduced here, and no configuration access is a
+mapping.
 
-### 3d. No accepted schema declares a platform interface
+### 3d. No accepted schema declared a platform interface
 
-`docs/11` §"Driver manifest" now shows accepted V1 form, and that is exactly why
-it must not be mistaken for an accepted interface:
+`docs/11` §"Driver manifest" shows accepted V1 *form*, and that is exactly why it
+must not be mistaken for an accepted interface:
 
 ```tos
 import capability platform.pci.FunctionConfig as pci;
@@ -25757,297 +26115,398 @@ import capability platform.irq.Binding as irq;
 import capability platform.dma.Allocator as dma;
 ```
 
-None of those four paths is declared by `SYSTEM_INTERFACE_V1` §4 or present in
-`tos-core/src/interfaces.rs`'s `ACCEPTED` table, and `types.rs:416` resolves an
-interface path only against that table. The form parses; the paths are not
-types. `docs/11` is Tier 2 architectural intent here, and ADR-0051 §4 already
-corrected the previous version of this same passage for the same reason.
+None of those four paths was declared by any schema, and `types.rs` resolves an
+interface path only against the accepted table. The form parses; the paths were
+not types. ADR-0051 §4 already corrected the previous version of this same
+passage for the same class of reason.
 
-`SYSTEM_INTERFACE_V1` §2 anticipates the fix — "A Stage 4 driver interface is
-another instance of these rules, not a special case of this document" — but
-ADR-0060 accepted *that* schema. A `PLATFORM_INTERFACE_V1` needs its own
-accepting decision.
+**§8 declares the two that now exist, and no others.** `docs/11` is corrected so
+the remaining illustrative names cannot be read as accepted.
 
-### 3e. `SYSTEM_ABI_V1` §2 names devices as services
+## 4. What Stage 4 still leaves open
 
-> It carries mechanism the nucleus alone can provide: address spaces, execution
-> contexts, capability handles, IPC transport, and the small amount of time a
-> scheduler needs. Filesystems, **devices**, repositories, networks and consoles
-> are services reached through IPC, not operations added here. **If an operation
-> could be a service, it is a service.**
-
-This is the clause D2 turns on, and it cannot be satisfied by both available
-mechanisms at once. An ABI operation that reads configuration space is a device
-operation added to the ABI, against the sentence's letter. A region that maps
-ECAM avoids the sentence entirely and lands on §3c instead. **One of the two
-must be chosen, and each costs an amendment somewhere.** Choosing quietly is
-what `docs/38` §Conflict protocol forbids.
-
-## 4. What Stage 4 must decide because nothing has
-
-Recorded so the open questions are not re-derived later, and so that no part of
-this ADR is read as settling one it does not:
-
-| Question | State |
+| Question | State after this ADR |
 |---|---|
-| PCI enumeration ownership | open — D1 |
-| configuration-space access mechanism | open — D2 |
-| platform facts (ECAM discovery) | open — D3 |
-| function capability shape and rights | open — D4 |
-| who may hold bus authority | open — D5 |
-| device matching | **deliberately open**, ADR-0051: "matching is a query evaluated by a bus manager against hardware, not an authority a launcher grants" |
-| BAR → MMIO mapping | open, and deliberately *not* opened here (§6) |
-| interrupt binding and acknowledgement | open, and constrained by `docs/11` §Interrupts and ADR-0049 |
-| DMA authority | open, and constrained by ADR-0037 §2 and `docs/11` §DMA |
-| reset authority | open, and deliberately deferred (§6) |
-| publication of `block.device.v1` | shape already fixed by ADR-0051 §2 and `CAPABILITY_V1` §6 — a request, never a claim |
+| PCI enumeration ownership | **decided** — §5 |
+| configuration-space access mechanism | **decided** — §6 |
+| platform facts / ECAM discovery | **decided for this stage** — §7 |
+| function capability shape and rights | **decided** — §10 |
+| who may hold bus authority | **decided** — §5, and it is not a nucleus rule |
+| device matching | **open**, ADR-0051: a query a bus manager evaluates, not an authority a launcher grants |
+| BAR → MMIO mapping | **open — Stage 4B.** A BAR value is data here |
+| device-memory region semantics | **open — Stage 4B** |
+| interrupt binding and acknowledgement | **open**, constrained by `docs/11` §Interrupts and ADR-0049 |
+| DMA authority | **open**, constrained by ADR-0037 §2 and `docs/11` §DMA |
+| IOMMU semantics | **open** |
+| reset authority | **open**, and no right is allocated for it |
+| VirtIO negotiation, queues, block I/O | **open** |
+| publication of `block.device.v1` | **open**; its shape needs nothing new (ADR-0051 §2, `CAPABILITY_V1` §6) |
 
-## 5. The decision surface
+## 5. D1 — the root of PCI authority, and who holds it
 
-Five decisions. D1 and D2 are the ones that cannot be deferred; D3, D4 and D5
-follow from D2 and are stated so that accepting D2 does not leave them implied.
+**Accepted: a launcher-minted root PCI Bus authority.**
 
-### D1 — where hardware authority originates
+A pre-existing hardware platform needs an explicit root of authority. It cannot
+be derived from memory, process or endpoint authority, and it cannot be created
+by an ordinary capability-returning operation. The root is:
 
-**A — a launcher-minted root bus authority.** A `platform.pci.Bus` capability is
-part of the boot endowment, minted by the launcher from platform facts and named
-in the launch and audit record, exactly as ADR-0075 §2b mints the root
-`MemoryAuthority`: "Its size and its identity are written into the launch and
-audit record, so the root of every later allocation can be named rather than
-assumed." Authority over one function is derived from it by a **scoped**
-narrowing that produces a new object, never by generic attenuation, which
-`CAPABILITY_V1` §3 already distinguishes.
+- a boot/platform fact, minted at the launch boundary and nowhere else;
+- explicitly scoped;
+- named, with its scope, in the launch and audit record;
+- unacquirable ambiently, and unmanufacturable by any process operation;
+- the traceable ancestor of every later PCI authority.
 
-- *For*: one new root, and it is the shape the corpus already uses for the only
-  other authority that cannot be derived from anything. The chain still
-  terminates at a constant that can be named. Nothing becomes ambient.
-- *Against*: a second kind of root is a second thing to audit, and the bus
-  capability is a real confused-deputy surface (D5).
+This is analogous to the root `MemoryAuthority` of ADR-0075 §2b **in authority
+provenance and not in resource accounting**: a bus is not a quantity, nothing is
+reserved out of it, and no accounting node exists.
 
-**B — the nucleus enumerates and endows each driver with its function.** No
-root; ring 0 walks the bus and decides who gets what.
-
-- *Against*: it makes the nucleus the PCI policy engine and the matcher. ADR-0048
-  §2 gives the nucleus "mechanism and explicitly no service policy", ADR-0055
-  refuses "a capability the nucleus decides on", and Stage 4A's brief names this
-  outcome as a failure. **Named to be rejected.**
-
-**C — a self-only creation rule for device authority.** Rejected in §3a: a
-device is not an object only its creator can name.
-
-**Recommended: A.**
-
-### D2 — how configuration space is actually read
-
-**M — a mechanism operation on the function capability.** Two operations, whose
-first argument is the function capability; the nucleus performs the access, takes
-the BDF **from the capability's object** and never from the caller, and bounds
-the offset by a constant of the contract.
-
-- *For*: no physical mapping ever crosses into ring 3. "Authority for function A
-  cannot reach function B" becomes structural rather than checked, because the
-  caller never names a function. Read and write are separate rights on separate
-  operations, so "a read-only capability cannot mutate configuration" is a
-  rights fact. No new region class, no caching question, no charge, no
-  reclamation. The whole surface is two ABI numbers and one schema.
-- *Against*: it puts a device operation in the ABI, against §3e's letter. The
-  defence is that §2's own first sentence is "mechanism the nucleus alone can
-  provide", and configuration access at CPL 3 with IOPL 0 and no mapping is
-  precisely that: the PCI *bus service* remains a textual service reached through
-  IPC, and this is the primitive underneath it as `endpoint_send` is the
-  primitive underneath every service. **That reading is the Architect's to make,
-  not this file's.** If it is made, §2's sentence should gain a clause
-  distinguishing a device *service* from a device *access primitive*, rather than
-  being left to be read against the table.
-- *Cost*: one boundary crossing per dword. Enumeration of one function's header
-  is tens of crossings and is not on any budgeted path (§7).
-
-**R — a device-memory region over the function's ECAM page.** The nucleus maps
-that function's 4 KiB uncacheable, and the driver does ordinary loads and stores.
-
-- *For*: `SYSTEM_ABI_V1` §2 is untouched — nothing device-shaped is added to the
-  ABI. The ECAM layout gives each function exactly one 4 KiB page, so the
-  confinement wanted falls out of the hardware. And BARs will need a
-  device-memory region anyway, so one decision would serve both.
-- *Against*: it amends ADR-0075 and ADR-0076 rather than fitting them (§3c), and
-  it moves two properties out of the capability model into page permissions: a
-  write to a BAR register or a reset bit is a store the nucleus never sees, so
-  BAR programming and reset stop being mediated at the moment config space
-  becomes a window.
-- *And*: it decides the device-region class under the pressure of a config-space
-  read, which is the wrong evidence to decide it on.
-
-**H — reads through a mapped read-only page, writes through an operation.**
-Cheaper than it sounds, but the negative-proof set then splits across two
-mechanisms and there are two things to audit instead of one.
-
-**Recommended: M for Stage 4A, with R re-opened at the BAR/MMIO slice on its own
-evidence.** BARs force the device-region question regardless; taking it now buys
-nothing and spends the decision badly.
-
-### D3 — where the platform facts come from
-
-Only D2-M makes this cheap, which is part of why M is recommended.
-
-**P1 — the nucleus parses ACPI MCFG** from `BootInfo.acpi_rsdp`. A new total
-parser in the trusted base over firmware bytes: AGENTS §8 requires it be total,
-structured and panic-free, and §10 requires threat-model coverage and negative
-tests. MCFG is small, and this is still nucleus growth for a Stage 4A that does
-not otherwise need it.
-
-**P2 — the loader finds MCFG and `BootInfo` carries an ECAM descriptor.**
-`BOOT_ABI_V1` goes to v2. The parse happens where firmware data is already
-handled — `uefi-loader/src/main.rs` already walks the configuration table and
-validates the RSDP — and the nucleus receives a validated descriptor. A
-versioned boundary change, which that contract exists to absorb.
-
-**P3 — CAM (`0xCF8`/`0xCFC`), and no ACPI at all.** Under D2-M the window lives
-entirely in ring 0, where it is owned and serialised and never exposed, so its
-being global costs nothing. No parser, no boot-ABI change.
-
-- *Limit, stated rather than discovered later*: CAM cannot reach offsets ≥
-  `0x100`. Stage 4A does not need them — the VIRTIO PCI capability list is in
-  standard config space, reached through the capability pointer at `0x34` — but
-  MSI-X and any PCIe extended capability will, and that is when P2 becomes due.
-
-**Recommended: P3 for Stage 4A, P2 when extended config space or MSI-X is
-actually needed.** It is the smallest thing that works, and its expiry date is
-known in advance.
-
-### D4 — what a function capability is
-
-Stated as a proposal because the brief asks for it, and because a rights set
-allocated loosely is harder to narrow later than to widen.
+### The root is held by the boot supervisor, not by the PCI service
 
 ```text
-object     PciFunction { segment, bus, device, function, generation }
-           — held in the nucleus's object table; never in the handle
-scope      exactly one function. Derived from the bus capability by a scoped
-           narrowing that makes a new object (CAPABILITY_V1 §3), because generic
-           attenuation does not consume its input and would leave two names for
-           one claim
-rights     config_read, config_write — separate, per the brief
-lifetime   bounded by the bus capability's and by the holder's; a claimed
-           function returns to the bus on release or holder death
-staleness  by generation, as everything else
+boot/platform
+    ↓  minted once, named in the launch record
+named root Bus authority
+    ↓  retained
+canonical textual boot supervisor / launch-policy process
+    ↓  delegated under /system/policy/, scoped
+derived Bus authority
+    ↓
+canonical textual PCI bus service
+    ↓  claimed per function
+PciFunction authority
+    ↓
+eventual textual device driver
 ```
 
-**A BAR is data in Stage 4A, not authority.** Reading `BAR0..5` through
-`config_read` yields the numbers the device reports, and holding those numbers
-maps nothing. That is what keeps the BAR/MMIO decision genuinely open instead of
-pre-decided by a header read.
+The supervisor **retains** the root and delegates a scoped Bus capability to the
+PCI service. If the PCI service crashes the root does not go with it: the
+supervisor revokes or re-derives the service's authority and restarts it through
+the ordinary Stage 3 lifecycle.
 
-**No reset right is allocated.** `SYSTEM_INTERFACE_V1` §4's own rule is that a
-contract must not declare "an operation the system does not perform"; a right
-with no operation is the same fault one layer down. Reset is deferred explicitly
-(§6), not represented and left unused.
+**An ordinary device driver receives a `PciFunction`, never the root Bus
+authority.**
 
-**Not a forgeable integer.** The BDF is in the nucleus's object. A caller that
-fabricates a scalar where a function capability belongs is refused by the
-verifier (ADR-0078 §4) and by the nucleus's kind check, and a caller cannot name
-a BDF at all — there is no parameter for one.
+### There is no nucleus rule naming the PCI service
 
-### D5 — who may hold bus authority
+Explicitly rejected: a ring-0 rule of the form "only the PCI service may hold
+Bus authority". That would encode service policy in the nucleus, against
+ADR-0048 §2, and would put a module name in a place that has no business knowing
+one. The restriction is expressed by **explicit capability flow, textual launch
+policy, source identity and audit evidence** — and by nothing else.
 
-The bus capability can claim every function, so it is the confused-deputy
-surface `CAPABILITY_V1` §7.6 names as the test that "fails quietly in systems
-that pass the other five".
+A supervisor that deliberately delegates its explicit root authority wrongly is
+a compromise of the authority-granting policy principal. It is not ambient
+authority, and the nucleus must not carry a hard-coded module-name policy to
+compensate for it. Stage 3 already fixed the distinction this preserves:
+**mechanism verifies that a grant is lawful; textual policy decides that the
+grant should happen.**
 
-Proposed: it is endowed to exactly one textual PCI bus service; a driver never
-receives one, and what travels to a driver in a launch plan is the **function**
-capability. Whether the nucleus should refuse a bus capability as a plan entry —
-as `SYSTEM_ABI_V1` operation 22 already refuses regions, replies and plans — is
-a decision, and refusing it would make "a driver cannot hold bus authority" a
-mechanism rather than a policy.
+### Rejected alternatives, retained as history and not approved
 
-## 6. What this ADR does not decide
+**B — the nucleus enumerates and endows each driver.** It makes the nucleus the
+PCI policy engine and the matcher, against ADR-0048 §2 and ADR-0055, and fails
+the Stage 4 identity gate even if every read works.
 
-- **BAR → MMIO mapping.** Deferred to the next slice on its own evidence
-  (D2). Nothing here maps device memory.
-- **Interrupts.** `docs/11` §Interrupts is Tier 2 and already constrains the
-  answer — the nucleus acknowledges and routes to driver event endpoints — and
-  ADR-0049 withheld external routing deliberately. One consequence is due before
-  any interrupt work, and it is a finding rather than a decision: see
-  `docs/evidence/STAGE4A_HARDWARE_BOUNDARY.md` §5 on the liveness rule.
-- **DMA.** ADR-0037 §2 makes both `DmaRegion` variants neither shareable nor
-  transferable and says a widening may come "later through a typed driver or
-  device contract that says what makes it safe". No such contract is proposed
-  here, and no `DmaRegion` origin exists yet.
-- **Device matching.** ADR-0051 left it open on purpose; nothing here narrows it.
-- **Reset authority.** Deferred, per D4.
-- **`block.device.v1`.** Not proposed. Its shape needs nothing new:
-  `CAPABILITY_V1` §6 and ADR-0051 §2 already make publication an authority
-  requested and granted, never claimed.
+**C — a self-only creation rule for device authority.** Refused by §3a: a device
+is not an object only its creator can name.
 
-## 7. Performance pre-check
+## 6. D2 — configuration access is a nucleus mechanism primitive
 
-`docs/35` §Stage 4's hard budgets are per **completed block request**, and
-nothing in D1–D5 touches a request path — there is no request path. Checked
-against each anyway, because the brief requires an early choice that would
-structurally violate one to be recorded before it is implemented:
+**Accepted: mechanism operations over a `PciFunction` capability.**
 
-| Budget | D1–D5 |
+Configuration-space access is a privileged hardware mechanism the nucleus must
+mediate, because CPL 3 cannot perform it safely under the accepted isolation
+boundary. **This does not move PCI, VirtIO or device policy into the nucleus.**
+The nucleus knows how to perform a privileged configuration transaction; it does
+not know which device is a VirtIO block device or what should drive it.
+
+### The general rule, amending `SYSTEM_ABI_V1` §2
+
+This is not a PCI exception. It is the Stage 4 interpretation of the existing
+"nucleus provides mechanism, no service policy" boundary, and it is stated
+generally so that the next device class is judged by a rule rather than by this
+precedent:
+
+> Device discovery policy, matching, class behaviour and device services remain
+> textual user-space services reached through IPC. The nucleus **MAY** expose a
+> narrowly capability-gated hardware mechanism primitive when the operation:
+>
+> 1. cannot safely be performed directly at CPL 3 under the accepted isolation
+>    boundary;
+> 2. operates only on an exact object and scope already named by a capability
+>    the caller holds;
+> 3. does not choose devices, drivers, matching policy or service behaviour;
+> 4. does not grant authority the caller did not already obtain through a
+>    normative origin;
+> 5. is the minimum mechanism required for a textual service to perform the real
+>    work.
+
+`SYSTEM_ABI_V1` §2 is amended to carry this rule. The amendment is explicit and
+is made in that document; this ADR does not silently override its old wording.
+
+### Rejected alternatives, retained as history and not approved
+
+**R — a device-memory region over the function's ECAM page.** It amends ADR-0075
+and ADR-0076 rather than fitting them, and it moves two properties out of the
+capability model into page permissions: a write to a BAR register or a reset bit
+would be a store the nucleus never sees. **H**, the hybrid, splits the negative
+proofs across two mechanisms.
+
+## 7. D3 — the configuration backend for the Stage 4 reference platform
+
+**Accepted: PCI Configuration Mechanism #1 (`0xCF8`/`0xCFC`), inside ring 0.**
+
+The ports are completely inaccessible from CPL 3. The address/data pair is owned
+and serialised by the nucleus-side mechanism. **No IOPL, no process-specific TSS
+I/O bitmap, and no exposure of either port to a process.**
+
+**This is an implementation backend, not the public authority model**, and the
+distinction is load-bearing:
+
+- the public contract names a **function** and an **offset**, never a port, a
+  mechanism or a physical address;
+- the `PciFunction` capability model does not change when the backend changes
+  from CAM to ECAM;
+- CAM's physical mechanism is not part of `PLATFORM_INTERFACE_V1` and never
+  appears in a textual interface.
+
+**Scope: conventional configuration space, the first 256 bytes.** That is what
+CAM reaches and it is what Stage 4A needs — the VIRTIO PCI capability list is
+reached through the capability pointer at `0x34` and lives in standard config
+space. The contract declares that bound honestly rather than promising a space
+the backend cannot serve.
+
+Later PCIe extended configuration space may version the platform interface and
+replace the backend with ECAM obtained through a boot/ACPI platform contract.
+**No ACPI MCFG parser and no `BOOT_ABI_V1` version change are required in Stage
+4A**, and P3 is not permission to build a throwaway public architecture around
+legacy I/O ports.
+
+## 8. `PLATFORM_INTERFACE_V1`
+
+A separately versioned Stage 4 platform schema, accepted by this ADR as
+`SYSTEM_INTERFACE_V1` §2 anticipated — "A Stage 4 driver interface is another
+instance of these rules, not a special case of this document."
+
+**It declares only what exists**: `platform.pci.Bus` and
+`platform.pci.FunctionConfig`, with their operations and rights. It declares no
+MMIO, IRQ or DMA interface. Declaring one because `docs/11` shows an
+illustrative name would be a contract describing a system that does not exist,
+which is the fault `SYSTEM_INTERFACE_V1` §4 names in its own terms.
+
+`docs/11` is corrected so that its remaining illustrative interface paths cannot
+be mistaken for accepted ones. Future platform interfaces are added when their
+mechanisms are actually decided.
+
+## 9. The platform root, as an origin class
+
+`CAPABILITY_V1` §2 is amended to recognise platform roots explicitly. The
+existing rule is unchanged:
+
+> an ordinary operation cannot manufacture authority over a pre-existing
+> external object.
+
+Stage 4 adds a third legitimate root class beside it:
+
+> Authority over a **pre-existing platform resource** may originate only at the
+> boot/platform boundary, under an accepted platform contract, with explicit
+> finite scope and identity and an attributable launch and audit record.
+
+**This is not an exception permitting arbitrary hardware capabilities to be
+minted later.** No ordinary process operation creates a root Bus authority, and
+the only Stage 4A instance of this class is the first PCI Bus authority.
+
+## 10. D4 — what a `PciFunction` is
+
+Nucleus-owned state, unreachable except through a capability:
+
+```text
+segment
+bus
+device
+function
+generation / assignment epoch
+```
+
+**None of these is encoded into a forgeable capability handle.** The BDF lives in
+the object, so it is part of the authority rather than a caller-supplied address.
+
+| | |
 |---|---|
-| zero dynamic allocation per steady-state request | unaffected; a function capability is a table slot written once at claim |
+| scope | exactly one PCI function |
+| rights | `config_read`, `config_write`, separate — a holder of `config_read` alone cannot mutate configuration |
+| reset | **no right allocated.** A right with no operation would be a contract describing a system that does not exist |
+| lifetime | bounded by the Bus authority it was claimed through and by its holders |
+| staleness | by the assignment generation |
+
+### A BAR value is data, not authority
+
+A BAR read from configuration space is a number the device reported. It does not
+grant a mapping, does not grant physical memory access, and cannot be presented
+where an MMIO capability is required — there is no operation that accepts one.
+**BAR → MMIO is a Stage 4B decision** and this ADR does not prejudge it.
+
+### Assignment is exclusive, and three lifetimes stay separate
+
+**At most one live `PciFunction` assignment object exists for a BDF under one
+root.** A second claim of an already-assigned function is refused. Several
+capabilities may name that one assignment object — attenuation produces another
+name, which is what later management/driver separation will need — so the object
+is not affine, and its assignment being exclusive is a property of the claim
+rather than of the capability model.
+
+Three facts that are not the same fact:
+
+| | |
+|---|---|
+| physical device existence | the device is there whether or not anything names it |
+| assignment lifetime | the claim, from `pci_function_claim` to the loss of its last name |
+| capability-handle lifetime | one process's name for it, with its own handle generation |
+
+The assignment carries a **generation** so that releasing a function and later
+claiming the same BDF does not make a stale capability valid again.
+
+### Derivation is its own operation
+
+**`capability_attenuate_scoped` (operation 16) is not reused.** It is a
+`MemoryAuthority` reservation with accounting semantics — a parent's remainder
+falls by what the child may spend — and a PCI function is not a quantity of
+memory. Inheriting those semantics accidentally is the error that would be
+saved by reusing the number, and an ABI number is not worth it.
+
+```text
+Bus authority + bus/device/function
+        ↓  pci_function_claim
+validated, exclusively assigned PciFunction object
+        ↓
+config operations take only PciFunction + offset + width
+```
+
+The Bus holder names a BDF when deriving, because possession of the Bus
+capability **is** the authority to address functions within that bus scope. After
+derivation the holder of the `PciFunction` cannot choose another BDF: no
+configuration operation accepts one.
+
+Three operations, not two. Operation-count minimisation is not an architectural
+requirement, and the earlier estimate of two is superseded.
+
+## 11. What this ADR does not decide
+
+Unchanged from the STOP, and restated because acceptance must not be read as
+widening: BAR → MMIO mapping, device-memory region semantics, interrupt routing
+and acknowledgement, DMA authority, IOMMU semantics, reset, VirtIO feature
+negotiation, VirtIO queues, block reads and writes, device matching policy,
+`block.device.v1`, persistent state and repository handoff.
+
+**Device matching remains deliberately open.** Reading identifiers is discovery;
+deciding which driver should own them is policy, and it comes later.
+
+## 12. The liveness finding, and where it belongs
+
+`SYSTEM_ABI_V1` §6 states the liveness rule as "nothing runnable **and nothing
+routed can change that**". `nucleus/src/process.rs` implements only the first
+half and says so in its own comment. It is correct for a stage that routes no
+device interrupt and becomes wrong at the first one: a driver blocked on its
+interrupt, alone in the system, would be cancelled the instant it blocked.
+
+**It is not part of Stage 4A**, which routes no interrupt and needs none. It is
+recorded as a **mandatory prerequisite to the first routed device interrupt** and
+is a blocking item for the IRQ slice, not for configuration access.
+
+## 13. Performance
+
+`docs/35` §Stage 4's hard budgets are per completed block request, and this ADR
+introduces no request path. Checked against each anyway:
+
+| Budget | This decision |
+|---|---|
+| zero dynamic allocation per steady-state request | unaffected; a claim writes one table slot |
 | ≤1 payload copy | unaffected; no payload |
-| ≤4 address-space/scheduler handoffs per request | **watch**: D2-M is one crossing per dword. That is acceptable only because config access is an initialisation path. A later design that read config space per request would violate this, and must not |
+| ≤4 address-space/scheduler handoffs per request | **watch**: one crossing per configuration access. Acceptable because configuration access is an initialisation path. A later design that read configuration space per request would violate this and must not |
 | batching-capable interrupt handling | not decided here |
-| no global driver lock across independent queues | unaffected; no queue. D5's single bus service is not a driver lock — it serialises *claims*, not I/O |
+| no global driver lock across independent queues | unaffected. The nucleus serialises the CAM window, which is a hardware register pair and not a driver lock; it is on no request path, and a later ECAM backend removes even that |
 
 ## Architecture impact statement
 
 - **Change level:** 3. **Invariants affected:** none amended. I-07 (explicit
   capabilities, no ambient global privilege) and I-08 (user-space drivers) are
-  the two this is *for*; both are strengthened by D1-A and D2-M and would be
-  weakened by D1-B.
+  strengthened: hardware authority gains a named root and a traceable ancestry
+  where it previously had neither.
 - **Canonical representation:** unchanged. The PCI service is canonical TOS Core
-  text carried through the ordinary source → lower → TOSIMAGE → verifier →
-  runtime path.
-- **Trusted-base impact:** under D2-M plus D3-P3, the nucleus gains a bounded
-  configuration accessor and an object table, and **no parser**. Under D3-P1 it
-  gains a parser over firmware bytes; under D3-P2 the loader does instead and
-  `BOOT_ABI_V1` versions.
-- **Source-to-runtime impact:** none. No new artifact class, no new digest.
-- **Recovery and rollback impact:** none yet. It arrives with persistent
-  storage, not with discovery.
-- **Stage identity gate:** `docs/37` §Stage 4. **No gate is claimed or closed by
-  this ADR.** It states what must be decided before the first hardware-facing
-  textual act can honestly exist.
-- **Threat-model impact:** a new authority root and, under D2-R, a new physical
-  mapping path — both requiring coverage under AGENTS §10. D2-M's surface is a
-  bounded offset and a nucleus-held BDF; D2-R's is a page permission.
-- **Compatibility profile:** a new `PLATFORM_INTERFACE_V1`, new `OBJECT_*` kinds
-  (the space currently ends at 8), a `LAUNCH_VERSION` bump (currently 4) and new
-  `SYSTEM_ABI_V1` operation numbers (next free 24) — every one a public boundary
-  versioned from its first commit under I-11.
+  text carried through the ordinary source → lower → TOSIMAGE → independent
+  verifier → runtime path.
+- **Trusted-base impact:** the nucleus gains a bounded configuration accessor
+  over a serialised port pair, a bus object and an assignment table. **No
+  parser**, no physical mapping path, no ACPI, no boot-ABI change.
+- **Source-to-runtime impact:** none. No new artifact class and no new digest.
+- **Recovery and rollback impact:** none. It arrives with persistent storage,
+  not with discovery.
+- **Stage identity gate:** `docs/37` §Stage 4. This ADR closes no gate; §14 is
+  what a gate would have to show.
+- **Threat-model impact:** a new authority root and a new privileged mechanism,
+  both requiring coverage under AGENTS §10. The surface is a bounded offset, a
+  bounded width and a nucleus-held BDF; the negative cases are §14.
+- **Compatibility profile:** `PLATFORM_INTERFACE_V1` at version 1, two new
+  `OBJECT_*` kinds, three new rights, three new `SYSTEM_ABI_V1` operations and a
+  `LAUNCH_VERSION` bump — each a public boundary versioned from its first commit
+  under I-11.
 - **New dependencies:** none.
-- **Tests, if accepted:** §8.
 
-## 8. Conformance evidence required if this is accepted
+## 14. Conformance evidence
 
 Positive, on the real device and from canonical text:
 
-1. a textual TOS Core process reads offset `0x00` of the `virtio-blk-pci`
-   function and reports `vendor=0x1AF4 device=0x1042`, with its own source
+1. a textual TOS Core process reads the `virtio-blk-pci` function and reports
+   `vendor=0x1AF4`, `device=0x1042`, class/subclass mass storage, and a
+   capability list that is genuinely device-provided, with its own source
    identity in the evidence;
-2. class and subclass read as mass storage, and the capability pointer at `0x34`
-   leads to the VIRTIO capability list — enough for the next step, and no more.
+2. the host configures QEMU and checks what the guest reported, and supplies
+   none of those answers.
 
 Negative, and a successful read alone is not sufficient Stage 4 evidence:
 
-3. a process holding no PCI authority cannot read configuration space, and is
-   refused by handle rather than by policy;
-4. authority for function A cannot reach function B;
-5. a `config_read`-only capability refuses `config_write`;
-6. a released or stale function capability refuses by generation;
-7. an out-of-range configuration offset is refused rather than wrapped or
-   truncated;
-8. a fabricated scalar in the capability position is refused by the independent
-   verifier, and a fabricated BDF is unexpressible because no parameter carries
-   one;
-9. the harness configures QEMU, observes the log and asserts — and performs none
-   of the guest's discovery. With the device absent, the proof fails rather than
-   passing from a fixture.
+3. a process holding no Bus or `PciFunction` authority cannot perform a
+   configuration operation;
+4. authority for function A cannot read function B;
+5. `config_read` without `config_write` cannot mutate;
+6. a stale or released function capability refuses;
+7. an offset outside conventional configuration space refuses;
+8. a malformed alignment or width refuses;
+9. a forged scalar in the capability position is refused;
+10. a BAR value cannot be used as MMIO authority;
+11. without the actual QEMU VirtIO device, the positive proof fails rather than
+    passing from a fixture.
+
+Existing handle and refusal ordering is unchanged: index bounds, then
+generation, then type, then rights.
+
+## 15. Realisation, and one thing this decision does not by itself reach
+
+Recorded here because a decision whose implementation state is invisible invites
+being re-derived. Full evidence:
+`docs/evidence/STAGE4A_HARDWARE_BOUNDARY.md`.
+
+**Built, green and gated**: the platform root and its lifecycle (§5, §9), the
+Bus → `PciFunction` derivation with exclusive assignment (§10), the nucleus
+mechanism and its CAM backend (§6, §7), `PLATFORM_INTERFACE_V1` (§8), and
+`SYSTEM_ABI_V1` operations 24–26. A canonical textual module holds the root,
+claims real functions of the Stage 4 machine, and is refused in three distinct
+ways it cannot itself decide.
+
+**Not reached**: the configuration read *from text*. Operations 25 and 26 exist
+and the nucleus performs them; no module can **declare** them, because
+`SYSTEM_INTERFACE_V1` §4.1 requires an `extern`'s `uses` to name an
+`import capability` of the enclosing module, and a `platform.pci.FunctionConfig`
+import cannot be answered at startup — the only lawful producer is operation 24,
+which runs afterwards.
+
+That is **not a defect in this decision** and does not reopen D1–D5. It is the
+question ADR-0078 §6 explicitly left open — "a capability of an interface a
+module never imports … is a separate question and is not answered here" — reached
+for the first time by the first authority whose object cannot exist before the
+process that claims it. Its decision surface is
+`STAGE4A_HARDWARE_BOUNDARY.md` §7, and it belongs to whoever settles ADR-0078's
+remainder rather than to this ADR.
 
 <!-- END docs/adr/0079-hardware-authority-origin.md -->
 

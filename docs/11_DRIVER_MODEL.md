@@ -46,12 +46,31 @@ module drivers.virtio.net version 1.0 profile bootstrap;
 resource [fuel: 4000000, stack: 128KiB, allocation: 64KiB, tasks: 4, workers: 1,
           sync: 2, shared: 0B, cleanup: 32, recursion: 16, imports: 4]
 
-import capability platform.pci.FunctionConfig as pci;
-import capability platform.mmio.RegionMap as mmio;
-import capability platform.irq.Binding as irq;
-import capability platform.dma.Allocator as dma;
-import capability net.adapter.V1Publisher as publisher;
+import capability platform.pci.FunctionConfig as pci;   // accepted
+import capability platform.mmio.RegionMap as mmio;      // ILLUSTRATIVE — not accepted
+import capability platform.irq.Binding as irq;          // ILLUSTRATIVE — not accepted
+import capability platform.dma.Allocator as dma;        // ILLUSTRATIVE — not accepted
+import capability net.adapter.V1Publisher as publisher; // ILLUSTRATIVE — not accepted
 ```
+
+> **Only the paths marked `accepted` are interfaces.** The others are names for
+> mechanisms that have not been decided, shown here because the shape of a
+> driver's request is worth seeing whole. A module writing one today is rejected
+> — `types.rs` resolves an interface path only against the accepted schema
+> tables, and an `extern` reaching an undeclared interface is
+> `E1801_FFI_NOT_AVAILABLE`.
+>
+> The accepted platform interfaces are exactly those in
+> `source/interfaces/platform/PLATFORM_INTERFACE_V1.md`, which as of Stage 4A is
+> `platform.pci.Bus` and `platform.pci.FunctionConfig` and nothing else. MMIO,
+> interrupts and DMA are open under ADR-0079 §11 and are added when their
+> mechanisms are decided, not when this example first showed a plausible name.
+>
+> This warning exists because the previous revision of this passage was mistaken
+> for a settled interface set during the Stage 4A audit: valid V1 syntax,
+> plausible paths, a Tier 2 document, and nothing anywhere saying which of them
+> a checker would accept. ADR-0051 §4 corrected an earlier version of the same
+> passage for a related reason.
 
 Three things are worth reading twice.
 

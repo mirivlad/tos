@@ -159,6 +159,27 @@ const LAUNCH_PLAN_ENDOW: u64 = 22;
 /// first.
 const LAUNCH_PLAN_SEAL: u64 = 23;
 
+/// Claims one PCI function within a bus capability's scope (ADR-0079 §10).
+///
+/// **The first operation admitted under `SYSTEM_ABI_V1` §2.1**, and the only one
+/// of the three that takes a bus, a device and a function: this is where a BDF
+/// is named, and the authority to name it is the bus capability itself. After
+/// it, a holder of the resulting function capability has no parameter through
+/// which to reach a different function.
+///
+/// Deliberately **not** `capability_attenuate_scoped` (16) with a different
+/// argument. That operation is a memory reservation whose semantics are a
+/// parent's remainder falling by what a child may spend, and a PCI function is
+/// not a quantity of memory; sharing the number would have made a function
+/// inherit accounting it has nothing to do with, to save an ABI number that is
+/// not scarce.
+const PCI_FUNCTION_CLAIM: u64 = 24;
+/// Reads conventional configuration space of the function a capability names.
+const PCI_CONFIG_READ: u64 = 25;
+/// Writes it, under a separate right, so that "may look at this device" and
+/// "may change what it does" are two grants.
+const PCI_CONFIG_WRITE: u64 = 26;
+
 /// The one call flag this contract version has.
 ///
 /// Blocking is the default because it is what `IPC_V1` describes — §4's
@@ -1060,7 +1081,136 @@ fn answer_rest(operation: u64, frame: &mut TrapFrame, caller: usize) -> Answer {
         REGION_SHARE => region_share(caller, arguments.first()),
         REGION_FREEZE => region_freeze(caller, arguments.first()),
 
+        // The three hardware mechanism primitives (`SYSTEM_ABI_V1` §2.1).
+        // Nothing here chooses a device, matches a driver or knows a device
+        // class: the first turns a bus scope into an assignment the caller
+        // named, and the other two perform a transaction against the function
+        // their capability names.
+        PCI_FUNCTION_CLAIM => pci_function_claim(
+            caller,
+            arguments.first(),
+            arguments.second(),
+            frame.rdx,
+            frame.r10,
+        ),
+        PCI_CONFIG_READ => {
+            pci_config_read(caller, arguments.first(), arguments.second(), frame.rdx)
+        }
+        PCI_CONFIG_WRITE => pci_config_write(
+            caller,
+            arguments.first(),
+            arguments.second(),
+            frame.rdx,
+            frame.r10,
+        ),
+
         _ => Answer::status(E_NOT_SUPPORTED),
+    }
+}
+
+/// Operation 24: one function out of a bus capability's scope.
+///
+/// **Exclusive, and refused three different ways.** A bus, device or function
+/// outside its architectural range is `E_BAD_ARGUMENT` — a fact about the
+/// argument that needs no authority to know. One inside its range but outside
+/// this capability's scope is `E_NO_CAPABILITY`, which is a different answer on
+/// purpose: the first says the caller asked for something that cannot exist, the
+/// second that it asked for something it may not reach. A function already
+/// assigned, or a full table, is `E_LIMIT`.
+fn pci_function_claim(caller: usize, handle: u64, bus: u64, device: u64, function: u64) -> Answer {
+    let bus_index = match capability::resolve(caller, handle, tos_launch::RIGHT_CLAIM) {
+        Err(refused) => return refused.into(),
+        Ok(Object::PciBus(index)) => index,
+        // `claim` over something that is not a bus is a right nobody granted
+        // over an object no function can be taken out of.
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+    };
+    let (index, generation) = match crate::pci::claim(bus_index, bus, device, function) {
+        Ok(assigned) => assigned,
+        Err(crate::pci::ClaimRefused::BadArgument) => return Answer::status(E_BAD_ARGUMENT),
+        Err(crate::pci::ClaimRefused::OutOfScope) => return Answer::status(E_NO_CAPABILITY),
+        Err(crate::pci::ClaimRefused::Limit) => return Answer::status(E_LIMIT),
+    };
+    // The name is made last. A claim that could not be named would be an
+    // assignment nothing holds and nothing can release, so the failure to grant
+    // undoes it rather than leaving it stranded.
+    match capability::grant(
+        caller,
+        Object::PciFunction { index, generation },
+        tos_launch::RIGHT_CONFIG_READ | tos_launch::RIGHT_CONFIG_WRITE,
+        0,
+    ) {
+        Ok(granted) => {
+            report_assignment(caller, index, generation);
+            Answer::value(granted)
+        }
+        Err(_) => {
+            // `grant` took no name, so the assignment has none: end it by the
+            // same rule that ends one whose last name went.
+            crate::pci::abandon(index, generation);
+            Answer::status(E_LIMIT)
+        }
+    }
+}
+
+/// Puts one assignment on the audit record, by the function it names.
+///
+/// A capability whose object cannot be attributed is the thing `CAPABILITY_V1`
+/// §3 refuses to call a capability, and a device authority is exactly where that
+/// matters: the record says which process now holds which function.
+fn report_assignment(caller: usize, index: u32, generation: u32) {
+    let Some((segment, bus, device, function)) = crate::pci::describe(index, generation) else {
+        return;
+    };
+    tos_serial::puts(b"TOS.RUN.PCI_ASSIGNED process=");
+    tos_serial::put_u32_decimal(caller as u32);
+    tos_serial::puts(b" segment=");
+    tos_serial::put_u32_decimal(u32::from(segment));
+    tos_serial::puts(b" bus=");
+    tos_serial::put_u32_decimal(u32::from(bus));
+    tos_serial::puts(b" device=");
+    tos_serial::put_u32_decimal(u32::from(device));
+    tos_serial::puts(b" function=");
+    tos_serial::put_u32_decimal(u32::from(function));
+    tos_serial::puts(b" generation=");
+    tos_serial::put_u32_decimal(generation);
+    tos_serial::puts(b" asserted_by=nucleus\r\n");
+}
+
+/// Operation 25. The capability decides which function; the caller decides only
+/// where in its configuration space to look.
+fn pci_config_read(caller: usize, handle: u64, offset: u64, width: u64) -> Answer {
+    let (index, generation) =
+        match capability::resolve(caller, handle, tos_launch::RIGHT_CONFIG_READ) {
+            Err(refused) => return refused.into(),
+            Ok(Object::PciFunction { index, generation }) => (index, generation),
+            Ok(_) => return Answer::status(E_NO_CAPABILITY),
+        };
+    // Bounds before the hardware, so a refused access reads nothing at all.
+    if !crate::pci::access_is_valid(offset, width) {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    match crate::pci::config_read(index, generation, offset, width) {
+        Some(value) => Answer::value(value),
+        None => Answer::status(E_BAD_ARGUMENT),
+    }
+}
+
+/// Operation 26, under the right that `config_read` alone does not carry.
+fn pci_config_write(caller: usize, handle: u64, offset: u64, width: u64, value: u64) -> Answer {
+    let (index, generation) =
+        match capability::resolve(caller, handle, tos_launch::RIGHT_CONFIG_WRITE) {
+            Err(refused) => return refused.into(),
+            Ok(Object::PciFunction { index, generation }) => (index, generation),
+            Ok(_) => return Answer::status(E_NO_CAPABILITY),
+        };
+    if !crate::pci::access_is_valid(offset, width) {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    if crate::pci::config_write(index, generation, offset, width, value) {
+        Answer::status(OK)
+    } else {
+        Answer::status(E_BAD_ARGUMENT)
     }
 }
 

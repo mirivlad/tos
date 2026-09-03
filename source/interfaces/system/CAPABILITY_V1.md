@@ -47,12 +47,30 @@ implementation nothing to honour: a process cannot construct a handle, because
 constructing one would mean writing into a table it cannot address. A guessed
 index either misses, or hits an entry the process was already given.
 
-**Where the entries come from** (ADR-0055, ADR-0075 §5). `SYSTEM_ABI_V1` creates
-no ambient authority. A capability an operation returns must have an explicitly
-defined normative origin: either authority the caller presented to that
-operation, which bounds what is produced, or an explicitly accepted bounded
-self-only creation rule. No operation creates authority over a pre-existing
-external object out of nothing, and no operation widens what its caller held.
+**Where the entries come from** (ADR-0055, ADR-0075 §5, ADR-0079 §9).
+`SYSTEM_ABI_V1` creates no ambient authority. A capability an operation returns
+must have an explicitly defined normative origin: either authority the caller
+presented to that operation, which bounds what is produced, or an explicitly
+accepted bounded self-only creation rule. No operation creates authority over a
+pre-existing external object out of nothing, and no operation widens what its
+caller held.
+
+**A third origin class, and it is not an operation** (ADR-0079 §9). A pre-existing
+*platform* resource — a PCI bus, and in later stages whatever else the machine
+already has — cannot satisfy either rule above: it is not derived from anything a
+process holds, and it is emphatically not something only its creator can name.
+Authority over one may therefore originate **only at the boot/platform boundary**,
+under an accepted platform contract, with explicit finite scope and identity and
+an attributable launch and audit record.
+
+The rule it is an addition to is unchanged: **an ordinary operation cannot
+manufacture authority over a pre-existing external object.** No process
+operation creates a platform root. What this admits is a root minted where every
+other root is minted — at the launch boundary, by whoever decided it, named in
+the record — and not a licence to mint hardware capabilities later or elsewhere.
+Every authority derived from such a root is bounded by it and traces back to it,
+which is what makes a device capability attributable in the same way a memory
+one is.
 An operation reachable *without* a capability that creates authority would be
 ambient authority with a handle in front of it, and there is none. A process's table is written by the nucleus **before the process is
 entered**, from the endowment the party that launched it decided. The endowment
@@ -86,7 +104,12 @@ capability = object + rights + scope + lifetime + generation
   `share`, which is what ADR-0037's accepted type model requires — a
   `Region<mut T>` is readable and writable and is neither shareable nor
   transferable, so `write` and `share` never appear together, and a
-  `DmaRegion` is granted neither `share` nor transfer in V1;
+  `DmaRegion` is granted neither `share` nor transfer in V1; for a **PCI bus**
+  `claim`, and for a **PCI function** `config_read` and `config_write`
+  (ADR-0079 §10, `PLATFORM_INTERFACE_V1`), which are separate for the reason
+  every pair here is separate — a holder of `config_read` alone cannot mutate a
+  device's configuration, and that is a fact about the handle rather than about
+  what its holder is trusted to attempt;
 - **scope**: the range, subset **or finite resource amount** the rights apply
   to, where the object has one. An amount never widens, so a derived authority
   may spend at most what its parent had.

@@ -141,6 +141,10 @@ pub enum ObjectKind {
     /// builder would be answering a request for something that has been decided
     /// with something that has not.
     LaunchPlan,
+    /// A PCI bus scope (`PLATFORM_INTERFACE_V1` §4).
+    PciBus,
+    /// One assignment of one PCI function (`PLATFORM_INTERFACE_V1` §4).
+    PciFunction,
 }
 
 /// One field of a record an accepted schema declares.
@@ -480,6 +484,116 @@ pub const ACCEPTED: &[Interface] = &[
             // schema that advertised an operation the ABI answers
             // `E_NOT_SUPPORTED` would be advertising something that does not
             // work.
+        ],
+    },
+    // ---- PLATFORM_INTERFACE_V1 (ADR-0079) ----
+    //
+    // A second accepted schema, in the same table because a checker asks one
+    // question — "is this path an interface, and does it declare this
+    // operation?" — and two tables would be two answers to it. Which document
+    // declares which entry is recorded in the comments and in the contracts;
+    // the resolution rule is one rule.
+    Interface {
+        path: "platform.pci.Bus",
+        object: ObjectKind::PciBus,
+        operations: &[
+            // The only operation that names a bus, a device and a function.
+            // Possession of a bus capability *is* the authority to address
+            // functions inside its scope, which is why the BDF is an argument
+            // here and appears nowhere in the interface below.
+            Operation {
+                name: "pci_function_claim",
+                capabilities: &[Requirement::of("platform.pci.Bus", "claim")],
+                parameters: &[
+                    Parameter::fixed("u64"),
+                    Parameter::fixed("u64"),
+                    Parameter::fixed("u64"),
+                ],
+                result: "Result<platform.pci.FunctionConfig, i64>",
+            },
+            // How a supervisor that holds the root hands a scoped name for it
+            // to the PCI service it launches. There is no rule anywhere naming
+            // which module may receive one: the flow is the policy, and it is
+            // textual (ADR-0079 §5).
+            Operation {
+                name: "endow_for_launch",
+                capabilities: &[Requirement::held("platform.pci.Bus")],
+                parameters: &[
+                    Parameter::fixed("system.process.LaunchPlanBuilder"),
+                    Parameter::fixed("u64"),
+                    Parameter::bounded("string", 64),
+                ],
+                result: "i64",
+            },
+            Operation {
+                name: "capability_attenuate",
+                capabilities: &[Requirement::held("platform.pci.Bus")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<platform.pci.Bus, i64>",
+            },
+            Operation {
+                name: "capability_release",
+                capabilities: &[Requirement::held("platform.pci.Bus")],
+                parameters: &[],
+                result: "i64",
+            },
+        ],
+    },
+    Interface {
+        path: "platform.pci.FunctionConfig",
+        object: ObjectKind::PciFunction,
+        operations: &[
+            // **No parameter names a function.** An offset and a width, and the
+            // capability decides the rest — so a holder cannot address a
+            // different device, not because it is forbidden to but because
+            // there is nowhere to say so.
+            Operation {
+                name: "pci_config_read",
+                capabilities: &[Requirement::of(
+                    "platform.pci.FunctionConfig",
+                    "config_read",
+                )],
+                parameters: &[Parameter::fixed("u64"), Parameter::fixed("u64")],
+                result: "Result<u64, i64>",
+            },
+            // A separate right, so that "may look at this device" and "may
+            // change what it does" are two grants and an attenuation can leave
+            // only the first.
+            Operation {
+                name: "pci_config_write",
+                capabilities: &[Requirement::of(
+                    "platform.pci.FunctionConfig",
+                    "config_write",
+                )],
+                parameters: &[
+                    Parameter::fixed("u64"),
+                    Parameter::fixed("u64"),
+                    Parameter::fixed("u64"),
+                ],
+                result: "i64",
+            },
+            Operation {
+                name: "endow_for_launch",
+                capabilities: &[Requirement::held("platform.pci.FunctionConfig")],
+                parameters: &[
+                    Parameter::fixed("system.process.LaunchPlanBuilder"),
+                    Parameter::fixed("u64"),
+                    Parameter::bounded("string", 64),
+                ],
+                result: "i64",
+            },
+            Operation {
+                name: "capability_attenuate",
+                capabilities: &[Requirement::held("platform.pci.FunctionConfig")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<platform.pci.FunctionConfig, i64>",
+            },
+            Operation {
+                name: "capability_release",
+                capabilities: &[Requirement::held("platform.pci.FunctionConfig")],
+                parameters: &[],
+                result: "i64",
+            },
         ],
     },
 ];

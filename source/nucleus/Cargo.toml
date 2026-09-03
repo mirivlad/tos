@@ -86,6 +86,13 @@ test-second-receiver = []
 # module requests. The module is the one that calls the system, which is the
 # Stage 3 identity question docs/37 asks.
 test-module-operation = []
+# ADR-0079: the boot process is endowed with the **root PCI bus authority**, a
+# platform root minted at the launch boundary and named in the record. It is the
+# third origin class `CAPABILITY_V1` §2 admits: not derived from anything a
+# process holds, and not something only its creator can name — a bus exists
+# because the machine has one, and this is the one lawful moment to say who may
+# address it. No operation of any contract produces one.
+test-pci-discovery = []
 # A grant of the wrong *kind* under the right name: authority over a process,
 # bound to the name a module asks for an endpoint under. The name matches and
 # the object does not, which is the one case `SYSTEM_INTERFACE_V1` §4's object
