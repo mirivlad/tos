@@ -22,6 +22,7 @@
 #                                    [--expect N]
 #                                    [--require "EV ..."] [--forbid "EV ..."]
 #                                    [--timeout SECONDS] [--event-timestamps FILE] [--accel tcg|kvm]
+#                                    [--stage4-block-device]
 #                                    [--interactive --display gtk|sdl] [--no-framebuffer]
 #
 # --expect defaults to 33 (HALT_OK). --require/--forbid default to the event
@@ -58,6 +59,10 @@ PRODUCTION_NUCLEUS_BEFORE_SHA256=""
 PRODUCTION_RUNTIME_IMAGE_BEFORE_SHA256=""
 QEMU_ACCEL=""
 NO_FRAMEBUFFER=0
+# ADR-0079 §7 and the Stage 4 profile extension: the deterministic block device
+# Stage 4 discovers. Off by default, so every Stage 1-3 gate keeps running the
+# ADR-0040 reference profile byte for byte.
+STAGE4_BLOCK=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -81,6 +86,7 @@ while [ $# -gt 0 ]; do
         --event-timestamps) EVENT_TIMESTAMPS="$2"; shift 2 ;;
         --accel)    QEMU_ACCEL="$2"; shift 2 ;;
         --no-framebuffer) NO_FRAMEBUFFER=1; shift ;;
+        --stage4-block-device) STAGE4_BLOCK=1; shift ;;
         --interactive) INTERACTIVE=1; shift ;;
         --display)  DISPLAY_BACKEND="$2"; shift 2 ;;
         -h|--help)  sed -n '3,28p' "$0"; exit 0 ;;
@@ -271,6 +277,32 @@ fi
 # the boot has to reach the same result with nothing to draw on.
 if [ "$NO_FRAMEBUFFER" -eq 1 ]; then
     QEMU_ARGS+=( -vga none )
+fi
+# The Stage 4 extension of the accepted base platform, never a change to it
+# (ADR-0079 §7). Every field is stated rather than left to a QEMU default,
+# because a device profile nobody wrote down is one that changes underneath the
+# evidence:
+#
+#   transport      modern VIRTIO PCI. `disable-legacy=on,disable-modern=off`
+#                  makes the function report device 0x1042 and not the
+#                  transitional 0x1001, which is the transport Stage 4 intends
+#                  to continue with rather than the one whose config is easier
+#                  to read
+#   pci location   fixed at 00:04.0, so the evidence names one function instead
+#                  of whichever slot enumeration happened to find
+#   backing        a raw image of a stated size with deterministic content
+#   queues         one, recorded because feature negotiation is part of the
+#                  surface QEMU exposes
+#   iommu_platform off for this slice, and stated because the later DMA contract
+#                  must not change when it becomes on (docs/11 §DMA)
+if [ "$STAGE4_BLOCK" -eq 1 ]; then
+    STAGE4_IMAGE="$OUT/stage4-block.img"
+    rm -f "$STAGE4_IMAGE"
+    dd if=/dev/zero of="$STAGE4_IMAGE" bs=1M count=16 status=none
+    QEMU_ARGS+=(
+        -drive "if=none,id=stage4blk,format=raw,file=$STAGE4_IMAGE"
+        -device "virtio-blk-pci,drive=stage4blk,addr=0x4,disable-legacy=on,disable-modern=off,num-queues=1,iommu_platform=off"
+    )
 fi
 if [ "$INTERACTIVE" -eq 0 ]; then
     QEMU_ARGS+=( -device isa-debug-exit )

@@ -88,6 +88,10 @@ const PROCESS_CREATE_FROM_BUNDLE: u64 = 20;
 const LAUNCH_PLAN_CREATE: u64 = 21;
 const LAUNCH_PLAN_ENDOW: u64 = 22;
 const LAUNCH_PLAN_SEAL: u64 = 23;
+/// The three hardware mechanism primitives (`SYSTEM_ABI_V1` §2.1, ADR-0079).
+const PCI_FUNCTION_CLAIM: u64 = 24;
+const PCI_CONFIG_READ: u64 = 25;
+const PCI_CONFIG_WRITE: u64 = 26;
 const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
@@ -1106,6 +1110,15 @@ enum Produced {
     /// facts, because neither is derivable from the other — a handle is an
     /// index in one table, and an instance identity is not authority.
     CreatedProcess,
+    /// `Result<u64, i64>`: the number `rdx` carries on success, the status
+    /// otherwise.
+    ///
+    /// The first result of any accepted schema whose success value is an
+    /// ordinary integer rather than authority or a record — a configuration
+    /// read produces a number the device reported, and that is all it produces.
+    /// **A number is not authority**: nothing downstream accepts one where a
+    /// capability belongs, which is what keeps a BAR value data (ADR-0079 §10).
+    Number,
     /// `Result<system.process.ChildEnding, i64>`: the record operation 14 wrote
     /// at `WAIT_CHILD_RECORD`, as the value it describes.
     ///
@@ -1334,6 +1347,116 @@ const PERFORMED: &[Performed] = &[
         values: &[Slot::Number(Reg::Rsi)],
         result: Produced::ChildEnding,
     },
+    // ---- PLATFORM_INTERFACE_V1 (ADR-0079) ----
+    //
+    // The same mechanism as every row above it: an interface, an operation
+    // number, where each capability and value goes. That a device is at the
+    // other end changes nothing here, which is the point — this bridge does not
+    // know what PCI is, and the row for a configuration read is the shape of the
+    // row for a send.
+    Performed {
+        interface: "platform.pci.Bus",
+        name: "pci_function_claim",
+        operation: PCI_FUNCTION_CLAIM,
+        capabilities: &[Reg::Rdi],
+        // §5 row 24: bus, device and function, in the three registers after the
+        // capability. Three values rather than one packed word — a packed BDF
+        // would have unused bits and therefore a canonical form to argue about,
+        // and each of the three has its own architectural range to be refused
+        // against.
+        values: &[
+            Slot::Number(Reg::Rsi),
+            Slot::Number(Reg::Rdx),
+            Slot::Number(Reg::R10),
+        ],
+        result: Produced::Authority,
+    },
+    Performed {
+        interface: "platform.pci.Bus",
+        name: "endow_for_launch",
+        operation: LAUNCH_PLAN_ENDOW,
+        capabilities: &[Reg::Rdi],
+        values: &[
+            Slot::Held(Reg::Rsi),
+            Slot::Number(Reg::R10),
+            Slot::Text {
+                length: Reg::Rdx,
+                at: tos_launch::LAUNCH_ENDOW_BINDING,
+                maximum: tos_launch::MAX_BINDING as usize,
+            },
+        ],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "platform.pci.Bus",
+        name: "capability_attenuate",
+        operation: CAPABILITY_ATTENUATE,
+        capabilities: &[Reg::Rdi],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Authority,
+    },
+    Performed {
+        interface: "platform.pci.Bus",
+        name: "capability_release",
+        operation: CAPABILITY_RELEASE,
+        capabilities: &[Reg::Rdi],
+        values: &[],
+        result: Produced::Status,
+    },
+    // **No row here carries a bus, a device or a function.** The capability
+    // decides which function; an offset and a width are all a caller says.
+    Performed {
+        interface: "platform.pci.FunctionConfig",
+        name: "pci_config_read",
+        operation: PCI_CONFIG_READ,
+        capabilities: &[Reg::Rdi],
+        values: &[Slot::Number(Reg::Rsi), Slot::Number(Reg::Rdx)],
+        result: Produced::Number,
+    },
+    Performed {
+        interface: "platform.pci.FunctionConfig",
+        name: "pci_config_write",
+        operation: PCI_CONFIG_WRITE,
+        capabilities: &[Reg::Rdi],
+        values: &[
+            Slot::Number(Reg::Rsi),
+            Slot::Number(Reg::Rdx),
+            Slot::Number(Reg::R10),
+        ],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "platform.pci.FunctionConfig",
+        name: "endow_for_launch",
+        operation: LAUNCH_PLAN_ENDOW,
+        capabilities: &[Reg::Rdi],
+        values: &[
+            Slot::Held(Reg::Rsi),
+            Slot::Number(Reg::R10),
+            Slot::Text {
+                length: Reg::Rdx,
+                at: tos_launch::LAUNCH_ENDOW_BINDING,
+                maximum: tos_launch::MAX_BINDING as usize,
+            },
+        ],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "platform.pci.FunctionConfig",
+        name: "capability_attenuate",
+        operation: CAPABILITY_ATTENUATE,
+        capabilities: &[Reg::Rdi],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Authority,
+    },
+    Performed {
+        interface: "platform.pci.FunctionConfig",
+        name: "capability_release",
+        operation: CAPABILITY_RELEASE,
+        capabilities: &[Reg::Rdi],
+        values: &[],
+        result: Produced::Status,
+    },
 ];
 
 /// One optional `u64` of the wait record, as the `Option` the schema declares.
@@ -1421,6 +1544,8 @@ impl System for Endowment<'_> {
                 interfaces::ObjectKind::MemoryAuthority => tos_launch::OBJECT_MEMORY_AUTHORITY,
                 interfaces::ObjectKind::LaunchPlanBuilder => tos_launch::OBJECT_LAUNCH_PLAN_BUILDER,
                 interfaces::ObjectKind::LaunchPlan => tos_launch::OBJECT_LAUNCH_PLAN,
+                interfaces::ObjectKind::PciBus => tos_launch::OBJECT_PCI_BUS,
+                interfaces::ObjectKind::PciFunction => tos_launch::OBJECT_PCI_FUNCTION,
             })?;
         let capability = answer?;
         self.report.line(&alloc::format!(
@@ -1581,6 +1706,7 @@ impl System for Endowment<'_> {
         let produced = match performed.result {
             Produced::Status => unreachable!("answered above"),
             Produced::Authority => Value::Capability(Handle::new(value)),
+            Produced::Number => Value::Int(IntKind::U64, u128::from(value) as i128),
             Produced::CreatedProcess => {
                 // SAFETY: the nucleus wrote the instance id at the fixed offset
                 // of this process's own argument region, and only on success —

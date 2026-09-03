@@ -113,6 +113,25 @@ pub enum Object {
     /// the *holder* of every reference its entries describe, and an object whose
     /// destruction releases references must have exactly one death.
     LaunchPlanBuilder { index: u32, generation: u32 },
+    /// A PCI bus scope, named by its bus object (ADR-0079 §5).
+    ///
+    /// **The only kind here that nothing makes.** Every other variant is
+    /// produced by an operation, or by a launcher out of something it already
+    /// held; a bus exists because the machine has one. So its origin is the
+    /// third class `CAPABILITY_V1` §2 admits — minted at the boot/platform
+    /// boundary, named with its scope in the launch record — and no operation of
+    /// any contract returns one. Like an endpoint, the object outlives every
+    /// handle to it and is a table slot for the life of the boot.
+    PciBus(u32),
+    /// One assignment of one PCI function (ADR-0079 §10).
+    ///
+    /// **Not affine, and the assignment's exclusivity is not the reason it might
+    /// look affine.** Exactly one claim exists per function while it lives, but
+    /// that is a property of `pci_function_claim` — several capabilities may name
+    /// one assignment, because a later split between a bus manager and a driver
+    /// needs attenuation to make a second, narrower name. So names are counted,
+    /// as a memory authority's are, and the claim ends when the last one goes.
+    PciFunction { index: u32, generation: u32 },
     /// The same plan after operation 23 consumed the builder.
     ///
     /// A separate variant for the reason `SharedRegion` is one — the state is
@@ -138,6 +157,8 @@ impl Object {
             Object::Region { .. } | Object::SharedRegion { .. } => tos_launch::OBJECT_REGION,
             Object::LaunchPlanBuilder { .. } => tos_launch::OBJECT_LAUNCH_PLAN_BUILDER,
             Object::LaunchPlan { .. } => tos_launch::OBJECT_LAUNCH_PLAN,
+            Object::PciBus(_) => tos_launch::OBJECT_PCI_BUS,
+            Object::PciFunction { .. } => tos_launch::OBJECT_PCI_FUNCTION,
         }
     }
 
@@ -379,14 +400,24 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
     match object {
         // Nothing to count, and nothing that a later kind should inherit by
         // being forgotten here: each arm is a decision.
-        Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {
-            Ok(())
-        }
+        Object::None
+        | Object::Endpoint(_)
+        | Object::Process { .. }
+        | Object::Reply { .. }
+        // A bus object is a table slot for the life of the boot, exactly as an
+        // endpoint is: nothing destroys it, so nothing has to count its names.
+        | Object::PciBus(_) => Ok(()),
         Object::MemoryAuthority { index, generation } => {
             // SAFETY: single-context nucleus; nothing else holds the tree.
             unsafe { crate::memory::authority() }
                 .retain(crate::region::AuthorityId { index, generation })
                 .map_err(|_| NotGranted::NoRoom)
+        }
+        // An assignment ends when its last name goes, so every name is counted
+        // through the same door — which is what makes releasing one mean the
+        // same thing however it was made.
+        Object::PciFunction { index, generation } => {
+            crate::pci::retain(index, generation).map_err(|_| NotGranted::NoRoom)
         }
         // Affine or not, the **region** is what says so. Operation 5 refuses to
         // make a second handle to an affine one, but an operation that reached
@@ -460,6 +491,19 @@ fn release_capability(object: Object) {
         | Object::LaunchPlan { index, generation } => {
             crate::plan::destroy(crate::plan::PlanId { index, generation });
         }
+        // Nothing to give back: the bus object outlives every name for it.
+        Object::PciBus(_) => {}
+        // The last name going is what ends the claim, so the function becomes
+        // claimable again by exactly the event that made it unreachable.
+        Object::PciFunction { index, generation } => {
+            if crate::pci::release(index, generation).is_err() {
+                // The entry named an assignment the table does not recognise,
+                // so a name was destroyed that the claim never counted. Fail
+                // closed rather than go on assigning from a table that is a
+                // reference out.
+                crate::memory::note_divergence(b"pci-function-name-release");
+            }
+        }
     }
 }
 
@@ -500,6 +544,11 @@ fn object_is_live(object: Object) -> bool {
         | Object::LaunchPlan { index, generation } => {
             crate::plan::is_live(crate::plan::PlanId { index, generation })
         }
+        Object::PciBus(index) => crate::pci::bus_is_live(index),
+        // A released assignment is not usable authority even where the slot has
+        // been claimed again: the generation moved, so a handle kept across the
+        // gap names the first claim and finds nothing.
+        Object::PciFunction { index, generation } => crate::pci::is_live(index, generation),
     }
 }
 
@@ -863,11 +912,17 @@ impl Binding {
 /// than effect; `MemoryAuthority` is what it is structure for.
 fn retain_transit(object: Object) -> Result<(), NotGranted> {
     match object {
-        Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {
-            Ok(())
-        }
+        Object::None
+        | Object::Endpoint(_)
+        | Object::Process { .. }
+        | Object::Reply { .. }
+        // Nothing counts a bus object's names, so a delegated one takes nothing.
+        | Object::PciBus(_) => Ok(()),
         // A name like any other: one budget, several ways of reaching it.
         Object::MemoryAuthority { .. } => retain_capability(object),
+        // The same, for an assignment: a delegation makes another name for one
+        // claim, and the claim outlives whichever name goes first.
+        Object::PciFunction { .. } => retain_capability(object),
         // Unreachable: a region does not travel in the generic transfer table
         // at all. It has a bound of its own (`IPC_V1` §3) and a lifecycle of
         // its own — an internal reference rather than a name (ADR-0075 §6) —
@@ -890,8 +945,12 @@ fn retain_transit(object: Object) -> Result<(), NotGranted> {
 /// Drops a reference a message held.
 fn release_transit(object: Object) {
     match object {
-        Object::None | Object::Endpoint(_) | Object::Process { .. } | Object::Reply { .. } => {}
-        Object::MemoryAuthority { .. } => release_capability(object),
+        Object::None
+        | Object::Endpoint(_)
+        | Object::Process { .. }
+        | Object::Reply { .. }
+        | Object::PciBus(_) => {}
+        Object::MemoryAuthority { .. } | Object::PciFunction { .. } => release_capability(object),
         // As above: never taken, so never given back.
         Object::Region { .. }
         | Object::SharedRegion { .. }

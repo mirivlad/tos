@@ -22,6 +22,7 @@ source/interfaces/system/SYSTEM_INTERFACE_V1.md
 source/interfaces/system/CAPABILITY_V1.md
 source/interfaces/system/IPC_V1.md
 source/interfaces/system/PROCESS_IDENTITY_V1.md
+source/interfaces/platform/PLATFORM_INTERFACE_V1.md
 docs/21_ARCHITECTURE_PRESERVATION_POLICY.md
 docs/37_STAGE_IDENTITY_GATES.md
 docs/03_ARCHITECTURE_OVERVIEW.md
