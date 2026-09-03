@@ -3592,7 +3592,12 @@ impl Work {
 struct Work {
     /// The benchmark's verified closure: images, records and membership, with a
     /// bounded resident set beside them. Prepared once, outside every sample.
-    prepared: tos_pipeline::Prepared,
+    ///
+    /// `'static` because `Prepared::launch` encodes each module into owned image
+    /// bytes and returns a closure that borrows nothing — which is what lets the
+    /// lowered module be dropped immediately below, and what keeps the resident
+    /// set the only thing alive across a sample.
+    prepared: tos_pipeline::Prepared<'static>,
     argument: tos_engine::Value,
     system: Marked,
     performed: u32,

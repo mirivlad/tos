@@ -114,11 +114,11 @@ grep -q '^TOS\.RUN\.PROCESS_CHARGE .* grant=56623104 ' "$LOG" ||
 # what was attempted, then what came back. A journal that could not tell those
 # apart would be a log of things that happened rather than a record of decisions.
 for decision in \
-    'supervisor\.policy\.start-permitted' \
-    'supervisor\.action\.create' \
-    'supervisor\.result\.created' \
-    'supervisor\.observed\.ending' \
-    'supervisor\.inferred\.own-failure'; do
+    'info\.supervisor\.policy\.start-permitted' \
+    'info\.supervisor\.action\.create' \
+    'info\.supervisor\.result\.created' \
+    'info\.supervisor\.observed\.ending' \
+    'warn\.supervisor\.inferred\.own-failure'; do
     [ "$(said "$decision")" -ge 1 ] ||
         fail "the supervisor never journalled '$decision'"
 done
@@ -139,10 +139,10 @@ def first(name):
     return records.index(name) if name in records else None
 
 for earlier, later in [
-    ("supervisor.policy.start-permitted", "supervisor.action.create"),
-    ("supervisor.action.create", "supervisor.result.created"),
-    ("supervisor.observed.ending", "supervisor.inferred.own-failure"),
-    ("supervisor.inferred.own-failure", "supervisor.policy.restart-permitted"),
+    ("info.supervisor.policy.start-permitted", "info.supervisor.action.create"),
+    ("info.supervisor.action.create", "info.supervisor.result.created"),
+    ("info.supervisor.observed.ending", "warn.supervisor.inferred.own-failure"),
+    ("warn.supervisor.inferred.own-failure", "info.supervisor.policy.restart-permitted"),
 ]:
     a, b = first(earlier), first(later)
     if a is None or b is None or a >= b:
@@ -163,16 +163,16 @@ PY
 # Not "the code has a branch for each" — the boot took each of them. A blocked
 # service, a latched one, and a restart, all in one run, all journalled as
 # different decisions.
-[ "$(said 'supervisor\.state\.blocked')" -ge 1 ] ||
+[ "$(said 'warn\.supervisor\.state\.blocked')" -ge 1 ] ||
     fail "no service was ever blocked, so BLOCKED is unevidenced on the real machine"
 # Two services have a window wider than the boot and a budget of two, so both
 # latch; the third's window is one tick and it never does. That the third goes
 # on restarting *after* both latches is what says a latch is one service's.
-[ "$(said 'supervisor\.state\.failed')" = 2 ] ||
+[ "$(said 'error\.supervisor\.state\.failed')" = 2 ] ||
     fail "the two wide-window services should have exhausted their budgets"
-[ "$(said 'supervisor\.policy\.restart-permitted')" -ge 1 ] ||
+[ "$(said 'info\.supervisor\.policy\.restart-permitted')" -ge 1 ] ||
     fail "nothing was ever restarted, so the budget was never exercised"
-[ "$(said 'supervisor\.policy\.latched-no-start')" -ge 1 ] ||
+[ "$(said 'warn\.supervisor\.policy\.latched-no-start')" -ge 1 ] ||
     fail "a latched service was never asked again, so the latch proves nothing"
 
 python3 - "$LOG" <<'PY'
@@ -188,21 +188,21 @@ for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
     if found:
         records.append(found.group(1))
 
-latched = records.index("supervisor.state.failed")
-last_latch = len(records) - 1 - records[::-1].index("supervisor.state.failed")
+latched = records.index("error.supervisor.state.failed")
+last_latch = len(records) - 1 - records[::-1].index("error.supervisor.state.failed")
 for at, record in enumerate(records):
-    if record == "supervisor.policy.latched-no-start" and at < latched:
+    if record == "warn.supervisor.policy.latched-no-start" and at < latched:
         raise SystemExit(
             "supervision: FAIL: a service refused to start for being latched "
             "before anything latched"
         )
 after = records[last_latch:]
-if "supervisor.result.created" not in after:
+if "info.supervisor.result.created" not in after:
     raise SystemExit(
         "supervision: FAIL: nothing was started after the latch, so the latch "
         "cannot be told apart from the run ending"
     )
-refusals = after.count("supervisor.policy.latched-no-start")
+refusals = after.count("warn.supervisor.policy.latched-no-start")
 print(f"  the latch at record {latched}; {refusals} refusal(s) after it, and")
 print("  other services still starting — so the latch is one service's and not the run's")
 PY

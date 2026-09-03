@@ -262,3 +262,122 @@ When the canonical boot module does not complete, the nucleus emits
 whose exact condition Boot ABI v1 section 2 states. Which stage refused, and
 why, is in the `TOS.RUN.*` events above — the result code says the boot module
 failed, not how.
+
+## 9. Severity, and the operator-visible important-error view
+
+Stage 3 requires one operator-visible view of the events that matter. This
+section says what that view is and how a reader selects it. It adds no
+transport, no second channel and no storage: every question below is answered
+by something the system already has.
+
+### 9.1 The view is the transport
+
+**The single operator-visible view is the diagnostic transport itself**, in the
+order it was produced. It is already the one place every component's account
+converges — the loader's, the nucleus's, the runtime edge's, and any process's
+own journal — and a second place would be a second truth about what happened.
+
+The *important-error* view is that transport filtered to severity `WARN` and
+above. It is a **selection**, not a copy: nothing is duplicated, nothing is
+summarised, and an event appears once.
+
+### 9.2 Severity is a property of the event kind
+
+| Severity | What it means |
+|---|---|
+| `DEBUG` | detail a component emits for its own diagnosis. **No identifier of this contract is `DEBUG`.** |
+| `INFO` | the system did what it was asked. The default. |
+| `WARN` | something was refused, cancelled or released, and the system carried on **as designed**. An operator should know; nothing is broken. |
+| `ERROR` | a component's work did not succeed. The boot may continue; that component's job did not. |
+| `FATAL` | the boot did not do what it was asked and stops. |
+
+**Severity is declared per identifier, not chosen per occurrence.** What an
+event kind means does not vary between two of them, so an emitter has no
+severity to decide and no field to fill; a reader applies the table below. This
+is also why adding severity costs no emitter a line of code and no gate a
+change: it is a statement *about* a vocabulary that already exists.
+
+Everything this contract declares is `INFO` unless listed here. Boot ABI v1's
+own failure vocabulary (§7 "Failure vocabulary and extension rule") is `FATAL`
+in its entirety, by that contract rather than by this one.
+
+| Identifier | Severity | Why |
+|---|---|---|
+| `TOS.NUCLEUS.INVARIANT` | `FATAL` | the nucleus found its own accounting wrong and will not go on |
+| `TOS.RUN.UNSTARTABLE` | `FATAL` | no stage ran; there is nothing to report about |
+| `TOS.RUN.PROCESS_FAULT` | `ERROR` | a process touched memory no capability of its own authorised |
+| `TOS.RUN.PROCESS_DEADLOCKED` | `ERROR` | a process is waiting for something that cannot happen |
+| `TOS.RUN.DEADLOCK` | `ERROR` | nothing is runnable and something is waiting |
+| `TOS.RUN.BUNDLE.REFUSED` | `ERROR` | a target refused the artifact it was created from |
+| `TOS.RUN.PROCESS_REFUSED` | `WARN` | a creation could not be funded or had no slot — an ordinary bound, named |
+| `TOS.RUN.BLOCK_CANCELLED` | `WARN` | a wait was cancelled by the liveness rule (ADR-0059) |
+| `TOS.RUN.WAIT_CANCELLED` | `WARN` | as above, for a lifecycle wait |
+| `TOS.RUN.NOTICE_RELEASED` | `WARN` | an ending nobody was left to collect was released rather than kept |
+
+### 9.3 A process's own journal reaches the same view
+
+A process writes its own records as `string` values of
+`SYSTEM_INTERFACE_V1`'s `endpoint_send_text`, which the runtime edge renders on
+this transport as the `said=` field of `TOS.RUN.INTERFACE`. That is the only way
+a TOS Core module can put text into the world in its own words, and it is
+already how the Stage 3 supervisor's journal is written.
+
+**A record names its own severity as its first dotted segment:**
+
+```text
+said=<severity>.<producer>.<kind>.<what>
+     warn.supervisor.state.blocked
+     error.supervisor.policy.budget-exhausted
+     info.supervisor.action.create
+```
+
+The severity is the record's, because a process is the only thing that knows
+what its own decisions mean — this contract cannot enumerate the vocabulary of
+every service that will ever run, and a table that tried would be a contract
+that has to change whenever a service does. What this contract fixes is the
+*form*: the first segment is one of the five names in §9.2, lower case, and a
+record whose first segment is not one of them is `INFO`.
+
+The remaining segments are the producer's own. Stage 3's supervisor uses
+`<producer>.<kind>.<what>` with `kind` one of `observed`, `inferred`, `policy`,
+`action`, `result` or `state`, which keeps apart what the nucleus asserted, what
+the supervisor concluded, what its policy decided, what it attempted and what
+came back.
+
+### 9.4 How an operator reads it
+
+`scripts/tos-journal.py` renders the important-error view from a captured
+transport, in human-readable text: severity, the component that produced it, the
+event, and its detail. It is a **reader**, not a component: it holds no state,
+runs on a host, and can be replaced by `grep` without losing anything, because
+the selection rule is one segment of a name.
+
+```text
+$ python3 scripts/tos-journal.py boot/serial.log
+WARN   supervisor  state.blocked                 system/boot/worker.tos
+ERROR  supervisor  policy.budget-exhausted       system/boot/worker.tos
+WARN   nucleus     TOS.RUN.PROCESS_REFUSED       reason=no-funding wanted=58806272
+```
+
+### 9.5 Bounds
+
+Every bound is one an accepted contract already fixed, and this section adds
+none:
+
+- a process's journal record is an inline IPC payload, so `IPC_V1` §3 bounds it
+  at **256 bytes**; a longer one is refused before the call is made;
+- an endpoint queue holds **four** messages (`IPC_V1` §3), so a producer that
+  does not drain its own sink is refused rather than growing one;
+- a process's report region is a fixed part of its charged footprint
+  (ADR-0076 §3), drained by the nucleus at each system call;
+- the transport itself is a stream, not a store.
+
+### 9.6 What Stage 3 does not decide
+
+**Persistence, rollover, archival, cross-boot recovery, retention and filesystem
+location are not decided here and are not implemented.** No accepted contract
+decides them, and a Stage 3 view that invented one would be a Stage 4
+observability design arriving without a decision. What Stage 3 requires and this
+provides is that the consequential events exist, are produced by the component
+whose statement they are, converge on one transport in one order, carry a
+severity a reader can select by, and are bounded.
