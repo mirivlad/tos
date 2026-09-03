@@ -6,9 +6,10 @@
 #
 # One supervisor builds a real `TOSBUNDLE/v1` over this boot's own source set
 # into a region it allocated, freezes it, shares it, and then creates targets
-# from it. **This is not the canonical build worker** — ADR-0074 is a Draft and
-# the build/supervisor lifecycle it proposes is not settled — it is the smallest
-# arrangement that produces a real artifact for a real question.
+# from it. **This is not the canonical build worker** — that is ADR-0074 §4a's
+# T1 topology, which `build-topology.sh` performs — it is the smallest
+# arrangement that produces a real artifact for a real question about
+# operation 20 alone.
 #
 # What is asserted, and why each one is a claim somebody could get wrong:
 #

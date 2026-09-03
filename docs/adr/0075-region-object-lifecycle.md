@@ -15,7 +15,7 @@
   the first implementation slice does not need them
 - Related: ADR-0037 (Accepted, revision 3) — the **type-level** region model this
   must implement rather than re-decide. ADR-0055 (Accepted) — where authority
-  comes from, and its Option B. ADR-0050, ADR-0041 — grants. ADR-0074 (Draft) —
+  comes from, and its Option B. ADR-0050, ADR-0041 — grants. ADR-0074 (Accepted 2026-09-03; Draft when this was written) —
   the build workspace and the launch bundle this exists to carry.
   `CAPABILITY_V1`, `IPC_V1` §5–§6, `SYSTEM_ABI_V1` §5
 

@@ -16,7 +16,7 @@
   asked to be brought back rather than resolved here
 - Related: ADR-0075 (Accepted) — the authority tree and the region lifecycle this
   funds. ADR-0069 — the reference process grant. ADR-0050, ADR-0041 — grants and
-  the pool. ADR-0074 (Draft) — the build workspace this has to be able to pay
+  the pool. ADR-0074 (Accepted 2026-09-03; Draft when this was written) — the build workspace this has to be able to pay
   for. `docs/evidence/STAGE3_BUILD_WORKSPACE.md`
 
 ## 1. Two counters over one memory
