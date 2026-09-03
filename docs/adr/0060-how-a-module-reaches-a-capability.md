@@ -199,3 +199,13 @@ the only thing exercising capability and IPC contracts is a binary. Nothing
 already built changes under any option — the nucleus, the ABI and the evidence
 of Phase 4 stand as they are, and what is decided here is who else may reach
 them.
+
+## Superseded in part by ADR-0080
+
+`Signature.effects` by interface path is unchanged and is what ADR-0080 builds
+on. What that decision corrects is narrower: this ADR's mechanism assumed every
+`uses` item was an `import capability` binding, because an import was the only
+way a module could come to hold authority when it was written. TOS Core 1.1
+admits an interface named directly, for capabilities that arrive as the value an
+operation returned. The effect identity, the schema rules and the `extern` form
+are otherwise as written here.

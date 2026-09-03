@@ -370,3 +370,12 @@ the capability table, the endowment chain and the engine's interface port stand
 as they are; what is decided here is which declaration of a module a grant is
 matched against, and what the launch record must say for that match to be
 checkable rather than assumed.
+
+## Superseded in part by ADR-0080
+
+The binding rule is unchanged for every capability that *is* endowed: the
+imported name is the capability, and a request is answered or denied by launch
+policy. What ADR-0080 separates is the second job this ADR's binding was doing —
+naming a function's effect. A capability obtained at runtime has no binding to
+name, so a `uses` item may name its interface instead; that declares an effect
+and requests nothing.

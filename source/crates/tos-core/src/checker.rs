@@ -512,7 +512,15 @@ fn diagnostic(code: &'static str, stage: Stage, span: Span, source: &SourceUnit)
 }
 
 /// The source-language version this frontend implements (docs/42 section 1).
-const LANGUAGE_VERSION: (u32, u32) = (1, 0);
+///
+/// **1.1 since ADR-0080**, which adds the direct-interface effect form and
+/// nothing else. 1.0 remains supported: a module declaring it keeps its meaning,
+/// its diagnostics and its digest, and is refused only if it uses a form its own
+/// header did not claim (`E1608`).
+const LANGUAGE_VERSION: (u32, u32) = (1, 1);
+
+/// The minor in which a direct interface effect became legal (ADR-0080 §5).
+const DIRECT_INTERFACE_EFFECT_MINOR: u32 = 1;
 
 /// Checks the declared source-language version.
 ///
@@ -548,6 +556,49 @@ fn check_language_version(source: &SourceUnit, schema: &Schema, out: &mut Vec<Di
             .with_field("declared", minor)
             .with_field("supported", expected_minor),
         );
+        return;
+    }
+    check_features_against_minor(source, schema, minor, out);
+}
+
+/// Refuses a source form the module's **own header** did not claim (ADR-0080 §5).
+///
+/// A module whose header says `1.0` and whose body uses a 1.1 form would work
+/// here and be refused by a 1.0 frontend, with nothing in the source saying
+/// which was right. The header is a fact about the source, so a module gets
+/// exactly the language it declared — and the diagnostic names the feature and
+/// the minor it needs rather than the form it happened to see.
+fn check_features_against_minor(
+    source: &SourceUnit,
+    schema: &Schema,
+    minor: u32,
+    out: &mut Vec<Diagnostic>,
+) {
+    if minor >= DIRECT_INTERFACE_EFFECT_MINOR {
+        return;
+    }
+    let signatures = schema
+        .functions()
+        .iter()
+        .map(|function| function.signature())
+        .chain(schema.extern_functions().iter());
+    for signature in signatures {
+        for effect in signature.effects() {
+            if effect.is_binding() {
+                continue;
+            }
+            out.push(
+                diagnostic(
+                    "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR",
+                    Stage::Type,
+                    effect.span(),
+                    source,
+                )
+                .with_field("feature", "direct interface effect")
+                .with_field("declared", minor)
+                .with_field("requires", DIRECT_INTERFACE_EFFECT_MINOR),
+            );
+        }
     }
 }
 

@@ -347,3 +347,12 @@ Nothing already built changes: the capability model, the one-receiver rule, the
 liveness rule, the endowment binding of ADR-0061 and the argument marshalling of
 ADR-0062 all stand as they are. What is added is an operation that costs one
 crossing pair where the present pair of operations costs two.
+
+## Reconciled with ADR-0080
+
+"One effect per capability the operation requires, in the order the schema
+declares them" is unchanged, and so is the rule that one grant may not stand in
+for two. What changes is only what an effect may be written as: an import
+binding, or the interface itself. The per-position source check of ADR-0078 is
+what keeps two authorities separate, and it is unaffected by how either was
+declared.

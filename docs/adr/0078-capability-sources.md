@@ -175,3 +175,18 @@ module got one, not what it may do with it.
    hole is not left one position along;
 9. an unknown container version is refused, and version 3 reads as `Import`;
 10. every existing import-only gate is unchanged and green.
+
+## 8. The open question of §6, answered by ADR-0080
+
+§6 left one case deliberately open: "A capability of an interface a module never
+imports — one delivered by a message, say — is a separate question and is not
+answered here." Stage 4A reached it through a different door than the one
+imagined — a capability an *operation returned*, rather than one a message
+delivered — and the shape was the same: the verifier rule of §4 required the
+interface at every position to be one the enclosing function declares as an
+effect, and an effect could only be an import binding.
+
+ADR-0080 separates those two facts. An effect names an interface; an import
+requests a capability. The per-position source rule of §2 and §4 is unchanged
+and is what still proves which capability fills a position — the two remain
+orthogonal, which is what this ADR's §2 required of them.

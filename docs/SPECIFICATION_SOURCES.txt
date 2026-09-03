@@ -147,3 +147,4 @@ docs/adr/0076-unified-memory-funding.md
 docs/adr/0077-launch-plans.md
 docs/adr/0078-capability-sources.md
 docs/adr/0079-hardware-authority-origin.md
+docs/adr/0080-capability-effects-name-interfaces.md

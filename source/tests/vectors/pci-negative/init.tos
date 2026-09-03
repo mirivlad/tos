@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4A authority negatives, executed rather than asserted.
+//
+// A successful read is not Stage 4 evidence on its own. This module holds the
+// same single capability the discovery module holds — the root PCI bus
+// authority — and then tries, one at a time, every way of reaching further than
+// it was granted. Each attempt must be refused by the nucleus, with the status
+// that says *why*, and each refusal sets one bit.
+//
+// The module contains no device identity. Two of the cases turn on the
+// difference between a function that has a device behind it and one that does
+// not, which is a fact only the machine knows.
+
+module system.boot.init version 1.1 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 262144,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus,
+    bus_number: u64,
+    device: u64,
+    function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig,
+    offset: u64,
+    width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_config_write(
+    cap: platform.pci.FunctionConfig,
+    offset: u64,
+    width: u64,
+    value: u64
+) -> i64 uses [platform.pci.FunctionConfig];
+
+extern fn capability_attenuate(
+    cap: platform.pci.FunctionConfig,
+    rights: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [platform.pci.FunctionConfig];
+
+extern fn capability_release(
+    cap: platform.pci.FunctionConfig
+) -> i64 uses [platform.pci.FunctionConfig];
+
+// An out-of-range configuration access is refused rather than wrapped: past
+// conventional space, a width the mechanism cannot perform, and an offset that
+// is not a multiple of its width. Each is `E_BAD_ARGUMENT`, and each reads
+// nothing at all.
+fn bounds(function: platform.pci.FunctionConfig) -> i64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut found: i64 = 0i64;
+    match (pci_config_read(function, 256u64, 1u64)) {
+        Ok(value) => { }
+        Err(status) => {
+            if (status == -3i64) {
+                found = found + 2i64;
+            }
+        }
+    }
+    match (pci_config_read(function, 0u64, 3u64)) {
+        Ok(value) => { }
+        Err(status) => {
+            if (status == -3i64) {
+                found = found + 4i64;
+            }
+        }
+    }
+    match (pci_config_read(function, 1u64, 2u64)) {
+        Ok(value) => { }
+        Err(status) => {
+            if (status == -3i64) {
+                found = found + 8i64;
+            }
+        }
+    }
+    return found;
+}
+
+// A capability carrying `config_read` and not `config_write` refuses to mutate.
+// 4096 is `config_read` alone; the attenuation drops the other bit, and what
+// comes back is a narrower name for the same assignment.
+fn read_only(function: platform.pci.FunctionConfig) -> i64
+    uses [platform.pci.FunctionConfig]
+{
+    match (capability_attenuate(function, 4096u64)) {
+        Ok(weaker) => {
+            let refused: i64 = pci_config_write(weaker, 4u64, 2u64, 0u64);
+            if (refused == -1i64) {
+                return 16i64;
+            }
+            return 0i64;
+        }
+        Err(status) => {
+            return 0i64;
+        }
+    }
+}
+
+// A released capability names nothing. The assignment ends with its last name,
+// and the handle that named it stops resolving rather than addressing whatever
+// occupies the slot next.
+fn released(function: platform.pci.FunctionConfig) -> i64
+    uses [platform.pci.FunctionConfig]
+{
+    let dropped: i64 = capability_release(function);
+    if (dropped != 0i64) {
+        return 0i64;
+    }
+    match (pci_config_read(function, 0u64, 2u64)) {
+        Ok(value) => {
+            return 0i64;
+        }
+        Err(status) => {
+            return 32i64;
+        }
+    }
+}
+
+// **Authority for one function does not reach another.** There is no parameter
+// through which to name a different function, so the only way to reach a second
+// one is to claim it — and what each capability reads is decided by the object
+// it names. The machine puts a device behind one of these addresses and nothing
+// behind the other, so two capabilities of the same kind, used identically,
+// return different things.
+fn two_functions() -> i64 uses [bus, platform.pci.FunctionConfig] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(present) => {
+            match (pci_function_claim(bus, 0u64, 5u64, 0u64)) {
+                Ok(absent) => {
+                    match (pci_config_read(present, 0u64, 2u64)) {
+                        Ok(here) => {
+                            match (pci_config_read(absent, 0u64, 2u64)) {
+                                Ok(there) => {
+                                    if (here != there) {
+                                        return 64i64;
+                                    }
+                                    return 0i64;
+                                }
+                                Err(status) => { return 0i64; }
+                            }
+                        }
+                        Err(status) => { return 0i64; }
+                    }
+                }
+                Err(status) => { return 0i64; }
+            }
+        }
+        Err(status) => { return 0i64; }
+    }
+}
+
+// Eight findings. Every one of them is a refusal or a difference the nucleus
+// decided against real hardware and its own assignment table; none is a number
+// this module contains.
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
+    let mut found: i64 = 0i64;
+    // A device outside its architectural range, refused without consulting any
+    // authority.
+    match (pci_function_claim(bus, 0u64, 32u64, 0u64)) {
+        Ok(impossible) => { }
+        Err(status) => {
+            if (status == -3i64) {
+                found = found + 1i64;
+            }
+        }
+    }
+    found = found + two_functions();
+    // Claiming an already-assigned function is refused while the first claim
+    // lives, whether or not the table has room.
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(again) => { }
+        Err(status) => {
+            if (status == -6i64) {
+                found = found + 128i64;
+            }
+        }
+    }
+    match (pci_function_claim(bus, 0u64, 6u64, 0u64)) {
+        Ok(spare) => {
+            found = found + bounds(spare);
+            found = found + read_only(spare);
+        }
+        Err(status) => { }
+    }
+    match (pci_function_claim(bus, 0u64, 7u64, 0u64)) {
+        Ok(doomed) => {
+            found = found + released(doomed);
+        }
+        Err(status) => { }
+    }
+    return found;
+}

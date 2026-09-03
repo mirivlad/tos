@@ -106,10 +106,16 @@ pub fn lower_module_in_set(
         .collect::<Vec<_>>()
         .join(".");
 
+    // The version the header declared, in the canonical `major.minor` spelling
+    // the artifact records (ADR-0080 §5).
+    let (major, minor) = schema.outline().prefix().header().version();
+    let language_version = alloc::format!("{major}.{minor}");
+
     let mut lowerer = Lowerer {
         source,
         schema,
         profile,
+        language_version,
         context,
         types: Vec::new(),
         type_index: BTreeMap::new(),
@@ -186,12 +192,18 @@ pub fn lower_module_in_set(
         let Some(effect) = signature.effects().first() else {
             continue;
         };
-        let Some(interface) = lowerer.capability_interfaces.get(effect.text(source)) else {
+        // The interface the operation is reached through, whichever way its
+        // effect was written (ADR-0080).
+        let Some(interface) =
+            crate::effects::resolve(source, &lowerer.capability_interfaces, effect)
+                .interface()
+                .map(alloc::string::ToString::to_string)
+        else {
             continue;
         };
         lowerer
             .externs
-            .insert(signature.name().text(source).to_string(), interface.clone());
+            .insert(signature.name().text(source).to_string(), interface);
     }
     for (index, function) in schema.functions().iter().enumerate() {
         lowerer
@@ -219,7 +231,7 @@ pub fn lower_module_in_set(
 
     let header = Header {
         schema_id: tos_ir::SCHEMA_ID.to_string(),
-        language_version: tos_ir::LANGUAGE_VERSION.to_string(),
+        language_version: lowerer.language_version.clone(),
         unicode_normalization_baseline: tos_ir::UNICODE_BASELINE.to_string(),
         profile,
         module_name,
@@ -371,6 +383,14 @@ struct Lowerer<'source> {
     source: &'source SourceUnit,
     schema: &'source Schema,
     profile: Profile,
+    /// The source-language version the **module's own header** declared
+    /// (ADR-0080 §5).
+    ///
+    /// Not the newest this frontend implements. With one supported minor those
+    /// were the same string; with 1.0 and 1.1 both supported they are not, and a
+    /// header that always said the newest would put two languages under one
+    /// identity — in the module digest, the cache and the provenance record.
+    language_version: alloc::string::String,
     context: &'source ModuleContext,
     types: Vec<TypeDef>,
     type_index: BTreeMap<TypeDef, TypeId>,
@@ -461,7 +481,7 @@ impl<'source> Lowerer<'source> {
             path: self.context.path.clone(),
             content_id: self.context.content_id.clone(),
             frontend_identity: FRONTEND_IDENTITY.to_string(),
-            language_version: tos_ir::LANGUAGE_VERSION.to_string(),
+            language_version: self.language_version.clone(),
             profile: self.profile,
             unicode_normalization_baseline: tos_ir::UNICODE_BASELINE.to_string(),
             byte_start: span.start(),
@@ -1018,11 +1038,9 @@ impl<'source> Lowerer<'source> {
             .effects()
             .iter()
             .map(|effect| {
-                let written = effect.text(self.source);
-                self.capability_interfaces
-                    .get(written)
-                    .cloned()
-                    .unwrap_or_else(|| written.to_string())
+                crate::effects::resolve(self.source, &self.capability_interfaces, effect)
+                    .recorded()
+                    .to_string()
             })
             .collect();
         let lowered_signature = Signature {

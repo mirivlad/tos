@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Stage 4A: a textual module takes authority over one real PCI function.
+// Stage 4A: a textual module reads a real PCI device's configuration space.
 //
 // It holds exactly one capability, and it is the one it asked for by name: the
 // **root PCI bus authority** the launcher minted (ADR-0079 §5, §9). That
@@ -8,23 +8,22 @@
 // one — so it is the first capability in this system whose origin is the
 // boot/platform boundary rather than an operation or a parent.
 //
-// What this module does with it is claim functions out of its scope, which is
-// what possession of a bus capability *is* the authority to do. Every number
-// below is one the nucleus produced against real hardware: this module contains
-// no device identity, no assignment table and no opinion about what a function
-// at bus 0 device 4 might be.
+// From it the module claims one function and then reads that function's
+// configuration space through the capability the claim produced. It never
+// imported `platform.pci.FunctionConfig` and could not have: no launcher can
+// answer a request for an object that does not exist until the claim runs. It
+// declares the interface as an **effect** instead (ADR-0080), which says which
+// class of authority this function may exercise and grants none of it — the
+// capability the operation acts on is the value the claim returned.
 //
-// **What it deliberately does not do is read configuration space.** Not because
-// Stage 4A does not want it, but because a module cannot yet declare an
-// operation on `platform.pci.FunctionConfig`: `SYSTEM_INTERFACE_V1` §4.1 makes
-// an `extern`'s `uses` name an `import capability` of the enclosing module, the
-// import must be answered before the first instruction runs, and the only lawful
-// producer of a function capability is the claim below — which runs after. That
-// is the case ADR-0078 §6 recorded as open ("a capability of an interface a
-// module never imports … is a separate question"), reached for the first time
-// here. It is reported rather than worked around.
+// **Every number below comes from the device.** This module contains no vendor
+// identifier, no device identifier and no class code to compare against; it
+// reports what it read, and the harness — which cannot reach into the guest —
+// decides whether that is a VirtIO block device. The nucleus cannot decide it
+// either: it performs a configuration transaction against the function a
+// capability names and has no idea what a VirtIO device is.
 
-module system.boot.init version 1.0 profile full;
+module system.boot.init version 1.1 profile full;
 
 import capability platform.pci.Bus as bus;
 
@@ -48,60 +47,86 @@ extern fn pci_function_claim(
     function: u64
 ) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
 
-// Four findings, each a bit, and no single answer produces the number.
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig,
+    offset: u64,
+    width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+// What the device says about itself, packed into the one value a module returns.
 //
-//   1  a function of the real machine was claimed out of this capability's scope
-//   2  claiming it a second time was refused — the assignment is exclusive
-//   4  a device number outside its architectural range was refused
-//   8  a *different* function was claimed, so the refusal above was about the
-//      function and not about the table having one entry
+//   bits  0..15   vendor id      offset 0x00, 2 bytes
+//   bits 16..31   device id      offset 0x02, 2 bytes
+//   bits 32..39   class code     offset 0x0B, 1 byte
+//   bits 40..47   subclass       offset 0x0A, 1 byte
+//   bits 48..55   capability ptr offset 0x34, 1 byte
 //
-// A module that ignored the answers could not produce 15: two of the four
-// require a refusal and two require a success, and the nucleus decides which is
-// which against the hardware and the assignment table.
-pub fn main() -> i64 uses [bus] {
-    let mut findings: i64 = 0i64;
+// The harness decodes it. Packing rather than five separate reports is what lets
+// one `TOS.RUN.COMPLETED` carry the whole observation, and every field is a
+// number this module read rather than one it holds.
+fn observation(function: platform.pci.FunctionConfig) -> i64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut packed: u64 = 0u64;
+    match (pci_config_read(function, 0u64, 2u64)) {
+        Ok(vendor) => {
+            packed = packed | vendor;
+        }
+        Err(status) => {
+            return status - 200i64;
+        }
+    }
+    match (pci_config_read(function, 2u64, 2u64)) {
+        Ok(device) => {
+            packed = packed | (device << 16u64);
+        }
+        Err(status) => {
+            return status - 300i64;
+        }
+    }
+    match (pci_config_read(function, 11u64, 1u64)) {
+        Ok(class) => {
+            packed = packed | (class << 32u64);
+        }
+        Err(status) => {
+            return status - 400i64;
+        }
+    }
+    match (pci_config_read(function, 10u64, 1u64)) {
+        Ok(subclass) => {
+            packed = packed | (subclass << 40u64);
+        }
+        Err(status) => {
+            return status - 500i64;
+        }
+    }
+    match (pci_config_read(function, 52u64, 1u64)) {
+        Ok(capabilities) => {
+            packed = packed | (capabilities << 48u64);
+        }
+        Err(status) => {
+            return status - 600i64;
+        }
+    }
+    match (to_i64(packed)) {
+        Ok(value) => {
+            return value;
+        }
+        Err(problem) => {
+            return -700i64;
+        }
+    }
+}
+
+// The device at the Stage 4 profile's fixed location, read through authority
+// derived from the bus root.
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
     match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
-        Ok(claimed) => {
-            findings = findings + 1i64;
+        Ok(function) => {
+            return observation(function);
         }
         Err(status) => {
-            findings = findings + 0i64;
+            return status - 100i64;
         }
     }
-    // The same function again. Exclusive means exclusive: one live assignment
-    // per function under one root, so this is `E_LIMIT` and not a second name.
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
-        Ok(again) => {
-            findings = findings + 0i64;
-        }
-        Err(status) => {
-            if (status == -6i64) {
-                findings = findings + 2i64;
-            }
-        }
-    }
-    // Device 32 does not exist in any PCI topology: five bits address a device.
-    // A fact about the argument, refused without consulting any authority.
-    match (pci_function_claim(bus, 0u64, 32u64, 0u64)) {
-        Ok(impossible) => {
-            findings = findings + 0i64;
-        }
-        Err(status) => {
-            if (status == -3i64) {
-                findings = findings + 4i64;
-            }
-        }
-    }
-    // A different function, to show the second claim's refusal was about the
-    // function rather than about capacity.
-    match (pci_function_claim(bus, 0u64, 5u64, 0u64)) {
-        Ok(other) => {
-            findings = findings + 8i64;
-        }
-        Err(status) => {
-            findings = findings + 0i64;
-        }
-    }
-    return findings;
 }

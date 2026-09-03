@@ -20,6 +20,7 @@ mod concurrency;
 mod constants;
 mod defer;
 mod diagnostic;
+mod effects;
 mod exhaustiveness;
 mod flow;
 mod guards;
@@ -991,7 +992,7 @@ mod tests {
         assert_eq!(function.name().text(&source), "now");
         assert_eq!(function.parameters().len(), 1);
         assert_eq!(function.parameters()[0].borrow_mode(), BorrowMode::Shared);
-        assert_eq!(function.effects()[0].text(&source), "clock");
+        assert_eq!(function.effects()[0].path(&source), "clock");
     }
 
     #[test]
@@ -2295,7 +2296,7 @@ mod tests {
                 "",
                 "extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 \
                  uses [endpoint];",
-                "uses names no capability import of this module",
+                "uses names no capability import and no accepted interface",
             ),
         ];
         for (imports, body, expected) in cases {
@@ -2360,9 +2361,205 @@ mod tests {
             .collect()
     }
 
+    // ---- ADR-0080: capability effects name interfaces ----
+
+    fn diagnostics_for(text: &str) -> Vec<Diagnostic> {
+        let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+        let schema = Parser::parse_schema(&source)
+            .into_accepted()
+            .expect("the module parses");
+        Checker::check(&source, &schema)
+    }
+
+    fn errors_for(text: &str) -> Vec<Diagnostic> {
+        diagnostics_for(text)
+            .into_iter()
+            .filter(|d| d.severity() == Severity::Error)
+            .collect()
+    }
+
+    /// A module that claims 1.1 and names an accepted interface directly.
+    /// The capability it acts on is one an operation produced, so no import
+    /// answers it and none could.
+    const RUNTIME_EFFECT: &str = "
+module system.test.effects version 1.1 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [fuel: 65536, stack: 16KiB, allocation: 4KiB, tasks: 1, workers: 1,
+          sync: 0, shared: 0B, cleanup: 0, recursion: 8, imports: 4]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus, bus_number: u64, device: u64, function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig, offset: u64, width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            match (pci_config_read(function, 0u64, 4u64)) {
+                Ok(value) => { return 1i64; }
+                Err(status) => { return status; }
+            }
+        }
+        Err(status) => { return status - 100i64; }
+    }
+}
+";
+
     #[test]
-    fn the_declared_language_version_must_be_exactly_one_zero() {
+    fn a_direct_interface_effect_admits_a_runtime_obtained_capability() {
+        let errors = errors_for(RUNTIME_EFFECT);
+        assert!(
+            errors.is_empty(),
+            "a 1.1 module acting on a runtime capability checks clean: {errors:?}"
+        );
+    }
+
+    /// The same module claiming 1.0. The form is refused because the header did
+    /// not claim it — not because the form is wrong.
+    #[test]
+    fn a_direct_interface_effect_needs_the_minor_that_added_it() {
+        let text = RUNTIME_EFFECT.replace("version 1.1", "version 1.0");
+        let errors = errors_for(&text);
+        let gated: Vec<&Diagnostic> = errors
+            .iter()
+            .filter(|d| d.code() == "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR")
+            .collect();
+        assert!(!gated.is_empty(), "expected E1608, got: {errors:?}");
+        assert_eq!(gated[0].field("requires"), Some("1"));
+        assert_eq!(gated[0].field("declared"), Some("0"));
+    }
+
+    /// A path no accepted schema declares fails statically rather than becoming
+    /// an effect naming nothing.
+    #[test]
+    fn a_direct_interface_effect_must_name_an_accepted_interface() {
+        let text = RUNTIME_EFFECT.replace(
+            "uses [platform.pci.FunctionConfig]",
+            "uses [platform.pci.NoSuchInterface]",
+        );
+        let errors = errors_for(&text);
+        assert!(
+            errors.iter().any(|d| d.code() == "E1801_FFI_NOT_AVAILABLE"),
+            "an undeclared interface path is refused: {errors:?}"
+        );
+    }
+
+    /// A path that exists and is **not a capability interface** is refused too.
+    /// `system.process.CreatedProcess` is a schema *record*: a module can hold
+    /// one, and no capability is ever of it.
+    #[test]
+    fn a_direct_interface_effect_must_name_a_capability_interface() {
+        let text = RUNTIME_EFFECT.replace(
+            "uses [platform.pci.FunctionConfig]",
+            "uses [system.process.CreatedProcess]",
+        );
+        let errors = errors_for(&text);
+        assert!(
+            errors.iter().any(|d| d.code() == "E1801_FFI_NOT_AVAILABLE"),
+            "a record path is not an interface: {errors:?}"
+        );
+    }
+
+    /// An interface effect is a declaration and never a grant. Naming the
+    /// interface itself where a value belongs produces nothing: an effect
+    /// introduces no binding, so there is no expression that yields a
+    /// capability of it.
+    ///
+    /// The other half — a *scalar* in that position — is refused by the
+    /// independent verifier rather than here, which `SYSTEM_INTERFACE_V1` §4.1
+    /// fixes deliberately ("not by the frontend that emitted it, which is the
+    /// point of checking it twice"). That half is proved in
+    /// `tests/integration/tests/interface_effects.rs`.
+    #[test]
+    fn a_direct_interface_effect_introduces_no_value() {
+        let text = "
+module system.test.effects version 1.1 profile full;
+
+resource [fuel: 65536, stack: 16KiB, allocation: 4KiB, tasks: 1, workers: 1,
+          sync: 0, shared: 0B, cleanup: 0, recursion: 8, imports: 4]
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig, offset: u64, width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+pub fn main() -> i64 uses [platform.pci.FunctionConfig] {
+    match (pci_config_read(platform.pci.FunctionConfig, 0u64, 4u64)) {
+        Ok(value) => { return 1i64; }
+        Err(status) => { return status; }
+    }
+}
+";
+        let errors = errors_for(text);
+        assert!(
+            !errors.is_empty(),
+            "an effect declaration does not make its interface nameable as a value"
+        );
+    }
+
+    /// The two spellings denote one effect, so they lower to the same
+    /// `Signature.effects` (ADR-0080 §4).
+    #[test]
+    fn a_binding_and_its_interface_are_one_effect() {
+        const BOUND: &str = "
+module system.test.effects version 1.1 profile full;
+
+import capability system.ipc.Endpoint as journal;
+
+resource [fuel: 65536, stack: 16KiB, allocation: 4KiB, tasks: 1, workers: 1,
+          sync: 0, shared: 0B, cleanup: 0, recursion: 8, imports: 4]
+
+extern fn endpoint_send_text(cap: system.ipc.Endpoint, message: string) -> i64
+    uses [journal];
+
+pub fn main() -> i64 uses [SPELLING] {
+    return endpoint_send_text(journal, \"info.test.a.b\");
+}
+";
+        let effects = |spelling: &str| {
+            let text = BOUND.replace("SPELLING", spelling);
+            let source = SourceReader::read(text.as_bytes()).expect("transport-valid");
+            let schema = Parser::parse_schema(&source)
+                .into_accepted()
+                .expect("parses");
+            assert!(
+                !Checker::check(&source, &schema)
+                    .iter()
+                    .any(|d| d.severity() == Severity::Error),
+                "{spelling} checks clean"
+            );
+            let module = lower_module(
+                &source,
+                &schema,
+                &ModuleContext {
+                    source_set: String::from("effects-test"),
+                    path: String::from("system/test/effects.tos"),
+                    content_id: String::from("test"),
+                    dependency_digest: String::from("test"),
+                    capability_interface_digest: String::from("test"),
+                },
+            )
+            .expect("lowers");
+            module.functions[0].signature.effects.clone()
+        };
+        assert_eq!(effects("journal"), effects("system.ipc.Endpoint"));
+        assert_eq!(
+            effects("journal"),
+            vec![String::from("system.ipc.Endpoint")]
+        );
+    }
+
+    /// The supported range is **1.0 and 1.1** (ADR-0080 §5). A module declaring
+    /// either is accepted; a newer minor is refused whole, by its header, before
+    /// any of its syntax is read.
+    #[test]
+    fn the_declared_language_version_must_be_a_supported_one() {
         assert!(check_header("1.0").is_empty());
+        assert!(check_header("1.1").is_empty());
 
         let major = check_header("2.0");
         assert_eq!(major.len(), 1);
@@ -2374,7 +2571,7 @@ mod tests {
         assert_eq!(minor.len(), 1);
         assert_eq!(minor[0].code(), "E1602_UNSUPPORTED_LANGUAGE_MINOR");
         assert_eq!(minor[0].field("declared"), Some("3"));
-        assert_eq!(minor[0].field("supported"), Some("0"));
+        assert_eq!(minor[0].field("supported"), Some("1"));
     }
 
     #[test]

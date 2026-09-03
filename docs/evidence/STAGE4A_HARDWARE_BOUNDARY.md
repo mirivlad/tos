@@ -2,13 +2,16 @@
 
 # Stage 4A — the hardware authority boundary, as built
 
-- Status: **evidence, 2026-09-04.** The authority half of Stage 4A is built,
-  green and gated. The configuration-read half is **blocked by a second,
-  narrower architecture STOP** that this round found while implementing the
-  first — see §7
-- Decision: `docs/adr/0079-hardware-authority-origin.md`, **Accepted (Project
-  Architect-approved, Vladimir Tomashevskiy, 2026-09-03)**
-- Gate: `source/host-tools/qemu-test/pci-discovery.sh`, in preflight as
+- Status: **evidence, 2026-09-04. Stage 4A is complete and green.** Canonical
+  TOS Core reads the real device's configuration space under a capability, and
+  all nine authority negatives are gated — eight of them executed rather than
+  asserted. The second STOP this round found while implementing the first was
+  resolved by ADR-0080; §7 records how
+- Decisions: `docs/adr/0079-hardware-authority-origin.md` (**Accepted**,
+  Vladimir Tomashevskiy, 2026-09-03) and
+  `docs/adr/0080-capability-effects-name-interfaces.md` (**Accepted**,
+  Vladimir Tomashevskiy, 2026-09-04)
+- Gates: `source/host-tools/qemu-test/pci-discovery.sh`, in preflight as
   *QEMU textual PCI function claim* (`qemu` profile, `full-only`)
 - Covers: the platform root, the Bus → `PciFunction` derivation, the nucleus
   mechanism, `PLATFORM_INTERFACE_V1`, the Stage 4 device profile, what the
@@ -16,7 +19,7 @@
 
 ## 1. What was built
 
-The chain the ruling fixed, end to end, with the last link missing:
+The chain the ruling fixed, end to end:
 
 ```text
 boot/platform
@@ -24,26 +27,21 @@ boot/platform
 root platform.pci.Bus                       ← built, gated
     ↓  held by the canonical textual boot process
     ↓  pci_function_claim
-platform.pci.FunctionConfig                 ← built, gated
-    ↓  pci_config_read / pci_config_write
-real configuration space                    ← nucleus side built; NOT reachable
-                                              from text (§7), and therefore
-                                              NOT EXERCISED at all
+platform.pci.FunctionConfig                 ← built, gated; a runtime value of
+    ↓                                         an interface nothing imported
+    ↓  pci_config_read
+real configuration space                    ← built, gated, and read
 ```
 
-Everything above the last row is implemented, exercised from canonical TOS Core
-on the real QEMU machine, and held by a gate. The last row exists in the nucleus,
-in `SYSTEM_ABI_V1` and in `PLATFORM_INTERFACE_V1`, and **no module can declare
-it**, for a reason that is not about PCI at all.
+Every row is implemented, exercised from canonical TOS Core on the real QEMU
+machine, and held by a gate.
 
-**Said plainly, because the distinction is easy to lose: no textual code has
-touched hardware yet, and neither has anything else.** A claim is an authority
-operation — it takes an exclusive assignment of an *address* within a bus
-capability's scope, and it does not probe, read or otherwise consult the device
-at that address. The CAM transaction in `pci.rs` is reachable only through
-operations 25 and 26, which nothing calls, so it is **implemented and
-unexercised**. Stage 4A therefore establishes the authority boundary and not the
-hardware-facing act the identity gate is about.
+**The last row is the one that matters, and it needed a language decision to
+reach.** A claim is authority over an *address* and touches no hardware; only a
+configuration read does. Until ADR-0080 no module could declare an operation on
+`platform.pci.FunctionConfig`, because the frontend required every `uses` item
+to be an import binding and no import can answer a request for an object that
+does not exist until the claim runs. §7 records that.
 
 ## 2. Where hardware authority originates, and its lifecycle
 
@@ -116,7 +114,7 @@ handle to the first claim.
 
 | Piece | Why not user-space |
 |---|---|
-| the CAM transaction (`0xCF8`/`0xCFC`) — **implemented, unexercised** | port I/O is unreachable at CPL 3 — IOPL is 0 and the single TSS admits no port. Exposing the pair would be ambient access to **every** function's configuration space, since it is one global window |
+| the CAM transaction (`0xCF8`/`0xCFC`) | port I/O is unreachable at CPL 3 — IOPL is 0 and the single TSS admits no port. Exposing the pair would be ambient access to **every** function's configuration space, since it is one global window |
 | the bus object and its scope | a root cannot be produced by an operation; something outside the ABI has to mint it, and the launcher is the only thing that runs before a process does |
 | the assignment table | exclusivity is a property of the machine, not of one process's view of it; a service-held table could be bypassed by a second holder of the same bus |
 | the offset/width bound | it is the thing standing between a caller and the hardware, so it lives where the hardware is touched |
@@ -127,7 +125,7 @@ selection, no ACPI parser and no boot-ABI change. `pci.rs` cannot tell a block
 device from a serial controller. It answers "read offset 8 of the function this
 capability names".
 
-## 5. The textual module, and what it proved
+## 5. The textual module, and what it read
 
 `source/tests/vectors/pci/init.tos`, canonical TOS Core carried through the
 ordinary source → capsule → lower → TOSIMAGE → independent verifier → runtime
@@ -135,130 +133,122 @@ path. Its source identity is in the evidence:
 
 ```text
 TOS.BOOTTEXT.DIGEST 7e326a4312940e02a964f5c1d75235bfeb1139b654c999d2ba1f5b1852ec14ba
-TOS.IDENTITY source_kind=detached
-             source_digest=225ec018c2bc87138b1f32b64518f9cb70cb7e4ac339560832a46635daa479fe
-             capsule_digest=d71c071e1da75021fc22552e3354a12d44aeb8ceed68640279d56e50004cb4bd
+TOS.IDENTITY source_kind=detached capsule_digest=800a469e…
 ```
 
-It holds exactly one capability and asked for it by name and kind:
+It is a **TOS Core 1.1** module. It holds exactly one capability and asked for
+it by name and kind — and for nothing else:
 
 ```text
 TOS.RUN.REQUEST binding=bus interface=platform.pci.Bus object=9 wanted=9
-TOS.RUN.CAPABILITY held=1 handle=0x100000000 object=9 rights=2048 binding=bus
 ```
 
-It took exclusive assignments of two addresses in the real machine's bus scope,
-and the nucleus named which. **Neither claim consulted the device**: one of the
-two addresses has no device behind it at all, and it was assigned exactly as the
-other was, because a claim is about authority over an address and not about what
-is there.
+There is one request in the whole run. It never imported
+`platform.pci.FunctionConfig`; it declares that interface as an **effect** and
+acts on the value the claim returned (ADR-0080).
+
+The nucleus named the function it assigned — a BDF from the object it created,
+which a module cannot put there:
 
 ```text
 TOS.RUN.PCI_ASSIGNED process=0 segment=0 bus=0 device=4 function=0 generation=1 asserted_by=nucleus
-TOS.RUN.PCI_ASSIGNED process=0 segment=0 bus=0 device=5 function=0 generation=1 asserted_by=nucleus
 ```
 
-**The BDF in that record is the nucleus's, from the object it created.** A module
-cannot put one there and could not name a different function if it tried.
-
-And it reported four findings, no single answer producing the number:
+And the module reported what the device said about itself, five fields packed
+into one value:
 
 ```text
-TOS.RUN.COMPLETED value=i64:15
+TOS.RUN.COMPLETED value=i64:42784201027754740     (0x0098000110421AF4)
+
+  vendor           0x1AF4     offset 0x00
+  device           0x1042     offset 0x02   modern VirtIO, not the transitional 0x1001
+  class            0x01       offset 0x0B   mass storage
+  subclass         0x00       offset 0x0A
+  capability ptr   0x98       offset 0x34   a list the device laid out
 ```
 
-| bit | what it required |
-|---|---|
-| 1 | an address was claimed out of the bus capability's scope |
-| 2 | claiming it again was refused **`E_LIMIT`** — the assignment is exclusive |
-| 4 | device 32 was refused **`E_BAD_ARGUMENT`** — outside the architectural range |
-| 8 | a *different* function was claimed, so bit 2 was about the function and not about capacity |
+**The module contains none of those numbers.** It has no vendor identifier, no
+device identifier and no class code to compare against; it reports what it read
+and the harness decides what it means. The nucleus cannot decide either — it
+performs a configuration transaction against the function a capability names and
+has no idea what a VirtIO device is.
 
-Two of the four require a refusal the nucleus decides against its assignment
-table and the architectural ranges; two require successes. A module that ignored
-the answers could not produce 15.
+**And the values are the hardware's.** The same module, same nucleus, same
+machine *minus the device* reports `vendor=0xFFFF` — an absent function reads
+all-ones — so not one assertion above would hold without the real device present.
 
 ## 6. Negative authority evidence
 
-The ruling asks for nine. Six are proved; three depend on the blocked half and
-are stated as unproved rather than quietly dropped.
+All nine, and eight of them executed by canonical text against the real machine
+rather than asserted from the shape of the contract.
 
-| # | Case | State |
+`source/tests/vectors/pci-negative/init.tos` holds the same single bus
+capability and then tries, one at a time, every way of reaching further than it
+was granted. Each refusal sets one bit; the module reports **255**, and every
+bit is a status the nucleus decided:
+
+| # | Case | Evidence |
 |---|---|---|
-| 1 | no PCI authority → no configuration operation | **proved**, and more strongly than a refused call: the same module under the canonical constant that endows nothing is `capability-denied` before its first instruction, and no `TOS.RUN.PCI_ASSIGNED` appears |
-| 2 | function A cannot read function B | **structural, not yet exercised.** No configuration operation accepts a BDF, so there is no parameter through which to try; the exercise needs §7 |
-| 3 | `config_read` without `config_write` cannot mutate | **not proved** — blocked by §7 |
-| 4 | stale/released function capability refuses | **not gated.** The path exists — `pci::release` advances the generation and `object_is_live` refuses — but the ring-3 exercise needs §7 |
-| 5 | offset outside conventional space refuses | **not gated.** `pci.rs` carries an in-tree unit test, which no gate executes: the nucleus is `no_std` with its own panic handler and has no host test target, so its `#[cfg(test)]` modules are unrun — the same as `region.rs`'s. The gated exercise needs §7 |
-| 6 | malformed alignment/width refuses | **not gated**, as row 5 |
-| 7 | forged scalar in a capability position refused | **proved** by the existing verifier gate (ADR-0078 §7.7), which is interface-agnostic |
-| 8 | a BAR value cannot be used as MMIO authority | **structural**: no operation of any accepted schema takes one. There is nothing to present it to |
-| 9 | without the device, the positive proof fails | **not proved, and cannot be at this stage.** A claim succeeds for any address in scope whether or not a device is behind it, so nothing this gate asserts would change if the `virtio-blk-pci` were removed. The differential this case asks for needs a configuration read, which is §7 |
+| 1 | no PCI authority → no configuration operation | **executed**: the same module under the canonical constant that endows nothing is `capability-denied` before its first instruction — stronger than a refused call, since there is no authority to refuse |
+| 2 | function A cannot access function B | **executed** (bit 64): two claims, one device. There is no parameter through which to name another function, so each capability reads its own — the one with a device behind it and the one without return different values |
+| 3 | `config_read` cannot `config_write` | **executed** (bit 16): the capability is attenuated to `config_read` alone and the write is refused `E_NO_CAPABILITY` |
+| 4 | stale/released capability refuses | **executed** (bit 32): released, then used; refused by generation |
+| 5 | offset outside conventional space refuses | **executed** (bit 2): offset 256 is `E_BAD_ARGUMENT`, and nothing is read |
+| 6 | malformed width or alignment refuses | **executed** (bits 4, 8): width 3, and offset 1 at width 2 |
+| 7 | forged scalar in a capability position refused | **by the independent verifier**, over the artifact, in `tests/integration/tests/interface_effects.rs` — including under a direct interface effect, which is where it matters most |
+| 8 | a BAR value is not authority | **structural**: no operation of any accepted schema takes one. The module reads BARs as data and there is nothing to present them to |
+| 9 | without the device, the positive proof fails | **executed**: the device-absent run reports `vendor=0xFFFF`, a different observation entirely |
+
+Two more, added because ADR-0080 made them possible to get wrong: a claim of an
+already-live assignment is refused `E_LIMIT` (bit 128), and a device outside its
+architectural range is refused `E_BAD_ARGUMENT` (bit 1).
 
 Handle and refusal ordering is unchanged: index bounds, generation, type, rights.
 
-## 7. The remaining STOP: a runtime capability of an interface the module never imports
+## 7. The second STOP, and how it was resolved
 
-**Found while implementing, verified against the checker, and not worked
-around.**
+Found while implementing the first, verified against the checker, reported
+rather than worked around — and then decided.
 
-### The smallest unreachable operation
+**The wall.** `SYSTEM_INTERFACE_V1` §4.1 and ADR-0061 made an `extern`'s `uses`
+name an `import capability` binding of the enclosing module, and the frontend
+enforced it. So a module calling `pci_config_read` had to write
+`import capability platform.pci.FunctionConfig as f;` — a request nothing can
+answer, because the only lawful producer is the claim, which runs after startup.
+A parent could not place one in a child's plan either: `endow_for_launch` on that
+interface is itself an operation on it. The recursion had no base case, and it
+was not about PCI.
 
-> The same textual module that claimed the function calls `pci_config_read` on
-> it and receives the vendor and device identifiers the device reported.
+**The decision.** ADR-0080 separates two things that had been accidentally
+identical while an import was the only way to hold authority:
 
-### Why it is unreachable
-
-`SYSTEM_INTERFACE_V1` §4.1 and ADR-0061 make an `extern`'s `uses` name an
-`import capability` **binding of the enclosing module**, and the frontend
-enforces it (`tos-core/src/boundary.rs`, `unavailable`): the first effect must
-resolve to an import whose interface is the one the operation requires. So a
-module that calls `pci_config_read` must write
-
-```tos
-import capability platform.pci.FunctionConfig as function;
+```text
+import capability   requests a capability, binds a name, is answered or denied
+uses [...]          declares which interfaces a function may exercise
 ```
 
-That request must be answered before the first instruction or the process is
-refused with `CapabilityDenied` (`tos-engine`: "Every request answered before the
-first instruction, or none of them run"). **Nothing can lawfully answer it.** The
-only producer of a function capability is `pci_function_claim`, which runs after
-startup; and a launcher that pre-claimed one would be the nucleus choosing a
-device, which ADR-0079 §5 names to be rejected.
+TOS Core **1.1** admits `uses [interface.path]`. It requests nothing, implies no
+instance, and adds nothing to the capability table; the operation still needs a
+capability value at the call site, the verifier proves its exact nominal type
+against the artifact, and the nucleus proves rights and liveness at the call.
 
-The recursion has no base case. A parent cannot place a function into a child's
-launch plan either: `endow_for_launch` on `platform.pci.FunctionConfig` is
-itself an operation on that interface, so the parent needs the same
-unanswerable import.
+**What was rejected**, and stayed rejected: an "endow a function through the Bus"
+operation, and moving the configuration operations back onto `platform.pci.Bus`.
+Both would have made PCI a special case in a frontend that should not know what
+PCI is.
 
-Verified empirically against the checker: with the import absent the declaration
-is `E1801_FFI_NOT_AVAILABLE`; with it present the module checks clean and dies at
-startup instead.
+**The consequence worth naming.** Effect identity is now the interface path
+everywhere — which it already was in the IR, since ADR-0060. A function
+declaring `uses [a]` may therefore exercise a different binding `b` of the same
+interface, which was previously refused. That **widens** what is accepted and
+reinterprets nothing: the artifact could never tell the two apart, so the old
+refusal was a frontend rule with nothing below it to enforce it.
 
-### This is the question ADR-0078 §6 recorded as open
-
-> **It does not admit an interface a module never requested.** … A capability of
-> an interface a module never imports — one delivered by a message, say — is a
-> separate question and is not answered here.
-
-Stage 4A is the first case to reach it. Every previous runtime-obtained
-capability escaped it for a reason that does not generalise: a child
-`system.process.Control` and a scoped `system.memory.Authority` are of interfaces
-the module already imports for its own authority, and `LaunchPlanBuilder` and
-`LaunchPlan` **declare no operations at all**, so nothing is ever reached
-*through* one.
-
-### The smallest decision surface
-
-| Option | Consequence |
-|---|---|
-| **A — a runtime-sourced position needs no import, and `uses` may name the interface directly** | closest to ADR-0078 §4's own words, which already contemplate "the exact nominal interface check that has no import declaration to compare against". Requires deciding what `uses` means when it names an interface rather than a binding, and docs/42 §2's "enclosing `uses` effect" has to be read against that |
-| **B — a fourth operation: place a function into a plan *through the bus*** | needs no language change. The bus service claims, then endows the child through its Bus capability; the driver imports `platform.pci.FunctionConfig` and is granted one. Cost: only a bus holder may delegate a function, so a driver cannot re-delegate — a policy asymmetry driven by a frontend rule rather than by the authority model |
-| **C — declare the config operations on `platform.pci.Bus`, function as a value** | works today with no change at all. **Rejected here rather than recommended**: it makes reading require the Bus, which contradicts the ruling's "an ordinary device driver receives a `PciFunction`, never the root Bus authority" |
-
-**Not chosen.** A is a change to an accepted language-boundary rule and B adds an
-operation whose shape encodes a policy the Architect did not decide. Either is a
-Level-2/3 decision, and the round's rule is to report rather than pick.
+**1.0 is unchanged.** Every 1.0 module keeps its meaning and its digest, a 1.0
+module using a 1.1 form is `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR`, and a
+frontend implementing only 1.0 refuses a 1.1 module whole by its header with
+`E1602`. The artifact records the version the module *declared*, so two minors
+never share one identity.
 
 ## 8. The liveness prerequisite, unchanged
 
@@ -315,6 +305,7 @@ stub, from a constant that looked like ordinary versioning.
 
 | Gate | State |
 |---|---|
-| *QEMU textual PCI function claim* (new) | **green** |
-| every Stage 1–3 gate | **unchanged and green**; no harness, budget or profile was modified, and the Stage 4 device is opt-in |
-| Stage 4 identity gate | **not claimed, and not partly claimed.** No persistent data moved, no configuration was read, and no textual code has yet performed a hardware-facing act. What is gated is the authority boundary that such an act will cross |
+| *QEMU textual PCI function claim* | **green** — the real read, the device-absent differential, eight executed negatives and the startup denial |
+| `interface_effects` (new) | **green** — the ADR-0080 chain through the independent verifier |
+| every Stage 1–3 gate | **unchanged and green.** No harness, budget or profile was modified, and the Stage 4 device is opt-in |
+| Stage 4 identity gate | **not claimed.** Discovery is not persistent data. What Stage 4A establishes is the authority boundary and the first hardware-facing act across it |

@@ -610,13 +610,16 @@ fn check_schema(module: &Module) -> Result<(), Finding> {
             alloc::format!("expected {}, found {}", tos_ir::SCHEMA_ID, header.schema_id),
         ));
     }
-    if header.language_version != tos_ir::LANGUAGE_VERSION {
+    // One schema, two source-language minors (ADR-0080 §5). The artifact says
+    // which its module declared, and the verifier accepts any this schema
+    // represents — an unknown one is refused rather than assumed.
+    if !tos_ir::LANGUAGE_VERSIONS.contains(&header.language_version.as_str()) {
         return Err(Finding::new(
             "V2002_SCHEMA",
             "header.language_version",
             alloc::format!(
-                "expected {}, found {}",
-                tos_ir::LANGUAGE_VERSION,
+                "expected one of {:?}, found {}",
+                tos_ir::LANGUAGE_VERSIONS,
                 header.language_version
             ),
         ));
@@ -1683,26 +1686,28 @@ fn check_tasks_sync_atomics_unsafe(module: &Module) -> Result<(), Finding> {
                     // An operation reaching an accepted interface schema
                     // (ADR-0060). The verifier does not carry the schema — a
                     // verifier that knew which interfaces exist would be a
-                    // second place they are declared — it proves the two things
-                    // the artifact must say about itself, which is
-                    // docs/43 §3's "effect/right/interface match":
+                    // second place they are declared — it proves what the
+                    // artifact must say about itself, which is docs/43 §3's
+                    // "effect/right/interface match": the function making the
+                    // call **declared** this interface as an effect.
                     //
-                    // the module **requested** this interface, and the function
-                    // making the call **declared** it as an effect. A module
-                    // that reached an interface it never asked for, or a
-                    // function that reached one its signature does not admit,
-                    // is refused here whatever any schema says.
-                    if !module
-                        .capability_imports
-                        .iter()
-                        .any(|import| &import.interface == interface)
-                    {
-                        return Err(Finding::new(
-                            "V2033_UNSAFE",
-                            at(),
-                            alloc::format!("{interface} is reached but never imported"),
-                        ));
-                    }
+                    // **It no longer requires a capability import** (ADR-0080).
+                    // An import is a *request*, answered before the first
+                    // instruction; an effect is a *declaration* of which class
+                    // of authority may be exercised. They coincided while an
+                    // import was the only way to come to hold a capability, and
+                    // stopped coinciding when operations began returning them:
+                    // a module that claims a PCI function reaches
+                    // `platform.pci.FunctionConfig` through a value, and no
+                    // import can answer a request for an object that does not
+                    // exist until the claim runs.
+                    //
+                    // Nothing is weakened by dropping it. Which capability
+                    // fills a position is proved per position below — an
+                    // `Import` against the module's own table, a `Value`
+                    // against its exact nominal type — so authority is still
+                    // checked twice and is still checked against the artifact
+                    // rather than the frontend's word.
                     if !function.signature.effects.iter().any(|e| e == interface) {
                         return Err(Finding::new(
                             "V2033_UNSAFE",
