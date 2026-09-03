@@ -34,6 +34,18 @@ GITROOT="$(cd "$ROOT/.." && pwd)"
 OUT="${1:-$ROOT/target/qemu-supervision}"
 mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
+# Anything after the output directory is passed to the boot harness unchanged.
+# The gate calls this with one argument and is unaffected; what uses the rest is
+# the human-facing launcher, which asks for an interactive display. An
+# interactive session has no exit code to check and writes no event log, so the
+# assertions below are skipped in that mode and the run says so — the gate is
+# the evidence, and a demonstration does not pretend to be one.
+shift || true
+HARNESS_EXTRA=("$@")
+INTERACTIVE=0
+for argument in "${HARNESS_EXTRA[@]+"${HARNESS_EXTRA[@]}"}"; do
+    [ "$argument" = "--interactive" ] && INTERACTIVE=1
+done
 
 FIXTURE="$ROOT/tests/vectors/supervision"
 TOOL="$ROOT/target/release/tos-capsule-tool"
@@ -57,6 +69,18 @@ printf '/system/boot/init.tos\t%s/init.tos\n/system/policy/services.tos\t%s/serv
 python3 "$GITROOT/scripts/check-capsule-provenance.py" --root "$GITROOT" \
     --capsule "$OUT/supervision.bin" --manifest "$OUT/capsule.meta.json"
 
+if [ "$INTERACTIVE" -eq 1 ]; then
+    bash "$HERE/run.sh" \
+        --out "$OUT" \
+        --capsule "$OUT/supervision.bin" \
+        --nucleus "$TARGET/x86_64-unknown-none/release/tos-nucleus" \
+        "${HARNESS_EXTRA[@]}"
+    echo "supervision: interactive session ended; serial log: $OUT/serial.log"
+    echo "supervision: assertions are skipped in this mode — run without"
+    echo "supervision: --interactive, or the qemu_supervision gate, for evidence"
+    exit 0
+fi
+
 bash "$HERE/run.sh" \
     --out "$OUT" \
     --capsule "$OUT/supervision.bin" \
@@ -64,6 +88,7 @@ bash "$HERE/run.sh" \
     --expect 33 \
     --require "TOS.NUCLEUS.ENTRY TOS.RUN.REQUEST TOS.RUN.INTERFACE TOS.RUN.COMPLETED TOS.HALT" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.UNSTARTABLE TOS.RUN.TRAP TOS.NUCLEUS.INVARIANT" \
+    "${HARNESS_EXTRA[@]+"${HARNESS_EXTRA[@]}"}" \
     > /dev/null
 
 LOG="$OUT/events.log"

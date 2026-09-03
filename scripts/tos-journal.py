@@ -95,6 +95,102 @@ def entry(line):
     return CLASSIFIED.get(identifier, "INFO"), producer, identifier, detail
 
 
+# The Stage 3 supervision story, as labels over the same transport.
+#
+# **Not a second vocabulary.** Every key below is an identifier or a record the
+# accepted contracts already define; this maps them to words a person reads
+# quickly. Anything not listed simply does not appear in the story view, which
+# is what makes it a story rather than a second log.
+STORY_RECORDS = {
+    "policy.start-permitted": ("start", "policy permits starting"),
+    "action.create": ("create", "creating a process"),
+    "result.created": ("created", "process created"),
+    "result.refused": ("refused", "creation refused"),
+    "policy.dependency-unavailable": ("blocked", "a dependency is not running"),
+    "state.blocked": ("blocked", "BLOCKED"),
+    "observed.ending": ("ended", "an ending was observed"),
+    "observed.no-ending": ("idle", "nothing left to wait for"),
+    "inferred.own-failure": ("failure", "the service itself failed"),
+    "policy.restart-permitted": ("restart", "inside the window, restart permitted"),
+    "policy.budget-exhausted": ("failed", "restart budget exhausted"),
+    "state.failed": ("failed", "FAILED, and it latches"),
+    "policy.latched-no-start": ("latched", "not started: already FAILED"),
+    "report": ("report", "the supervisor is done"),
+}
+
+STORY_EVENTS = {
+    "TOS.RUN.PROCESS_ENDOWED": ("process", "a process was endowed and started"),
+    "TOS.RUN.PROCESS_EXIT": ("exit", "a process reached its own end"),
+    "TOS.RUN.PROCESS_TERMINATED": ("exit", "a process was ended by authority"),
+    "TOS.RUN.PROCESS_RECLAIMED": ("reclaim", "its memory came back"),
+    "TOS.RUN.PROCESS_REFUSED": ("refused", "the nucleus refused a creation"),
+    "TOS.RUN.VERIFIED": ("verify", "a module verified itself before running"),
+    "TOS.RUN.COMPLETED": ("done", "an entry returned"),
+    "TOS.RUN.REQUEST": ("granted", "a capability request was answered"),
+    "TOS.RUN.BEGIN": ("capsule", "the source set this boot runs"),
+}
+
+# Which fields of an event are worth showing beside its label.
+STORY_FIELDS = {
+    "TOS.RUN.PROCESS_ENDOWED": ("process", "capabilities"),
+    "TOS.RUN.PROCESS_EXIT": ("process", "self_reported_status"),
+    "TOS.RUN.PROCESS_TERMINATED": ("process", "by"),
+    "TOS.RUN.PROCESS_RECLAIMED": ("process", "frames"),
+    "TOS.RUN.PROCESS_REFUSED": ("reason",),
+    "TOS.RUN.VERIFIED": ("module",),
+    "TOS.RUN.COMPLETED": ("value",),
+    "TOS.RUN.REQUEST": ("binding", "interface"),
+    "TOS.RUN.BEGIN": ("path", "modules"),
+}
+
+
+def fields_of(detail):
+    return dict(re.findall(r"(\w+)=(\S+)", detail))
+
+
+def story(lines):
+    """The supervision narrative, as (label, subject, note) in transport order."""
+    told = []
+    # Where the most recent *process-written* record landed. A module path
+    # follows its decision in the supervisor's own record stream, but the
+    # transport interleaves that stream with the nucleus's — a report region is
+    # drained at system calls, so an event from ring 0 can arrive between a
+    # decision and the service it was about. Attaching the path to whatever came
+    # last would put it on that event instead.
+    last_record = None
+    for line in lines:
+        # A record naming a module path is read before `entry` sees it, because
+        # a path is not a dotted severity form and splitting it as one would
+        # take it apart.
+        said = SAID.match(line.strip())
+        if said and "/" in said.group(1):
+            if last_record is not None and not told[last_record][1]:
+                told[last_record][1] = said.group(1)
+            continue
+        found = entry(line)
+        if not found:
+            continue
+        severity, producer, event, detail = found
+        # A process's own record: `<severity>.<producer>.<kind>.<what>`, of
+        # which `entry` has already stripped the first two segments.
+        if producer not in ("nucleus", "runtime", "loader"):
+            if event in STORY_RECORDS:
+                label, note = STORY_RECORDS[event]
+                told.append([label, "", note])
+                last_record = len(told) - 1
+            continue
+        if event in STORY_EVENTS:
+            label, note = STORY_EVENTS[event]
+            values = fields_of(detail)
+            subject = " ".join(
+                f"{name}={values[name]}"
+                for name in STORY_FIELDS.get(event, ())
+                if name in values
+            )
+            told.append([label, subject, note])
+    return told
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("log", help="a captured diagnostic transport")
@@ -103,6 +199,11 @@ def main():
         default="WARN",
         choices=ORDER,
         help="the lowest severity to show (default WARN: the important-error view)",
+    )
+    parser.add_argument(
+        "--story",
+        action="store_true",
+        help="the Stage 3 supervision narrative instead of the severity view",
     )
     parser.add_argument(
         "--check",
@@ -116,6 +217,10 @@ def main():
     worst = 0
     with open(arguments.log, "rb") as handle:
         text = handle.read().decode("utf-8", "replace").replace("\r", "")
+    if arguments.story:
+        for label, subject, note in story(text.splitlines()):
+            print(f"  [{label:<8}] {subject:<34} {note}".rstrip())
+        return 0
     for line in text.splitlines():
         found = entry(line)
         if not found:
