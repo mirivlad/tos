@@ -9,6 +9,11 @@ precedence over anything written here. Accepted by ADR-0042 (Project
 Architect-approved, 2026-08-12), which also makes `TOS.RUN.*` the delegated
 namespace Boot ABI v1 section 7 admits between its own success identifiers.
 
+**§9 is a Project Architect-approved amendment, Vladimir Tomashevskiy,
+2026-09-03**, granted against closure commit `77970cb` as the Stage 3
+operator-visible error-view semantics. What it accepts is stated in §9 itself
+and summarised there under §9.7; the boundary of §9.6 is approved with it.
+
 Producer: `source/crates/tos-pipeline` (`render::events`) and the component
 driving it.
 Consumers: the serial boot log, host test harnesses,
@@ -374,6 +379,17 @@ none:
 
 ### 9.6 What Stage 3 does not decide
 
+> **Approved as a boundary, not as a final answer** (Project Architect,
+> 2026-09-03). Persistence, rollover, archival, retention, filesystem location
+> and cross-boot journal recovery are not Stage 3 closure requirements, and this
+> approval neither chooses the eventual mechanism nor assigns it to a particular
+> later stage. It states only that those questions do not block Stage 3.
+>
+> **It does not follow that losing all diagnostic history across a real
+> production reboot is an acceptable final TOS operator experience.** That
+> remains a future design obligation.
+
+
 **Persistence, rollover, archival, cross-boot recovery, retention and filesystem
 location are not decided here and are not implemented.** No accepted contract
 decides them, and a Stage 3 view that invented one would be a Stage 4
@@ -381,3 +397,21 @@ observability design arriving without a decision. What Stage 3 requires and this
 provides is that the consequential events exist, are produced by the component
 whose statement they are, converge on one transport in one order, carry a
 severity a reader can select by, and are bounded.
+
+### 9.7 What was approved, as the ruling states it
+
+The Stage 3 operator-visible error-view semantics, accepted 2026-09-03:
+
+- the diagnostic transport is the single converged operator-visible view;
+- the important-error view is a **selection** of that transport, not a
+  duplicated second log;
+- `WARN`, `ERROR` and `FATAL` form the important-error selection;
+- the severity of a contract-defined event is fixed **per event kind**;
+- process-owned journal records carry their own severity in the textual form
+  §9.3 fixes;
+- all components converge on **one ordered transport**;
+- `scripts/tos-journal.py` is a **reader** of that view — not a production
+  subsystem and not a second source of truth;
+- the human-readable textual operator interface is part of the Stage 3 result;
+- and the existing IPC, report-region and transport bounds remain the bounds:
+  no new unbounded queue and no new store is introduced.

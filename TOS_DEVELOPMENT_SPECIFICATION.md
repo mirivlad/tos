@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `3b5bedae9023a6be12405057f0b8d7bb8c4553c7af0a5c7468679f78b65da451`\
+Source-manifest SHA-256: `ae7e313cc61c60cf1d00c6f1823988831c4ba59cd69056459c32cf7a34a47f98`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -278,21 +278,25 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 
 ## Status
 
-Stage 0, Stage 1, Stage 1.5 and Stage 2 are formally closed; the Stage 2
-closure approval is archived in `source/legal/publication-records/`. The
-repository is in **Stage 3**, implemented against the accepted Stage 3
-contracts — `IPC_V1`, `CAPABILITY_V1`, `SYSTEM_ABI_V1`,
-`PROCESS_IDENTITY_V1` and ADR-0048 onwards. Stage 3 is **not closed**: no
-closure approval exists and none is claimed here.
+Stage 0, Stage 1, Stage 1.5, Stage 2 and **Stage 3** are formally closed. Each
+closure approval is archived in `source/legal/publication-records/`; Stage 3 was
+closed by the Project Architect on 2026-09-03 for evidence commit `77970cb`,
+against `docs/evidence/STAGE3_CLOSURE_AUDIT.md` — 60 audited obligations, 56
+closed, none blocking. Stage 4 has not begun.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
-nucleus, a verified ring-3 runtime image, a process created with a
-`RuntimeMemoryGrantV1` of 54 MiB, and canonical TOS Core source taken through
-the production reader, parser, checker, resolver, `tos-ir/v1` lowerer,
-independent verifier and bounded engine, with process creation, exit,
-reclamation and IPC covered by QEMU gates. What is host-side reference work
-rather than freestanding: the build-to-bundle lifecycle (ADR-0073,
-`TOSBUNDLE/v1`) and everything ADR-0074 and ADR-0075 draft around it.
+nucleus, a verified ring-3 runtime image, processes created and funded out of a
+presented `MemoryAuthority`, and canonical TOS Core source taken through the
+production reader, parser, checker, resolver, `tos-ir/v1` lowerer, independent
+verifier and bounded engine. Above that: capabilities and IPC with counted
+bounds, regions with a three-state lifecycle, launch plans, a build-to-bundle
+lifecycle whose target verifies its own artifact, and a **supervisor written in
+TOS Core** that reads canonical policy from `/system/policy/`, restarts services
+against a failure-density window, and writes an operator-visible journal. All of
+it is covered by QEMU gates.
+
+Measured on the reference platform: absolute IPC latency `p99 = 39.147 µs`
+against the accepted `≤ 200 µs` bound, at evidence level P2.
 
 ADR-0030 (external vendor opaque material and `/vendor`), ADR-0031 with
 `docs/45_SYSTEM_SOURCE_HIERARCHY.md` (runtime system source hierarchy) and
@@ -1513,6 +1517,11 @@ precedence over anything written here. Accepted by ADR-0042 (Project
 Architect-approved, 2026-08-12), which also makes `TOS.RUN.*` the delegated
 namespace Boot ABI v1 section 7 admits between its own success identifiers.
 
+**§9 is a Project Architect-approved amendment, Vladimir Tomashevskiy,
+2026-09-03**, granted against closure commit `77970cb` as the Stage 3
+operator-visible error-view semantics. What it accepts is stated in §9 itself
+and summarised there under §9.7; the boundary of §9.6 is approved with it.
+
 Producer: `source/crates/tos-pipeline` (`render::events`) and the component
 driving it.
 Consumers: the serial boot log, host test harnesses,
@@ -1878,6 +1887,17 @@ none:
 
 ### 9.6 What Stage 3 does not decide
 
+> **Approved as a boundary, not as a final answer** (Project Architect,
+> 2026-09-03). Persistence, rollover, archival, retention, filesystem location
+> and cross-boot journal recovery are not Stage 3 closure requirements, and this
+> approval neither chooses the eventual mechanism nor assigns it to a particular
+> later stage. It states only that those questions do not block Stage 3.
+>
+> **It does not follow that losing all diagnostic history across a real
+> production reboot is an acceptable final TOS operator experience.** That
+> remains a future design obligation.
+
+
 **Persistence, rollover, archival, cross-boot recovery, retention and filesystem
 location are not decided here and are not implemented.** No accepted contract
 decides them, and a Stage 3 view that invented one would be a Stage 4
@@ -1885,6 +1905,24 @@ observability design arriving without a decision. What Stage 3 requires and this
 provides is that the consequential events exist, are produced by the component
 whose statement they are, converge on one transport in one order, carry a
 severity a reader can select by, and are bounded.
+
+### 9.7 What was approved, as the ruling states it
+
+The Stage 3 operator-visible error-view semantics, accepted 2026-09-03:
+
+- the diagnostic transport is the single converged operator-visible view;
+- the important-error view is a **selection** of that transport, not a
+  duplicated second log;
+- `WARN`, `ERROR` and `FATAL` form the important-error selection;
+- the severity of a contract-defined event is fixed **per event kind**;
+- process-owned journal records carry their own severity in the textual form
+  §9.3 fixes;
+- all components converge on **one ordered transport**;
+- `scripts/tos-journal.py` is a **reader** of that view — not a production
+  subsystem and not a second source of truth;
+- the human-readable textual operator interface is part of the Stage 3 result;
+- and the existing IPC, report-region and transport bounds remain the bounds:
+  no new unbounded queue and no new store is introduced.
 
 <!-- END source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md -->
 
@@ -23577,18 +23615,27 @@ backend, and a capsule is not a universal one.
 
 # ADR-0074: The build workspace, the launch bundle, and who owns them
 
-- Status: **Proposed for acceptance** — the surviving decision is implemented
-  and evidenced; what remains is Project Architect approval
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-29. Reconciled with the implemented system 2026-09-03
 - Decision level: 2 — it fixes where a build's products live, what crosses the
   boundary between a build and a run, and which component owns that memory over
   time. It changes no TOS Core semantics, no accepted ceiling, no trust rule and
   no ABI operation
-- Project Architect approval: **not yet given for the document as a whole.** Two
-  decisions inside it were taken by the Architect on 2026-08-29 and are recorded
-  as such in §1 and §2, and both are now implemented. The 2026-09-03 closure
-  instruction directed this reconciliation and asked for the result to be
-  prepared for Accepted status
+- Project Architect approval: **Vladimir Tomashevskiy, 2026-09-03**, for the
+  reconciled form on closure commit `77970cb`. Two decisions inside it were
+  taken by the Architect on 2026-08-29 and are recorded as such in §1 and §2;
+  the 2026-09-03 ruling approves the surviving normative decision after
+  reconciliation — build products outside the workspace, one immutable bundle
+  region per exact closure, the performed T1 lifecycle of §4a, the funded
+  build-worker role in place of a fixed `BuildWorkspace` allocation, the
+  measured Capsule-v1 account of §5d, operation 20 as built in §6a, and the
+  answers collected in §7a.
+
+  **The historical and superseded sections stay historical and superseded.**
+  Their presence in this document does not revive their old semantics, and the
+  approval does not extend to them. The still-open installed-source backend
+  (§5 C) and the absence of a fixed `BuildWorkspace` size (§5a, §5c) remain
+  outside the Stage 3 closure claim, exactly as this document states
 - Evidence: `docs/evidence/STAGE3_BUILD_WORKSPACE.md`,
   `docs/evidence/STAGE3_SUPERVISION.md` §7 — the performed T1 lifecycle,
   `docs/evidence/STAGE3_LAUNCH_PLANS.md`,
@@ -24244,7 +24291,7 @@ measurement bear on them:
   the first implementation slice does not need them
 - Related: ADR-0037 (Accepted, revision 3) — the **type-level** region model this
   must implement rather than re-decide. ADR-0055 (Accepted) — where authority
-  comes from, and its Option B. ADR-0050, ADR-0041 — grants. ADR-0074 (Draft) —
+  comes from, and its Option B. ADR-0050, ADR-0041 — grants. ADR-0074 (Accepted 2026-09-03; Draft when this was written) —
   the build workspace and the launch bundle this exists to carry.
   `CAPABILITY_V1`, `IPC_V1` §5–§6, `SYSTEM_ABI_V1` §5
 
@@ -24722,7 +24769,7 @@ long-running supervisor would slowly convert one build's budget into another's.
   asked to be brought back rather than resolved here
 - Related: ADR-0075 (Accepted) — the authority tree and the region lifecycle this
   funds. ADR-0069 — the reference process grant. ADR-0050, ADR-0041 — grants and
-  the pool. ADR-0074 (Draft) — the build workspace this has to be able to pay
+  the pool. ADR-0074 (Accepted 2026-09-03; Draft when this was written) — the build workspace this has to be able to pay
   for. `docs/evidence/STAGE3_BUILD_WORKSPACE.md`
 
 ## 1. Two counters over one memory

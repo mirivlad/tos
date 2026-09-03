@@ -263,21 +263,25 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 
 ## Status
 
-Stage 0, Stage 1, Stage 1.5 and Stage 2 are formally closed; the Stage 2
-closure approval is archived in `source/legal/publication-records/`. The
-repository is in **Stage 3**, implemented against the accepted Stage 3
-contracts — `IPC_V1`, `CAPABILITY_V1`, `SYSTEM_ABI_V1`,
-`PROCESS_IDENTITY_V1` and ADR-0048 onwards. Stage 3 is **not closed**: no
-closure approval exists and none is claimed here.
+Stage 0, Stage 1, Stage 1.5, Stage 2 and **Stage 3** are formally closed. Each
+closure approval is archived in `source/legal/publication-records/`; Stage 3 was
+closed by the Project Architect on 2026-09-03 for evidence commit `77970cb`,
+against `docs/evidence/STAGE3_CLOSURE_AUDIT.md` — 60 audited obligations, 56
+closed, none blocking. Stage 4 has not begun.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
-nucleus, a verified ring-3 runtime image, a process created with a
-`RuntimeMemoryGrantV1` of 54 MiB, and canonical TOS Core source taken through
-the production reader, parser, checker, resolver, `tos-ir/v1` lowerer,
-independent verifier and bounded engine, with process creation, exit,
-reclamation and IPC covered by QEMU gates. What is host-side reference work
-rather than freestanding: the build-to-bundle lifecycle (ADR-0073,
-`TOSBUNDLE/v1`) and everything ADR-0074 and ADR-0075 draft around it.
+nucleus, a verified ring-3 runtime image, processes created and funded out of a
+presented `MemoryAuthority`, and canonical TOS Core source taken through the
+production reader, parser, checker, resolver, `tos-ir/v1` lowerer, independent
+verifier and bounded engine. Above that: capabilities and IPC with counted
+bounds, regions with a three-state lifecycle, launch plans, a build-to-bundle
+lifecycle whose target verifies its own artifact, and a **supervisor written in
+TOS Core** that reads canonical policy from `/system/policy/`, restarts services
+against a failure-density window, and writes an operator-visible journal. All of
+it is covered by QEMU gates.
+
+Measured on the reference platform: absolute IPC latency `p99 = 39.147 µs`
+against the accepted `≤ 200 µs` bound, at evidence level P2.
 
 ADR-0030 (external vendor opaque material and `/vendor`), ADR-0031 with
 `docs/45_SYSTEM_SOURCE_HIERARCHY.md` (runtime system source hierarchy) and

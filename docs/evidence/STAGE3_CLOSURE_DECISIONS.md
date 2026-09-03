@@ -2,8 +2,36 @@
 
 # Stage 3 closure — one group of decisions, and what each one unblocks
 
-- Status: **decision packet — Project Architect decisions required before the
-  final Stage 3 implementation round**
+> **HISTORICAL — RESOLVED, AND STAGE 3 IS CLOSED.**
+>
+> Every decision this packet asked for was given, every item its table below
+> marks *pending*, *blocked* or *not started* has since been implemented and
+> evidenced, and the Project Architect closed Stage 3 on 2026-09-03 for evidence
+> commit `77970cb`.
+>
+> **Read `docs/evidence/STAGE3_CLOSURE_AUDIT.md` for the current state**; the
+> approval is archived in
+> `source/legal/publication-records/77970cb-stage3-closure-approval.md`.
+>
+> This document is kept for the questions it asked and the reasoning behind
+> them. Its status lines describe 2026-09-02 and describe nothing now. Where it
+> says a thing needs new ABI operation numbers, or is blocked, or is not
+> started, the resolution is:
+>
+> | This packet said | Resolved by |
+> |---|---|
+> | typed system-interface results — decision pending | `SYSTEM_INTERFACE_V1` §5; `STAGE3_LAUNCH_PLANS.md` §1 |
+> | heterogeneous textual endowment — needs new ABI operations | ADR-0077, operations 21–23 |
+> | textual supervisor that *creates* — blocked | ADR-0078, then `tests/vectors/supervision/init.tos` |
+> | canonical supervisor, `/system/policy/` — pending | `STAGE3_SUPERVISION.md` §1 |
+> | build worker — pending | ADR-0074 §4a; `qemu_build_topology` |
+> | service manifests — not started | still not started, and out of Stage 3 |
+> | terminal failure / restart evidence — pending | `STAGE3_SUPERVISION.md` §3–§5 |
+> | central operator-visible journal — not started | `RUNTIME_OBSERVABILITY_V1` §9 |
+> | observer / performance — environmental prerequisite | run in the repository's own workflow: P2, `p99 = 39.147 µs` |
+> | identity exit audit — pending | `STAGE3_CLOSURE_AUDIT.md` §10 |
+
+- Status: **historical decision packet — resolved; see the closure audit**
 - Date: 2026-09-02
 - Written at: operations 19 and 20 implemented and green, operations 8 and 15
   retired

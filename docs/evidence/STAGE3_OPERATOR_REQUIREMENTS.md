@@ -2,10 +2,15 @@
 
 # Stage 3 operator requirements — supervisor, failure and the error journal
 
-- Status: **recorded, not implemented.** These are requirements to design
-  against when the supervisor and its service manifests are built, which is
-  after Regions and the funded ABI. Nothing here is a decision about a
-  mechanism that exists today, and nothing here authorises building one early
+- Status: **recorded 2026-09-01; the Stage 3 subset is now implemented.** The
+  supervisor, the restart window, `BLOCKED`, the terminal `FAILED` latch and the
+  operator-visible important-error view exist and are evidenced — see
+  `STAGE3_SUPERVISION.md`, `RUNTIME_OBSERVABILITY_V1` §9 and
+  `STAGE3_CLOSURE_AUDIT.md` §8. **Service manifests remain unbuilt** and were
+  never a Stage 3 obligation. The requirements below are unchanged and are what
+  the implementation was designed against; where one names a capability Stage 3
+  did not claim — journal persistence above all — it stays a future obligation,
+  which the Project Architect stated explicitly when closing Stage 3
 - Date recorded: 2026-09-01
 - Source: the Project Architect, relaying an operator with long Unix/Linux
   administration experience. They describe expected *operational* behaviour —

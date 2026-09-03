@@ -6,6 +6,13 @@ One map from every Stage 3 closure obligation to the contract that decides it,
 the code that implements it, and the gate that proves it. It duplicates no ADR:
 where a decision is stated somewhere else, this points at it.
 
+> **Stage 3 was closed on this basis.** The Project Architect approved formal
+> closure on 2026-09-03 for evidence commit
+> `77970cb4144bcfd469671e8a1b228220687b9f90`, the tree this audit describes. The
+> approval is archived in
+> `source/legal/publication-records/77970cb4144bcfd469671e8a1b228220687b9f90-stage3-closure-approval.md`,
+> and it records what closure does **not** cover.
+
 **Verdicts** are one of four, and nothing else:
 
 - **CLOSED** — implemented, and proved by a gate that runs.

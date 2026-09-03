@@ -1861,12 +1861,11 @@ const BUNDLE_REGION_BYTES: u64 = 256 * 1024;
 /// Writes a bundle over this boot's own source set into a region, and returns
 /// the shared capability for it.
 ///
-/// **This is not the canonical build worker.** ADR-0074 is a Draft and the
-/// build/supervisor lifecycle it proposes is not settled; what this is, is the
-/// smallest thing that produces a *real* `TOSBUNDLE/v1` over a real closure so
-/// that operation 20 can be asked a real question. The topology it belongs in is
-/// a decision, and it is written up as one in
-/// `docs/evidence/STAGE3_CLOSURE_DECISIONS.md`.
+/// **This is not the canonical build worker.** That is ADR-0074 §4a's T1
+/// topology, which `build_worker` and `build_supervisor` perform and
+/// `build-topology.sh` proves. What this is, is the smallest thing that produces
+/// a *real* `TOSBUNDLE/v1` over a real closure so that operation 20 can be asked
+/// a real question on its own.
 ///
 /// The region goes through the whole state machine on the way out: allocated
 /// mutable, written, frozen, shared. That is the lifecycle ADR-0075 §4 names,

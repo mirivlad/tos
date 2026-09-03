@@ -2,18 +2,27 @@
 
 # ADR-0074: The build workspace, the launch bundle, and who owns them
 
-- Status: **Proposed for acceptance** — the surviving decision is implemented
-  and evidenced; what remains is Project Architect approval
+- Status: **Accepted** (Project Architect-approved)
 - Date: 2026-08-29. Reconciled with the implemented system 2026-09-03
 - Decision level: 2 — it fixes where a build's products live, what crosses the
   boundary between a build and a run, and which component owns that memory over
   time. It changes no TOS Core semantics, no accepted ceiling, no trust rule and
   no ABI operation
-- Project Architect approval: **not yet given for the document as a whole.** Two
-  decisions inside it were taken by the Architect on 2026-08-29 and are recorded
-  as such in §1 and §2, and both are now implemented. The 2026-09-03 closure
-  instruction directed this reconciliation and asked for the result to be
-  prepared for Accepted status
+- Project Architect approval: **Vladimir Tomashevskiy, 2026-09-03**, for the
+  reconciled form on closure commit `77970cb`. Two decisions inside it were
+  taken by the Architect on 2026-08-29 and are recorded as such in §1 and §2;
+  the 2026-09-03 ruling approves the surviving normative decision after
+  reconciliation — build products outside the workspace, one immutable bundle
+  region per exact closure, the performed T1 lifecycle of §4a, the funded
+  build-worker role in place of a fixed `BuildWorkspace` allocation, the
+  measured Capsule-v1 account of §5d, operation 20 as built in §6a, and the
+  answers collected in §7a.
+
+  **The historical and superseded sections stay historical and superseded.**
+  Their presence in this document does not revive their old semantics, and the
+  approval does not extend to them. The still-open installed-source backend
+  (§5 C) and the absence of a fixed `BuildWorkspace` size (§5a, §5c) remain
+  outside the Stage 3 closure claim, exactly as this document states
 - Evidence: `docs/evidence/STAGE3_BUILD_WORKSPACE.md`,
   `docs/evidence/STAGE3_SUPERVISION.md` §7 — the performed T1 lifecycle,
   `docs/evidence/STAGE3_LAUNCH_PLANS.md`,

@@ -7,7 +7,7 @@
   (`process_create_funded`), the retirement of operations 8 and 15, the
   withdrawal of the source-level `process_create`, and operation 20
   (`process_create_from_bundle`) with `Launch` v5
-- Related: ADR-0055, ADR-0061, ADR-0067, ADR-0069, ADR-0073, ADR-0074 (Draft),
+- Related: ADR-0055, ADR-0061, ADR-0067, ADR-0069, ADR-0073, ADR-0074 (Accepted 2026-09-03; Draft when this was written),
   ADR-0075, ADR-0076 §3–§4, §7; `SYSTEM_ABI_V1` §5, §7, `SYSTEM_INTERFACE_V1`
   §4, `CAPABILITY_V1` §3–§4
 
