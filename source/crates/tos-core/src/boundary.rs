@@ -85,11 +85,14 @@ pub(crate) fn check_boundary(source: &SourceUnit, schema: &Schema) -> Vec<Diagno
         let Some(first) = signature.effects().first() else {
             continue;
         };
-        let Some(path) = requested.get(first.text(source)) else {
+        let Some(path) = crate::effects::resolve(source, &requested, first)
+            .interface()
+            .map(alloc::string::ToString::to_string)
+        else {
             continue;
         };
         let Some(operation) =
-            interfaces::interface(path).and_then(|interface| interface.operation(name))
+            interfaces::interface(&path).and_then(|interface| interface.operation(name))
         else {
             continue;
         };
@@ -130,10 +133,13 @@ fn unavailable(
     let Some(first) = effects.first() else {
         return Some("expected a capability effect");
     };
-    let Some(path) = requested.get(first.text(source)) else {
-        return Some("uses names no capability import of this module");
+    let Some(path) = crate::effects::resolve(source, requested, first)
+        .interface()
+        .map(alloc::string::ToString::to_string)
+    else {
+        return Some("uses names no capability import and no accepted interface");
     };
-    let Some(interface) = interfaces::interface(path) else {
+    let Some(interface) = interfaces::interface(&path) else {
         return Some("no accepted interface schema declares this interface");
     };
     let Some(operation) = interface.operation(signature.name().text(source)) else {
@@ -147,8 +153,12 @@ fn unavailable(
         return Some("the operation requires a different number of capability effects");
     }
     for (required, effect) in operation.capabilities.iter().zip(effects) {
-        match requested.get(effect.text(source)) {
-            None => return Some("uses names no capability import of this module"),
+        // **The interface, whichever way it was written** (ADR-0080). A binding
+        // resolves to what it imported; a dotted item is the interface itself.
+        // What an operation requires is an interface, so that is what is
+        // compared — and a runtime-obtained capability has no import to name.
+        match crate::effects::resolve(source, requested, effect).interface() {
+            None => return Some("uses names no capability import and no accepted interface"),
             Some(path) if path != required.interface => {
                 return Some("a capability effect is not of the interface the operation requires")
             }

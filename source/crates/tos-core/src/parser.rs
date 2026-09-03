@@ -384,6 +384,35 @@ impl FunctionParameter {
     }
 }
 
+/// One item of a `uses` list (ADR-0080, `docs/39` §2's `effect_ref`).
+///
+/// **Two spellings, one thing.** A single segment is a capability import
+/// binding; several are an accepted interface path written directly. Both
+/// resolve to the same kind of semantic effect — an interface — which is why
+/// they are one node rather than two: a reader of the resolved set cannot tell
+/// which spelling produced it, and nothing downstream should be able to.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectRef {
+    segments: Vec<Span>,
+    span: Span,
+}
+
+impl EffectRef {
+    /// The written text, canonically: segments joined by `.`, whatever
+    /// whitespace the source put around the dots.
+    pub fn path(&self, source: &SourceUnit) -> alloc::string::String {
+        let parts: Vec<&str> = self.segments.iter().map(|s| s.text(source)).collect();
+        parts.join(".")
+    }
+    /// Whether this is the one-segment form, which is a binding name.
+    pub fn is_binding(&self) -> bool {
+        self.segments.len() == 1
+    }
+    pub fn span(&self) -> Span {
+        self.span
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub struct FunctionSignature {
     visibility: Visibility,
@@ -391,7 +420,7 @@ pub struct FunctionSignature {
     name: Span,
     parameters: Vec<FunctionParameter>,
     result: TypeSyntax,
-    effects: Vec<Span>,
+    effects: Vec<EffectRef>,
     span: Span,
 }
 impl FunctionSignature {
@@ -411,7 +440,7 @@ impl FunctionSignature {
     pub fn result(&self) -> &TypeSyntax {
         &self.result
     }
-    pub fn effects(&self) -> &[Span] {
+    pub fn effects(&self) -> &[EffectRef] {
         &self.effects
     }
     pub fn span(&self) -> Span {
@@ -2532,7 +2561,7 @@ impl<'source> TokenCursor<'source> {
         })
     }
 
-    fn parse_effects(&mut self) -> Result<Vec<Span>, ParseError> {
+    fn parse_effects(&mut self) -> Result<Vec<EffectRef>, ParseError> {
         if self.current_text() != "uses" {
             return Ok(Vec::new());
         }
@@ -2540,10 +2569,30 @@ impl<'source> TokenCursor<'source> {
         self.expect_kind(TokenKind::OpenBracket, ParseErrorCode::UnexpectedToken)?;
         let effects = self.parse_comma_list(
             ListCloser::Kind(TokenKind::CloseBracket),
-            Self::expect_identifier,
+            Self::expect_effect_ref,
         );
         self.expect_kind(TokenKind::CloseBracket, ParseErrorCode::UnexpectedToken)?;
         Ok(effects)
+    }
+
+    /// One `effect_ref`: a binding name, or an interface path (ADR-0080 §5).
+    ///
+    /// The same qualified-name production every other dotted name in this
+    /// grammar uses, rather than a second dotted-name parser. Which of the two
+    /// forms it is is decided by whether it has more than one segment, and a
+    /// binding name cannot contain a dot — so no source valid under 1.0 changes
+    /// meaning, and the two forms are told apart without a keyword.
+    fn expect_effect_ref(&mut self) -> Result<EffectRef, ParseError> {
+        let segments = self.parse_dotted_name()?;
+        let start = segments
+            .first()
+            .expect("a dotted name has one segment")
+            .start;
+        let end = segments.last().expect("a dotted name has one segment").end;
+        Ok(EffectRef {
+            segments,
+            span: Span { start, end },
+        })
     }
 
     fn parse_type(&mut self) -> Result<TypeSyntax, ParseError> {

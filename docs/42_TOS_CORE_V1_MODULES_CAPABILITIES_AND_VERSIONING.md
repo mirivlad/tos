@@ -3,7 +3,7 @@
 # TOS Core V1 — modules, capabilities, and versioning
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
-- Language version: `TOS Core 1.0`
+- Language versions: `TOS Core 1.0` and `TOS Core 1.1` (ADR-0080)
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`,
   `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`, and
@@ -18,9 +18,17 @@ module system.example version 1.0 profile bootstrap;
 ```
 
 The version is the source-language major/minor version, not a module release
-number. For V1, it MUST be exactly `1.0`; any other major is
-`E1601_UNSUPPORTED_LANGUAGE_VERSION`, and an unknown minor is
-`E1602_UNSUPPORTED_LANGUAGE_MINOR`. A resolver maps module name
+number. For V1 the major MUST be `1`; any other is
+`E1601_UNSUPPORTED_LANGUAGE_VERSION`, and a minor the frontend does not
+implement is `E1602_UNSUPPORTED_LANGUAGE_MINOR`. The accepted minors are **0 and
+1**: 1.1 adds the direct-interface effect form of docs/39 and nothing else
+(ADR-0080).
+
+**A module receives the language its header declares**, not the newest the
+frontend implements. A 1.0 module using a 1.1 form is
+`E1608_FEATURE_REQUIRES_LANGUAGE_MINOR`, and the version the header declared is
+what the artifact records — so two minors never share one identity in the module
+digest, the cache or the provenance record. A resolver maps module name
 `a.b.c` to canonical repository path `a/b/c.tos` relative to a declared module
 root in the active source set. A source whose path does not match its header is
 `E1603_MODULE_PATH_MISMATCH`.
@@ -126,6 +134,17 @@ casting one is `E1502_FORGED_CAPABILITY`. A capability operation is valid only
 when the capability type, requested operation/right, resource range, and the
 enclosing `uses` effect all match a declared interface contract.
 
+**The `uses` effect names an interface, and a request is a separate fact**
+(ADR-0080). `import capability` requests authority before the first instruction
+and is answered or denied by launch policy; a `uses` effect declares which
+interfaces a function may exercise and requests nothing. They coincide whenever a
+module uses only what it imported, which is why one declaration did both jobs
+until an operation began returning capabilities of interfaces no import could
+have been answered for. An effect naming an interface directly therefore grants
+nothing: the operation still requires a capability value at the call site, the
+verifier proves its exact nominal type against the artifact, and the nucleus
+proves the object's rights and liveness at the call.
+
 The effective process grant is an explicit finite set of object-specific rights
 and resource constraints. A capability can move to one scoped task only if its
 interface declares it transferable. Delegation/attenuation is a typed interface
@@ -168,14 +187,21 @@ Bootstrap recovery.
 
 ## 4. Language, IR, runtime, and cache compatibility
 
-Language source declares `1.0`. A frontend declares the exact source versions,
-profiles, feature set, and conformance revision it implements. It rejects an
-unknown language major and rejects any minor feature it does not advertise. A
-source has no "best effort" downgrade path. Additive V1 minor extensions must
-use a reserved feature declaration and have an accepted contract; they cannot
-reinterpret existing token sequences.
+Language source declares `1.0` or `1.1`. A frontend declares the exact source
+versions, profiles, feature set, and conformance revision it implements. It
+rejects an unknown language major and rejects any minor feature it does not
+advertise. A source has no "best effort" downgrade path. Additive V1 minor
+extensions must have an accepted contract and cannot reinterpret existing token
+sequences.
 
-For declared language version `1.0`, canonical-source NFC validation uses the
+**1.1 is the first such extension, and it meets both requirements.** ADR-0080 is
+its accepted contract, and it reinterprets no token sequence: a `uses` item that
+was legal under 1.0 is a single identifier, and the form 1.1 adds is a dotted
+path, which 1.0 could not parse there at all. A frontend implementing only 1.0
+refuses a 1.1 module **whole, by its header**, with `E1602` — never partly, and
+never by silently ignoring the form it does not know.
+
+For every declared language version of V1, canonical-source NFC validation uses the
 fixed Unicode 17.0.0 / UAX #15 Revision 57 baseline from docs/39 and ADR-0029.
 The normalization baseline is selected by language version, never by the host
 Unicode database. A future language version that changes it requires an

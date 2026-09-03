@@ -3,7 +3,11 @@
 # TOS Core V1 — source model and grammar
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
-- Language version: `TOS Core 1.0`
+- Language versions: `TOS Core 1.0` and `TOS Core 1.1`
+  - 1.1 adds the direct-interface effect form of §`effects` and nothing else
+    (ADR-0080). 1.0 remains supported and unchanged: every 1.0 module keeps its
+    meaning, its diagnostics and its digest, and a module receives exactly the
+    language its own header declares
 - Authority on acceptance: Tier 2 under
   `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`
 - Governing Tier 1 decision: ADR-0027
@@ -37,7 +41,7 @@ declaration. Its canonical identity consists of:
 source_set_identity
 canonical repository path
 sha256(normalized_source_bytes)
-language version (1.0)
+language version (1.0 or 1.1, as the module's header declares)
 profile declaration
 ```
 
@@ -245,7 +249,9 @@ async_marker    = "async" ;
 parameter_list  = parameter ( "," parameter )* ","? ;
 parameter       = borrow_mode? identifier ":" type ;
 borrow_mode     = "borrow" ( "mut" )? ;
-effects         = "uses" "[" identifier ( "," identifier )* ","? "]" ;
+effects         = "uses" "[" effect_ref ( "," effect_ref )* ","? "]" ;
+effect_ref      = identifier | interface_path ;
+interface_path  = identifier ( "." identifier )+ ;
 extern_decl     = "extern" "fn" identifier "(" parameter_list? ")"
                   "->" type effects? ";" ;
 
@@ -399,10 +405,33 @@ An `extern` declaration is reserved by the grammar and rejected as
 operation it names. ADR-0060 admitted the first such schema,
 `source/interfaces/system/SYSTEM_INTERFACE_V1.md`, which supplies the interface
 identifier and capability rule this sentence was waiting for: the item's `uses`
-effect names a capability import of the module, the interface is that import's
-type, and the operation's name, parameters and result must be the ones that
-interface declares. Nothing the schema does not declare became available, and no
-build flag, host library or `unsafe` block enables anything (docs/42 §5).
+effect names the interface, and the operation's name, parameters and result must
+be the ones that interface declares. Nothing the schema does not declare became
+available, and no build flag, host library or `unsafe` block enables anything
+(docs/42 §5).
+
+**An `effect_ref` is a binding or an interface** (ADR-0080, TOS Core 1.1). A
+single identifier is a capability import of the module, and resolves to the
+interface that import requested; a dotted `interface_path` is an accepted
+interface named directly. The two forms denote the same kind of thing — an
+interface — so a function declaring either may perform the operations that
+interface declares, and the resolved effect recorded in the IR is the interface
+path whichever way it was written.
+
+The dotted form exists because a capability may lawfully arrive **at runtime**,
+as the value an operation returned, and an interface reached that way has no
+import to name: the object did not exist when the process started, so no request
+could have been answered for it. Naming the interface directly declares which
+class of authority a function may exercise **without requesting any**. It
+introduces no binding, implies no instance, and adds nothing to the process's
+capability table; the operation still requires an actual capability at the call
+site, checked against the artifact by the verifier and against the object by the
+nucleus.
+
+A dotted `effect_ref` in a module whose header declares `1.0` is
+`E1608_FEATURE_REQUIRES_LANGUAGE_MINOR`. A module receives the language its own
+header claims, and a form the header did not claim is refused rather than
+quietly accepted.
 
 ## 6. Deliberate exclusions
 

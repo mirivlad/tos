@@ -38,8 +38,18 @@ pub use footprint::retained_bytes;
 /// The schema every V1 module declares.
 pub const SCHEMA_ID: &str = "tos-ir/v1";
 
-/// The language version this schema represents.
+/// The language version a module declares when nothing says otherwise, and the
+/// one every artifact written before ADR-0080 carries.
 pub const LANGUAGE_VERSION: &str = "1.0";
+
+/// Every source-language version this schema represents (ADR-0080 §5).
+///
+/// **A schema version and a language version are not the same thing.**
+/// `tos-ir/v1` is unchanged by TOS Core 1.1 — the direct-interface effect form
+/// resolves to an interface path, which is what `Signature.effects` has always
+/// carried — so one schema represents both minors, and an artifact records
+/// which of them its module declared.
+pub const LANGUAGE_VERSIONS: &[&str] = &["1.0", "1.1"];
 
 /// The Unicode baseline docs/43 section 2 fixes for V1.
 pub const UNICODE_BASELINE: &str = "UCD-17.0.0/UAX15-r57/NFC";

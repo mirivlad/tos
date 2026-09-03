@@ -120,7 +120,7 @@ The semantic operation families are:
 | arithmetic/comparison/control | typed operands/results, checked/trap behavior, complete branch targets |
 | move/borrow/drop | affine state, borrow exclusivity, bounded cleanup/drop contract |
 | Result/error | declared `Ok`/`Err` construction and `?` propagation edge |
-| capability | declared capability **source** per position, effect/right/interface match, no construction from scalar data |
+| capability | declared capability **source** per position, effect/right/interface match, no construction from scalar data. The two are proved **independently** (ADR-0080): the operation's required interface is in the enclosing function's resolved effect set, *and* each position is an `Import` naming one of the module's own requests or a `Value` whose exact nominal capability type is the one that position requires. A `Value` requires no import — an import is a request answered before the first instruction, and a capability an operation produced answers none |
 | region/DMA | typed grant, rights, checked range/alignment, transfer/share rule, no physical-address exposure |
 | resource | reserve/release/check fuel, stack, allocation, task, worker, sync, shared, cleanup, recursion/import bounds |
 | async/parallel | scoped spawn, typed captures, affine `Task<T>` token, `TaskResult<T>` await/join result, cancellation request, and scope completion |

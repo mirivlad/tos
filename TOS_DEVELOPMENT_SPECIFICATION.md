@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `17769c7f2f206cef3af0e92bd37f017bb7f471e564e86eb76c0e2c5316519b12`\
+Source-manifest SHA-256: `ee2a057ba8ff6d2d954134f7bfd4ec5d9375aff0cdb01c3e50c8713045bee61e`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -3110,12 +3110,21 @@ where authority arrives.
 - **`import capability`** requests the authority and binds a name to it. It is a
   request, not a grant (`docs/42` §2): the launcher maps it to a concrete grant
   under policy, and a denied request is `CapabilityDenied` at startup.
-- **`uses [name]`** on an `extern fn` names that binding. The interface is the
-  imported capability's type, so an operation cannot be reached except through a
-  capability of the interface that declares it. This is `docs/42` §2's rule
-  stated as a mechanism: "the capability type, requested operation/right,
-  resource range, and the enclosing `uses` effect all match a declared interface
-  contract."
+- **`uses [...]`** on an `extern fn` names the **interface** the operation
+  belongs to, so an operation cannot be reached except through a capability of
+  the interface that declares it. This is `docs/42` §2's rule stated as a
+  mechanism: "the capability type, requested operation/right, resource range,
+  and the enclosing `uses` effect all match a declared interface contract."
+
+  **Two spellings, one effect** (ADR-0080, TOS Core 1.1). A bare identifier is a
+  capability import of the module and resolves to the interface that import
+  requested; a dotted path is an accepted interface named directly. The second
+  form exists because a capability may arrive as the **value an operation
+  returned**, and such an interface has no import to name — the object did not
+  exist when the process started, so no request could have been answered for it.
+  Naming the interface declares which class of authority the function may
+  exercise and requests none: the call site still supplies an actual capability,
+  and §4.1 is where that is checked.
 - **The first parameter is the capability**, of the interface's declared type.
   An operation may require more than one, and §4.1 says how it declares them;
   the remaining parameters are values. No parameter is a pointer, because TOS
@@ -5608,7 +5617,11 @@ A backend such as an interpreter, bytecode VM, Wasm engine or native compiler ma
 # TOS Core V1 — source model and grammar
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
-- Language version: `TOS Core 1.0`
+- Language versions: `TOS Core 1.0` and `TOS Core 1.1`
+  - 1.1 adds the direct-interface effect form of §`effects` and nothing else
+    (ADR-0080). 1.0 remains supported and unchanged: every 1.0 module keeps its
+    meaning, its diagnostics and its digest, and a module receives exactly the
+    language its own header declares
 - Authority on acceptance: Tier 2 under
   `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`
 - Governing Tier 1 decision: ADR-0027
@@ -5642,7 +5655,7 @@ declaration. Its canonical identity consists of:
 source_set_identity
 canonical repository path
 sha256(normalized_source_bytes)
-language version (1.0)
+language version (1.0 or 1.1, as the module's header declares)
 profile declaration
 ```
 
@@ -5850,7 +5863,9 @@ async_marker    = "async" ;
 parameter_list  = parameter ( "," parameter )* ","? ;
 parameter       = borrow_mode? identifier ":" type ;
 borrow_mode     = "borrow" ( "mut" )? ;
-effects         = "uses" "[" identifier ( "," identifier )* ","? "]" ;
+effects         = "uses" "[" effect_ref ( "," effect_ref )* ","? "]" ;
+effect_ref      = identifier | interface_path ;
+interface_path  = identifier ( "." identifier )+ ;
 extern_decl     = "extern" "fn" identifier "(" parameter_list? ")"
                   "->" type effects? ";" ;
 
@@ -6004,10 +6019,33 @@ An `extern` declaration is reserved by the grammar and rejected as
 operation it names. ADR-0060 admitted the first such schema,
 `source/interfaces/system/SYSTEM_INTERFACE_V1.md`, which supplies the interface
 identifier and capability rule this sentence was waiting for: the item's `uses`
-effect names a capability import of the module, the interface is that import's
-type, and the operation's name, parameters and result must be the ones that
-interface declares. Nothing the schema does not declare became available, and no
-build flag, host library or `unsafe` block enables anything (docs/42 §5).
+effect names the interface, and the operation's name, parameters and result must
+be the ones that interface declares. Nothing the schema does not declare became
+available, and no build flag, host library or `unsafe` block enables anything
+(docs/42 §5).
+
+**An `effect_ref` is a binding or an interface** (ADR-0080, TOS Core 1.1). A
+single identifier is a capability import of the module, and resolves to the
+interface that import requested; a dotted `interface_path` is an accepted
+interface named directly. The two forms denote the same kind of thing — an
+interface — so a function declaring either may perform the operations that
+interface declares, and the resolved effect recorded in the IR is the interface
+path whichever way it was written.
+
+The dotted form exists because a capability may lawfully arrive **at runtime**,
+as the value an operation returned, and an interface reached that way has no
+import to name: the object did not exist when the process started, so no request
+could have been answered for it. Naming the interface directly declares which
+class of authority a function may exercise **without requesting any**. It
+introduces no binding, implies no instance, and adds nothing to the process's
+capability table; the operation still requires an actual capability at the call
+site, checked against the artifact by the verifier and against the object by the
+nucleus.
+
+A dotted `effect_ref` in a module whose header declares `1.0` is
+`E1608_FEATURE_REQUIRES_LANGUAGE_MINOR`. A module receives the language its own
+header claims, and a form the header did not claim is refused rather than
+quietly accepted.
 
 ## 6. Deliberate exclusions
 
@@ -6737,7 +6775,7 @@ events. A full registry and conformance expectations are in docs/44.
 # TOS Core V1 — modules, capabilities, and versioning
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
-- Language version: `TOS Core 1.0`
+- Language versions: `TOS Core 1.0` and `TOS Core 1.1` (ADR-0080)
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`,
   `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`, and
@@ -6752,9 +6790,17 @@ module system.example version 1.0 profile bootstrap;
 ```
 
 The version is the source-language major/minor version, not a module release
-number. For V1, it MUST be exactly `1.0`; any other major is
-`E1601_UNSUPPORTED_LANGUAGE_VERSION`, and an unknown minor is
-`E1602_UNSUPPORTED_LANGUAGE_MINOR`. A resolver maps module name
+number. For V1 the major MUST be `1`; any other is
+`E1601_UNSUPPORTED_LANGUAGE_VERSION`, and a minor the frontend does not
+implement is `E1602_UNSUPPORTED_LANGUAGE_MINOR`. The accepted minors are **0 and
+1**: 1.1 adds the direct-interface effect form of docs/39 and nothing else
+(ADR-0080).
+
+**A module receives the language its header declares**, not the newest the
+frontend implements. A 1.0 module using a 1.1 form is
+`E1608_FEATURE_REQUIRES_LANGUAGE_MINOR`, and the version the header declared is
+what the artifact records — so two minors never share one identity in the module
+digest, the cache or the provenance record. A resolver maps module name
 `a.b.c` to canonical repository path `a/b/c.tos` relative to a declared module
 root in the active source set. A source whose path does not match its header is
 `E1603_MODULE_PATH_MISMATCH`.
@@ -6860,6 +6906,17 @@ casting one is `E1502_FORGED_CAPABILITY`. A capability operation is valid only
 when the capability type, requested operation/right, resource range, and the
 enclosing `uses` effect all match a declared interface contract.
 
+**The `uses` effect names an interface, and a request is a separate fact**
+(ADR-0080). `import capability` requests authority before the first instruction
+and is answered or denied by launch policy; a `uses` effect declares which
+interfaces a function may exercise and requests nothing. They coincide whenever a
+module uses only what it imported, which is why one declaration did both jobs
+until an operation began returning capabilities of interfaces no import could
+have been answered for. An effect naming an interface directly therefore grants
+nothing: the operation still requires a capability value at the call site, the
+verifier proves its exact nominal type against the artifact, and the nucleus
+proves the object's rights and liveness at the call.
+
 The effective process grant is an explicit finite set of object-specific rights
 and resource constraints. A capability can move to one scoped task only if its
 interface declares it transferable. Delegation/attenuation is a typed interface
@@ -6902,14 +6959,21 @@ Bootstrap recovery.
 
 ## 4. Language, IR, runtime, and cache compatibility
 
-Language source declares `1.0`. A frontend declares the exact source versions,
-profiles, feature set, and conformance revision it implements. It rejects an
-unknown language major and rejects any minor feature it does not advertise. A
-source has no "best effort" downgrade path. Additive V1 minor extensions must
-use a reserved feature declaration and have an accepted contract; they cannot
-reinterpret existing token sequences.
+Language source declares `1.0` or `1.1`. A frontend declares the exact source
+versions, profiles, feature set, and conformance revision it implements. It
+rejects an unknown language major and rejects any minor feature it does not
+advertise. A source has no "best effort" downgrade path. Additive V1 minor
+extensions must have an accepted contract and cannot reinterpret existing token
+sequences.
 
-For declared language version `1.0`, canonical-source NFC validation uses the
+**1.1 is the first such extension, and it meets both requirements.** ADR-0080 is
+its accepted contract, and it reinterprets no token sequence: a `uses` item that
+was legal under 1.0 is a single identifier, and the form 1.1 adds is a dotted
+path, which 1.0 could not parse there at all. A frontend implementing only 1.0
+refuses a 1.1 module **whole, by its header**, with `E1602` — never partly, and
+never by silently ignoring the form it does not know.
+
+For every declared language version of V1, canonical-source NFC validation uses the
 fixed Unicode 17.0.0 / UAX #15 Revision 57 baseline from docs/39 and ADR-0029.
 The normalization baseline is selected by language version, never by the host
 Unicode database. A future language version that changes it requires an
@@ -7091,7 +7155,7 @@ The semantic operation families are:
 | arithmetic/comparison/control | typed operands/results, checked/trap behavior, complete branch targets |
 | move/borrow/drop | affine state, borrow exclusivity, bounded cleanup/drop contract |
 | Result/error | declared `Ok`/`Err` construction and `?` propagation edge |
-| capability | declared capability **source** per position, effect/right/interface match, no construction from scalar data |
+| capability | declared capability **source** per position, effect/right/interface match, no construction from scalar data. The two are proved **independently** (ADR-0080): the operation's required interface is in the enclosing function's resolved effect set, *and* each position is an `Import` naming one of the module's own requests or a `Value` whose exact nominal capability type is the one that position requires. A `Value` requires no import — an import is a request answered before the first instruction, and a capability an operation produced answers none |
 | region/DMA | typed grant, rights, checked range/alignment, transfer/share rule, no physical-address exposure |
 | resource | reserve/release/check fuel, stack, allocation, task, worker, sync, shared, cleanup, recursion/import bounds |
 | async/parallel | scoped spawn, typed captures, affine `Task<T>` token, `TaskResult<T>` await/join result, cancellation request, and scope completion |
@@ -7245,7 +7309,7 @@ frontend, verifier, source maps, capability contract, or recovery semantics.
 # TOS Core V1 — conformance, limits, and implementation review
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
-- Language version: `TOS Core 1.0`
+- Language versions: `TOS Core 1.0` and `TOS Core 1.1` (ADR-0080)
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` through
   `docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`
@@ -7499,6 +7563,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1605_AMBIGUOUS_IMPORT` | an import has candidates nothing orders: the declared source set holds the requested name more than once inside one module root, or more than one reachable declared dependency source set provides it. Candidates in different roots are settled by the declared root order and are not ambiguous (ADR-0038) |
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 | `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
+| `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` | the module uses a source form added in a later minor than its own header declares. Fields: `feature`, `declared`, `requires`. A module receives the language its header claims, so a 1.1 form in a 1.0 module is refused here rather than accepted by a frontend that happens to implement both (ADR-0080) |
 
 ### Concurrency (stage `type`)
 
@@ -19414,6 +19479,16 @@ already built changes under any option — the nucleus, the ABI and the evidence
 of Phase 4 stand as they are, and what is decided here is who else may reach
 them.
 
+## Superseded in part by ADR-0080
+
+`Signature.effects` by interface path is unchanged and is what ADR-0080 builds
+on. What that decision corrects is narrower: this ADR's mechanism assumed every
+`uses` item was an `import capability` binding, because an import was the only
+way a module could come to hold authority when it was written. TOS Core 1.1
+admits an interface named directly, for capabilities that arrive as the value an
+operation returned. The effect identity, the schema rules and the `extern` form
+are otherwise as written here.
+
 <!-- END docs/adr/0060-how-a-module-reaches-a-capability.md -->
 
 ---
@@ -19792,6 +19867,15 @@ the capability table, the endowment chain and the engine's interface port stand
 as they are; what is decided here is which declaration of a module a grant is
 matched against, and what the launch record must say for that match to be
 checkable rather than assumed.
+
+## Superseded in part by ADR-0080
+
+The binding rule is unchanged for every capability that *is* endowed: the
+imported name is the capability, and a request is answered or denied by launch
+policy. What ADR-0080 separates is the second job this ADR's binding was doing —
+naming a function's effect. A capability obtained at runtime has no binding to
+name, so a `uses` item may name its interface instead; that declares an effect
+and requests nothing.
 
 <!-- END docs/adr/0061-how-an-endowment-binds-to-a-module.md -->
 
@@ -20400,6 +20484,15 @@ Nothing already built changes: the capability model, the one-receiver rule, the
 liveness rule, the endowment binding of ADR-0061 and the argument marshalling of
 ADR-0062 all stand as they are. What is added is an operation that costs one
 crossing pair where the present pair of operations costs two.
+
+## Reconciled with ADR-0080
+
+"One effect per capability the operation requires, in the order the schema
+declares them" is unchanged, and so is the rule that one grant may not stand in
+for two. What changes is only what an effect may be written as: an import
+binding, or the interface itself. The per-position source check of ADR-0078 is
+what keeps two authorities separate, and it is unaffected by how either was
+declared.
 
 <!-- END docs/adr/0063-an-operation-that-requires-two-capabilities.md -->
 
@@ -25993,6 +26086,21 @@ module got one, not what it may do with it.
 9. an unknown container version is refused, and version 3 reads as `Import`;
 10. every existing import-only gate is unchanged and green.
 
+## 8. The open question of §6, answered by ADR-0080
+
+§6 left one case deliberately open: "A capability of an interface a module never
+imports — one delivered by a message, say — is a separate question and is not
+answered here." Stage 4A reached it through a different door than the one
+imagined — a capability an *operation returned*, rather than one a message
+delivered — and the shape was the same: the verifier rule of §4 required the
+interface at every position to be one the enclosing function declares as an
+effect, and an effect could only be an import binding.
+
+ADR-0080 separates those two facts. An effect names an interface; an import
+requests a capability. The per-position source rule of §2 and §4 is unchanged
+and is what still proves which capability fills a position — the two remain
+orthogonal, which is what this ADR's §2 required of them.
+
 <!-- END docs/adr/0078-capability-sources.md -->
 
 ---
@@ -26509,6 +26617,295 @@ process that claims it. Its decision surface is
 remainder rather than to this ADR.
 
 <!-- END docs/adr/0079-hardware-authority-origin.md -->
+
+---
+
+<!-- BEGIN docs/adr/0080-capability-effects-name-interfaces.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0080: Capability effects name interfaces independently of capability origin
+
+- Status: **Accepted (Project Architect-approved)**
+- Date: 2026-09-04
+- Decision level: **3** — it changes the accepted source language. `docs/39`'s
+  `effects` production admits a new form, the source-language version becomes
+  **TOS Core 1.1**, and the frontend's effect model is corrected to the one
+  `Signature.effects` has always carried. It changes no Tier 0 invariant, no IR
+  schema, no ABI operation and no accepted ceiling
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-04
+- Related: ADR-0028 (the language contract this amends), ADR-0060 (the interface
+  schema, and `Signature.effects` by interface path), ADR-0061 (how an endowment
+  binds to a module), ADR-0063 (an operation requiring two capabilities),
+  ADR-0078 §4, §6 (capability sources, and the question left open there),
+  ADR-0079 (the decision whose implementation reached that question).
+  `docs/39` §2, §5, `docs/42` §1–§2, §4, `docs/43` §3, `docs/44`,
+  `SYSTEM_INTERFACE_V1` §3, §4.1
+
+## 1. The question, which ADR-0078 §6 left open on purpose
+
+> A capability of an interface a module never imports — one delivered by a
+> message, say — is a separate question and is not answered here.
+
+Stage 4A reached it. A module holding the root `platform.pci.Bus` calls
+`pci_function_claim` and receives a `platform.pci.FunctionConfig` — lawfully,
+from an operation reached through authority it did import. It then cannot use
+it. `SYSTEM_INTERFACE_V1` §4.1 makes an `extern`'s `uses` name an
+`import capability` **binding of the enclosing module**, so the module must
+write `import capability platform.pci.FunctionConfig as f;`, and that request
+cannot be answered before the first instruction: the only lawful producer is the
+claim, which runs afterwards. A parent cannot place one in a child's plan for the
+same reason — `endow_for_launch` on that interface is itself an operation on it.
+
+The recursion has no base case, and it is not about PCI. It is about **every**
+authority whose object cannot exist before the process that obtains it.
+
+## 2. Two things that were accidentally the same, and are not
+
+Stage 3 had one way for a module to come to hold authority, so one declaration
+did two jobs and nothing forced them apart. They are now separated:
+
+| | **Authority request / startup binding** | **Interface effect declaration** |
+|---|---|---|
+| written | `import capability P as n;` | `uses [...]` |
+| when | before the first instruction | at every call site, statically |
+| what it does | requests a capability; creates a binding; introduces a value | states which capability interfaces a function may exercise |
+| decided by | launch policy — answered or denied | the module's author, checked against accepted schemas |
+| failure | `CapabilityDenied` at startup | a static diagnostic |
+| grants authority | **yes**, if answered | **never** |
+
+They coincide whenever a module uses only what it imported, which is every
+module written so far. That coincidence is why the frontend could enforce "every
+`uses` item is an import binding" without anyone noticing it was a second rule.
+
+**`import capability` is unchanged in every respect.** It still requests, still
+binds, still participates in startup identity and the endowment, still produces
+`CapabilityDenied` when refused.
+
+## 3. The decision
+
+**`uses` may name an accepted capability interface directly.**
+
+```tos
+uses [platform.pci.FunctionConfig]
+```
+
+This means: *this function may perform operations whose capability positions
+require the accepted nominal interface `platform.pci.FunctionConfig`.*
+
+It does **not** mean, and an implementation that made any of these true would be
+wrong: request one at launch; manufacture one; imply a well-known instance;
+authorise a missing capability; license a *different* capability; or add
+anything to the process's capability table.
+
+**An interface effect with no capability value is no authority at all.** The
+operation still requires an actual capability at the call site; the verifier
+still proves its exact nominal type against the artifact; and the nucleus still
+proves handle bounds, generation, object kind, rights and liveness at every
+call. What this admits is a *declaration*, and a declaration has never been a
+grant — `docs/42` §2 has said so since it was written.
+
+### The existing form is preserved exactly
+
+```tos
+import capability system.ipc.Endpoint as endpoint;
+
+fn f() -> i64 uses [endpoint] { ... }
+```
+
+A bare identifier in `uses` still resolves to a capability import binding under
+the existing rules. **After resolution its semantic effect is that binding's
+interface path**, so these two denote the same effect:
+
+```tos
+uses [endpoint]                 // endpoint imports system.ipc.Endpoint
+uses [system.ipc.Endpoint]
+```
+
+The first additionally corresponds to a startup request, because the import
+exists. The second does not. **There are not two effect identities.**
+
+## 4. Effect identity is the interface path, and always was
+
+ADR-0060 fixed `Signature.effects: Vec<String>` as "declared capability effects
+**by interface path**", and the lowerer has resolved bindings to paths since it
+was written. The artifact has therefore never been able to tell `uses [a]` from
+`uses [b]` when both import one interface — the distinction existed in the
+frontend and nowhere else, and no verifier could enforce it.
+
+This decision makes the frontend agree with the representation rather than the
+other way round. **No IR schema change**: `tos-ir/v1` already carries exactly the
+resolved semantics, which §9 records was checked rather than assumed.
+
+Authority *source* stays where ADR-0078 put it, and the two stay orthogonal:
+
+```text
+effect interface     which class of authority may be exercised
+capability source    which actual capability value fills this position
+```
+
+Collapsing them again — in either direction — is the mistake this ADR exists to
+prevent.
+
+### One consequence, stated rather than discovered
+
+Under the resolved model, a function declaring `uses [a]` may also exercise a
+*different* binding `b` of the **same** interface. That was previously
+`E1501_UNDECLARED_CAPABILITY_EFFECT`.
+
+This **widens** what is accepted; it reinterprets nothing. Every program valid
+under the old rule is valid now and means exactly what it meant, because the
+artifact it lowers to is byte-identical — the old rule refused programs the
+representation could not have distinguished anyway. A rule enforceable in one
+frontend and in no verifier is not a property of the language.
+
+## 5. TOS Core 1.1
+
+**This changes accepted source syntax, so it is a language version.** Unlike
+ADR-0078 it is not a consistency correction that happens to be invisible, and
+calling it one would be the opposite of what `docs/44` requires of a new syntax
+feature.
+
+- **TOS Core major version remains 1.** `docs/42` §1's major rule is untouched.
+- **TOS Core 1.0 remains supported, unchanged.** Every 1.0 module keeps its
+  meaning, its diagnostics and its digest.
+- **TOS Core 1.1 adds the direct-interface effect form and nothing else.**
+
+```ebnf
+effects     = "uses" "[" effect_ref ( "," effect_ref )* ","? "]" ;
+effect_ref  = identifier | interface_path ;
+interface_path = identifier ( "." identifier )+ ;
+```
+
+The dotted form is unambiguously an interface path: a bare identifier is a
+binding and cannot contain a dot, so no source valid under 1.0 changes meaning.
+It uses `docs/39`'s existing qualified-name production rather than a second
+dotted-name parser.
+
+**The version gate is the existing mechanism, not a new one.** The module header
+already declares the source-language version, and `docs/44` already assigns
+`E1602_UNSUPPORTED_LANGUAGE_MINOR` to "a minor version the frontend does not
+implement". So a 1.0-only frontend rejects a 1.1 module *whole*, by its header,
+before any of its syntax is read — never partly accepting the new form.
+
+**A module gets what it declared.** A module whose header says `version 1.0` and
+whose body uses a direct interface effect is refused with
+`E1608_FEATURE_REQUIRES_LANGUAGE_MINOR`, naming the feature and the minor it
+needs. Without that, 1.1 syntax would work in a module that told every reader it
+was 1.0, and the header would stop being a fact about the source.
+
+**The artifact records the version the module declared**, not the newest the
+frontend implements. With one supported minor those were the same string; with
+two they are not, and a header that always said "1.0" would put two languages
+under one identity.
+
+## 6. Static checks
+
+For `uses [P]` where `P` is dotted, the checker proves:
+
+- `P` is declared by an accepted interface schema;
+- it denotes a **capability interface** — not a record, a module or any other
+  nominal type;
+- the function's operations are permitted by that schema;
+- each capability parameter has the exact required nominal interface;
+- ordinary effect propagation is unchanged: a caller still declares every effect
+  its callees require.
+
+A typo or an undeclared path fails **statically**. A direct interface effect
+cannot make an unavailable `extern` available: the operation must be declared by
+an accepted schema, and `E1801_FFI_NOT_AVAILABLE` is unchanged for everything
+else. No `AnyCapability`, no raw handle, no implicit coercion, and no effect
+inferred because a value happened to arrive at runtime.
+
+## 7. The verifier proves two dimensions, independently
+
+**Effect.** The operation's required interface is in the enclosing function's
+resolved effect set.
+
+**Authority source**, per capability position (ADR-0078):
+
+- `Import(index)` — the index names one of the module's own capability imports,
+  and the interface matches, exactly as before;
+- `Value(operand)` — the operand's type is `TypeDef::Capability(interface)` with
+  the interface **equal** to the schema-required one for that position, under
+  ordinary ownership and dominance rules.
+
+**A `Value` position requires no import.** The two alternatives ADR-0078 §3
+rejected stay rejected: no dummy startup import, and no unrelated import
+reinterpreted as a licence.
+
+## 8. Delegation becomes generic, and PCI is not special
+
+A process holding a runtime `platform.pci.FunctionConfig` may use every
+operation that interface declares, `endow_for_launch` included:
+
+```text
+Bus → pci_function_claim → runtime FunctionConfig value
+    → endow_for_launch(function, plan, …) → child receives a startup binding
+```
+
+The parent needs no startup `FunctionConfig` import to delegate a runtime value.
+**No "endow a function through the Bus" operation is added**, and the
+configuration operations stay on `platform.pci.FunctionConfig` where ADR-0079
+put them.
+
+The same shape answers the general case ADR-0078 §6 named, without a second
+decision: a capability of interface `X` that arrives by IPC is usable by a
+function declaring `uses [X]`, provided the transfer rules admit it. Nothing in
+the frontend or the verifier mentions PCI.
+
+## 9. What was checked rather than assumed
+
+- `Signature.effects` already carries interface paths, and the lowerer already
+  resolves bindings to them — so no `tos-ir` version change is required, and
+  none is made. Had the IR been unable to represent the resolved semantics, this
+  ADR would have stopped and said so.
+- The module header's version is already the **source-language** version, and
+  `E1601`/`E1602` already gate major and minor. The 1.0/1.1 range needs no new
+  version mechanism, only a second supported minor and the feature gate of §5.
+- `E1608` is the next free code in `docs/44`'s `E16xx` module/version band.
+
+## Architecture impact statement
+
+- **Change level:** 3 — the accepted source language. **Invariants affected:**
+  none amended. I-07 is strengthened: a declaration that never grants is now
+  distinguishable in the language from a request that does.
+- **Canonical representation:** unchanged for every 1.0 module, byte for byte.
+  A 1.1 module records `1.1` as its language version.
+- **Trusted-base impact:** none. No nucleus change.
+- **Source-to-runtime impact:** the artifact records the declared language
+  version rather than a constant, which is what makes two supported minors
+  distinguishable in identity, cache and provenance.
+- **Recovery and rollback impact:** none.
+- **Stage identity gate:** none claimed. This unblocks Stage 4A's remaining half.
+- **Threat-model impact:** neutral by construction — §3's list of what an
+  interface effect does *not* do is the threat statement, and §7 is where it is
+  enforced twice.
+- **Compatibility profile:** TOS Core **1.0 and 1.1**. A 1.0-only frontend
+  refuses a 1.1 module by its header.
+- **New dependencies:** none.
+
+## 10. Conformance evidence
+
+1. 1.0 positives: existing vectors are unchanged and still pass, including
+   `uses [binding]`.
+2. 1.1 positives: a direct interface effect on an ordinary function and on an
+   `extern`; a runtime-obtained capability used through one.
+3. A 1.0 module using a direct interface effect is
+   `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR`.
+4. A 1.1 module naming an undeclared interface path in `uses` is refused
+   statically; so is one naming a record or module path.
+5. A direct interface effect grants nothing: a module declaring one and holding
+   no capability of that interface cannot perform the operation, and fails where
+   a module holding one succeeds.
+6. `uses [a]` and `uses [system.ipc.Endpoint]` produce the **same**
+   `Signature.effects`, and a 1.0 module's artifact is unchanged.
+7. A frontend supporting only 1.0 refuses a 1.1 module with `E1602`, whole and
+   by its header.
+8. The declared language version reaches the module header, the image and the
+   identity record.
+
+<!-- END docs/adr/0080-capability-effects-name-interfaces.md -->
 
 ---
 

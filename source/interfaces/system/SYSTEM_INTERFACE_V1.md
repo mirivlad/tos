@@ -60,12 +60,21 @@ where authority arrives.
 - **`import capability`** requests the authority and binds a name to it. It is a
   request, not a grant (`docs/42` §2): the launcher maps it to a concrete grant
   under policy, and a denied request is `CapabilityDenied` at startup.
-- **`uses [name]`** on an `extern fn` names that binding. The interface is the
-  imported capability's type, so an operation cannot be reached except through a
-  capability of the interface that declares it. This is `docs/42` §2's rule
-  stated as a mechanism: "the capability type, requested operation/right,
-  resource range, and the enclosing `uses` effect all match a declared interface
-  contract."
+- **`uses [...]`** on an `extern fn` names the **interface** the operation
+  belongs to, so an operation cannot be reached except through a capability of
+  the interface that declares it. This is `docs/42` §2's rule stated as a
+  mechanism: "the capability type, requested operation/right, resource range,
+  and the enclosing `uses` effect all match a declared interface contract."
+
+  **Two spellings, one effect** (ADR-0080, TOS Core 1.1). A bare identifier is a
+  capability import of the module and resolves to the interface that import
+  requested; a dotted path is an accepted interface named directly. The second
+  form exists because a capability may arrive as the **value an operation
+  returned**, and such an interface has no import to name — the object did not
+  exist when the process started, so no request could have been answered for it.
+  Naming the interface declares which class of authority the function may
+  exercise and requests none: the call site still supplies an actual capability,
+  and §4.1 is where that is checked.
 - **The first parameter is the capability**, of the interface's declared type.
   An operation may require more than one, and §4.1 says how it declares them;
   the remaining parameters are values. No parameter is a pointer, because TOS

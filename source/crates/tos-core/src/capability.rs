@@ -54,14 +54,16 @@ pub(crate) fn check_capabilities(source: &SourceUnit, schema: &Schema) -> Vec<Di
     }
     let paths: BTreeSet<String> = capabilities.values().cloned().collect();
 
+    // **Effect sets are sets of interface paths** (ADR-0080). A binding
+    // resolves to the interface it imported and a dotted item is one already,
+    // so a caller and a callee are compared in the space `Signature.effects`
+    // records — which is what the artifact has always carried, and what a
+    // verifier can actually check. A binding *name* means something only inside
+    // the module that wrote it.
     let mut declared: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
     for function in schema.functions() {
-        let effects: BTreeSet<String> = function
-            .signature()
-            .effects()
-            .iter()
-            .map(|effect| effect.text(source).to_string())
-            .collect();
+        let effects =
+            crate::effects::resolved_set(source, &capabilities, function.signature().effects());
         declared.insert(function.signature().name().text(source), effects);
     }
 
@@ -74,12 +76,11 @@ pub(crate) fn check_capabilities(source: &SourceUnit, schema: &Schema) -> Vec<Di
         diagnostics: Vec::new(),
     };
     for function in schema.functions() {
-        checker.effects = function
-            .signature()
-            .effects()
-            .iter()
-            .map(|effect| effect.text(source).to_string())
-            .collect();
+        checker.effects = crate::effects::resolved_set(
+            source,
+            &checker.capabilities,
+            function.signature().effects(),
+        );
         checker.walk_block(function.body());
     }
     checker.diagnostics
@@ -103,12 +104,21 @@ impl CapabilityChecker<'_> {
         Diagnostic::new(code, Severity::Error, Stage::Effect, span, self.source)
     }
 
-    /// Reports a use of a capability the enclosing function does not declare.
+    /// Reports a use of a capability whose **interface** the enclosing function
+    /// does not declare.
+    ///
+    /// The set is interfaces, so a function declaring one binding of an
+    /// interface may exercise another binding of the same one. That is a
+    /// widening rather than a reinterpretation (ADR-0080 §4): the artifact could
+    /// never tell the two apart, so the old refusal was a frontend rule with
+    /// nothing below it to enforce it.
     fn require_effect(&mut self, name: &str, span: Span) {
-        if !self.capabilities.contains_key(name) || self.effects.contains(name) {
+        let Some(interface) = self.capabilities.get(name).cloned() else {
+            return;
+        };
+        if self.effects.contains(&interface) {
             return;
         }
-        let interface = self.capabilities[name].clone();
         let diagnostic = self
             .report("E1501_UNDECLARED_CAPABILITY_EFFECT", span)
             .with_field("capability", name.to_string())
@@ -122,16 +132,22 @@ impl CapabilityChecker<'_> {
         let Some(required) = self.declared.get(callee) else {
             return;
         };
+        // Both sides are interface paths (ADR-0080), so what is missing is an
+        // interface. The `capability` field keeps naming *something the reader
+        // can act on*: the binding this module imported for that interface where
+        // it has one, and the interface itself where it does not — a caller may
+        // legitimately declare an effect it holds no import for.
         let missing: Vec<String> = required.difference(&self.effects).cloned().collect();
-        for name in missing {
-            let interface = self
+        for interface in missing {
+            let named = self
                 .capabilities
-                .get(&name)
-                .cloned()
-                .unwrap_or_else(|| String::from("<unresolved>"));
+                .iter()
+                .find(|(_, path)| *path == &interface)
+                .map(|(binding, _)| binding.clone())
+                .unwrap_or_else(|| interface.clone());
             let diagnostic = self
                 .report("E1501_UNDECLARED_CAPABILITY_EFFECT", span)
-                .with_field("capability", name)
+                .with_field("capability", named)
                 .with_field("interface", interface)
                 .with_field("required_by", callee.to_string());
             self.diagnostics.push(diagnostic);
