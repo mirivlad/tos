@@ -35,7 +35,22 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   `docs/evidence/STAGE3_CLOSURE_AUDIT.md`: 60 обязательств, 56 CLOSED, 0
   блокирующих, 4 вынесены за Stage 3 принятым решением; P2 observer
   qualification и P2 абсолютная задержка IPC `p99 = 39.147 мкс` при бюджете
-  `<= 200 мкс`. Stage 4 не начат. Текст ниже описывает Stage 3 как он строился.
+  `<= 200 мкс`. Текст ниже описывает Stage 3 как он строился.
+- **Stage 4A открыт и остановлен на архитектурном STOP** (2026-09-03).
+  Раунд — hardware boundary и PCI discovery; цель была узкой: канонический
+  текстовый процесс читает configuration space реального `virtio-blk-pci` под
+  capability. Железо не тронуто, ни один контракт не изменён, ни один gate
+  Stage 1–3 не ослаблен. Основание — `docs/evidence/STAGE4A_HARDWARE_BOUNDARY.md`:
+  у capability, называющей PCI-функцию, нет законного origin
+  (`CAPABILITY_V1` §2 в редакции ADR-0075 §5 + ADR-0055), а два доступных
+  механизма доступа к config space отвергаются **разными** принятыми
+  клаузулами — ABI-операция противоречит букве `SYSTEM_ABI_V1` §2, а
+  отображение ECAM противоречит операции 17, ADR-0075 §6 и ADR-0076. Поверхность
+  решения — `docs/adr/0079-hardware-authority-origin.md` (**Proposed**), D1…D5.
+  Рекомендация: D1-A + D2-M + D3-P3. Отдельная находка, не входящая в STOP:
+  `nucleus/src/process.rs:1091` реализует только первую половину правила
+  liveness из `SYSTEM_ABI_V1` §6 — это надо закрыть до первого routed device
+  interrupt, а не после.
 - **Как это было по ходу работы: Stage 3, в работе, не закрыт.** Реализация ведётся против
   принятых Stage 3 контрактов (`IPC_V1`, `CAPABILITY_V1`, `SYSTEM_ABI_V1`,
   `PROCESS_IDENTITY_V1`, ADR-0048…ADR-0073). На реальном freestanding пути
