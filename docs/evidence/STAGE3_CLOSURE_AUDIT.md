@@ -59,8 +59,8 @@ against that inventory. `[q]` marks a gate in the `qemu` profile.
 
 | # | Requirement | Normative source | Implementation | Evidence / gate | Verdict |
 |---|---|---|---|---|---|
-| 4.1 | Absolute Stage 3 latency budget `p99 ≤ 200 µs` | ADR-0068 (which removed the relative `≤ 8x` from conformance) | `tests/performance`, `qemu_stage3_ipc_conformance` | `qemu_stage3_ipc_conformance` `[q]` — **needs the ADR-0066 observer build** | ENVIRONMENT-ONLY |
-| 4.2 | Observer qualification | ADR-0066 | `host-tools/qemu-test/observer-*` | `qemu_stage3_observer_conformance` `[q]` — **needs the ADR-0066 observer build** | ENVIRONMENT-ONLY |
+| 4.1 | Absolute Stage 3 latency budget `p99 ≤ 200 µs` | ADR-0068 (which removed the relative `≤ 8x` from conformance) | `tests/performance`, `qemu_stage3_ipc_conformance` | `qemu_stage3_ipc_conformance` `[q]`, run on the closure commit by the repository's own workflow: **`p99 = 39.147 µs` of 300 samples, evidence P2**. See §12 | CLOSED |
+| 4.2 | Observer qualification | ADR-0066 | `host-tools/qemu-test/observer-*` | `qemu_stage3_observer_conformance` `[q]`, same run: **`positive_pairs = 21/21`, `sign_p = 4.77e-07`, evidence P2**. See §12 | CLOSED |
 | 4.3 | The relative `≤ 8x` ratio is observational data, not a conformance obligation | ADR-0068 | — | recorded in ADR-0068 | OUT OF STAGE 3 by accepted decision |
 | 4.4 | Counted IPC constraints hold | `IPC_V1` §8 | `ipc::cost` | `qemu_exchange_cost` `[q]` | CLOSED |
 
@@ -155,6 +155,7 @@ already exists; no new mechanism was added for it.
 | **Process identity (the slot)** | `TOS.RUN.PROCESS_EXIT`/`_TERMINATED`/`_RECLAIMED` all carry `process=<slot>`, and reclamation is reported per slot with the frames it returned | every QEMU gate |
 | **Instance identity** | a boot-monotonic number the nucleus assigns and never reuses. It is **not** a handle: a handle is an index in one process's table and means nothing in another (ADR-0067 §7) | `qemu_lifecycle` `[q]` |
 | **An ended object vs. a reused slot** | the slot's **generation** advances at retirement, so a capability naming the old occupant stops resolving — `capability::resolve` asks `object_is_live` once, centrally, rather than in each operation | `qemu_supervisor` `[q]`: the same handle over an ended child answers `E_NO_CAPABILITY`, not authority over whoever occupies the slot next. `qemu_lifecycle` `[q]`: stale authority refused |
+| **A slot genuinely is reused, and nothing is confused by it** | — | `qemu_supervision` `[q]` reclaims `process=1` and later endows `process=1` again for a different service. The supervisor attributes every failure correctly across that reuse: two services latch and the third never does, which is a per-service count it could not have got right by matching on a slot |
 | **Region and lane reuse** | a released region's lane is reusable and the old handle is not: the same slot, a new generation | `qemu_memory_authority` `[q]` (`same_lane=1`, `stale=-1`) |
 | **Supervisor observation of the correct child** | `ChildEnding.child_instance` is the **instance**, and the supervisor matches on it rather than on a slot or a handle | `qemu_supervision` `[q]`; `supervision.rs` — a run whose only difference is which instance ended produces a different decision |
 | **Endings are not lost, and are not kept forever** | every ending is collected in ending order, and one nobody is left to collect is **released** rather than held: `TOS.RUN.NOTICE_RELEASED` | `qemu_lifecycle` `[q]` (three boots: collection order, a delegated observer cancelled with the relation, a delivery to a blocked collector) |
@@ -170,12 +171,63 @@ Counted over the numbered requirement rows of §1–§9, of which there are 60.
 
 | Verdict | Count |
 |---|---:|
-| CLOSED | 54 |
-| ENVIRONMENT-ONLY | 2 |
+| CLOSED | 56 |
+| ENVIRONMENT-ONLY | 0 |
 | OUT OF STAGE 3 by accepted decision | 4 |
 | **OPEN — blocks Stage 3** | **0** |
 
-The two ENVIRONMENT-ONLY items are §4.1 and §4.2, and both have the same cause:
-this host has no ADR-0066 observer QEMU build. See §9 of
-`STAGE3_LAUNCH_PLANS.md` and §4 above for what that does and does not leave
-unknown.
+**Nothing is ENVIRONMENT-ONLY.** §4.1 and §4.2 were, until the closure-commit
+run in §12 produced them. This host still has no ADR-0066 observer QEMU build
+and its local profile still reports 43 of 45; the evidence is the workflow's,
+which is where ADR-0040 reserves P2 for.
+
+## 12. The closure-commit observer run
+
+The Architect's instruction was to use the existing repository workflow rather
+than substitute anything. `.github/workflows/qemu-boot.yml` fetches the
+digest-pinned QEMU 10.0.11 source, builds the ADR-0066 observer with
+`build-simple-observer.sh`, puts it on `PATH`, and runs the whole `qemu`
+profile — the same profile, the same gates, the same thresholds as here.
+
+**What was found, and corrected.** Before this round the two gates failed there
+with `exit 101`: a build error in the measurement workload
+(`struct Work { prepared: tos_pipeline::Prepared }` after `Prepared` gained a
+lifetime parameter), dating from before this round and invisible on any host
+without the observer, because the observer check runs first and exits `2`. The
+conformance result was therefore **absent**, not merely unavailable. It is fixed
+— `Prepared::launch` has always returned `Prepared<'static>` — and every feature
+build of the runtime image and the nucleus was then swept clean.
+
+Nothing else was changed to obtain the run: no substitute QEMU, no other timing
+source, no other observer, no local approximation, and no threshold. A diff of
+every threshold-bearing path across this whole body of work is empty.
+
+**Result for the closure commit** (`ed846b9`, run `33700558125`):
+
+```text
+QUALIFY-OBSERVER PASS: evidence=P2 positive_pairs=21/21 sign_p=4.76837e-07
+STAGE3-OBSERVER-CONFORMANCE PASS: evidence=P2
+
+measure-channel: 300 sample(s) after 3 warm-up(s): median 22.89 us,
+                 p99 39.15 us, min 20.31, max 40.89, jitter 20.58 us
+  303 real exchanges including 3 warm-ups; one additional exchange primed the server
+  request=64 bytes reply=64 bytes preemption=active; nothing subtracted
+  nucleus counted messages=608 copies=912 exchanges=304 crossings=609+609
+QUALIFY-IPC PASS: evidence=P2 p99=39.147 us of 300 samples <= 200.0 us
+  observational only, not a budget (ADR-0068): ratio=7.957x
+
+PREFLIGHT PASS: 45 gate(s) passed
+```
+
+`p99 = 39.147 µs` against the `200 µs` budget — a factor of five inside it — at
+evidence level **P2**, which ADR-0040 reserves for the reference platform and
+the harness refuses to emit anywhere else. The counted IPC constraints are in
+the same line and come from the nucleus's own counters, not the observer's.
+
+The relative ratio is reported as `7.957x` and is **observational only**: ADR-0068
+removed it from conformance, and it is recorded here because the harness prints
+it, not because anything turns on it.
+
+**The whole `qemu` profile passed: 45 of 45.** Both gates that were
+ENVIRONMENT-ONLY in every earlier report are CLOSED, on the closure commit,
+through the accepted observer.
