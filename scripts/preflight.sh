@@ -103,6 +103,9 @@ interface_schema() {
 abi_operations() {
     bash "$ROOT/scripts/tests/check-abi-operations.sh"
 }
+closure_audit() {
+    bash "$ROOT/scripts/tests/check-closure-audit.sh"
+}
 operator_journal() {
     bash "$ROOT/scripts/tests/check-operator-journal.sh"
 }
@@ -418,6 +421,7 @@ gate docs       default   "accepted interface schema"                  interface
 gate docs       default   "system ABI operation numbers"               abi_operations
 gate docs       default   "Boot ABI event contract"                    boot_event_contract
 gate docs       default   "operator important-error view"              operator_journal
+gate docs       default   "Stage 3 closure audit"                      closure_audit
 gate docs       default   "nucleus exception foundation"               exception_foundation
 gate docs       default   "Stage 2 language-contract consistency"      stage2_language_contract
 gate docs       default   "CI and preflight prove the same gates"      gate_parity
