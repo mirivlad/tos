@@ -38,7 +38,7 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 445
+- files in the release package: 446
 - active system invariants: 21
 - architecture decision records: 78 (40 accepted)
 
@@ -117,7 +117,7 @@ Architecture decision records
 - docs/adr/0071-bounded-verified-module-residency.md — ADR-0071: Bounded verified-module residency and the module provider [**Accepted**]
 - docs/adr/0072-source-backed-launch-workspace.md — ADR-0072: The launch workspace, and what a process grant is for [**Accepted**]
 - docs/adr/0073-build-to-image-launch.md — ADR-0073: Build-to-image launch and verifier-owned process admission [**Accepted**]
-- docs/adr/0074-build-workspace-and-launch-bundle.md — ADR-0074: The build workspace, the launch bundle, and who owns them [**Draft — not accepted, and nothing in it is implemented**]
+- docs/adr/0074-build-workspace-and-launch-bundle.md — ADR-0074: The build workspace, the launch bundle, and who owns them [**Proposed for acceptance** — the surviving decision is implemented]
 - docs/adr/0075-region-object-lifecycle.md — ADR-0075: Region object lifecycle, the mutable-to-immutable transition, and reclamation [**Accepted**]
 - docs/adr/0076-unified-memory-funding.md — ADR-0076: One physical account — frames, memory authority, process grants and region backing [**Accepted**]
 - docs/adr/0077-launch-plans.md — ADR-0077: A launch plan is an object, and it outlives the creation that reads it [**Accepted**]

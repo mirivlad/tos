@@ -94,6 +94,13 @@ extern fn endpoint_receive(cap: system.ipc.Endpoint) -> i64 uses [journal];
 
 // One journal record: what happened, in this supervisor's own words.
 //
+// **The first segment is the severity** (`RUNTIME_OBSERVABILITY_V1` §9.3), and
+// it is this module's to choose because it is the only thing that knows what
+// its own decisions mean: a service that cannot start is a warning, a service
+// that has exhausted its budget is an error, and an ordinary restart is
+// neither. An operator reads the important-error view by selecting on that one
+// segment.
+//
 // The record is written here and rendered by the runtime edge; **it is not a
 // host log.** What the nucleus observed is on the nucleus's own lines, with the
 // instance identities only ring 0 can assert; what this module inferred,
@@ -124,7 +131,7 @@ pub fn main() -> i64 uses [process, memory, journal] {
         Ok(builder) => {
             let placed: i64 = endow_for_launch(memory, builder, 128u64, "memory");
             if (placed != 0i64) {
-                note("supervisor.result.refused");
+                note("warn.supervisor.result.refused");
                 return placed;
             }
             match (launch_plan_seal(process, builder)) {
@@ -132,13 +139,13 @@ pub fn main() -> i64 uses [process, memory, journal] {
                     return supervise(plan);
                 }
                 Err(unsealed) => {
-                    note("supervisor.result.refused");
+                    note("warn.supervisor.result.refused");
                     return unsealed;
                 }
             }
         }
         Err(unplanned) => {
-            note("supervisor.result.refused");
+            note("warn.supervisor.result.refused");
             return unplanned;
         }
     }
@@ -198,9 +205,9 @@ fn supervise(plan: system.process.LaunchPlan) -> i64 uses [process, memory, jour
                     }
                 }
                 if (startable) {
-                    note("supervisor.policy.start-permitted");
+                    note("info.supervisor.policy.start-permitted");
                     note(policy.program(at));
-                    note("supervisor.action.create");
+                    note("info.supervisor.action.create");
                     match (process_create_funded(
                         process, memory, plan,
                         policy.program(at), policy.grant(at), 0u64
@@ -210,7 +217,7 @@ fn supervise(plan: system.process.LaunchPlan) -> i64 uses [process, memory, jour
                             state[at] = 1u64;
                             running = running + 1i64;
                             created = created + 1i64;
-                            note("supervisor.result.created");
+                            note("info.supervisor.result.created");
                             // The child's own authority is a value this
                             // operation produced, and it is let go at once. A
                             // supervisor that kept one per launch would fill
@@ -221,20 +228,20 @@ fn supervise(plan: system.process.LaunchPlan) -> i64 uses [process, memory, jour
                             capability_release(child.control);
                         }
                         Err(refused) => {
-                            note("supervisor.result.refused");
+                            note("warn.supervisor.result.refused");
                         }
                     }
                 } else {
                     state[at] = 2u64;
                     blocked = blocked + 1i64;
-                    note("supervisor.policy.dependency-unavailable");
+                    note("warn.supervisor.policy.dependency-unavailable");
                     note(policy.program(at));
-                    note("supervisor.state.blocked");
+                    note("warn.supervisor.state.blocked");
                 }
             } else {
                 if (state[at] == 3u64) {
                     // The latch, asked the question that would have started it.
-                    note("supervisor.policy.latched-no-start");
+                    note("warn.supervisor.policy.latched-no-start");
                 }
             }
             at = at + 1B;
@@ -249,7 +256,7 @@ fn supervise(plan: system.process.LaunchPlan) -> i64 uses [process, memory, jour
         if (running > 0i64) {
             match (process_wait_child(process, 0u64)) {
                 Ok(ending) => {
-                    note("supervisor.observed.ending");
+                    note("info.supervisor.observed.ending");
                     let mut which: size = 0B;
                     let mut found: bool = false;
                     let mut scan: size = 0B;
@@ -265,7 +272,7 @@ fn supervise(plan: system.process.LaunchPlan) -> i64 uses [process, memory, jour
                     if (found) {
                         state[which] = 0u64;
                         running = running - 1i64;
-                        note("supervisor.inferred.own-failure");
+                        note("warn.supervisor.inferred.own-failure");
                         note(policy.program(which));
                         // Failure **density**: drop what is older than the
                         // window relative to *this* ending, then record this
@@ -288,26 +295,26 @@ fn supervise(plan: system.process.LaunchPlan) -> i64 uses [process, memory, jour
                         }
                         recorded[which] = kept;
                         if (kept < policy.max_attempts(which)) {
-                            note("supervisor.policy.restart-permitted");
+                            note("info.supervisor.policy.restart-permitted");
                         } else {
                             state[which] = 3u64;
                             latched = latched + 1i64;
-                            note("supervisor.policy.budget-exhausted");
-                            note("supervisor.state.failed");
+                            note("error.supervisor.policy.budget-exhausted");
+                            note("error.supervisor.state.failed");
                         }
                     } else {
-                        note("supervisor.inferred.unknown-child");
+                        note("error.supervisor.inferred.unknown-child");
                     }
                 }
                 Err(cancelled) => {
-                    note("supervisor.observed.no-ending");
+                    note("info.supervisor.observed.no-ending");
                 }
             }
         }
         round = round + 1u64;
     }
 
-    note("supervisor.report");
+    note("info.supervisor.report");
     // Composed so no single outcome produces it: services created, services
     // latched terminal, and services blocked, each weighed differently.
     return 1000i64 + created * 10i64 + latched * 100i64 + blocked;

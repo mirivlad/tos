@@ -235,12 +235,15 @@ const WINDOW: u64 = 1_000_000;
 fn a_failure_exactly_a_window_old_has_expired() {
     let (value, watched) = supervise(&[0, 1, 2, WINDOW]);
     assert_eq!(
-        decisions(&watched, "supervisor.state.failed"),
+        decisions(&watched, "error.supervisor.state.failed"),
         0,
         "a failure exactly a window old was kept: {:?}",
         watched.journal
     );
-    assert_eq!(decisions(&watched, "supervisor.policy.budget-exhausted"), 0);
+    assert_eq!(
+        decisions(&watched, "error.supervisor.policy.budget-exhausted"),
+        0
+    );
     // 1000 + created x10 + latched x100 + blocked.
     assert_eq!(value, 1071);
 }
@@ -249,25 +252,34 @@ fn a_failure_exactly_a_window_old_has_expired() {
 fn a_failure_one_tick_inside_the_window_still_counts() {
     let (value, watched) = supervise(&[0, 1, 2, WINDOW - 1]);
     assert_eq!(
-        decisions(&watched, "supervisor.state.failed"),
+        decisions(&watched, "error.supervisor.state.failed"),
         1,
         "a failure one tick inside the window was dropped: {:?}",
         watched.journal
     );
-    assert_eq!(decisions(&watched, "supervisor.policy.budget-exhausted"), 1);
+    assert_eq!(
+        decisions(&watched, "error.supervisor.policy.budget-exhausted"),
+        1
+    );
     assert_eq!(value, 1161);
 }
 
 #[test]
 fn a_failure_with_budget_left_restarts() {
     let (_, watched) = supervise(&[500]);
-    assert_eq!(decisions(&watched, "supervisor.observed.ending"), 1);
-    assert_eq!(decisions(&watched, "supervisor.inferred.own-failure"), 1);
+    assert_eq!(decisions(&watched, "info.supervisor.observed.ending"), 1);
     assert_eq!(
-        decisions(&watched, "supervisor.policy.restart-permitted"),
+        decisions(&watched, "warn.supervisor.inferred.own-failure"),
         1
     );
-    assert_eq!(decisions(&watched, "supervisor.policy.budget-exhausted"), 0);
+    assert_eq!(
+        decisions(&watched, "info.supervisor.policy.restart-permitted"),
+        1
+    );
+    assert_eq!(
+        decisions(&watched, "error.supervisor.policy.budget-exhausted"),
+        0
+    );
 }
 
 #[test]
@@ -278,16 +290,16 @@ fn a_window_narrower_than_the_gap_never_accumulates() {
     //
     // This is the test that fails if failures are counted rather than dated.
     let (_, watched) = supervise(&[500, 501, 502, 503, 504, 505, 506, 507, 508, 509]);
-    assert_eq!(decisions(&watched, "supervisor.state.failed"), 2);
+    assert_eq!(decisions(&watched, "error.supervisor.state.failed"), 2);
     let latched_at = watched
         .journal
         .iter()
-        .rposition(|record| record == "supervisor.state.failed")
+        .rposition(|record| record == "error.supervisor.state.failed")
         .expect("something latched");
     assert!(
         watched.journal[latched_at..]
             .iter()
-            .any(|record| record == "supervisor.result.created"),
+            .any(|record| record == "info.supervisor.result.created"),
         "nothing was restarted after the last latch: {:?}",
         watched.journal
     );
@@ -303,9 +315,9 @@ fn blocked_is_a_statement_about_now_and_is_left_when_the_dependency_runs() {
     assert_eq!(
         watched.journal.iter().take(3).collect::<Vec<_>>(),
         vec![
-            "supervisor.policy.dependency-unavailable",
+            "warn.supervisor.policy.dependency-unavailable",
             "system/boot/worker.tos",
-            "supervisor.state.blocked",
+            "warn.supervisor.state.blocked",
         ]
     );
     // Blocking consumed no restart budget: nothing about that service failed,
@@ -313,13 +325,13 @@ fn blocked_is_a_statement_about_now_and_is_left_when_the_dependency_runs() {
     let first_failure = watched
         .journal
         .iter()
-        .position(|record| record == "supervisor.inferred.own-failure")
+        .position(|record| record == "warn.supervisor.inferred.own-failure")
         .expect("a failure was inferred later");
     assert!(2 < first_failure);
     assert!(
         watched.journal[..first_failure]
             .iter()
-            .filter(|record| *record == "supervisor.result.created")
+            .filter(|record| *record == "info.supervisor.result.created")
             .count()
             >= 2
     );
@@ -331,13 +343,13 @@ fn a_latched_service_is_not_started_by_an_event_that_would_have_started_it() {
     let last_latch = watched
         .journal
         .iter()
-        .rposition(|record| record == "supervisor.state.failed")
+        .rposition(|record| record == "error.supervisor.state.failed")
         .expect("something latched");
     let after = &watched.journal[last_latch..];
     assert!(
         after
             .iter()
-            .filter(|record| *record == "supervisor.policy.latched-no-start")
+            .filter(|record| *record == "warn.supervisor.policy.latched-no-start")
             .count()
             >= 2,
         "a latched service was never asked again: {after:?}"
@@ -347,11 +359,11 @@ fn a_latched_service_is_not_started_by_an_event_that_would_have_started_it() {
     // Terminal dominates dependency recovery.
     assert!(after
         .iter()
-        .any(|record| record == "supervisor.result.created"));
+        .any(|record| record == "info.supervisor.result.created"));
     assert_eq!(
         after
             .iter()
-            .filter(|record| *record == "supervisor.state.failed")
+            .filter(|record| *record == "error.supervisor.state.failed")
             .count(),
         1,
         "a service latched twice, so the latch is not a latch"
@@ -368,13 +380,13 @@ fn the_policy_decides_what_exists_and_the_supervisor_reads_it() {
     // then its dependency is running. BLOCKED was a statement about that
     // moment, and nothing but the moment changed.
     assert_eq!(watched.created, 3);
-    assert_eq!(decisions(&watched, "supervisor.state.blocked"), 1);
+    assert_eq!(decisions(&watched, "warn.supervisor.state.blocked"), 1);
     assert!(watched
         .journal
         .contains(&String::from("system/boot/worker.tos")));
     // With nothing running, the wait can gain no member: the supervisor is told
     // so rather than spinning.
-    assert!(decisions(&watched, "supervisor.observed.no-ending") > 0);
+    assert!(decisions(&watched, "info.supervisor.observed.no-ending") > 0);
 }
 
 #[test]
@@ -384,13 +396,13 @@ fn the_decisions_appear_in_the_order_the_machine_makes_them() {
     assert_eq!(
         first,
         vec![
-            "supervisor.policy.dependency-unavailable",
+            "warn.supervisor.policy.dependency-unavailable",
             "system/boot/worker.tos",
-            "supervisor.state.blocked",
-            "supervisor.policy.start-permitted",
+            "warn.supervisor.state.blocked",
+            "info.supervisor.policy.start-permitted",
             "system/boot/worker.tos",
-            "supervisor.action.create",
-            "supervisor.result.created",
+            "info.supervisor.action.create",
+            "info.supervisor.result.created",
         ]
     );
     // And an ending is observed before anything is inferred from it, which is
@@ -398,12 +410,12 @@ fn the_decisions_appear_in_the_order_the_machine_makes_them() {
     let observed = watched
         .journal
         .iter()
-        .position(|record| record == "supervisor.observed.ending")
+        .position(|record| record == "info.supervisor.observed.ending")
         .expect("an ending was observed");
     let inferred = watched
         .journal
         .iter()
-        .position(|record| record == "supervisor.inferred.own-failure")
+        .position(|record| record == "warn.supervisor.inferred.own-failure")
         .expect("a failure was inferred");
     assert!(observed < inferred);
 }

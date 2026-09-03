@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `7f1e518a89e088072db9cfce0976c2aea3b23c0a9a3532840bedce901b12deb3`\
+Source-manifest SHA-256: `3b5bedae9023a6be12405057f0b8d7bb8c4553c7af0a5c7468679f78b65da451`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -1766,6 +1766,125 @@ When the canonical boot module does not complete, the nucleus emits
 whose exact condition Boot ABI v1 section 2 states. Which stage refused, and
 why, is in the `TOS.RUN.*` events above — the result code says the boot module
 failed, not how.
+
+## 9. Severity, and the operator-visible important-error view
+
+Stage 3 requires one operator-visible view of the events that matter. This
+section says what that view is and how a reader selects it. It adds no
+transport, no second channel and no storage: every question below is answered
+by something the system already has.
+
+### 9.1 The view is the transport
+
+**The single operator-visible view is the diagnostic transport itself**, in the
+order it was produced. It is already the one place every component's account
+converges — the loader's, the nucleus's, the runtime edge's, and any process's
+own journal — and a second place would be a second truth about what happened.
+
+The *important-error* view is that transport filtered to severity `WARN` and
+above. It is a **selection**, not a copy: nothing is duplicated, nothing is
+summarised, and an event appears once.
+
+### 9.2 Severity is a property of the event kind
+
+| Severity | What it means |
+|---|---|
+| `DEBUG` | detail a component emits for its own diagnosis. **No identifier of this contract is `DEBUG`.** |
+| `INFO` | the system did what it was asked. The default. |
+| `WARN` | something was refused, cancelled or released, and the system carried on **as designed**. An operator should know; nothing is broken. |
+| `ERROR` | a component's work did not succeed. The boot may continue; that component's job did not. |
+| `FATAL` | the boot did not do what it was asked and stops. |
+
+**Severity is declared per identifier, not chosen per occurrence.** What an
+event kind means does not vary between two of them, so an emitter has no
+severity to decide and no field to fill; a reader applies the table below. This
+is also why adding severity costs no emitter a line of code and no gate a
+change: it is a statement *about* a vocabulary that already exists.
+
+Everything this contract declares is `INFO` unless listed here. Boot ABI v1's
+own failure vocabulary (§7 "Failure vocabulary and extension rule") is `FATAL`
+in its entirety, by that contract rather than by this one.
+
+| Identifier | Severity | Why |
+|---|---|---|
+| `TOS.NUCLEUS.INVARIANT` | `FATAL` | the nucleus found its own accounting wrong and will not go on |
+| `TOS.RUN.UNSTARTABLE` | `FATAL` | no stage ran; there is nothing to report about |
+| `TOS.RUN.PROCESS_FAULT` | `ERROR` | a process touched memory no capability of its own authorised |
+| `TOS.RUN.PROCESS_DEADLOCKED` | `ERROR` | a process is waiting for something that cannot happen |
+| `TOS.RUN.DEADLOCK` | `ERROR` | nothing is runnable and something is waiting |
+| `TOS.RUN.BUNDLE.REFUSED` | `ERROR` | a target refused the artifact it was created from |
+| `TOS.RUN.PROCESS_REFUSED` | `WARN` | a creation could not be funded or had no slot — an ordinary bound, named |
+| `TOS.RUN.BLOCK_CANCELLED` | `WARN` | a wait was cancelled by the liveness rule (ADR-0059) |
+| `TOS.RUN.WAIT_CANCELLED` | `WARN` | as above, for a lifecycle wait |
+| `TOS.RUN.NOTICE_RELEASED` | `WARN` | an ending nobody was left to collect was released rather than kept |
+
+### 9.3 A process's own journal reaches the same view
+
+A process writes its own records as `string` values of
+`SYSTEM_INTERFACE_V1`'s `endpoint_send_text`, which the runtime edge renders on
+this transport as the `said=` field of `TOS.RUN.INTERFACE`. That is the only way
+a TOS Core module can put text into the world in its own words, and it is
+already how the Stage 3 supervisor's journal is written.
+
+**A record names its own severity as its first dotted segment:**
+
+```text
+said=<severity>.<producer>.<kind>.<what>
+     warn.supervisor.state.blocked
+     error.supervisor.policy.budget-exhausted
+     info.supervisor.action.create
+```
+
+The severity is the record's, because a process is the only thing that knows
+what its own decisions mean — this contract cannot enumerate the vocabulary of
+every service that will ever run, and a table that tried would be a contract
+that has to change whenever a service does. What this contract fixes is the
+*form*: the first segment is one of the five names in §9.2, lower case, and a
+record whose first segment is not one of them is `INFO`.
+
+The remaining segments are the producer's own. Stage 3's supervisor uses
+`<producer>.<kind>.<what>` with `kind` one of `observed`, `inferred`, `policy`,
+`action`, `result` or `state`, which keeps apart what the nucleus asserted, what
+the supervisor concluded, what its policy decided, what it attempted and what
+came back.
+
+### 9.4 How an operator reads it
+
+`scripts/tos-journal.py` renders the important-error view from a captured
+transport, in human-readable text: severity, the component that produced it, the
+event, and its detail. It is a **reader**, not a component: it holds no state,
+runs on a host, and can be replaced by `grep` without losing anything, because
+the selection rule is one segment of a name.
+
+```text
+$ python3 scripts/tos-journal.py boot/serial.log
+WARN   supervisor  state.blocked                 system/boot/worker.tos
+ERROR  supervisor  policy.budget-exhausted       system/boot/worker.tos
+WARN   nucleus     TOS.RUN.PROCESS_REFUSED       reason=no-funding wanted=58806272
+```
+
+### 9.5 Bounds
+
+Every bound is one an accepted contract already fixed, and this section adds
+none:
+
+- a process's journal record is an inline IPC payload, so `IPC_V1` §3 bounds it
+  at **256 bytes**; a longer one is refused before the call is made;
+- an endpoint queue holds **four** messages (`IPC_V1` §3), so a producer that
+  does not drain its own sink is refused rather than growing one;
+- a process's report region is a fixed part of its charged footprint
+  (ADR-0076 §3), drained by the nucleus at each system call;
+- the transport itself is a stream, not a store.
+
+### 9.6 What Stage 3 does not decide
+
+**Persistence, rollover, archival, cross-boot recovery, retention and filesystem
+location are not decided here and are not implemented.** No accepted contract
+decides them, and a Stage 3 view that invented one would be a Stage 4
+observability design arriving without a decision. What Stage 3 requires and this
+provides is that the consequential events exist, are produced by the component
+whose statement they are, converge on one transport in one order, carry a
+severity a reader can select by, and are bounded.
 
 <!-- END source/interfaces/runtime/RUNTIME_OBSERVABILITY_V1.md -->
 
@@ -23458,22 +23577,53 @@ backend, and a capsule is not a universal one.
 
 # ADR-0074: The build workspace, the launch bundle, and who owns them
 
-- Status: **Draft — not accepted, and nothing in it is implemented**
-- Date: 2026-08-29
+- Status: **Proposed for acceptance** — the surviving decision is implemented
+  and evidenced; what remains is Project Architect approval
+- Date: 2026-08-29. Reconciled with the implemented system 2026-09-03
 - Decision level: 2 — it fixes where a build's products live, what crosses the
   boundary between a build and a run, and which component owns that memory over
   time. It changes no TOS Core semantics, no accepted ceiling, no trust rule and
   no ABI operation
-- Project Architect approval: **not given.** Two decisions inside it were taken
-  by the Architect on 2026-08-29 and are recorded as such in §1 and §2; the
-  rest is a proposal
+- Project Architect approval: **not yet given for the document as a whole.** Two
+  decisions inside it were taken by the Architect on 2026-08-29 and are recorded
+  as such in §1 and §2, and both are now implemented. The 2026-09-03 closure
+  instruction directed this reconciliation and asked for the result to be
+  prepared for Accepted status
 - Evidence: `docs/evidence/STAGE3_BUILD_WORKSPACE.md`,
+  `docs/evidence/STAGE3_SUPERVISION.md` §7 — the performed T1 lifecycle,
+  `docs/evidence/STAGE3_LAUNCH_PLANS.md`,
   `docs/evidence/STAGE3_MODULE_RESIDENCY_P1.md`,
-  `docs/evidence/STAGE3_PROCESS_GRANT.md`
+  `docs/evidence/STAGE3_PROCESS_GRANT.md`;
+  `source/host-tools/qemu-test/build-topology.sh`,
+  `source/host-tools/qemu-test/bundle-launch.sh`
 - Related: ADR-0073 (Accepted) — the build leaves the target process and the
-  verifier stays in it; this ADR says where its output goes. ADR-0072, ADR-0071,
+  verifier stays in it; this ADR says where its output goes. **ADR-0075
+  (Accepted)** — the Region object model, which supersedes §4 and §5b.
+  **ADR-0076 (Accepted)** — funded creation, which supersedes §6's endowment
+  question and §7's workspace-origin question. ADR-0077, ADR-0072, ADR-0071,
   ADR-0070, ADR-0069, ADR-0040. `IPC_V1` §5 — regions. `SYSTEM_ABI_V1` §5 —
-  operations 7, 8 and 15
+  operations 7, 17, 18, 19 and 20
+
+## 0. What this document is now, section by section
+
+This ADR was written as a draft before the Region contract, funded creation or
+any freestanding bundle lifecycle existed. Every one of those now exists and is
+evidenced, so most of what follows is either **implemented** or **superseded**.
+The reconciliation is stated here, once, so a reader is not left to work out
+which parts still decide anything.
+
+| Section | Status now |
+|---|---|
+| §1 products outside the workspace | **Normative and implemented.** `build_into_bundle` writes into a caller-supplied backing |
+| §2 one bundle region per exact closure, opaque to ring 0 | **Normative and implemented.** `SYSTEM_ABI_V1` operation 20; the nucleus reads no byte |
+| §3 reference-implementation measurements | **Historical.** Superseded by its own §5 measurements, twice, and kept because §1 and §2 were taken from it |
+| §4 the lifecycle as a transaction | **Superseded by ADR-0075 §4.** Replaced by §4a below, which is the lifecycle actually performed |
+| §5 A/B physical accounts | **Historical measurement, standing.** §5d carries the current measured T1 figures |
+| §5 C installed-source backend | **Open, and out of Stage 3** by ADR-0073's separation of claims |
+| §5a a fixed BuildWorkspace size | **Still not proposed, and nothing depends on it.** See §5c |
+| §5b region-authority gaps | **Superseded by ADR-0075**, which closed every gap it found |
+| §6 process-creation shapes | **Superseded.** Shape A was chosen and is operation 20; the sketch's numbers, registers and entry-path rule are not what was built. See §6a |
+| §7 open questions | **All six answered.** See §7a |
 
 ## 1. Decided: a build's products live outside the build workspace
 
@@ -23504,9 +23654,15 @@ manifest, decoded modules, or any frontend or verifier conclusion.
 **To the nucleus the contents are opaque.** The format is understood by the
 runtime that will verify the closure, and by nothing in ring 0.
 
-`TOSBUNDLE/v1` (`source/crates/tos-bundle`) is that format, written and read as a
-host-backed reference implementation, with a total bounded parser. No region, no
-ABI operation and no freestanding lifecycle is implemented.
+`TOSBUNDLE/v1` (`source/crates/tos-bundle`) is that format, with a total bounded
+parser.
+
+**Implemented, freestanding, and evidenced.** When this section was written none
+of the region, the ABI operation or the lifecycle existed; all three now do. A
+region carries the bundle (ADR-0075), operation 20 creates a process from one,
+and the whole lifecycle runs on the reference platform — see §4a. `parse_prefix`
+was added so a bundle can be read out of a region without changing the format: a
+region is a container of whole frames and an artifact is a prefix of one.
 
 ## 3. What the reference implementation established
 
@@ -23537,13 +23693,59 @@ The two paths are differentially equivalent: the same source through
 `build_into_bundle -> admit_bundle` produces the same receipt from the target's
 own verifier, the same value and the same accounting.
 
-## 4. Proposed: the lifecycle is a transaction, and the handoff is linear
+## 4a. The lifecycle, as performed
 
-> **Superseded by ADR-0075 §4.** Under a consuming freeze transition the
-> lifetime is carried by the capability itself — ownership is affinity, the
-> handoff is a linear transfer, reclamation is the last handle — so no
-> memory-owning transaction object is needed. What follows is kept as the
-> reasoning that led there.
+> This replaces §4. ADR-0075 removed the need for a memory-owning transaction
+> object — the lifetime is carried by the capability itself — and ADR-0074's T1
+> topology has since been built and measured. What follows is not a proposal.
+
+```text
+supervisor resident, holding process authority and a MemoryAuthority
+  -> creates a transient build worker (operation 19), funded from the authority
+     it presents, at the worker role's own fixed policy grant (ADR-0069 §2a)
+  -> the worker allocates a region from the authority it was endowed with
+     (operation 17) and writes a TOSBUNDLE/v1 into it as it builds
+  -> freeze (18): the region becomes permanently immutable in place, and the
+     worker's writable window becomes read-only. There is no half-frozen state
+  -> share (7): the immutable affine region becomes a shared one, which is what
+     lets it be in two places at once
+  -> the worker hands the shared region to the supervisor over an endpoint it
+     was given (IPC_V1 §5), and exits
+  -> the supervisor collects the worker's ending (operation 14) and the worker's
+     frames and slot are reclaimed
+  -> only then is the target created from the bundle (operation 20). It receives
+     its own capability for the same region and its own read-only window
+  -> the target parses, verifies and runs the closure itself. No receipt
+     crosses, and no verdict but its own is trusted
+```
+
+**Every arrow is evidenced in that order**, by
+`source/host-tools/qemu-test/build-topology.sh`: the gate requires the worker's
+reclamation to precede the target's creation, and requires the ending collected
+to be the worker's own instance rather than merely *an* ending.
+
+Three properties §4 argued for survive, and are now facts rather than intentions:
+
+- **the workspace and the target grant never coexist.** The worker's whole
+  footprint is reclaimed before the target is created, which the account shows;
+- **the worker cannot reach the bundle after the handoff.** Freeze is consuming
+  and in place, so the writable window is gone rather than merely unused;
+- **and even if something did rewrite it, the target verifies anyway.** ADR-0073
+  owns that, and operation 20 keeps it: a corrupt bundle produces a process that
+  is created *successfully* and then refuses itself.
+
+**A partial bundle is still not a launchable artifact**, and still by a property
+of the format rather than a rule anyone obeys: the header is written last, so a
+build that did not finish does not parse.
+
+## 4. Historical: the lifecycle as a transaction, and the handoff as linear
+
+> **Superseded by ADR-0075 §4, and replaced by §4a above.** Under a consuming
+> freeze transition the lifetime is carried by the capability itself — ownership
+> is affinity, the handoff is a linear transfer, reclamation is the last handle
+> — so no memory-owning transaction object is needed. What follows is **history**:
+> the reasoning that led there, kept because the shape it argued for is the shape
+> that was built, and none of it is normative.
 
 **The bundle backing belongs to the system launch/recovery transaction, not to
 the build worker.**
@@ -23820,9 +24022,76 @@ Until G1–G6 are closed there is no Region contract to implement, and §6's ABI
 shape cannot be fixed: it would have to name a right (`read-only map`) that no
 accepted contract defines.
 
+## 5c. The workspace size question, and why Stage 3 does not turn on it
+
+§5a says the smallest declared workspace the worst measured build fits in is a
+measurement rather than a bound, and that remains true. **Nothing in the
+implemented system depends on it.** A build worker's arena is a *funded role
+grant* under ADR-0069 §2a and ADR-0076 §3: a fixed policy figure its creator
+names and a presented `MemoryAuthority` pays for, refused with `E_LIMIT` if it
+cannot be. The system therefore needs no fixed `BuildWorkspace` constant to be
+correct, and this ADR does not introduce one.
+
+## 5d. The measured T1 account
+
+Measured on the reference platform with **both** roles resident, from the
+nucleus's own account rather than from arithmetic:
+
+| | frames | |
+|---|---:|---|
+| supervisor, at the ordinary runtime grant | 14 357 | 56.08 MiB |
+| build worker, at the worker role's grant | 25 109 | 98.08 MiB |
+| both resident | 39 466 | 154.16 MiB |
+| the root authority | 57 410 | 224.26 MiB |
+| **left for bundle backing** | **17 944** | **70.09 MiB** |
+
+Held against the largest bundle any Capsule v1 configuration produces — `50.52
+MiB`, at 255 modules of 128 KiB, from §5 B — that leaves **19.57 MiB** spare.
+The gate asserts it against that figure and deliberately not against the
+1147-byte artifact a test boot happens to build.
+
+**The claim, stated precisely.** Stage 3 proves the canonical Capsule-v1
+freestanding build/launch path under this topology, with the worst measured
+Capsule-v1 bundle fitting the measured headroom. It does **not** claim that a
+future installed-source backend can freestanding-build every generative docs/44
+ceiling corpus with the same supervisor resident. ADR-0073's separation of the
+reference algorithm, the Capsule-v1 boot path and a future installed-source
+backend is not collapsed, and no docs/44 ceiling moves.
+
+## 6a. Process creation, as built
+
+> This supersedes §6. Shape A was chosen and is `SYSTEM_ABI_V1` operation 20.
+> §6 below is **history**: the comparison that led to the choice, kept for the
+> argument against shape B, which is still the reason a capability binding is
+> never special. None of its numbers, registers or rules is normative.
+
+What was built, and where it differs from the sketch:
+
+| §6 A sketch | Operation 20 as accepted |
+|---|---|
+| operation numbers 16 and 17 | **20**; 16 and 17 became `capability_attenuate_scoped` and `region_allocate` |
+| a second operation for the restart generation | one operation, with the generation in `CreateFundedRecord` under a flag — because absence and a zero must stay apart (ADR-0067, ADR-0076) |
+| `rsi` = the bundle region | `rdx` = the bundle, a **shared** region with `read`. `rsi` is the `MemoryAuthority` that pays, which shape A predates (ADR-0076) |
+| the endowment in `CREATE_ENDOWMENT` | a **sealed launch plan** (ADR-0077); the raw table is removed |
+| "the entry path is a declared input, checked by the runtime" | **no entry, path or ordinal at all.** The bundle declares its own entry, and a caller-supplied one would be a second truth about which program this is |
+
+The last row is the one substantive reversal, and it is a strengthening rather
+than a weakening: the sketch wanted a supervisor to name what it meant to run so
+a mismatch could be caught, and what replaced it removes the possibility of a
+mismatch. Everything §6 required of *both* shapes holds — the nucleus does not
+know what a `TOSIMAGE` is, a bundle is an opaque immutable range, the target
+parses and verifies it itself, restart-generation semantics survive, capability
+authority stays explicit, the target cannot widen the closure it was given, and
+nothing is looked up ambiently.
+
+**The affine form is refused, which the sketch could not have said.** Operation
+20 requires the *shared* region: a target gets a window of its own while its
+creator keeps one, which is two holders, and `share` is the operation that makes
+that possible.
+
 ## 6. Process creation: two shapes, and a recommendation
 
-**Not implemented. No operation number is claimed by this draft.**
+**Historical. Superseded by §6a.**
 
 Both shapes must hold the same line: the nucleus does not know what a
 `TOSIMAGE` is, a bundle is an opaque immutable range to it, a module is named by
@@ -23919,7 +24188,23 @@ costs is a rule that a particular capability binding is special, which is the
 kind of rule that is invisible in the ABI document and load-bearing in the
 implementation.
 
+## 7a. The six open questions, answered
+
+Every question §7 left open has since been decided by an accepted contract and
+implemented. This is the reconciliation; §7 below is history.
+
+| Question | Answer, and where |
+|---|---|
+| the origin of the `BuildWorkspace` | a **funded role grant**: a fixed policy figure the creator names, paid for by a presented `MemoryAuthority` (ADR-0069 §2a, ADR-0076 §3). No fixed constant is needed — §5c |
+| the lifecycle of a Region object | **ADR-0075** in full: three states, structural affinity, per-process mapping ownership, reclamation on the last of capability references, mappings and internal references |
+| the writable → sealed transition | `region_freeze`, `SYSTEM_ABI_V1` operation 18: consuming, in place, with no half-frozen state (ADR-0075 §3) |
+| ownership and reclamation after the worker dies | the **capability** owns it. The worker's names go with the worker; the supervisor holds one and the target holds its own; the backing returns when all three counts reach zero |
+| when a transferred region is mapped into the target | **at creation**, by operation 20, which gives the target its own capability and its own read-only window |
+| one bundle region or several | **one**, decided in §2 and unchanged |
+
 ## 7. What this draft does not decide
+
+**Historical. Superseded by §7a.**
 
 The Architect's six open questions are unchanged except where §1, §2 and the
 measurement bear on them:
