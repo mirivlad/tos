@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `ae7e313cc61c60cf1d00c6f1823988831c4ba59cd69056459c32cf7a34a47f98`\
+Source-manifest SHA-256: `a2f52b61bb3dd2d70b902cd7577f57093882a44d1146bb15cda304ed2202c823`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -54,7 +54,7 @@ The name expands to **TextOS** and also carries the internal joke of the Russian
 
 ## Quick start
 
-The supported Stage 1 reference environment is x86_64 Linux with:
+The supported reference environment is x86_64 Linux with:
 
 - QEMU system emulation for x86_64;
 - a QEMU GTK backend (SDL is an automatic fallback; Debian/MX package:
@@ -84,6 +84,9 @@ For a headless automated check, run:
 ```sh
 ./run-tos.sh --check
 ```
+
+To watch the Stage 3 system — the supervisor written in TOS Core — see
+[Try the Stage 3 system](#try-the-stage-3-system) below.
 
 Serial and filtered event evidence is retained under
 `source/target/run-tos/interactive/` or `source/target/run-tos/check/`, in
@@ -124,12 +127,103 @@ identical apart from the picture.
 
 Stage 1 is formally closed as a bootable TOS foundation with source-bound
 capsule identity and fail-closed validation. Stage 1.5 is formally closed with
-ADR-0027's bespoke TOS Core foundation selection. Stage 2 Part A is accepted:
-ADR-0028 fixes the TOS Core V1 semantic/IR contract and ADR-0029 its Unicode
-normalization baseline. Stage 2 Part B production reference implementation is
-under way — the bounded source reader and lexer are complete and the parser is
-in progress; checker, IR, verifier and interpreter are not implemented. TOS is
-not yet a user shell, application environment, or desktop operating system.
+ADR-0027's bespoke TOS Core foundation selection. Stage 2 is formally closed:
+canonical TOS Core source executes through the production reader, parser,
+checker, deterministic `tos-ir/v1` lowerer, independent verifier and bounded
+engine. **Stage 3 is formally closed** (2026-09-03) — capabilities, IPC,
+regions, funded process creation, the build-to-bundle lifecycle and a
+supervisor written in TOS Core. TOS is not yet a user shell, application
+environment, or desktop operating system, and Stage 4 has not begun.
+
+## Try the Stage 3 system
+
+```sh
+./run-tos.sh --stage3
+```
+
+This boots the closed Stage 3 system rather than a demonstration of it: the
+same capsule, nucleus and scenario the `qemu_supervision` gate uses. Three
+canonical TOS Core modules go into the capsule —
+`/system/policy/services.tos` (the policy), `/system/boot/init.tos` (the
+supervisor) and `/system/boot/worker.tos` (the service) — and everything below
+happens on the real freestanding path: source parsed, checked, lowered,
+encoded, verified by an independent verifier, and run in processes the nucleus
+creates out of a presented memory authority.
+
+**What you will see.** After the build, a narrative of what the supervisor did,
+derived from the boot's own diagnostic transport:
+
+```text
+  [capsule ] path=system/boot/init.tos modules=3  the source set this boot runs
+  [granted ] binding=process interface=system.process.Control
+  [blocked ] system/boot/worker.tos               a dependency is not running
+  [start   ] system/boot/worker.tos               policy permits starting
+  [created ]                                      process created
+  [exit    ] process=1 self_reported_status=0     a process reached its own end
+  [failure ] system/boot/worker.tos               the service itself failed
+  [restart ]                                      inside the window, restart permitted
+  [failed  ]                                      FAILED, and it latches
+  [latched ]                                      not started: already FAILED
+```
+
+Then the same run at operator severity — `WARN` and above, and nothing else.
+That is the important-error view of `RUNTIME_OBSERVABILITY_V1` §9; both views
+are selections of one transport, not a second log.
+
+**Where the evidence is kept.** `source/target/run-tos/stage3/`:
+
+- `serial.log` — every byte the machine emitted;
+- `events.log` — the `TOS.*` events with firmware chatter removed.
+
+Read them yourself at any time:
+
+```sh
+python3 scripts/tos-journal.py --story source/target/run-tos/stage3/serial.log
+python3 scripts/tos-journal.py source/target/run-tos/stage3/serial.log
+```
+
+### Change the policy and watch it behave differently
+
+The policy is canonical TOS Core source, and editing it is the point. Open
+`source/tests/vectors/supervision/services.tos` and find the restart budgets:
+
+```tos
+pub fn max_attempts(at: size) -> size {
+    let budgets: array<size, 3> = [2B, 2B, 2B];
+    return budgets[at];
+}
+```
+
+Two failures inside a service's window exhaust its budget, so the default run
+latches two services into terminal `FAILED`. Change the budgets to `4B` and run
+`./run-tos.sh --stage3` again: with more room, the same failures are restarted
+instead, and only one service latches. The `[restart]` and `[failed]` lines
+change accordingly.
+
+Two other figures are worth trying, in the same file:
+
+- `window(at)` — the width, in boot-monotonic ticks, of the interval a failure
+  counts in. The third service's window is `1u64`, which is why its failures
+  never accumulate however many there are;
+- `has_requirement(at)` / `requires(at)` — which service must be running before
+  another may start. The first service depends on the third, which is why the
+  run opens with `[blocked]`.
+
+When you are finished experimenting, restore the file:
+
+```sh
+git checkout -- source/tests/vectors/supervision/services.tos
+```
+
+**The QEMU window.** `./run-tos.sh --stage3 --interactive` also opens the boot
+display. It shows the *boot* console — the same one `./run-tos.sh` shows — and
+not the supervision story. As with `./run-tos.sh`, the window stays open after
+the boot halts so you can look at it; close it or press Ctrl-C, and the story
+and operator views are printed on the terminal. Only `serial.log` is retained in
+this mode, because the interactive path writes no filtered event log.
+
+There is no shell, no keyboard input and no way to interact with the running
+system. Stage 3 did not build one, and the window does not pretend otherwise.
 
 ## Core thesis
 
