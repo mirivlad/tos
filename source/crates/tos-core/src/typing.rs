@@ -85,6 +85,18 @@ fn mutable_region_name(written: &str, mutable: bool) -> String {
     }
 }
 
+/// Whether a region element may be accessed directly (ADR-0081 §3).
+///
+/// **Only types whose in-memory representation the language contract already
+/// fixes.** A nominal record's field order is the frontend's choice, and
+/// admitting `region[i]` over one would silently publish that choice as a
+/// binary format shared with a device or another process. If aggregate layout
+/// in shared memory is ever wanted it needs its own contract; nothing in Stage 4
+/// requires it.
+pub(crate) fn accessible_element(element: &Type) -> bool {
+    matches!(element, Type::Bool | Type::Integer(_))
+}
+
 /// The internal name of a mutably granted region. Never written in source.
 pub(crate) const REGION_MUT: &str = "Region<mut>";
 /// The internal name of a mutably granted device-visible region.
@@ -919,6 +931,32 @@ impl<'source> TypeChecker<'source> {
             Some(Type::Array(element)) => *element,
             Some(Type::Constructed(name, arguments)) if name == "slice" => {
                 arguments.first().cloned().unwrap_or(Type::Unknown)
+            }
+            // A region's element, for all four granted modes (ADR-0081 §2).
+            // `docs/44`'s `E1211` has covered "an array, slice or region index"
+            // since V1 and ADR-0037 §7 requires a positive vector writing
+            // through a `Region<mut T>`; what was missing was this line, not
+            // the decision. Indexing does **not** make a region an array: its
+            // grant, affinity, transfer and lifetime rules are untouched, and
+            // its backing address stays unobservable.
+            Some(Type::Constructed(name, arguments)) if region_facts(&name).is_some() => {
+                let element = arguments.first().cloned().unwrap_or(Type::Unknown);
+                if !accessible_element(&element) {
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            "E1215_ARGUMENT_TYPE_MISMATCH",
+                            Severity::Error,
+                            Stage::Type,
+                            expression.span(),
+                            self.source,
+                        )
+                        .with_field("requirement", "region element access")
+                        .with_field("actual", element.spell())
+                        .with_field("reason", "element representation is not fixed"),
+                    );
+                    return Type::Unknown;
+                }
+                element
             }
             _ => Type::Unknown,
         }
