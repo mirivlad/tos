@@ -2,7 +2,10 @@
 
 # Stage 4A — the hardware authority boundary, as built
 
-- Status: **evidence, 2026-09-04. Stage 4A is complete and green.** Canonical
+- Status: **evidence, 2026-09-04. Stage 4A is formally closed** by Project
+  Architect approval for evidence commit `2655aaa`; see §12 and
+  `source/legal/publication-records/2655aaa3d7bd0993c5bbfe0da168d2dd1c44641d-stage4a-closure-approval.md`.
+  Canonical
   TOS Core reads the real device's configuration space under a capability, and
   all nine authority negatives are gated — eight of them executed rather than
   asserted. The second STOP this round found while implementing the first was
@@ -309,3 +312,30 @@ stub, from a constant that looked like ordinary versioning.
 | `interface_effects` (new) | **green** — the ADR-0080 chain through the independent verifier |
 | every Stage 1–3 gate | **unchanged and green.** No harness, budget or profile was modified, and the Stage 4 device is opt-in |
 | Stage 4 identity gate | **not claimed.** Discovery is not persistent data. What Stage 4A establishes is the authority boundary and the first hardware-facing act across it |
+
+## 12. Closure
+
+Stage 4A was formally closed by the Project Architect on **2026-09-04**, for
+evidence commit **`2655aaa3d7bd0993c5bbfe0da168d2dd1c44641d`**. The ruling is
+archived verbatim in
+`source/legal/publication-records/2655aaa3d7bd0993c5bbfe0da168d2dd1c44641d-stage4a-closure-approval.md`.
+
+The ruling accepts this document and its two decisions — ADR-0079 and ADR-0080 —
+as the evidence basis: root Bus authority originating at the platform/launcher
+boundary and unmintable by ordinary runtime code, `PciFunction` naming exactly
+one live assigned function, BDF scalars as data rather than authority, exclusive
+generation-bound assignment, configuration access requiring the exact live
+capability and rights, the real values read from the device, the device-absent
+differential, the gated negatives, the forged scalar refused by the independent
+verifier, and TOS Core 1.1's separation of startup capability requests from
+interface effect declarations. It states that **no Stage 1–3 gate was weakened**.
+
+It closes the authority boundary and configuration access only. It approves and
+implies **no BAR/MMIO mapping, device-memory semantics, IRQ, DMA, IOMMU, device
+reset, VirtIO queue setup, block I/O, persistent storage or repository handoff.**
+BAR/MMIO and device memory were decided separately and later, by ADR-0081 under
+the Stage 4B closure.
+
+The §8 liveness prerequisite crosses this closure unchanged and remains
+mandatory before the first routed device interrupt, and the Stage 4 identity gate
+above remains unclaimed.

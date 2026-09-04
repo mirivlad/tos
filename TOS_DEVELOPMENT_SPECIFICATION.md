@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `7a41a00b353a7dce96373410254b225c787c84ad7f8563c60d5f98ed9bb8fba7`\
+Source-manifest SHA-256: `694aa8bdbaddb6a524477489060997329fb1832d92e629855f7e91b452dd1c5c`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -377,17 +377,19 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 
 ## Status
 
-Stage 0, Stage 1, Stage 1.5, Stage 2, **Stage 3** and **Stage 4B** are formally
-closed, and their closure approvals are archived in
+Stage 0, Stage 1, Stage 1.5, Stage 2, **Stage 3**, **Stage 4A** and **Stage 4B**
+are formally closed, and every one of those closure approvals is archived in
 `source/legal/publication-records/`. Stage 3 was closed by the Project Architect
 on 2026-09-03 for evidence commit `77970cb`, against
 `docs/evidence/STAGE3_CLOSURE_AUDIT.md` — 60 audited obligations, 56 closed,
-none blocking. **Stage 4A** was approved as complete on 2026-09-04 against its
-final commit `2655aaa` and green CI, and is recorded in `PROGRESS.md` rather
-than as a separate archived record. **Stage 4B — BAR/MMIO and real textual
-VirtIO PCI capability discovery — was closed by the Project Architect on
-2026-09-04** for evidence commit `ec03210`, against
-`docs/evidence/STAGE4B_MMIO_BOUNDARY.md` and ADR-0081. That closure implies no
+none blocking. **Stage 4A — the hardware authority boundary and real textual PCI
+configuration access — was closed on 2026-09-04** for evidence commit
+`2655aaa`, against `docs/evidence/STAGE4A_HARDWARE_BOUNDARY.md`, ADR-0079 and
+ADR-0080; that closure approves no BAR/MMIO mapping, device-memory semantics,
+IRQ, DMA, IOMMU, reset, queue setup, block I/O, persistent storage or repository
+handoff. **Stage 4B — BAR/MMIO and real textual VirtIO PCI capability discovery
+— was closed on 2026-09-04** for evidence commit `ec03210`, against
+`docs/evidence/STAGE4B_MMIO_BOUNDARY.md` and ADR-0081; that closure implies no
 IRQ, DMA, Virtqueue, block-I/O or reset semantics. Stage 4C has not begun.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
