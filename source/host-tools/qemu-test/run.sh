@@ -63,6 +63,10 @@ NO_FRAMEBUFFER=0
 # Stage 4 discovers. Off by default, so every Stage 1-3 gate keeps running the
 # ADR-0040 reference profile byte for byte.
 STAGE4_BLOCK=0
+# A *legacy*-transport VirtIO block device, for the negative that shows the
+# textual parser reports absence rather than inventing defaults. It is not part
+# of the Stage 4 reference profile: ADR-0079 §7 fixes that as modern transport.
+STAGE4_BLOCK_LEGACY=0
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -87,6 +91,7 @@ while [ $# -gt 0 ]; do
         --accel)    QEMU_ACCEL="$2"; shift 2 ;;
         --no-framebuffer) NO_FRAMEBUFFER=1; shift ;;
         --stage4-block-device) STAGE4_BLOCK=1; shift ;;
+        --stage4-block-device-legacy) STAGE4_BLOCK=1; STAGE4_BLOCK_LEGACY=1; shift ;;
         --interactive) INTERACTIVE=1; shift ;;
         --display)  DISPLAY_BACKEND="$2"; shift 2 ;;
         -h|--help)  sed -n '3,28p' "$0"; exit 0 ;;
@@ -301,8 +306,18 @@ if [ "$STAGE4_BLOCK" -eq 1 ]; then
     dd if=/dev/zero of="$STAGE4_IMAGE" bs=1M count=16 status=none
     QEMU_ARGS+=(
         -drive "if=none,id=stage4blk,format=raw,file=$STAGE4_IMAGE"
-        -device "virtio-blk-pci,drive=stage4blk,addr=0x4,disable-legacy=on,disable-modern=off,num-queues=1,iommu_platform=off"
     )
+    if [ "$STAGE4_BLOCK_LEGACY" -eq 1 ]; then
+        # Same device class, transitional transport: it reports device 0x1001
+        # and carries no modern VirtIO PCI capability structures at all.
+        QEMU_ARGS+=(
+            -device "virtio-blk-pci,drive=stage4blk,addr=0x4,disable-legacy=off,disable-modern=on"
+        )
+    else
+        QEMU_ARGS+=(
+            -device "virtio-blk-pci,drive=stage4blk,addr=0x4,disable-legacy=on,disable-modern=off,num-queues=1,iommu_platform=off"
+        )
+    fi
 fi
 if [ "$INTERACTIVE" -eq 0 ]; then
     QEMU_ARGS+=( -device isa-debug-exit )

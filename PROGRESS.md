@@ -56,6 +56,26 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   Побочная находка: `LAUNCH_VERSION` и `BUNDLE_LAUNCH_VERSION` — одно
   пространство дискриминатора; версия 5 конфликтовала, поэтому `LAUNCH_VERSION`
   теперь 6.
+- **Stage 4B открыт, textual-часть зелёная, MMIO упёрся в языковой STOP**
+  (2026-09-04). Построено и закрыто гейтом *QEMU textual VirtIO capability
+  discovery*: канонический TOS Core 1.1 модуль обходит capability-list реального
+  устройства через `pci_config_read`, находит все четыре современные VirtIO PCI
+  структуры (common/notify/ISR/device, все в BAR 4, common cfg offset 0x0
+  length 0x1000), читает у каждой BAR/offset/length и отказывается от
+  некорректных цепочек с явной границей обхода. Нуклеус не получил ни строки
+  кода; гейт механически проверяет, что слово VirtIO не встречается в ring 0.
+  **STOP:** TOS Core не умеет читать через регион вообще — в `docs/39` §2 нет
+  предопределённых `read`/`write`/`slice`, индексация региона не типизируется
+  (`typing.rs::index_type`), `SYSTEM_INTERFACE_V1` §8 говорит, что ни одна
+  операция не возвращает регион, а `docs/40` описывает контракты доступа,
+  которых нет в грамматике. Плюс нигде не определена volatile-семантика.
+  Это блокирует и Stage 4D (очередь VirtIO живёт в `DmaRegion`), поэтому выбор
+  ABI-операций для MMIO вопрос не снимает. Поверхность решения —
+  `docs/evidence/STAGE4B_MMIO_BOUNDARY.md` §6.
+- **Stage 4A закрыт** (2026-09-04, коммит `2655aaa`): канонический текст читает
+  реальное PCI configuration space устройства под capability
+  (vendor 0x1AF4, device 0x1042, class 0x01, cap ptr 0x98), восемь из девяти
+  негативов исполняются, ADR-0079 и ADR-0080 приняты.
 - **Stage 4A: первый архитектурный STOP** (2026-09-03), снятый решением
   Архитектора того же дня.
   Раунд — hardware boundary и PCI discovery; цель была узкой: канонический
