@@ -486,6 +486,11 @@ fn write_type(out: &mut Out<'_>, definition: &TypeDef) {
         TypeDef::Text => out.tag(5),
         TypeDef::Bytes => out.tag(6),
         TypeDef::ConversionError => out.tag(7),
+        // ADR-0081 §5, and the reason the encoding version moves: these bytes
+        // did not exist before, so a reader of an older version must refuse
+        // rather than misread a tag it does not know (ADR-0070).
+        TypeDef::MmioRegion => out.tag(36),
+        TypeDef::MmioRegionMut => out.tag(37),
         TypeDef::Event => out.tag(8),
         TypeDef::Semaphore => out.tag(9),
         TypeDef::Barrier => out.tag(10),
@@ -784,6 +789,32 @@ fn write_op(out: &mut Out<'_>, op: &Op) {
         Op::Read { place } => {
             out.tag(3);
             write_place(out, place);
+        }
+        Op::MmioRead {
+            region,
+            offset,
+            width,
+            little_endian,
+        } => {
+            out.tag(38);
+            write_operand(out, region);
+            write_operand(out, offset);
+            out.tag(*width);
+            out.tag(u8::from(*little_endian));
+        }
+        Op::MmioWrite {
+            region,
+            offset,
+            value,
+            width,
+            little_endian,
+        } => {
+            out.tag(39);
+            write_operand(out, region);
+            write_operand(out, offset);
+            write_operand(out, value);
+            out.tag(*width);
+            out.tag(u8::from(*little_endian));
         }
         Op::Move { place } => {
             out.tag(4);

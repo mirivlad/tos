@@ -270,6 +270,46 @@ pub struct Reach<'a> {
 /// the same order over the same inputs, which is a property of `docs/40`'s
 /// evaluation order and is unchanged by this trait existing. Everything a `reach`
 /// returns is outside it.
+/// The capability an operand names, or a trap.
+fn capability_of(value: &Value, source: usize) -> Result<Handle, Trap> {
+    match value {
+        Value::Capability(handle) => Ok(*handle),
+        _ => Err(Trap::new(
+            "RUNTIME_TYPE_CONFUSION",
+            String::from("a device access names something that is not a mapping"),
+            source,
+        )),
+    }
+}
+
+/// The unsigned number an operand names, or a trap.
+fn number_of(value: &Value, source: usize) -> Result<u64, Trap> {
+    match value {
+        Value::Int(_, number) if *number >= 0 => Ok(*number as u64),
+        _ => Err(Trap::new(
+            "RUNTIME_TYPE_CONFUSION",
+            String::from("a device access names an offset that is not an unsigned number"),
+            source,
+        )),
+    }
+}
+
+/// One device access the host is asked to perform (ADR-0081 §7).
+#[derive(Clone, Copy, Debug)]
+pub struct Observe {
+    /// The mapping, as the capability the module holds.
+    pub region: Handle,
+    /// Where in that mapping, in bytes.
+    pub offset: u64,
+    /// How many bytes move, which is also the alignment the offset must satisfy.
+    pub width: u8,
+    /// Whether the device's bytes are little-endian. Carried rather than
+    /// assumed, so a big-endian target is a different value here.
+    pub little_endian: bool,
+    /// The value to write, or `None` for a read.
+    pub value: Option<u64>,
+}
+
 pub trait System {
     /// Which capability answers one of the module's requests.
     ///
@@ -293,6 +333,26 @@ pub trait System {
     /// host cannot perform at all, which is not an answer the program could
     /// have handled.
     fn reach(&mut self, call: Reach<'_>) -> Result<Value, Trap>;
+
+    /// Performs **one** hardware access of the declared width (ADR-0081 §9).
+    ///
+    /// Called once per source-level MMIO operation, and the host performs
+    /// exactly one device transaction for it: not elided, not coalesced with
+    /// another, not repeated speculatively, not widened or narrowed, and not
+    /// reordered against another such access. Two reads in source are two
+    /// device observations.
+    ///
+    /// The engine supplies the capability, a byte offset and the transaction's
+    /// shape. **It never supplies an address**, and never learns one: which
+    /// bytes a mapping covers is the host's, exactly as which frames a region
+    /// covers is.
+    ///
+    /// A read answers with the value; a write answers with [`Value::Unit`]. A
+    /// refusal — an out-of-range offset, a stale mapping, a width the mapping
+    /// cannot serve — is a [`Trap`], because unlike an interface operation
+    /// there is no status a module could have handled: the access did not
+    /// happen and there is no value to stand for one that did.
+    fn observe(&mut self, access: Observe) -> Result<Value, Trap>;
 
     /// Marks the instant before one TOS Core call, for an external observer.
     ///
@@ -330,6 +390,14 @@ pub struct Unreachable;
 impl System for Unreachable {
     fn granted(&mut self, _request: Request<'_>) -> Option<Handle> {
         None
+    }
+
+    fn observe(&mut self, _access: Observe) -> Result<Value, Trap> {
+        Err(Trap::new(
+            "RUNTIME_DEVICE_UNREACHABLE",
+            String::from("a device access was made on a run with no device to reach"),
+            0,
+        ))
     }
 
     fn reach(&mut self, call: Reach<'_>) -> Result<Value, Trap> {
@@ -1539,6 +1607,47 @@ impl Engine<'_> {
         let _ = home;
         let produced = match op {
             Op::Const(constant) => Some(self.constant(module, *constant, source)?),
+            // **An observation, not a load** (ADR-0081 §9). The engine does not
+            // perform it and does not know an address: it hands the host the
+            // capability, the offset and the shape of the transaction, and the
+            // host performs exactly one hardware access of that width. Every
+            // rule about not eliding, coalescing, repeating or reordering is a
+            // property of this being one call per source operation.
+            Op::MmioRead {
+                region,
+                offset,
+                width,
+                little_endian,
+            } => {
+                let region = self.operand(module, region, values, source)?;
+                let offset = self.operand(module, offset, values, source)?;
+                Some(self.system.observe(Observe {
+                    region: capability_of(&region, source)?,
+                    offset: number_of(&offset, source)?,
+                    width: *width,
+                    little_endian: *little_endian,
+                    value: None,
+                })?)
+            }
+            Op::MmioWrite {
+                region,
+                offset,
+                value,
+                width,
+                little_endian,
+            } => {
+                let region = self.operand(module, region, values, source)?;
+                let offset = self.operand(module, offset, values, source)?;
+                let value = self.operand(module, value, values, source)?;
+                self.system.observe(Observe {
+                    region: capability_of(&region, source)?,
+                    offset: number_of(&offset, source)?,
+                    width: *width,
+                    little_endian: *little_endian,
+                    value: Some(number_of(&value, source)?),
+                })?;
+                Some(Value::Unit)
+            }
             Op::Aggregate { operands, .. } => {
                 // Reserve before building: docs/41 section 6 checks a
                 // reservation before the thing it pays for happens, so a value

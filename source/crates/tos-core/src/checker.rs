@@ -62,7 +62,17 @@ impl LimitKind {
 /// Value names the language supplies without declaration (docs/39 section 2).
 const PREDECLARED_VALUES: [&str; 6] = ["Some", "None", "Ok", "Err", "Completed", "Cancelled"];
 
-const PREDECLARED_FUNCTIONS: [&str; 12] = [
+const PREDECLARED_FUNCTIONS: [&str; 20] = [
+    // ADR-0081 §7: device access is width- and byte-order-explicit, because a
+    // register's width belongs to the transaction rather than to a type.
+    "mmio_read_u8",
+    "mmio_read_le_u16",
+    "mmio_read_le_u32",
+    "mmio_read_le_u64",
+    "mmio_write_u8",
+    "mmio_write_le_u16",
+    "mmio_write_le_u32",
+    "mmio_write_le_u64",
     // ADR-0037: sharing is an explicit typed operation, never an implicit copy.
     "share",
     "to_i8",
@@ -513,14 +523,22 @@ fn diagnostic(code: &'static str, stage: Stage, span: Span, source: &SourceUnit)
 
 /// The source-language version this frontend implements (docs/42 section 1).
 ///
-/// **1.1 since ADR-0080**, which adds the direct-interface effect form and
-/// nothing else. 1.0 remains supported: a module declaring it keeps its meaning,
-/// its diagnostics and its digest, and is refused only if it uses a form its own
+/// **1.2 since ADR-0081**, which adds device memory. 1.1 added the
+/// direct-interface effect form (ADR-0080). Every earlier minor remains
+/// supported and unchanged: a module declaring one keeps its meaning, its
+/// diagnostics and its digest, and is refused only if it uses a form its own
 /// header did not claim (`E1608`).
-const LANGUAGE_VERSION: (u32, u32) = (1, 1);
+const LANGUAGE_VERSION: (u32, u32) = (1, 2);
 
 /// The minor in which a direct interface effect became legal (ADR-0080 §5).
 const DIRECT_INTERFACE_EFFECT_MINOR: u32 = 1;
+
+/// The minor in which device memory became part of the language (ADR-0081 §6).
+///
+/// Indexed region access needed no version: it implements semantics the
+/// accepted corpus already described. MMIO is not in the accepted language at
+/// all, so it is additive and takes one.
+const DEVICE_MEMORY_MINOR: u32 = 2;
 
 /// Checks the declared source-language version.
 ///
@@ -574,31 +592,132 @@ fn check_features_against_minor(
     minor: u32,
     out: &mut Vec<Diagnostic>,
 ) {
-    if minor >= DIRECT_INTERFACE_EFFECT_MINOR {
-        return;
-    }
-    let signatures = schema
+    let signatures: Vec<_> = schema
         .functions()
         .iter()
         .map(|function| function.signature())
-        .chain(schema.extern_functions().iter());
-    for signature in signatures {
-        for effect in signature.effects() {
-            if effect.is_binding() {
-                continue;
+        .chain(schema.extern_functions().iter())
+        .collect();
+    if minor < DIRECT_INTERFACE_EFFECT_MINOR {
+        for signature in &signatures {
+            for effect in signature.effects() {
+                if effect.is_binding() {
+                    continue;
+                }
+                out.push(
+                    diagnostic(
+                        "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR",
+                        Stage::Type,
+                        effect.span(),
+                        source,
+                    )
+                    .with_field("feature", "direct interface effect")
+                    .with_field("declared", minor)
+                    .with_field("requires", DIRECT_INTERFACE_EFFECT_MINOR),
+                );
             }
-            out.push(
-                diagnostic(
-                    "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR",
-                    Stage::Type,
-                    effect.span(),
-                    source,
-                )
-                .with_field("feature", "direct interface effect")
-                .with_field("declared", minor)
-                .with_field("requires", DIRECT_INTERFACE_EFFECT_MINOR),
-            );
         }
+    }
+    if minor < DEVICE_MEMORY_MINOR {
+        refuse_device_memory(source, schema, &signatures, minor, out);
+    }
+}
+
+/// Refuses the device-memory feature in a module that did not claim it.
+///
+/// Both halves of the feature are caught: naming one of the types, and calling
+/// one of the accesses. A module that could name the type but not the operation
+/// would still be a 1.0 module holding a 1.2 value.
+fn refuse_device_memory(
+    source: &SourceUnit,
+    schema: &Schema,
+    signatures: &[&crate::parser::FunctionSignature],
+    minor: u32,
+    out: &mut Vec<Diagnostic>,
+) {
+    let mut report = |span| {
+        out.push(
+            diagnostic(
+                "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR",
+                Stage::Type,
+                span,
+                source,
+            )
+            .with_field("feature", "device memory")
+            .with_field("declared", minor)
+            .with_field("requires", DEVICE_MEMORY_MINOR),
+        );
+    };
+    for signature in signatures {
+        for parameter in signature.parameters() {
+            if names_device_memory(source, parameter.ty()) {
+                report(parameter.span());
+            }
+        }
+        if names_device_memory(source, signature.result()) {
+            report(signature.span());
+        }
+    }
+    for function in schema.functions() {
+        let mut found = Vec::new();
+        device_accesses_in(source, function.body(), &mut found);
+        for span in found {
+            report(span);
+        }
+    }
+}
+
+/// Every device-memory access written inside a block, however deeply nested.
+fn device_accesses_in(source: &SourceUnit, block: &crate::parser::Block, out: &mut Vec<Span>) {
+    for statement in block.statements() {
+        for expression in [statement.target(), statement.expression()]
+            .into_iter()
+            .flatten()
+        {
+            crate::walk::walk_tree(expression, false, |node| {
+                if let crate::walk::Node::Expression(inner) = node {
+                    if inner.form() == crate::parser::ExpressionForm::Call {
+                        if let Some(callee) = inner.inner() {
+                            if callee.form() == crate::parser::ExpressionForm::Name
+                                && crate::typing::mmio_access(callee.span().text(source)).is_some()
+                            {
+                                out.push(inner.span());
+                            }
+                        }
+                    }
+                }
+                crate::walk::Descend::Children
+            });
+        }
+        for nested in [statement.body(), statement.else_body()]
+            .into_iter()
+            .flatten()
+        {
+            device_accesses_in(source, nested, out);
+        }
+        if let Some(chained) = statement.else_if() {
+            for nested in [chained.body(), chained.else_body()].into_iter().flatten() {
+                device_accesses_in(source, nested, out);
+            }
+        }
+    }
+}
+
+/// Whether a written type names device memory.
+fn names_device_memory(source: &SourceUnit, ty: &crate::parser::TypeSyntax) -> bool {
+    match ty {
+        crate::parser::TypeSyntax::Name { path, .. } => path
+            .last()
+            .is_some_and(|segment| matches!(segment.text(source), "MmioRegion" | "MmioRegionMut")),
+        crate::parser::TypeSyntax::Constructed {
+            name, arguments, ..
+        } => {
+            matches!(name.text(source), "MmioRegion" | "MmioRegionMut")
+                || arguments
+                    .iter()
+                    .any(|inner| names_device_memory(source, inner))
+        }
+        _ => false,
     }
 }
 

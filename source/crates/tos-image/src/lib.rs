@@ -93,7 +93,11 @@ pub const MAGIC: [u8; 8] = *b"TOSIMAGE";
 /// version changed — an older reader given a version-4 image refuses it rather
 /// than reading an operand tag as an index, which is what "fail closed on an
 /// unknown version" is for.
-pub const ENCODING_VERSION: u32 = 4;
+/// Version 5 carries the device-memory kinds and the two observation
+/// operations (ADR-0081 §6). New tags rather than changed ones, so an older
+/// reader given a version-5 image must refuse it rather than meet a tag it does
+/// not know — which is what ADR-0070's fail-closed unknown-version rule is for.
+pub const ENCODING_VERSION: u32 = 5;
 
 /// The container versions this reader still decodes.
 ///
@@ -104,7 +108,7 @@ pub const ENCODING_VERSION: u32 = 4;
 /// `CapabilitySource::Import(index)`, one for one, with nothing invented — so
 /// admitting it adds no way for an old image to mean something new. Anything
 /// else is refused by [`ImageError::UnknownEncodingVersion`].
-pub const READABLE_ENCODING_VERSIONS: &[u32] = &[3, ENCODING_VERSION];
+pub const READABLE_ENCODING_VERSIONS: &[u32] = &[3, 4, ENCODING_VERSION];
 
 /// Which semantic schema the payload claims. `1` is `tos-ir/v1`.
 pub const SCHEMA_VERSION: u32 = 1;

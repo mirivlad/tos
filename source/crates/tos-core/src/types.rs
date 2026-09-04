@@ -43,7 +43,14 @@ const PRIMITIVE_TYPES: [&str; 14] = [
 ];
 
 /// Predeclared types that take no type arguments.
-const NULLARY_TYPES: [&str; 8] = [
+///
+/// The two device-memory kinds are here rather than among the parameterized
+/// constructors, and that is the model rather than an omission (ADR-0081 §7):
+/// an MMIO access carries its own width and byte order, because a device
+/// register's width is a property of the *transaction* and not of an element
+/// type. A `MmioRegion<u32>` would claim the window has one element type, which
+/// is false of every device whose registers differ in width.
+const NULLARY_TYPES: [&str; 10] = [
     "Event",
     "Semaphore",
     "Barrier",
@@ -52,6 +59,11 @@ const NULLARY_TYPES: [&str; 8] = [
     "AtomicU32",
     "AtomicU64",
     "ConversionError",
+    // Readable, and readable-and-writable, device memory (ADR-0081 §5). Not
+    // `Region` aliases and not `DmaRegion` aliases: nothing funds them, nothing
+    // reclaims them to the pool, and an access through one is an observation.
+    "MmioRegion",
+    "MmioRegionMut",
 ];
 
 /// The fixed arity of every parameterized V1 type constructor (docs/40
