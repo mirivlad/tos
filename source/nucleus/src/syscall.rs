@@ -1354,10 +1354,14 @@ fn pci_config_write(caller: usize, handle: u64, offset: u64, width: u64, value: 
     if !crate::pci::access_is_valid(offset, width) {
         return Answer::status(E_BAD_ARGUMENT);
     }
-    if crate::pci::config_write(index, generation, offset, width, value) {
-        Answer::status(OK)
-    } else {
-        Answer::status(E_BAD_ARGUMENT)
+    match crate::pci::config_write(index, generation, offset, width, value) {
+        Ok(()) => Answer::status(OK),
+        Err(crate::pci::WriteRefused::BadArgument) => Answer::status(E_BAD_ARGUMENT),
+        // Well formed, and not this capability's to change. `E_NO_CAPABILITY`
+        // rather than `E_BAD_ARGUMENT` because the argument is fine: what the
+        // caller lacks is the authority, and `SYSTEM_ABI_V1` §4 keeps "you named
+        // nothing" and "you may not" apart on purpose.
+        Err(crate::pci::WriteRefused::Reserved) => Answer::status(E_NO_CAPABILITY),
     }
 }
 

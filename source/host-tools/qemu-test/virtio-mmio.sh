@@ -109,6 +109,23 @@ negatives="$(run negatives virtio-mmio-negative 33 --stage4-block-device)"
 [ "$(grep -c '^TOS\.RUN\.MMIO_MAPPED ' "$OUT/negatives/events.log" || true)" = 0 ] ||
     fail "a refused request produced a window anyway"
 
+# --- the three ambient paths to interrupt authority are closed -----------------
+# ADR-0082 §5. The MSI-X table is in a BAR and the MSI-X capability and the Bus
+# Master Enable bit are in the first 256 bytes of configuration space, so a
+# holder of `map` and `config_write` reached all three before this. Each is now
+# refused, and the two neighbouring accesses still work — a refusal that refused
+# everything would prove nothing.
+#
+#   1 a writable window on the MSI-X table BAR    2 a read-only one, same page
+#   4 the MSI-X message control                   8 setting Bus Master Enable
+#  16 the capability is still readable           32 a no-change command write works
+msix="$(run msix-negative virtio-msix-negative 33 --stage4-block-device)"
+[ -n "$msix" ] || fail "the MSI-X refusal probe reported nothing"
+[ "$msix" != "-2" ] || fail "the reference device reported no MSI-X capability"
+[ "$msix" = 63 ] || fail "the MSI-X authority refusals did not all hold: $msix"
+[ "$(grep -c '^TOS\.RUN\.MMIO_MAPPED ' "$OUT/msix-negative/events.log" || true)" = 0 ] ||
+    fail "a window was mapped over the MSI-X structures"
+
 # --- an access past its own window refuses before touching the device ----------
 run bounds virtio-mmio-bounds 75 --stage4-block-device > /dev/null || true
 grep -q 'code=RUNTIME_DEVICE_REFUSED' "$OUT/bounds/events.log" ||
@@ -150,6 +167,10 @@ echo "  it read num_queues=$queues device_status=0x$(printf %02X "$status")" \
 echo "  without the device the same module reports a refusal, not a reading"
 echo "  eight mapping refusals hold, and an access past the window refuses"
 echo "  before the device is touched"
+echo "  the three ambient paths to interrupt authority are closed: no window over"
+echo "  the MSI-X table in either form, no write to the MSI-X capability, and no"
+echo "  write that would set Bus Master Enable — while reading the capability and"
+echo "  writing the command register unchanged both still work"
 echo "  and the memory account is exactly where it started: $available frames"
 echo "  available against $pool endowed, so a device window is neither charged"
 echo "  to the pool nor credited back to it"
