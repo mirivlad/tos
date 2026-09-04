@@ -98,10 +98,18 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   Это блокирует и Stage 4D (очередь VirtIO живёт в `DmaRegion`), поэтому выбор
   ABI-операций для MMIO вопрос не снимает. Поверхность решения —
   `docs/evidence/STAGE4B_MMIO_BOUNDARY.md` §6.
-- **Stage 4A закрыт** (2026-09-04, коммит `2655aaa`): канонический текст читает
+- **Stage 4A формально закрыт** (2026-09-04, коммит свидетельства `2655aaa`;
+  approval в `source/legal/publication-records/`): канонический текст читает
   реальное PCI configuration space устройства под capability
-  (vendor 0x1AF4, device 0x1042, class 0x01, cap ptr 0x98), восемь из девяти
-  негативов исполняются, ADR-0079 и ADR-0080 приняты.
+  (vendor 0x1AF4, device 0x1042, class 0x01, subclass 0x00, cap ptr 0x98 — этих
+  значений нет в тексте модуля, а без устройства та же проба даёт 0xFFFF),
+  восемь из девяти негативов исполняются, подделанный скаляр отклоняет
+  независимый verifier, ADR-0079 и ADR-0080 приняты. Approval закрывает **только**
+  границу авторитета и чтение configuration space: ни BAR/MMIO, ни device-память,
+  ни IRQ, ни DMA, ни IOMMU, ни reset, ни очереди, ни block-I/O, ни persistent
+  storage, ни repository handoff. Дефект liveness `SYSTEM_ABI_V1` §6 переходит
+  через закрытие без изменений и остаётся обязательным условием до первого
+  routed device interrupt; identity gate Stage 4 не заявлен.
 - **Stage 4A: первый архитектурный STOP** (2026-09-03), снятый решением
   Архитектора того же дня.
   Раунд — hardware boundary и PCI discovery; цель была узкой: канонический
