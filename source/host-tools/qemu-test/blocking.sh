@@ -13,10 +13,12 @@
 #   1. the non-blocking form still answers. A receive that asked not to wait is
 #      told `E_WOULD_BLOCK`, which `SYSTEM_ABI_V1` §4 assigns to exactly that;
 #   2. the blocking form waits, and the process stops being runnable;
-#   3. the scheduler finds nothing runnable and something blocked. In Stage 3
-#      one interrupt is routed and it wakes nobody, so that state is not a pause
-#      — it is a state nothing can leave. Every block is cancelled at that
-#      instant with `E_CANCELLED`, and the nucleus says who was blocked on what;
+#   3. the scheduler finds nothing runnable, something blocked, **and nothing
+#      routed that could wake any of it** — the whole of `SYSTEM_ABI_V1` §6's
+#      condition, taken as a census over the blocked contexts rather than
+#      assumed from the stage. That state is not a pause; it is a state nothing
+#      can leave. Every block is cancelled at that instant with `E_CANCELLED`,
+#      and the nucleus says who was blocked on what;
 #   4. `E_CANCELLED` reaches the process, which is proved by what it does next:
 #      it reports the status and asks once more, which only a resumed process
 #      can do;
@@ -86,6 +88,18 @@ exactly() {
 exactly 1 "^TOS\\.RUN\\.IPC\\.POLLED status=$E_WOULD_BLOCK\$" \
     "a receive that asked not to wait was not told there was nothing to take"
 
+# --- the census the rule was decided from -------------------------------------
+# **Both halves of §6, on the record with the numbers.** `routed=0` is what says
+# the second half was evaluated and came back empty rather than not having been
+# asked; a nucleus that concluded "stalled" from "something is blocked" alone
+# could not produce this line, and one that had a live routed source would have
+# to say so here before it cancelled anything. Twice, because the rule is
+# evaluated twice: once to cancel, once to find nothing had moved.
+exactly 2 '^TOS\.RUN\.LIVENESS blocked=1 routed=0 verdict=stalled asserted_by=nucleus$' \
+    "the liveness verdict was not reached from a census of what could still wake the blocked context"
+[ "$(count '^TOS\.RUN\.LIVENESS .*verdict=awaiting-hardware')" = 0 ] ||
+    fail "a stage that routes no device interrupt reported a routed wake source"
+
 # --- the rule fired, once, and named what was waiting ------------------------
 exactly 1 "^TOS\\.RUN\\.BLOCK_CANCELLED process=0 operation=$RECEIVE endpoint=[0-9]* reason=no-runnable-context asserted_by=nucleus\$" \
     "the liveness rule did not fire exactly once before the deadlock"
@@ -120,6 +134,8 @@ exactly 1 '^TOS\.BOOTMODULE\.FAIL stage=process$' \
 
 echo "BLOCKING PASS: a wait nothing could satisfy was ended, diagnosed and reported"
 echo "  the non-blocking form answered $E_WOULD_BLOCK; the blocking form waited"
+echo "  the verdict came from a census — one context blocked, none of it wakeable"
+echo "  by anything routed — rather than from 'something is blocked'"
 echo "  the liveness rule fired once, the process observed $E_CANCELLED and asked again"
 echo "  the second firing found nothing delivered, so the wait was named a deadlock"
 echo "  the boot failed with RESULT_BOOT_MODULE_FAILED rather than halting ok"

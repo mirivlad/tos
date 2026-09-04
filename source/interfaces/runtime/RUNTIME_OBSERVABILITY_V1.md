@@ -193,6 +193,7 @@ own, because two vocabularies describing one system eventually disagree.
 | `TOS.RUN.PROCESS_RECLAIMED` | `process=` `frames=` `available=` | What the pool took back when the named process ended, and what it holds now. |
 | `TOS.RUN.PROCESS_TERMINATED` | `process=` `by=` `ticks=` `quanta=` `asserted_by=nucleus` | The process was ended by another process holding authority over it (`process_terminate`). `by=` is that process. The whole event is the nucleus's assertion: nothing in it is anyone's claim about themselves. |
 | `TOS.RUN.BLOCK_CANCELLED` | `process=` `operation=` `endpoint=` `reason=` `asserted_by=nucleus` | A wait was cancelled by the nucleus. `reason=no-runnable-context` is ADR-0059's liveness rule: nothing was runnable, something was waiting, and nothing routed could change that. |
+| `TOS.RUN.LIVENESS` | `blocked=` `routed=` `verdict=` `asserted_by=nucleus` | The census ADR-0059's rule was decided from, at an instant when nothing was runnable. `blocked=` is how many contexts were waiting and `routed=` how many of those a **live routed source** could still wake; `verdict=` is `stalled` or `awaiting-hardware`. Emitted for every `stalled` verdict and on entry to `awaiting-hardware`. |
 | `TOS.RUN.DEADLOCK` | `asserted_by=nucleus` | The liveness rule fired twice with no message delivered in between. The contexts are not waiting for something that has not happened yet. |
 | `TOS.RUN.PROCESS_DEADLOCKED` | `process=` `operation=` `endpoint=` `asserted_by=nucleus` | A context ended because the system could not continue. Not a fault, not its own claim and not another process's decision — a statement about the arrangement. |
 | `TOS.RUN.PROCESS_ENDOWED` | `process=` `capabilities=` `policy=` `asserted_by=launcher` | What authority the process was given, before it ran its first instruction (ADR-0055). `policy=` names where the decision came from — `launcher-constant` until `/system/policy/` exists (ADR-0051 §3). |
@@ -210,6 +211,17 @@ Two fields carry their asserter in their name, and that is not decoration.
 its own work. A reader must never have to guess which kind of claim it is
 holding (`PROCESS_IDENTITY_V1` §2), and merging the two would make the guess
 necessary.
+
+**`TOS.RUN.LIVENESS` carries the numbers a verdict about the whole system was
+reached from, and that is why it is separate from the cancellation it usually
+precedes.** `TOS.RUN.BLOCK_CANCELLED` says what happened to one wait;
+`TOS.RUN.LIVENESS` says what the nucleus found when it looked at all of them.
+`routed=0` is the observable evidence that the second half of ADR-0059's rule —
+"and nothing routed can change that" — was evaluated and came back empty, which
+a reader cannot otherwise distinguish from a nucleus that never asked. On a
+system where nothing is blocked the event is absent: that is not a finding but
+the ordinary end of the scheduler's loop, and the boot's own verdict already
+says it.
 
 `system_commit=absent` is the true value for a capsule-launched Stage 3 process:
 Stage 3 reads no repository, and writing a commit the system never read is the

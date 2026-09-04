@@ -294,6 +294,90 @@ impl Waiting {
             Waiting::Message(endpoint) | Waiting::Room(endpoint) => *endpoint,
         }
     }
+
+    /// What could still end this wait.
+    ///
+    /// **Exhaustive, and deliberately without a wildcard.** A new blocking
+    /// reason is a new question about liveness, and a compiler that refuses to
+    /// build until this match answers it is the only mechanism for asking that
+    /// cannot be forgotten. Every arm below is one reason, answered on its own.
+    fn wake_source(&self) -> WakeSource {
+        match self {
+            Waiting::Nothing => WakeSource::NotWaiting,
+            // `endpoint_send` or `endpoint_call`, made by a context that has to
+            // be given the processor to make it.
+            Waiting::Message(_) => WakeSource::Peer,
+            // `endpoint_receive`, which likewise nobody performs without
+            // running.
+            Waiting::Room(_) => WakeSource::Peer,
+            // `endpoint_reply` or `endpoint_reply_receive`, likewise.
+            Waiting::Reply => WakeSource::Peer,
+            // A child ending — by its own `process_exit`, by its own fault, or
+            // by another context terminating it. All three require a context to
+            // run, and an ending that has *already* been recorded was handed to
+            // its waiter before the scheduler went looking for something to
+            // run, so a pending ending is never what this state is waiting for.
+            Waiting::ChildOf(_) => WakeSource::Peer,
+        }
+    }
+}
+
+/// What could end a wait, and whether the nucleus can prove that thing still
+/// exists.
+///
+/// `SYSTEM_ABI_V1` §6 states the liveness rule over exactly this distinction —
+/// "when no context is runnable and some context is blocked, **and nothing
+/// routed can change that**" — and its second clause is a question about the
+/// *wait*, not about the scheduler. A wait only a context can satisfy is
+/// unsatisfiable at the instant no context can be given the processor. A wait a
+/// live routed interrupt can satisfy is not, because nothing in this system has
+/// to run for the machine to deliver one.
+///
+/// The two are kept apart here rather than in the scheduler so that the rule
+/// reads over the answer instead of recomputing it, and so that the answer is
+/// per-wait: the census the scheduler takes is over the blocked contexts, and a
+/// single live routed source among them is what makes the state an idle system
+/// rather than a stopped one.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WakeSource {
+    /// The context is not waiting for anything.
+    NotWaiting,
+    /// Only a context of this system, by running, can satisfy this wait.
+    Peer,
+    /// A routed device interrupt can satisfy it with nothing running, and the
+    /// route it names is still live.
+    ///
+    /// **No blocking reason produces this yet, and that is the honest state of
+    /// this stage rather than an omission.** ADR-0049 routes one interrupt, the
+    /// timer, and the timer wakes nobody; until a device interrupt is routed to
+    /// a waiting context there is no wait of this class to classify. What the
+    /// value buys before its first producer exists is that the rule below is
+    /// written over the classification rather than over "is anything blocked",
+    /// so the first routed interrupt is a new arm in [`Waiting::wake_source`]
+    /// and not a rewrite of the scheduler's termination condition.
+    #[allow(dead_code)]
+    Routed,
+}
+
+/// What the scheduler found at the instant it had nothing to run.
+///
+/// Three states, because `SYSTEM_ABI_V1` §6 needs three and a boolean carries
+/// two. "Nothing runnable" alone cannot tell a boot that finished from a system
+/// that stopped, and — once anything routed can wake a context — cannot tell a
+/// system that stopped from one that is idle waiting for hardware.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Liveness {
+    /// Nothing is blocked either: the work this boot had is over, and the
+    /// scheduler's loop ends.
+    Finished,
+    /// Something is blocked and something routed can still wake it. The system
+    /// is **idle, not stopped**, and what distinguishes the two is a live wake
+    /// source rather than an opinion about how long to wait.
+    AwaitingHardware,
+    /// Something is blocked and only a context that cannot be given the
+    /// processor could wake it. This is the state ADR-0059's rule is about, and
+    /// the only one in which a block is cancelled.
+    Stalled,
 }
 
 /// What the launcher gave a process, and what has to come back when it ends.
@@ -1090,24 +1174,102 @@ pub unsafe fn wake(index: usize, answer: crate::syscall::Answer) {
     table[index].state = State::Runnable;
 }
 
-/// Whether any context is waiting for something.
-fn any_blocked() -> bool {
+/// The census the liveness rule is decided from: how many contexts are blocked,
+/// and how many of those a routed source could still wake.
+fn blocked_census() -> (u32, u32) {
     // SAFETY: single-context nucleus.
     let table = unsafe { table() };
-    (0..MAX_PROCESSES).any(|index| table[index].state == State::Blocked)
+    let mut blocked = 0;
+    let mut routed = 0;
+    for slot in table.iter() {
+        if slot.state != State::Blocked {
+            continue;
+        }
+        blocked += 1;
+        if slot.waiting.wake_source() == WakeSource::Routed {
+            routed += 1;
+        }
+    }
+    (blocked, routed)
+}
+
+/// Which of the three states of `SYSTEM_ABI_V1` §6 the system is in, asked only
+/// when nothing is runnable.
+///
+/// **Both halves of the rule, and the second is not free any more.** "No
+/// runnable context" answers whether anything can run *now*; the census answers
+/// whether anything that is not a context could still change that. A stage that
+/// routes no device interrupt makes the two the same question, which is why the
+/// first implementation of this rule could be written as "is anything blocked" —
+/// and is exactly why writing it that way stops being correct at the first
+/// routed interrupt rather than at some later redesign.
+fn liveness(blocked: u32, routed: u32) -> Liveness {
+    if blocked == 0 {
+        return Liveness::Finished;
+    }
+    if routed > 0 {
+        return Liveness::AwaitingHardware;
+    }
+    Liveness::Stalled
+}
+
+/// Says what the census found, so that a verdict about the whole system is on
+/// the record with the numbers it was reached from.
+///
+/// A verdict nobody can check is an assertion; these two counts are what makes
+/// it a finding. `routed=0` beside `verdict=stalled` is the evidence that the
+/// second half of the rule was evaluated and came back empty, rather than not
+/// having been asked.
+fn report_liveness(verdict: Liveness, blocked: u32, routed: u32) {
+    let verdict = match verdict {
+        // Not a finding. Nothing is waiting, so there is no census to report and
+        // no state anybody could be wrong about: the loop simply ends, and the
+        // boot's ordinary verdict is what says so.
+        Liveness::Finished => return,
+        Liveness::AwaitingHardware => b"awaiting-hardware".as_slice(),
+        Liveness::Stalled => b"stalled".as_slice(),
+    };
+    tos_serial::puts(b"TOS.RUN.LIVENESS blocked=");
+    tos_serial::put_u32_decimal(blocked);
+    tos_serial::puts(b" routed=");
+    tos_serial::put_u32_decimal(routed);
+    tos_serial::puts(b" verdict=");
+    tos_serial::puts(verdict);
+    tos_serial::puts(b" asserted_by=nucleus\r\n");
+}
+
+/// Gives the processor back to the machine until an interrupt arrives.
+///
+/// Reached only from [`Liveness::AwaitingHardware`]: nothing can run, and
+/// something routed can still wake a context. Spinning would be the same wait
+/// with the machine held down, and returning would be the scheduler concluding
+/// something the census has just refused to conclude.
+///
+/// **`sti` before `hlt`, and it is not decoration.** A context that ends inside
+/// a system call returns to this loop with interrupts masked, and a `hlt` there
+/// would be a halt nothing could end. The pair is also the architecture's own
+/// idiom for the race it would otherwise have: `sti` takes effect after the
+/// following instruction, so an interrupt that arrives between the two is taken
+/// after the `hlt` rather than before it, and no wakeup is lost.
+fn await_interrupt() {
+    // SAFETY: no context is running, the nucleus's own address space is live,
+    // and the IDT has been loaded since boot — so an interrupt taken here lands
+    // in a handler that finds `RUNNING` false and returns without touching the
+    // table.
+    unsafe { core::arch::asm!("sti", "hlt", options(nomem, nostack, preserves_flags)) };
 }
 
 /// Cancels every block, because nothing can end them (ADR-0059).
 ///
-/// Called at the instant the scheduler finds nothing runnable and something
-/// blocked. In Stage 3 that is decidable rather than a guess: one interrupt is
-/// routed, it is the timer, and it wakes nobody — so no wait in that state can
-/// ever be satisfied. `E_CANCELLED` is accurate and not an approximation: the
-/// operation *was* cancelled, and the canceller is the nucleus.
-///
-/// **Stage 4 must revisit this.** The rule is "nothing runnable *and nothing
-/// routed can change that*", and the second half stops being free the day a
-/// device interrupt can wake a driver.
+/// Called at the instant the scheduler finds nothing runnable, something
+/// blocked, **and no live routed source among what is blocked** — the whole of
+/// `SYSTEM_ABI_V1` §6's condition rather than its first half. That is decidable
+/// rather than a guess, and it is decided by [`liveness`] from the census
+/// instead of being assumed from the stage: no wait in that state can ever be
+/// satisfied, because every one of them names something only a context could do
+/// and no context can be given the processor. `E_CANCELLED` is accurate and not
+/// an approximation: the operation *was* cancelled, and the canceller is the
+/// nucleus.
 fn cancel_every_block() {
     // What is blocked, read out before anything is done about it. `wake` names
     // the table itself, so a borrow held across it would be two live references
@@ -1133,6 +1295,12 @@ fn cancel_every_block() {
         tos_serial::put_u32_decimal(*operation);
         tos_serial::puts(b" endpoint=");
         tos_serial::put_u32_decimal(waiting.endpoint());
+        // The declared value of `RUNTIME_OBSERVABILITY_V1` §7, unchanged. What
+        // the census found is said by `TOS.RUN.LIVENESS`, which is a new event
+        // rather than a new meaning for a field readers already parse: the
+        // reason a wait was cancelled has not changed, and the evidence that
+        // both halves of the rule were evaluated is a different fact about a
+        // different subject — the system, not this wait.
         tos_serial::puts(b" reason=no-runnable-context asserted_by=nucleus\r\n");
         // SAFETY: the context is blocked, and this is the answer to the call it
         // blocked in.
@@ -1226,6 +1394,11 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
     // delivered in between, and what the delivery count was when it last did.
     let mut firings = 0u32;
     let mut deliveries = 0u64;
+    // Whether the idle verdict has already been said. An idle system is woken
+    // by every timer tick and finds the same census each time, so announcing it
+    // per evaluation would put a boot's whole idle time on the wire; announcing
+    // it per *entry* into the state says the thing that changed.
+    let mut announced_idle = false;
     loop {
         // Anything that ended since the last turn goes back first, here, where
         // the nucleus's own address space is the live one and nothing is
@@ -1242,34 +1415,64 @@ pub unsafe fn schedule(nucleus: &AddressSpace) {
         let current = unsafe { CURRENT };
         let next = match next_runnable_after(current) {
             Some(next) => next,
-            // Nothing to run. Whether that is the end of the boot or a system
-            // that has stopped depends on whether anybody is waiting, and in
-            // Stage 3 that question has an answer rather than a guess.
-            None if !any_blocked() => return,
+            // Nothing to run, which is three states wearing one appearance
+            // (`SYSTEM_ABI_V1` §6). Which one it is depends on what is blocked
+            // and on what could still wake it, and the census answers both
+            // rather than the stage answering them by construction.
             None => {
-                let delivered = crate::ipc::deliveries();
-                if firings > 0 && delivered == deliveries {
-                    // The rule fired, every block was cancelled, the contexts
-                    // ran again — and blocked again without a single message
-                    // moving. They are not waiting for something that has not
-                    // happened yet; they are waiting for each other.
-                    tos_serial::puts(b"TOS.RUN.DEADLOCK asserted_by=nucleus\r\n");
-                    end_every_block();
-                } else {
-                    // Consecutive is counted in **deliveries, not in turns**.
-                    // A cancelled context becomes runnable and takes a turn
-                    // immediately — that is what cancelling it is for — so a
-                    // counter reset by "somebody ran" would reset every time
-                    // and never reach two. What distinguishes a system that is
-                    // making progress from one that is not is whether a message
-                    // moved, and nothing else.
-                    firings = 1;
-                    deliveries = delivered;
-                    cancel_every_block();
+                // Taken once, and the verdict and the record are both read from
+                // it: a census walked twice is two censuses, and the numbers on
+                // the record would then be a second opinion about the state the
+                // decision was made in rather than that state.
+                let (blocked, routed) = blocked_census();
+                match liveness(blocked, routed) {
+                    // Nothing is waiting: the boot's work is over.
+                    Liveness::Finished => return,
+                    // Something routed can still wake a blocked context, so the
+                    // system is idle rather than stopped. Halting is the honest
+                    // answer — there is nothing to run and something to wait for —
+                    // and it is also the only one that does not spend the machine
+                    // on asking the same question again.
+                    Liveness::AwaitingHardware => {
+                        if !announced_idle {
+                            report_liveness(Liveness::AwaitingHardware, blocked, routed);
+                            announced_idle = true;
+                        }
+                        await_interrupt();
+                        continue;
+                    }
+                    Liveness::Stalled => {
+                        report_liveness(Liveness::Stalled, blocked, routed);
+                        let delivered = crate::ipc::deliveries();
+                        if firings > 0 && delivered == deliveries {
+                            // The rule fired, every block was cancelled, the
+                            // contexts ran again — and blocked again without a
+                            // single message moving. They are not waiting for
+                            // something that has not happened yet; they are waiting
+                            // for each other.
+                            tos_serial::puts(b"TOS.RUN.DEADLOCK asserted_by=nucleus\r\n");
+                            end_every_block();
+                        } else {
+                            // Consecutive is counted in **deliveries, not in
+                            // turns**. A cancelled context becomes runnable and
+                            // takes a turn immediately — that is what cancelling it
+                            // is for — so a counter reset by "somebody ran" would
+                            // reset every time and never reach two. What
+                            // distinguishes a system that is making progress from
+                            // one that is not is whether a message moved, and
+                            // nothing else.
+                            firings = 1;
+                            deliveries = delivered;
+                            cancel_every_block();
+                        }
+                        continue;
+                    }
                 }
-                continue;
             }
         };
+        // Something is about to run, so an idle verdict said earlier is about a
+        // state the system has left, and the next entry into it is news again.
+        announced_idle = false;
         // The slot is named as a raw place rather than borrowed, and that is
         // not a style choice. The frame's address is read by `process_start`
         // after any borrow would have ended, and the timer handler names this

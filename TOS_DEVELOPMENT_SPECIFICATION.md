@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `694aa8bdbaddb6a524477489060997329fb1832d92e629855f7e91b452dd1c5c`\
+Source-manifest SHA-256: `d43a5717cb6a8e2a42ce98e85c9ef50d96b47bb86a2f530dbcb36396dd764dc3`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -1809,6 +1809,7 @@ own, because two vocabularies describing one system eventually disagree.
 | `TOS.RUN.PROCESS_RECLAIMED` | `process=` `frames=` `available=` | What the pool took back when the named process ended, and what it holds now. |
 | `TOS.RUN.PROCESS_TERMINATED` | `process=` `by=` `ticks=` `quanta=` `asserted_by=nucleus` | The process was ended by another process holding authority over it (`process_terminate`). `by=` is that process. The whole event is the nucleus's assertion: nothing in it is anyone's claim about themselves. |
 | `TOS.RUN.BLOCK_CANCELLED` | `process=` `operation=` `endpoint=` `reason=` `asserted_by=nucleus` | A wait was cancelled by the nucleus. `reason=no-runnable-context` is ADR-0059's liveness rule: nothing was runnable, something was waiting, and nothing routed could change that. |
+| `TOS.RUN.LIVENESS` | `blocked=` `routed=` `verdict=` `asserted_by=nucleus` | The census ADR-0059's rule was decided from, at an instant when nothing was runnable. `blocked=` is how many contexts were waiting and `routed=` how many of those a **live routed source** could still wake; `verdict=` is `stalled` or `awaiting-hardware`. Emitted for every `stalled` verdict and on entry to `awaiting-hardware`. |
 | `TOS.RUN.DEADLOCK` | `asserted_by=nucleus` | The liveness rule fired twice with no message delivered in between. The contexts are not waiting for something that has not happened yet. |
 | `TOS.RUN.PROCESS_DEADLOCKED` | `process=` `operation=` `endpoint=` `asserted_by=nucleus` | A context ended because the system could not continue. Not a fault, not its own claim and not another process's decision — a statement about the arrangement. |
 | `TOS.RUN.PROCESS_ENDOWED` | `process=` `capabilities=` `policy=` `asserted_by=launcher` | What authority the process was given, before it ran its first instruction (ADR-0055). `policy=` names where the decision came from — `launcher-constant` until `/system/policy/` exists (ADR-0051 §3). |
@@ -1826,6 +1827,17 @@ Two fields carry their asserter in their name, and that is not decoration.
 its own work. A reader must never have to guess which kind of claim it is
 holding (`PROCESS_IDENTITY_V1` §2), and merging the two would make the guess
 necessary.
+
+**`TOS.RUN.LIVENESS` carries the numbers a verdict about the whole system was
+reached from, and that is why it is separate from the cancellation it usually
+precedes.** `TOS.RUN.BLOCK_CANCELLED` says what happened to one wait;
+`TOS.RUN.LIVENESS` says what the nucleus found when it looked at all of them.
+`routed=0` is the observable evidence that the second half of ADR-0059's rule —
+"and nothing routed can change that" — was evaluated and came back empty, which
+a reader cannot otherwise distinguish from a nucleus that never asked. On a
+system where nothing is blocked the event is absent: that is not a finding but
+the ordinary end of the scheduler's loop, and the boot's own verdict already
+says it.
 
 `system_commit=absent` is the true value for a capsule-launched Stage 3 process:
 Stage 3 reads no repository, and writing a commit the system never read is the
@@ -19326,6 +19338,80 @@ Phase 4 Task 4's blocking half depends on this; its transfer half depends on
 ADR-0058 instead, and the two are independent. Nothing in the scheduler, the
 capability table or the process-authority chain built before this changes under
 any of the four options.
+
+## Realisation — the second clause, implemented rather than assumed
+
+Recorded here for the same reason ADR-0079 §15 records one: a decision whose
+implementation state is invisible invites being re-derived, and this decision has
+a clause whose implementation was deliberately deferred and then reported as a
+prerequisite by ADR-0079 §12.
+
+**This is implementation completion, not a new decision.** Option D above and
+`SYSTEM_ABI_V1` §6 both state the rule with both halves — "no context is
+runnable and some context is blocked, **and nothing routed can change that**" —
+and neither is amended by anything below. What changed is that the first
+implementation wrote the rule as "is anything blocked", which is *equivalent* in
+a stage that routes no device interrupt and is not equivalent in one that does.
+The equivalence was a fact about the stage; it was never the rule.
+
+### What the nucleus now decides from
+
+`Waiting` is classified into a **wake source**, exhaustively and without a
+wildcard, so that a new blocking reason cannot be added without the compiler
+demanding an answer to the liveness question about it:
+
+| Blocking reason | What could end it | Wake source |
+|---|---|---|
+| `Message(endpoint)` | `endpoint_send` / `endpoint_call` by another context | peer |
+| `Room(endpoint)` | `endpoint_receive` by another context | peer |
+| `Reply` | `endpoint_reply` / `endpoint_reply_receive` by another context | peer |
+| `ChildOf(instance)` | a child ending — by its own exit, its own fault, or another context terminating it | peer |
+
+Every reason this contract has is **peer**: all four name something only a
+context that is given the processor can do, and an ending already recorded is
+handed to its waiter before the scheduler goes looking for something to run. So
+the census that the rule is now decided from returns zero routed sources today,
+and the rule fires in exactly the states it fired in before. That is the point:
+the repair is provable to change no behaviour, and the first routed interrupt is
+then a new arm in one match rather than a rewrite of the termination condition.
+
+The scheduler's answer to "nothing is runnable" becomes three states rather than
+two, which is what `SYSTEM_ABI_V1` §6 needs and a boolean cannot carry:
+
+```text
+nothing blocked                          → the boot's work is over
+blocked, and a live routed source exists → idle: halt until an interrupt
+blocked, and no live routed source       → the rule fires
+```
+
+The middle state **halts** rather than spinning or concluding. A system with
+nothing to run and something routed to wait for is idle, and idling is not a
+verdict about liveness.
+
+### What is on the record
+
+`TOS.RUN.LIVENESS blocked= routed= verdict=` is emitted at the instant the
+verdict is reached (`RUNTIME_OBSERVABILITY_V1` §7). `routed=0` beside
+`verdict=stalled` is the observable difference between a nucleus that evaluated
+the second half of the rule and one that never asked — a distinction no reader
+could otherwise make, because both produce the same cancellation.
+
+### The limitation this creates, named rather than discovered
+
+Once any wait has a live routed source, a *peer* deadlock that coexists with it
+is no longer diagnosed: a context blocked on an interrupt may, when that
+interrupt arrives, send the message the deadlocked pair is waiting for, so
+cancelling them while the route is live would be cancelling waits the system
+could still satisfy.
+
+This is the same class as the partial starvation named above, and it is bounded
+by the same thing rather than by nothing: a routed source is an **authority**,
+not an ambient condition. It dies with the process that holds it, with the device
+assignment it descends from, and with any revocation the holder's launcher
+performs — and at that instant the waits depending on it resolve and the ordinary
+rule applies again. The rule does not degrade into "something is blocked,
+therefore the system is live forever"; it degrades into "a live routed capability
+exists, therefore the system may still make progress", which is true.
 
 <!-- END docs/adr/0059-blocking-and-the-liveness-rule.md -->
 
