@@ -36,6 +36,10 @@ What happened, in order:
 3. The Project Architect reviewed the resulting design afterwards.
 4. Approval was granted on **2026-09-04**, for the reconciled design set out in
    this document.
+5. Stage 4B was then formally closed on **2026-09-04** for evidence commit
+   `ec03210`, and the closure ruling states that it accepts this chronology as
+   recorded and the narrowed scope below as written —
+   `source/legal/publication-records/ec032105edb16d8559cd2177ca04a337854d12df-stage4b-closure-approval.md`.
 
 Nothing here claims the approval existed earlier, and no Git history was
 rewritten to make the order look different. The implementation is accepted; the

@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `3710e7441c0136337f44fcbe3c3d3228bc349e8610792b61f41946e9265d677f`\
+Source-manifest SHA-256: `7a41a00b353a7dce96373410254b225c787c84ad7f8563c60d5f98ed9bb8fba7`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -132,8 +132,13 @@ canonical TOS Core source executes through the production reader, parser,
 checker, deterministic `tos-ir/v1` lowerer, independent verifier and bounded
 engine. **Stage 3 is formally closed** (2026-09-03) — capabilities, IPC,
 regions, funded process creation, the build-to-bundle lifecycle and a
-supervisor written in TOS Core. TOS is not yet a user shell, application
-environment, or desktop operating system, and Stage 4 has not begun.
+supervisor written in TOS Core. **Stage 4A and Stage 4B are closed**
+(2026-09-04) — canonical TOS Core holds a platform root, claims a real PCI
+function, reads its configuration space, finds the VirtIO capability structures
+itself, derives a bounded window on the BAR they name, and reads the device's
+registers, with the nucleus holding mechanism only. TOS is not yet a user shell,
+application environment, or desktop operating system; it does not yet drive a
+disk, and Stage 4C has not begun.
 
 ## Try the Stage 3 system
 
@@ -372,11 +377,18 @@ See `LICENSE.md`, `GOVERNANCE.md`, `PATENTS.md`, `CONTRIBUTING.md` and `TRADEMAR
 
 ## Status
 
-Stage 0, Stage 1, Stage 1.5, Stage 2 and **Stage 3** are formally closed. Each
-closure approval is archived in `source/legal/publication-records/`; Stage 3 was
-closed by the Project Architect on 2026-09-03 for evidence commit `77970cb`,
-against `docs/evidence/STAGE3_CLOSURE_AUDIT.md` — 60 audited obligations, 56
-closed, none blocking. Stage 4 has not begun.
+Stage 0, Stage 1, Stage 1.5, Stage 2, **Stage 3** and **Stage 4B** are formally
+closed, and their closure approvals are archived in
+`source/legal/publication-records/`. Stage 3 was closed by the Project Architect
+on 2026-09-03 for evidence commit `77970cb`, against
+`docs/evidence/STAGE3_CLOSURE_AUDIT.md` — 60 audited obligations, 56 closed,
+none blocking. **Stage 4A** was approved as complete on 2026-09-04 against its
+final commit `2655aaa` and green CI, and is recorded in `PROGRESS.md` rather
+than as a separate archived record. **Stage 4B — BAR/MMIO and real textual
+VirtIO PCI capability discovery — was closed by the Project Architect on
+2026-09-04** for evidence commit `ec03210`, against
+`docs/evidence/STAGE4B_MMIO_BOUNDARY.md` and ADR-0081. That closure implies no
+IRQ, DMA, Virtqueue, block-I/O or reset semantics. Stage 4C has not begun.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a
@@ -26991,6 +27003,10 @@ What happened, in order:
 3. The Project Architect reviewed the resulting design afterwards.
 4. Approval was granted on **2026-09-04**, for the reconciled design set out in
    this document.
+5. Stage 4B was then formally closed on **2026-09-04** for evidence commit
+   `ec03210`, and the closure ruling states that it accepts this chronology as
+   recorded and the narrowed scope below as written —
+   `source/legal/publication-records/ec032105edb16d8559cd2177ca04a337854d12df-stage4b-closure-approval.md`.
 
 Nothing here claims the approval existed earlier, and no Git history was
 rewritten to make the order look different. The implementation is accepted; the
