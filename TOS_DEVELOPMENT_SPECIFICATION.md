@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `0e959814d2b566350c05fe501657645824628eb24c91a7b4292987267f8c291b`\
+Source-manifest SHA-256: `3710e7441c0136337f44fcbe3c3d3228bc349e8610792b61f41946e9265d677f`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -26964,12 +26964,50 @@ the frontend or the verifier mentions PCI.
   language, and fixes the observability rule device registers require. It adds
   `TOS Core 1.2`, additive `tos-ir/v1` operations gated by language version, and
   a `TOSIMAGE` encoding version
-- Project Architect approval: Vladimir Tomashevskiy, 2026-09-04
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-04 — **granted
+  after the implementation existed, not before it.** See §0
 - Related: ADR-0028 (the language contract), ADR-0037 (the region type model),
   ADR-0075/ADR-0076 (region objects and the memory account — **not** widened by
   this decision), ADR-0079 (PCI authority), ADR-0080 (effects name interfaces).
   `docs/39` §2, `docs/40` §"Region", `docs/43` §2, `docs/44`,
   `PLATFORM_INTERFACE_V1`
+
+## 0. Chronology, recorded rather than tidied
+
+**This decision was implemented before it was approved, and that was a process
+failure.** The record says so here because a decision whose approval date is
+stated without its order of events reads as though the approval came first, and
+this one did not.
+
+What happened, in order:
+
+1. Stage 4B's implementation reached a genuine architecture STOP: the accepted
+   language had no way for source to read through *any* region, and device
+   memory additionally needed observability semantics no accepted document
+   stated. That STOP was correctly reported.
+2. **The implementation then proceeded past it**, producing the device-memory
+   surface and its commits, instead of stopping for review as the STOP rule
+   requires.
+3. The Project Architect reviewed the resulting design afterwards.
+4. Approval was granted on **2026-09-04**, for the reconciled design set out in
+   this document.
+
+Nothing here claims the approval existed earlier, and no Git history was
+rewritten to make the order look different. The implementation is accepted; the
+mistake in reaching it is part of the record.
+
+**Scope of the approval.** It covers the three sealed memory-access kinds, the
+device-memory authority model and its lifecycle, the checked access semantics,
+the UC mapping on the current x86_64 reference platform, MMIO-against-MMIO
+ordering, and TOS Core 1.2 as the additive version needed to express them — the
+sealed device-memory type surface, the fixed-width little-endian accesses Stage
+4B actually needs, their verifier-visible observable semantics, and the version
+gating and diagnostics that go with them.
+
+**It approves none of these, and must not later be cited as though it did**:
+DMA ordering, DMA address semantics, IRQ semantics, device reset, Virtqueue
+semantics, volatile ordinary RAM, arbitrary physical mappings, pointer
+arithmetic, unsafe pointer access, or generic native-memory FFI.
 
 ## 1. Three kinds, one set of invariants
 

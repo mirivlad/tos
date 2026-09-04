@@ -116,6 +116,25 @@ grep -q 'code=RUNTIME_DEVICE_REFUSED' "$OUT/bounds/events.log" ||
 grep -q 'detail=a_device_access_past_the_end_of_its_mapping' "$OUT/bounds/events.log" ||
     fail "the refusal did not name the bound it broke"
 
+# --- a device window is not ordinary RAM, coming or going ----------------------
+# **The account is exactly where it started.** The probe mapped a device window
+# and died holding it; if a device mapping were charged to the pool the pool
+# would be short, and if releasing one credited the pool it would be over. Both
+# are the mistake ADR-0081 §5 exists to prevent, and this is where a regression
+# in either direction shows up as a number.
+account="$(grep -m1 '^TOS\.MEM\.ACCOUNT ' "$OUT/probe/events.log")"
+reclaimed="$(grep -m1 '^TOS\.RUN\.PROCESS_RECLAIMED ' "$OUT/probe/events.log")"
+value_of() { printf '%s' "$1" | tr ' ' '\n' | sed -n "s/^$2=\(.*\)$/\1/p"; }
+pool="$(value_of "$account" pool_frames)"
+reserve_free="$(value_of "$account" table_reserve_free)"
+available="$(value_of "$reclaimed" available)"
+tables_free="$(value_of "$reclaimed" tables_free)"
+[ -n "$pool" ] && [ -n "$available" ] || fail "the run reported no memory account"
+[ "$available" = "$pool" ] ||
+    fail "a device mapping changed the pool: $available available, $pool endowed"
+[ "$tables_free" = "$reserve_free" ] ||
+    fail "a device mapping leaked page tables: $tables_free free, $reserve_free reserved"
+
 # --- and the nucleus still knows nothing about VirtIO --------------------------
 leaked="$(find "$ROOT/nucleus/src" -name '*.rs' -print0 |
     xargs -0 sed -e 's://.*::' -e 's:/\*.*\*/::' |
@@ -131,3 +150,6 @@ echo "  it read num_queues=$queues device_status=0x$(printf %02X "$status")" \
 echo "  without the device the same module reports a refusal, not a reading"
 echo "  eight mapping refusals hold, and an access past the window refuses"
 echo "  before the device is touched"
+echo "  and the memory account is exactly where it started: $available frames"
+echo "  available against $pool endowed, so a device window is neither charged"
+echo "  to the pool nor credited back to it"

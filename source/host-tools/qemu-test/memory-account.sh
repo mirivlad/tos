@@ -147,6 +147,16 @@ check(
     reserve,
     backing + processes * (identity + windows + devices + mappings),
 )
+# **And the device term is a real cost, not a zero that balances.** Dropping the
+# term from the formula makes the sum above disagree; making it *zero* would let
+# the sum agree while the reserve under-provisions every device window. Both are
+# the same mistake, and only this line catches the second.
+if devices <= 0:
+    raise SystemExit(
+        "memory-account: FAIL: the device-mapping reserve term is a real cost: "
+        f"{devices}"
+    )
+print(f"  the device-mapping reserve is a real cost: {devices}")
 check(
     "and its total is the one the boot took",
     reserve,
