@@ -2,7 +2,10 @@
 
 # Stage 4B — BAR/MMIO authority, and canonical text reading real device registers
 
-- Status: **evidence, 2026-09-04. Stage 4B is complete and green.** Canonical
+- Status: **evidence, 2026-09-04. Stage 4B is formally closed** by Project
+  Architect approval for evidence commit `ec03210`; see §13 and
+  `source/legal/publication-records/ec032105edb16d8559cd2177ca04a337854d12df-stage4b-closure-approval.md`.
+  Canonical
   TOS Core 1.2 discovers the real VirtIO PCI capability structures, derives a
   bounded read-only window on the BAR they name, and reads the device's common
   configuration through a capability-confined MMIO mechanism
@@ -301,3 +304,20 @@ before IRQ exists.
   are untouched.
 
 **No architecture STOP remains open before Stage 4C.**
+
+## 13. Closure
+
+Stage 4B was formally closed by the Project Architect on **2026-09-04**, for
+evidence commit **`ec032105edb16d8559cd2177ca04a337854d12df`**. The ruling is
+archived verbatim in
+`source/legal/publication-records/ec032105edb16d8559cd2177ca04a337854d12df-stage4b-closure-approval.md`.
+
+The ruling accepts this document and ADR-0081 as the evidence basis, accepts the
+narrowed approval scope ADR-0081 states for itself, and records that the
+previously red QEMU workflow was correctly treated as a real independent failure
+and fixed at its cause. It states that no Stage 1–4A gate was weakened, and that
+**no IRQ, DMA, Virtqueue, block-I/O or reset semantics are implied**.
+
+The two obligations in §12 are carried across the closure unchanged: the
+`SYSTEM_ABI_V1` §6 liveness half-rule remains a mandatory prerequisite to the
+first routed device interrupt, and the Stage 4 identity gate remains unclaimed.
