@@ -151,6 +151,8 @@ fn type_bytes(definition: &TypeDef) -> usize {
         | TypeDef::Text
         | TypeDef::Bytes
         | TypeDef::ConversionError
+        | TypeDef::MmioRegion
+        | TypeDef::MmioRegionMut
         | TypeDef::Event
         | TypeDef::Semaphore
         | TypeDef::Barrier
@@ -338,6 +340,19 @@ fn op_bytes(op: &Op) -> usize {
             operands,
         } => operands_bytes(operands),
         Op::Read { place } | Op::Move { place } | Op::Drop { place } => place_bytes(place),
+        Op::MmioRead {
+            region,
+            offset,
+            width: _,
+            little_endian: _,
+        } => operand_bytes(region) + operand_bytes(offset),
+        Op::MmioWrite {
+            region,
+            offset,
+            value,
+            width: _,
+            little_endian: _,
+        } => operand_bytes(region) + operand_bytes(offset) + operand_bytes(value),
         Op::Write { place, value } => place_bytes(place) + operand_bytes(value),
         Op::Borrow { place, kind: _ } => place_bytes(place),
         Op::Binary { op: _, left, right } => operand_bytes(left) + operand_bytes(right),

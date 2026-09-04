@@ -37,8 +37,8 @@ use core::panic::PanicInfo;
 use tos_launch::{Launch, LaunchCapability, LaunchUnit, ReportHeader, LAUNCH_VERSION};
 use tos_pipeline::{
     interfaces, prepare_from_source, render, run_prepared, CapabilityRequest, Handle, IntKind,
-    PipelineStage, Preparation, Reach, ResidencyLimits, SetError, SetRequest, System, Trace, Trap,
-    Unit, Value,
+    Observe, PipelineStage, Preparation, Reach, ResidencyLimits, SetError, SetRequest, System,
+    Trace, Trap, Unit, Value,
 };
 use tos_runtime::{stack, GlobalHeap};
 
@@ -741,6 +741,7 @@ unsafe fn bundle_entry(launch: &tos_launch::BundleLaunch) -> ! {
         )
     };
     let mut endowment = Endowment {
+        mappings: [DeviceMapping::EMPTY; MAX_DEVICE_MAPPINGS],
         held,
         arguments: launch.arguments_base,
         report: Report {
@@ -915,6 +916,7 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
         )
     };
     let mut endowment = Endowment {
+        mappings: [DeviceMapping::EMPTY; MAX_DEVICE_MAPPINGS],
         held,
         arguments: launch.arguments_base,
         report,
@@ -1517,9 +1519,142 @@ struct Endowment<'a> {
     /// Its own copy, not a borrow: see [`Report`]. The trace holds one too, and
     /// both write to the one region the launcher named.
     report: Report,
+    /// Where each device mapping this process holds actually is.
+    ///
+    /// **The only place in ring 3 that knows a device address**, and it is
+    /// below the language: a module names a capability and an offset, the
+    /// engine carries them without reading either, and this is where they
+    /// become a window. `docs/42` §2's rule that a process never observes a
+    /// region's address is about the *program*; something has to perform the
+    /// access, and it is this.
+    mappings: [DeviceMapping; MAX_DEVICE_MAPPINGS],
+}
+
+/// How many device mappings one process may hold at once.
+const MAX_DEVICE_MAPPINGS: usize = 4;
+
+/// One mapped device window, as the host needs it (ADR-0081 §7).
+#[derive(Clone, Copy)]
+struct DeviceMapping {
+    /// The capability the module names it by, or zero for an empty slot. A
+    /// handle of all zeros names nothing in any table, so zero is safe as the
+    /// empty marker rather than needing a flag beside it.
+    handle: u64,
+    /// Where the nucleus mapped it in this address space.
+    base: u64,
+    /// How many bytes it covers. Every access is checked against this.
+    length: u64,
+    /// Whether the mapping is writable. The page table enforces this too — a
+    /// read-only grant has no `WRITABLE` bit — and this is the check that
+    /// refuses *before* the processor faults.
+    writable: bool,
+}
+
+impl DeviceMapping {
+    const EMPTY: Self = Self {
+        handle: 0,
+        base: 0,
+        length: 0,
+        writable: false,
+    };
+}
+
+impl Endowment<'_> {
+    /// The mapping a capability names, if this process holds it.
+    fn mapping(&self, handle: Handle) -> Option<DeviceMapping> {
+        let named = handle.get();
+        if named == 0 {
+            return None;
+        }
+        self.mappings
+            .iter()
+            .find(|mapping| mapping.handle == named)
+            .copied()
+    }
 }
 
 impl System for Endowment<'_> {
+    /// One device access, of exactly the declared width (ADR-0081 §9).
+    ///
+    /// **Checked before the device is touched, and never partially** (§12): a
+    /// mapping this process does not hold, a width the contract does not
+    /// declare, an offset that is not a multiple of that width, or an access
+    /// reaching past the mapping all refuse with nothing read and nothing
+    /// written.
+    fn observe(&mut self, access: Observe) -> Result<Value, Trap> {
+        let refuse = |detail: &str| {
+            Err(Trap::new(
+                "RUNTIME_DEVICE_REFUSED",
+                alloc::string::String::from(detail),
+                0,
+            ))
+        };
+        let Some(mapping) = self.mapping(access.region) else {
+            return refuse("a device access names a mapping this process does not hold");
+        };
+        if access.value.is_some() && !mapping.writable {
+            return refuse("a write through a read-only device mapping");
+        }
+        let width = u64::from(access.width);
+        if !matches!(width, 1 | 2 | 4 | 8) {
+            return refuse("a device access of a width this contract does not declare");
+        }
+        if !access.offset.is_multiple_of(width) {
+            return refuse("a device access whose offset is not a multiple of its width");
+        }
+        // Checked, so nothing wraps into a mapping it does not name.
+        let Some(end) = access.offset.checked_add(width) else {
+            return refuse("a device access whose extent overflows");
+        };
+        if end > mapping.length {
+            return refuse("a device access past the end of its mapping");
+        }
+        let at = mapping.base + access.offset;
+        // Every device this contract admits is little-endian, and the flag says
+        // so rather than being assumed — a target that is not is a different
+        // value here and a different transaction.
+        if !access.little_endian && width != 1 {
+            return refuse("a big-endian device access, which this contract does not declare");
+        }
+        // SAFETY: the nucleus mapped `[base, base + length)` into this address
+        // space with device attributes, and the bounds above put this access
+        // inside it. Volatile is what makes one source operation exactly one
+        // hardware access: it may not be elided, duplicated, widened, narrowed
+        // or reordered against another volatile access.
+        unsafe {
+            match access.value {
+                None => {
+                    let value = match width {
+                        1 => u64::from(
+                            core::ptr::with_exposed_provenance::<u8>(at as usize).read_volatile(),
+                        ),
+                        2 => u64::from(
+                            core::ptr::with_exposed_provenance::<u16>(at as usize).read_volatile(),
+                        ),
+                        4 => u64::from(
+                            core::ptr::with_exposed_provenance::<u32>(at as usize).read_volatile(),
+                        ),
+                        _ => core::ptr::with_exposed_provenance::<u64>(at as usize).read_volatile(),
+                    };
+                    Ok(Value::Int(IntKind::U64, u128::from(value) as i128))
+                }
+                Some(value) => {
+                    match width {
+                        1 => core::ptr::with_exposed_provenance_mut::<u8>(at as usize)
+                            .write_volatile(value as u8),
+                        2 => core::ptr::with_exposed_provenance_mut::<u16>(at as usize)
+                            .write_volatile(value as u16),
+                        4 => core::ptr::with_exposed_provenance_mut::<u32>(at as usize)
+                            .write_volatile(value as u32),
+                        _ => core::ptr::with_exposed_provenance_mut::<u64>(at as usize)
+                            .write_volatile(value),
+                    }
+                    Ok(Value::Unit)
+                }
+            }
+        }
+    }
+
     fn granted(&mut self, request: CapabilityRequest<'_>) -> Option<Handle> {
         // By the binding, which is the identity of the request (ADR-0061). Not
         // by position: this process's record and its module's import list are

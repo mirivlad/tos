@@ -675,6 +675,8 @@ fn write_type(out: &mut Out<'_>, definition: &TypeDef) -> Result<(), ImageError>
                 }
             }
         }
+        TypeDef::MmioRegion => return Err(ImageError::Unsupported("TypeDef::MmioRegion")),
+        TypeDef::MmioRegionMut => return Err(ImageError::Unsupported("TypeDef::MmioRegionMut")),
         TypeDef::ConversionError => {
             return Err(ImageError::Unsupported("TypeDef::ConversionError"))
         }
@@ -967,6 +969,9 @@ fn write_op(out: &mut Out<'_>, op: &Op) -> Result<(), ImageError> {
             out.tag(3);
             write_place(out, place);
         }
+        // This prototype predates device memory and does not encode it.
+        Op::MmioRead { .. } => return Err(ImageError::Unsupported("Op::MmioRead")),
+        Op::MmioWrite { .. } => return Err(ImageError::Unsupported("Op::MmioWrite")),
         Op::Move { place } => {
             out.tag(4);
             write_place(out, place);
@@ -2102,6 +2107,7 @@ pub fn coverage(module: &Module) -> BTreeMap<&'static str, usize> {
 fn places_of(op: &Op) -> Vec<&Place> {
     match op {
         Op::Read { place } | Op::Move { place } | Op::Drop { place } => std::vec![place],
+        Op::MmioRead { .. } | Op::MmioWrite { .. } => std::vec![],
         Op::Write { place, .. } | Op::Borrow { place, .. } => std::vec![place],
         _ => Vec::new(),
     }
@@ -2116,6 +2122,8 @@ fn type_name(definition: &TypeDef) -> &'static str {
         TypeDef::Duration => "TypeDef::Duration",
         TypeDef::Text => "TypeDef::Text",
         TypeDef::Bytes => "TypeDef::Bytes",
+        TypeDef::MmioRegion => "TypeDef::MmioRegion",
+        TypeDef::MmioRegionMut => "TypeDef::MmioRegionMut",
         TypeDef::ConversionError => "TypeDef::ConversionError",
         TypeDef::Event => "TypeDef::Event",
         TypeDef::Semaphore => "TypeDef::Semaphore",
@@ -2166,6 +2174,8 @@ fn op_name(op: &Op) -> &'static str {
         Op::Aggregate { .. } => "Op::Aggregate",
         Op::Variant { .. } => "Op::Variant",
         Op::Read { .. } => "Op::Read",
+        Op::MmioRead { .. } => "Op::MmioRead",
+        Op::MmioWrite { .. } => "Op::MmioWrite",
         Op::Move { .. } => "Op::Move",
         Op::Write { .. } => "Op::Write",
         Op::Borrow { .. } => "Op::Borrow",

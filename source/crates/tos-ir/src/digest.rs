@@ -214,6 +214,11 @@ fn write_type<S: Sink>(out: &mut Writer<S>, definition: &TypeDef) {
         TypeDef::Text => out.tag(5),
         TypeDef::Bytes => out.tag(6),
         TypeDef::ConversionError => out.tag(7),
+        // ADR-0081 §5. New tags rather than a flag on an existing one: the
+        // canonical stream must distinguish a device mapping from a region,
+        // and a reader that guessed would be reading the wrong kind.
+        TypeDef::MmioRegion => out.tag(36),
+        TypeDef::MmioRegionMut => out.tag(37),
         TypeDef::Event => out.tag(8),
         TypeDef::Semaphore => out.tag(9),
         TypeDef::Barrier => out.tag(10),
@@ -534,6 +539,35 @@ fn write_op<S: Sink>(out: &mut Writer<S>, op: &Op) {
         Op::Read { place } => {
             out.tag(3);
             write_place(out, place);
+        }
+        // A device observation is part of a module's identity like any other
+        // operation, and its width and byte order are part of *it* — two
+        // modules differing only in the width of one access are two modules.
+        Op::MmioRead {
+            region,
+            offset,
+            width,
+            little_endian,
+        } => {
+            out.tag(38);
+            write_operand(out, region);
+            write_operand(out, offset);
+            out.number(u128::from(*width));
+            out.number(u128::from(*little_endian));
+        }
+        Op::MmioWrite {
+            region,
+            offset,
+            value,
+            width,
+            little_endian,
+        } => {
+            out.tag(39);
+            write_operand(out, region);
+            write_operand(out, offset);
+            write_operand(out, value);
+            out.number(u128::from(*width));
+            out.number(u128::from(*little_endian));
         }
         Op::Move { place } => {
             out.tag(4);

@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `5f55b98e58037f8baabb4d7b0f4f9ad19713839cbdbe49ec04ee39a210bf96e8`\
+Source-manifest SHA-256: `ba5b18a6a11b10fad5c58704819779bdc8c45fbcaa934962ff0a349f0c52b902`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -5733,10 +5733,10 @@ The inventory is deliberately machine-readable and is checked by
 ```text
 reserved: as async await bootstrap borrow break cancel capability const continue defer else enum extern false fn for full if import in join let loop match module mut parallel profile pub record resource return spawn true unsafe uses version while
 primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes unit
-predeclared-type: Option Result Task TaskResult Shared Region DmaRegion Mutex RwLock MutexGuard ReadGuard WriteGuard Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice array
+predeclared-type: Option Result Task TaskResult Shared Region DmaRegion MmioRegion MmioRegionMut Mutex RwLock MutexGuard ReadGuard WriteGuard Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice array
 atomic-order: Relaxed Acquire Release AcqRel SeqCst
 predeclared-value: Some None Ok Err Completed Cancelled
-predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul share
+predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul share mmio_read_u8 mmio_read_le_u16 mmio_read_le_u32 mmio_read_le_u64 mmio_write_u8 mmio_write_le_u16 mmio_write_le_u32 mmio_write_le_u64
 special-token: _
 ```
 <!-- stage2-word-inventory:end -->
@@ -5876,7 +5876,8 @@ primitive_type  = "bool" | "i8" | "i16" | "i32" | "i64"
                 | "string" | "bytes" | "unit" ;
 predeclared_type = "Event" | "Semaphore" | "Barrier" | "Latch"
                 | "AtomicBool" | "AtomicU32" | "AtomicU64"
-                | "ConversionError" ;
+                | "ConversionError"
+                | "MmioRegion" | "MmioRegionMut" ;
 named_type      = qualified_name ;
 constructed_type = "Option" "<" type ">"
                 | "Result" "<" type "," type ">"
@@ -5954,7 +5955,12 @@ primary         = literal | "true" | "false" | predeclared_value
 predeclared_value = "Some" | "None" | "Ok" | "Err" | "Completed" | "Cancelled" ;
 predeclared_function = "to_i8" | "to_i16" | "to_i32" | "to_i64"
                 | "to_u8" | "to_u16" | "to_u32" | "to_u64"
-                | "wrapping_add" | "wrapping_sub" | "wrapping_mul" ;
+                | "wrapping_add" | "wrapping_sub" | "wrapping_mul"
+                | mmio_access ;
+mmio_access     = "mmio_read_u8" | "mmio_read_le_u16"
+                | "mmio_read_le_u32" | "mmio_read_le_u64"
+                | "mmio_write_u8" | "mmio_write_le_u16"
+                | "mmio_write_le_u32" | "mmio_write_le_u64" ;
 literal         = integer | size | duration | string | bytes ;
 tuple           = "(" expression "," expression ( "," expression )* ","? ")" ;
 array           = "[" positional_argument_list? "]" ;

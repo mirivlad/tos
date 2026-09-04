@@ -311,6 +311,8 @@ impl In<'_> {
             5 => TypeDef::Text,
             6 => TypeDef::Bytes,
             7 => TypeDef::ConversionError,
+            36 => TypeDef::MmioRegion,
+            37 => TypeDef::MmioRegionMut,
             8 => TypeDef::Event,
             9 => TypeDef::Semaphore,
             10 => TypeDef::Barrier,
@@ -659,6 +661,19 @@ impl In<'_> {
             },
             3 => Op::Read {
                 place: self.place()?,
+            },
+            38 => Op::MmioRead {
+                region: self.operand()?,
+                offset: self.operand()?,
+                width: self.byte("mmio width")?,
+                little_endian: self.byte("mmio byte order")? != 0,
+            },
+            39 => Op::MmioWrite {
+                region: self.operand()?,
+                offset: self.operand()?,
+                value: self.operand()?,
+                width: self.byte("mmio width")?,
+                little_endian: self.byte("mmio byte order")? != 0,
             },
             4 => Op::Move {
                 place: self.place()?,

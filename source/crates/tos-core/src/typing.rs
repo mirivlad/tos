@@ -54,7 +54,12 @@ const INTEGER_TYPES: [&str; 8] = ["i8", "i16", "i32", "i64", "u8", "u16", "u32",
 /// `TaskResult<T>` is deliberately absent: `Completed` and `Cancelled` are
 /// predeclared constructors, so it is an ordinary affine result value source is
 /// meant to build.
-const NONCONSTRUCTIBLE_TYPES: [&str; 17] = [
+const NONCONSTRUCTIBLE_TYPES: [&str; 19] = [
+    // Device memory is obtained from a PCI function and from nothing else
+    // (ADR-0081 §13). Writing one is a forged mapping, exactly as writing a
+    // region is a forged grant.
+    "MmioRegion",
+    "MmioRegionMut",
     "Task",
     "Shared",
     "Region",
@@ -75,6 +80,36 @@ const NONCONSTRUCTIBLE_TYPES: [&str; 17] = [
     "AtomicU32",
     "AtomicU64",
 ];
+
+/// One device-memory access the language declares (ADR-0081 §7).
+///
+/// **Width and byte order are part of the operation, not of a type.** A device
+/// register's width belongs to the transaction — the same window carries 8-,
+/// 16- and 32-bit registers — so an element type would be a claim about the
+/// window that no device makes.
+#[derive(Clone, Copy)]
+pub(crate) struct MmioAccess {
+    /// Bytes moved, which is also the alignment the offset must satisfy.
+    pub(crate) width: u64,
+    /// Whether this is a write. A write requires the mutable form.
+    pub(crate) writes: bool,
+}
+
+/// The access one predeclared name performs, if it is one.
+pub(crate) fn mmio_access(name: &str) -> Option<MmioAccess> {
+    let access = |width, writes| Some(MmioAccess { width, writes });
+    match name {
+        "mmio_read_u8" => access(1, false),
+        "mmio_read_le_u16" => access(2, false),
+        "mmio_read_le_u32" => access(4, false),
+        "mmio_read_le_u64" => access(8, false),
+        "mmio_write_u8" => access(1, true),
+        "mmio_write_le_u16" => access(2, true),
+        "mmio_write_le_u32" => access(4, true),
+        "mmio_write_le_u64" => access(8, true),
+        _ => None,
+    }
+}
 
 /// The internal constructor name for a region written with or without `mut`.
 fn mutable_region_name(written: &str, mutable: bool) -> String {
@@ -1193,6 +1228,85 @@ impl<'source> TypeChecker<'source> {
     /// An argument that does not satisfy the requirement is
     /// `E1215_ARGUMENT_TYPE_MISMATCH` — the general code ADR-0037 section 5
     /// settles on — rather than a code invented for this one operation.
+    /// The type of one device-memory access (ADR-0081 §7).
+    ///
+    /// A read takes the region and a byte offset and yields `u64`; a write
+    /// takes a value too and yields `unit`. The offset is exact `size`, as
+    /// every other bounded index in this language is. **A write requires
+    /// `MmioRegionMut`** — the read-only form is read-only in the type as well
+    /// as in the page table, and this is the half of that the checker owns.
+    fn mmio_type(
+        &mut self,
+        expression: &'source Expression,
+        actual: &[Type],
+        access: MmioAccess,
+    ) -> Type {
+        let wanted = if access.writes { 3 } else { 2 };
+        if actual.len() != wanted {
+            return Type::Unknown;
+        }
+        let result = if access.writes {
+            Type::Unit
+        } else {
+            Type::Integer(String::from("u64"))
+        };
+        let region = &actual[0];
+        let named = match region {
+            Type::Constructed(name, _) | Type::Nominal(name) => name.as_str(),
+            _ => "",
+        };
+        let readable = named == "MmioRegion" || named == "MmioRegionMut";
+        let writable = named == "MmioRegionMut";
+        if matches!(region, Type::Unknown) {
+            return result;
+        }
+        if !readable || (access.writes && !writable) {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    "E1215_ARGUMENT_TYPE_MISMATCH",
+                    Severity::Error,
+                    Stage::Type,
+                    expression
+                        .arguments()
+                        .first()
+                        .map_or(expression.span(), |a| a.span()),
+                    self.source,
+                )
+                .with_field("requirement", "device-memory access")
+                .with_field(
+                    "expected",
+                    if access.writes {
+                        "MmioRegionMut"
+                    } else {
+                        "MmioRegion"
+                    },
+                )
+                .with_field("actual", region.spell()),
+            );
+            return result;
+        }
+        // The offset, and a written value, are ordinary checked arguments.
+        if let Some(offset) = expression.arguments().get(1) {
+            if !matches!(
+                actual[1],
+                Type::Size | Type::UnsuffixedInteger | Type::Unknown
+            ) {
+                self.diagnostics.push(
+                    Diagnostic::new(
+                        "E1211_INDEX_TYPE_MISMATCH",
+                        Severity::Error,
+                        Stage::Type,
+                        offset.span(),
+                        self.source,
+                    )
+                    .with_field("expected", "size")
+                    .with_field("actual", actual[1].spell()),
+                );
+            }
+        }
+        result
+    }
+
     fn share_type(&mut self, expression: &'source Expression, actual: &[Type]) -> Type {
         let [argument] = actual else {
             // Arity is not this slice's finding; the call simply has no type.
@@ -1289,6 +1403,9 @@ impl<'source> TypeChecker<'source> {
         let name = callee.span().text(self.source);
         if name == "share" {
             return self.share_type(expression, &actual);
+        }
+        if let Some(access) = mmio_access(name) {
+            return self.mmio_type(expression, &actual, access);
         }
         if let Some((parameters, result)) = self.declarations.functions.get(name) {
             let result = result.clone();

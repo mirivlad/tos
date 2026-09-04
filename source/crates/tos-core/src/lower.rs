@@ -590,6 +590,10 @@ impl<'source> Lowerer<'source> {
                     "string" => TypeDef::Text,
                     "bytes" => TypeDef::Bytes,
                     "ConversionError" => TypeDef::ConversionError,
+                    // Device memory (ADR-0081 §5). Nullary, because an access
+                    // carries its own width: the window has no element type.
+                    "MmioRegion" => TypeDef::MmioRegion,
+                    "MmioRegionMut" => TypeDef::MmioRegionMut,
                     "Event" => TypeDef::Event,
                     "Semaphore" => TypeDef::Semaphore,
                     "Barrier" => TypeDef::Barrier,
@@ -3095,6 +3099,54 @@ impl<'source> Lowerer<'source> {
                 unsafe_interface: None,
             });
             return Ok(Operand::Value(value));
+        }
+        // A device access lowers to its **own** operation (ADR-0081 §8), for
+        // the same reason `share` does and one more: an ordinary read may be
+        // eliminated, coalesced, repeated or reordered, and a device access may
+        // not. Hiding it in a `Call` would leave the observability rule with
+        // nothing in the artifact to attach to.
+        if !self.functions_by_name.contains_key(&name) {
+            if let Some(access) = crate::typing::mmio_access(&name) {
+                let wanted = if access.writes { 3 } else { 2 };
+                if operands.len() != wanted {
+                    return Err(self.gap("device access arity", expression.span()));
+                }
+                let region = operands[0].clone();
+                let offset = operands[1].clone();
+                let width = access.width as u8;
+                let ty = if access.writes {
+                    self.unit_type()
+                } else {
+                    self.intern(TypeDef::Int(tos_ir::IntKind::U64))
+                };
+                let value = builder.define(ty);
+                let op = if access.writes {
+                    Op::MmioWrite {
+                        region,
+                        offset,
+                        value: operands[2].clone(),
+                        width,
+                        little_endian: true,
+                    }
+                } else {
+                    Op::MmioRead {
+                        region,
+                        offset,
+                        width,
+                        little_endian: true,
+                    }
+                };
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op,
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
+                    unsafe_interface: None,
+                });
+                return Ok(Operand::Value(value));
+            }
         }
         let (target, ty) = match self.functions_by_name.get(&name) {
             Some(&index) => {

@@ -49,7 +49,7 @@ pub const LANGUAGE_VERSION: &str = "1.0";
 /// resolves to an interface path, which is what `Signature.effects` has always
 /// carried — so one schema represents both minors, and an artifact records
 /// which of them its module declared.
-pub const LANGUAGE_VERSIONS: &[&str] = &["1.0", "1.1"];
+pub const LANGUAGE_VERSIONS: &[&str] = &["1.0", "1.1", "1.2"];
 
 /// The Unicode baseline docs/43 section 2 fixes for V1.
 pub const UNICODE_BASELINE: &str = "UCD-17.0.0/UAX15-r57/NFC";
@@ -228,6 +228,17 @@ pub enum TypeDef {
     Shared(TypeId),
     Region(TypeId),
     DmaRegion(TypeId),
+    /// A readable device-memory mapping (ADR-0081 §5).
+    ///
+    /// **Not a `Region` and not a `DmaRegion`.** It is funded by nothing,
+    /// returns to no allocator, and an access through it is an *observation* of
+    /// hardware rather than a load from memory. It carries no element type
+    /// because a device register's width belongs to the transaction (§7).
+    MmioRegion,
+    /// The same, writable. Two kinds rather than one with a right, because a
+    /// read-only grant is read-only in the page table too and the two are
+    /// different objects at every level.
+    MmioRegionMut,
     /// A mutably granted region (ADR-0037): writable, not shareable, not
     /// `Transferable`. A distinct constructor rather than a flag, so a
     /// traversal cannot read the type and forget to look at the mode.
@@ -547,6 +558,32 @@ pub enum Op {
     /// Reads a place without taking ownership of it.
     Read {
         place: Place,
+    },
+    /// **Observes** a device register (ADR-0081 §8, §9).
+    ///
+    /// Its own operation rather than an `Op::Read` over a region, because an
+    /// ordinary read may be eliminated, coalesced, repeated or reordered and a
+    /// device access may not. A rule that depended on nobody optimising a load
+    /// would not be a rule; this is the shape that lets the verifier and the
+    /// backend both see that one source access is exactly one hardware access
+    /// of the declared width.
+    MmioRead {
+        region: Operand,
+        offset: Operand,
+        /// Bytes moved, and the alignment the offset must satisfy.
+        width: u8,
+        /// Little-endian, which every access this version declares is. Carried
+        /// rather than assumed so a big-endian target is a new value here and
+        /// not a silent reinterpretation.
+        little_endian: bool,
+    },
+    /// Writes a device register, under the same rules.
+    MmioWrite {
+        region: Operand,
+        offset: Operand,
+        value: Operand,
+        width: u8,
+        little_endian: bool,
     },
     /// Takes ownership of the value at a place.
     Move {

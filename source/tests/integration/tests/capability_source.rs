@@ -386,6 +386,19 @@ struct Runtime {
 }
 
 impl tos_engine::System for Runtime {
+    /// No device is reachable on this run, and saying so is the only honest
+    /// answer: a device access here has reached hardware that does not exist.
+    fn observe(
+        &mut self,
+        _access: tos_engine::Observe,
+    ) -> Result<tos_engine::Value, tos_engine::Trap> {
+        Err(tos_engine::Trap::new(
+            "RUNTIME_DEVICE_UNREACHABLE",
+            String::from("a device access was made on a run with no device to reach"),
+            0,
+        ))
+    }
+
     fn granted(&mut self, request: tos_engine::Request<'_>) -> Option<tos_engine::Handle> {
         Some(tos_engine::Handle::new(match request.binding {
             "process" => 0x10,

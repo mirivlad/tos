@@ -1059,6 +1059,24 @@ impl<'source> OwnershipChecker<'source> {
                 self.walk_expression(callee, state);
             }
         }
+        // **A device access observes; it does not consume** (ADR-0081 §7). A
+        // mapping is read many times — that is what a device window is for —
+        // and an access that took ownership would let a module touch its
+        // registers exactly once. The mapping's lifetime belongs to the object
+        // that produced it, not to the access.
+        //
+        // `share` is the operation that *does* consume, and it still does: this
+        // names the eight accesses and nothing else.
+        if let Some(callee) = expression.callee() {
+            if callee.form() == ExpressionForm::Name
+                && crate::typing::mmio_access(callee.span().text(self.source)).is_some()
+            {
+                for argument in expression.arguments() {
+                    self.walk_expression(argument.value(), state);
+                }
+                return;
+            }
+        }
         // Every argument position takes ownership unless it is written as a
         // borrow, which the parser records as a unary operand.
         for argument in expression.arguments() {

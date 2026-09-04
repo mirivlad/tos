@@ -138,6 +138,9 @@ mod tag {
     pub const TEXT: u8 = 5;
     pub const BYTES: u8 = 6;
     pub const CONVERSION_ERROR: u8 = 7;
+    /// Device memory, readable and read-write (ADR-0081 §5).
+    pub const MMIO_REGION: u8 = 36;
+    pub const MMIO_REGION_MUT: u8 = 37;
     pub const EVENT: u8 = 8;
     pub const SEMAPHORE: u8 = 9;
     pub const BARRIER: u8 = 10;
@@ -231,6 +234,8 @@ impl CompactTypes {
             tag::TEXT => TypeDef::Text,
             tag::BYTES => TypeDef::Bytes,
             tag::CONVERSION_ERROR => TypeDef::ConversionError,
+            tag::MMIO_REGION => TypeDef::MmioRegion,
+            tag::MMIO_REGION_MUT => TypeDef::MmioRegionMut,
             tag::EVENT => TypeDef::Event,
             tag::SEMAPHORE => TypeDef::Semaphore,
             tag::BARRIER => TypeDef::Barrier,
@@ -570,6 +575,8 @@ impl<'a> Builder<'a> {
             TypeDef::Text => simple(tag::TEXT),
             TypeDef::Bytes => simple(tag::BYTES),
             TypeDef::ConversionError => simple(tag::CONVERSION_ERROR),
+            TypeDef::MmioRegion => simple(tag::MMIO_REGION),
+            TypeDef::MmioRegionMut => simple(tag::MMIO_REGION_MUT),
             TypeDef::Event => simple(tag::EVENT),
             TypeDef::Semaphore => simple(tag::SEMAPHORE),
             TypeDef::Barrier => simple(tag::BARRIER),
