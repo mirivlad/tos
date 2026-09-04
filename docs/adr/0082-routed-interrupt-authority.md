@@ -2,11 +2,18 @@
 
 # ADR-0082: Where routed interrupt authority comes from, and how a textual driver waits for its device
 
-- Status: **Proposed** — not approved, and must not be recorded as approved
-  until the Project Architect has reviewed it. ADR-0081 §0 records what
-  happened the last time an implementation ran ahead of a decision; this file
-  exists before the mechanism it decides
+- Status: **Accepted (Project Architect-approved, 2026-09-05)**
 - Date: 2026-09-05
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-05, on the revised
+  document — that is, this one, including the mandatory amendments of §5a–§5f
+  which the ruling required before approval. **The decision was written before
+  the mechanism and approved before the mechanism was built**, which is what
+  ADR-0081 §0 recorded going wrong the previous time and is stated here because
+  an order that is right is only visible if it is written down
+- **What the approval covers**: §3–§12, including the ownership repairs in
+  §5a–§5f. It does **not** cover DMA authority, device-visible addressing, the
+  IOMMU, the MMIO↔DMA ordering contract, device reset, VirtIO feature
+  negotiation, queues, or block I/O — see §12
 - Decision level: **3** — it admits a second class of authority descending from
   a device assignment, moves interrupt-controller programming into the nucleus
   as a capability-gated mechanism, adds a blocking operation whose wake source
@@ -158,14 +165,26 @@ widening:
 2. `pci_config_write` refuses any access touching the function's MSI-X
    capability structure. Reads are unaffected: where a table lives is a fact
    about hardware, and ADR-0079 already says a fact is not authority.
-3. `pci_config_write` refuses any access that would change the Command
-   register's Bus Master Enable bit. Bus mastering becomes **nucleus-owned**:
-   it is set while the function has at least one live device-visible descendant
-   and cleared when it has none.
+3. `pci_config_write` refuses any access that would **change** the Command
+   register's Bus Master Enable bit. That bit becomes **nucleus-owned**, under
+   the predicate and the lifecycle of §5d.
+
+   **One bit of one byte.** BME is bit 2 of the byte at `0x04`, and the refusal
+   is judged on that bit alone: an access either contains that byte or does not,
+   and a one-byte write at `0x05` — whose own bit 2 is INTx Disable — is
+   ordinary business. The rest of the Command register is a driver's, save what
+   §5b reserves.
 
 Refusing rather than filtering is deliberate throughout: a write that silently
 kept some bits and dropped others would leave a driver unable to tell what the
 device now holds.
+
+**Three is what the review found, and not what the hardware has.** §5a–§5f
+extend this list, because a resource that can be relocated moves the MSI-X table
+out from under refusal 1, and a bit nobody may write still has to hold the right
+value. The reviewed and accepted set is those sections together with these
+three; this section is the part that was visible first, not the part that is
+sufficient.
 
 ### The consequence that must not be buried
 
@@ -205,6 +224,226 @@ An IOMMU backend later strengthens confinement **without changing the public DMA
 object model**, which is why that model must not be written in terms of
 identity-mapped physical addresses. Closing the gap is not in this ADR's scope
 and is not claimed by it.
+
+## 5a. D3a — resource placement is static for an assignment
+
+**Decided: a claimed function's resource placement is platform/nucleus-owned for
+the whole assignment lifetime, and dynamic BAR relocation is rejected.**
+
+This is not a precaution. It was measured on the reference function, and the
+audit is `docs/evidence/STAGE4C1_REVIEW_FINDINGS.md` §2:
+
+```text
+BAR1  accepted a CPL-3 write   ← and BAR1 is the MSI-X table's own BAR
+BAR4  accepted a CPL-3 write   ← the modern structures, low half
+BAR5  accepted a CPL-3 write   ← the high half of the same 64-bit resource
+and a window was still derived from BAR4 after BAR4 had been rewritten
+```
+
+ADR-0081 §13 measures each BAR **once, at claim time**, and every later mapping
+derives its physical base from that measurement. §4 of this document adds a
+nucleus mapping of the MSI-X table derived the same way, and §5's first refusal
+computes the table's extent from a cached BIR. All three rest on the cached
+layout still being the layout the live function decodes, and nothing kept that
+true. Relocation is therefore **incompatible with the assignment model already
+accepted by ADR-0081**, and the resolution is to make the model's assumption
+hold rather than to teach three mechanisms to chase a moving resource.
+
+`pci_config_write` refuses a write that would **change** a protected
+resource-placement or routing field. Reads remain allowed. A write that puts
+back the value already there remains allowed, exactly as for Bus Master Enable.
+`E_NO_CAPABILITY`, because the argument is well formed and what the caller lacks
+is the authority.
+
+**The rule is expressed from the function's reported header type**, because a
+byte-offset rule would be wrong in both directions on a bridge — refusing
+nothing that matters and permitting the registers that re-route whole buses.
+
+| Header | Protected |
+|---|---|
+| **Type 0** | BAR0–BAR5; Expansion ROM BAR; Command Memory Space Enable, under §5b |
+| **Type 1** | BAR0–BAR1; primary, secondary and subordinate bus numbers; I/O base/limit including the upper fields; memory base/limit; prefetchable memory base/limit including the upper fields; Expansion ROM BAR; Command Memory Space Enable; Command I/O Space Enable; and the Bridge Control fields that alter downstream address routing or downstream device state — ISA Enable, VGA Enable, VGA 16-bit Decode, Secondary Bus Reset |
+
+**A 64-bit BAR pair is one resource placement, and both halves are protected.**
+The audit's third line is why this is stated rather than implied: a driver that
+could move only the high half would move the whole address while the low half
+looked untouched.
+
+**Status and error-reporting bits that merely share a register are not
+reserved.** Bridge Control also carries parity-error response and SERR
+forwarding, and those are a driver's ordinary business; reserving them because
+of their neighbours would be the wide narrowing this decision exists to avoid.
+
+## 5b. D3b — Memory Space Enable has a lifecycle of its own
+
+Refusing CPL-3 writes to Command bit 1 is necessary and **not sufficient**: a
+bit nobody may write still has to be *right*, and firmware decided its value
+before TOS ran.
+
+> **memory-decoding descendant** — an assignment descendant whose mechanism
+> requires the function's PCI memory-space decoding to be enabled.
+
+| Descendant | Memory-decoding? | Why |
+|---|---|---|
+| `MmioRegion` / `MmioRegionMut` | **yes** | the window is worthless if the function does not decode it |
+| MSI-X `platform.irq.Source` | **yes** | its table is in a memory BAR |
+| a DMA mapping alone | **no** | the device initiates those; decoding is governed independently by BME |
+
+> **Memory Space Enable is set if and only if the assignment has at least one
+> live memory-decoding descendant.**
+
+**This is a second predicate and not a spelling of the first.** MSE and BME are
+independent: an `MmioRegion` needs MSE and not BME; a DMA mapping needs BME and
+not MSE; an MSI-X source happens to need both, which is exactly why keeping them
+separate matters — a single predicate would be right about the source and wrong
+about the other two.
+
+The lifecycle is §5d's, applied to this predicate: a claim normalises MSE clear
+before the first capability reaches CPL 3, the pre-claim firmware state is not
+restored, the first such descendant sets it before that descendant becomes
+usable, later ones do not change it, destruction of one leaves it set while
+another remains, the last one clears it, and process death, failed creation and
+re-claim all begin or end at the same defined state.
+
+**One permitted exception, bounded and unobservable.** Sanitising the MSI-X
+table at claim time is a memory access to a BAR, so the mechanism may enable
+memory decoding inside a claim or source-initialisation critical section during
+which no CPL-3 instruction runs. It must finish in the state the invariant
+dictates. A window a process can observe is not such a section.
+
+## 5c. D3c — conventional MSI is nucleus-owned interrupt routing too
+
+§3's rule is about **authority**, not about a transport: an interrupt is reached
+through the live assignment and through nothing else. A device that offered
+conventional MSI would therefore offer an ambient route around
+`platform.irq.Source` — the same escalation §5 closes for MSI-X, through a
+different capability.
+
+So the claim path audits the conventional capability list for **both** MSI
+(id `0x05`) and MSI-X (id `0x11`).
+
+For **MSI**:
+
+- its extent is derived from its own Message Control — whether it carries a
+  64-bit address, and whether it carries per-vector masking — because those two
+  bits are what decide whether the structure is 10, 14 or 24 bytes. **A blanket
+  maximum range is refused**: reserving bytes that belong to the *next*
+  capability would refuse writes to a structure this decision says nothing
+  about;
+- `pci_config_write` refuses writes touching its routing, control, address, data
+  and mask state; reads remain allowed;
+- the claim normalises MSI Enable to **disabled** before CPL 3 can receive the
+  assignment.
+
+For **MSI-X**: the existing reservation is retained, and the claim normalises
+MSI-X Enable **off** and Function Mask **on** before CPL 3 can receive the
+assignment.
+
+**Stage 4's positive backend remains MSI-X only.** No MSI delivery path is
+built, and none is implied: what §5c decides is a *refusal*, and a refusal needs
+no backend. Coverage for it is structural, over a controlled capability rather
+than over a device the reference profile does not have — inventing an MSI
+positive backend merely to exercise a refusal would be building a mechanism to
+test the absence of a mechanism.
+
+## 5d. D3d — bus mastering, with the lifecycle it needs
+
+> **bus-mastering descendant** — an assignment descendant whose mechanism
+> requires the function to issue its own memory transactions.
+
+| Descendant | Bus-mastering? |
+|---|---|
+| `MmioRegion` / `MmioRegionMut` | no — the CPU initiates; the device does not |
+| MSI / MSI-X `platform.irq.Source` | **yes** — the message *is* a memory write the device issues |
+| a future DMA mapping | **yes** |
+| a future INTx source | no — a line, not a transaction |
+
+> **Bus Master Enable is set if and only if at least one live bus-mastering
+> descendant exists.**
+
+Both halves are load-bearing. *Only if* is what makes a claim clear the bit
+**the firmware left set** — measured, not hypothetical: OVMF hands TOS a
+`virtio-blk-pci` function that is already bus-mastering. *If* is what makes an
+interrupt source work without a driver ever naming the bit.
+
+| Moment | BME |
+|---|---|
+| immediately after `pci_function_claim` | **cleared** — whatever firmware left is discarded |
+| before the first capability reaches CPL 3 | cleared; the clear is inside the claim |
+| first bus-mastering descendant created | set, before that descendant becomes nameable |
+| second and later such descendants | unchanged — a predicate over a set, not a counter |
+| one of several destroyed | unchanged while another remains |
+| the last one destroyed | **cleared**, including when it goes because its process died |
+| an `MmioRegion` created or destroyed | unchanged |
+| process death | the predicate is re-evaluated once after the sweep, not per release |
+| assignment teardown | cleared explicitly, because the device outlives the assignment |
+| failed claim or failed grant rollback | cleared |
+| re-claim of the same BDF | cleared again, from the same defined state |
+
+**The pre-claim state is deliberately not restored.** Restoring "set" would hand
+the next claimant a bus-mastering function for a reason that is a fact about a
+previous environment — the situation the measurement above shows is real — and
+restoring "clear" where firmware left it clear is indistinguishable from not
+restoring. One post-condition, and it is the safe one.
+
+## 5e. D3e — an MSI-X table write is complete when the table says so
+
+A configuration-space read is **not** a synonym for the completion of an MMIO
+table write, and using one as a fence would be a claim about the interconnect
+that nothing here proves. Completion is proved by **reading back the same MSI-X
+table entry** — its Vector Control field — after the posted writes to it.
+
+Creation, in order:
+
+```text
+1  the entry is masked
+2  message address and data are programmed while it is masked
+3  the same entry is read back, which proves the table writes have landed
+4  BME satisfies §5d's invariant
+5  MSI-X Enable and Function Mask reach their intended state
+6  the entry is unmasked — only now can this source fire
+```
+
+with three properties preserved from §7 and §4.2: the **IDT gate is installed
+before the message is programmed**, so a message that somehow arrives lands
+somewhere defined; the **source object is published before the entry can fire**,
+so a delivered message never finds a handler with no source to wake; and the
+**capability reaches CPL 3 only after creation is complete**.
+
+## 5f. D3f — a device vector is retired, never recycled, within a boot
+
+The earlier proposal ended teardown with a "drain" step, and **no accepted
+mechanism proves that a message emitted before masking cannot arrive after the
+vector has been reused.** A stale MSI carries a vector; it does not carry the
+source's generation. Every other stale-authority property in this system is
+proved by a generation, and this one cannot be.
+
+So Stage 4C takes the conservative rule rather than an unproved one:
+
+> Once a CPU vector has been allocated to a routed device source, it is
+> **retired** for the remainder of that boot and is never returned to the
+> allocator.
+
+Destruction, in order:
+
+```text
+1  mask the table entry
+2  read back the same entry, so the mask has landed at the function
+3  disable MSI-X or apply Function Mask, if this was the last source
+4  apply the §5d and §5b transitions
+5  cancel any waiter with E_CANCELLED
+6  unpublish the source
+7  keep an IDT handler for the retired vector
+8  a late interrupt on it is acknowledged, counted as spurious, and wakes nobody
+9  the allocator never hands that vector to another source this boot
+```
+
+**A bounded number of vectors traded for a proof.** Exhaustion is `E_LIMIT` and
+is neither hidden nor worked around by recycling. A later stage may introduce
+reuse only with a separately proved hardware-quiescence mechanism.
+
+This costs the steady-state request path nothing: vectors are allocated when a
+source is created and never on a delivery.
 
 ## 6. D4 — what a `platform.irq.Source` is
 
@@ -295,12 +534,15 @@ operation.
 **A spurious interrupt is acknowledged and counted, and wakes nobody.** An
 interrupt on a vector whose source is not live is recorded and dropped: waking
 "whoever used to hold this" would be delivering an event to authority that has
-ended.
+ended. **This is also the whole of what a late message does to a retired
+vector** (§5f): the vector keeps its handler for the rest of the boot, and the
+handler's only possible answer is this one.
 
 **Process death.** The waiter stops being blocked with everything else the
 process held; the sources it named are released by the ordinary capability
-sweep; the last name going releases the entry, the vector and the descendant.
-A dead process cannot leave a routed interrupt pointing at a slot.
+sweep; the last name going releases the entry and the descendant, and **retires
+the vector** — it does not return to the allocator. A dead process cannot leave
+a routed interrupt pointing at a slot.
 
 **Assignment teardown, and revocation.** When a source is destroyed while a
 context waits on it, that wait is woken with `E_CANCELLED` **at that instant**.
@@ -372,39 +614,14 @@ four, with the remaining two available to whatever client exchange sits above
 it. No syscall per descriptor field, none per MMIO access, and none per DMA
 load or store.
 
-## 11a. Review findings, and what is still open in this decision
-
-The Project Architect's review of this document was positive in direction and
-withheld approval pending six findings. They are answered in
-`docs/evidence/STAGE4C1_REVIEW_FINDINGS.md`, and three of them change what this
-ADR must say before it can be approved:
-
-- **the Bus Master refusal above is now bit-precise** and gated, which is the one
-  finding the review directed be repaired rather than proposed;
-- **resource-placement registers are relocatable today, and the reference
-  function proves it.** BAR1 — the MSI-X table's own BAR — accepts a CPL-3 write,
-  as do both halves of the 64-bit BAR4 pair, and the nucleus still derives a
-  window from the base it cached before the move. §5's first refusal and §4's
-  nucleus mapping both rest on a cached layout that nothing currently keeps
-  true. A narrowing is proposed in the findings report §2.6 and **is not
-  implemented**;
-- **bus-master ownership cannot start from a clear bit.** The reference
-  machine's firmware hands TOS a function that is *already* bus-mastering, so
-  §5's "nucleus-owned" needs the explicit lifecycle proposed in the findings
-  report §3, including the claim-time clear. `device-visible descendant` is
-  replaced by **bus-mastering descendant**, which excludes `MmioRegion` and
-  includes an MSI/MSI-X source and a future DMA mapping.
-
-The initial-state and teardown ordering §7 leaves implicit is set out in the
-findings report §4, and is also a proposal.
-
 ## 12. What this ADR does not decide
 
 DMA authority, DMA allocation, device-visible addressing, the IOMMU, the
 MMIO↔DMA ordering contract, device reset, VirtIO feature negotiation, queues, or
-block I/O. Bus-master enable is decided here only as far as §5's third refusal
-requires — that it is nucleus-owned and follows the existence of device-visible
-descendants — and the DMA slice inherits that rule rather than restating it.
+block I/O. Bus mastering is decided here as far as §5d requires — the predicate,
+the term, and the whole lifecycle — and the DMA slice **inherits** that rule
+rather than restating it, adding a DMA mapping to the classification table and
+changing nothing else.
 
 ## Architecture impact statement
 
@@ -414,17 +631,22 @@ descendants — and the DMA slice inherits that rule rather than restating it.
   I-08 is strengthened: a driver can wait for its device without a line of it
   being in ring 0.
 - **Canonical representation:** unchanged.
-- **Trusted-base impact:** the nucleus gains MSI-X capability parsing, a vector
-  allocator, an IDT gate range, one interrupt handler, a source table and its
-  lifecycle. **No VirtIO knowledge**, which a gate enforces.
+- **Trusted-base impact:** the nucleus gains MSI and MSI-X capability parsing, a
+  **retiring** vector allocator, an IDT gate range, one interrupt handler, a
+  source table and its lifecycle, and ownership of two independent
+  device-enable predicates. **No VirtIO knowledge**, which a gate enforces.
 - **Source-to-runtime impact:** none. No new artifact class, no new digest.
 - **Threat-model impact:** a new delivery path into a process, and — stated
   rather than implied — bus mastering on a platform with no IOMMU. `docs/34` S5
   and X4 §Drivers gain the entry §5 requires.
 - **Compatibility profile:** `PLATFORM_INTERFACE_V1` at version 2, one new
-  `OBJECT_*` kind, two new rights, two new `SYSTEM_ABI_V1` operations, and two
-  narrowed operation domains — each a public boundary versioned from this
-  commit under I-11.
+  `OBJECT_*` kind, two new rights, two new `SYSTEM_ABI_V1` operations, and the
+  narrowed domains of operations 26 and 27 — each a public boundary versioned
+  from this commit under I-11.
+- **Bounded-resource impact:** CPU vectors for device sources are **retired
+  rather than recycled** within a boot (§5f), so their supply is finite and
+  exhaustion is `E_LIMIT`. This is a deliberate trade of capacity for a
+  stale-authority proof the generation mechanism cannot provide.
 - **New dependencies:** none.
 
 ## 13. Conformance evidence
@@ -461,4 +683,29 @@ Negative, and a successful wake alone is not sufficient evidence:
     that merely overlaps it;
 13. **`pci_config_write` over the MSI-X capability is refused**, and reads of it
     still work;
-14. **`pci_config_write` that would change Bus Master Enable is refused.**
+14. **`pci_config_write` that would change Bus Master Enable is refused**, and
+    the refusal is one bit of one byte: every width and offset that includes
+    `0x04` is judged on that bit alone, a one-byte write at `0x05` is not, and a
+    write that leaves the bit as it found it proceeds.
+
+The ownership repairs of §5a–§5f carry their own evidence, and it is separate
+from the mechanism's because it exists before the mechanism does:
+
+15. **BAR1 cannot move**, nor BAR4's low half, nor BAR4's high half;
+16. a **readback of an unchanged protected value is still permitted**;
+17. **`pci_bar_map` after a refused relocation still derives the original
+    measured window** — which is the property §5a exists to preserve, and is not
+    implied by the refusal alone;
+18. **ordinary unrelated writable configuration fields remain writable**, so the
+    narrowing is shown to be a narrowing and not a closure;
+19. a claim leaves **BME clear, MSE clear, MSI-X Enable off, Function Mask on
+    and MSI Enable off**, whatever the firmware left — proved against a machine
+    whose firmware leaves BME *set*;
+20. the **MSI capability's extent is derived from its own Message Control**, not
+    from a blanket maximum, so a device with a capability after it has that
+    capability still writable;
+21. **MSE follows memory-decoding descendants and BME follows bus-mastering
+    descendants, independently** — an `MmioRegion` moves one and not the other,
+    and a source moves both;
+22. a **retired vector is never handed to a second source** in the same boot,
+    and a late interrupt on one is counted spurious and wakes nobody.

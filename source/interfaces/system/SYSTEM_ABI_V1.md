@@ -189,7 +189,7 @@ are marked and are exactly those a process can only apply to itself.
 
 | 25 | `pci_config_read` | PCI function capability with `config_read` | reads `rdx` bytes of conventional configuration space at offset `rsi` of the function **that capability names**, and returns the value in `rdx`. `E_BAD_ARGUMENT` for a width that is not 1, 2 or 4, an offset not a multiple of the width, or an access reaching past byte 256 |
 
-| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25. **Two of the function's registers are the nucleus's and are refused with `E_NO_CAPABILITY`** (ADR-0082 §5): any access touching the function's MSI-X capability, and any access that would *change* the Command register's Bus Master Enable bit. Reads of both are unaffected |
+| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25. **Some of the function's state is the nucleus's and is refused with `E_NO_CAPABILITY`** — the MSI and MSI-X capabilities, the resource-placement registers of the reported header type, and the Command and Bridge Control bits that decide decoding, mastering and downstream routing. The table below §5 states the set and the "would change" rule; reads are unaffected |
 
 | 27 | `pci_bar_map` | PCI function capability with `map` | maps BAR `rsi` of the function that capability names, from page-aligned offset `rdx` for page-aligned length `r10`, writable when `r8` is non-zero, and returns a device-memory capability in `rdx` (ADR-0081 §13). The physical base is taken from the assignment's own measured BAR state — **a caller never supplies an address** — and the window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime. `E_BAD_ARGUMENT` for a BAR index outside the architectural range or an unaligned, zero or overflowing window; `E_NO_CAPABILITY` for an I/O or unimplemented BAR, a range not inside the BAR's extent, or **a window overlapping the function's MSI-X table or pending-bit array** (ADR-0082 §5); `E_LIMIT` when no mapping slot is free or the caller already holds as many windows as it may |
 
@@ -204,25 +204,46 @@ when both are gone does the assignment end and its generation advance.
 than served by mapping a whole page behind the contract: what the holder can
 reach and what the contract says it was given are the same pages.
 
-**Three narrowings, and each closes a path to authority nobody granted**
-(ADR-0082 §5). The hardware puts the structures that decide where a function's
-interrupts go, and whether it may reach memory at all, *inside* ranges 26 and 27
-already reach: the MSI-X table lives in a BAR, and the MSI-X capability and Bus
-Master Enable live in conventional configuration space. Before this, a holder of
-`map` and `config_write` could program an arbitrary message address and data —
-an interrupt of its choosing on a vector of its choosing — and could make the
-device a bus master, without holding anything that named either. So a window
-overlapping the MSI-X table or its pending-bit array is refused, a write
-touching the MSI-X capability is refused, and a write that would change Bus
-Master Enable is refused. **Reads are untouched**: where a table lives and
-whether a function is a bus master are facts about hardware, and a fact is not
-authority. A write that leaves Bus Master Enable as it found it proceeds, so a
-caller reading the Command register and writing it back is not refused for
-having touched a register that happens to contain one owned bit.
+**What operations 26 and 27 do not confer, and why it is not a list of
+exceptions** (ADR-0082 §5, §5a–§5d). The hardware puts the state that decides
+where a function's interrupts go, where it decodes, and whether it may reach
+memory at all *inside* ranges these operations already reach. Before this, a
+holder of `map` and `config_write` could program an arbitrary message address
+and data — an interrupt of its choosing on a vector of its choosing — could
+relocate the very BAR the MSI-X table lives in, and could make the device a bus
+master, without holding anything that named any of it.
+
+| Reserved | Because |
+|---|---|
+| a window overlapping the MSI-X table or its pending-bit array | writing it *is* choosing which interrupt goes where |
+| a write touching the MSI-X capability | it enables, masks, and says where the table is |
+| a write touching the conventional MSI capability, over the extent that capability itself reports | the authority rule is about interrupts, not about a transport |
+| a write that would **change** the resource-placement registers of the function's **reported header type** | the assignment measured them once and everything derives from that measurement |
+| a write that would **change** Memory Space Enable or Bus Master Enable | each follows a predicate over live descendants, not a caller |
+| on a Type-1 header, I/O Space Enable and the Bridge Control bits that alter downstream routing or reset | a bridge's forwarding is its resource placement |
+
+**Reads are untouched.** Where a table lives, where a function decodes and
+whether it is a bus master are facts about hardware, and a fact is not
+authority.
+
+**"Would change" is meant literally, and is judged byte by byte and bit by
+bit.** A write that puts back the value already there proceeds, so a caller
+reading a register and writing it back is never refused for having touched a
+field it did not alter. Bus Master Enable is bit 2 of the byte at `0x04` and is
+judged on that bit alone — a one-byte write at `0x05`, whose own bit 2 is INTx
+Disable, is ordinary business. Status and error-reporting bits are not reserved
+merely for sharing a register with something that is.
 
 **Refused rather than filtered**, throughout: a write that silently kept some
 bits and dropped others would leave a caller unable to tell what the device now
 holds.
+
+**A claim leaves the function in a defined state.** Whatever firmware left is
+discarded before any capability naming the assignment exists: memory decoding
+off, bus mastering off, MSI-X disabled and function-masked, MSI disabled. This
+is not caution — on the accepted Stage 4 machine the firmware hands over a
+function with decoding *and* bus mastering already on. The pre-claim state is
+not recorded and is never restored.
 
 **Device memory is not charged to a `MemoryAuthority` and is not returned to the
 pool.** ADR-0076's one physical account is about pool frames; a device register
