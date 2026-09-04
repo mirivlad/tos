@@ -172,6 +172,12 @@ clippy_uefi() {
     (cd "$ROOT/source" && cargo clippy -p tos-uefi-loader \
         --target x86_64-unknown-uefi -- -D warnings)
 }
+# Every declared feature of the freestanding binaries still type-checks. A
+# feature nothing builds is a feature nothing checks, and Stage 4B lost a trait
+# implementation behind one for exactly that reason.
+feature_builds() {
+    bash "$ROOT/scripts/tests/check-feature-builds.sh"
+}
 clippy_nucleus() {
     (cd "$ROOT/source" && cargo clippy -p tos-nucleus \
         --target x86_64-unknown-none -- -D warnings)
@@ -458,6 +464,7 @@ gate source     default   "cargo fmt"                                  fmt
 gate source     default   "cargo test"                                 tests
 gate source     default   "clippy host"                                clippy_host
 gate source     default   "clippy UEFI loader"                         clippy_uefi
+gate source     full-only "feature configurations type-check"        feature_builds
 gate source     default   "clippy nucleus"                             clippy_nucleus
 gate source     full-only "capsule parser fuzz"                        fuzz
 

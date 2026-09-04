@@ -4007,6 +4007,17 @@ impl tos_pipeline::System for Marked {
         None
     }
 
+    /// No device is reachable from the benchmark, and saying so is the only
+    /// honest answer. It grants no capability, so nothing it runs can hold a
+    /// device window — a refusal here is unreachable rather than a fallback.
+    fn observe(&mut self, _access: tos_pipeline::Observe) -> Result<tos_engine::Value, Trap> {
+        Err(Trap::new(
+            "RUNTIME_DEVICE_UNREACHABLE",
+            "a device access was made on a measurement run with no device to reach",
+            0,
+        ))
+    }
+
     fn reach(&mut self, call: tos_pipeline::Reach<'_>) -> Result<tos_engine::Value, Trap> {
         Err(Trap::new(
             "RUNTIME_OPERATION_NOT_IMPLEMENTED",

@@ -74,6 +74,47 @@ and tells each assignment it has one fewer descendant — so an assignment whose
 driver died becomes releasable rather than staying live forever, and no
 untracked mapping can survive.
 
+## 3a. Closure repairs
+
+Four corrections were required before closure, and each is recorded here rather
+than folded silently into the design.
+
+**The governance record.** This decision was implemented *before* it was
+approved: Stage 4B reached a genuine architecture STOP, the implementation
+proceeded past it instead of stopping for review, and approval was granted
+afterwards on 2026-09-04. ADR-0081 §0 states that chronology, and no Git history
+was rewritten. The implementation is accepted; the process mistake is part of
+the record. The approval's scope is also written down there, including the list
+of things it must **not** later be cited as approving — DMA ordering and
+addressing, IRQ, reset, Virtqueue semantics, volatile ordinary RAM, arbitrary
+physical mappings, pointer arithmetic and native-memory FFI.
+
+**A red CI boot gate, and its real cause.** Commit `6cf1f7c` failed the QEMU
+workflow. It was **not** the known ADR-0066 observer-host limitation, and
+classifying it that way would have been wrong: the observer gates on CI got
+*past* the host check and then failed to compile with
+`error[E0046]: not all trait items implemented, missing: observe` — a `System`
+implementation behind `test-measurement-call` that the Stage 4B trait addition
+missed. Locally the same gates exited earlier, on the absent observer QEMU, so
+nothing on this host ever compiled that feature. The fix is the missing
+implementation, refusing honestly because the benchmark grants no capability and
+so can hold no window.
+
+**And the reason it was invisible.** A feature nothing builds is a feature
+nothing checks. `scripts/tests/check-feature-builds.sh` now type-checks all 48
+declared feature configurations of the two freestanding binaries, one at a time
+because several are alternative launcher constants. It reproduces the failure
+above when the fix is removed.
+
+**The schema rule, made exact.** `no_accepted_interface_admits_a_region` had
+been narrowed with a substring heuristic. It now classifies by *type
+constructor*: the written type is split into whole names, a `.` does not
+separate them, and each is compared entire — so `MmioRegion` is a different
+constructor and `platform.mmio.Region` is an interface path rather than a
+memory-region grant. Regression cases cover both directions, and a structural
+test asserts the device kinds are not IR region kinds. Writing those cases
+caught a real imprecision in the first version of the fix.
+
 ## 4. Why it is not ordinary funded RAM
 
 ADR-0075 and ADR-0076 were **not** widened. A device window is not a
@@ -88,6 +129,16 @@ So `RAM allocation authority ≠ device mapping authority`: a process holding a
 no ordinary physical memory. The page tables that map it come from the proved
 reserve, as every mapping's do, and `process::device_mapping_bound` puts an
 explicit term in it.
+
+**Two invariants hold that shape, and both would fail if it were lost.** The
+memory account checks that the reserve equals the sum of its named parts *and*
+that the device term is a real cost rather than a zero that happens to balance —
+because a zeroed term would keep the equation true while under-provisioning
+every window. And the Stage 4B gate checks that after a process mapped a window
+and died holding it, the pool is back to exactly what the root was endowed with
+and the table reserve is back to what it reserved: a device window is neither
+charged to the pool nor credited back to it. **The accepted physical total was
+not changed to make anything pass, and no frame is counted twice.**
 
 ## 5. BAR sizing
 

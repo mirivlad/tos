@@ -74,6 +74,36 @@ fn lower(text: &str) -> tos_ir::Module {
     .expect("the module lowers")
 }
 
+/// Whether a written type is one of the **memory** region kinds.
+///
+/// `Region` and `DmaRegion` are what `docs/42` §2 is about: a grant whose
+/// interface must declare element type, alignment, access, size, DMA
+/// domain, lifetime and transfer rules, none of which any schema here
+/// declares.
+///
+/// **`MmioRegion` is deliberately not one of them** (ADR-0081 §5). It is a
+/// separate sealed kind: it has no element type, nothing funds it, nothing
+/// reclaims it to the pool, and the facts a device window needs — the two
+/// access forms, the page-granular extent, and a lifetime tied to the PCI
+/// assignment it descends from — *are* declared, by `PLATFORM_INTERFACE_V1`.
+/// Matching on the shared word would make this assertion about spelling
+/// rather than about the rule.
+fn names_a_memory_region(ty: &str) -> bool {
+    // **Keyed on the type constructor, not on a substring.** The written type
+    // is split into whole names — `<`, `>`, `,` and spaces separate them, and a
+    // `.` does not — and each is compared entire. So:
+    //
+    //   `MmioRegion`          a different constructor, not a prefixed `Region`
+    //   `platform.mmio.Region` an interface path, whose last segment is not a
+    //                          type constructor at all
+    //
+    // Both are differences a `contains` would erase, and both are the rule's
+    // actual subject: an interface must not acquire *ordinary memory* region
+    // semantics without declaring the contract `docs/42` §2 requires.
+    ty.split(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '.')
+        .any(|name| matches!(name, "Region" | "DmaRegion" | "region"))
+}
+
 #[test]
 fn the_artifact_names_the_interface_it_reaches() {
     let module = lower(MODULE);
@@ -192,37 +222,6 @@ fn no_accepted_interface_admits_a_region() {
     // message with too many regions, and it is checked here rather than asserted
     // in prose — a schema that quietly grew a region parameter would make §9.6
     // reachable and unevidenced in the same commit.
-    /// Whether a written type is one of the **memory** region kinds.
-    ///
-    /// `Region` and `DmaRegion` are what `docs/42` §2 is about: a grant whose
-    /// interface must declare element type, alignment, access, size, DMA
-    /// domain, lifetime and transfer rules, none of which any schema here
-    /// declares.
-    ///
-    /// **`MmioRegion` is deliberately not one of them** (ADR-0081 §5). It is a
-    /// separate sealed kind: it has no element type, nothing funds it, nothing
-    /// reclaims it to the pool, and the facts a device window needs — the two
-    /// access forms, the page-granular extent, and a lifetime tied to the PCI
-    /// assignment it descends from — *are* declared, by `PLATFORM_INTERFACE_V1`.
-    /// Matching on the shared word would make this assertion about spelling
-    /// rather than about the rule.
-    fn names_a_memory_region(ty: &str) -> bool {
-        ty.contains("DmaRegion") || {
-            let mut at = 0;
-            let mut found = false;
-            while let Some(index) = ty[at..].find("Region") {
-                let start = at + index;
-                let preceded_by_word =
-                    start > 0 && ty.as_bytes()[start - 1].is_ascii_alphanumeric();
-                if !preceded_by_word {
-                    found = true;
-                }
-                at = start + "Region".len();
-            }
-            found || ty.contains("region")
-        }
-    }
-
     for interface in tos_core::interfaces::ACCEPTED {
         assert_ne!(
             interface.object,
@@ -380,4 +379,83 @@ fn one_capability_cannot_stand_in_for_two() {
         .expect_err("one import standing in for two is refused");
     assert_eq!(finding.code, "V2013_CAPABILITY");
     assert!(finding.detail.contains("more than once"), "{finding:?}");
+}
+
+/// The rule §8's assertion rests on, exercised directly (Stage 4B closure).
+///
+/// The invariant is **not** "no accepted type may contain the word Region". It
+/// is that no accepted interface silently acquires ordinary `Region`/
+/// `DmaRegion` semantics without declaring the complete memory-region contract
+/// `docs/42` §2 requires — element type, alignment, access, size, DMA domain,
+/// lifetime and transfer rules.
+///
+/// The spellings below are the canonical ones `boundary::type_text` produces,
+/// so this is a test of the classification the schema check actually performs
+/// rather than of a paraphrase of it.
+#[test]
+fn memory_regions_are_classified_by_constructor_not_by_spelling() {
+    // Ordinary and DMA memory, in every granted mode: these must be rejected by
+    // the interface rule, because no schema declares what a grant of one means.
+    for ty in [
+        "Region<u8>",
+        "Region<mut u8>",
+        "DmaRegion<u8>",
+        "DmaRegion<mut u8>",
+        // And nested, because a result type is where one would actually appear.
+        "Result<Region<u8>, i64>",
+        "Result<DmaRegion<mut u8>, i64>",
+    ] {
+        assert!(
+            names_a_memory_region(ty),
+            "{ty} is ordinary or DMA memory and must be caught by the rule"
+        );
+    }
+
+    // Device memory is a separate sealed kind (ADR-0081 §5): no element type,
+    // nothing funds it, nothing reclaims it to the pool, and the facts a window
+    // needs *are* declared by `PLATFORM_INTERFACE_V1`. It shares six letters
+    // with `Region` and nothing else.
+    for ty in [
+        "MmioRegion",
+        "MmioRegionMut",
+        "Result<MmioRegion, i64>",
+        "Result<MmioRegionMut, i64>",
+        // A future platform interface path must not be caught either, merely
+        // for having the word in its last segment.
+        "platform.mmio.Region",
+        "platform.pci.FunctionConfig",
+    ] {
+        assert!(
+            !names_a_memory_region(ty),
+            "{ty} is not ordinary or DMA memory and must not be caught by the rule"
+        );
+    }
+
+    // And the rule still catches the thing it was written for, however it is
+    // reached: a bare constructor name, and the lower-case spelling `docs/44`
+    // uses for an element.
+    assert!(names_a_memory_region("Region"));
+    assert!(names_a_memory_region("region"));
+}
+
+/// The device kinds really are distinct object kinds, not a spelling of one.
+///
+/// Structured rather than textual: whatever the types are called, the frontend
+/// must not classify a device window as an ordinary memory region.
+#[test]
+fn device_memory_is_a_distinct_ir_kind() {
+    use tos_ir::TypeDef;
+    assert_ne!(TypeDef::MmioRegion, TypeDef::MmioRegionMut);
+    for device in [TypeDef::MmioRegion, TypeDef::MmioRegionMut] {
+        assert!(
+            !matches!(
+                device,
+                TypeDef::Region(_)
+                    | TypeDef::RegionMut(_)
+                    | TypeDef::DmaRegion(_)
+                    | TypeDef::DmaRegionMut(_)
+            ),
+            "a device window is being carried as an ordinary memory region"
+        );
+    }
 }
