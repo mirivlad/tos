@@ -10,7 +10,7 @@
 - Decision level: **3** — it admits a second class of authority descending from
   a device assignment, moves interrupt-controller programming into the nucleus
   as a capability-gated mechanism, adds a blocking operation whose wake source
-  is not a context, and **narrows two already-accepted operations** because
+  is not a context, and **narrows already-accepted operations** because
   their current domains reach the hardware that decides where an interrupt goes
 - Related: ADR-0049 (the interrupt baseline and what it withheld), ADR-0059
   (blocking and the liveness rule, and its §"Realisation"), ADR-0079 (hardware
@@ -128,12 +128,12 @@ every address space this nucleus builds, for exactly the same reason — a handl
 must reach a device register whatever is running. An MSI-X table page is mapped
 the same way, supervisor-only, uncacheable, bounded by `MAX_ASSIGNMENTS`.
 
-## 5. D3 — two ambient paths to interrupt authority, closed
+## 5. D3 — three ambient paths to interrupt authority, closed
 
 This is the part of the decision that touches already-accepted operations, and
 it is stated first because it is the part a reviewer must weigh hardest.
 
-MSI-X is programmed through two places a CPL-3 holder can currently reach:
+MSI-X is programmed through three places a CPL-3 holder can currently reach:
 
 | Place | Reached today by | What it would grant |
 |---|---|---|
@@ -176,17 +176,35 @@ optional for a routed interrupt — claiming one necessarily enables it.
 `docs/34` S5 already governs this and is satisfied by saying it plainly rather
 than by pretending otherwise: "IOMMU absence or limitations are reported as a
 weaker security profile, not hidden", and T5 states that early TOS "does not
-claim full protection" against DMA-capable hardware outside isolation. This ADR
-therefore reports, as a property of the Stage 4 reference platform and not of
-the contract:
+claim full protection" against DMA-capable hardware outside isolation. The
+wording below is the accepted one and is to be carried unchanged into `docs/34`
+and into the Stage 4C-2 DMA decision:
 
-> On the current no-IOMMU profile, a process holding `map` and `interrupt` over
-> a function can program that device to read or write any physical memory. The
-> capability model bounds what the driver may *obtain*; it does not bound what
-> the device may *do*, and only an IOMMU can. The public contract is written so
-> that turning an IOMMU on narrows this without changing a single operation.
+> **With no IOMMU, TOS cannot claim hardware-enforced confinement of a malicious
+> bus-mastering device.** The capability model controls which sanctioned DMA
+> objects and device-visible addresses software may **obtain**; it does not
+> physically prevent a malicious driver from programming a bus-mastering device
+> with some other address.
 
-Closing it is not in this ADR's scope and is not claimed by it.
+Two consequences, which must be stated together and never separately:
+
+- **sanctioned DMA authority and device-visible address issuance** require
+  *both* memory funding authority and the live device assignment, and that is
+  mechanically enforced;
+- **hardware DMA confinement** is not provided by the no-IOMMU reference
+  profile, and no sentence of any contract may imply that it is.
+
+Recorded so it cannot be written later by accident: **it is false, on this
+profile, to say that possession of only a `PciFunction` makes arbitrary RAM
+physically invisible to the device.** Once bus mastering is enabled — which a
+routed interrupt requires — the device can address any physical memory a driver
+programs into it. What the capability model bounds is which addresses a driver
+can obtain *legitimately*, not which addresses the hardware will accept.
+
+An IOMMU backend later strengthens confinement **without changing the public DMA
+object model**, which is why that model must not be written in terms of
+identity-mapped physical addresses. Closing the gap is not in this ADR's scope
+and is not claimed by it.
 
 ## 6. D4 — what a `platform.irq.Source` is
 
@@ -353,6 +371,32 @@ Two crossings per unbatched request on the driver's side, inside the budget of
 four, with the remaining two available to whatever client exchange sits above
 it. No syscall per descriptor field, none per MMIO access, and none per DMA
 load or store.
+
+## 11a. Review findings, and what is still open in this decision
+
+The Project Architect's review of this document was positive in direction and
+withheld approval pending six findings. They are answered in
+`docs/evidence/STAGE4C1_REVIEW_FINDINGS.md`, and three of them change what this
+ADR must say before it can be approved:
+
+- **the Bus Master refusal above is now bit-precise** and gated, which is the one
+  finding the review directed be repaired rather than proposed;
+- **resource-placement registers are relocatable today, and the reference
+  function proves it.** BAR1 — the MSI-X table's own BAR — accepts a CPL-3 write,
+  as do both halves of the 64-bit BAR4 pair, and the nucleus still derives a
+  window from the base it cached before the move. §5's first refusal and §4's
+  nucleus mapping both rest on a cached layout that nothing currently keeps
+  true. A narrowing is proposed in the findings report §2.6 and **is not
+  implemented**;
+- **bus-master ownership cannot start from a clear bit.** The reference
+  machine's firmware hands TOS a function that is *already* bus-mastering, so
+  §5's "nucleus-owned" needs the explicit lifecycle proposed in the findings
+  report §3, including the claim-time clear. `device-visible descendant` is
+  replaced by **bus-mastering descendant**, which excludes `MmioRegion` and
+  includes an MSI/MSI-X source and a future DMA mapping.
+
+The initial-state and teardown ordering §7 leaves implicit is set out in the
+findings report §4, and is also a proposal.
 
 ## 12. What this ADR does not decide
 

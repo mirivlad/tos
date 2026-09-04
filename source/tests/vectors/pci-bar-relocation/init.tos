@@ -1,0 +1,139 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4C-1 audit: can a `config_write` holder move a resource after the
+// assignment measured where it was?
+//
+// **This module proves a defect rather than a property.** ADR-0081 §13 measures
+// each BAR once, at claim time, and every later mapping derives its physical
+// base from that cached measurement; ADR-0082 records the MSI-X table's location
+// the same way. Both assume the cached layout stays the layout the live function
+// decodes. Nothing currently enforces that: the BAR registers are inside the 256
+// bytes `pci_config_write` reaches.
+//
+// So this asks the real device, rather than reasoning from the contract. Each
+// register is written with all-ones and read back — the same probe the nucleus
+// itself performs when sizing, so nothing here is a write the device has not
+// already seen — and every original value is restored immediately.
+//
+// A bit set means the register **accepted the write**, which is the defect.
+// A run reporting zero would mean the resource registers are already protected.
+
+module system.boot.init version 1.2 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 262144, stack: 32KiB, allocation: 4KiB, tasks: 1, workers: 1,
+    sync: 0, shared: 0B, cleanup: 0, recursion: 16, imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus, bus_number: u64, device: u64, function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig, offset: u64, width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_config_write(
+    cap: platform.pci.FunctionConfig, offset: u64, width: u64, value: u64
+) -> i64 uses [platform.pci.FunctionConfig];
+
+extern fn pci_bar_map_read(
+    cap: platform.pci.FunctionConfig, bar: u64, offset: size, length: size
+) -> Result<MmioRegion, i64> uses [platform.pci.FunctionConfig];
+
+const ALL_ONES: u64 = 4294967295u64;
+// BAR0 lives here and each register is four bytes wide.
+const BAR0: u64 = 16u64;
+// The expansion ROM base address register of a Type-0 header.
+const EXPANSION_ROM: u64 = 48u64;
+// The header type register. Bit 7 says multi-function; the low bits say which
+// layout the rest of the header has, and a Type-1 puts its resource registers
+// somewhere else entirely.
+const HEADER_TYPE: u64 = 14u64;
+
+fn read_at(function: platform.pci.FunctionConfig, offset: u64, width: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, width)) {
+        Ok(value) => { return value; }
+        Err(status) => { return 4294967296u64; }
+    }
+}
+
+// Whether one four-byte register accepts a write from CPL 3.
+//
+// Writes all-ones, reads back, restores. A register the nucleus protects answers
+// `E_NO_CAPABILITY` and reads back unchanged; one it does not protect reports
+// something other than what it held.
+fn accepts_write(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    let original: u64 = read_at(function, offset, 4u64);
+    let status: i64 = pci_config_write(function, offset, 4u64, ALL_ONES);
+    if (status != 0i64) {
+        return 0u64;
+    }
+    let probed: u64 = read_at(function, offset, 4u64);
+    let restore: i64 = pci_config_write(function, offset, 4u64, original);
+    let back: u64 = read_at(function, offset, 4u64);
+    // The write took effect only if the register actually changed *and* the
+    // original went back. A register that never changed is one the device holds
+    // read-only, which is not the same as one the nucleus protects.
+    if (probed == original) {
+        return 0u64;
+    }
+    if (back != original) {
+        return 0u64;
+    }
+    return 1u64;
+}
+
+//   1  BAR0     2  BAR1     4  BAR2     8  BAR3    16  BAR4    32  BAR5
+//  64  the expansion ROM base address register
+// 128  a window can still be derived after BAR4 has been rewritten — that is,
+//      the nucleus hands out a mapping from a base the function no longer
+//      decodes
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            let mut found: i64 = 0i64;
+            // Recorded so the finding is scoped honestly: the offsets below are
+            // a Type-0 header's, and a Type-1 header puts bridge windows and its
+            // expansion ROM elsewhere.
+            let header: u64 = read_at(function, HEADER_TYPE, 1u64);
+
+            if (accepts_write(function, BAR0) == 1u64) { found = found + 1i64; }
+            if (accepts_write(function, BAR0 + 4u64) == 1u64) { found = found + 2i64; }
+            if (accepts_write(function, BAR0 + 8u64) == 1u64) { found = found + 4i64; }
+            if (accepts_write(function, BAR0 + 12u64) == 1u64) { found = found + 8i64; }
+            if (accepts_write(function, BAR0 + 16u64) == 1u64) { found = found + 16i64; }
+            if (accepts_write(function, BAR0 + 20u64) == 1u64) { found = found + 32i64; }
+            if (accepts_write(function, EXPANSION_ROM) == 1u64) { found = found + 64i64; }
+
+            // The consequence, not merely the ability. BAR4 is rewritten to an
+            // address the device will now decode instead, and the nucleus is
+            // then asked for a window on BAR4. If it produces one, that window
+            // is derived from the base it cached at claim time — a physical
+            // range this function no longer answers for.
+            let bar4: u64 = read_at(function, BAR0 + 16u64, 4u64);
+            let moved: i64 = pci_config_write(function, BAR0 + 16u64, 4u64, ALL_ONES);
+            if (moved == 0i64) {
+                match (pci_bar_map_read(function, 4u64, 0B, 4096B)) {
+                    Ok(window) => { found = found + 128i64; }
+                    Err(status) => { }
+                }
+            }
+            let put_back: i64 = pci_config_write(function, BAR0 + 16u64, 4u64, bar4);
+
+            // The header type travels out with the result, so the report can say
+            // which layout these offsets were read under.
+            if (header % 128u64 == 0u64) {
+                return found + 256i64;
+            }
+            return found;
+        }
+        Err(status) => { return status - 1000i64; }
+    }
+}

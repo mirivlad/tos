@@ -1,0 +1,183 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4C-1a: the Bus Master Enable refusal is about one bit of one byte.
+//
+// ADR-0082 §5 narrows `pci_config_write` so that a driver cannot make its device
+// a bus master. The narrowing must be exactly that and no wider: BME is bit 2 of
+// the byte at configuration offset 0x04, and a driver has ordinary business
+// everywhere else in the Command register — memory-space decoding, parity
+// reporting, INTx disable.
+//
+// The first implementation of this test compared bit 2 of *whatever byte the
+// caller wrote* against the register's BME, so a legal one-byte write at 0x05 —
+// whose bit 2 is INTx Disable — was refused for a bit it does not contain. This
+// module is the regression that says so.
+//
+// Every write below either restores what it found or changes a bit whose only
+// effect is reporting, and the Command register is put back before the module
+// returns.
+
+module system.boot.init version 1.2 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 262144, stack: 32KiB, allocation: 4KiB, tasks: 1, workers: 1,
+    sync: 0, shared: 0B, cleanup: 0, recursion: 16, imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus, bus_number: u64, device: u64, function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig, offset: u64, width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_config_write(
+    cap: platform.pci.FunctionConfig, offset: u64, width: u64, value: u64
+) -> i64 uses [platform.pci.FunctionConfig];
+
+// `SYSTEM_ABI_V1` §4.
+const E_NO_CAPABILITY: i64 = -1i64;
+const OK: i64 = 0i64;
+
+// The Command register, its two bytes, and the bits this module names.
+const COMMAND: u64 = 4u64;
+const COMMAND_HIGH: u64 = 5u64;
+// Bit 2 of the low byte: Bus Master Enable, the one owned bit.
+const BUS_MASTER: u64 = 4u64;
+// Bit 2 of the *high* byte, which is Command bit 10 — INTx Disable. Nothing to
+// do with bus mastering, and the case the earlier form of the rule got wrong.
+const HIGH_BIT_2: u64 = 4u64;
+// Bit 6 of the low byte: Parity Error Response. An ordinary Command bit whose
+// only effect is reporting, used to show that changing the register while
+// leaving BME alone is permitted.
+const PARITY_RESPONSE: u64 = 64u64;
+
+fn read_at(function: platform.pci.FunctionConfig, offset: u64, width: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, width)) {
+        Ok(value) => { return value; }
+        Err(status) => { return 4294967296u64; }
+    }
+}
+
+fn is(status: i64, expected: i64, bit: i64) -> i64 {
+    if (status == expected) { return bit; }
+    return 0i64;
+}
+
+// Whether one power-of-two bit is set, without needing a bitwise operator.
+fn has_bit(value: u64, bit: u64) -> u64 {
+    if (value % (bit + bit) >= bit) { return 1u64; }
+    return 0u64;
+}
+
+// The same value with one bit the other way round.
+//
+// **Polarity-agnostic on purpose.** The firmware of this reference machine
+// leaves Bus Master Enable *set* on the function it enumerated, so "a write that
+// would change BME" is a write that clears it here and would be a write that
+// sets it on a machine whose firmware left it clear. A test that assumed one of
+// those would be testing the firmware rather than the rule.
+fn flip_bit(value: u64, bit: u64) -> u64 {
+    if (has_bit(value, bit) == 1u64) { return value - bit; }
+    return value + bit;
+}
+
+//   1  width 1 at 0x04 that would set BME                       refused
+//   2  width 1 at 0x04 that leaves BME as it found it           allowed
+//   4  width 1 at 0x05 toggling bit 2 of *that* byte            allowed
+//   8  width 2 at 0x04 that would set BME                       refused
+//  16  width 2 at 0x04 changing another Command bit only        allowed
+//  32  width 4 at 0x04 that would set BME                       refused
+//  64  width 4 at 0x04 that leaves BME alone                    allowed
+// 128  reads are unaffected, and the register really did change where a write
+//      was allowed and really did not where one was refused
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            let mut found: i64 = 0i64;
+            // What the function holds before anything is written. Read as one
+            // byte and as two, because the rule is about a byte and the wider
+            // accesses have to agree with it.
+            let low: u64 = read_at(function, COMMAND, 1u64);
+            let high: u64 = read_at(function, COMMAND_HIGH, 1u64);
+            let both: u64 = read_at(function, COMMAND, 2u64);
+            let quad: u64 = read_at(function, COMMAND, 4u64);
+            // What the firmware left. Not a precondition — the rule is about a
+            // change either way — but a fact this evidence carries, because
+            // whether the machine hands TOS a function that is already a bus
+            // master is exactly the initial-state question the lifecycle has to
+            // answer.
+            let started_mastering: u64 = has_bit(low, BUS_MASTER);
+
+            // 1: one byte at 0x04, changing the owned bit.
+            found = found + is(
+                pci_config_write(function, COMMAND, 1u64, flip_bit(low, BUS_MASTER)),
+                E_NO_CAPABILITY, 1i64);
+
+            // 2: one byte at 0x04, writing back exactly what was there.
+            found = found + is(
+                pci_config_write(function, COMMAND, 1u64, low), OK, 2i64);
+
+            // 4: one byte at 0x05, toggling *its* bit 2. That bit is Command bit
+            // 10, INTx Disable, and has nothing to do with bus mastering — so
+            // the write is ordinary and must proceed. This is the case the first
+            // form of the rule got wrong.
+            found = found + is(
+                pci_config_write(function, COMMAND_HIGH, 1u64, flip_bit(high, HIGH_BIT_2)),
+                OK, 4i64);
+            // Put it back, so nothing after this runs against a changed device.
+            let restored_high: i64 = pci_config_write(function, COMMAND_HIGH, 1u64, high);
+
+            // 8: two bytes at 0x04, changing the owned bit.
+            found = found + is(
+                pci_config_write(function, COMMAND, 2u64, flip_bit(both, BUS_MASTER)),
+                E_NO_CAPABILITY, 8i64);
+
+            // 16: two bytes at 0x04, changing a different Command bit and
+            // leaving BME exactly as it was.
+            found = found + is(
+                pci_config_write(function, COMMAND, 2u64, flip_bit(both, PARITY_RESPONSE)),
+                OK, 16i64);
+
+            // 32: four bytes at 0x04 — Command and Status together — changing the
+            // owned bit. The width does not change which bit the rule is about.
+            found = found + is(
+                pci_config_write(function, COMMAND, 4u64, flip_bit(quad, BUS_MASTER)),
+                E_NO_CAPABILITY, 32i64);
+
+            // 64: the same four-byte write with BME left alone. `quad` now
+            // carries the parity bit that case 16 set, so this write changes
+            // nothing at all in the Command register and still must proceed.
+            found = found + is(
+                pci_config_write(function, COMMAND, 4u64,
+                    flip_bit(read_at(function, COMMAND, 4u64), PARITY_RESPONSE)),
+                OK, 64i64);
+
+            // 128: the device really changed where a write was allowed, and
+            // really did not where one was refused. Without this the seven bits
+            // above would pass on a nucleus that refused nothing and wrote
+            // nothing. BME must be exactly where the boot found it, and the
+            // parity bit must be back where case 64 put it.
+            let after: u64 = read_at(function, COMMAND, 1u64);
+            if (has_bit(after, BUS_MASTER) == started_mastering) {
+                if (has_bit(after, PARITY_RESPONSE) == has_bit(low, PARITY_RESPONSE)) {
+                    found = found + 128i64;
+                }
+            }
+
+            // The Command register goes back to what the boot found, and the
+            // firmware's initial state travels out with the result.
+            let restored: i64 = pci_config_write(function, COMMAND, 2u64, both);
+            if (started_mastering == 1u64) {
+                return found + 256i64;
+            }
+            return found;
+        }
+        Err(status) => { return status - 100i64; }
+    }
+}
