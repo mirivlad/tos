@@ -344,6 +344,12 @@ qemu_virtio_caps() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/virtio-caps.sh \
         target/preflight-qemu/virtio-caps)
 }
+# Stage 4B: canonical text maps a BAR window and reads the real VirtIO common
+# configuration. `full-only` for the Stage 4 device profile.
+qemu_virtio_mmio() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/virtio-mmio.sh \
+        target/preflight-qemu/virtio-mmio)
+}
 qemu_supervisor_text() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/supervisor-text.sh \
         target/preflight-qemu/supervisor-text)
@@ -512,6 +518,7 @@ gate qemu       full-only "QEMU T1 build topology"                     qemu_buil
 gate qemu       full-only "QEMU a textual supervisor starts services"  qemu_supervisor_text
 gate qemu       full-only "QEMU textual PCI function claim"            qemu_pci_discovery
 gate qemu       full-only "QEMU textual VirtIO capability discovery"    qemu_virtio_caps
+gate qemu       full-only "QEMU textual VirtIO register read"           qemu_virtio_mmio
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0026 performance conformance"   qemu_performance_conformance

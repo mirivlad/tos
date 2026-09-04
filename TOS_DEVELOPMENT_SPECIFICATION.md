@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `ba5b18a6a11b10fad5c58704819779bdc8c45fbcaa934962ff0a349f0c52b902`\
+Source-manifest SHA-256: `0e959814d2b566350c05fe501657645824628eb24c91a7b4292987267f8c291b`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2706,6 +2706,25 @@ are marked and are exactly those a process can only apply to itself.
 
 | 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25 |
 
+| 27 | `pci_bar_map` | PCI function capability with `map` | maps BAR `rsi` of the function that capability names, from page-aligned offset `rdx` for page-aligned length `r10`, writable when `r8` is non-zero, and returns a device-memory capability in `rdx` (ADR-0081 §13). The physical base is taken from the assignment's own measured BAR state — **a caller never supplies an address** — and the window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime. `E_BAD_ARGUMENT` for a BAR index outside the architectural range or an unaligned, zero or overflowing window; `E_NO_CAPABILITY` for an I/O or unimplemented BAR, or a range not inside the BAR's extent; `E_LIMIT` when no mapping slot is free or the caller already holds as many windows as it may |
+
+**A mapping is a descendant of the assignment, not of the handle that made it**
+(ADR-0081 §14). The assignment stays live while *either* a function capability
+names it **or** a mapping exists under it, so releasing the last function handle
+does not let the same BDF be claimed again while a window is still reaching it,
+and a manager releasing its own handle does not destroy a driver's window. Only
+when both are gone does the assignment end and its generation advance.
+
+**The scope is page-granular and explicit.** Sub-page grants are refused rather
+than served by mapping a whole page behind the contract: what the holder can
+reach and what the contract says it was given are the same pages.
+
+**Device memory is not charged to a `MemoryAuthority` and is not returned to the
+pool.** ADR-0076's one physical account is about pool frames; a device register
+is pre-existing external hardware state that nothing funds and nothing reclaims.
+A process holding memory-allocation authority gains no device access, and a
+process holding device access gains no ordinary physical memory.
+
 **Operations 24–26 are hardware mechanism primitives under §2.1, and each meets
 the five conditions.** They cannot be performed at CPL 3: the configuration
 address and data ports are unreachable from ring 3 and stay so — no IOPL, no
@@ -4377,6 +4396,8 @@ nucleus-owned state.
 |---|---|---|---|---|
 | `pci_config_read` | `platform.pci.FunctionConfig` with `config_read` | `offset: u64`, `width: u64` | `Result<u64, i64>` | 25 |
 | `pci_config_write` | `platform.pci.FunctionConfig` with `config_write` | `offset: u64`, `width: u64`, `value: u64` | `i64` | 26 |
+| `pci_bar_map_read` | `platform.pci.FunctionConfig` with `map` | `bar: u64`, `offset: size`, `length: size` | `Result<MmioRegion, i64>` | 27 |
+| `pci_bar_map_write` | `platform.pci.FunctionConfig` with `map` | `bar: u64`, `offset: size`, `length: size` | `Result<MmioRegionMut, i64>` | 27 |
 | `endow_for_launch` | `platform.pci.FunctionConfig` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 | `capability_attenuate` | `platform.pci.FunctionConfig` with `none` | `rights: u64` | `Result<platform.pci.FunctionConfig, i64>` | 5 |
 | `capability_release` | `platform.pci.FunctionConfig` with `none` | *(none)* | `i64` | 6 |
@@ -4386,6 +4407,21 @@ width; which function it reaches is decided by the capability. So a holder
 cannot address a different function — not because it is forbidden to, but
 because there is no parameter through which to say so, and a fabricated device
 number is a value with nowhere to go.
+
+**Mapping is a third right, and the form is the operation** (ADR-0081 §13). A
+holder that may read a device's registers is not thereby a holder that may map
+its memory, so `map` is separate from both configuration rights. And a writable
+window is asked for by calling the *other* operation rather than by passing a
+flag: the two produce different types, so a module cannot arrive at a writable
+mapping by computing a number.
+
+**The caller never supplies a physical address.** It names a BAR index and a
+page-aligned window inside that BAR; the base comes from what the device
+reported and what the nucleus measured when the function was claimed. A request
+not entirely inside the BAR's extent is refused rather than clamped, an I/O or
+unimplemented BAR never becomes authority, and the granted scope is exactly the
+pages mapped — a grant narrower than the window it hands out would be a contract
+that lies about what its holder can reach.
 
 **`config_read` and `config_write` are separate rights.** A capability carrying
 only `config_read` refuses operation 26 with `E_NO_CAPABILITY`. This is the

@@ -446,8 +446,15 @@ pub fn aperture_fits() -> bool {
     if REGION_APERTURE.checked_add(span).is_none() {
         return false;
     }
+    // The device aperture sits above every region lane and must also fit.
+    let Some(device_span) = (MAX_DEVICE_MAPPINGS as u64).checked_mul(DEVICE_LANE_SPAN) else {
+        return false;
+    };
+    let Some(device_end) = DEVICE_APERTURE.checked_add(device_span) else {
+        return false;
+    };
     let end = region_lane(MAX_REGIONS as u32);
-    REGION_APERTURE > highest_window && end <= CANONICAL_LOW_END
+    REGION_APERTURE > highest_window && end <= DEVICE_APERTURE && device_end <= CANONICAL_LOW_END
 }
 
 /// How many page tables one virtual range can need, at worst.
@@ -577,6 +584,7 @@ pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange], admitted: u64) -> u64
         + MAX_PROCESSES as u64
             * (paging::build_tables(bi, descs)
                 + process_window_tables()
+                + device_mapping_bound()
                 + region_mapping_bound(admitted))
 }
 
@@ -584,6 +592,9 @@ pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange], admitted: u64) -> u64
 const PRESENT_USER: u64 = 1 | (1 << 2);
 const WRITABLE: u64 = 1 << 1;
 const NO_EXECUTE: u64 = 1 << 63;
+/// Device memory: `PCD | PWT`, which selects `UC` under the reset-state PAT.
+const WRITE_THROUGH: u64 = 1 << 3;
+const CACHE_DISABLE: u64 = 1 << 4;
 
 /// Why a process could not be started. Never a statement about the program.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1490,6 +1501,12 @@ unsafe fn retire(index: usize) {
     // SAFETY: single-context nucleus; nothing else holds the tree.
     let tree = unsafe { crate::memory::authority() };
     tree.mappings_destroyed(index as u32);
+    // **Process death cannot leave an untracked device window** (ADR-0081 §14).
+    // The pages go with the address space; this frees the slots and tells each
+    // assignment that a descendant has gone, which is what may finally let an
+    // assignment whose driver died be released. The assignment's own state
+    // stays auditable afterwards.
+    crate::device::clear_process(index);
     crate::syscall::drain_reclaims();
     // And the authority that funded it is told, so what the tree says is
     // committed is what the pool has actually lost.
@@ -2970,6 +2987,94 @@ struct Furnished {
 /// Refuses rather than replaces, at every leaf: something already mapped in a
 /// region's lane means the lifecycle lost track of a frame, and overwriting it
 /// would give one address two owners.
+/// Where a process's device windows begin: above every region lane.
+///
+/// **A separate aperture, because device memory is a separate kind**
+/// (ADR-0081 §5). Sharing the region lanes would make one index space serve two
+/// object tables, and the first thing to go wrong would be a region and a
+/// mapping believing they own the same branch.
+pub const DEVICE_APERTURE: u64 = REGION_APERTURE + (MAX_REGIONS as u64) * REGION_LANE_SPAN;
+
+/// One lane per device mapping. A GiB is far more than any BAR window this
+/// stage maps, and it keeps each lane inside its own page directory.
+pub const DEVICE_LANE_SPAN: u64 = 1 << 30;
+
+/// How many device windows one process may hold.
+pub const MAX_DEVICE_MAPPINGS: usize = 4;
+
+/// Where device mapping `index` is mapped, in the process that holds it.
+pub const fn device_lane(index: u32) -> u64 {
+    DEVICE_APERTURE + (index as u64) * DEVICE_LANE_SPAN
+}
+
+/// What one process's device windows can cost the page-table reserve.
+///
+/// At most one table per level per lane: a lane begins on a GiB boundary, so it
+/// needs a page directory and a page table of its own, and the PDPT above it is
+/// counted per lane as well. Loose in the safe direction, which is what a
+/// reserve wants.
+pub fn device_mapping_bound() -> u64 {
+    3 * MAX_DEVICE_MAPPINGS as u64
+}
+
+/// Maps a physical device range into a process, uncacheable (ADR-0081 §10).
+///
+/// **`PCD` and `PWT` together**, which with the reset-state PAT selects `UC`:
+/// no caching, no write combining, no speculative reads, and accesses reaching
+/// the device in program order. That is the processor's half of the contract;
+/// the language's half — that one source access is one hardware access — is a
+/// different contract and is enforced elsewhere. Neither implies the other.
+///
+/// User-visible and never executable. A read-only grant is mapped without
+/// `WRITABLE`, so the page table refuses a write whatever the checker did.
+pub fn map_device(
+    process: usize,
+    slot: u32,
+    physical: u64,
+    length: u64,
+    writable: bool,
+) -> Result<u64, ()> {
+    let lane = device_lane(slot);
+    let mut flags = PRESENT_USER | NO_EXECUTE | CACHE_DISABLE | WRITE_THROUGH;
+    if writable {
+        flags |= WRITABLE;
+    }
+    // SAFETY: single-context nucleus; nothing else holds these.
+    let tables = unsafe { crate::memory::tables() };
+    // SAFETY: as above; nothing else touches the table.
+    let table = unsafe { table() };
+    let Some(space) = table.get_mut(process).and_then(|slot| slot.space.as_mut()) else {
+        return Err(());
+    };
+    let mut offset = 0;
+    while offset < length {
+        if space
+            .map_page(tables, lane + offset, physical + offset, flags)
+            .is_err()
+        {
+            // SAFETY: nothing outside this call reached the partial lane.
+            unsafe { space.release_branch(tables, lane) };
+            return Err(());
+        }
+        offset += FRAME_SIZE;
+    }
+    Ok(lane)
+}
+
+/// Removes a process's device window.
+pub fn unmap_device(process: usize, slot: u32) {
+    let lane = device_lane(slot);
+    // SAFETY: single-context nucleus; nothing else holds these.
+    let tables = unsafe { crate::memory::tables() };
+    // SAFETY: as above.
+    let table = unsafe { table() };
+    let Some(space) = table.get_mut(process).and_then(|slot| slot.space.as_mut()) else {
+        return;
+    };
+    // SAFETY: the lane is this process's own and nothing else names it.
+    unsafe { space.release_branch(tables, lane) };
+}
+
 pub fn map_region(process: usize, index: u32, pages: u64, writable: bool) -> Result<u64, ()> {
     let lane = region_lane(index);
     let flags = if writable {

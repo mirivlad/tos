@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4B: every way of asking for a device window you were not granted.
+//
+// The module holds the same single bus capability the probe holds, claims the
+// same real function, and then asks for windows it must not receive. Each
+// refusal is a status the nucleus decided against the BAR state it measured at
+// claim time, and each sets one bit.
+
+module system.boot.init version 1.2 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 262144, stack: 32KiB, allocation: 4KiB, tasks: 1, workers: 1,
+    sync: 0, shared: 0B, cleanup: 0, recursion: 16, imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus, bus_number: u64, device: u64, function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_bar_map_read(
+    cap: platform.pci.FunctionConfig, bar: u64, offset: size, length: size
+) -> Result<MmioRegion, i64> uses [platform.pci.FunctionConfig];
+
+// A refusal that names the reason, folded into one bit.
+fn refused(outcome: Result<MmioRegion, i64>, expected: i64, bit: i64) -> i64 {
+    match (outcome) {
+        Ok(window) => { return 0i64; }
+        Err(status) => {
+            if (status == expected) {
+                return bit;
+            }
+            return 0i64;
+        }
+    }
+}
+
+//   1  a BAR index outside the architectural range      E_BAD_ARGUMENT
+//   2  an unimplemented BAR is not authority            E_NO_CAPABILITY
+//   4  an offset that is not page-aligned               E_BAD_ARGUMENT
+//   8  a length that is not page-aligned                E_BAD_ARGUMENT
+//  16  a zero-length window                             E_BAD_ARGUMENT
+//  32  a window reaching past the BAR's extent          E_NO_CAPABILITY
+//  64  an offset+length that overflows                  E_BAD_ARGUMENT
+// 128  a function with no BARs at all cannot be mapped  E_NO_CAPABILITY
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            let mut found: i64 = 0i64;
+            found = found + refused(pci_bar_map_read(function, 6u64, 0B, 4096B), -3i64, 1i64);
+            found = found + refused(pci_bar_map_read(function, 2u64, 0B, 4096B), -1i64, 2i64);
+            found = found + refused(pci_bar_map_read(function, 4u64, 1B, 4096B), -3i64, 4i64);
+            found = found + refused(pci_bar_map_read(function, 4u64, 0B, 100B), -3i64, 8i64);
+            found = found + refused(pci_bar_map_read(function, 4u64, 0B, 0B), -3i64, 16i64);
+            found = found + refused(
+                pci_bar_map_read(function, 4u64, 0B, 1073741824B), -1i64, 32i64);
+            found = found + refused(
+                pci_bar_map_read(function, 4u64, 18446744073709547520B, 8192B), -3i64, 64i64);
+            // A different function of the same machine, with nothing behind it:
+            // its BARs are unimplemented, so no window comes out of it. This is
+            // also why authority over one function reaches no other — the base
+            // comes from *that* assignment's own measured state.
+            match (pci_function_claim(bus, 0u64, 5u64, 0u64)) {
+                Ok(empty) => {
+                    found = found
+                        + refused(pci_bar_map_read(empty, 4u64, 0B, 4096B), -1i64, 128i64);
+                }
+                Err(status) => { }
+            }
+            return found;
+        }
+        Err(status) => { return status - 100i64; }
+    }
+}

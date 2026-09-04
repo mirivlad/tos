@@ -36,7 +36,8 @@
 /// the endowment (ADR-0055) and that slot; version 1 carried memory and text and
 /// no authority at all, which is the state in which no process could ever hold a
 /// capability.
-/// Version 6 adds the two platform object kinds and the three rights over them
+/// Version 7 adds the device-memory kind and its three rights (ADR-0081).
+/// Version 6 added the two platform object kinds and the three rights over them
 /// (ADR-0079). A record naming a PCI bus or function means nothing to a nucleus
 /// that has no such kind, and a nucleus that has them would misread an older
 /// record's rights mask as carrying them — so the version moves, and an image
@@ -49,7 +50,7 @@
 /// version disagreement that fails closed — it is an ordinary launch record read
 /// as a bundle, which is a set of pointers into whatever happened to be laid out
 /// there. A number here must therefore be free in **both** sequences.
-pub const LAUNCH_VERSION: u32 = 6;
+pub const LAUNCH_VERSION: u32 = 7;
 
 /// What kind of object a capability names (`CAPABILITY_V1` §3).
 ///
@@ -102,6 +103,13 @@ pub const OBJECT_PCI_BUS: u32 = 9;
 /// for as long as it lives, carrying a generation so that releasing a function
 /// and claiming it again does not revive a handle to the first claim.
 pub const OBJECT_PCI_FUNCTION: u32 = 10;
+/// A mapped device-memory window (ADR-0081 §5).
+///
+/// **Its own kind, not a region.** A region is pool memory with an owner in the
+/// memory account; this is pre-existing hardware state that nothing funds and
+/// nothing reclaims. Two forms of one kind, told apart by rights, because both
+/// declare the same operations and what differs is what the holder may do.
+pub const OBJECT_MMIO_REGION: u32 = 11;
 
 /// The one right a reply capability has: `endpoint_reply` (4) is the only
 /// operation that names one.
@@ -184,6 +192,16 @@ pub const RIGHT_CLAIM: u32 = 1 << 11;
 /// not exist.
 pub const RIGHT_CONFIG_READ: u32 = 1 << 12;
 pub const RIGHT_CONFIG_WRITE: u32 = 1 << 13;
+
+/// The right to derive a device mapping from an assigned function, and the two
+/// rights over the mapping itself (ADR-0081 §13, §10).
+///
+/// `map` is separate from configuration access for the reason `claim` is
+/// separate from possession: a holder that may read a device's registers is not
+/// thereby a holder that may map its memory.
+pub const RIGHT_MAP: u32 = 1 << 14;
+pub const RIGHT_MMIO_READ: u32 = 1 << 15;
+pub const RIGHT_MMIO_WRITE: u32 = 1 << 16;
 
 /// One capability the launcher endowed this process with, described to the
 /// process that holds it.
@@ -517,6 +535,26 @@ pub const HAS_RESTART_GENERATION: u64 = 1;
 /// one offset is how a sequence of calls silently overwrites its own arguments.
 pub const LAUNCH_ENDOW_BINDING: u64 = CREATE_FUNDED_RECORD + 16;
 
+/// Where `pci_bar_map` leaves what it mapped (ADR-0081 §13).
+///
+/// **The base is for the host bridge, not for the program.** A TOS Core module
+/// names a capability and an offset and never learns an address; something in
+/// ring 3 has to turn that into a load, and this is how the runtime image is
+/// told where the window it just received actually is — the same way the launch
+/// record tells it where its grant is.
+pub const MMIO_MAP_RECORD: u64 = LAUNCH_ENDOW_BINDING + MAX_BINDING;
+
+/// What operation 27 writes there.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct MmioMapRecord {
+    /// Where the window is in this process's address space.
+    pub base: u64,
+    /// How many bytes it covers — the whole of what was granted, so a caller
+    /// cannot be given a scope smaller than the pages it can reach.
+    pub length: u64,
+}
+
 /// The argument region is one frame, and every fixed result has to fit inside
 /// it without overlapping another. Checked rather than counted: two contracts
 /// drifting apart is exactly what a fixed offset exists to prevent.
@@ -535,7 +573,8 @@ const _: () = {
         CREATE_FUNDED_RECORD + core::mem::size_of::<CreateFundedRecord>() as u64
             <= LAUNCH_ENDOW_BINDING
     );
-    assert!(LAUNCH_ENDOW_BINDING + MAX_BINDING <= FRAME);
+    assert!(LAUNCH_ENDOW_BINDING + MAX_BINDING <= MMIO_MAP_RECORD);
+    assert!(MMIO_MAP_RECORD + core::mem::size_of::<MmioMapRecord>() as u64 <= FRAME);
     // The creation argument areas are read by one call and must not run into
     // each other or into the results a creation writes back.
     assert!(CREATE_SELF_BINDING + MAX_BINDING <= CREATE_MODULE);

@@ -135,9 +135,18 @@ check("the pool returned to the root's endowment", int(reclaimed["available"]), 
 identity = int(reserve_lines["process_identity_frames"])
 windows = int(reserve_lines["process_windows_frames"])
 mappings = int(reserve_lines["process_region_mapping_frames"])
+# Device windows cost page tables like any other mapping, and are named
+# separately because they are a separate kind (ADR-0081 §5). What is *not* in
+# this account is the device memory itself: it is pre-existing hardware state
+# that nothing funds and nothing reclaims.
+devices = int(reserve_lines["process_device_mapping_frames"])
 backing = int(reserve_lines["region_backing_frames"])
 processes = int(reserve_lines["processes"])
-check("the reserve is its parts", reserve, backing + processes * (identity + windows + mappings))
+check(
+    "the reserve is its parts",
+    reserve,
+    backing + processes * (identity + windows + devices + mappings),
+)
 check(
     "and its total is the one the boot took",
     reserve,

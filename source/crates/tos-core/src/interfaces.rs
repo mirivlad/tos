@@ -572,6 +572,32 @@ pub const ACCEPTED: &[Interface] = &[
                 ],
                 result: "i64",
             },
+            // **Two operations over one ABI selector**, differing only in the
+            // form they produce (ADR-0081 §5). A schema entry declares one
+            // result type, and a read-only window and a writable one are two
+            // types — so asking for the second is a different call rather than
+            // the same call with a flag, and a module cannot receive a writable
+            // window by passing a number it computed.
+            Operation {
+                name: "pci_bar_map_read",
+                capabilities: &[Requirement::of("platform.pci.FunctionConfig", "map")],
+                parameters: &[
+                    Parameter::fixed("u64"),
+                    Parameter::fixed("size"),
+                    Parameter::fixed("size"),
+                ],
+                result: "Result<MmioRegion, i64>",
+            },
+            Operation {
+                name: "pci_bar_map_write",
+                capabilities: &[Requirement::of("platform.pci.FunctionConfig", "map")],
+                parameters: &[
+                    Parameter::fixed("u64"),
+                    Parameter::fixed("size"),
+                    Parameter::fixed("size"),
+                ],
+                result: "Result<MmioRegionMut, i64>",
+            },
             Operation {
                 name: "endow_for_launch",
                 capabilities: &[Requirement::held("platform.pci.FunctionConfig")],

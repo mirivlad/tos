@@ -141,6 +141,10 @@ mod apic;
 mod backing;
 mod capability;
 mod console;
+/// Mapped device memory (ADR-0081). A descendant of a PCI function
+/// assignment, and not an ordinary region: nothing funds it and nothing
+/// reclaims it to the pool.
+mod device;
 mod exception;
 mod framebuffer;
 #[cfg(feature = "test-creation-rollback")]
@@ -761,6 +765,13 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     tos_serial::put_u32_decimal(process::process_window_tables() as u32);
     tos_serial::puts(b" process_region_mapping_frames=");
     tos_serial::put_u32_decimal(process::region_mapping_bound(admitted_bytes) as u32);
+    // Device windows are their own line, because they are their own kind
+    // (ADR-0081 §5): the tables that map them come from the reserve like every
+    // other mapping's, and nothing about the *memory* they reach is in this
+    // account at all. A reserve whose parts do not sum to it is a reserve
+    // nobody can check.
+    tos_serial::puts(b" process_device_mapping_frames=");
+    tos_serial::put_u32_decimal(process::device_mapping_bound() as u32);
     tos_serial::puts(b" region_backing_frames=");
     tos_serial::put_u32_decimal(process::region_backing_bound(admitted_bytes) as u32);
     tos_serial::puts(b" processes=");

@@ -132,6 +132,11 @@ pub enum Object {
     /// needs attenuation to make a second, narrower name. So names are counted,
     /// as a memory authority's are, and the claim ends when the last one goes.
     PciFunction { index: u32, generation: u32 },
+    /// A mapped device-memory window (ADR-0081 §5).
+    ///
+    /// Counted like an assignment's names rather than affine: a manager may
+    /// attenuate one to hand a driver a read-only view of the same window.
+    MmioRegion { index: u32, generation: u32 },
     /// The same plan after operation 23 consumed the builder.
     ///
     /// A separate variant for the reason `SharedRegion` is one — the state is
@@ -159,6 +164,7 @@ impl Object {
             Object::LaunchPlan { .. } => tos_launch::OBJECT_LAUNCH_PLAN,
             Object::PciBus(_) => tos_launch::OBJECT_PCI_BUS,
             Object::PciFunction { .. } => tos_launch::OBJECT_PCI_FUNCTION,
+            Object::MmioRegion { .. } => tos_launch::OBJECT_MMIO_REGION,
         }
     }
 
@@ -419,6 +425,9 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
         Object::PciFunction { index, generation } => {
             crate::pci::retain(index, generation).map_err(|_| NotGranted::NoRoom)
         }
+        Object::MmioRegion { index, generation } => {
+            crate::device::retain(index, generation).map_err(|_| NotGranted::NoRoom)
+        }
         // Affine or not, the **region** is what says so. Operation 5 refuses to
         // make a second handle to an affine one, but an operation that reached
         // `grant` by another road would too — so the refusal lives in the
@@ -495,6 +504,14 @@ fn release_capability(object: Object) {
         Object::PciBus(_) => {}
         // The last name going is what ends the claim, so the function becomes
         // claimable again by exactly the event that made it unreachable.
+        // The last name going unmaps the window and tells the assignment it
+        // has one fewer descendant — which may be what finally lets that
+        // assignment end (ADR-0081 §14).
+        Object::MmioRegion { index, generation } => {
+            if crate::device::release(index, generation).is_err() {
+                crate::memory::note_divergence(b"mmio-name-release");
+            }
+        }
         Object::PciFunction { index, generation } => {
             if crate::pci::release(index, generation).is_err() {
                 // The entry named an assignment the table does not recognise,
@@ -549,6 +566,7 @@ fn object_is_live(object: Object) -> bool {
         // been claimed again: the generation moved, so a handle kept across the
         // gap names the first claim and finds nothing.
         Object::PciFunction { index, generation } => crate::pci::is_live(index, generation),
+        Object::MmioRegion { index, generation } => crate::device::is_live(index, generation),
     }
 }
 
@@ -922,7 +940,7 @@ fn retain_transit(object: Object) -> Result<(), NotGranted> {
         Object::MemoryAuthority { .. } => retain_capability(object),
         // The same, for an assignment: a delegation makes another name for one
         // claim, and the claim outlives whichever name goes first.
-        Object::PciFunction { .. } => retain_capability(object),
+        Object::PciFunction { .. } | Object::MmioRegion { .. } => retain_capability(object),
         // Unreachable: a region does not travel in the generic transfer table
         // at all. It has a bound of its own (`IPC_V1` §3) and a lifecycle of
         // its own — an internal reference rather than a name (ADR-0075 §6) —
@@ -950,7 +968,9 @@ fn release_transit(object: Object) {
         | Object::Process { .. }
         | Object::Reply { .. }
         | Object::PciBus(_) => {}
-        Object::MemoryAuthority { .. } | Object::PciFunction { .. } => release_capability(object),
+        Object::MemoryAuthority { .. } | Object::PciFunction { .. } | Object::MmioRegion { .. } => {
+            release_capability(object)
+        }
         // As above: never taken, so never given back.
         Object::Region { .. }
         | Object::SharedRegion { .. }

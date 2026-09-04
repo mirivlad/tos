@@ -283,8 +283,19 @@ fn capability_of(value: &Value, source: usize) -> Result<Handle, Trap> {
 }
 
 /// The unsigned number an operand names, or a trap.
+///
+/// A byte offset into a device window is a `size` — the type every bounded
+/// extent in this language has — and a written value may also be an unsigned
+/// integer. Both are the same number here; neither is an address.
 fn number_of(value: &Value, source: usize) -> Result<u64, Trap> {
     match value {
+        Value::Size(number) => u64::try_from(*number).map_err(|_| {
+            Trap::new(
+                "RUNTIME_TYPE_CONFUSION",
+                String::from("a device access names an offset larger than the edge carries"),
+                source,
+            )
+        }),
         Value::Int(_, number) if *number >= 0 => Ok(*number as u64),
         _ => Err(Trap::new(
             "RUNTIME_TYPE_CONFUSION",

@@ -133,6 +133,8 @@ nucleus-owned state.
 |---|---|---|---|---|
 | `pci_config_read` | `platform.pci.FunctionConfig` with `config_read` | `offset: u64`, `width: u64` | `Result<u64, i64>` | 25 |
 | `pci_config_write` | `platform.pci.FunctionConfig` with `config_write` | `offset: u64`, `width: u64`, `value: u64` | `i64` | 26 |
+| `pci_bar_map_read` | `platform.pci.FunctionConfig` with `map` | `bar: u64`, `offset: size`, `length: size` | `Result<MmioRegion, i64>` | 27 |
+| `pci_bar_map_write` | `platform.pci.FunctionConfig` with `map` | `bar: u64`, `offset: size`, `length: size` | `Result<MmioRegionMut, i64>` | 27 |
 | `endow_for_launch` | `platform.pci.FunctionConfig` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 | `capability_attenuate` | `platform.pci.FunctionConfig` with `none` | `rights: u64` | `Result<platform.pci.FunctionConfig, i64>` | 5 |
 | `capability_release` | `platform.pci.FunctionConfig` with `none` | *(none)* | `i64` | 6 |
@@ -142,6 +144,21 @@ width; which function it reaches is decided by the capability. So a holder
 cannot address a different function — not because it is forbidden to, but
 because there is no parameter through which to say so, and a fabricated device
 number is a value with nowhere to go.
+
+**Mapping is a third right, and the form is the operation** (ADR-0081 §13). A
+holder that may read a device's registers is not thereby a holder that may map
+its memory, so `map` is separate from both configuration rights. And a writable
+window is asked for by calling the *other* operation rather than by passing a
+flag: the two produce different types, so a module cannot arrive at a writable
+mapping by computing a number.
+
+**The caller never supplies a physical address.** It names a BAR index and a
+page-aligned window inside that BAR; the base comes from what the device
+reported and what the nucleus measured when the function was claimed. A request
+not entirely inside the BAR's extent is refused rather than clamped, an I/O or
+unimplemented BAR never becomes authority, and the granted scope is exactly the
+pages mapped — a grant narrower than the window it hands out would be a contract
+that lies about what its holder can reach.
 
 **`config_read` and `config_write` are separate rights.** A capability carrying
 only `config_read` refuses operation 26 with `E_NO_CAPABILITY`. This is the
