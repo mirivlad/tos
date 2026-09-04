@@ -109,8 +109,93 @@ struct Assignment {
     descendants: u32,
     /// Each BAR's base and extent, measured once at claim time (§3).
     bars: [Bar; BARS],
+    /// Where this function's MSI-X structures are, read once at claim time.
+    ///
+    /// **Read before any capability of this function is granted**, because the
+    /// two refusals it feeds (ADR-0082 §5) must hold for the first mapping and
+    /// the first configuration write, not from the second onwards.
+    msix: MsiX,
     live: bool,
 }
+
+/// Where a function keeps the structures that decide where its interrupts go.
+///
+/// **This is PCI mechanism and not device knowledge.** Capability id `0x11` and
+/// the layout of its four words are in the PCI specification; nothing here knows
+/// what the device behind them is, and a gate asserts that ring 0 contains no
+/// VirtIO vocabulary.
+#[derive(Clone, Copy)]
+struct MsiX {
+    /// The capability's offset in configuration space, or zero when the function
+    /// has none. Zero is unambiguous: the first 64 bytes are the standard header
+    /// and no capability can start there.
+    capability: u8,
+    /// Which BAR the table lives in, and where in it.
+    table_bar: u8,
+    table_offset: u64,
+    /// Which BAR the pending-bit array lives in, and where in it. Often the same
+    /// BAR as the table and sometimes not, so both are kept.
+    pba_bar: u8,
+    pba_offset: u64,
+    /// How many entries the table has. The specification stores this as
+    /// *N − 1*; what is kept here is N, so that arithmetic over it reads as the
+    /// count it is.
+    entries: u16,
+}
+
+impl MsiX {
+    const ABSENT: Self = Self {
+        capability: 0,
+        table_bar: 0,
+        table_offset: 0,
+        pba_bar: 0,
+        pba_offset: 0,
+        entries: 0,
+    };
+
+    /// Whether the function has one at all.
+    fn present(&self) -> bool {
+        self.capability != 0 && self.entries != 0
+    }
+
+    /// The bytes the table occupies: sixteen per entry, by the specification.
+    fn table_extent(&self) -> (u64, u64) {
+        (
+            self.table_offset,
+            u64::from(self.entries) * MSIX_ENTRY_BYTES,
+        )
+    }
+
+    /// The bytes the pending-bit array occupies: one bit per entry, rounded up
+    /// to whole 64-bit words, because that is the unit the array is defined in.
+    fn pba_extent(&self) -> (u64, u64) {
+        let words = u64::from(self.entries).div_ceil(64);
+        (self.pba_offset, words * 8)
+    }
+}
+
+/// One MSI-X table entry: message address low, high, message data, vector
+/// control.
+const MSIX_ENTRY_BYTES: u64 = 16;
+/// The capability identifier the PCI specification assigns to MSI-X.
+const CAP_ID_MSIX: u64 = 0x11;
+/// Where the capability list starts, and the bounds a well-formed one stays in.
+const CAPABILITY_POINTER: u64 = 0x34;
+const FIRST_CAPABILITY: u64 = 0x40;
+const LAST_CAPABILITY: u64 = 0xFC;
+/// How far a capability walk will go before it decides the list is malformed.
+/// Conventional space cannot hold more than this many four-byte capabilities, so
+/// a device answering a loop is bounded rather than able to hang ring 0.
+const MAX_CAPABILITY_STEPS: usize = 48;
+/// The MSI-X capability's own words, from its start.
+const MSIX_MESSAGE_CONTROL: u64 = 0x02;
+const MSIX_TABLE_WORD: u64 = 0x04;
+const MSIX_PBA_WORD: u64 = 0x08;
+/// How many bytes the whole capability structure occupies.
+const MSIX_CAPABILITY_BYTES: u64 = 12;
+/// The low three bits of the table and PBA words select a BAR; the rest is a
+/// byte offset that is always eight-byte aligned.
+const MSIX_BIR_MASK: u64 = 0x7;
 
 /// How many base-address registers a function has.
 const BARS: usize = 6;
@@ -150,6 +235,7 @@ impl Assignment {
         generation: 1,
         descendants: 0,
         bars: [Bar::EMPTY; BARS],
+        msix: MsiX::ABSENT,
         names: 0,
         live: false,
     };
@@ -304,9 +390,17 @@ pub fn claim(
     entry.names = 0;
     entry.descendants = 0;
     entry.bars = [Bar::EMPTY; BARS];
+    entry.msix = MsiX::ABSENT;
     entry.live = true;
     let measured = *entry;
     let generation = entry.generation;
+    // **Before the caller can hold anything.** Where this function's interrupt
+    // structures live is what two refusals are made of (ADR-0082 §5), and a
+    // refusal that only worked from the second mapping onwards would not be one.
+    // Reading it here also puts it under the same exclusivity as BAR sizing:
+    // nothing else holds this function, so nothing else is walking its
+    // capability list at the same time.
+    table[index].msix = find_msix(&measured);
     // Sizing happens **once, here**, under the exclusivity this claim just
     // established (ADR-0081 §13). Nothing else can hold this function, so
     // nothing else can be probing it; and a later mapping never repeats the
@@ -384,8 +478,77 @@ fn size_bars(entry: &Assignment) -> [Bar; BARS] {
     bars
 }
 
+/// Walks a function's capability list for MSI-X, reading nothing else.
+///
+/// **Bounded three ways**, because a capability list is data a device supplies
+/// and ring 0 walking device-supplied data is exactly where a hang belongs to
+/// the device rather than to the driver: the pointer must lie in the range the
+/// specification puts capabilities in, the walk stops after
+/// [`MAX_CAPABILITY_STEPS`], and a pointer that does not advance is treated as
+/// the end rather than followed round again.
+///
+/// A function with no capability list, or one with no MSI-X capability, produces
+/// [`MsiX::ABSENT`] — which is not an error. Most functions have no MSI-X, and
+/// the two refusals it feeds simply have nothing to refuse.
+fn find_msix(entry: &Assignment) -> MsiX {
+    // Bit 4 of the status register says whether there is a capability list at
+    // all. A device without one may leave 0x34 holding anything.
+    const STATUS: u64 = 0x06;
+    const HAS_CAPABILITY_LIST: u64 = 1 << 4;
+    if read_config(entry, STATUS, 2) & HAS_CAPABILITY_LIST == 0 {
+        return MsiX::ABSENT;
+    }
+    let mut at = read_config(entry, CAPABILITY_POINTER, 1) & !0x3;
+    let mut steps = 0;
+    while steps < MAX_CAPABILITY_STEPS {
+        if !(FIRST_CAPABILITY..=LAST_CAPABILITY).contains(&at) {
+            return MsiX::ABSENT;
+        }
+        if read_config(entry, at, 1) == CAP_ID_MSIX {
+            return read_msix_at(entry, at);
+        }
+        let next = read_config(entry, at + 1, 1) & !0x3;
+        // A pointer that does not move is a malformed list, and following it
+        // would be the loop this bound exists to prevent reaching its limit for
+        // no reason.
+        if next == at {
+            return MsiX::ABSENT;
+        }
+        at = next;
+        steps += 1;
+    }
+    MsiX::ABSENT
+}
+
+/// Reads one MSI-X capability structure, whose offset the walk above found.
+fn read_msix_at(entry: &Assignment, capability: u64) -> MsiX {
+    // The capability must fit inside conventional space with room for its four
+    // words. A device claiming one at an offset where it cannot fit is
+    // malformed, and a partial read would be worse than no capability at all.
+    if capability + MSIX_CAPABILITY_BYTES > CONVENTIONAL_CONFIG_BYTES {
+        return MsiX::ABSENT;
+    }
+    let control = read_config(entry, capability + MSIX_MESSAGE_CONTROL, 2);
+    // The specification stores the table size as N − 1 in the low eleven bits.
+    let entries = ((control & 0x7FF) + 1) as u16;
+    let table = read_config(entry, capability + MSIX_TABLE_WORD, 4);
+    let pba = read_config(entry, capability + MSIX_PBA_WORD, 4);
+    MsiX {
+        capability: capability as u8,
+        table_bar: (table & MSIX_BIR_MASK) as u8,
+        table_offset: table & !MSIX_BIR_MASK,
+        pba_bar: (pba & MSIX_BIR_MASK) as u8,
+        pba_offset: pba & !MSIX_BIR_MASK,
+        entries,
+    }
+}
+
 /// The command register, and the bits that let a function answer bus cycles.
 const COMMAND: u64 = 0x04;
+/// Bus Master Enable: whether the function may issue its own memory
+/// transactions. **Nucleus-owned** (ADR-0082 §5), because an MSI-X message is
+/// one of those transactions and so is every byte of DMA.
+const BUS_MASTER: u64 = 1 << 2;
 const BAR0: u64 = 0x10;
 /// I/O-space and memory-space decoding.
 const DECODE_BITS: u16 = 0b11;
@@ -470,10 +633,96 @@ pub fn bar_window(
     if end > window.length {
         return Err(BarRefused::OutOfScope);
     }
+    // **A window that reaches this function's MSI-X structures is refused**
+    // (ADR-0082 §5). The table is where a message address and a message data
+    // word live, so a process that could write it could deliver an interrupt of
+    // its choosing to a vector of its choosing — authority nobody granted, taken
+    // by writing a number. The pending-bit array goes with it: it is the other
+    // half of one structure, and a page granting one usually grants both.
+    //
+    // `E_NO_CAPABILITY` rather than `E_BAD_ARGUMENT`, by the rule that already
+    // refuses an I/O BAR: the request is well formed, and what it names is not
+    // something this capability confers.
+    if overlaps_msix(&entry, bar as u8, offset, length) {
+        return Err(BarRefused::OutOfScope);
+    }
     let Some(base) = window.base.checked_add(offset) else {
         return Err(BarRefused::BadArgument);
     };
     Ok(base)
+}
+
+/// Whether a window of one BAR reaches this function's MSI-X table or its
+/// pending-bit array.
+///
+/// Overlap and not containment: a page that merely *touches* the table is a page
+/// through which the table can be written, so the test is whether the two ranges
+/// intersect at all.
+fn overlaps_msix(entry: &Assignment, bar: u8, offset: u64, length: u64) -> bool {
+    if !entry.msix.present() {
+        return false;
+    }
+    let Some(end) = offset.checked_add(length) else {
+        // An overflowing request is refused for its own reason a line later;
+        // saying "it does not overlap" here would be answering a question about
+        // a range that does not exist.
+        return true;
+    };
+    let reaches = |structure_bar: u8, (start, bytes): (u64, u64)| -> bool {
+        if structure_bar != bar || bytes == 0 {
+            return false;
+        }
+        match start.checked_add(bytes) {
+            Some(structure_end) => offset < structure_end && start < end,
+            // A structure whose extent overflows is one this nucleus cannot
+            // bound, and an unbounded structure is refused whole.
+            None => true,
+        }
+    };
+    reaches(entry.msix.table_bar, entry.msix.table_extent())
+        || reaches(entry.msix.pba_bar, entry.msix.pba_extent())
+}
+
+/// Whether a configuration write may proceed (ADR-0082 §5).
+///
+/// Two structures in conventional space decide things that are the nucleus's to
+/// decide, and both are inside the range operation 26 reaches. Refusing the
+/// write is the only honest answer: a write that silently kept some bits and
+/// dropped others would leave a caller unable to tell what the device now holds.
+///
+/// **Reads are untouched.** Where a table lives and whether a function is a bus
+/// master are facts about hardware, and ADR-0079 already settles that a fact is
+/// not authority.
+fn write_is_permitted(entry: &Assignment, offset: u64, width: u64, value: u64) -> bool {
+    // The MSI-X capability structure: its message control word enables, disables
+    // and masks the whole mechanism, and its table and PBA words say where the
+    // structures are. A caller that could move them could move the table out
+    // from under the refusal above.
+    if entry.msix.capability != 0 {
+        let start = u64::from(entry.msix.capability);
+        let end = start + MSIX_CAPABILITY_BYTES;
+        if offset < end && start < offset + width {
+            return false;
+        }
+    }
+    // Bus Master Enable. Not "the command register" — a driver has ordinary
+    // business there, memory-space decoding among it — but this one bit, which
+    // is what lets the function issue the memory writes that an MSI-X message
+    // and every byte of DMA are made of. A write that leaves it as it found it
+    // is allowed, so a caller reading the register and writing it back is not
+    // refused for having touched a bit it did not change.
+    if offset < COMMAND + 2 && COMMAND < offset + width {
+        let current = read_config(entry, COMMAND, 2);
+        // Where in the written value the command register's bits fall, so that a
+        // one-byte write at 0x04 and a four-byte write at 0x04 are judged on the
+        // same bit of the same register.
+        let shift = (COMMAND.saturating_sub(offset)) * 8;
+        let written = value >> shift;
+        if (written ^ current) & BUS_MASTER != 0 {
+            return false;
+        }
+    }
+    true
 }
 
 /// A page, as this mechanism measures one.
@@ -672,13 +921,35 @@ pub fn config_read(index: u32, generation: u32, offset: u64, width: u64) -> Opti
     Some(value)
 }
 
+/// Why a configuration write did not happen.
+pub enum WriteRefused {
+    /// The access is malformed, or the assignment it named has gone.
+    BadArgument,
+    /// Well formed, and what it names is not this capability's to change: a
+    /// structure the nucleus owns because it decides where interrupts go or
+    /// whether the device may reach memory at all (ADR-0082 §5).
+    Reserved,
+}
+
 /// Writes conventional configuration space (operation 26).
-pub fn config_write(index: u32, generation: u32, offset: u64, width: u64, value: u64) -> bool {
+pub fn config_write(
+    index: u32,
+    generation: u32,
+    offset: u64,
+    width: u64,
+    value: u64,
+) -> Result<(), WriteRefused> {
     let Some(entry) = assignment(index, generation) else {
-        return false;
+        return Err(WriteRefused::BadArgument);
     };
     if !access_is_valid(offset, width) || entry.segment != 0 {
-        return false;
+        return Err(WriteRefused::BadArgument);
+    }
+    // Two structures of this function are the nucleus's, and they are inside the
+    // range this operation reaches (ADR-0082 §5). Checked before the transaction
+    // rather than after it, so a refused write touches nothing.
+    if !write_is_permitted(&entry, offset, width, value) {
+        return Err(WriteRefused::Reserved);
     }
     let address = address_of(&entry, offset);
     let port = CONFIG_DATA + (offset as u16 & 3);
@@ -693,7 +964,7 @@ pub fn config_write(index: u32, generation: u32, offset: u64, width: u64, value:
             _ => out_u32(port, value as u32),
         }
     }
-    true
+    Ok(())
 }
 
 // The port accessors. Each is `unsafe` because a port access is not something a

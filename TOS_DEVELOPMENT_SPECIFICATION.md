@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `d43a5717cb6a8e2a42ce98e85c9ef50d96b47bb86a2f530dbcb36396dd764dc3`\
+Source-manifest SHA-256: `54421ba0abfaccf0e743d278aa111593ca486e639991cb332275504d2b9f562d`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2730,9 +2730,9 @@ are marked and are exactly those a process can only apply to itself.
 
 | 25 | `pci_config_read` | PCI function capability with `config_read` | reads `rdx` bytes of conventional configuration space at offset `rsi` of the function **that capability names**, and returns the value in `rdx`. `E_BAD_ARGUMENT` for a width that is not 1, 2 or 4, an offset not a multiple of the width, or an access reaching past byte 256 |
 
-| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25 |
+| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25. **Two structures of the function are the nucleus's and are refused with `E_NO_CAPABILITY`** (ADR-0082 §5): any access touching the function's MSI-X capability, and any access that would *change* the Command register's Bus Master Enable bit. Reads of both are unaffected |
 
-| 27 | `pci_bar_map` | PCI function capability with `map` | maps BAR `rsi` of the function that capability names, from page-aligned offset `rdx` for page-aligned length `r10`, writable when `r8` is non-zero, and returns a device-memory capability in `rdx` (ADR-0081 §13). The physical base is taken from the assignment's own measured BAR state — **a caller never supplies an address** — and the window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime. `E_BAD_ARGUMENT` for a BAR index outside the architectural range or an unaligned, zero or overflowing window; `E_NO_CAPABILITY` for an I/O or unimplemented BAR, or a range not inside the BAR's extent; `E_LIMIT` when no mapping slot is free or the caller already holds as many windows as it may |
+| 27 | `pci_bar_map` | PCI function capability with `map` | maps BAR `rsi` of the function that capability names, from page-aligned offset `rdx` for page-aligned length `r10`, writable when `r8` is non-zero, and returns a device-memory capability in `rdx` (ADR-0081 §13). The physical base is taken from the assignment's own measured BAR state — **a caller never supplies an address** — and the window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime. `E_BAD_ARGUMENT` for a BAR index outside the architectural range or an unaligned, zero or overflowing window; `E_NO_CAPABILITY` for an I/O or unimplemented BAR, a range not inside the BAR's extent, or **a window overlapping the function's MSI-X table or pending-bit array** (ADR-0082 §5); `E_LIMIT` when no mapping slot is free or the caller already holds as many windows as it may |
 
 **A mapping is a descendant of the assignment, not of the handle that made it**
 (ADR-0081 §14). The assignment stays live while *either* a function capability
@@ -2744,6 +2744,26 @@ when both are gone does the assignment end and its generation advance.
 **The scope is page-granular and explicit.** Sub-page grants are refused rather
 than served by mapping a whole page behind the contract: what the holder can
 reach and what the contract says it was given are the same pages.
+
+**Three narrowings, and each closes a path to authority nobody granted**
+(ADR-0082 §5). The hardware puts the structures that decide where a function's
+interrupts go, and whether it may reach memory at all, *inside* ranges 26 and 27
+already reach: the MSI-X table lives in a BAR, and the MSI-X capability and Bus
+Master Enable live in conventional configuration space. Before this, a holder of
+`map` and `config_write` could program an arbitrary message address and data —
+an interrupt of its choosing on a vector of its choosing — and could make the
+device a bus master, without holding anything that named either. So a window
+overlapping the MSI-X table or its pending-bit array is refused, a write
+touching the MSI-X capability is refused, and a write that would change Bus
+Master Enable is refused. **Reads are untouched**: where a table lives and
+whether a function is a bus master are facts about hardware, and a fact is not
+authority. A write that leaves Bus Master Enable as it found it proceeds, so a
+caller reading the Command register and writing it back is not refused for
+having touched a register that happens to contain one owned bit.
+
+**Refused rather than filtered**, throughout: a write that silently kept some
+bits and dropped others would leave a caller unable to tell what the device now
+holds.
 
 **Device memory is not charged to a `MemoryAuthority` and is not returned to the
 pool.** ADR-0076's one physical account is about pool frames; a device register
@@ -4454,6 +4474,31 @@ only `config_read` refuses operation 26 with `E_NO_CAPABILITY`. This is the
 attenuation a manager performs before handing a function to something that
 should only look at it.
 
+**Three things a `FunctionConfig` does not confer, even with every right**
+(ADR-0082 §5). They are not exceptions carved out of the rights model; they are
+places where the hardware happens to put the nucleus's own state inside a range
+these operations reach:
+
+- a **window overlapping the MSI-X table or pending-bit array** is refused by
+  `pci_bar_map_read` and `pci_bar_map_write` alike. The table holds a message
+  address and a message data word, so writing it is choosing which interrupt is
+  delivered to which vector — authority taken by writing a number, which is what
+  this whole schema exists to make impossible;
+- a **configuration write touching the MSI-X capability** is refused. Its
+  message-control word enables, disables and masks the mechanism, and its other
+  words say where the structures are — a caller that could move them could move
+  the table out from under the refusal above;
+- a **configuration write that would change Bus Master Enable** is refused.
+  That bit is what lets a function issue its own memory transactions, which is
+  what an MSI-X message and every byte of DMA are made of. It is nucleus-owned
+  and follows the existence of device-visible descendants.
+
+**Reads of all three still work**, and that is the model rather than an
+oversight: where a table lives and whether a function is a bus master are facts
+the device reports, and §4 already says nothing read here is authority. A write
+to the Command register that leaves Bus Master Enable as it found it proceeds
+normally.
+
 **Conventional configuration space only.** `offset + width` must lie within the
 first **256** bytes, `width` must be 1, 2 or 4, and `offset` must be a multiple
 of `width`. Every violation is `E_BAD_ARGUMENT`; nothing wraps, nothing is
@@ -4530,6 +4575,13 @@ speculative declaration §2 refuses, one layer down.
    lives, and a handle from a released assignment refuses by generation.
 7. `offset`, `width` and their sum are bounded as §4 states, and each violation
    is `E_BAD_ARGUMENT` with nothing read and nothing written.
+7a. A window over the function's MSI-X table is refused in **both** map forms; a
+   configuration write touching the MSI-X capability is refused; a
+   configuration write that would change Bus Master Enable is refused. Each is
+   `E_NO_CAPABILITY`, and each leaves the device untouched. Reading the MSI-X
+   capability still succeeds, and a Command-register write that changes no owned
+   bit still succeeds — a refusal that refused its neighbours too would prove
+   nothing about what it was protecting.
 8. The interface paths a verified module uses are readable from its IR without
    executing it, and match the `uses` effects of its declared operations.
 

@@ -165,6 +165,31 @@ only `config_read` refuses operation 26 with `E_NO_CAPABILITY`. This is the
 attenuation a manager performs before handing a function to something that
 should only look at it.
 
+**Three things a `FunctionConfig` does not confer, even with every right**
+(ADR-0082 §5). They are not exceptions carved out of the rights model; they are
+places where the hardware happens to put the nucleus's own state inside a range
+these operations reach:
+
+- a **window overlapping the MSI-X table or pending-bit array** is refused by
+  `pci_bar_map_read` and `pci_bar_map_write` alike. The table holds a message
+  address and a message data word, so writing it is choosing which interrupt is
+  delivered to which vector — authority taken by writing a number, which is what
+  this whole schema exists to make impossible;
+- a **configuration write touching the MSI-X capability** is refused. Its
+  message-control word enables, disables and masks the mechanism, and its other
+  words say where the structures are — a caller that could move them could move
+  the table out from under the refusal above;
+- a **configuration write that would change Bus Master Enable** is refused.
+  That bit is what lets a function issue its own memory transactions, which is
+  what an MSI-X message and every byte of DMA are made of. It is nucleus-owned
+  and follows the existence of device-visible descendants.
+
+**Reads of all three still work**, and that is the model rather than an
+oversight: where a table lives and whether a function is a bus master are facts
+the device reports, and §4 already says nothing read here is authority. A write
+to the Command register that leaves Bus Master Enable as it found it proceeds
+normally.
+
 **Conventional configuration space only.** `offset + width` must lie within the
 first **256** bytes, `width` must be 1, 2 or 4, and `offset` must be a multiple
 of `width`. Every violation is `E_BAD_ARGUMENT`; nothing wraps, nothing is
@@ -241,5 +266,12 @@ speculative declaration §2 refuses, one layer down.
    lives, and a handle from a released assignment refuses by generation.
 7. `offset`, `width` and their sum are bounded as §4 states, and each violation
    is `E_BAD_ARGUMENT` with nothing read and nothing written.
+7a. A window over the function's MSI-X table is refused in **both** map forms; a
+   configuration write touching the MSI-X capability is refused; a
+   configuration write that would change Bus Master Enable is refused. Each is
+   `E_NO_CAPABILITY`, and each leaves the device untouched. Reading the MSI-X
+   capability still succeeds, and a Command-register write that changes no owned
+   bit still succeeds — a refusal that refused its neighbours too would prove
+   nothing about what it was protecting.
 8. The interface paths a verified module uses are readable from its IR without
    executing it, and match the `uses` effects of its declared operations.

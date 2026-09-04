@@ -1,0 +1,212 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4C-1a: the three ambient paths to interrupt authority, refused.
+//
+// ADR-0082 §5. The hardware puts the thing that decides where an interrupt goes
+// inside ranges two accepted operations already reach — the MSI-X table lives in
+// a BAR, and the MSI-X capability and the Bus Master Enable bit live in the
+// first 256 bytes of configuration space. A holder of `map` and `config_write`
+// could therefore program an arbitrary interrupt message, or make the device a
+// bus master, without holding any authority that named either.
+//
+// This module holds exactly what a driver holds: one bus capability, and the
+// function it claims through it. It then asks for each of those things and must
+// be refused — and, because a refusal that refused everything would prove
+// nothing, it also checks that the two neighbouring accesses still work.
+//
+// **The module finds the MSI-X capability itself**, by walking the list the
+// device publishes. Nothing here is told where the table is, so the nucleus and
+// the module agree about it or the evidence fails.
+
+module system.boot.init version 1.2 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 262144, stack: 32KiB, allocation: 4KiB, tasks: 1, workers: 1,
+    sync: 0, shared: 0B, cleanup: 0, recursion: 16, imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus, bus_number: u64, device: u64, function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig, offset: u64, width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_config_write(
+    cap: platform.pci.FunctionConfig, offset: u64, width: u64, value: u64
+) -> i64 uses [platform.pci.FunctionConfig];
+
+extern fn pci_bar_map_read(
+    cap: platform.pci.FunctionConfig, bar: u64, offset: size, length: size
+) -> Result<MmioRegion, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_bar_map_write(
+    cap: platform.pci.FunctionConfig, bar: u64, offset: size, length: size
+) -> Result<MmioRegionMut, i64> uses [platform.pci.FunctionConfig];
+
+// `SYSTEM_ABI_V1` §4. Named so the expectations below read as the contract.
+const E_NO_CAPABILITY: i64 = -1i64;
+const OK: i64 = 0i64;
+
+// A well-formed capability chain has at most this many entries in 256 bytes.
+const MAX_CAPABILITIES: u64 = 64u64;
+const FIRST_CAPABILITY: u64 = 64u64;
+const LAST_CAPABILITY: u64 = 240u64;
+const CAPABILITY_POINTER: u64 = 52u64;
+const CAP_ID_MSIX: u64 = 17u64;
+// The command register, and the bit the nucleus owns.
+const COMMAND: u64 = 4u64;
+const BUS_MASTER: u64 = 4u64;
+
+fn byte_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 1u64)) {
+        Ok(value) => { return value; }
+        Err(status) => { return 256u64; }
+    }
+}
+
+fn word_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 2u64)) {
+        Ok(value) => { return value; }
+        Err(status) => { return 65536u64; }
+    }
+}
+
+fn dword_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 4u64)) {
+        Ok(value) => { return value; }
+        Err(status) => { return 0u64; }
+    }
+}
+
+// Where the MSI-X capability is, discovered rather than assumed. 256 means the
+// device has none, which for this evidence is a failure rather than a fact:
+// without one there is nothing for the refusals to be about.
+fn msix_capability(function: platform.pci.FunctionConfig) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut at: u64 = byte_at(function, CAPABILITY_POINTER);
+    let mut steps: u64 = 0u64;
+    let mut found: u64 = 256u64;
+    while (steps < MAX_CAPABILITIES) {
+        if (at < FIRST_CAPABILITY) {
+            steps = MAX_CAPABILITIES;
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (at > LAST_CAPABILITY) {
+                steps = MAX_CAPABILITIES;
+            }
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (byte_at(function, at) == CAP_ID_MSIX) {
+                found = at;
+                steps = MAX_CAPABILITIES;
+            }
+            if (steps < MAX_CAPABILITIES) {
+                at = byte_at(function, at + 1u64);
+                steps = steps + 1u64;
+            }
+        }
+    }
+    return found;
+}
+
+fn refused_read(outcome: Result<MmioRegion, i64>, expected: i64, bit: i64) -> i64 {
+    match (outcome) {
+        Ok(window) => { return 0i64; }
+        Err(status) => {
+            if (status == expected) { return bit; }
+            return 0i64;
+        }
+    }
+}
+
+fn refused_write(outcome: Result<MmioRegionMut, i64>, expected: i64, bit: i64) -> i64 {
+    match (outcome) {
+        Ok(window) => { return 0i64; }
+        Err(status) => {
+            if (status == expected) { return bit; }
+            return 0i64;
+        }
+    }
+}
+
+fn is(status: i64, expected: i64, bit: i64) -> i64 {
+    if (status == expected) { return bit; }
+    return 0i64;
+}
+
+//   1  a writable window on the MSI-X table BAR is refused
+//   2  a read-only window on the same page is refused too
+//   4  a config write to the MSI-X message control is refused
+//   8  a config write that would set Bus Master Enable is refused
+//  16  and the capability is still *readable* — a fact is not authority
+//  32  and an ordinary command-register write that changes nothing still works
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            let cap_at: u64 = msix_capability(function);
+            if (cap_at > LAST_CAPABILITY) {
+                // No MSI-X on the reference device would make every refusal
+                // below vacuous, so it is reported as its own failure.
+                return -2i64;
+            }
+            // The table word's low three bits name the BAR the table is in; the
+            // rest is a byte offset. The module reads both from the device.
+            let table: u64 = dword_at(function, cap_at + 4u64);
+            let table_bar: u64 = table % 8u64;
+            let mut found: i64 = 0i64;
+
+            // 1 and 2: the page the table is on, both forms.
+            found = found + refused_write(
+                pci_bar_map_write(function, table_bar, 0B, 4096B),
+                E_NO_CAPABILITY, 1i64);
+            found = found + refused_read(
+                pci_bar_map_read(function, table_bar, 0B, 4096B),
+                E_NO_CAPABILITY, 2i64);
+
+            // 4: the message control word, which enables and masks the whole
+            // mechanism. Written with the value it already holds, so a nucleus
+            // that permitted it would not even be changing anything — the
+            // refusal is about the register, not about the value.
+            let control: u64 = word_at(function, cap_at + 2u64);
+            found = found + is(
+                pci_config_write(function, cap_at + 2u64, 2u64, control),
+                E_NO_CAPABILITY, 4i64);
+
+            // 8: bus mastering. An MSI-X message is a memory write, so this bit
+            // is what makes a device able to deliver one — and to reach any
+            // other address it likes on a machine with no IOMMU.
+            let command: u64 = word_at(function, COMMAND);
+            found = found + is(
+                pci_config_write(function, COMMAND, 2u64, command + BUS_MASTER),
+                E_NO_CAPABILITY, 8i64);
+
+            // 16: reading it still works. Where a table lives is a fact about
+            // hardware, and ADR-0079 already settles that a fact is not
+            // authority.
+            if (byte_at(function, cap_at) == CAP_ID_MSIX) {
+                found = found + 16i64;
+            }
+
+            // 32: an ordinary command-register write is not refused for having
+            // touched a register that happens to contain one owned bit. The
+            // value written is the one already there, so bus mastering is
+            // unchanged and the write proceeds.
+            found = found + is(
+                pci_config_write(function, COMMAND, 2u64, command), OK, 32i64);
+
+            return found;
+        }
+        Err(status) => { return status - 100i64; }
+    }
+}
