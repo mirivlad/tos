@@ -27,14 +27,28 @@ pub(crate) fn check_mutability(source: &SourceUnit, schema: &Schema) -> Vec<Diag
     let mut checker = MutabilityChecker {
         source,
         scopes: Vec::new(),
+        region_writes: alloc::collections::BTreeSet::new(),
         diagnostics: Vec::new(),
     };
     for function in schema.functions() {
         checker.push_scope();
         for parameter in function.signature().parameters() {
-            // Only an exclusive borrow makes a parameter assignable.
+            // Only an exclusive borrow makes a parameter assignable — **or a
+            // mutably granted region**, whose write right is part of its type
+            // rather than of the binding that names it (ADR-0037 §1, ADR-0081
+            // §2). `r[i] = v` through a `Region<mut T>` parameter is the
+            // positive vector ADR-0037 §7 requires, and refusing it because the
+            // parameter was not written `borrow mut` would be reading the
+            // grant off the binding instead of off the type.
+            //
+            // The *binding* is still not assignable: this permits writing
+            // through the region, and `r = other` remains refused because a
+            // whole-binding assignment has no projection to reach through.
             let mutable = parameter.borrow_mode() == BorrowMode::Mutable;
             checker.declare(parameter.name().text(source), mutable);
+            if mutably_granted_region(source, parameter.ty()) {
+                checker.declare_region_write(parameter.name().text(source));
+            }
         }
         checker.visit_block(function.body());
         checker.pop_scope();
@@ -45,7 +59,20 @@ pub(crate) fn check_mutability(source: &SourceUnit, schema: &Schema) -> Vec<Diag
 struct MutabilityChecker<'source> {
     source: &'source SourceUnit,
     scopes: Vec<BTreeMap<&'source str, bool>>,
+    /// Names whose **type** permits writing through them: a mutably granted
+    /// region (ADR-0037 §1). Not scoped, because a region reaches this checker
+    /// only as a parameter — nothing in V1 source constructs one.
+    region_writes: alloc::collections::BTreeSet<&'source str>,
     diagnostics: Vec<Diagnostic>,
+}
+
+/// Whether a declared type is a mutably granted region.
+fn mutably_granted_region(source: &SourceUnit, ty: &crate::parser::TypeSyntax) -> bool {
+    matches!(
+        ty,
+        crate::parser::TypeSyntax::Constructed { name, mutable: true, .. }
+            if matches!(name.text(source), "Region" | "DmaRegion")
+    )
 }
 
 impl<'source> MutabilityChecker<'source> {
@@ -61,6 +88,11 @@ impl<'source> MutabilityChecker<'source> {
         if let Some(scope) = self.scopes.last_mut() {
             scope.insert(name, mutable);
         }
+    }
+
+    /// Records that writing *through* this name is permitted by its type.
+    fn declare_region_write(&mut self, name: &'source str) {
+        self.region_writes.insert(name);
     }
 
     /// The mutability of the innermost binding of `name`, if it has one.
@@ -87,6 +119,14 @@ impl<'source> MutabilityChecker<'source> {
             return;
         };
         let name = root.text(self.source);
+        // A write **through** a mutably granted region, which its type permits
+        // whatever the binding says. A whole-binding assignment is not one:
+        // it has no projection, so it is refused by the ordinary rule below.
+        if self.region_writes.contains(name)
+            && matches!(target.form(), ExpressionForm::Field | ExpressionForm::Index)
+        {
+            return;
+        }
         // An unbound name is E1202 from the resolver; reporting it again as an
         // immutability finding would double-report one mistake.
         let Some(mutable) = self.lookup(name) else {
