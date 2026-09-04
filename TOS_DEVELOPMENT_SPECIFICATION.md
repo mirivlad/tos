@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `54421ba0abfaccf0e743d278aa111593ca486e639991cb332275504d2b9f562d`\
+Source-manifest SHA-256: `e61b9fffbeeda04fbdc1d64884409f319b238106fb3e39ed624fc7d3f88e9bb8`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2730,7 +2730,7 @@ are marked and are exactly those a process can only apply to itself.
 
 | 25 | `pci_config_read` | PCI function capability with `config_read` | reads `rdx` bytes of conventional configuration space at offset `rsi` of the function **that capability names**, and returns the value in `rdx`. `E_BAD_ARGUMENT` for a width that is not 1, 2 or 4, an offset not a multiple of the width, or an access reaching past byte 256 |
 
-| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25. **Two structures of the function are the nucleus's and are refused with `E_NO_CAPABILITY`** (ADR-0082 §5): any access touching the function's MSI-X capability, and any access that would *change* the Command register's Bus Master Enable bit. Reads of both are unaffected |
+| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25. **Two of the function's registers are the nucleus's and are refused with `E_NO_CAPABILITY`** (ADR-0082 §5): any access touching the function's MSI-X capability, and any access that would *change* the Command register's Bus Master Enable bit. Reads of both are unaffected |
 
 | 27 | `pci_bar_map` | PCI function capability with `map` | maps BAR `rsi` of the function that capability names, from page-aligned offset `rdx` for page-aligned length `r10`, writable when `r8` is non-zero, and returns a device-memory capability in `rdx` (ADR-0081 §13). The physical base is taken from the assignment's own measured BAR state — **a caller never supplies an address** — and the window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime. `E_BAD_ARGUMENT` for a BAR index outside the architectural range or an unaligned, zero or overflowing window; `E_NO_CAPABILITY` for an I/O or unimplemented BAR, a range not inside the BAR's extent, or **a window overlapping the function's MSI-X table or pending-bit array** (ADR-0082 §5); `E_LIMIT` when no mapping slot is free or the caller already holds as many windows as it may |
 

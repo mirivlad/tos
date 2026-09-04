@@ -548,7 +548,12 @@ const COMMAND: u64 = 0x04;
 /// Bus Master Enable: whether the function may issue its own memory
 /// transactions. **Nucleus-owned** (ADR-0082 §5), because an MSI-X message is
 /// one of those transactions and so is every byte of DMA.
-const BUS_MASTER: u64 = 1 << 2;
+///
+/// Its **bit position inside the byte at [`COMMAND`]**, and it is written that
+/// way rather than as a mask of the two-byte register on purpose: the rule is
+/// about one bit of one byte, and a mask of a wider register invites comparing
+/// it against whichever byte a caller happened to write.
+const BUS_MASTER_BIT: u64 = 2;
 const BAR0: u64 = 0x10;
 /// I/O-space and memory-space decoding.
 const DECODE_BITS: u16 = 0b11;
@@ -705,24 +710,41 @@ fn write_is_permitted(entry: &Assignment, offset: u64, width: u64, value: u64) -
             return false;
         }
     }
-    // Bus Master Enable. Not "the command register" — a driver has ordinary
-    // business there, memory-space decoding among it — but this one bit, which
-    // is what lets the function issue the memory writes that an MSI-X message
-    // and every byte of DMA are made of. A write that leaves it as it found it
-    // is allowed, so a caller reading the register and writing it back is not
-    // refused for having touched a bit it did not change.
-    if offset < COMMAND + 2 && COMMAND < offset + width {
-        let current = read_config(entry, COMMAND, 2);
-        // Where in the written value the command register's bits fall, so that a
-        // one-byte write at 0x04 and a four-byte write at 0x04 are judged on the
-        // same bit of the same register.
-        let shift = (COMMAND.saturating_sub(offset)) * 8;
-        let written = value >> shift;
-        if (written ^ current) & BUS_MASTER != 0 {
+    // Bus Master Enable, and **exactly** that bit. Not the Command register: a
+    // driver has ordinary business in it — memory-space decoding, parity
+    // reporting, INTx disable — and refusing all of it would be a much wider
+    // narrowing than the reason calls for. What this bit alone does is let the
+    // function issue its own memory transactions, which is what an MSI-X message
+    // and every byte of DMA are made of.
+    //
+    // **One byte, one bit, and the write must actually change it.** BME is bit 2
+    // of the byte at `COMMAND`, and nothing else: the earlier form of this test
+    // compared bit 2 of *whatever byte the caller wrote* against the register's
+    // BME, so a legal one-byte write at `COMMAND + 1` — whose bit 2 is INTx
+    // Disable and has nothing to do with bus mastering — was refused for a bit
+    // it does not contain.
+    if bus_master_is_written(offset, width) {
+        // Where BME falls inside the value the caller supplied.
+        let shift = (COMMAND - offset) * 8 + BUS_MASTER_BIT;
+        let written = (value >> shift) & 1;
+        // The byte on its own, so the comparison is between one bit and the same
+        // one bit rather than between a bit and a wider register.
+        let current = (read_config(entry, COMMAND, 1) >> BUS_MASTER_BIT) & 1;
+        if written != current {
             return false;
         }
     }
     true
+}
+
+/// Whether a configuration write includes the byte Bus Master Enable lives in.
+///
+/// `access_is_valid` has already required the offset to be a multiple of the
+/// width, so an access either contains `COMMAND` whole or does not touch it: a
+/// four-byte write at zero ends before it, and a one-byte write at `COMMAND + 1`
+/// starts after it.
+fn bus_master_is_written(offset: u64, width: u64) -> bool {
+    offset <= COMMAND && COMMAND < offset + width
 }
 
 /// A page, as this mechanism measures one.
@@ -945,7 +967,7 @@ pub fn config_write(
     if !access_is_valid(offset, width) || entry.segment != 0 {
         return Err(WriteRefused::BadArgument);
     }
-    // Two structures of this function are the nucleus's, and they are inside the
+    // Two of this function's registers are the nucleus's, and both are inside the
     // range this operation reaches (ADR-0082 §5). Checked before the transaction
     // rather than after it, so a refused write touches nothing.
     if !write_is_permitted(&entry, offset, width, value) {

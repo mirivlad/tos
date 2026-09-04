@@ -126,6 +126,27 @@ msix="$(run msix-negative virtio-msix-negative 33 --stage4-block-device)"
 [ "$(grep -c '^TOS\.RUN\.MMIO_MAPPED ' "$OUT/msix-negative/events.log" || true)" = 0 ] ||
     fail "a window was mapped over the MSI-X structures"
 
+# --- and the Bus Master refusal is about one bit of one byte -------------------
+# ADR-0082 §5's narrowing must be exactly that and no wider. BME is bit 2 of the
+# byte at 0x04; the rest of the Command register is a driver's ordinary business.
+# The first form of this rule compared bit 2 of *whatever byte was written*
+# against the register's BME, so a legal one-byte write at 0x05 — whose bit 2 is
+# INTx Disable — was refused for a bit it does not contain.
+#
+#   1 w1 @0x04 setting BME            2 w1 @0x04 leaving it       4 w1 @0x05
+#   8 w2 @0x04 setting BME           16 w2 @0x04 other bits only
+#  32 w4 @0x04 setting BME           64 w4 @0x04 leaving it
+# 128 the device really did change where allowed, and did not where refused
+bme="$(run bme-precision pci-bme-precision 33 --stage4-block-device)"
+[ -n "$bme" ] || fail "the Bus Master precision probe reported nothing"
+[ "$bme" -ge 0 ] || fail "the Bus Master precision probe reported a refusal: $bme"
+[ $(( bme & 255 )) = 255 ] || fail "the Bus Master refusal is not bit-precise: $bme"
+# Bit 8 carries what the *firmware* left, which is a fact about the machine
+# rather than a property of the rule — the rule is about a change in either
+# direction. It is recorded because whether TOS is handed a function that is
+# already a bus master is the initial-state question the lifecycle must answer.
+firmware_bme=$(( bme >> 8 ))
+
 # --- an access past its own window refuses before touching the device ----------
 run bounds virtio-mmio-bounds 75 --stage4-block-device > /dev/null || true
 grep -q 'code=RUNTIME_DEVICE_REFUSED' "$OUT/bounds/events.log" ||
@@ -171,6 +192,15 @@ echo "  the three ambient paths to interrupt authority are closed: no window ove
 echo "  the MSI-X table in either form, no write to the MSI-X capability, and no"
 echo "  write that would set Bus Master Enable — while reading the capability and"
 echo "  writing the command register unchanged both still work"
+echo "  and that last refusal is one bit of one byte: all seven width/offset cases"
+echo "  hold, including a one-byte write at 0x05 whose own bit 2 is INTx Disable"
+if [ "$firmware_bme" = 1 ]; then
+    echo "  measured, and load-bearing for the BME lifecycle: this machine's firmware"
+    echo "  hands TOS a function that is **already bus-mastering**, so the claim path"
+    echo "  cannot assume a clear bit"
+else
+    echo "  measured: this machine's firmware left Bus Master Enable clear"
+fi
 echo "  and the memory account is exactly where it started: $available frames"
 echo "  available against $pool endowed, so a device window is neither charged"
 echo "  to the pool nor credited back to it"
