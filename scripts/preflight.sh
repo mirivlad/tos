@@ -352,6 +352,10 @@ qemu_virtio_caps() {
 }
 # Stage 4B: canonical text maps a BAR window and reads the real VirtIO common
 # configuration. `full-only` for the Stage 4 device profile.
+qemu_pci_placement() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/pci-placement.sh \
+        target/preflight-qemu/pci-placement)
+}
 qemu_virtio_mmio() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/virtio-mmio.sh \
         target/preflight-qemu/virtio-mmio)
@@ -526,6 +530,7 @@ gate qemu       full-only "QEMU a textual supervisor starts services"  qemu_supe
 gate qemu       full-only "QEMU textual PCI function claim"            qemu_pci_discovery
 gate qemu       full-only "QEMU textual VirtIO capability discovery"    qemu_virtio_caps
 gate qemu       full-only "QEMU textual VirtIO register read"           qemu_virtio_mmio
+gate qemu       full-only "QEMU a claimed function cannot be relocated"   qemu_pci_placement
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0026 performance conformance"   qemu_performance_conformance

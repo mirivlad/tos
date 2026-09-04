@@ -107,11 +107,14 @@ pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
             let high: u64 = read_at(function, COMMAND_HIGH, 1u64);
             let both: u64 = read_at(function, COMMAND, 2u64);
             let quad: u64 = read_at(function, COMMAND, 4u64);
-            // What the firmware left. Not a precondition — the rule is about a
-            // change either way — but a fact this evidence carries, because
-            // whether the machine hands TOS a function that is already a bus
-            // master is exactly the initial-state question the lifecycle has to
-            // answer.
+            // What CPL 3 sees at the instant it first holds the assignment.
+            //
+            // **This must be zero, and the gate asserts it** (ADR-0082 §5d).
+            // The claim clears whatever firmware left before any capability
+            // naming this assignment can exist, so a module that finds itself
+            // holding a bus-mastering function has found the lifecycle broken.
+            // What the *firmware* left is not observable from here — that is the
+            // point — and the nucleus states it on `TOS.RUN.PCI_NORMALISED`.
             let started_mastering: u64 = has_bit(low, BUS_MASTER);
 
             // 1: one byte at 0x04, changing the owned bit.

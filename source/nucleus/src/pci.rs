@@ -107,6 +107,16 @@ struct Assignment {
     /// Written to be generic: an IRQ or DMA object will be a descendant of the
     /// same assignment under the same invariant.
     descendants: u32,
+    /// How many live descendants need the function to **decode memory**, and how
+    /// many need it to **issue its own transactions** (ADR-0082 §5b, §5d).
+    ///
+    /// **Two counters and not one, because they are two independent
+    /// predicates.** A mapped window needs decoding and no bus mastering; a DMA
+    /// mapping will need bus mastering and no decoding; an MSI-X source happens
+    /// to need both — which is exactly why a single counter would be right about
+    /// the source and wrong about the other two.
+    memory_decoding: u32,
+    bus_mastering: u32,
     /// Each BAR's base and extent, measured once at claim time (§3).
     bars: [Bar; BARS],
     /// Where this function's MSI-X structures are, read once at claim time.
@@ -115,7 +125,65 @@ struct Assignment {
     /// two refusals it feeds (ADR-0082 §5) must hold for the first mapping and
     /// the first configuration write, not from the second onwards.
     msix: MsiX,
+    /// Where this function's conventional MSI capability is, if it has one.
+    ///
+    /// Reserved for the same reason as MSI-X and by the same rule (ADR-0082
+    /// §5c): the authority rule is about *interrupts*, not about a transport, so
+    /// a device offering MSI would otherwise offer an ambient route around
+    /// `platform.irq.Source`. Stage 4 builds no MSI delivery path, and needs
+    /// none — a refusal requires no backend.
+    msi: Msi,
+    /// Which header layout this function reports, read once at claim time.
+    ///
+    /// **The resource-placement rule is expressed from this** (ADR-0082 §5a). A
+    /// byte-offset rule that ignored it would be wrong in both directions on a
+    /// bridge: it would refuse nothing that matters and permit the registers
+    /// that re-route whole buses.
+    header: Header,
     live: bool,
+}
+
+/// Which of the two conventional header layouts a function reports.
+///
+/// Only the low seven bits of the header-type register select the layout; bit 7
+/// says the device is multi-function and is not part of this question.
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum Header {
+    /// An ordinary function: six BARs, and its expansion ROM at `0x30`.
+    Type0,
+    /// A bridge: two BARs, bus numbers and forwarding windows where a Type-0
+    /// keeps BARs, and its expansion ROM at `0x38`.
+    Type1,
+    /// Neither — a CardBus bridge, or a layout this nucleus does not know.
+    /// **Every conventional-space write is refused**, because a rule stated over
+    /// a layout nobody has read is not a rule.
+    Unknown,
+}
+
+/// Where a function keeps its conventional MSI capability, and how big it is.
+///
+/// **The extent is derived, never assumed** (ADR-0082 §5c). MSI's structure is
+/// 10, 14 or 24 bytes depending on two bits of its own Message Control, and
+/// reserving a blanket maximum would reserve bytes belonging to whatever
+/// capability follows it — refusing writes to a structure this decision says
+/// nothing about.
+#[derive(Clone, Copy)]
+struct Msi {
+    /// The capability's offset, or zero when the function has none.
+    capability: u8,
+    /// How many bytes it occupies, derived from its Message Control.
+    bytes: u64,
+}
+
+impl Msi {
+    const ABSENT: Self = Self {
+        capability: 0,
+        bytes: 0,
+    };
+
+    fn present(&self) -> bool {
+        self.capability != 0 && self.bytes != 0
+    }
 }
 
 /// Where a function keeps the structures that decide where its interrupts go.
@@ -177,8 +245,11 @@ impl MsiX {
 /// One MSI-X table entry: message address low, high, message data, vector
 /// control.
 const MSIX_ENTRY_BYTES: u64 = 16;
-/// The capability identifier the PCI specification assigns to MSI-X.
+/// The capability identifiers the PCI specification assigns to the two
+/// message-signalled interrupt mechanisms. Both are reserved: ADR-0082's
+/// authority rule is about interrupts and not about a transport.
 const CAP_ID_MSIX: u64 = 0x11;
+const CAP_ID_MSI: u64 = 0x05;
 /// Where the capability list starts, and the bounds a well-formed one stays in.
 const CAPABILITY_POINTER: u64 = 0x34;
 const FIRST_CAPABILITY: u64 = 0x40;
@@ -234,8 +305,12 @@ impl Assignment {
         // register nobody wrote — names nothing here either.
         generation: 1,
         descendants: 0,
+        memory_decoding: 0,
+        bus_mastering: 0,
         bars: [Bar::EMPTY; BARS],
         msix: MsiX::ABSENT,
+        msi: Msi::ABSENT,
+        header: Header::Unknown,
         names: 0,
         live: false,
     };
@@ -389,18 +464,33 @@ pub fn claim(
     entry.function = function;
     entry.names = 0;
     entry.descendants = 0;
+    entry.memory_decoding = 0;
+    entry.bus_mastering = 0;
     entry.bars = [Bar::EMPTY; BARS];
     entry.msix = MsiX::ABSENT;
+    entry.msi = Msi::ABSENT;
+    entry.header = Header::Unknown;
     entry.live = true;
     let measured = *entry;
     let generation = entry.generation;
     // **Before the caller can hold anything.** Where this function's interrupt
-    // structures live is what two refusals are made of (ADR-0082 §5), and a
-    // refusal that only worked from the second mapping onwards would not be one.
-    // Reading it here also puts it under the same exclusivity as BAR sizing:
-    // nothing else holds this function, so nothing else is walking its
-    // capability list at the same time.
-    table[index].msix = find_msix(&measured);
+    // structures live is what two refusals are made of (ADR-0082 §5, §5c), and
+    // which header layout it reports is what the placement rule is stated over
+    // (§5a). A refusal that only worked from the second mapping onwards would
+    // not be one. Reading it here also puts it under the same exclusivity as
+    // BAR sizing: nothing else holds this function, so nothing else is walking
+    // its capability list at the same time.
+    table[index].header = read_header(&measured);
+    let (msix, msi) = find_interrupt_capabilities(&measured);
+    table[index].msix = msix;
+    table[index].msi = msi;
+    let measured = table[index];
+    // **The function is put into a defined state before CPL 3 can name it**
+    // (ADR-0082 §5b, §5c, §5d). Whatever the firmware left is discarded rather
+    // than inherited: this machine's leaves the reference function already
+    // bus-mastering, and a lifecycle that only ever *set* these bits would leave
+    // every claimed function enabled for reasons that predate TOS entirely.
+    normalise(&measured);
     // Sizing happens **once, here**, under the exclusivity this claim just
     // established (ADR-0081 §13). Nothing else can hold this function, so
     // nothing else can be probing it; and a later mapping never repeats the
@@ -478,6 +568,154 @@ fn size_bars(entry: &Assignment) -> [Bar; BARS] {
     bars
 }
 
+/// Puts a freshly claimed function into the state the lifecycles dictate,
+/// whatever the firmware left (ADR-0082 §5b, §5c, §5d).
+///
+/// **Called inside the claim, before any capability naming this assignment can
+/// exist**, so no CPL-3 instruction ever runs against a function enabled for
+/// reasons that predate TOS. That is not a hypothetical: OVMF hands this
+/// nucleus a `virtio-blk-pci` function with Bus Master Enable already set.
+///
+/// Four post-conditions, and each is the "no descendants yet" case of a
+/// predicate rather than a special rule for claiming:
+///
+/// - Bus Master Enable **clear** — no bus-mastering descendant exists (§5d);
+/// - Memory Space Enable **clear** — no memory-decoding descendant exists (§5b);
+/// - MSI-X Enable **off** and Function Mask **on** (§5c);
+/// - MSI Enable **off** (§5c).
+///
+/// The pre-claim state is deliberately **not** recorded and never restored.
+/// Restoring "set" would hand the next claimant a bus-mastering function for a
+/// reason that is a fact about a previous environment, and restoring "clear"
+/// where it was clear is indistinguishable from not restoring.
+fn normalise(entry: &Assignment) {
+    let command = read_config(entry, COMMAND, 2);
+    let cleared = command & !((1 << MEMORY_SPACE_BIT) | (1 << BUS_MASTER_BIT));
+    if cleared != command {
+        write_config(entry, COMMAND, 2, cleared);
+    }
+    // **What the firmware left, on the record.** After this function returns no
+    // process can observe it — that is the point — so the only place it can be
+    // stated is here, by the only party that saw it. A reader checking that a
+    // claim starts from a defined state needs to know it was not already there.
+    tos_serial::puts(b"TOS.RUN.PCI_NORMALISED segment=");
+    tos_serial::put_u32_decimal(u32::from(entry.segment));
+    tos_serial::puts(b" bus=");
+    tos_serial::put_u32_decimal(u32::from(entry.bus));
+    tos_serial::puts(b" device=");
+    tos_serial::put_u32_decimal(u32::from(entry.device));
+    tos_serial::puts(b" function=");
+    tos_serial::put_u32_decimal(u32::from(entry.function));
+    tos_serial::puts(b" found_memory_space=");
+    tos_serial::put_u32_decimal(((command >> MEMORY_SPACE_BIT) & 1) as u32);
+    tos_serial::puts(b" found_bus_master=");
+    tos_serial::put_u32_decimal(((command >> BUS_MASTER_BIT) & 1) as u32);
+    tos_serial::puts(b" msix=");
+    tos_serial::puts(if entry.msix.present() {
+        b"disabled_masked".as_slice()
+    } else {
+        b"absent".as_slice()
+    });
+    tos_serial::puts(b" msi=");
+    tos_serial::puts(if entry.msi.present() {
+        b"disabled".as_slice()
+    } else {
+        b"absent".as_slice()
+    });
+    // **The extent, because "derived" and "blanket" are indistinguishable from
+    // a refusal** (ADR-0082 §5c). MSI's structure is 10, 14, 20 or 24 bytes
+    // depending on two bits of its own Message Control, and a nucleus that
+    // reserved the maximum would refuse writes to whatever capability follows a
+    // shorter one. The number here is what was derived, and it is the only way a
+    // reader can tell the two apart.
+    tos_serial::puts(b" msi_bytes=");
+    tos_serial::put_u32_decimal(entry.msi.bytes as u32);
+    tos_serial::puts(b" asserted_by=nucleus\r\n");
+    if entry.msix.present() {
+        // Enable off, Function Mask on. Both, and in one write: a device left
+        // enabled by firmware must not be able to deliver between the two.
+        let control = u64::from(entry.msix.capability) + MSIX_MESSAGE_CONTROL;
+        let value = read_config(entry, control, 2);
+        write_config(
+            entry,
+            control,
+            2,
+            (value & !MSIX_ENABLE) | MSIX_FUNCTION_MASK,
+        );
+    }
+    if entry.msi.present() {
+        // MSI Enable is bit 0 of its Message Control. There is no function mask
+        // to set: disabling it is the whole of what this mechanism offers.
+        let control = u64::from(entry.msi.capability) + 0x02;
+        let value = read_config(entry, control, 2);
+        write_config(entry, control, 2, value & !MSI_ENABLE);
+    }
+}
+
+/// MSI-X Message Control: the enable bit, and the mask that silences every entry
+/// regardless of its own.
+const MSIX_ENABLE: u64 = 1 << 15;
+const MSIX_FUNCTION_MASK: u64 = 1 << 14;
+/// Conventional MSI Message Control: its enable bit.
+const MSI_ENABLE: u64 = 1 << 0;
+
+/// Reads which header layout a function reports.
+fn read_header(entry: &Assignment) -> Header {
+    const HEADER_TYPE: u64 = 0x0E;
+    // Bit 7 is the multi-function flag and says nothing about the layout.
+    match read_config(entry, HEADER_TYPE, 1) & 0x7F {
+        0 => Header::Type0,
+        1 => Header::Type1,
+        _ => Header::Unknown,
+    }
+}
+
+/// The half-open byte ranges of conventional configuration space whose value is
+/// the platform's for the life of the assignment (ADR-0082 §5a, §5b).
+///
+/// **Resource placement, not resources.** These registers say *where* the
+/// function decodes and *which* addresses a bridge forwards. ADR-0081 §13
+/// measures them once at claim time and every later mapping derives its physical
+/// base from that measurement, so a function that could move them could move a
+/// live window — and the MSI-X table with it — out from under everything that
+/// cached where it was.
+///
+/// Returned as a fixed array with a used length, because ring 0 does not
+/// allocate and the set is closed and small.
+fn placement_ranges(header: Header) -> ([(u64, u64); PLACEMENT_RANGES], usize) {
+    let mut ranges = [(0u64, 0u64); PLACEMENT_RANGES];
+    match header {
+        Header::Type0 => {
+            // Six base-address registers, and the expansion ROM's own.
+            ranges[0] = (BAR0, 6 * 4);
+            ranges[1] = (0x30, 4);
+            ([ranges[0], ranges[1], (0, 0), (0, 0), (0, 0), (0, 0)], 2)
+        }
+        Header::Type1 => {
+            // Two BARs; then the bus numbers and every forwarding window, which
+            // are a bridge's resource placement exactly as a BAR is a
+            // function's; then its expansion ROM, which lives at a different
+            // offset from a Type-0's.
+            ranges[0] = (BAR0, 2 * 4);
+            // Primary, secondary and subordinate bus numbers. The secondary
+            // latency timer at 0x1B is left alone: it is not routing.
+            ranges[1] = (0x18, 3);
+            // I/O base and limit, and the memory and prefetchable windows.
+            ranges[2] = (0x1C, 2);
+            ranges[3] = (0x20, 8);
+            // The upper halves of the I/O window and of the prefetchable window.
+            ranges[4] = (0x28, 12);
+            ranges[5] = (0x38, 4);
+            (ranges, 6)
+        }
+        // A layout this nucleus has not read is one it cannot state a rule over.
+        Header::Unknown => (ranges, 0),
+    }
+}
+
+/// How many placement ranges the widest header needs.
+const PLACEMENT_RANGES: usize = 6;
+
 /// Walks a function's capability list for MSI-X, reading nothing else.
 ///
 /// **Bounded three ways**, because a capability list is data a device supplies
@@ -490,34 +728,71 @@ fn size_bars(entry: &Assignment) -> [Bar; BARS] {
 /// A function with no capability list, or one with no MSI-X capability, produces
 /// [`MsiX::ABSENT`] — which is not an error. Most functions have no MSI-X, and
 /// the two refusals it feeds simply have nothing to refuse.
-fn find_msix(entry: &Assignment) -> MsiX {
+/// One walk, both capabilities, because walking the list twice would read a
+/// device-supplied structure twice and could reach two different answers.
+fn find_interrupt_capabilities(entry: &Assignment) -> (MsiX, Msi) {
     // Bit 4 of the status register says whether there is a capability list at
     // all. A device without one may leave 0x34 holding anything.
     const STATUS: u64 = 0x06;
     const HAS_CAPABILITY_LIST: u64 = 1 << 4;
+    let mut msix = MsiX::ABSENT;
+    let mut msi = Msi::ABSENT;
     if read_config(entry, STATUS, 2) & HAS_CAPABILITY_LIST == 0 {
-        return MsiX::ABSENT;
+        return (msix, msi);
     }
     let mut at = read_config(entry, CAPABILITY_POINTER, 1) & !0x3;
     let mut steps = 0;
     while steps < MAX_CAPABILITY_STEPS {
         if !(FIRST_CAPABILITY..=LAST_CAPABILITY).contains(&at) {
-            return MsiX::ABSENT;
+            break;
         }
-        if read_config(entry, at, 1) == CAP_ID_MSIX {
-            return read_msix_at(entry, at);
+        match read_config(entry, at, 1) {
+            CAP_ID_MSIX => msix = read_msix_at(entry, at),
+            CAP_ID_MSI => msi = read_msi_at(entry, at),
+            _ => {}
         }
         let next = read_config(entry, at + 1, 1) & !0x3;
         // A pointer that does not move is a malformed list, and following it
         // would be the loop this bound exists to prevent reaching its limit for
         // no reason.
         if next == at {
-            return MsiX::ABSENT;
+            break;
         }
         at = next;
         steps += 1;
     }
-    MsiX::ABSENT
+    (msix, msi)
+}
+
+/// Reads one conventional MSI capability, deriving its extent from its own
+/// Message Control rather than reserving a maximum (ADR-0082 §5c).
+///
+/// Two bits decide the size, and both are the device's own report: a 64-bit
+/// message address adds four bytes, and per-vector masking adds ten more. The
+/// four shapes are 10, 14, 20 and 24 bytes. Reserving 24 for a capability that
+/// occupies 10 would refuse writes to whatever capability follows it.
+fn read_msi_at(entry: &Assignment, capability: u64) -> Msi {
+    const MESSAGE_CONTROL: u64 = 0x02;
+    const ADDRESS_IS_64_BIT: u64 = 1 << 7;
+    const PER_VECTOR_MASKING: u64 = 1 << 8;
+    let control = read_config(entry, capability + MESSAGE_CONTROL, 2);
+    let mut bytes = 10;
+    if control & ADDRESS_IS_64_BIT != 0 {
+        bytes += 4;
+    }
+    if control & PER_VECTOR_MASKING != 0 {
+        bytes += 10;
+    }
+    // A capability claiming to extend past conventional space is malformed, and
+    // a partial reservation would be worse than none: the whole structure is
+    // reserved or the capability is treated as absent.
+    if capability + bytes > CONVENTIONAL_CONFIG_BYTES {
+        return Msi::ABSENT;
+    }
+    Msi {
+        capability: capability as u8,
+        bytes,
+    }
 }
 
 /// Reads one MSI-X capability structure, whose offset the walk above found.
@@ -554,6 +829,22 @@ const COMMAND: u64 = 0x04;
 /// about one bit of one byte, and a mask of a wider register invites comparing
 /// it against whichever byte a caller happened to write.
 const BUS_MASTER_BIT: u64 = 2;
+/// Memory Space Enable, bit 1 of the same byte. **A second, independent
+/// predicate** (ADR-0082 §5b): a window is worthless if the function does not
+/// decode it, and a DMA mapping needs nothing of it. Merging the two would be
+/// right about an interrupt source and wrong about both of the others.
+const MEMORY_SPACE_BIT: u64 = 1;
+/// I/O Space Enable, bit 0. Owned on a **bridge only**, where it gates a
+/// forwarding window; on an ordinary function this stage refuses I/O BARs
+/// outright, so nothing the contract grants depends on it.
+const IO_SPACE_BIT: u64 = 0;
+/// A bridge's Bridge Control register, and the four bits of its low byte that
+/// decide what it forwards and whether it resets what is behind it: ISA Enable,
+/// VGA Enable, VGA 16-bit Decode, Secondary Bus Reset. The other four bits of
+/// that byte are parity, SERR, master-abort mode and fast back-to-back, and are
+/// deliberately **not** reserved for sharing a register with these.
+const BRIDGE_CONTROL: u64 = 0x3E;
+const BRIDGE_CONTROL_ROUTING_BITS: [u64; 4] = [2, 3, 4, 6];
 const BAR0: u64 = 0x10;
 /// I/O-space and memory-space decoding.
 const DECODE_BITS: u16 = 0b11;
@@ -699,6 +990,13 @@ fn overlaps_msix(entry: &Assignment, bar: u8, offset: u64, length: u64) -> bool 
 /// master are facts about hardware, and ADR-0079 already settles that a fact is
 /// not authority.
 fn write_is_permitted(entry: &Assignment, offset: u64, width: u64, value: u64) -> bool {
+    // A header layout this nucleus has not read is one it cannot state a rule
+    // over, so nothing in conventional space may be written. Fail closed: the
+    // alternative is a function whose resource registers are unprotected because
+    // its header was unfamiliar.
+    if entry.header == Header::Unknown {
+        return false;
+    }
     // The MSI-X capability structure: its message control word enables, disables
     // and masks the whole mechanism, and its table and PBA words say where the
     // structures are. A caller that could move them could move the table out
@@ -710,48 +1008,156 @@ fn write_is_permitted(entry: &Assignment, offset: u64, width: u64, value: u64) -
             return false;
         }
     }
-    // Bus Master Enable, and **exactly** that bit. Not the Command register: a
-    // driver has ordinary business in it — memory-space decoding, parity
-    // reporting, INTx disable — and refusing all of it would be a much wider
-    // narrowing than the reason calls for. What this bit alone does is let the
-    // function issue its own memory transactions, which is what an MSI-X message
-    // and every byte of DMA are made of.
-    //
-    // **One byte, one bit, and the write must actually change it.** BME is bit 2
-    // of the byte at `COMMAND`, and nothing else: the earlier form of this test
-    // compared bit 2 of *whatever byte the caller wrote* against the register's
-    // BME, so a legal one-byte write at `COMMAND + 1` — whose bit 2 is INTx
-    // Disable and has nothing to do with bus mastering — was refused for a bit
-    // it does not contain.
-    if bus_master_is_written(offset, width) {
-        // Where BME falls inside the value the caller supplied.
-        let shift = (COMMAND - offset) * 8 + BUS_MASTER_BIT;
-        let written = (value >> shift) & 1;
-        // The byte on its own, so the comparison is between one bit and the same
-        // one bit rather than between a bit and a wider register.
-        let current = (read_config(entry, COMMAND, 1) >> BUS_MASTER_BIT) & 1;
-        if written != current {
+    // The conventional MSI capability, over the extent the device itself
+    // reported (ADR-0082 §5c). Reserved for the same reason as MSI-X: a device
+    // offering it would otherwise offer an ambient route around
+    // `platform.irq.Source`, through a different capability.
+    if entry.msi.present() {
+        let start = u64::from(entry.msi.capability);
+        let end = start + entry.msi.bytes;
+        if offset < end && start < offset + width {
             return false;
+        }
+    }
+    // Resource placement, for the lifetime of the assignment (ADR-0082 §5a).
+    // Where the function decodes, and — on a bridge — which addresses it
+    // forwards. A 64-bit BAR pair is one placement and both halves are in the
+    // same range, so neither half can move while the other looks untouched.
+    let (ranges, used) = placement_ranges(entry.header);
+    for (start, bytes) in &ranges[..used] {
+        if changes_bytes(entry, offset, width, value, *start, *bytes) {
+            return false;
+        }
+    }
+    // Three bits of the Command register, each owned for its own reason and each
+    // judged **on its own bit**. Not the register: a driver has ordinary
+    // business in it — parity reporting, SERR, INTx disable — and refusing all
+    // of it would be a far wider narrowing than the reasons call for.
+    //
+    // **A one-byte write at `COMMAND + 1` touches none of them.** The earlier
+    // form of this test compared bit 2 of whatever byte the caller wrote against
+    // the register's Bus Master Enable, so such a write — whose own bit 2 is
+    // INTx Disable — was refused for a bit it does not contain.
+    for bit in owned_command_bits(entry.header) {
+        if changes_bit(entry, offset, width, value, COMMAND, *bit) {
+            return false;
+        }
+    }
+    // A bridge forwards, and four of its Bridge Control bits decide what and to
+    // whom. The other four in that byte are parity, SERR, master-abort mode and
+    // fast back-to-back — a driver's ordinary business, and deliberately left
+    // alone rather than reserved for sharing a register (ADR-0082 §5a).
+    if entry.header == Header::Type1 {
+        for bit in BRIDGE_CONTROL_ROUTING_BITS {
+            if changes_bit(entry, offset, width, value, BRIDGE_CONTROL, bit) {
+                return false;
+            }
         }
     }
     true
 }
 
-/// Whether a configuration write includes the byte Bus Master Enable lives in.
+/// Which bits of the Command register this assignment owns.
 ///
-/// `access_is_valid` has already required the offset to be a multiple of the
-/// width, so an access either contains `COMMAND` whole or does not touch it: a
-/// four-byte write at zero ends before it, and a one-byte write at `COMMAND + 1`
-/// starts after it.
-fn bus_master_is_written(offset: u64, width: u64) -> bool {
-    offset <= COMMAND && COMMAND < offset + width
+/// Memory Space Enable and Bus Master Enable on every function, under §5b's and
+/// §5d's separate predicates; I/O Space Enable additionally on a bridge, where
+/// it gates a forwarding window rather than a BAR this stage refuses anyway.
+fn owned_command_bits(header: Header) -> &'static [u64] {
+    match header {
+        Header::Type1 => &[IO_SPACE_BIT, MEMORY_SPACE_BIT, BUS_MASTER_BIT],
+        _ => &[MEMORY_SPACE_BIT, BUS_MASTER_BIT],
+    }
+}
+
+/// Whether a write would change any byte of `[start, start + bytes)`.
+///
+/// **Byte-precise, so that writing back what is there is permitted.** A caller
+/// that reads a register and writes it back unchanged has changed nothing, and
+/// refusing it would be refusing an operation with no effect. Only the bytes the
+/// write actually covers are compared.
+fn changes_bytes(
+    entry: &Assignment,
+    offset: u64,
+    width: u64,
+    value: u64,
+    start: u64,
+    bytes: u64,
+) -> bool {
+    let mut at = if offset > start { offset } else { start };
+    let stop = {
+        let write_end = offset + width;
+        let range_end = start + bytes;
+        if write_end < range_end {
+            write_end
+        } else {
+            range_end
+        }
+    };
+    while at < stop {
+        let written = (value >> ((at - offset) * 8)) & 0xFF;
+        if written != read_config(entry, at, 1) {
+            return true;
+        }
+        at += 1;
+    }
+    false
+}
+
+/// Whether a write would change one bit of one byte.
+///
+/// The same "unchanged is permitted" rule as [`changes_bytes`], one bit wide.
+/// The byte is read on its own, so the comparison is between one bit and the
+/// same one bit rather than between a bit and whatever wider register contains
+/// it.
+fn changes_bit(
+    entry: &Assignment,
+    offset: u64,
+    width: u64,
+    value: u64,
+    byte: u64,
+    bit: u64,
+) -> bool {
+    if offset > byte || byte >= offset + width {
+        return false;
+    }
+    let written = (value >> ((byte - offset) * 8 + bit)) & 1;
+    let current = (read_config(entry, byte, 1) >> bit) & 1;
+    written != current
 }
 
 /// A page, as this mechanism measures one.
 const FRAME_SIZE: u64 = 4096;
 
+/// What a descendant needs the function to be able to do.
+///
+/// **Two independent questions, asked of the mechanism rather than of the object
+/// kind** (ADR-0082 §5b, §5d). The next descendant class is classified by
+/// answering them, not by being compared against the ones already here.
+#[derive(Clone, Copy)]
+pub struct Needs {
+    /// Whether the mechanism requires the function to decode memory accesses
+    /// the CPU makes to it.
+    pub memory_decoding: bool,
+    /// Whether the mechanism requires the function to issue memory transactions
+    /// of its own.
+    pub bus_mastering: bool,
+}
+
+impl Needs {
+    /// A mapped device window. The CPU reads and writes the device, so the
+    /// function must decode; the device initiates nothing, so it need not
+    /// master the bus.
+    pub const MMIO: Needs = Needs {
+        memory_decoding: true,
+        bus_mastering: false,
+    };
+}
+
 /// Records that a descendant hardware object was created under an assignment.
-pub fn take_descendant(index: u32, generation: u32) -> Result<(), ()> {
+///
+/// The enables are applied **before this returns**, so the descendant is usable
+/// the instant it is nameable and never in the window between.
+pub fn take_descendant(index: u32, generation: u32, needs: Needs) -> Result<(), ()> {
     let usable = index as usize;
     if assignment(index, generation).is_none() {
         return Err(());
@@ -759,11 +1165,19 @@ pub fn take_descendant(index: u32, generation: u32) -> Result<(), ()> {
     // SAFETY: single-context nucleus; the index was checked by `assignment`.
     let entry = &mut unsafe { table() }[usable];
     entry.descendants = entry.descendants.checked_add(1).ok_or(())?;
+    if needs.memory_decoding {
+        entry.memory_decoding = entry.memory_decoding.checked_add(1).ok_or(())?;
+    }
+    if needs.bus_mastering {
+        entry.bus_mastering = entry.bus_mastering.checked_add(1).ok_or(())?;
+    }
+    let settled = *entry;
+    apply_enables(&settled);
     Ok(())
 }
 
 /// Drops a descendant, ending the assignment when nothing reaches it any more.
-pub fn drop_descendant(index: u32, generation: u32) {
+pub fn drop_descendant(index: u32, generation: u32, needs: Needs) {
     let usable = index as usize;
     if assignment(index, generation).is_none() {
         return;
@@ -771,7 +1185,67 @@ pub fn drop_descendant(index: u32, generation: u32) {
     // SAFETY: as above.
     let entry = &mut unsafe { table() }[usable];
     entry.descendants = entry.descendants.saturating_sub(1);
+    if needs.memory_decoding {
+        entry.memory_decoding = entry.memory_decoding.saturating_sub(1);
+    }
+    if needs.bus_mastering {
+        entry.bus_mastering = entry.bus_mastering.saturating_sub(1);
+    }
+    let settled = *entry;
+    // **Before the assignment may end.** A function whose last descendant has
+    // gone must stop decoding and stop mastering while there is still an
+    // assignment to say so; afterwards there is no object left to act through.
+    apply_enables(&settled);
+    // SAFETY: as above; re-borrowed because `apply_enables` reads the device.
+    let entry = &mut unsafe { table() }[usable];
     end_if_unreachable(entry);
+}
+
+/// Makes the function's two enable bits agree with its two predicates.
+///
+/// > Memory Space Enable is set **iff** the assignment has at least one live
+/// > memory-decoding descendant.
+/// > Bus Master Enable is set **iff** it has at least one live bus-mastering
+/// > descendant.
+///
+/// Idempotent, and written as one read-modify-write so that a transition
+/// affecting both bits is one configuration transaction rather than a state in
+/// between. Nothing is written when nothing changes, so the device sees a write
+/// only when a predicate actually flipped.
+fn apply_enables(entry: &Assignment) {
+    if !entry.live {
+        return;
+    }
+    let command = read_config(entry, COMMAND, 2);
+    let mut wanted = command & !((1 << MEMORY_SPACE_BIT) | (1 << BUS_MASTER_BIT));
+    if entry.memory_decoding > 0 {
+        wanted |= 1 << MEMORY_SPACE_BIT;
+    }
+    if entry.bus_mastering > 0 {
+        wanted |= 1 << BUS_MASTER_BIT;
+    }
+    if wanted != command {
+        write_config(entry, COMMAND, 2, wanted);
+        // Only when a predicate actually flipped, so the log carries transitions
+        // and not a line per descendant. Both counts appear on every one of
+        // them, which is what makes the independence of the two predicates
+        // readable rather than asserted: a window moves one and not the other.
+        tos_serial::puts(b"TOS.RUN.PCI_ENABLES bus=");
+        tos_serial::put_u32_decimal(u32::from(entry.bus));
+        tos_serial::puts(b" device=");
+        tos_serial::put_u32_decimal(u32::from(entry.device));
+        tos_serial::puts(b" function=");
+        tos_serial::put_u32_decimal(u32::from(entry.function));
+        tos_serial::puts(b" memory_decoding=");
+        tos_serial::put_u32_decimal(entry.memory_decoding);
+        tos_serial::puts(b" bus_mastering=");
+        tos_serial::put_u32_decimal(entry.bus_mastering);
+        tos_serial::puts(b" memory_space=");
+        tos_serial::put_u32_decimal(((wanted >> MEMORY_SPACE_BIT) & 1) as u32);
+        tos_serial::puts(b" bus_master=");
+        tos_serial::put_u32_decimal(((wanted >> BUS_MASTER_BIT) & 1) as u32);
+        tos_serial::puts(b" asserted_by=nucleus\r\n");
+    }
 }
 
 /// Ends an assignment when neither a name nor a descendant reaches it.
