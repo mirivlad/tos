@@ -1,0 +1,209 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4B: the VirtIO PCI capability structures, discovered by canonical text.
+//
+// Everything VirtIO-specific in this system lives here. The nucleus performs a
+// configuration transaction against the function a capability names and knows
+// nothing else — not what a vendor-specific PCI capability is, not that
+// `cfg_type` 1 means the common configuration, not that this device is a block
+// device. If a constant named `VIRTIO_PCI_CAP_*` ever appears under
+// `nucleus/src/`, the boundary has moved and this comment is the place it was
+// supposed to stop.
+//
+// What this module does:
+//
+//   1. reads the PCI capability pointer at 0x34;
+//   2. walks the linked list, bounded;
+//   3. finds the vendor-specific (0x09) entries;
+//   4. reads each one's `cfg_type`, BAR index, offset and length;
+//   5. reports which of the four modern VirtIO structures it identified, where
+//      each lives, and whether every one of them was well-formed.
+//
+// It reads and does not write. Nothing here touches a BAR, maps anything, or
+// initialises the device.
+
+module system.boot.init version 1.1 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 1048576,
+    stack: 32KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus,
+    bus_number: u64,
+    device: u64,
+    function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig,
+    offset: u64,
+    width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+// One byte of configuration space, or a sentinel this module can tell from data.
+//
+// 0x100 is outside a byte, so it can never be a value the device returned.
+fn byte_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 1u64)) {
+        Ok(value) => {
+            return value;
+        }
+        Err(status) => {
+            return 256u64;
+        }
+    }
+}
+
+fn dword_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 4u64)) {
+        Ok(value) => {
+            return value;
+        }
+        Err(status) => {
+            return 0u64;
+        }
+    }
+}
+
+// **The traversal is bounded, and the bound is not a guess.** Conventional
+// configuration space is 256 bytes and the smallest capability header is four,
+// so no well-formed chain has more than 64 entries. A chain that would run past
+// that is malformed — a loop, or a pointer into itself — and this stops rather
+// than following it. A capability list is device-supplied data, and a device
+// that lies must not be able to hang the process reading it.
+const MAX_CAPABILITIES: u64 = 64u64;
+
+// Where a capability may begin: after the 64-byte standard header, inside
+// conventional space, and with room for the sixteen bytes a VirtIO capability
+// occupies. A pointer outside that is refused rather than read.
+const FIRST_CAPABILITY: u64 = 64u64;
+const LAST_CAPABILITY: u64 = 240u64;
+
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            return walk(function);
+        }
+        Err(status) => {
+            return status - 100i64;
+        }
+    }
+}
+
+// The packed observation, decoded by the harness:
+//
+//   bits  0.. 3   which structures were identified: 1 common, 2 notify,
+//                 4 ISR, 8 device configuration
+//   bit   4       every one of those four had a BAR index inside the
+//                 architectural range and a non-zero length — so each one's
+//                 offset and length were genuinely read, not merely its type
+//   bits  8..11   common configuration BAR index
+//   bits 12..15   notify BAR index
+//   bits 16..19   ISR BAR index
+//   bits 20..23   device configuration BAR index
+//   bits 24..43   common configuration offset within its BAR
+//   bits 44..62   common configuration length
+fn walk(function: platform.pci.FunctionConfig) -> i64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut found: u64 = 0u64;
+    let mut bars: u64 = 0u64;
+    let mut common_offset: u64 = 0u64;
+    let mut common_length: u64 = 0u64;
+    let mut wellformed: u64 = 1u64;
+    let mut at: u64 = byte_at(function, 52u64);
+    let mut steps: u64 = 0u64;
+    while (steps < MAX_CAPABILITIES) {
+        if (at == 0u64) {
+            steps = MAX_CAPABILITIES;
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (at < FIRST_CAPABILITY) {
+                // A pointer below the standard header cannot be a capability.
+                // Malformed: stop, and say so by leaving `wellformed` clear.
+                wellformed = 0u64;
+                steps = MAX_CAPABILITIES;
+            }
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (at > LAST_CAPABILITY) {
+                wellformed = 0u64;
+                steps = MAX_CAPABILITIES;
+            }
+        }
+        if (steps < MAX_CAPABILITIES) {
+            let vendor: u64 = byte_at(function, at);
+            let next: u64 = byte_at(function, at + 1u64);
+            if (vendor == 9u64) {
+                let kind: u64 = byte_at(function, at + 3u64);
+                let bar: u64 = byte_at(function, at + 4u64);
+                let offset: u64 = dword_at(function, at + 8u64);
+                let length: u64 = dword_at(function, at + 12u64);
+                // Well-formedness is asked of the four structures this module
+                // is looking for, and of those only. A vendor capability of
+                // another `cfg_type` — the PCI-access window, say — has its own
+                // shape, and judging it by these rules would report a device as
+                // malformed for carrying something this module does not use.
+                if (kind < 5u64) {
+                    if (kind > 0u64) {
+                        if (bar > 5u64) {
+                            wellformed = 0u64;
+                        }
+                        if (length == 0u64) {
+                            wellformed = 0u64;
+                        }
+                    }
+                }
+                if (kind == 1u64) {
+                    found = found | 1u64;
+                    bars = bars | (bar << 0u64);
+                    common_offset = offset;
+                    common_length = length;
+                }
+                if (kind == 2u64) {
+                    found = found | 2u64;
+                    bars = bars | (bar << 4u64);
+                }
+                if (kind == 3u64) {
+                    found = found | 4u64;
+                    bars = bars | (bar << 8u64);
+                }
+                if (kind == 4u64) {
+                    found = found | 8u64;
+                    bars = bars | (bar << 12u64);
+                }
+            }
+            at = next;
+            steps = steps + 1u64;
+        }
+    }
+    let packed: u64 = found
+        | (wellformed << 4u64)
+        | (bars << 8u64)
+        | ((common_offset & 1048575u64) << 24u64)
+        | ((common_length & 524287u64) << 44u64);
+    match (to_i64(packed)) {
+        Ok(value) => {
+            return value;
+        }
+        Err(problem) => {
+            return -900i64;
+        }
+    }
+}
