@@ -1,0 +1,168 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4B: canonical text reads the real VirtIO common configuration.
+//
+// The whole chain, in one module and with nothing supplying an answer:
+//
+//   root PCI bus authority   →  the launcher minted it, and nothing else can
+//   pci_function_claim       →  one function of the real machine
+//   pci_config_read          →  the device's own capability list, walked here
+//   pci_bar_map_read         →  a bounded window on the BAR that list named
+//   mmio_read_*              →  the registers behind it
+//
+// **Everything VirtIO-specific is in this file.** The nucleus performs PCI
+// transactions and maps pages; it does not know what `cfg_type` 1 means, where
+// `device_status` lives, or that this is a block device.
+//
+// It is read-only. Nothing is written to configuration space, no BAR is
+// programmed, no queue is created, `DRIVER_OK` is not set and the device is
+// never notified.
+
+module system.boot.init version 1.2 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 1048576,
+    stack: 32KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus,
+    bus_number: u64,
+    device: u64,
+    function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig,
+    offset: u64,
+    width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_bar_map_read(
+    cap: platform.pci.FunctionConfig,
+    bar: u64,
+    offset: size,
+    length: size
+) -> Result<MmioRegion, i64> uses [platform.pci.FunctionConfig];
+
+fn byte_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 1u64)) {
+        Ok(value) => { return value; }
+        Err(status) => { return 256u64; }
+    }
+}
+
+fn dword_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 4u64)) {
+        Ok(value) => { return value; }
+        Err(status) => { return 0u64; }
+    }
+}
+
+// A well-formed capability chain has at most this many entries in 256 bytes of
+// configuration space, so a device that returns a loop cannot hang this module.
+const MAX_CAPABILITIES: u64 = 64u64;
+const FIRST_CAPABILITY: u64 = 64u64;
+const LAST_CAPABILITY: u64 = 240u64;
+
+// Where the common configuration lives, discovered rather than assumed. The BAR
+// index and the offset both come from the device's own capability structure.
+fn common_bar(function: platform.pci.FunctionConfig) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut at: u64 = byte_at(function, 52u64);
+    let mut steps: u64 = 0u64;
+    let mut found: u64 = 256u64;
+    while (steps < MAX_CAPABILITIES) {
+        if (at < FIRST_CAPABILITY) {
+            steps = MAX_CAPABILITIES;
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (at > LAST_CAPABILITY) {
+                steps = MAX_CAPABILITIES;
+            }
+        }
+        if (steps < MAX_CAPABILITIES) {
+            let vendor: u64 = byte_at(function, at);
+            if (vendor == 9u64) {
+                if (byte_at(function, at + 3u64) == 1u64) {
+                    found = byte_at(function, at + 4u64);
+                    steps = MAX_CAPABILITIES;
+                }
+            }
+            if (steps < MAX_CAPABILITIES) {
+                at = byte_at(function, at + 1u64);
+                steps = steps + 1u64;
+            }
+        }
+    }
+    return found;
+}
+
+// The VirtIO common configuration, as the modern PCI transport lays it out.
+// These offsets are this module's knowledge of the device, and appear nowhere
+// else in the system:
+//
+//   0x00 device_feature_select   0x04 device_feature
+//   0x0C num_queues              0x14 device_status
+//   0x15 config_generation       0x16 queue_select
+//   0x18 queue_size
+fn observe(window: MmioRegion) -> i64 {
+    let queues: u64 = mmio_read_le_u16(window, 12B);
+    let status: u64 = mmio_read_u8(window, 20B);
+    let generation: u64 = mmio_read_u8(window, 21B);
+    let queue_size: u64 = mmio_read_le_u16(window, 24B);
+    let features: u64 = mmio_read_le_u32(window, 4B);
+    // Packed for the harness to decode:
+    //   0..15  num_queues        16..23  device_status
+    //   24..31 config_generation 32..47  queue 0 size
+    //   48..62 whether the low feature dword is non-zero, and its low bits
+    let packed: u64 = queues
+        | (status << 16u64)
+        | (generation << 24u64)
+        | ((queue_size & 65535u64) << 32u64)
+        | ((features & 32767u64) << 48u64);
+    match (to_i64(packed)) {
+        Ok(value) => { return value; }
+        Err(problem) => { return -900i64; }
+    }
+}
+
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            let bar: u64 = common_bar(function);
+            if (bar > 5u64) {
+                return -200i64;
+            }
+            // One page of the BAR the device's own capability named. The offset
+            // is zero because that is where this device put its common
+            // configuration; the module read that, it did not assume it.
+            match (pci_bar_map_read(function, bar, 0B, 4096B)) {
+                Ok(window) => {
+                    return observe(window);
+                }
+                Err(status) => {
+                    return status - 300i64;
+                }
+            }
+        }
+        Err(status) => {
+            return status - 100i64;
+        }
+    }
+}

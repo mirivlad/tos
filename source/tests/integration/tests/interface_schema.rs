@@ -192,6 +192,37 @@ fn no_accepted_interface_admits_a_region() {
     // message with too many regions, and it is checked here rather than asserted
     // in prose — a schema that quietly grew a region parameter would make §9.6
     // reachable and unevidenced in the same commit.
+    /// Whether a written type is one of the **memory** region kinds.
+    ///
+    /// `Region` and `DmaRegion` are what `docs/42` §2 is about: a grant whose
+    /// interface must declare element type, alignment, access, size, DMA
+    /// domain, lifetime and transfer rules, none of which any schema here
+    /// declares.
+    ///
+    /// **`MmioRegion` is deliberately not one of them** (ADR-0081 §5). It is a
+    /// separate sealed kind: it has no element type, nothing funds it, nothing
+    /// reclaims it to the pool, and the facts a device window needs — the two
+    /// access forms, the page-granular extent, and a lifetime tied to the PCI
+    /// assignment it descends from — *are* declared, by `PLATFORM_INTERFACE_V1`.
+    /// Matching on the shared word would make this assertion about spelling
+    /// rather than about the rule.
+    fn names_a_memory_region(ty: &str) -> bool {
+        ty.contains("DmaRegion") || {
+            let mut at = 0;
+            let mut found = false;
+            while let Some(index) = ty[at..].find("Region") {
+                let start = at + index;
+                let preceded_by_word =
+                    start > 0 && ty.as_bytes()[start - 1].is_ascii_alphanumeric();
+                if !preceded_by_word {
+                    found = true;
+                }
+                at = start + "Region".len();
+            }
+            found || ty.contains("region")
+        }
+    }
+
     for interface in tos_core::interfaces::ACCEPTED {
         assert_ne!(
             interface.object,
@@ -202,7 +233,7 @@ fn no_accepted_interface_admits_a_region() {
         for operation in interface.operations {
             for parameter in operation.parameters {
                 assert!(
-                    !parameter.ty.contains("Region") && !parameter.ty.contains("region"),
+                    !names_a_memory_region(parameter.ty),
                     "{}::{} takes {}, so a region crosses an interface that declares no rules for one",
                     interface.path,
                     operation.name,
@@ -216,7 +247,7 @@ fn no_accepted_interface_admits_a_region() {
             // seven facts `docs/42` §2 requires a region grant's interface to
             // declare are declared nowhere in this schema.
             assert!(
-                !operation.result.contains("Region") && !operation.result.contains("region"),
+                !names_a_memory_region(operation.result),
                 "{}::{} returns {}, so a region originates through an interface that \
                  declares no rules for one",
                 interface.path,

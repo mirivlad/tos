@@ -191,6 +191,25 @@ are marked and are exactly those a process can only apply to itself.
 
 | 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25 |
 
+| 27 | `pci_bar_map` | PCI function capability with `map` | maps BAR `rsi` of the function that capability names, from page-aligned offset `rdx` for page-aligned length `r10`, writable when `r8` is non-zero, and returns a device-memory capability in `rdx` (ADR-0081 §13). The physical base is taken from the assignment's own measured BAR state — **a caller never supplies an address** — and the window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime. `E_BAD_ARGUMENT` for a BAR index outside the architectural range or an unaligned, zero or overflowing window; `E_NO_CAPABILITY` for an I/O or unimplemented BAR, or a range not inside the BAR's extent; `E_LIMIT` when no mapping slot is free or the caller already holds as many windows as it may |
+
+**A mapping is a descendant of the assignment, not of the handle that made it**
+(ADR-0081 §14). The assignment stays live while *either* a function capability
+names it **or** a mapping exists under it, so releasing the last function handle
+does not let the same BDF be claimed again while a window is still reaching it,
+and a manager releasing its own handle does not destroy a driver's window. Only
+when both are gone does the assignment end and its generation advance.
+
+**The scope is page-granular and explicit.** Sub-page grants are refused rather
+than served by mapping a whole page behind the contract: what the holder can
+reach and what the contract says it was given are the same pages.
+
+**Device memory is not charged to a `MemoryAuthority` and is not returned to the
+pool.** ADR-0076's one physical account is about pool frames; a device register
+is pre-existing external hardware state that nothing funds and nothing reclaims.
+A process holding memory-allocation authority gains no device access, and a
+process holding device access gains no ordinary physical memory.
+
 **Operations 24–26 are hardware mechanism primitives under §2.1, and each meets
 the five conditions.** They cannot be performed at CPL 3: the configuration
 address and data ports are unreachable from ring 3 and stay so — no IOPL, no

@@ -1,0 +1,43 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4B: an access past the end of its own window.
+//
+// The mapping is real and the offset is not in it. This must fail **before the
+// device is touched** (ADR-0081 §12) — nothing wraps, nothing is partially
+// performed, and the process ends rather than reading something it was not
+// granted. Its own run, because a refused access ends the process: there is no
+// status a module could have handled, and inventing one would be a value
+// standing for an access that did not happen.
+
+module system.boot.init version 1.2 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 262144, stack: 32KiB, allocation: 4KiB, tasks: 1, workers: 1,
+    sync: 0, shared: 0B, cleanup: 0, recursion: 16, imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus, bus_number: u64, device: u64, function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_bar_map_read(
+    cap: platform.pci.FunctionConfig, bar: u64, offset: size, length: size
+) -> Result<MmioRegion, i64> uses [platform.pci.FunctionConfig];
+
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            match (pci_bar_map_read(function, 4u64, 0B, 4096B)) {
+                Ok(window) => {
+                    // One byte past the window it was granted.
+                    let past: u64 = mmio_read_u8(window, 4096B);
+                    return -1i64;
+                }
+                Err(status) => { return status - 300i64; }
+            }
+        }
+        Err(status) => { return status - 100i64; }
+    }
+}

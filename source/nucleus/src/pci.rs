@@ -94,7 +94,49 @@ struct Assignment {
     /// for it — which is what a later split between a bus manager and a driver
     /// needs. The claim ends when the last name goes, and not before.
     names: u32,
+    /// How many derived hardware objects exist under this assignment
+    /// (ADR-0081 §14).
+    ///
+    /// **The assignment outlives its function handles when it must.** It stays
+    /// live while *either* a capability names it or a descendant exists, so
+    /// releasing the last `FunctionConfig` does not let the same BDF be claimed
+    /// again while a mapping is still reaching it — and a manager releasing its
+    /// own handle does not destroy a driver's window. Only when both reach zero
+    /// does the claim end and the generation advance.
+    ///
+    /// Written to be generic: an IRQ or DMA object will be a descendant of the
+    /// same assignment under the same invariant.
+    descendants: u32,
+    /// Each BAR's base and extent, measured once at claim time (§3).
+    bars: [Bar; BARS],
     live: bool,
+}
+
+/// How many base-address registers a function has.
+const BARS: usize = 6;
+
+/// One base-address register, as the nucleus measured it.
+///
+/// **Measured once, at claim time, under the exclusivity Stage 4A established**
+/// (ADR-0081 §13). Sizing writes to the register and reads it back, which is
+/// only safe because nothing else can hold this function; doing it per mapping
+/// would repeat a destructive probe on a device somebody may already be using.
+#[derive(Clone, Copy)]
+struct Bar {
+    /// The physical address the device decodes, with the type bits removed.
+    base: u64,
+    /// How many bytes it covers. Zero when the BAR is unimplemented.
+    length: u64,
+    /// Whether this is a memory BAR. An I/O BAR is refused in this stage.
+    memory: bool,
+}
+
+impl Bar {
+    const EMPTY: Self = Self {
+        base: 0,
+        length: 0,
+        memory: false,
+    };
 }
 
 impl Assignment {
@@ -106,6 +148,8 @@ impl Assignment {
         // Generations start at one, so a handle of all zeros — the value of a
         // register nobody wrote — names nothing here either.
         generation: 1,
+        descendants: 0,
+        bars: [Bar::EMPTY; BARS],
         names: 0,
         live: false,
     };
@@ -258,8 +302,221 @@ pub fn claim(
     entry.device = device;
     entry.function = function;
     entry.names = 0;
+    entry.descendants = 0;
+    entry.bars = [Bar::EMPTY; BARS];
     entry.live = true;
-    Ok((index as u32, entry.generation))
+    let measured = *entry;
+    let generation = entry.generation;
+    // Sizing happens **once, here**, under the exclusivity this claim just
+    // established (ADR-0081 §13). Nothing else can hold this function, so
+    // nothing else can be probing it; and a later mapping never repeats the
+    // probe, because a destructive read-modify-restore on a device somebody is
+    // using is not a thing to do twice.
+    table[index].bars = size_bars(&measured);
+    Ok((index as u32, generation))
+}
+
+/// Measures every base-address register of a freshly claimed function.
+///
+/// The PCI-standard probe: write all-ones, read back which bits the device left
+/// clear, and restore the original value exactly. It is mechanism only ring 0
+/// can perform safely, and it teaches the nucleus **PCI BAR mechanics and
+/// nothing about any device class**.
+///
+/// Memory decoding is disabled for the duration and restored afterwards,
+/// including on every refusal path: a device whose BAR reads all-ones while it
+/// is still decoding could answer a bus cycle from an address it does not own.
+fn size_bars(entry: &Assignment) -> [Bar; BARS] {
+    let mut bars = [Bar::EMPTY; BARS];
+    let command = read_config(entry, COMMAND, 2) as u16;
+    write_config(entry, COMMAND, 2, u64::from(command & !DECODE_BITS));
+    let mut at = 0usize;
+    while at < BARS {
+        let offset = BAR0 + (at as u64) * 4;
+        let original = read_config(entry, offset, 4);
+        write_config(entry, offset, 4, 0xFFFF_FFFF);
+        let probed = read_config(entry, offset, 4);
+        write_config(entry, offset, 4, original);
+        // An unimplemented BAR reads back as zero and never becomes authority.
+        if probed == 0 {
+            at += 1;
+            continue;
+        }
+        // Bit 0 says which space it decodes. An I/O BAR is refused in this
+        // stage — it is not memory and cannot be mapped — so it is recorded
+        // with `memory` clear and no extent, and a request for it refuses.
+        if original & 1 != 0 {
+            at += 1;
+            continue;
+        }
+        let sixty_four = (original >> 1) & 0x3 == 0x2;
+        let mut base = original & !0xF;
+        let mut mask = probed & !0xF;
+        if sixty_four {
+            // A 64-bit BAR is a pair, and the pair is one register: the high
+            // half is measured with the low one and the slot above it is not a
+            // BAR of its own.
+            if at + 1 >= BARS {
+                at += 1;
+                continue;
+            }
+            let high_offset = offset + 4;
+            let high_original = read_config(entry, high_offset, 4);
+            write_config(entry, high_offset, 4, 0xFFFF_FFFF);
+            let high_probed = read_config(entry, high_offset, 4);
+            write_config(entry, high_offset, 4, high_original);
+            base |= high_original << 32;
+            mask |= high_probed << 32;
+        }
+        // The extent is the low run of clear bits, plus one. Checked, so a
+        // device answering nonsense produces no extent rather than a wrap.
+        let length = (!mask).wrapping_add(1);
+        if length != 0 && base != 0 {
+            bars[at] = Bar {
+                base,
+                length,
+                memory: true,
+            };
+        }
+        at += if sixty_four { 2 } else { 1 };
+    }
+    write_config(entry, COMMAND, 2, u64::from(command));
+    bars
+}
+
+/// The command register, and the bits that let a function answer bus cycles.
+const COMMAND: u64 = 0x04;
+const BAR0: u64 = 0x10;
+/// I/O-space and memory-space decoding.
+const DECODE_BITS: u16 = 0b11;
+
+/// A configuration read against an assignment, for the nucleus's own use.
+fn read_config(entry: &Assignment, offset: u64, width: u64) -> u64 {
+    if entry.segment != 0 || !access_is_valid(offset, width) {
+        return 0;
+    }
+    let address = address_of(entry, offset);
+    let port = CONFIG_DATA + (offset as u16 & 3);
+    // SAFETY: as in `config_read` — fixed registers of the declared profile,
+    // reachable only from ring 0, in the single context that uses them.
+    unsafe {
+        out_u32(CONFIG_ADDRESS, address);
+        match width {
+            1 => u64::from(in_u8(port)),
+            2 => u64::from(in_u16(port)),
+            _ => u64::from(in_u32(port)),
+        }
+    }
+}
+
+/// A configuration write against an assignment, for the nucleus's own use.
+fn write_config(entry: &Assignment, offset: u64, width: u64, value: u64) {
+    if entry.segment != 0 || !access_is_valid(offset, width) {
+        return;
+    }
+    let address = address_of(entry, offset);
+    let port = CONFIG_DATA + (offset as u16 & 3);
+    // SAFETY: as above.
+    unsafe {
+        out_u32(CONFIG_ADDRESS, address);
+        match width {
+            1 => out_u8(port, value as u8),
+            2 => out_u16(port, value as u16),
+            _ => out_u32(port, value as u32),
+        }
+    }
+}
+
+/// Why a mapping request was refused.
+pub enum BarRefused {
+    /// A BAR index outside the architectural range, or an unaligned or
+    /// overflowing request. A fact about the argument.
+    BadArgument,
+    /// The assignment has gone, or the BAR is unimplemented, is an I/O BAR, or
+    /// does not contain the requested range.
+    OutOfScope,
+}
+
+/// The physical range a mapping request names, validated against the live
+/// assignment's own BAR state (ADR-0081 §13).
+///
+/// **The caller never supplies a physical address.** It names a BAR index and a
+/// page-aligned window inside it; the base comes from what the device reported
+/// and what this nucleus measured, and a request that is not entirely inside
+/// that extent is refused rather than clamped.
+pub fn bar_window(
+    index: u32,
+    generation: u32,
+    bar: u64,
+    offset: u64,
+    length: u64,
+) -> Result<u64, BarRefused> {
+    let Some(entry) = assignment(index, generation) else {
+        return Err(BarRefused::OutOfScope);
+    };
+    if bar >= BARS as u64 {
+        return Err(BarRefused::BadArgument);
+    }
+    if length == 0 || !offset.is_multiple_of(FRAME_SIZE) || !length.is_multiple_of(FRAME_SIZE) {
+        return Err(BarRefused::BadArgument);
+    }
+    let window = entry.bars[bar as usize];
+    if !window.memory || window.length == 0 {
+        return Err(BarRefused::OutOfScope);
+    }
+    let Some(end) = offset.checked_add(length) else {
+        return Err(BarRefused::BadArgument);
+    };
+    if end > window.length {
+        return Err(BarRefused::OutOfScope);
+    }
+    let Some(base) = window.base.checked_add(offset) else {
+        return Err(BarRefused::BadArgument);
+    };
+    Ok(base)
+}
+
+/// A page, as this mechanism measures one.
+const FRAME_SIZE: u64 = 4096;
+
+/// Records that a descendant hardware object was created under an assignment.
+pub fn take_descendant(index: u32, generation: u32) -> Result<(), ()> {
+    let usable = index as usize;
+    if assignment(index, generation).is_none() {
+        return Err(());
+    }
+    // SAFETY: single-context nucleus; the index was checked by `assignment`.
+    let entry = &mut unsafe { table() }[usable];
+    entry.descendants = entry.descendants.checked_add(1).ok_or(())?;
+    Ok(())
+}
+
+/// Drops a descendant, ending the assignment when nothing reaches it any more.
+pub fn drop_descendant(index: u32, generation: u32) {
+    let usable = index as usize;
+    if assignment(index, generation).is_none() {
+        return;
+    }
+    // SAFETY: as above.
+    let entry = &mut unsafe { table() }[usable];
+    entry.descendants = entry.descendants.saturating_sub(1);
+    end_if_unreachable(entry);
+}
+
+/// Ends an assignment when neither a name nor a descendant reaches it.
+///
+/// The one rule, applied wherever either count falls: an assignment is live
+/// while *something* reaches it, and the generation advances only when nothing
+/// does. That is what makes a re-claimed BDF a different assignment.
+fn end_if_unreachable(entry: &mut Assignment) {
+    if entry.names != 0 || entry.descendants != 0 {
+        return;
+    }
+    entry.live = false;
+    entry.generation = entry.generation.wrapping_add(1);
+    if entry.generation == 0 {
+        entry.generation = 1;
+    }
 }
 
 impl Assignment {
@@ -317,15 +574,11 @@ pub fn release(index: u32, generation: u32) -> Result<(), ()> {
     // SAFETY: as above.
     let entry = &mut unsafe { table() }[usable];
     entry.names = entry.names.checked_sub(1).ok_or(())?;
-    if entry.names == 0 {
-        entry.live = false;
-        entry.generation = entry.generation.wrapping_add(1);
-        // A generation of zero would make a handle nobody wrote resolve, so the
-        // wrap skips it rather than landing on it.
-        if entry.generation == 0 {
-            entry.generation = 1;
-        }
-    }
+    // **Not necessarily the end of the assignment** (ADR-0081 §14). A derived
+    // mapping keeps it live: releasing the last function handle while a driver
+    // still holds a window must not let the same BDF be claimed again and
+    // reached through that window.
+    end_if_unreachable(entry);
     Ok(())
 }
 
@@ -343,17 +596,13 @@ pub fn abandon(index: u32, generation: u32) {
     }
     // SAFETY: single-context nucleus; the index was checked by `assignment`.
     let entry = &mut unsafe { table() }[usable];
-    if entry.names != 0 {
-        // Named after all, so it is not this path's to end: the last name going
-        // is what ends it, and undoing a claim somebody holds would be worse
-        // than the leak this exists to prevent.
+    if entry.names != 0 || entry.descendants != 0 {
+        // Reached after all, so it is not this path's to end: the last name or
+        // descendant going is what ends it, and undoing a claim somebody holds
+        // would be worse than the leak this exists to prevent.
         return;
     }
-    entry.live = false;
-    entry.generation = entry.generation.wrapping_add(1);
-    if entry.generation == 0 {
-        entry.generation = 1;
-    }
+    end_if_unreachable(entry);
 }
 
 /// The function an assignment names, for the audit record.

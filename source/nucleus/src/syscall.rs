@@ -180,6 +180,17 @@ const PCI_CONFIG_READ: u64 = 25;
 /// "may change what it does" are two grants.
 const PCI_CONFIG_WRITE: u64 = 26;
 
+/// Derives a bounded device-memory mapping from an assigned function
+/// (ADR-0081 §13).
+///
+/// **The caller never supplies a physical address.** It names a BAR index and a
+/// page-aligned window inside that BAR; the base comes from what the device
+/// reported and what this nucleus measured at claim time. A request that is not
+/// entirely inside the BAR's extent is refused rather than clamped, and the
+/// public scope is exactly the pages mapped — a grant narrower than the window
+/// it hands out would be a contract that lies about what its holder can reach.
+const PCI_BAR_MAP: u64 = 27;
+
 /// The one call flag this contract version has.
 ///
 /// Blocking is the default because it is what `IPC_V1` describes — §4's
@@ -1103,6 +1114,14 @@ fn answer_rest(operation: u64, frame: &mut TrapFrame, caller: usize) -> Answer {
             frame.rdx,
             frame.r10,
         ),
+        PCI_BAR_MAP => pci_bar_map(
+            caller,
+            arguments.first(),
+            arguments.second(),
+            frame.rdx,
+            frame.r10,
+            frame.r8,
+        ),
 
         _ => Answer::status(E_NOT_SUPPORTED),
     }
@@ -1137,7 +1156,7 @@ fn pci_function_claim(caller: usize, handle: u64, bus: u64, device: u64, functio
     match capability::grant(
         caller,
         Object::PciFunction { index, generation },
-        tos_launch::RIGHT_CONFIG_READ | tos_launch::RIGHT_CONFIG_WRITE,
+        tos_launch::RIGHT_CONFIG_READ | tos_launch::RIGHT_CONFIG_WRITE | tos_launch::RIGHT_MAP,
         0,
     ) {
         Ok(granted) => {
@@ -1194,6 +1213,134 @@ fn pci_config_read(caller: usize, handle: u64, offset: u64, width: u64) -> Answe
         Some(value) => Answer::value(value),
         None => Answer::status(E_BAD_ARGUMENT),
     }
+}
+
+/// Operation 27: a bounded device window out of one assigned function.
+///
+/// The mapping is a **descendant of the assignment** (ADR-0081 §14), so the
+/// function cannot be released and its BDF re-claimed while this window is
+/// still reaching it. What comes back is a capability naming the mapping, and
+/// where the window landed is written to the argument region for the host
+/// bridge — the program never learns an address.
+fn pci_bar_map(
+    caller: usize,
+    handle: u64,
+    bar: u64,
+    offset: u64,
+    length: u64,
+    writable: u64,
+) -> Answer {
+    let (index, generation) = match capability::resolve(caller, handle, tos_launch::RIGHT_MAP) {
+        Err(refused) => return refused.into(),
+        Ok(Object::PciFunction { index, generation }) => (index, generation),
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+    };
+    let writable = writable != 0;
+    let physical = match crate::pci::bar_window(index, generation, bar, offset, length) {
+        Ok(base) => base,
+        Err(crate::pci::BarRefused::BadArgument) => return Answer::status(E_BAD_ARGUMENT),
+        Err(crate::pci::BarRefused::OutOfScope) => return Answer::status(E_NO_CAPABILITY),
+    };
+    let (mapping, mapping_generation, base) =
+        match crate::device::map(index, generation, caller, physical, length, writable) {
+            Ok(made) => made,
+            Err(crate::device::Refused::Limit) => return Answer::status(E_LIMIT),
+            Err(crate::device::Refused::Paging) => return Answer::status(E_LIMIT),
+        };
+    // The rights the holder gets over the window it asked for. A read-only
+    // grant carries no write right *and* is mapped without the writable bit:
+    // the checker, the capability and the page table all say the same thing.
+    let mut rights = tos_launch::RIGHT_MMIO_READ;
+    if writable {
+        rights |= tos_launch::RIGHT_MMIO_WRITE;
+    }
+    match capability::grant(
+        caller,
+        Object::MmioRegion {
+            index: mapping,
+            generation: mapping_generation,
+        },
+        rights,
+        0,
+    ) {
+        Ok(granted) => {
+            if !report_mapping(caller, base, length) {
+                crate::device::abandon(mapping, mapping_generation);
+                return Answer::status(E_BAD_ARGUMENT);
+            }
+            report_window(caller, index, generation, bar, offset, length, writable);
+            Answer::value(granted)
+        }
+        Err(_) => {
+            // A mapping nothing can name is a window nothing can release, so
+            // the failure to grant undoes it rather than stranding it.
+            crate::device::abandon(mapping, mapping_generation);
+            Answer::status(E_LIMIT)
+        }
+    }
+}
+
+/// Tells the host bridge where the window it just received is.
+fn report_mapping(caller: usize, base: u64, length: u64) -> bool {
+    let region = crate::process::arguments_region();
+    if region == 0 {
+        return false;
+    }
+    let record = tos_launch::MmioMapRecord { base, length };
+    // SAFETY: the launcher mapped this process's argument region writable at
+    // the address the launch record names, and the record fits inside it by the
+    // compile-time assertion in `tos-launch`.
+    unsafe {
+        core::ptr::with_exposed_provenance_mut::<tos_launch::MmioMapRecord>(
+            (region + tos_launch::MMIO_MAP_RECORD) as usize,
+        )
+        .write_unaligned(record)
+    };
+    let _ = caller;
+    true
+}
+
+/// Puts one device window on the audit record, by what it covers.
+///
+/// **The physical base is deliberately absent.** ADR-0081 §16 admits a physical
+/// address in low-level diagnostics as an implementation fact, and keeps it out
+/// of capability identity; what a reader needs here is which function, which
+/// BAR and which part of it — all of which are the authority.
+#[allow(clippy::too_many_arguments)]
+fn report_window(
+    caller: usize,
+    index: u32,
+    generation: u32,
+    bar: u64,
+    offset: u64,
+    length: u64,
+    writable: bool,
+) {
+    let Some((segment, bus, device, function)) = crate::pci::describe(index, generation) else {
+        return;
+    };
+    tos_serial::puts(b"TOS.RUN.MMIO_MAPPED process=");
+    tos_serial::put_u32_decimal(caller as u32);
+    tos_serial::puts(b" segment=");
+    tos_serial::put_u32_decimal(u32::from(segment));
+    tos_serial::puts(b" bus=");
+    tos_serial::put_u32_decimal(u32::from(bus));
+    tos_serial::puts(b" device=");
+    tos_serial::put_u32_decimal(u32::from(device));
+    tos_serial::puts(b" function=");
+    tos_serial::put_u32_decimal(u32::from(function));
+    tos_serial::puts(b" bar=");
+    tos_serial::put_u32_decimal(bar as u32);
+    tos_serial::puts(b" offset=");
+    tos_serial::put_u32_decimal(offset as u32);
+    tos_serial::puts(b" length=");
+    tos_serial::put_u32_decimal(length as u32);
+    tos_serial::puts(if writable {
+        b" access=read_write"
+    } else {
+        b" access=read_only"
+    });
+    tos_serial::puts(b" asserted_by=nucleus\r\n");
 }
 
 /// Operation 26, under the right that `config_read` alone does not carry.

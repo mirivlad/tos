@@ -92,6 +92,7 @@ const LAUNCH_PLAN_SEAL: u64 = 23;
 const PCI_FUNCTION_CLAIM: u64 = 24;
 const PCI_CONFIG_READ: u64 = 25;
 const PCI_CONFIG_WRITE: u64 = 26;
+const PCI_BAR_MAP: u64 = 27;
 const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
@@ -1085,6 +1086,14 @@ enum Slot {
     /// operation's own capability, and this is the only place it becomes a
     /// number (`docs/42` §2).
     Held(Reg),
+    /// A constant **this row** puts in a register, which no module supplies.
+    ///
+    /// It exists for a distinction that must not be a value: two schema rows
+    /// over one ABI selector differing in what they produce (ADR-0081 §5). A
+    /// writable device window is asked for by calling the other operation, not
+    /// by passing a number — so the number is the row's, and a module has no
+    /// way to write it.
+    Fixed(Reg, u64),
     /// A `string`: its bytes at a fixed offset of the argument region, its
     /// length in a register.
     ///
@@ -1112,6 +1121,20 @@ enum Produced {
     /// facts, because neither is derivable from the other — a handle is an
     /// index in one table, and an instance identity is not authority.
     CreatedProcess,
+    /// `Result<MmioRegion, i64>` and its writable form: the capability `rdx`
+    /// carries, and — for this host alone — the window the nucleus wrote to the
+    /// argument region (ADR-0081 §13).
+    ///
+    /// **The only result that teaches this bridge an address.** A module
+    /// receives a capability and nothing else; what is recorded here is how to
+    /// turn a later `MmioRead` on that capability into a load, which is the
+    /// same act the bridge already performs on a region grant.
+    Mapping {
+        /// Whether the window is writable, which decides which of the two
+        /// results this row produces and which rights the mapping is recorded
+        /// with.
+        writable: bool,
+    },
     /// `Result<u64, i64>`: the number `rdx` carries on success, the status
     /// otherwise.
     ///
@@ -1427,6 +1450,35 @@ const PERFORMED: &[Performed] = &[
         ],
         result: Produced::Status,
     },
+    // §5 row 27: the BAR index, then the page-aligned offset and length. The
+    // form is not a value the module passes — it is which of the two rows this
+    // is, so a writable window cannot be asked for by arithmetic.
+    Performed {
+        interface: "platform.pci.FunctionConfig",
+        name: "pci_bar_map_read",
+        operation: PCI_BAR_MAP,
+        capabilities: &[Reg::Rdi],
+        values: &[
+            Slot::Number(Reg::Rsi),
+            Slot::Number(Reg::Rdx),
+            Slot::Number(Reg::R10),
+            Slot::Fixed(Reg::R8, 0),
+        ],
+        result: Produced::Mapping { writable: false },
+    },
+    Performed {
+        interface: "platform.pci.FunctionConfig",
+        name: "pci_bar_map_write",
+        operation: PCI_BAR_MAP,
+        capabilities: &[Reg::Rdi],
+        values: &[
+            Slot::Number(Reg::Rsi),
+            Slot::Number(Reg::Rdx),
+            Slot::Number(Reg::R10),
+            Slot::Fixed(Reg::R8, 1),
+        ],
+        result: Produced::Mapping { writable: true },
+    },
     Performed {
         interface: "platform.pci.FunctionConfig",
         name: "endow_for_launch",
@@ -1560,6 +1612,24 @@ impl DeviceMapping {
 }
 
 impl Endowment<'_> {
+    /// Records a window this process was just granted.
+    ///
+    /// Refuses rather than overwriting when the table is full: a bridge that
+    /// silently dropped one would leave a capability the module holds and this
+    /// host cannot serve, which is a worse failure than the refusal.
+    fn remember(&mut self, handle: u64, record: tos_launch::MmioMapRecord, writable: bool) -> bool {
+        let Some(slot) = self.mappings.iter_mut().find(|slot| slot.handle == 0) else {
+            return false;
+        };
+        *slot = DeviceMapping {
+            handle,
+            base: record.base,
+            length: record.length,
+            writable,
+        };
+        true
+    }
+
     /// The mapping a capability names, if this process holds it.
     fn mapping(&self, handle: Handle) -> Option<DeviceMapping> {
         let named = handle.get();
@@ -1715,7 +1785,14 @@ impl System for Endowment<'_> {
         // The one `string` an operation carried, kept for the audit record.
         let mut said: Option<&str> = None;
         let capabilities = performed.capabilities.len();
-        if call.arguments.len() != capabilities + performed.values.len() {
+        // A `Fixed` slot is the row's own constant and is not something the
+        // module passes, so it is not counted among the arguments expected.
+        let supplied_values = performed
+            .values
+            .iter()
+            .filter(|slot| !matches!(slot, Slot::Fixed(_, _)))
+            .count();
+        if call.arguments.len() != capabilities + supplied_values {
             return Err(Trap::new(
                 "RUNTIME_TYPE_CONFUSION",
                 "an operation was reached with the wrong number of arguments",
@@ -1734,7 +1811,21 @@ impl System for Endowment<'_> {
             };
             registers[*register as usize] = held.get();
         }
-        for (slot, argument) in performed.values.iter().zip(&call.arguments[capabilities..]) {
+        // A `Fixed` slot takes no argument: it is the row's own constant, so
+        // the argument cursor does not advance for it.
+        let mut supplied = call.arguments[capabilities..].iter();
+        for slot in performed.values.iter() {
+            if let Slot::Fixed(register, value) = slot {
+                registers[*register as usize] = *value;
+                continue;
+            }
+            let Some(argument) = supplied.next() else {
+                return Err(Trap::new(
+                    "RUNTIME_TYPE_CONFUSION",
+                    "an operation was reached with fewer values than it declares",
+                    call.source,
+                ));
+            };
             match (slot, argument) {
                 (Slot::Number(register), Value::Int(_, number)) => {
                     if *number < 0 {
@@ -1745,6 +1836,21 @@ impl System for Endowment<'_> {
                         ));
                     }
                     registers[*register as usize] = *number as u64;
+                }
+                // A `size` is the type every bounded extent in this language
+                // has — an offset into a device window, a length in pages — and
+                // it crosses in the register its slot names, exactly as a `u64`
+                // does. It is unsigned by construction, so there is no negative
+                // case to refuse.
+                (Slot::Number(register), Value::Size(number)) => {
+                    let Ok(number) = u64::try_from(*number) else {
+                        return Err(Trap::new(
+                            "RUNTIME_TYPE_CONFUSION",
+                            "an operation was reached with a size larger than the edge carries",
+                            call.source,
+                        ));
+                    };
+                    registers[*register as usize] = number;
                 }
                 // A capability the module *holds as a value*, because an
                 // operation produced it: a launch plan, or a child. It is
@@ -1842,6 +1948,27 @@ impl System for Endowment<'_> {
             Produced::Status => unreachable!("answered above"),
             Produced::Authority => Value::Capability(Handle::new(value)),
             Produced::Number => Value::Int(IntKind::U64, u128::from(value) as i128),
+            Produced::Mapping { writable } => {
+                // SAFETY: the nucleus wrote the record at the fixed offset of
+                // this process's own argument region, and only on success —
+                // which is the branch this is.
+                let record = unsafe {
+                    core::ptr::with_exposed_provenance::<tos_launch::MmioMapRecord>(
+                        (self.arguments + tos_launch::MMIO_MAP_RECORD) as usize,
+                    )
+                    .read_unaligned()
+                };
+                if !self.remember(value, record, writable) {
+                    return Err(Trap::new(
+                        "RUNTIME_DEVICE_REFUSED",
+                        alloc::string::String::from(
+                            "more device windows than this process may hold",
+                        ),
+                        0,
+                    ));
+                }
+                Value::Capability(Handle::new(value))
+            }
             Produced::CreatedProcess => {
                 // SAFETY: the nucleus wrote the instance id at the fixed offset
                 // of this process's own argument region, and only on success —
