@@ -149,3 +149,4 @@ docs/adr/0078-capability-sources.md
 docs/adr/0079-hardware-authority-origin.md
 docs/adr/0080-capability-effects-name-interfaces.md
 docs/adr/0081-region-access-and-device-memory.md
+docs/adr/0083-repairing-the-stage1-validation-performance-metric.md
