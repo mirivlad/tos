@@ -1,0 +1,106 @@
+{
+  "record_spdx_license": "CC-BY-SA-4.0",
+  "metric": "same-artifact paired Stage 1 validation performance (ADR-0083)",
+  "label": "s4c-3",
+  "threshold": null,
+  "verdict": null,
+  "note": "No threshold is applied. ADR-0083 is Proposed and the replacement threshold is not chosen; this report is evidence for that choice.",
+  "same_artifact": {
+    "full_image_sha256": "243f5cb79a9e5f34f4ac527642ff6bb9c4cd11873b652bb024fcc5e1e8a5a9cc",
+    "crypto_image_sha256": "243f5cb79a9e5f34f4ac527642ff6bb9c4cd11873b652bb024fcc5e1e8a5a9cc",
+    "equal": true,
+    "image_bytes": 138504
+  },
+  "diagnostic_identity": {
+    "note": "retained for attribution; never a threshold",
+    "elf_bytes": 156216,
+    "text_addr": "0000000002000000",
+    "text_size": "000136ef",
+    "compress_block_addr": "0000000002006580"
+  },
+  "fixture": {
+    "capsule_sha256": "6dabadc666f46a755c91845bfa896d4ed3fb2b3aeb707ba89da33461bb07959f"
+  },
+  "discipline": {
+    "warmups": 3,
+    "samples": 21,
+    "percentile": "nearest-rank",
+    "mode_selector": "opt/tos/measurement-mode via firmware configuration"
+  },
+  "source": {
+    "commit": "831c2e04e12c19ed55f39e96047fe5bc78ca67a9",
+    "dirty": false
+  },
+  "full_exact": {
+    "measured_ns": [
+      3618276367,
+      3530266360,
+      3208966619,
+      3235371702,
+      3326807674,
+      3222735514,
+      3249823798,
+      3270100244,
+      3220229553,
+      3208655538,
+      3259659772,
+      3248069753,
+      3485574868,
+      3213923995,
+      3205549779,
+      3249503498,
+      3217595842,
+      3227867767,
+      3222788496,
+      3230223288,
+      3239274400
+    ],
+    "warmup_ns": [
+      3545202249,
+      3595648597,
+      3555320711
+    ],
+    "median_ns": 3235371702,
+    "p95_ns": 3530266360,
+    "p99_ns": 3618276367,
+    "min_ns": 3205549779,
+    "max_ns": 3618276367
+  },
+  "unavoidable_crypto": {
+    "measured_ns": [
+      3208293131,
+      3201765193,
+      3213329679,
+      3285226762,
+      3244506392,
+      3210873549,
+      3241626325,
+      3226373418,
+      3203393476,
+      3215022319,
+      3239216523,
+      3225990355,
+      3208407161,
+      3251507219,
+      3221670813,
+      3263577085,
+      3342215018,
+      3212057992,
+      3243971135,
+      3211955593,
+      3245297758
+    ],
+    "warmup_ns": [
+      3207684225,
+      3218918334,
+      3214657368
+    ],
+    "median_ns": 3225990355,
+    "p95_ns": 3285226762,
+    "p99_ns": 3342215018,
+    "min_ns": 3201765193,
+    "max_ns": 3342215018
+  },
+  "ratio_p95": 1.0745883361338575,
+  "ratio_median": 1.0029080517818225
+}

@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `246d8640ed16b923deb8dec54bb26de72d91359dc0cc4d52fcac303d81ff62c4`\
+Source-manifest SHA-256: `3c3cc7dc9f54e2ce6e72efc92c740a8beff62b17715479f20b5b8870c69b8d4f`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -27577,7 +27577,7 @@ non-cryptographic validation work changes, and §1 shows it does not.
 The old gate is not deleted. Stage 4C does not become green by removing the
 thing that failed.
 
-## 4. D1 — one artifact, two runtime-selected modes
+## 4. D1 — one artifact, two runtime-selected modes, one logical workload
 
 **Decided (architecture approved for implementation and measurement; threshold
 not approved).**
@@ -27586,23 +27586,80 @@ not approved).**
 one measurement-only nucleus image — one ELF, one SHA-256
         │
         ├── FULL_EXACT
-        │     the production validation path, reached by falling through
-        │     into the same `nucleus_main` body: capsule hashing, parser
-        │     validation, detached identity, canonical lookup, boot-text digest
+        │     two fresh complete logical validation passes
+        │     two fresh plain whole-capsule mirror digests
+        │     no parse or digest result shared between passes
+        │     canonical /system/boot/init.tos lookup on the second pass
+        │     fresh boot-text digest
         │
         └── UNAVOIDABLE_CRYPTO
-              exactly the accepted unavoidable cryptographic work, the same
-              hashing implementation over the same bytes, with no parser or
-              hash result carried over from the other mode
+              the cryptographic subset of exactly that workload
+              two fresh parser-crypto passes
+              two fresh whole-capsule mirror digests
+              one fresh boot-text digest
 ```
 
 Both series come from the same bytes, so linker layout, function placement, code
 addresses, static data placement and the TCG translation environment are shared
-and cancel in the quotient. That is the whole of the repair's mechanism.
+and cancel. That is the first half of the repair.
 
-**Both series start at `TOS.NUCLEUS.ENTRY`**, so both cover the same component
-of the same image and the loader — a different binary, doing its own hashing —
-is outside both sides rather than inside one.
+**The second half is that the two describe the same logical operation.** An
+earlier form measured *one* validation pass against a denominator modelling
+*two*, and a ratio near a third was the arithmetic of that mismatch rather than a
+statement about structural overhead. A quotient meant to read as
+
+> structural validation cost, relative to the cryptographic work that same
+> validation necessarily performs
+
+must compare the whole operation with the crypto subset **of that operation**.
+
+`FULL_EXACT` is the sequence the native runner already models in
+`validate_twice_and_lookup()`:
+
+```text
+digest_1 = sha256(capsule_bytes)
+{ parse_1 = parse(capsule_bytes) }        scoped, so nothing crosses
+digest_2 = sha256(capsule_bytes)          require digest_2 == digest_1
+parse_2  = parse(capsule_bytes)
+boot     = parse_2.boot_file()            require /system/boot/init.tos
+boot_digest = sha256(boot.content)
+```
+
+and `UNAVOIDABLE_CRYPTO` is `validate_unavoidable_crypto_twice()`. Both call the
+production `sha256`, `parse`, `boot_file` and parser crypto replay; the
+measurement code supplies the order and nothing else.
+
+**The denominator's accepted model is not narrowed.** Two parser passes, two
+whole-capsule mirrors, one boot-text digest — `101203397` bytes over `2007`
+invocations for the current fixture. Redefining accepted "unavoidable
+cryptographic work" to make a ratio approach one is not an implementation's to
+do.
+
+### The boundary
+
+Both modes emit **`TOS.TEST.PAIRED.START`** at the same point, after an
+identical untimed prefix that includes one common setup parse. The ordinary
+boot, the loader and the setup are therefore outside both intervals rather than
+inside one, and whatever they did to translation and cache state is common to
+both. The setup parse's digests enter neither timed workload; both recompute
+from `cap_bytes`.
+
+`TOS.NUCLEUS.ENTRY` is not a ratio boundary, and `TOS.BOOTTEXT.PATH` is not the
+numerator's end — the boot-text digest is inside the numerator, as this document
+always described it. `FULL_EXACT` ends at `TOS.TEST.PAIRED.FULL.DONE`.
+
+### What this metric is not
+
+**It is not the wall-clock latency of the production loader+nucleus boot.** It
+is an architectural validation-efficiency figure: the cost of the exact Stage 1
+logical validation workload relative to its own unavoidable cryptographic
+subset. Ordinary production boot timing, its segment decomposition and its
+retained regression history remain separate observational evidence, and the
+ordinary functional boot gate is unchanged.
+
+That separation is deliberate and is better than pretending two separately
+linked production components can form one layout-cancelling quotient — which is
+precisely what the old construction attempted.
 
 ## 5. D2 — the selector
 
@@ -27677,34 +27734,65 @@ KVM remains optional research evidence and is not required while the recorded
 host cannot boot TOS under it — `/dev/kvm` is present and the nucleus fails
 identically on both trees with `TOS.RUN.UNSTARTABLE reason=no-address-space`.
 
-## 9. The threshold is deliberately absent
+## 9. The threshold — proposed from the corrected distribution
 
-**This ADR proposes no number, and `1.30` is not carried over.**
+**Proposed for review. Not adopted, and not mine to accept.**
 
-A threshold is proposed only after the repaired metric has been measured — three
-complete TCG paired series from clean rebuilds of each tree, three native paired
-series, the same-artifact digests, raw 3+21 samples, medians, p95, p99, segment
-decomposition and repeatability statistics — and it is brought back for review
-rather than adopted here.
+Six complete TCG series — three clean rebuilds of each tree — and six native
+series, all in `docs/evidence/stage4c1-adr0083-paired-metric/`:
 
-When it is proposed it must: have a semantic interpretation; leave measured
-headroom rather than equal the worst sample; account for measured repeatability;
-still detect a meaningful structural validation regression; not encode TCG
-page-placement artifacts; and preserve the existing rule that a >15% regression
-requires explanation and >30% blocks unless an ADR changes the contract.
+```text
+TCG p95 ratio     pooled mean 1.0076   min 0.9549   max 1.0746   stdev 4.0%
+TCG median ratio  pooled mean 0.9977   min 0.9826   max 1.0109   stdev 1.2%
+native            pooled mean 0.9988   min 0.9900   max 1.0146   stdev 1.0%
+between trees     mean difference 0.0075, against a pooled stdev of 0.0401
+```
 
-**A finding the measurement has already produced, which the threshold must
-confront.** With comparable intervals in one artifact, `FULL_EXACT` measures
-about **0.34** of `UNAVOIDABLE_CRYPTO`. The denominator's accepted model — two
-parser-crypto replays, two whole-capsule mirror digests and a boot-text digest,
-101,203,397 bytes over 2007 invocations — is roughly three times the
-cryptographic work the nucleus performs in the interval the numerator covers. A
-budget phrased as "overhead ≤ 30% of unavoidable crypto" is therefore satisfied
-by a wide margin for a reason that has nothing to do with overhead. **Whether
-the denominator's model, the numerator's scope, or the budget's phrasing is what
-needs adjusting is a question for review, and this ADR does not decide it** — the
-accepted definition of unavoidable cryptographic work is not something an
-implementation may quietly redefine to make a number come out.
+The sanity property of §4 holds: the centre is 1.00, where the mismatched form
+sat at 0.35.
+
+```text
+same_artifact_full_exact_p95 / same_artifact_unavoidable_crypto_p95
+
+    <= 1.15   regression requires explanation
+    <= 1.30   blocking
+```
+
+**Interpretation** — the one ADR-0026 always claimed and its construction could
+not deliver: the complete Stage 1 logical validation costs no more than 30%
+above the unavoidable cryptographic subset **of that same workload**, in one
+artifact, over one interval, from one boundary. Because the centre is 1.00 the
+two lines are exactly the corpus's existing policy, with no change of units.
+
+| | headroom over worst observed (1.0746) | σ over pooled mean |
+|---|---|---|
+| 1.15 | 7.0% | 3.55 |
+| 1.30 | 21.0% | 7.29 |
+
+**`1.30` is not carried over, and is not the same decision.** The old number
+bounded a quotient of two artifacts over two incomparable intervals, where it
+meant nothing checkable. It is proposed again only because this distribution
+centres on 1.00 and 30% is the policy the corpus already states — derived from
+the evidence, not inherited from the superseded metric.
+
+### Two caveats this proposal carries
+
+**The structural overhead is below the measurement's resolution.** In two of six
+series the numerator came out *below* the denominator, and the pooled mean is
+1.0076 with a 4.0% stdev. Stage 1 validation over this fixture is overwhelmingly
+cryptographic: hashing 16 MiB across 1000 files dominates parsing and lookup so
+completely that the structural remainder is around or under one percent. These
+lines therefore **bound** structural cost; they do not resolve it, and they will
+not detect drift. Making the metric resolve structural cost would mean a fixture
+that shifts work away from hashing, which is a larger change than this ADR
+should make.
+
+**The p95-of-ratio is three times noisier than the median-of-ratio** — 4.0%
+against 1.2% — because it divides two independently drawn tail estimates, so
+both tails' noise enters the quotient. §8's accepted discipline names nearest-rank
+p95 and this proposal keeps it; the measured alternative is recorded because the
+ruling admits a change where the experiment demonstrates a specific defect, and
+this is a measured one.
 
 ## 10. Gate transition
 
