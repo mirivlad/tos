@@ -249,7 +249,7 @@ fn console_failed(console: &mut Option<BootConsole<'static>>, code: &[u8], detai
 /// Test-only baseline for the exact SHA-256 operations on a successful boot.
 /// The preceding production `parse` supplies only a structural borrowed view;
 /// every timed digest below starts from fresh `Sha256` state.
-#[cfg(any(feature = "test-crypto-baseline", feature = "test-paired-measurement"))]
+#[cfg(feature = "test-crypto-baseline")]
 fn crypto_baseline(cap_bytes: &[u8], capsule: &Capsule<'_>) -> ! {
     let boot = match capsule.boot_file() {
         Some(file) => file,
@@ -290,6 +290,146 @@ fn crypto_baseline(cap_bytes: &[u8], capsule: &Capsule<'_>) -> ! {
     tos_serial::put_u32_decimal(hashes);
     tos_serial::puts(b"\r\n");
     result_port(RESULT_HALT_OK)
+}
+
+/// The two timed workloads of the same-artifact paired metric (ADR-0083).
+///
+/// **They are the same logical operation and its cryptographic subset**, which
+/// is what makes their quotient mean anything. The earlier form measured one
+/// validation pass against a denominator modelling two, so the ratio sat near
+/// a third for a reason that had nothing to do with structural overhead.
+///
+/// Both begin at one explicit boundary — `TOS.TEST.PAIRED.START` — rather than
+/// at the nucleus's entry, so the ordinary boot prefix and the common setup
+/// parse are outside both intervals instead of inside one.
+///
+/// Neither reimplements anything: `sha256`, `parse`, `boot_file` and the parser
+/// crypto replay are the production implementations. What lives here is the
+/// order they are called in.
+#[cfg(feature = "test-paired-measurement")]
+fn paired_measurement(mode: measurement::Mode, cap_bytes: &[u8], setup: &Capsule<'_>) -> ! {
+    // Taken before the boundary: obtaining it is setup, not measured work, and
+    // it must cost the same in both modes.
+    let setup_boot = match setup.boot_file() {
+        Some(file) => file,
+        None => cap_fail(),
+    };
+    tos_serial::puts(b"TOS.TEST.PAIRED.START\r\n");
+    match mode {
+        measurement::Mode::FullExact => paired_full_exact(cap_bytes),
+        measurement::Mode::UnavoidableCrypto => {
+            paired_unavoidable_crypto(cap_bytes, setup, setup_boot.content)
+        }
+    }
+}
+
+/// The complete logical validation workload: two independent passes and the
+/// canonical lookup, exactly as the native reference models it.
+///
+/// **Each pass is fresh.** The first parsed view is dropped before the second
+/// call, so no parsed object and no digest crosses the boundary between them —
+/// which is the property that makes them two validations rather than one
+/// validation and a cache hit.
+#[cfg(feature = "test-paired-measurement")]
+fn paired_full_exact(cap_bytes: &[u8]) -> ! {
+    // The loader computes the plain capsule digest for BootInfo before its
+    // parser validation; the nucleus recomputes it before its own, comparing
+    // the explicit ABI mirror rather than a cache.
+    let loader_capsule_digest = sha256(cap_bytes);
+    // First pass: the loader's fresh validation. The view is scoped so it
+    // cannot be carried into the second.
+    let first_files = {
+        let first = match parse(cap_bytes) {
+            Ok(capsule) => capsule,
+            Err(_) => cap_fail(),
+        };
+        first.file_count()
+    };
+    let nucleus_capsule_digest = sha256(cap_bytes);
+    if nucleus_capsule_digest != loader_capsule_digest {
+        cap_fail();
+    }
+    // Second pass: the nucleus's independent validation, and the canonical
+    // lookup is performed on *this* result.
+    let second = match parse(cap_bytes) {
+        Ok(capsule) => capsule,
+        Err(_) => cap_fail(),
+    };
+    let boot = match second.boot_file() {
+        Some(file) => file,
+        None => cap_fail(),
+    };
+    if boot.name != tos_capsule::BOOT_PATH {
+        cap_fail();
+    }
+    let boot_digest = sha256(boot.content);
+    // What the workload did, so a gate can check the shape rather than trust
+    // it: two parses, two whole-capsule digests, the lookup taken from the
+    // second parse, and a fresh boot-text digest whose value production also
+    // reports.
+    tos_serial::puts(
+        b"TOS.TEST.PAIRED.FULL.DONE parses=2 capsule_digests=2 lookup_from=second files=",
+    );
+    tos_serial::put_u32_decimal(first_files as u32);
+    tos_serial::puts(b" boot_digest=");
+    put_hex_digest(&boot_digest);
+    tos_serial::puts(b" path=");
+    tos_serial::puts(tos_capsule::BOOT_PATH);
+    tos_serial::puts(b"\r\n");
+    result_port(RESULT_HALT_OK)
+}
+
+/// The cryptographic subset of exactly that workload.
+#[cfg(feature = "test-paired-measurement")]
+fn paired_unavoidable_crypto(cap_bytes: &[u8], setup: &Capsule<'_>, boot_text: &[u8]) -> ! {
+    let loader_capsule_digest = sha256(cap_bytes);
+    let first = match verify_parser_crypto(setup) {
+        Ok(accounting) => accounting,
+        Err(_) => cap_fail(),
+    };
+    let nucleus_capsule_digest = sha256(cap_bytes);
+    if nucleus_capsule_digest != loader_capsule_digest {
+        cap_fail();
+    }
+    let second = match verify_parser_crypto(setup) {
+        Ok(accounting) => accounting,
+        Err(_) => cap_fail(),
+    };
+    if second != first {
+        cap_fail();
+    }
+    let _boot_digest = sha256(boot_text);
+    report_crypto_accounting(&first, cap_bytes.len(), boot_text.len());
+    result_port(RESULT_HALT_OK)
+}
+
+/// The exact accepted accounting, reported identically wherever it is produced.
+#[cfg(any(feature = "test-crypto-baseline", feature = "test-paired-measurement"))]
+fn report_crypto_accounting(
+    parser: &tos_capsule::test_crypto_baseline::CryptoAccounting,
+    capsule_bytes: usize,
+    boot_text_bytes: usize,
+) {
+    let bytes = parser.bytes_hashed * 2 + (capsule_bytes as u64) * 2 + boot_text_bytes as u64;
+    let hashes = parser.hash_invocations * 2 + 3;
+    if bytes > u32::MAX as u64 {
+        cap_fail();
+    }
+    tos_serial::puts(b"TOS.TEST.CRYPTO.BASELINE.DONE bytes=");
+    tos_serial::put_u32_decimal(bytes as u32);
+    tos_serial::puts(b" hashes=");
+    tos_serial::put_u32_decimal(hashes);
+    tos_serial::puts(b"\r\n");
+}
+
+/// A digest as lower-case hex, so a gate can compare it with what production
+/// reports for the same fixture.
+#[cfg(feature = "test-paired-measurement")]
+fn put_hex_digest(digest: &[u8; 32]) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    for byte in digest {
+        tos_serial::puts(&[HEX[(byte >> 4) as usize], HEX[(byte & 0xf) as usize]]);
+    }
 }
 
 /// The name a launcher constant binds a grant to (ADR-0061).
@@ -408,6 +548,10 @@ fn first_logical_line(content: &[u8]) -> Option<&[u8]> {
 // `call`, not a Rust call, so `clippy::not_unsafe_ptr_arg_deref` does not apply.
 #[allow(clippy::not_unsafe_ptr_arg_deref)]
 #[cfg_attr(feature = "test-crypto-baseline", allow(unreachable_code))]
+#[cfg_attr(
+    feature = "test-paired-measurement",
+    allow(unreachable_code, unused_variables)
+)]
 #[no_mangle]
 #[link_section = ".text.boot_entry"]
 pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
@@ -519,15 +663,18 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // the series this boot belongs to decided at run time — so linker layout,
     // function placement and the TCG translation environment are shared between
     // numerator and denominator instead of being two independent draws.
+    //
+    // **The `parse` above is the common untimed setup and belongs to neither
+    // series.** Both modes reach this point having executed exactly the same
+    // prefix, so whatever that prefix did to the emulator's translation and
+    // cache state is common to both and cancels. Its parsed view is the
+    // borrowed structural handle the crypto replay needs; none of its digests
+    // enters either timed workload, both of which recompute from `cap_bytes`.
     #[cfg(feature = "test-paired-measurement")]
     {
         let mode = measurement::mode();
         measurement::report(mode);
-        if mode == measurement::Mode::UnavoidableCrypto {
-            crypto_baseline(cap_bytes, &cap);
-        }
-        // FULL_EXACT falls through into the ordinary production boot below and
-        // is measured through the production implementations, not a copy.
+        paired_measurement(mode, cap_bytes, &cap);
     }
 
     // The handoff record only mirrors the capsule's identity fields

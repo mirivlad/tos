@@ -131,10 +131,13 @@ series() { # $1 = mode word, $2 = end event, $3 = out dir, $4 = required events
 # is the ordinary successful boot; UNAVOIDABLE_CRYPTO halts as soon as it has
 # performed the accepted unavoidable cryptographic work, so it never reaches the
 # canonical lookup or the launcher.
-series full   TOS.BOOTTEXT.PATH             "$OUT/full-exact" \
-    "TOS.BOOT.ENTRY TOS.CAPSULE.OK TOS.BOOT.HANDOFF TOS.NUCLEUS.ENTRY TOS.TEST.PAIRED.MODE TOS.CAPSULE.OK TOS.BOOTTEXT.PATH TOS.BOOTTEXT.DIGEST TOS.IDENTITY TOS.HALT"
+# Both modes reach TOS.TEST.PAIRED.START having executed exactly the same
+# prefix, and each ends at its own completion event. The interval therefore
+# contains the mode's logical workload and nothing else.
+series full   TOS.TEST.PAIRED.FULL.DONE     "$OUT/full-exact" \
+    "TOS.BOOT.ENTRY TOS.CAPSULE.OK TOS.BOOT.HANDOFF TOS.NUCLEUS.ENTRY TOS.TEST.PAIRED.MODE TOS.TEST.PAIRED.START TOS.TEST.PAIRED.FULL.DONE"
 series crypto TOS.TEST.CRYPTO.BASELINE.DONE "$OUT/unavoidable-crypto" \
-    "TOS.BOOT.ENTRY TOS.CAPSULE.OK TOS.BOOT.HANDOFF TOS.NUCLEUS.ENTRY TOS.TEST.PAIRED.MODE TOS.TEST.CRYPTO.BASELINE.START TOS.TEST.CRYPTO.BASELINE.DONE"
+    "TOS.BOOT.ENTRY TOS.CAPSULE.OK TOS.BOOT.HANDOFF TOS.NUCLEUS.ENTRY TOS.TEST.PAIRED.MODE TOS.TEST.PAIRED.START TOS.TEST.CRYPTO.BASELINE.DONE"
 
 python3 "$HERE/paired-report.py" \
     --label "$LABEL" \
