@@ -1,0 +1,23 @@
+label: s4c-crypto
+features: test-crypto-baseline
+tree: 6fc0bf575f932e6ef0ed495aed59b64d8dee3247
+raw_sha256: 5dbebfeed572a6fb6cd97e63e6682301157ad2cdede2a383efc09d7810d5652c
+raw_bytes: 134408
+elf_sha256: 81ab0675b38fb7a723f85f63defa8497a38f7dc870ed045d01f37569340dddd8
+elf_bytes: 151728
+entry: 
+
+--- sections ---
+Тип                Адрес      Смещ               ES        
+NULL               0000000000000000 000000             00        
+.text              PROGBITS   0000000002000000   012dff    
+.rodata            PROGBITS   0000000002013000   0010d1    
+.data              PROGBITS   0000000002015000   00bca8    
+.got               PROGBITS   0000000002020ca8   000060    
+.bss               NOBITS     0000000002020d08   00af18    
+.comment           PROGBITS   0000000000000000   00008b    
+.symtab            SYMTAB     0000000000000000   001110    
+.shstrtab          STRTAB     0000000000000000   000042    
+.strtab            STRTAB     0000000000000000   001f42    
+
+--- program headers ---

@@ -1,0 +1,3436 @@
+{
+  "architecture": "x86_64 Stage 1",
+  "baseline": "none; initial Stage 1 P2 baseline",
+  "evidence_status": "P1",
+  "firmware": {
+    "code_path": "/home/mirivlad/git/tos/source/target/preflight-qemu/perf-baseline/qemu-full/run/OVMF_CODE.fd",
+    "code_sha256": "624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0",
+    "vars_path": "/home/mirivlad/git/tos/source/target/preflight-qemu/perf-baseline/qemu-full/run/OVMF_VARS.fd",
+    "vars_sha256": "79091dd4ab5e91d7febac74b02dc7f7ec8891a40150cad37c8836105d833cce0"
+  },
+  "guest": {
+    "cpu": "qemu64",
+    "memory_mib": 256,
+    "vcpus": 1
+  },
+  "host": {
+    "cpu": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+    "virtualization_mode": "TCG (QEMU invoked without -enable-kvm)"
+  },
+  "measurement": {
+    "end_event": "TOS.BOOTTEXT.PATH",
+    "event_clock": "host monotonic serial-byte arrival",
+    "start_event": "TOS.BOOT.ENTRY"
+  },
+  "qemu": {
+    "accelerator": "tcg",
+    "machine": "q35",
+    "version": "QEMU emulator version 10.0.11 (Debian 1:10.0.11+ds-0+deb13u1)"
+  },
+  "raw_samples": {
+    "measurements": [
+      {
+        "duration_ns": 2660108413,
+        "end_monotonic_ns": 12916170463857,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12913510355444
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12914878390838
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12914957633487
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12914957881738
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12916169958280
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12916170463857
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12916170886654
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12916171405702
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12916172623150
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12917468278073
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12917469729610
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12918053311903
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12918054062562
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12918054867665
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12918059683072
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12918060985526
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12918061641728
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12918069640657
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12918094134402
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12918099333632
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12918125708257
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12918143146878
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12918150610743
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12918150848356
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12918150917639
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12918151346768
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12918153292935
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12918225704486
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12918225868493
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12918227867625
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12918264825805
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12918293444828
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12918293525233
+          }
+        ],
+        "index": 1,
+        "phase": "measurement",
+        "start_monotonic_ns": 12913510355444
+      },
+      {
+        "duration_ns": 2685007635,
+        "end_monotonic_ns": 12924620812725,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12921935805090
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12923331755183
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12923411321752
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12923411576601
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12924620389882
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12924620812725
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12924621208294
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12924621610118
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12924622597444
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12925910834746
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12925912355742
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12926500266160
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12926500949998
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12926501769263
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12926506395456
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12926507569465
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12926508256250
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12926515957404
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12926539512070
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12926543753195
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12926569936770
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12926587340832
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12926594308992
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12926594579406
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12926594660346
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12926595106124
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12926597071638
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12926666360034
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12926666522237
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12926668396899
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12926704544673
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12926732884982
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12926732958919
+          }
+        ],
+        "index": 2,
+        "phase": "measurement",
+        "start_monotonic_ns": 12921935805090
+      },
+      {
+        "duration_ns": 2625165792,
+        "end_monotonic_ns": 12932969064063,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12930343898271
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12931701141971
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12931780039269
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12931780332090
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12932968655029
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12932969064063
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12932969471372
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12932969939575
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12932970938060
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12934257990529
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12934259566749
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12934823136106
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12934823851794
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12934824789607
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12934829729970
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12934831033233
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12934831665690
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12934839638274
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12934863815114
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12934868172957
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12934895404357
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12934913256021
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12934920823749
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12934921113538
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12934921218540
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12934921638532
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12934923701527
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12934997035855
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12934997255542
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12934999314005
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12935036143865
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12935064901409
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12935064971380
+          }
+        ],
+        "index": 3,
+        "phase": "measurement",
+        "start_monotonic_ns": 12930343898271
+      },
+      {
+        "duration_ns": 2650267744,
+        "end_monotonic_ns": 12942272820627,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12939622552883
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12941000506881
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12941079753058
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12941080044858
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12942272463436
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12942272820627
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12942273178105
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12942273575054
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12942274586402
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12943557832060
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12943559591850
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12944136983048
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12944137742739
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12944138546020
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12944143144137
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12944144505932
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12944145163460
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12944152907647
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12944176607732
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12944181212455
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12944207984555
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12944225466684
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12944233433894
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12944233694450
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12944233789328
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12944234204457
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12944236226757
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12944345154289
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12944345418610
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12944347480778
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12944386332898
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12944415449777
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12944415509008
+          }
+        ],
+        "index": 4,
+        "phase": "measurement",
+        "start_monotonic_ns": 12939622552883
+      },
+      {
+        "duration_ns": 2659981486,
+        "end_monotonic_ns": 12951269790248,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12948609808762
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12949958284129
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12950046616272
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12950046982766
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12951269420275
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12951269790248
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12951270212272
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12951270634395
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12951271567727
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12952556266564
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12952557717134
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12953141772849
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12953142509089
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12953143308007
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12953148168819
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12953149436331
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12953150072586
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12953157521652
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12953181854758
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12953186289649
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12953213100327
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12953230668988
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12953238413896
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12953238643718
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12953238732417
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12953239152227
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12953241145105
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12953314817251
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12953315038958
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12953316919522
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12953353936068
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12953382611026
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12953382668575
+          }
+        ],
+        "index": 5,
+        "phase": "measurement",
+        "start_monotonic_ns": 12948609808762
+      },
+      {
+        "duration_ns": 2659748167,
+        "end_monotonic_ns": 12959556076883,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12956896328716
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12958295251545
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12958373909998
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12958374200519
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12959555680565
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12959556076883
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12959556520840
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12959556917010
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12959557829884
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12960837134557
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12960838591035
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12961384867089
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12961385540547
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12961386375077
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12961391134756
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12961392412796
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12961393024873
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12961400915173
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12961424696482
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12961429015456
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12961455185022
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12961472056644
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12961479299140
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12961479579060
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12961479661787
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12961480089069
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12961482047138
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12961552531505
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12961552748694
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12961554691099
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12961591850076
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12961620796395
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12961620853467
+          }
+        ],
+        "index": 6,
+        "phase": "measurement",
+        "start_monotonic_ns": 12956896328716
+      },
+      {
+        "duration_ns": 2609660697,
+        "end_monotonic_ns": 12967827169448,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12965217508751
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12966558439178
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12966637472152
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12966637721036
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12967826725213
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12967827169448
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12967827580028
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12967827989129
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12967828970798
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12969110088808
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12969111558658
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12969675756414
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12969676684780
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12969677694287
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12969683464084
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12969685020082
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12969685761519
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12969695195326
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12969724433672
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12969729902869
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12969760858418
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12969778280103
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12969785667434
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12969785926768
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12969786035037
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12969786431548
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12969788473825
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12969858597650
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12969858750166
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12969860746885
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12969902273566
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12969931143545
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12969931210529
+          }
+        ],
+        "index": 7,
+        "phase": "measurement",
+        "start_monotonic_ns": 12965217508751
+      },
+      {
+        "duration_ns": 2614626642,
+        "end_monotonic_ns": 12976027742950,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12973413116308
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12974750462285
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12974829062072
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12974829337389
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12976027321004
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12976027742950
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12976028107897
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12976028516621
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12976029512635
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12977308949785
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12977310396547
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12977901111874
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12977901795337
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12977902638360
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12977907280866
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12977908524861
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12977909166047
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12977916938361
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12977940413302
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12977944797015
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12977971162481
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12977988581663
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12977995727887
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12977995981674
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12977996086602
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12977996500809
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12977998518244
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12978068430523
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12978068615426
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12978070496174
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12978107596733
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12978136932797
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12978136989738
+          }
+        ],
+        "index": 8,
+        "phase": "measurement",
+        "start_monotonic_ns": 12973413116308
+      },
+      {
+        "duration_ns": 2631085804,
+        "end_monotonic_ns": 12984644454124,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12982013368320
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12983377304509
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12983458833573
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12983459103563
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12984644048679
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12984644454124
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12984644815923
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12984645251429
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12984646240800
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12985917220836
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12985918630105
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12986510719024
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12986511514347
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12986512339794
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12986517023737
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12986518262310
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12986518990674
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12986526613353
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12986550377936
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12986554736187
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12986582041143
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12986599576644
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12986607138675
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12986607435511
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12986607535587
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12986607910603
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12986609836787
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12986692924577
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12986693101293
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12986695096803
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12986732143390
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12986760880320
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12986760945545
+          }
+        ],
+        "index": 9,
+        "phase": "measurement",
+        "start_monotonic_ns": 12982013368320
+      },
+      {
+        "duration_ns": 2636040346,
+        "end_monotonic_ns": 12992901909504,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12990265869158
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12991632424645
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12991711444009
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12991711683436
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12992901493897
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12992901909504
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12992902282173
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12992902736721
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12992903753185
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12994184370285
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12994185682768
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12994750481152
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12994751319247
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12994752072269
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12994756789833
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12994758026510
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12994758795600
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12994766602846
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12994790842801
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12994795037782
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12994821782123
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12994839336431
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12994846428981
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12994846712272
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12994846816912
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12994847246613
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12994849277789
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12994920749413
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12994920913113
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12994922812948
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12994961380495
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12994990388847
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12994990436690
+          }
+        ],
+        "index": 10,
+        "phase": "measurement",
+        "start_monotonic_ns": 12990265869158
+      },
+      {
+        "duration_ns": 2662462299,
+        "end_monotonic_ns": 13001231768040,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12998569305741
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12999950350824
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13000028839718
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13000029110224
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13001231364705
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13001231768040
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13001232139553
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13001232552851
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13001233512642
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13002517870041
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13002519365835
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13003106509505
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13003107238247
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13003107945949
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13003112734837
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13003113961843
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13003114599638
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13003122120701
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13003145510664
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13003149920230
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13003176260236
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13003193843198
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13003201053693
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13003201477071
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13003201602557
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13003202064041
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13003204070439
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13003273836900
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13003274049542
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13003275866532
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13003312268456
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13003340382492
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13003340472850
+          }
+        ],
+        "index": 11,
+        "phase": "measurement",
+        "start_monotonic_ns": 12998569305741
+      },
+      {
+        "duration_ns": 2686269689,
+        "end_monotonic_ns": 13010294404917,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 13007608135228
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13008994666345
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13009074143839
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13009074408387
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13010293948959
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13010294404917
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13010294727077
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13010295166791
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13010296120543
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13011581520066
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13011582894999
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13012154624051
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13012155481609
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13012156463666
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13012162280890
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13012163895193
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13012164695134
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13012174151651
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13012203511647
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13012208812617
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13012236467889
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13012254502855
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13012261831152
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13012262128318
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13012262212311
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13012262723035
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13012264804920
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13012334097299
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13012334265205
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13012335996708
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13012372271201
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13012401286800
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13012401367740
+          }
+        ],
+        "index": 12,
+        "phase": "measurement",
+        "start_monotonic_ns": 13007608135228
+      },
+      {
+        "duration_ns": 2670577510,
+        "end_monotonic_ns": 13018643364482,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 13015972786972
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13017342029010
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13017420592310
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13017420810123
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13018642907199
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13018643364482
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13018643714283
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13018644129373
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13018645176413
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13019941146409
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13019942512904
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13020506870324
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13020507634136
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13020508444324
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13020513295713
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13020514539030
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13020515142011
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13020522625764
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13020546870145
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13020551400308
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13020577110977
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13020594572597
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13020602240633
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13020602516830
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13020602613650
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13020602986559
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13020604938463
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13020674717119
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13020674868250
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13020676702716
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13020713299823
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13020742050853
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13020742115662
+          }
+        ],
+        "index": 13,
+        "phase": "measurement",
+        "start_monotonic_ns": 13015972786972
+      },
+      {
+        "duration_ns": 2596942391,
+        "end_monotonic_ns": 13026806639937,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 13024209697546
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13025536635865
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13025615698927
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13025615915645
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13026806191996
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13026806639937
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13026807033376
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13026807488867
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13026808571934
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13028088643882
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13028089944911
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13028631038695
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13028631740672
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13028632598397
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13028637078417
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13028638270133
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13028638851778
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13028646365840
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13028669812368
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13028673991387
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13028700197320
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13028717939352
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13028725219553
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13028725522414
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13028725634678
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13028726063086
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13028728071793
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13028797054552
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13028797232123
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13028799186095
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13028835365236
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13028864074809
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13028864155244
+          }
+        ],
+        "index": 14,
+        "phase": "measurement",
+        "start_monotonic_ns": 13024209697546
+      },
+      {
+        "duration_ns": 2638217375,
+        "end_monotonic_ns": 13034967255767,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 13032329038392
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13033690824299
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13033769849100
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13033770101788
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13034966787090
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13034967255767
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13034967603128
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13034967988967
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13034968949332
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13036270228011
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13036271693356
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13036834058171
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13036834772164
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13036835661445
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13036840313362
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13036841571199
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13036842197360
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13036849936046
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13036873991598
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13036878560167
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13036904815684
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13036921991315
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13036928975247
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13036929392231
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13036929399668
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13036929801331
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13036931722699
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13037008722330
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13037008871630
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13037010884277
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13037051668258
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13037081365983
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13037081456495
+          }
+        ],
+        "index": 15,
+        "phase": "measurement",
+        "start_monotonic_ns": 13032329038392
+      },
+      {
+        "duration_ns": 2712284526,
+        "end_monotonic_ns": 13043348514743,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 13040636230217
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13042080751466
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13042160823079
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13042161080846
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13043348102279
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13043348514743
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13043348832641
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13043349255910
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13043350212081
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13044632216542
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13044633711325
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13045214149396
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13045214880660
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13045215714666
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13045220587286
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13045221746161
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13045222417532
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13045230116035
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13045254258437
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13045258386693
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13045287538946
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13045309037663
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13045318203947
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13045318523764
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13045318616354
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13045319185570
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13045321564999
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13045412594524
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13045412895477
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13045416515772
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13045463277872
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13045500737169
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13045500886830
+          }
+        ],
+        "index": 16,
+        "phase": "measurement",
+        "start_monotonic_ns": 13040636230217
+      },
+      {
+        "duration_ns": 2661497517,
+        "end_monotonic_ns": 13051686678269,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 13049025180752
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13050412867953
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13050491629850
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13050491851976
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13051686221827
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13051686678269
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13051687085352
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13051687492200
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13051688426558
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13052981807300
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13052983361531
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13053582173324
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13053582827124
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13053583728088
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13053588424179
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13053589606665
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13053590345339
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13053598286848
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13053621784931
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13053626136215
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13053652768525
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13053670719972
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13053677807768
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13053678171296
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13053678283156
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13053678734351
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13053680876778
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13053750985507
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13053751202242
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13053753117062
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13053789665108
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13053817794936
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13053817846818
+          }
+        ],
+        "index": 17,
+        "phase": "measurement",
+        "start_monotonic_ns": 13049025180752
+      },
+      {
+        "duration_ns": 2636864670,
+        "end_monotonic_ns": 13060003813859,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 13057366949189
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13058730857792
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13058809511293
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13058809733135
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13060003405607
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13060003813859
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13060004169483
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13060004581169
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13060005522397
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13061300441270
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13061301873397
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13061841826574
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13061842556257
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13061843424510
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13061849829198
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13061851358278
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13061852093113
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13061861414341
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13061890518488
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13061895834771
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13061928224579
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13061949623956
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13061958462695
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13061958764495
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13061958853894
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13061959347402
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13061961833803
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13062041856658
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13062042038799
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13062043965147
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13062080328893
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13062108907476
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13062108965830
+          }
+        ],
+        "index": 18,
+        "phase": "measurement",
+        "start_monotonic_ns": 13057366949189
+      },
+      {
+        "duration_ns": 2588446661,
+        "end_monotonic_ns": 13068166923968,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 13065578477307
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13066900877943
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13066979487180
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13066979728110
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13068166521806
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13068166923968
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13068167302470
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13068167691454
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13068168661784
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13069456123528
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13069457498609
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13070044800344
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13070045651349
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13070046499890
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13070051304021
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13070052558492
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13070053211139
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13070060768855
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13070083996028
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13070088220822
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13070114724495
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13070131623587
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13070138952790
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13070139219650
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13070139367219
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13070139751325
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13070141699420
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13070219213082
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13070219459305
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13070221326347
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13070260652613
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13070295535170
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13070295612063
+          }
+        ],
+        "index": 19,
+        "phase": "measurement",
+        "start_monotonic_ns": 13065578477307
+      },
+      {
+        "duration_ns": 2650348256,
+        "end_monotonic_ns": 13076489973712,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 13073839625456
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13075212689244
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13075292172671
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13075292438405
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13076489568808
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13076489973712
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13076490322061
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13076490729976
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13076491737256
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13077789834670
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13077791227488
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13078363972579
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13078364857575
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13078365649931
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13078370524451
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13078371721877
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13078372393333
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13078380054274
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13078404559450
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13078408715399
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13078435034064
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13078452798737
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13078460026204
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13078460327473
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13078460445585
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13078460853499
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13078462788911
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13078534431665
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13078534585456
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13078536404600
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13078578848645
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13078611923423
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13078611966918
+          }
+        ],
+        "index": 20,
+        "phase": "measurement",
+        "start_monotonic_ns": 13073839625456
+      },
+      {
+        "duration_ns": 2617471973,
+        "end_monotonic_ns": 13084722277412,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 13082104805439
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13083436465226
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 13083516225479
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 13083516493795
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 13084721842018
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 13084722277412
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 13084722628669
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 13084723084163
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 13084723951610
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 13086013843843
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 13086015293027
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 13086603592403
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 13086604490448
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 13086605447594
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 13086611194295
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13086612680704
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13086613466141
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13086624280185
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13086648733720
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13086652909916
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13086679215276
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 13086696458727
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 13086703861000
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 13086704134150
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 13086704229567
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 13086704676250
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 13086706646699
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 13086785784538
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 13086786294974
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 13086788340341
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 13086829119632
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 13086862568246
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 13086862647800
+          }
+        ],
+        "index": 21,
+        "phase": "measurement",
+        "start_monotonic_ns": 13082104805439
+      }
+    ],
+    "warmups": [
+      {
+        "duration_ns": 2625870353,
+        "end_monotonic_ns": 12888403711963,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12885777841610
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12887133259602
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12887212425598
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12887212670641
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12888403310013
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12888403711963
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12888404083534
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12888404508036
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12888405528991
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12889749587485
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12889750936803
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12890301138951
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12890301908059
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12890302738561
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12890307497212
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12890308800154
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12890309473404
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12890317020965
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12890340981297
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12890345467134
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12890371962977
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12890389105656
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12890396647717
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12890396916209
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12890397019953
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12890397440515
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12890399410840
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12890468704864
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12890468876229
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12890470845753
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12890506656234
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12890536782411
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12890536847663
+          }
+        ],
+        "index": 1,
+        "phase": "warmup",
+        "start_monotonic_ns": 12885777841610
+      },
+      {
+        "duration_ns": 2672598802,
+        "end_monotonic_ns": 12898809456143,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12896136857341
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12897491108879
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12897569637535
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12897569848460
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12898809047621
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12898809456143
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12898809826210
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12898810230437
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12898811271545
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12900111934732
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12900113370081
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12900698698453
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12900699474585
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12900700280444
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12900704915011
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12900706127393
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12900706830391
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12900714482862
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12900737480272
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12900741696191
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12900768607706
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12900786137457
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12900793420905
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12900793780381
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12900793886561
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12900794315962
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12900796358891
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12900879921927
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12900880168272
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12900882140762
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12900918588480
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12900946672981
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12900946741549
+          }
+        ],
+        "index": 2,
+        "phase": "warmup",
+        "start_monotonic_ns": 12896136857341
+      },
+      {
+        "duration_ns": 2666079231,
+        "end_monotonic_ns": 12907738791440,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12905072712209
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12906471870415
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12906551088300
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12906551381578
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12907738431725
+          },
+          {
+            "event": "TOS.BOOTTEXT.PATH",
+            "monotonic_ns": 12907738791440
+          },
+          {
+            "event": "TOS.BOOTTEXT.LINE",
+            "monotonic_ns": 12907739143733
+          },
+          {
+            "event": "TOS.BOOTTEXT.DIGEST",
+            "monotonic_ns": 12907739545830
+          },
+          {
+            "event": "TOS.IDENTITY",
+            "monotonic_ns": 12907740497722
+          },
+          {
+            "event": "TOS.MEM.RESERVE",
+            "monotonic_ns": 12909016729873
+          },
+          {
+            "event": "TOS.MEM.ACCOUNT",
+            "monotonic_ns": 12909018201921
+          },
+          {
+            "event": "TOS.RUN.PROCESS_CHARGE",
+            "monotonic_ns": 12909586279800
+          },
+          {
+            "event": "TOS.RUN.PROCESS_ENDOWED",
+            "monotonic_ns": 12909587170484
+          },
+          {
+            "event": "TOS.RUN.PROCESS_BEGIN",
+            "monotonic_ns": 12909588233158
+          },
+          {
+            "event": "TOS.RUN.BEGIN",
+            "monotonic_ns": 12909594046539
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12909595558050
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12909596369914
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12909606045199
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12909635817305
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12909641228941
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12909674294482
+          },
+          {
+            "event": "TOS.RUN.STAGE",
+            "monotonic_ns": 12909693220186
+          },
+          {
+            "event": "TOS.RUN.VERIFIED",
+            "monotonic_ns": 12909700905953
+          },
+          {
+            "event": "TOS.RUN.ACCOUNTING",
+            "monotonic_ns": 12909701182703
+          },
+          {
+            "event": "TOS.RUN.COMPLETED",
+            "monotonic_ns": 12909701277300
+          },
+          {
+            "event": "TOS.RUN.MEMORY",
+            "monotonic_ns": 12909701721746
+          },
+          {
+            "event": "TOS.RUN.STACK",
+            "monotonic_ns": 12909703724996
+          },
+          {
+            "event": "TOS.RUN.TICKS",
+            "monotonic_ns": 12909778708028
+          },
+          {
+            "event": "TOS.RUN.CAPABILITY",
+            "monotonic_ns": 12909778902424
+          },
+          {
+            "event": "TOS.RUN.PROCESS_EXIT",
+            "monotonic_ns": 12909780829878
+          },
+          {
+            "event": "TOS.RUN.PROCESS_RECLAIMED",
+            "monotonic_ns": 12909817634018
+          },
+          {
+            "event": "TOS.RUN.IPC.COST",
+            "monotonic_ns": 12909848498486
+          },
+          {
+            "event": "TOS.HALT",
+            "monotonic_ns": 12909848563373
+          }
+        ],
+        "index": 3,
+        "phase": "warmup",
+        "start_monotonic_ns": 12905072712209
+      }
+    ]
+  },
+  "rustc_version": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "source_commit": "1c3bb490b1e4d688cf208498cda1287a0d5df6ed",
+  "statistics": {
+    "median_ns": 2650267744,
+    "p95_ns": 2686269689,
+    "p95_rank": 20,
+    "p99_ns": 2712284526,
+    "p99_rank": 21
+  },
+  "workload": {
+    "file_count": 1000,
+    "fixture": "stage1-capsule-1000-files-16-mib-v1",
+    "manifest_sha256": "5ea1bece4588cfb6b7c7e122a5786b11e3317161cf812e8fb75dd95a9a4ecb63",
+    "payload_bytes": 16777216,
+    "source_identity_mode": "detached-source-set"
+  }
+}
