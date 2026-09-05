@@ -1,0 +1,23 @@
+label: s4c-production
+features: <production>
+tree: 6fc0bf575f932e6ef0ed495aed59b64d8dee3247
+raw_sha256: 65a95ae8ed45936e64dd0fb8ede4592df6cdf22d57d8145dbc14197887cdf4aa
+raw_bytes: 179504
+elf_sha256: 801a36623b1cc07bab44fb0a8a372e567877dbab4231345773ff2b6f46c5c858
+elf_bytes: 199480
+entry: 
+
+--- sections ---
+Тип                Адрес      Смещ               ES        
+NULL               0000000000000000 000000             00        
+.text              PROGBITS   0000000002000000   01cfdf    
+.rodata            PROGBITS   000000000201d000   002289    
+.data              PROGBITS   0000000002020000   00bcb8    
+.got               PROGBITS   000000000202bcb8   000078    
+.bss               NOBITS     000000000202bd30   00af50    
+.comment           PROGBITS   0000000000000000   00008b    
+.symtab            SYMTAB     0000000000000000   0013e0    
+.shstrtab          STRTAB     0000000000000000   000042    
+.strtab            STRTAB     0000000000000000   0026cf    
+
+--- program headers ---

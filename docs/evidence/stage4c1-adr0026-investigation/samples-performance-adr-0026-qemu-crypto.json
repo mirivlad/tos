@@ -1,0 +1,896 @@
+{
+  "architecture": "x86_64 Stage 1 QEMU unavoidable crypto research",
+  "crypto_accounting": {
+    "bytes_per_boot": 101203397,
+    "hashes_per_boot": 2007
+  },
+  "evidence_status": "P1",
+  "firmware": {
+    "code_path": "/home/mirivlad/git/tos/source/target/preflight-qemu/performance-adr-0026/qemu-crypto/run/OVMF_CODE.fd",
+    "code_sha256": "624e06de18b4fa535e90db7160d00d3d07d206422b89999bf1e27d920264e4e0",
+    "vars_path": "/home/mirivlad/git/tos/source/target/preflight-qemu/performance-adr-0026/qemu-crypto/run/OVMF_VARS.fd",
+    "vars_sha256": "79091dd4ab5e91d7febac74b02dc7f7ec8891a40150cad37c8836105d833cce0"
+  },
+  "guest": {
+    "cpu": "qemu64",
+    "memory_mib": 256,
+    "vcpus": 1
+  },
+  "host": {
+    "cpu": "Intel(R) Xeon(R) CPU E5-2680 v4 @ 2.40GHz",
+    "virtualization_mode": "TCG (QEMU invoked without -enable-kvm)"
+  },
+  "measurement": {
+    "end_event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+    "event_clock": "host monotonic serial-byte arrival",
+    "logical_sequence": "two plain capsule mirrors -> two parser crypto replays -> boot-text digest",
+    "start_event": "TOS.TEST.CRYPTO.BASELINE.START"
+  },
+  "qemu": {
+    "accelerator": "tcg",
+    "machine": "q35",
+    "version": "QEMU emulator version 10.0.11 (Debian 1:10.0.11+ds-0+deb13u1)"
+  },
+  "raw_samples": {
+    "measurements": [
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2335142123,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12539607408300
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12541035381590
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12541113953159
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12541114129588
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12542342831482
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12544677973605
+          }
+        ],
+        "index": 1,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2385662445,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12548249505940
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12549616754280
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12549695237219
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12549695402890
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12550917116391
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12553302778836
+          }
+        ],
+        "index": 2,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2315153781,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12556854518348
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12558264984715
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12558343920513
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12558344109481
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12559557092207
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12561872245988
+          }
+        ],
+        "index": 3,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2306140632,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12565463473776
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12566878721517
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12566958124400
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12566958297019
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12568153262088
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12570459402720
+          }
+        ],
+        "index": 4,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2356182971,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12574016033579
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12575424978435
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12575503430263
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12575503610263
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12576672866044
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12579029049015
+          }
+        ],
+        "index": 5,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2288634813,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12582528297573
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12583931715198
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12584011180696
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12584011368434
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12585176653321
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12587465288134
+          }
+        ],
+        "index": 6,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2374930008,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12590981689077
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12592347332814
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12592426499836
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12592426640624
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12593592423058
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12595967353066
+          }
+        ],
+        "index": 7,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2363453840,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12599559704417
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12600910529210
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12600989208584
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12600989382768
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12602155681300
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12604519135140
+          }
+        ],
+        "index": 8,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2310453465,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12608076924070
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12609526404742
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12609604747153
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12609604938002
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12610768356307
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12613078809772
+          }
+        ],
+        "index": 9,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2328086428,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12616683959034
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12618115832939
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12618196584252
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12618196745406
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12619383368184
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12621711454612
+          }
+        ],
+        "index": 10,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2321977574,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12625262198226
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12626641943569
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12626720174308
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12626720334640
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12627889986605
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12630211964179
+          }
+        ],
+        "index": 11,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2303350096,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12633820279093
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12635182316654
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12635261421992
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12635261581117
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12636433261950
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12638736612046
+          }
+        ],
+        "index": 12,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2314236726,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12642349797901
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12643795710702
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12643875767176
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12643875932180
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12645045315721
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12647359552447
+          }
+        ],
+        "index": 13,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2309488579,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12650949185248
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12652290735656
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12652369125090
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12652369298150
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12653532509026
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12655841997605
+          }
+        ],
+        "index": 14,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2093892708,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12659505727543
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12660843326998
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12660923347490
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12660923513916
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12662344862471
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12664438755179
+          }
+        ],
+        "index": 15,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2331252200,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12667924752058
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12669315998324
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12669394492814
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12669394646949
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12670606273966
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12672937526166
+          }
+        ],
+        "index": 16,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2389583122,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12677215378556
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12678667895672
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12678747167820
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12678747349395
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12679930538936
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12682320122058
+          }
+        ],
+        "index": 17,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2322413794,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12685882546487
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12687324496450
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12687404334585
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12687404520595
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12688588568981
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12690910982775
+          }
+        ],
+        "index": 18,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2317520715,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12694395901470
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12695806554133
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12695885325876
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12695885522521
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12697060507903
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12699378028618
+          }
+        ],
+        "index": 19,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2388368689,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12702958451734
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12704352949285
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12704433163120
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12704433353355
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12705634925360
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12708023294049
+          }
+        ],
+        "index": 20,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2321333836,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12711641213824
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12713026876873
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12713105730187
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12713105918104
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12714280819296
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12716602153132
+          }
+        ],
+        "index": 21,
+        "mode": "unavoidable_crypto",
+        "phase": "measurement",
+        "validations": 2
+      }
+    ],
+    "warmups": [
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2300231837,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12512854059683
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12514303714065
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12514381880772
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12514382069418
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12515589176044
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12517889407881
+          }
+        ],
+        "index": 1,
+        "mode": "unavoidable_crypto",
+        "phase": "warmup",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2433973416,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12521858872249
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12523282091077
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12523360734228
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12523360908826
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12524596112945
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12527030086361
+          }
+        ],
+        "index": 2,
+        "mode": "unavoidable_crypto",
+        "phase": "warmup",
+        "validations": 2
+      },
+      {
+        "crypto_bytes_per_boot": 101203397,
+        "crypto_hashes_per_boot": 2007,
+        "duration_ns": 2319499513,
+        "event_timestamps": [
+          {
+            "event": "TOS.BOOT.ENTRY",
+            "monotonic_ns": 12530582614540
+          },
+          {
+            "event": "TOS.CAPSULE.OK",
+            "monotonic_ns": 12532129969429
+          },
+          {
+            "event": "TOS.BOOT.HANDOFF",
+            "monotonic_ns": 12532129975111
+          },
+          {
+            "event": "TOS.NUCLEUS.ENTRY",
+            "monotonic_ns": 12532129978084
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.START",
+            "monotonic_ns": 12533223532813
+          },
+          {
+            "event": "TOS.TEST.CRYPTO.BASELINE.DONE",
+            "monotonic_ns": 12535543032326
+          }
+        ],
+        "index": 3,
+        "mode": "unavoidable_crypto",
+        "phase": "warmup",
+        "validations": 2
+      }
+    ]
+  },
+  "rustc_version": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "source_commit": "1c3bb490b1e4d688cf208498cda1287a0d5df6ed",
+  "statistics": {
+    "median_ns": 2321977574,
+    "p95_ns": 2388368689,
+    "p95_rank": 20,
+    "p99_ns": 2389583122,
+    "p99_rank": 21
+  },
+  "workload": {
+    "file_count": 1000,
+    "fixture": "stage1-capsule-1000-files-16-mib-v1",
+    "manifest_sha256": "5ea1bece4588cfb6b7c7e122a5786b11e3317161cf812e8fb75dd95a9a4ecb63",
+    "payload_bytes": 16777216,
+    "source_identity_mode": "detached-source-set"
+  }
+}

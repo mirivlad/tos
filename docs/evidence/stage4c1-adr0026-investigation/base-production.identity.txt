@@ -1,0 +1,23 @@
+label: base-production
+features: <production>
+tree: 1c3bb490b1e4d688cf208498cda1287a0d5df6ed
+raw_sha256: 4cf4fa35f6ed3e60fb2636b5ba37ccc47c30202df4a8b063f2489c9fc33aef01
+raw_bytes: 179312
+elf_sha256: 60a1bc7551f37e7e810c3203d47fd3cf4d4701c57ee5a1087a6a42662fac8430
+elf_bytes: 199208
+entry: 
+
+--- sections ---
+Тип                Адрес      Смещ               ES        
+NULL               0000000000000000 000000             00        
+.text              PROGBITS   0000000002000000   01c4af    
+.rodata            PROGBITS   000000000201d000   002211    
+.data              PROGBITS   0000000002020000   00bbf8    
+.got               PROGBITS   000000000202bbf8   000078    
+.bss               NOBITS     000000000202bc70   00af50    
+.comment           PROGBITS   0000000000000000   00008b    
+.symtab            SYMTAB     0000000000000000   0013c8    
+.shstrtab          STRTAB     0000000000000000   000042    
+.strtab            STRTAB     0000000000000000   00269a    
+
+--- program headers ---
