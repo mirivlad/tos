@@ -47,6 +47,11 @@ QEMU_TIMEOUT=90
 INTERACTIVE=0
 DISPLAY_BACKEND=""
 EVENT_TIMESTAMPS=""
+# ADR-0083 measurement-only: one `name=value` published through the emulator's
+# firmware-configuration interface, so a single nucleus image can be told which
+# of two measured series this boot is without relinking it. It adds no device,
+# changes no image and is never set by a functional gate.
+FW_CFG=""
 # ADR-0066: when set, the serial line is a duplex socket and an external
 # observer drives the protocol over it. The machine, the firmware and the ESP
 # are the ordinary ones; what differs is that the wire has two ends.
@@ -88,6 +93,7 @@ while [ $# -gt 0 ]; do
         --forbid)   FORBID="$2"; shift 2 ;;
         --timeout)  QEMU_TIMEOUT="$2"; shift 2 ;;
         --event-timestamps) EVENT_TIMESTAMPS="$2"; shift 2 ;;
+        --fw-cfg)   FW_CFG="$2"; shift 2 ;;
         --accel)    QEMU_ACCEL="$2"; shift 2 ;;
         --no-framebuffer) NO_FRAMEBUFFER=1; shift ;;
         --stage4-block-device) STAGE4_BLOCK=1; shift ;;
@@ -321,6 +327,13 @@ if [ "$STAGE4_BLOCK" -eq 1 ]; then
 fi
 if [ "$INTERACTIVE" -eq 0 ]; then
     QEMU_ARGS+=( -device isa-debug-exit )
+fi
+# Measurement-only, and deliberately not a device: the firmware-configuration
+# interface exists on this machine whether or not anything publishes a value, so
+# selecting a mode this way leaves the machine profile identical between the two
+# paired series (ADR-0083).
+if [ -n "$FW_CFG" ]; then
+    QEMU_ARGS+=( -fw_cfg "name=${FW_CFG%%=*},string=${FW_CFG#*=}" )
 fi
 MEASUREMENT_IDENTITY_ARGS=()
 if [ -n "$MEASUREMENT_BUILD_MANIFEST" ]; then
