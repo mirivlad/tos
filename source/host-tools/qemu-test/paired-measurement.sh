@@ -116,6 +116,14 @@ series() { # $1 = mode word, $2 = end event, $3 = out dir, $4 = required events
                 --timestamps "$run/timestamps.jsonl" --end "$end")"
         [ -n "$ns" ] || fail "$mode sample $index produced no interval"
         printf '%s\t%s\t%s\n' "$phase" "$index" "$ns" >> "$dir/samples.tsv"
+        # Keep the small evidence — what the guest said and when — and drop the
+        # per-sample firmware, ESP and capsule copies. A 3+21 series over a
+        # 16 MiB capsule otherwise retains gigabytes of identical bytes, and the
+        # bytes that matter are already identified by their digests.
+        mkdir -p "$dir/evidence"
+        cp "$run/events.log" "$dir/evidence/events-$index.log"
+        cp "$run/timestamps.jsonl" "$dir/evidence/timestamps-$index.jsonl"
+        rm -rf "$run"
     done
 }
 
