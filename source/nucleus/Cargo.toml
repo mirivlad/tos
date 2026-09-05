@@ -121,6 +121,13 @@ test-measurement-port = []
 test-measurement-no-preemption = ["test-measurement-port"]
 # Isolated evidence artifact only; never selected by the normal nucleus build.
 test-crypto-baseline = ["tos-capsule/test-crypto-baseline"]
+# ADR-0083: the **same-artifact** paired validation-performance metric. One
+# image supports both measured series, chosen at run time, so the numerator and
+# the denominator share linker layout, code addresses and the TCG translation
+# environment — which is what the old cross-artifact quotient could not do, and
+# what the Stage 4C construct-validity investigation showed it needed. Never
+# selected by the normal nucleus build.
+test-paired-measurement = ["tos-capsule/test-crypto-baseline"]
 
 [dependencies]
 tos-boot-protocol = { path = "../crates/boot-protocol" }

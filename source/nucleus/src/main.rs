@@ -151,6 +151,8 @@ mod framebuffer;
 mod injection;
 mod ipc;
 mod launch;
+#[cfg(feature = "test-paired-measurement")]
+mod measurement;
 mod memory;
 mod msr;
 mod paging;
@@ -185,9 +187,9 @@ use tos_boot_protocol::{
     SRC_KIND_GIT,
 };
 use tos_capsule::parse;
-#[cfg(feature = "test-crypto-baseline")]
+#[cfg(any(feature = "test-crypto-baseline", feature = "test-paired-measurement"))]
 use tos_capsule::test_crypto_baseline::verify as verify_parser_crypto;
-#[cfg(feature = "test-crypto-baseline")]
+#[cfg(any(feature = "test-crypto-baseline", feature = "test-paired-measurement"))]
 use tos_capsule::Capsule;
 use tos_hash::{sha256, Sha256};
 
@@ -247,7 +249,7 @@ fn console_failed(console: &mut Option<BootConsole<'static>>, code: &[u8], detai
 /// Test-only baseline for the exact SHA-256 operations on a successful boot.
 /// The preceding production `parse` supplies only a structural borrowed view;
 /// every timed digest below starts from fresh `Sha256` state.
-#[cfg(feature = "test-crypto-baseline")]
+#[cfg(any(feature = "test-crypto-baseline", feature = "test-paired-measurement"))]
 fn crypto_baseline(cap_bytes: &[u8], capsule: &Capsule<'_>) -> ! {
     let boot = match capsule.boot_file() {
         Some(file) => file,
@@ -512,6 +514,21 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
 
     #[cfg(feature = "test-crypto-baseline")]
     crypto_baseline(cap_bytes, &cap);
+
+    // The same-artifact paired metric (ADR-0083). One image, one SHA-256, and
+    // the series this boot belongs to decided at run time — so linker layout,
+    // function placement and the TCG translation environment are shared between
+    // numerator and denominator instead of being two independent draws.
+    #[cfg(feature = "test-paired-measurement")]
+    {
+        let mode = measurement::mode();
+        measurement::report(mode);
+        if mode == measurement::Mode::UnavoidableCrypto {
+            crypto_baseline(cap_bytes, &cap);
+        }
+        // FULL_EXACT falls through into the ordinary production boot below and
+        // is measured through the production implementations, not a copy.
+    }
 
     // The handoff record only mirrors the capsule's identity fields
     // (BOOT_ABI_V1 §6); it does not prove them. Verify the mirror against the
