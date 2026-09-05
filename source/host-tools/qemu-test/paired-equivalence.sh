@@ -1,19 +1,17 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# ADR-0083 §6: FULL_EXACT is the production path, proved mechanically.
+# ADR-0083 §6/§9: the paired workloads are the real ones, proved mechanically.
 #
-# The measurement artifact is not the production nucleus, so "it runs the same
-# validations" must be checked rather than asserted in prose. It is checked the
-# only way that cannot drift: boot the **production** nucleus and the
-# **measurement** nucleus in FULL_EXACT mode over the same capsule, and require
-# that everything either of them says about the work is identical.
+# **What changed, and why the old proof no longer fits.** An earlier form of
+# FULL_EXACT fell through into the ordinary production boot, so equality of the
+# ordered event sequence with a production boot was the right proof. FULL_EXACT
+# is now the *two-validator logical workload* — two fresh parses, two fresh
+# whole-capsule digests, the canonical lookup taken from the second parse, and a
+# fresh boot-text digest — which is deliberately not the shape of one production
+# boot. Event-sequence equality would now be the wrong question.
 #
-# There is no duplicated algorithm to compare, and that is the design: the
-# measurement feature adds a mode selector and a branch *into* the crypto
-# baseline. FULL_EXACT does not take that branch and falls through into the same
-# `nucleus_main` body, calling the same capsule hashing, the same parser
-# validation, the same detached identity, the same canonical lookup and the same
-# boot-text digest. This gate is what proves the fall-through is real.
+# So this proves the workload instead: what the measurement artifact did, and
+# that the values it produced are the production values for the same fixture.
 #
 #   bash host-tools/qemu-test/paired-equivalence.sh [OUT_DIR]
 set -euo pipefail
@@ -35,7 +33,6 @@ MEASURE_TARGET="$ROOT/target/test-paired-measurement"
     fail "the production nucleus changed while building the measurement artifact"
 MEASURE="$MEASURE_TARGET/x86_64-unknown-none/release/tos-nucleus"
 
-# One fixture, both boots.
 FIXTURE="$OUT/fixture"
 [ -f "$FIXTURE/capsule.bin" ] || bash "$HERE/stage1-performance.sh" --out "$FIXTURE" --prepare-only >&2
 CAPSULE="$FIXTURE/capsule.bin"
@@ -49,79 +46,84 @@ boot() { # $1 = label, $2 = nucleus, $3.. = extra run.sh args
     echo "$dir/events.log"
 }
 
-PROD_LOG="$(boot production "$PRODUCTION")"
-MEAS_LOG="$(boot measurement "$MEASURE" --fw-cfg "opt/tos/measurement-mode=full")"
-
-# ---- the work each boot reports ----------------------------------------------
-# Every field the ruling names, taken from what the guest itself said. A value
-# absent from one side and present in the other is a difference, so extraction
-# never defaults.
 field() { # $1 = log, $2 = event, $3 = key
     awk -v ev="$2" -v key="$3" '
-        $1 == ev { for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == key) { print kv[2]; exit } } }
-    ' "$1"
+        $1 == ev { for (i = 2; i <= NF; i++) { split($i, kv, "="); if (kv[1] == key) { print kv[2] } } }
+    ' "$1" | awk 'NR==1'
 }
 
-check() { # $1 = description, $2 = production value, $3 = measurement value
-    [ -n "$2" ] || fail "$1: production reported nothing"
-    [ "$2" = "$3" ] || fail "$1: production '$2' vs measurement '$3'"
-    printf '  %-28s %s\n' "$1" "$2"
+check() { # $1 = description, $2 = expected, $3 = actual
+    [ -n "$2" ] || fail "$1: nothing to compare against"
+    [ "$2" = "$3" ] || fail "$1: expected '$2', measurement reported '$3'"
+    printf '  %-34s %s\n' "$1" "$2"
 }
 
-echo "PAIRED-EQUIVALENCE: FULL_EXACT against the production boot"
-check "capsule sha256"        "$(field "$PROD_LOG" TOS.IDENTITY capsule_digest)" \
-                              "$(field "$MEAS_LOG" TOS.IDENTITY capsule_digest)"
-check "fixture identity"      "$(field "$PROD_LOG" TOS.IDENTITY source_digest)" \
-                              "$(field "$MEAS_LOG" TOS.IDENTITY source_digest)"
-check "files validated"       "$(field "$PROD_LOG" TOS.CAPSULE.OK files)" \
-                              "$(field "$MEAS_LOG" TOS.CAPSULE.OK files)"
-check "canonical lookup"      "$(awk '$1=="TOS.BOOTTEXT.PATH"{print $2; exit}' "$PROD_LOG")" \
-                              "$(awk '$1=="TOS.BOOTTEXT.PATH"{print $2; exit}' "$MEAS_LOG")"
-check "boot-text digest"      "$(awk '$1=="TOS.BOOTTEXT.DIGEST"{print $2; exit}' "$PROD_LOG")" \
-                              "$(awk '$1=="TOS.BOOTTEXT.DIGEST"{print $2; exit}' "$MEAS_LOG")"
-# The memory account is deliberately **not** compared. The measurement artifact
-# is a larger image, so it occupies one more frame and admits one fewer to the
-# pool; that is a property of it being a different binary, which the ruling
-# already accepts, and not a difference in validation work.
+PROD_LOG="$(boot production "$PRODUCTION")"
+FULL_LOG="$(boot full "$MEASURE" --fw-cfg "opt/tos/measurement-mode=full" \
+    --require "TOS.BOOT.ENTRY TOS.NUCLEUS.ENTRY TOS.TEST.PAIRED.START TOS.TEST.PAIRED.FULL.DONE")"
+CRYPTO_LOG="$(boot crypto "$MEASURE" --fw-cfg "opt/tos/measurement-mode=crypto" \
+    --require "TOS.BOOT.ENTRY TOS.NUCLEUS.ENTRY TOS.TEST.PAIRED.START TOS.TEST.CRYPTO.BASELINE.DONE")"
 
-# ---- ordered phase/event identity --------------------------------------------
-# The measurement artifact says one extra thing — which series it is — and that
-# line is the only difference permitted. Everything else, in order, must match.
-prod_seq="$(grep -oE '^TOS\.[A-Z0-9_.]+' "$PROD_LOG")"
-meas_seq="$(grep -oE '^TOS\.[A-Z0-9_.]+' "$MEAS_LOG" | grep -v '^TOS\.TEST\.PAIRED\.MODE$')"
-[ "$prod_seq" = "$meas_seq" ] || {
-    diff <(echo "$prod_seq") <(echo "$meas_seq") | head -20
-    fail "the ordered event sequences differ"
-}
-printf '  %-28s %s\n' "ordered event identity" "$(echo "$prod_seq" | sha256sum | cut -c1-32)"
+echo "PAIRED-EQUIVALENCE: the measured workloads, against production"
 
-# ---- no duplicated algorithm --------------------------------------------------
-# The equivalence above shows the two boots report the same work. This shows
-# there is only one implementation of it: the measurement feature may add a mode
-# selector and a branch, and must not add a second copy of anything it measures.
+# ---- the shape of the numerator's workload -----------------------------------
+# Reported by the guest that performed it, so this is what ran rather than what
+# the source is believed to say.
+check "fresh production parses"        2 "$(field "$FULL_LOG" TOS.TEST.PAIRED.FULL.DONE parses)"
+check "fresh whole-capsule digests"    2 "$(field "$FULL_LOG" TOS.TEST.PAIRED.FULL.DONE capsule_digests)"
+check "lookup taken from"         second "$(field "$FULL_LOG" TOS.TEST.PAIRED.FULL.DONE lookup_from)"
+
+# ---- and its values are production's -----------------------------------------
+check "files validated"  "$(field "$PROD_LOG" TOS.CAPSULE.OK files)" \
+                         "$(field "$FULL_LOG" TOS.TEST.PAIRED.FULL.DONE files)"
+check "canonical path"   "$(awk '$1=="TOS.BOOTTEXT.PATH"{print $2; exit}' "$PROD_LOG")" \
+                         "$(field "$FULL_LOG" TOS.TEST.PAIRED.FULL.DONE path)"
+check "boot-text digest" "$(awk '$1=="TOS.BOOTTEXT.DIGEST"{print $2; exit}' "$PROD_LOG")" \
+                         "$(field "$FULL_LOG" TOS.TEST.PAIRED.FULL.DONE boot_digest)"
+check "capsule digest"   "$(field "$PROD_LOG" TOS.IDENTITY capsule_digest)" \
+                         "$(sha256sum "$CAPSULE" | cut -d' ' -f1)"
+
+# ---- the denominator's accounting is the accepted one -------------------------
+check "unavoidable-crypto bytes"   101203397 "$(field "$CRYPTO_LOG" TOS.TEST.CRYPTO.BASELINE.DONE bytes)"
+check "unavoidable-crypto hashes"       2007 "$(field "$CRYPTO_LOG" TOS.TEST.CRYPTO.BASELINE.DONE hashes)"
+
+# ---- both modes share the boundary and the prefix -----------------------------
+for log in "$FULL_LOG" "$CRYPTO_LOG"; do
+    grep -q '^TOS\.TEST\.PAIRED\.START$' "$log" ||
+        fail "a mode did not emit the common measurement boundary"
+done
+printf '  %-34s %s\n' "common boundary in both modes" "TOS.TEST.PAIRED.START"
+
+# ---- no result crosses between the two passes ---------------------------------
+# Structural, and checked in the source because it is a property of scope rather
+# than of output: the first parsed view is bound inside a block that yields only
+# its file count, so nothing parsed in pass one is nameable in pass two.
+awk '/fn paired_full_exact/,/^}/' "$ROOT/nucleus/src/main.rs" | grep -q 'let first_files = {' ||
+    fail "the first validation pass is no longer scoped away from the second"
+printf '  %-34s %s\n' "pass 1 scoped out of pass 2" "yes"
+
+# ---- nothing is reimplemented -------------------------------------------------
 sites="$(grep -rn 'test-paired-measurement' "$ROOT/nucleus/src" | wc -l)"
-[ "$sites" -le 6 ] ||
-    fail "the measurement feature has grown to $sites sites in ring 0; it must stay a selector and a branch"
-# Comments stripped, as the VirtIO boundary gate does: the rule is about what
-# the selector *executes*, and prose that explains why it executes nothing is
-# not a violation of it.
+[ "$sites" -le 14 ] ||
+    fail "the measurement feature has grown to $sites sites in ring 0"
 selector_code="$(sed -e 's://.*::' "$ROOT/nucleus/src/measurement.rs")"
 for forbidden in sha256 verify parse validate digest capsule; do
     if printf '%s' "$selector_code" | grep -qi "$forbidden"; then
         fail "measurement.rs executes '$forbidden': the selector must not reimplement measured work"
     fi
 done
-printf '  %-28s %s cfg sites, selector reimplements nothing\n' "no duplicated algorithm" "$sites"
+# The orchestration may sequence the production pieces, and must contain no
+# second implementation of any of them.
+orchestration="$(awk '/fn paired_full_exact/,/^}$/' "$ROOT/nucleus/src/main.rs"
+                 awk '/fn paired_unavoidable_crypto/,/^}$/' "$ROOT/nucleus/src/main.rs")"
+for required in 'sha256(' 'parse(' 'boot_file()' 'verify_parser_crypto('; do
+    printf '%s' "$orchestration" | grep -qF "$required" ||
+        fail "the orchestration does not call the production '$required'"
+done
+printf '  %-34s %s\n' "no duplicated algorithm" "$sites cfg sites, production calls only"
 
-# ---- the crypto accounting the other mode reports -----------------------------
-# The denominator's declared work, recorded here so the two modes' accounting is
-# on one page rather than in two harnesses.
-CRYPTO_LOG="$(boot crypto "$MEASURE" --fw-cfg "opt/tos/measurement-mode=crypto" \
-    --require "TOS.BOOT.ENTRY TOS.NUCLEUS.ENTRY TOS.TEST.CRYPTO.BASELINE.DONE")"
-printf '  %-28s bytes=%s hashes=%s\n' "unavoidable-crypto model" \
-    "$(field "$CRYPTO_LOG" TOS.TEST.CRYPTO.BASELINE.DONE bytes)" \
-    "$(field "$CRYPTO_LOG" TOS.TEST.CRYPTO.BASELINE.DONE hashes)"
-
-echo "PAIRED-EQUIVALENCE PASS: FULL_EXACT reports the same work as the production"
-echo "  boot, in the same order, over the same capsule, and differs only by the"
-echo "  one line naming which measured series it is"
+echo "PAIRED-EQUIVALENCE PASS: FULL_EXACT performs two fresh production"
+echo "  validations and takes the canonical lookup from the second, producing the"
+echo "  same file count, path and boot-text digest as production;"
+echo "  UNAVOIDABLE_CRYPTO reports the exact accepted accounting; both modes"
+echo "  share one measurement boundary after an identical untimed prefix"

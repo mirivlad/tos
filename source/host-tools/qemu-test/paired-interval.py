@@ -2,20 +2,21 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """The timed interval of one paired-measurement sample.
 
-Both series start at ``TOS.NUCLEUS.ENTRY`` and end at the event that closes the
-work each mode performs.
+Both series start at ``TOS.TEST.PAIRED.START`` and end at the event that closes
+the logical workload each mode performs.
 
-**The start event is the repair's second half.** The old metric timed its
+**One explicit boundary, not a boot milestone.** The old metric timed its
 numerator from ``TOS.BOOT.ENTRY`` — the whole boot, including the UEFI loader's
 own capsule hashing, performed by a *different* binary — and its denominator
 from ``TOS.TEST.CRYPTO.BASELINE.START``, a sub-interval of the nucleus alone.
-Those two intervals do not begin at the same instant and do not cover the same
-component, so their quotient was not a ratio of two comparable quantities even
-before layout sensitivity was considered.
+Those intervals neither began at the same instant nor covered the same
+component.
 
-Starting both at the nucleus's own entry keeps the measured component the same
-one whose two modes are being compared, and keeps the loader — which this metric
-cannot vary and does not link — out of both sides.
+``TOS.TEST.PAIRED.START`` is emitted at the same point in both modes, after an
+identical untimed prefix that includes the common setup parse. So the ordinary
+boot, the loader and the setup are outside both intervals rather than inside
+one, and whatever they did to the emulator's translation and cache state is
+common to both.
 
 The clock is the existing host monotonic serial-byte arrival clock; this adds no
 guest timing interface.
