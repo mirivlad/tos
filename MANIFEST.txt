@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 459
+- files in the release package: 465
 - active system invariants: 21
-- architecture decision records: 82 (40 accepted)
+- architecture decision records: 83 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -126,6 +126,7 @@ Architecture decision records
 - docs/adr/0080-capability-effects-name-interfaces.md — ADR-0080: Capability effects name interfaces independently of capability origin [**Accepted (Project Architect-approved)**]
 - docs/adr/0081-region-access-and-device-memory.md — ADR-0081: Region access and device-memory observation [**Accepted (Project Architect-approved)**]
 - docs/adr/0082-routed-interrupt-authority.md — ADR-0082: Where routed interrupt authority comes from, and how a textual driver waits for its device [**Proposed** — not approved, and must not be recorded as approved]
+- docs/adr/0083-repairing-the-stage1-validation-performance-metric.md — ADR-0083: Repairing the Stage 1 validation-performance metric after TCG layout falsified the cross-artifact ratio [**Proposed — not Project Architect-approved.** It proposes no]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
