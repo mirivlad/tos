@@ -194,6 +194,8 @@ own, because two vocabularies describing one system eventually disagree.
 | `TOS.RUN.PROCESS_TERMINATED` | `process=` `by=` `ticks=` `quanta=` `asserted_by=nucleus` | The process was ended by another process holding authority over it (`process_terminate`). `by=` is that process. The whole event is the nucleus's assertion: nothing in it is anyone's claim about themselves. |
 | `TOS.RUN.BLOCK_CANCELLED` | `process=` `operation=` `endpoint=` `reason=` `asserted_by=nucleus` | A wait was cancelled by the nucleus. `reason=no-runnable-context` is ADR-0059's liveness rule: nothing was runnable, something was waiting, and nothing routed could change that. |
 | `TOS.RUN.LIVENESS` | `blocked=` `routed=` `verdict=` `asserted_by=nucleus` | The census ADR-0059's rule was decided from, at an instant when nothing was runnable. `blocked=` is how many contexts were waiting and `routed=` how many of those a **live routed source** could still wake; `verdict=` is `stalled` or `awaiting-hardware`. Emitted for every `stalled` verdict and on entry to `awaiting-hardware`. |
+| `TOS.RUN.PCI_NORMALISED` | `segment=` `bus=` `device=` `function=` `found_memory_space=` `found_bus_master=` `msix=` `msi=` `asserted_by=nucleus` | A claim put a function into the state ADR-0082 §5b–§5d dictate, discarding what firmware left. The two `found_` fields are what the firmware left, and **this is the only place they can be stated** — after the claim no process can observe them. `msix=` and `msi=` are `disabled_masked`, `disabled` or `absent`. |
+| `TOS.RUN.PCI_ENABLES` | `bus=` `device=` `function=` `memory_decoding=` `bus_mastering=` `memory_space=` `bus_master=` `asserted_by=nucleus` | A device-enable predicate changed. The first two counts are the live descendants of each kind; the last two are the bits that follow from them. Emitted only when a bit actually flips, so the log carries transitions rather than one line per descendant. |
 | `TOS.RUN.DEADLOCK` | `asserted_by=nucleus` | The liveness rule fired twice with no message delivered in between. The contexts are not waiting for something that has not happened yet. |
 | `TOS.RUN.PROCESS_DEADLOCKED` | `process=` `operation=` `endpoint=` `asserted_by=nucleus` | A context ended because the system could not continue. Not a fault, not its own claim and not another process's decision — a statement about the arrangement. |
 | `TOS.RUN.PROCESS_ENDOWED` | `process=` `capabilities=` `policy=` `asserted_by=launcher` | What authority the process was given, before it ran its first instruction (ADR-0055). `policy=` names where the decision came from — `launcher-constant` until `/system/policy/` exists (ADR-0051 §3). |
@@ -211,6 +213,14 @@ Two fields carry their asserter in their name, and that is not decoration.
 its own work. A reader must never have to guess which kind of claim it is
 holding (`PROCESS_IDENTITY_V1` §2), and merging the two would make the guess
 necessary.
+
+**The two PCI enable counts are separate because the predicates are separate.**
+`memory_decoding` and `bus_mastering` are counts of different sets, and a reader
+must be able to see one move without the other: mapping a window moves the
+first, a DMA mapping will move the second, and an interrupt source moves both.
+An event carrying one number would make the independence unobservable, which is
+the same failure as a liveness rule that could not distinguish "blocked" from
+"blocked with nothing that could wake it".
 
 **`TOS.RUN.LIVENESS` carries the numbers a verdict about the whole system was
 reached from, and that is why it is separate from the cancellation it usually

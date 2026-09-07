@@ -141,11 +141,15 @@ bme="$(run bme-precision pci-bme-precision 33 --stage4-block-device)"
 [ -n "$bme" ] || fail "the Bus Master precision probe reported nothing"
 [ "$bme" -ge 0 ] || fail "the Bus Master precision probe reported a refusal: $bme"
 [ $(( bme & 255 )) = 255 ] || fail "the Bus Master refusal is not bit-precise: $bme"
-# Bit 8 carries what the *firmware* left, which is a fact about the machine
-# rather than a property of the rule — the rule is about a change in either
-# direction. It is recorded because whether TOS is handed a function that is
-# already a bus master is the initial-state question the lifecycle must answer.
-firmware_bme=$(( bme >> 8 ))
+# Bit 8 is what **CPL 3** saw at the instant it first held the assignment, and it
+# must be clear (ADR-0082 §5d): the claim discards whatever firmware left before
+# any capability naming the assignment exists. What the firmware actually left is
+# not observable from a module — that is the point — and the nucleus states it.
+[ $(( bme >> 8 )) = 0 ] ||
+    fail "a claimed function reached CPL 3 already bus-mastering"
+grep -q '^TOS\.RUN\.PCI_NORMALISED .* device=4 function=0 found_memory_space=1 found_bus_master=1 ' \
+    "$OUT/bme-precision/events.log" ||
+    fail "the nucleus did not report discarding the firmware's enable state: $(grep PCI_NORMALISED "$OUT/bme-precision/events.log")"
 
 # --- an access past its own window refuses before touching the device ----------
 run bounds virtio-mmio-bounds 75 --stage4-block-device > /dev/null || true
@@ -153,6 +157,49 @@ grep -q 'code=RUNTIME_DEVICE_REFUSED' "$OUT/bounds/events.log" ||
     fail "an access past the mapping was not refused"
 grep -q 'detail=a_device_access_past_the_end_of_its_mapping' "$OUT/bounds/events.log" ||
     fail "the refusal did not name the bound it broke"
+
+# --- conventional MSI is reserved too ------------------------------------------
+# ADR-0082 §5c. The authority rule is about interrupts, not about a transport, so
+# a device offering conventional MSI must not offer an ambient route around
+# `platform.irq.Source`. The reference VirtIO function has no MSI capability, so
+# this claims a function of the **same machine** that does: the q35 chipset's own
+# SATA controller at 00:1f.2. Nothing is invented and no MSI delivery path is
+# built — a refusal needs no backend.
+#
+#   1 message control   2 message address   4 message data
+#   8 the capability is still readable     16 an unrelated field is still writable
+#  32 MSI Enable is off when CPL 3 first sees the function
+msi="$(run msi-reserved pci-msi-reserved 33 --stage4-block-device)"
+[ -n "$msi" ] || fail "the MSI reservation probe reported nothing"
+[ "$msi" != "-2" ] || fail "the q35 SATA controller reported no MSI capability"
+[ "$msi" = 63 ] || fail "the MSI reservation did not hold: $msi"
+# **Derived, not blanket.** MSI's structure is 10, 14, 20 or 24 bytes depending
+# on two bits of its own Message Control, and a nucleus reserving the maximum
+# would refuse writes to whatever capability follows a shorter one. This function
+# reports a 64-bit address and no per-vector masking, so 14 is the derived
+# answer and 24 would be the blanket one.
+grep -q '^TOS\.RUN\.PCI_NORMALISED .* device=31 function=2 .* msi=disabled msi_bytes=14 ' \
+    "$OUT/msi-reserved/events.log" ||
+    fail "the MSI extent was not derived from the capability's own control word: $(grep 'device=31' "$OUT/msi-reserved/events.log")"
+
+# --- the two enable predicates are independent ---------------------------------
+# ADR-0082 §5b and §5d are two rules, not one spelling of one. An `MmioRegion` is
+# a memory-decoding descendant and **not** a bus-mastering one, so mapping a
+# window must turn memory decoding on and leave bus mastering exactly where it
+# was. A nucleus that had merged the predicates would set both here, and would
+# then be wrong about a DMA mapping — which needs the other one and not this one.
+grep -q '^TOS\.RUN\.PCI_ENABLES .* device=4 function=0 memory_decoding=1 bus_mastering=0 memory_space=1 bus_master=0 asserted_by=nucleus$' \
+    "$OUT/probe/events.log" ||
+    fail "mapping a window did not move memory decoding alone: $(grep PCI_ENABLES "$OUT/probe/events.log")"
+# Anchored on the leading space so this does not match `found_bus_master=1`,
+# which is the *firmware's* state on the normalise line and is expected to be 1.
+[ "$(grep -c ' bus_master=1' "$OUT/probe/events.log" || true)" = 0 ] ||
+    fail "a run that mapped only a window enabled bus mastering"
+# And the last memory-decoding descendant going takes memory decoding with it.
+# The probe dies holding its window, so this is the process-death path.
+grep -q '^TOS\.RUN\.PCI_ENABLES .* memory_decoding=0 bus_mastering=0 memory_space=0 bus_master=0 asserted_by=nucleus$' \
+    "$OUT/probe/events.log" ||
+    fail "the last descendant going did not clear memory decoding"
 
 # --- a device window is not ordinary RAM, coming or going ----------------------
 # **The account is exactly where it started.** The probe mapped a device window
@@ -194,13 +241,14 @@ echo "  write that would set Bus Master Enable — while reading the capability 
 echo "  writing the command register unchanged both still work"
 echo "  and that last refusal is one bit of one byte: all seven width/offset cases"
 echo "  hold, including a one-byte write at 0x05 whose own bit 2 is INTx Disable"
-if [ "$firmware_bme" = 1 ]; then
-    echo "  measured, and load-bearing for the BME lifecycle: this machine's firmware"
-    echo "  hands TOS a function that is **already bus-mastering**, so the claim path"
-    echo "  cannot assume a clear bit"
-else
-    echo "  measured: this machine's firmware left Bus Master Enable clear"
-fi
+echo "  this machine's firmware hands TOS a function with memory decoding **and**"
+echo "  bus mastering already on; the claim discards both before any capability"
+echo "  naming the assignment exists, and the module never sees them set"
+echo "  conventional MSI is reserved on the one function of this machine that has"
+echo "  it, and its extent is derived from its own control word — 14 bytes, where"
+echo "  a blanket reservation would have said 24 and spilled into its neighbour"
+echo "  and the two enable predicates move independently: a window turns memory"
+echo "  decoding on and leaves bus mastering alone"
 echo "  and the memory account is exactly where it started: $available frames"
 echo "  available against $pool endowed, so a device window is neither charged"
 echo "  to the pool nor credited back to it"
