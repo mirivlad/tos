@@ -1,22 +1,23 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Stage 4C-1 audit: can a `config_write` holder move a resource after the
-// assignment measured where it was?
+// Stage 4C-1: a claimed function's resource placement cannot be moved.
 //
-// **This module proves a defect rather than a property.** ADR-0081 §13 measures
-// each BAR once, at claim time, and every later mapping derives its physical
-// base from that cached measurement; ADR-0082 records the MSI-X table's location
-// the same way. Both assume the cached layout stays the layout the live function
-// decodes. Nothing currently enforces that: the BAR registers are inside the 256
-// bytes `pci_config_write` reaches.
+// ADR-0082 §5a. ADR-0081 §13 measures each BAR once, at claim time, and every
+// later mapping derives its physical base from that cached measurement; §4 of
+// ADR-0082 maps the MSI-X table the same way, and §5 computes its extent from a
+// cached BIR. All three assume the cached layout stays the layout the live
+// function decodes.
 //
-// So this asks the real device, rather than reasoning from the contract. Each
-// register is written with all-ones and read back — the same probe the nucleus
-// itself performs when sizing, so nothing here is a write the device has not
-// already seen — and every original value is restored immediately.
+// **This module was written as an audit and reported that the assumption was
+// false**: BAR1 — the MSI-X table's own BAR — accepted a CPL-3 write, as did
+// both halves of the 64-bit BAR4 pair, and a window was still derived from the
+// stale cached base afterwards. It is now the negative gate for the narrowing
+// that closed it.
 //
-// A bit set means the register **accepted the write**, which is the defect.
-// A run reporting zero would mean the resource registers are already protected.
+// Each register is written with all-ones and read back — the same probe the
+// nucleus itself performs when sizing, so nothing here is a write the device has
+// not already seen. A bit set means the register **accepted the write**, so a
+// passing run reports zero for every placement register.
 
 module system.boot.init version 1.2 profile full;
 
@@ -92,9 +93,15 @@ fn accepts_write(function: platform.pci.FunctionConfig, offset: u64) -> u64
 
 //   1  BAR0     2  BAR1     4  BAR2     8  BAR3    16  BAR4    32  BAR5
 //  64  the expansion ROM base address register
-// 128  a window can still be derived after BAR4 has been rewritten — that is,
-//      the nucleus hands out a mapping from a base the function no longer
-//      decodes
+// 128  a window could still be derived after BAR4 had been rewritten — the
+//      defect this gate exists to keep closed
+//
+// and three bits that must be **set**, because a rule that refused everything
+// would prove nothing about what it protects:
+//
+// 512  writing a placement register back unchanged is still permitted
+//1024  a window on BAR4 still derives the original measured extent
+//2048  an ordinary unrelated writable field is still writable
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
     match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
         Ok(function) => {
@@ -112,11 +119,10 @@ pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
             if (accepts_write(function, BAR0 + 20u64) == 1u64) { found = found + 32i64; }
             if (accepts_write(function, EXPANSION_ROM) == 1u64) { found = found + 64i64; }
 
-            // The consequence, not merely the ability. BAR4 is rewritten to an
-            // address the device will now decode instead, and the nucleus is
-            // then asked for a window on BAR4. If it produces one, that window
-            // is derived from the base it cached at claim time — a physical
-            // range this function no longer answers for.
+            // The consequence, not merely the ability. BAR4 is rewritten, and
+            // the nucleus is then asked for a window on BAR4. Before the
+            // narrowing it produced one, derived from the base it cached at
+            // claim time — a physical range the function no longer answered for.
             let bar4: u64 = read_at(function, BAR0 + 16u64, 4u64);
             let moved: i64 = pci_config_write(function, BAR0 + 16u64, 4u64, ALL_ONES);
             if (moved == 0i64) {
@@ -126,6 +132,30 @@ pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
                 }
             }
             let put_back: i64 = pci_config_write(function, BAR0 + 16u64, 4u64, bar4);
+
+            // 512: writing back what is already there changes nothing, so it is
+            // permitted. Without this the narrowing could be a blanket refusal
+            // of the register and nobody would be able to tell.
+            if (pci_config_write(function, BAR0 + 16u64, 4u64, bar4) == 0i64) {
+                found = found + 512i64;
+            }
+
+            // 1024: and the window still comes out where it was measured. This
+            // is the property §5a exists to preserve, and it does not follow
+            // from the refusal on its own — a nucleus that refused the write and
+            // had already lost the base would fail here and pass above.
+            match (pci_bar_map_read(function, 4u64, 0B, 4096B)) {
+                Ok(window) => { found = found + 1024i64; }
+                Err(status) => { }
+            }
+
+            // 2048: an ordinary field that is nobody's but the driver's. The
+            // cache line size register is writable, is not placement, is not
+            // routing, and is not an interrupt structure.
+            let cache_line: u64 = read_at(function, 12u64, 1u64);
+            if (pci_config_write(function, 12u64, 1u64, cache_line) == 0i64) {
+                found = found + 2048i64;
+            }
 
             // The header type travels out with the result, so the report can say
             // which layout these offsets were read under.

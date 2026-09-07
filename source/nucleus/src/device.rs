@@ -125,7 +125,13 @@ pub fn map(
     // The descendant is recorded **after** the mapping exists and before the
     // capability is made: an assignment that counted a descendant which failed
     // to map could never be released.
-    if crate::pci::take_descendant(assignment, assignment_generation).is_err() {
+    // A window needs the function to **decode memory** and needs it to master
+    // nothing (ADR-0082 §5b): the CPU reads and writes the device, and the
+    // device initiates none of it. Taking the descendant is also what turns
+    // memory decoding on, so the window is live the instant it is nameable.
+    if crate::pci::take_descendant(assignment, assignment_generation, crate::pci::Needs::MMIO)
+        .is_err()
+    {
         crate::process::unmap_device(holder, lane);
         return Err(Refused::Limit);
     }
@@ -232,5 +238,9 @@ fn destroy(index: usize, entry: Mapping) {
     if slot.generation == 0 {
         slot.generation = 1;
     }
-    crate::pci::drop_descendant(entry.assignment, entry.assignment_generation);
+    crate::pci::drop_descendant(
+        entry.assignment,
+        entry.assignment_generation,
+        crate::pci::Needs::MMIO,
+    );
 }

@@ -165,9 +165,9 @@ only `config_read` refuses operation 26 with `E_NO_CAPABILITY`. This is the
 attenuation a manager performs before handing a function to something that
 should only look at it.
 
-**Three things a `FunctionConfig` does not confer, even with every right**
-(ADR-0082 §5). They are not exceptions carved out of the rights model; they are
-places where the hardware happens to put the nucleus's own state inside a range
+**What a `FunctionConfig` does not confer, even with every right** (ADR-0082 §5,
+§5a–§5d). These are not exceptions carved out of the rights model. They are
+places where the hardware happens to keep the *platform's* state inside a range
 these operations reach:
 
 - a **window overlapping the MSI-X table or pending-bit array** is refused by
@@ -175,20 +175,37 @@ these operations reach:
   address and a message data word, so writing it is choosing which interrupt is
   delivered to which vector — authority taken by writing a number, which is what
   this whole schema exists to make impossible;
-- a **configuration write touching the MSI-X capability** is refused. Its
-  message-control word enables, disables and masks the mechanism, and its other
-  words say where the structures are — a caller that could move them could move
-  the table out from under the refusal above;
-- a **configuration write that would change Bus Master Enable** is refused.
-  That bit is what lets a function issue its own memory transactions, which is
-  what an MSI-X message and every byte of DMA are made of. It is nucleus-owned
-  and follows the existence of device-visible descendants.
+- a **configuration write touching the MSI-X capability**, or the conventional
+  **MSI capability over the extent that capability itself reports**, is refused.
+  Both decide where interrupts go, and the rule is about interrupts rather than
+  about a transport: a device offering only MSI must not thereby offer a way
+  round the interrupt authority model;
+- a **configuration write that would change a resource-placement register** is
+  refused, stated over the function's **reported header type**. For a Type-0
+  function that is BAR0–BAR5 and the expansion ROM register; for a Type-1 bridge
+  it is its two BARs, its bus numbers, every forwarding window, its expansion
+  ROM register, and the Bridge Control bits that alter downstream routing or
+  reset what is behind it. **A 64-bit BAR pair is one placement and both halves
+  are protected**, so neither can move while the other looks untouched;
+- a **configuration write that would change Memory Space Enable or Bus Master
+  Enable** is refused. Each follows its own predicate over the assignment's live
+  descendants — decoding for a window, mastering for an interrupt source — and
+  the two are independent.
 
-**Reads of all three still work**, and that is the model rather than an
-oversight: where a table lives and whether a function is a bus master are facts
-the device reports, and §4 already says nothing read here is authority. A write
-to the Command register that leaves Bus Master Enable as it found it proceeds
-normally.
+**Reads still work**, and that is the model rather than an oversight: where a
+table lives, where a function decodes and whether it is a bus master are facts
+the device reports, and §4 already says nothing read here is authority.
+
+**"Would change" is literal.** A write that puts back the value already there
+proceeds, judged byte by byte for a register and bit by bit for a bit, so a
+caller reading and writing back is never refused for a field it did not alter.
+Status and error-reporting bits are not reserved merely for sharing a register
+with something that is.
+
+**A claim leaves the function in a defined state**: decoding off, mastering off,
+MSI-X disabled and function-masked, MSI disabled — whatever the firmware left,
+and before the first capability naming the assignment exists. The pre-claim
+state is not restored on release.
 
 **Conventional configuration space only.** `offset + width` must lie within the
 first **256** bytes, `width` must be 1, 2 or 4, and `offset` must be a multiple
@@ -267,11 +284,17 @@ speculative declaration §2 refuses, one layer down.
 7. `offset`, `width` and their sum are bounded as §4 states, and each violation
    is `E_BAD_ARGUMENT` with nothing read and nothing written.
 7a. A window over the function's MSI-X table is refused in **both** map forms; a
-   configuration write touching the MSI-X capability is refused; a
-   configuration write that would change Bus Master Enable is refused. Each is
-   `E_NO_CAPABILITY`, and each leaves the device untouched. Reading the MSI-X
-   capability still succeeds, and a Command-register write that changes no owned
+   configuration write touching the MSI-X or MSI capability is refused; a
+   configuration write that would change a resource-placement register of the
+   reported header type, or Memory Space Enable, or Bus Master Enable, is
+   refused. Each is `E_NO_CAPABILITY`, and each leaves the device untouched.
+8. And the narrowing is shown to be a narrowing: reading the MSI-X capability
+   still succeeds, writing a placement register back unchanged still succeeds, a
+   window still derives the extent measured at claim time, an unrelated writable
+   field is still writable, and a Command-register write that changes no owned
    bit still succeeds — a refusal that refused its neighbours too would prove
    nothing about what it was protecting.
+9. A claim normalises the function, and the nucleus records what firmware left,
+   because after the claim nothing else can observe it.
 8. The interface paths a verified module uses are readable from its IR without
    executing it, and match the `uses` effects of its declared operations.
