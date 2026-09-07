@@ -1,22 +1,51 @@
 #!/usr/bin/env bash
 # SPDX-License-Identifier: GPL-3.0-or-later
-# Retained Stage 1 ADR-0026 full/crypto conformance evidence.
+# Retained Stage 1 ADR-0026 evidence. **No longer active conformance.**
+#
+# This script was `stage1-performance-conformance.sh` until 2026-09-06, when
+# ADR-0083 replaced the metric it asserted. What it measures is unchanged and is
+# still retained:
+#
+#   - the native full and crypto series;
+#   - the mandatory q35/qemu64/TCG production boot series, whose absolute
+#     wall-clock timing and segment decomposition remain observational and
+#     regression evidence;
+#   - the isolated TCG series from the separately linked `test-crypto-baseline`
+#     nucleus, and the quotient of the two.
+#
+# **What it no longer does is fail a run on that quotient.** Stage 4C falsified
+# the quotient as a construct rather than falsifying its numbers: the numerator
+# and denominator came from two separately linked images over two intervals that
+# did not share a start event, and an inert layout displacement that executes
+# nothing and leaves the image length unchanged moved it across its conformance
+# boundary while native execution was unmoved. A ratio whose halves are
+# translated from different binaries cannot cancel what a ratio exists to
+# cancel.
+#
+# The ratio is still computed and still written to `qemu-crypto-ratio.json`,
+# because deleting the thing that failed is not how a stage becomes green, and
+# because a reader comparing the two metrics on one commit should be able to see
+# both. Active Stage 1 validation-performance conformance is
+# `stage1-paired-conformance.sh` (ADR-0083).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-OUT="$ROOT/target/stage1-performance-conformance"
+OUT="$ROOT/target/stage1-performance-historical"
 EVIDENCE_STATUS="P1"
 WORKLOAD="$ROOT/tests/performance/stage1_capsule_workload.py"
 
 usage() {
     cat <<'EOF'
-Usage: bash host-tools/qemu-test/stage1-performance-conformance.sh [--out DIR] [--evidence-status P1|P2]
+Usage: bash host-tools/qemu-test/stage1-performance-historical.sh [--out DIR] [--evidence-status P1|P2]
 
-Runs the accepted ADR-0026 evidence set without duplicating boot logic:
-native full+crypto series, mandatory q35/qemu64/TCG full series, and the
-isolated TCG unavoidable-crypto series. It retains raw samples, reports,
-fixture/sidecar, the mandatory p95 <= 1.30 ratio report and TCG decomposition
-under one target directory. P2 is reserved for GitHub Actions.
+Runs the retained ADR-0026 evidence set without duplicating boot logic: native
+full+crypto series, mandatory q35/qemu64/TCG full series, and the isolated TCG
+unavoidable-crypto series from the separately linked baseline nucleus. It
+retains raw samples, reports, fixture/sidecar, the superseded cross-artifact
+ratio report and the TCG decomposition under one target directory.
+
+The ratio is recorded and is NOT asserted: ADR-0083 replaced it as active
+conformance on 2026-09-06. P2 is reserved for GitHub Actions.
 EOF
 }
 
@@ -38,7 +67,7 @@ mkdir -p "$OUT"
 OUT="$(cd "$OUT" && pwd)"
 case "$OUT" in
     "$ROOT"/target/*) ;;
-    *) echo "conformance evidence output must remain under $ROOT/target" >&2; exit 2 ;;
+    *) echo "retained evidence output must remain under $ROOT/target" >&2; exit 2 ;;
 esac
 
 bash "$ROOT/host-tools/qemu-test/stage1-native-performance.sh" \
@@ -48,11 +77,12 @@ bash "$ROOT/host-tools/qemu-test/stage1-performance.sh" \
 bash "$ROOT/host-tools/qemu-test/crypto-baseline.sh" \
     --out "$OUT/qemu-crypto" --evidence-status "$EVIDENCE_STATUS"
 
+# No `--max-p95-ratio`: the quotient is recorded, and asserting it is what
+# ADR-0083 removed.
 python3 "$WORKLOAD" validation-ratio \
     --full "$OUT/qemu-full/report.json" \
     --crypto "$OUT/qemu-crypto/report.json" \
-    --out "$OUT/qemu-crypto-ratio.json" \
-    --max-p95-ratio 1.30
+    --out "$OUT/qemu-crypto-ratio.json"
 python3 "$WORKLOAD" decomposition \
     --report "$OUT/qemu-full/report.json" \
     --out "$OUT/qemu-segment-decomposition.json"
@@ -81,12 +111,21 @@ if qemu_full.get("source_commit") != qemu_crypto.get("source_commit"):
     raise SystemExit("QEMU full/crypto source commits differ")
 if qemu_full.get("workload") != qemu_crypto.get("workload"):
     raise SystemExit("QEMU full/crypto workloads differ")
-if ratio.get("max_p95_ratio") != 1.3 or ratio["full_over_unavoidable_crypto"]["p95_ratio"] > 1.3:
-    raise SystemExit("QEMU p95 ratio does not meet ADR-0026")
+# The quotient itself is deliberately not asserted (ADR-0083). What is asserted
+# is that this run recorded it as historical evidence rather than as a bound it
+# quietly met: a report carrying a threshold would be claiming a conformance
+# this script no longer performs.
+if ratio.get("max_p95_ratio") is not None:
+    raise SystemExit("the superseded ADR-0026 ratio must be recorded, not asserted")
 if segments.get("sample_count") != 21:
     raise SystemExit("QEMU decomposition does not retain 21 samples")
 summary = {
     "adr": "ADR-0026",
+    "status": (
+        "historical evidence; superseded as active conformance by ADR-0083 "
+        "on 2026-09-06"
+    ),
+    "active_conformance": "host-tools/qemu-test/stage1-paired-conformance.sh",
     "evidence_status": expected_status,
     "native": {
         "crypto_accounting": native_crypto["crypto_accounting"],
@@ -102,13 +141,13 @@ summary = {
     "source_commit": qemu_full["source_commit"],
     "workload": qemu_full["workload"],
 }
-(root / "conformance-summary.json").write_text(
+(root / "historical-summary.json").write_text(
     json.dumps(summary, indent=2, sort_keys=True) + "\n", encoding="utf-8"
 )
 print(
-    "STAGE1-PERFORMANCE-CONFORMANCE PASS: "
+    "STAGE1-PERFORMANCE-HISTORICAL PASS: "
     f"evidence={expected_status} "
-    f"qemu_p95_ratio={summary['qemu64_tcg']['p95_ratio']:.3f} "
-    f"summary={root / 'conformance-summary.json'}"
+    f"qemu_p95_ratio={summary['qemu64_tcg']['p95_ratio']:.3f} (recorded, not asserted) "
+    f"summary={root / 'historical-summary.json'}"
 )
 PY

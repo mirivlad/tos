@@ -9,8 +9,14 @@ quotient across its conformance boundary while native execution was unmoved.
 So this reporter will not compute a ratio at all unless both series report
 exactly equal image digests.
 
-It emits no verdict and knows no threshold. Choosing one belongs to ADR-0083 and
-to the Project Architect, after the repaired metric has been measured.
+**The threshold is optional and is supplied by the caller**, so that one program
+serves both roles ADR-0083 §10 separates: with `--max-p95-ratio` it is the
+active Stage 1 conformance gate and refuses a run above the bound; without it,
+it is the reproduction and research tool that measures and reports.
+
+The accepted bound is `1.30` on the **p95** ratio. The median ratio is computed
+and retained beside it as diagnostic and regression evidence, and is never the
+conformance statistic.
 """
 import argparse
 import json
@@ -66,6 +72,18 @@ def main() -> int:
     p.add_argument("--samples", required=True, type=int)
     p.add_argument("--repository", required=True, type=Path)
     p.add_argument("--out", required=True, type=Path)
+    p.add_argument(
+        "--max-p95-ratio",
+        type=float,
+        help="apply ADR-0083's blocking conformance bound; omit to only report",
+    )
+    p.add_argument(
+        "--baseline-p95-ratio",
+        type=float,
+        help="the retained accepted baseline, for the regression deviation",
+    )
+    p.add_argument("--baseline-median-ratio", type=float)
+    p.add_argument("--evidence-status", default=None, choices=[None, "P1", "P2"])
     args = p.parse_args()
 
     # ---- the same-artifact proof, before any arithmetic ----------------------
@@ -102,16 +120,50 @@ def main() -> int:
         except Exception:
             return True
 
+    # The conformance statistic is the p95 ratio. The median ratio is retained
+    # beside it and decides nothing, because it is the diagnostic figure.
+    verdict = None
+    if args.max_p95_ratio is not None:
+        verdict = "pass" if ratio_p95 <= args.max_p95_ratio else "fail"
+
+    regression = None
+    if args.baseline_p95_ratio:
+        regression = {
+            "note": (
+                "ADR-0083 section 10: the repository regression policy applies "
+                "relative to this retained baseline, not to the constant 1.0"
+            ),
+            "baseline_p95_ratio": args.baseline_p95_ratio,
+            "baseline_median_ratio": args.baseline_median_ratio,
+            "p95_deviation": ratio_p95 / args.baseline_p95_ratio - 1.0,
+            "median_deviation": (
+                ratio_median / args.baseline_median_ratio - 1.0
+                if args.baseline_median_ratio
+                else None
+            ),
+            "explanation_above": 0.15,
+            "blocking_above": 0.30,
+        }
+
     report = {
         "record_spdx_license": "CC-BY-SA-4.0",
         "metric": "same-artifact paired Stage 1 validation performance (ADR-0083)",
+        "adr": "ADR-0083",
         "label": args.label,
-        "threshold": None,
-        "verdict": None,
+        "evidence_status": args.evidence_status,
+        "conformance_statistic": "p95 ratio",
+        "threshold": args.max_p95_ratio,
+        "verdict": verdict,
         "note": (
-            "No threshold is applied. ADR-0083 is Proposed and the replacement "
-            "threshold is not chosen; this report is evidence for that choice."
+            "ADR-0083 accepted 2026-09-06. The p95 ratio is conformance; the "
+            "median ratio is diagnostic."
+            if args.max_p95_ratio is not None
+            else (
+                "No threshold applied: this run is reproduction/research "
+                "evidence, not the conformance gate."
+            )
         ),
+        "regression": regression,
         "same_artifact": {
             "full_image_sha256": args.full_image_sha256,
             "crypto_image_sha256": args.crypto_image_sha256,
@@ -155,7 +207,25 @@ def main() -> int:
         f"p99 {ms(crypto['p99_ns']):8.1f} ms  n={len(crypto['measured_ns'])}"
     )
     print(f"  same artifact: both series from {args.full_image_sha256[:32]}…")
-    print(f"  no threshold applied; ADR-0083 is Proposed")
+    if regression is not None:
+        print(
+            f"  retained baseline p95 {args.baseline_p95_ratio:.4f}: "
+            f"deviation {regression['p95_deviation'] * 100:+.1f}% "
+            f"(explain above +15%, blocks above +30%)"
+        )
+    if verdict is None:
+        print("  no threshold applied; this run is reproduction evidence")
+        return 0
+    if verdict == "fail":
+        print(
+            f"PAIRED-MEASUREMENT FAIL: p95 ratio {ratio_p95:.3f} exceeds the "
+            f"ADR-0083 bound {args.max_p95_ratio:.2f}"
+        )
+        return 1
+    print(
+        f"  ADR-0083 conformance: p95 ratio {ratio_p95:.3f} <= "
+        f"{args.max_p95_ratio:.2f} PASS"
+    )
     return 0
 
 

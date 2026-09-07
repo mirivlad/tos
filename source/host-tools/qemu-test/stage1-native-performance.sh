@@ -60,10 +60,14 @@ python3 "$ROOT/tests/performance/stage1_capsule_workload.py" crypto-report \
     --out "$OUT/crypto-report.json" \
     --source-commit "$(git -C "$GITROOT" rev-parse HEAD)" \
     --rustc-version "$(rustc --version)" --evidence-status "$EVIDENCE_STATUS"
+# Recorded, not asserted. This quotient is the same cross-artifact construction
+# ADR-0083 superseded — a full series and a separately linked crypto series —
+# and it is retained as historical evidence rather than deleted. Active Stage 1
+# validation-performance conformance is the same-artifact paired metric.
 python3 "$ROOT/tests/performance/stage1_capsule_workload.py" validation-ratio \
     --full "$OUT/full-report.json" \
     --crypto "$OUT/crypto-report.json" \
-    --out "$OUT/ratio.json" --max-p95-ratio 1.30
+    --out "$OUT/ratio.json"
 
 python3 - "$OUT/full-report.json" "$OUT/crypto-report.json" "$OUT/ratio.json" <<'PY'
 import json

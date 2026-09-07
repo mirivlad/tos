@@ -364,17 +364,35 @@ qemu_direction_flag() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/direction-flag.sh \
         target/preflight-qemu/direction-flag)
 }
-# ADR-0026's mandatory functional profile and its p95 ratio, on the boot harness
-# this repository ships. One gate, and the *evidence status* is the one thing
-# about it that is environment-specific: ADR-0040 reserves P2 for the reference
-# platform, and the script refuses to emit it anywhere else. The claim measured
-# is the same either way.
-qemu_performance_conformance() {
+# Active Stage 1 validation-performance conformance (ADR-0083): one
+# measurement-only image, two runtime-selected modes, and the p95 quotient of
+# the complete logical validation workload over its own unavoidable
+# cryptographic subset, bounded at 1.30.
+qemu_paired_performance_conformance() {
     conformance_status=P1
     if [ "${GITHUB_ACTIONS:-}" = true ]; then
         conformance_status=P2
     fi
-    (cd "$ROOT/source" && bash host-tools/qemu-test/stage1-performance-conformance.sh \
+    (cd "$ROOT/source" && bash host-tools/qemu-test/stage1-paired-conformance.sh \
+        --out target/preflight-qemu/performance-adr-0083 \
+        --evidence-status "$conformance_status")
+}
+# ADR-0026's retained evidence set on the same harness: the native series, the
+# mandatory functional profile whose absolute timing is a retained regression
+# metric, and the separately linked crypto series. Its quotient is recorded and
+# **not** asserted — ADR-0083 superseded that construction as conformance on
+# 2026-09-06, and this gate keeps measuring it rather than deleting it. It still
+# fails on evidence integrity: mismatched commits, workloads or accounting.
+#
+# The *evidence status* is the one environment-specific thing about either gate:
+# ADR-0040 reserves P2 for the reference platform, and the scripts refuse to
+# emit it anywhere else. The claim measured is the same either way.
+qemu_performance_historical() {
+    conformance_status=P1
+    if [ "${GITHUB_ACTIONS:-}" = true ]; then
+        conformance_status=P2
+    fi
+    (cd "$ROOT/source" && bash host-tools/qemu-test/stage1-performance-historical.sh \
         --out target/preflight-qemu/performance-adr-0026 \
         --evidence-status "$conformance_status")
 }
@@ -528,7 +546,8 @@ gate qemu       full-only "QEMU textual VirtIO capability discovery"    qemu_vir
 gate qemu       full-only "QEMU textual VirtIO register read"           qemu_virtio_mmio
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
-gate qemu       full-only "Stage 1 ADR-0026 performance conformance"   qemu_performance_conformance
+gate qemu       full-only "Stage 1 ADR-0083 paired validation performance" qemu_paired_performance_conformance
+gate qemu       full-only "Stage 1 ADR-0026 retained historical evidence" qemu_performance_historical
 gate qemu       full-only "Stage 3 ADR-0066 observer conformance"     qemu_stage3_observer_conformance
 gate qemu       full-only "Stage 3 IPC latency conformance"          qemu_stage3_ipc_conformance
 

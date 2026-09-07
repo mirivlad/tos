@@ -2,9 +2,11 @@
 
 # ADR-0083 — the corrected paired metric, measured
 
-- Status: **evidence, 2026-09-05.** ADR-0083 is **Proposed — not Project
-  Architect-approved.** No threshold is active, no gate is switched, the old
-  ADR-0026 gate is preserved
+- Status: **evidence, 2026-09-05.** ADR-0083 was **accepted on 2026-09-06** on
+  this evidence, with one blocking line — `p95 ratio <= 1.30` — and this
+  distribution as the retained baseline. The gate transition landed with the
+  acceptance; the old ADR-0026 cross-artifact ratio is preserved as historical
+  evidence and is no longer active conformance
 - Supersedes the first round of this evidence, whose numerator measured one
   validation pass against a denominator modelling two. That mismatch, and the
   `≤ 0.40` proposed from it, were rejected
@@ -101,17 +103,21 @@ both tails' noise enters the quotient. The accepted discipline names nearest-ran
 p95 and this evidence retains it, but the measured difference is offered because
 the ruling admits a change where the experiment demonstrates a specific defect.
 
-## 7. Threshold proposal
+## 7. The threshold, as proposed here and as accepted
 
-**Proposed, for review, not adopted.** The conformance figure stays the p95
-ratio, keeping the accepted discipline:
+**Accepted 2026-09-06**, with one line rather than the two proposed below. The
+conformance figure stays the p95 ratio, keeping the accepted discipline:
 
 ```
-same_artifact_full_exact_p95 / same_artifact_unavoidable_crypto_p95
-
-    <= 1.15   regression requires explanation
-    <= 1.30   blocking
+same_artifact_full_exact_p95 / same_artifact_unavoidable_crypto_p95 <= 1.30
 ```
+
+The `<= 1.15` "explanation required" line proposed in this evidence was
+**rejected** as a second *absolute* threshold: it conflates absolute structural
+overhead, which the `1.30` budget governs, with regression against a retained
+baseline, which the repository's >15%/>30% policy already governs — relative to
+the baseline recorded in §2, not to the constant 1.0. The rest of this section
+is the proposal as it was made.
 
 **Interpretation** — and this is the interpretation ADR-0026 always claimed and
 its construction could not deliver: the complete Stage 1 logical validation
@@ -150,6 +156,8 @@ structural cost, the fixture would have to shift work away from hashing — a
 larger change than this ADR should make.
 
 ## 8. What is not claimed
+
+*As recorded when this evidence was measured, before the 2026-09-06 acceptance:*
 
 - no gate is switched; the old ADR-0026 gate is preserved and still active;
 - `main` is untouched at `1c3bb49`;
