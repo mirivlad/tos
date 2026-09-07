@@ -193,12 +193,24 @@ are marked and are exactly those a process can only apply to itself.
 
 | 27 | `pci_bar_map` | PCI function capability with `map` | maps BAR `rsi` of the function that capability names, from page-aligned offset `rdx` for page-aligned length `r10`, writable when `r8` is non-zero, and returns a device-memory capability in `rdx` (ADR-0081 §13). The physical base is taken from the assignment's own measured BAR state — **a caller never supplies an address** — and the window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime. `E_BAD_ARGUMENT` for a BAR index outside the architectural range or an unaligned, zero or overflowing window; `E_NO_CAPABILITY` for an I/O or unimplemented BAR, a range not inside the BAR's extent, or **a window overlapping the function's MSI-X table or pending-bit array** (ADR-0082 §5); `E_LIMIT` when no mapping slot is free or the caller already holds as many windows as it may |
 
+| 28 | `pci_interrupt_claim` | PCI function capability with `interrupt` | derives one routed interrupt of the function that capability names from its MSI-X table entry `rsi`, and returns a handle to the source in `rdx` (ADR-0082 §3). **The entry index is the only argument, and it selects among entries of the caller's own function** — there is no parameter for a vector, a GSI, a legacy IRQ, an MSI address/data pair or a BDF. `E_BAD_ARGUMENT` for an index outside the table the function reports; `E_NO_CAPABILITY` when the assignment has gone, the function has no MSI-X capability, or its table is not reachable; `E_LIMIT` when a live source already occupies that entry, the source table is full, or the device-vector supply is spent |
+
+| 29 | `irq_wait` | interrupt source capability with `wait` | waits for the next interrupt of the source that capability names, and returns `OK` when the device has fired (ADR-0082 §7). **A one-bit latch, not a queue**: an interrupt arriving with nobody waiting sets the bit, and the next call clears it and returns without blocking, so the completion cannot be lost by racing the call. `E_LIMIT` when a context is already waiting — at most one is, however many capabilities name the source; `E_CANCELLED` when the source is destroyed under the waiter. There is no acknowledge argument and no mask operation anywhere in this contract |
+
+
 **A mapping is a descendant of the assignment, not of the handle that made it**
 (ADR-0081 §14). The assignment stays live while *either* a function capability
-names it **or** a mapping exists under it, so releasing the last function handle
-does not let the same BDF be claimed again while a window is still reaching it,
-and a manager releasing its own handle does not destroy a driver's window. Only
-when both are gone does the assignment end and its generation advance.
+names it **or** a descendant exists under it, so releasing the last function
+handle does not let the same BDF be claimed again while a window is still
+reaching it, and a manager releasing its own handle does not destroy a driver's
+window. Only when both are gone does the assignment end and its generation
+advance.
+
+**An interrupt source is a descendant under exactly the same rule** (ADR-0082
+§6), which is why §14 was written generically rather than about windows: release
+the function, re-claim the same BDF, and an interrupt of the first assignment
+cannot reach the second, because the assignment did not end while a source
+descended from it.
 
 **The scope is page-granular and explicit.** Sub-page grants are refused rather
 than served by mapping a whole page behind the contract: what the holder can
@@ -473,6 +485,19 @@ implied: in a stage that routes no device interrupt, "no runnable context" and
 "a state nothing can leave" are the same thing, and in a stage that routes one
 they are not. An implementation whose rule reads only "nothing runnable" becomes
 wrong at the moment a driver exists.
+
+**Operation 29 is the first wait whose wake source is not a context**
+(ADR-0082 §8). A context inside `irq_wait` on a live source can be woken by the
+device with nothing running, so a system in that state is **idle rather than
+stopped** and no block is cancelled. The classification is per-wait and is asked
+of the source: a wait whose source has been released is not routed any more and
+falls back to the ordinary rule — in practice it never gets there, because
+destroying a source cancels its waiter with `E_CANCELLED` at that instant.
+
+The limitation this creates is named rather than discovered later: while a
+routed source is live, a peer deadlock beside it is not diagnosed. It is bounded
+by the source being an authority that dies with its process, with its
+assignment, and with any revocation its launcher performs.
 
 How long *a particular process* may wait is not this contract's question and not
 the nucleus's. It is a decision about a component, of the same class as restart

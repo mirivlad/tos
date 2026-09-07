@@ -360,6 +360,13 @@ qemu_virtio_mmio() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/virtio-mmio.sh \
         target/preflight-qemu/virtio-mmio)
 }
+# Stage 4C-1b (ADR-0082): a textual driver holding one PCI function derives one
+# routed interrupt of it, blocks, and is woken by a real MSI-X message from the
+# real device. `full-only` for the Stage 4 device profile.
+qemu_irq_routed() {
+    (cd "$ROOT/source" && bash host-tools/qemu-test/irq-routed.sh \
+        target/preflight-qemu/irq-routed)
+}
 qemu_supervisor_text() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/supervisor-text.sh \
         target/preflight-qemu/supervisor-text)
@@ -549,6 +556,7 @@ gate qemu       full-only "QEMU textual PCI function claim"            qemu_pci_
 gate qemu       full-only "QEMU textual VirtIO capability discovery"    qemu_virtio_caps
 gate qemu       full-only "QEMU textual VirtIO register read"           qemu_virtio_mmio
 gate qemu       full-only "QEMU a claimed function cannot be relocated"   qemu_pci_placement
+gate qemu       full-only "QEMU a device interrupt wakes its driver"    qemu_irq_routed
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0083 paired validation performance" qemu_paired_performance_conformance
