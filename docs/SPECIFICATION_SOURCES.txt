@@ -151,3 +151,4 @@ docs/adr/0080-capability-effects-name-interfaces.md
 docs/adr/0081-region-access-and-device-memory.md
 docs/adr/0082-routed-interrupt-authority.md
 docs/adr/0083-repairing-the-stage1-validation-performance-metric.md
+docs/adr/0084-dma-authority-and-device-visible-addressing.md
