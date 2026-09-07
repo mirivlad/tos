@@ -150,6 +150,12 @@ mod framebuffer;
 #[cfg(feature = "test-creation-rollback")]
 mod injection;
 mod ipc;
+/// Routed interrupt authority and MSI-X delivery (ADR-0082).
+///
+/// A `platform.irq.Source` descends from a live PCI function assignment and from
+/// nothing else, and a driver waits for its own device without a line of that
+/// device being in ring 0.
+mod irq;
 mod launch;
 #[cfg(feature = "test-paired-measurement")]
 mod measurement;

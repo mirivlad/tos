@@ -83,6 +83,26 @@ unsafe fn write(offset: u64, value: u32) {
     };
 }
 
+/// Acknowledges the interrupt currently in service.
+///
+/// **The whole of what ending an MSI-X interrupt takes** (ADR-0082 §4, §7). It
+/// is edge-delivered and unshared, so no device register is involved and ring 0
+/// needs to know nothing about whatever raised it — which is why that transport
+/// was chosen over INTx, whose acknowledgement would have meant reading a
+/// device's own status register from the nucleus.
+///
+/// # Safety
+///
+/// The caller is an interrupt handler for a vector that was actually delivered,
+/// and the local APIC page is mapped — which it is in every address space this
+/// nucleus builds.
+// SAFETY: the caller's promise that an interrupt is in service is what makes
+// this end that one rather than an arbitrary write.
+pub unsafe fn end_of_interrupt() {
+    // SAFETY: per the contract; a zero to the architected EOI register.
+    unsafe { write(EOI, 0) };
+}
+
 /// Masks the legacy 8259 pair.
 ///
 /// SAFETY: called once, before interrupts are enabled.

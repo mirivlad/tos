@@ -751,9 +751,15 @@ pub fn build_tables(bi: &BootInfo, descs: &[MemoryRange]) -> u64 {
         chunk += HUGE_SIZE;
     }
     // The root table; the interiors above; one page table per chunk broken
-    // into 4 KiB pages; and the three levels the local APIC's page may need
-    // for itself.
-    1 + pdpts + directories + fine + 3
+    // into 4 KiB pages; the three levels the local APIC's page may need for
+    // itself; and the same three for every MSI-X table page ring 0 may have
+    // taken responsibility for (ADR-0082 §4).
+    //
+    // **Counted whether or not any source exists yet**, because the reserve is
+    // sized once from this machine's memory map and a claim happens later: a
+    // bound that grew when a driver claimed an interrupt would be a bound
+    // discovered by a process failing to start.
+    1 + pdpts + directories + fine + 3 + 3 * MAX_NUCLEUS_DEVICE_PAGES as u64
 }
 
 /// Builds the nucleus's own address space over this machine.
@@ -829,9 +835,92 @@ fn fill(
         tables,
         crate::apic::LOCAL_APIC,
         crate::apic::LOCAL_APIC,
-        WRITABLE | NO_EXECUTE | CACHE_DISABLE | WRITE_THROUGH,
+        NUCLEUS_DEVICE_FLAGS,
     )?;
+    // And every MSI-X table page ring 0 has been made responsible for
+    // (ADR-0082 §4), for the same reason and on the same terms: the nucleus
+    // programs a table that lives in a BAR no process has mapped, and it does so
+    // from whichever address space happened to be live — a driver's, when the
+    // source is claimed, and its own, when a dead process's sources are swept.
+    //
+    // A space built *after* a source exists gets them here; the spaces that
+    // already existed were given them when the page was registered. Both paths
+    // exist because a claim and a process creation can happen in either order.
+    for page in nucleus_device_pages() {
+        if page != 0 {
+            space.map_page(tables, page, page, NUCLEUS_DEVICE_FLAGS)?;
+        }
+    }
     Ok(())
+}
+
+/// How a device register the nucleus owns is mapped: writable, uncacheable,
+/// never executable, and **without `USER`** — so a process sharing the address
+/// space cannot read or write it whatever else it holds.
+pub const NUCLEUS_DEVICE_FLAGS: u64 = WRITABLE | NO_EXECUTE | CACHE_DISABLE | WRITE_THROUGH;
+
+/// How many device pages beyond the local APIC ring 0 may take responsibility
+/// for (ADR-0082 §4: "bounded by `MAX_ASSIGNMENTS`").
+///
+/// A fixed nucleus bound over a statically reserved set. Each entry costs every
+/// address space a page-table path, which is why it is counted in
+/// `process::table_reserve` rather than discovered when a space fails to build.
+pub const MAX_NUCLEUS_DEVICE_PAGES: usize = crate::pci::MAX_ASSIGNMENTS;
+
+/// The pages themselves. Physical, identity-mapped, page-aligned; zero is empty,
+/// which is unambiguous because no device BAR decodes at physical zero.
+static mut NUCLEUS_DEVICE_PAGES: [u64; MAX_NUCLEUS_DEVICE_PAGES] =
+    [0; MAX_NUCLEUS_DEVICE_PAGES];
+
+/// The registered set, copied out rather than borrowed.
+pub fn nucleus_device_pages() -> [u64; MAX_NUCLEUS_DEVICE_PAGES] {
+    // SAFETY: single-context nucleus; a read of a plain array through a raw
+    // pointer, so no reference to the static is ever formed.
+    unsafe { core::ptr::addr_of!(NUCLEUS_DEVICE_PAGES).read() }
+}
+
+/// Whether this page is already ring 0's responsibility.
+pub fn nucleus_device_page_registered(page: u64) -> bool {
+    nucleus_device_pages().contains(&page)
+}
+
+/// Takes responsibility for one device page, so every address space built from
+/// now on maps it.
+///
+/// **Registration never expires.** A page is not withdrawn when the source that
+/// needed it goes: withdrawing an identity mapping in the middle of the range
+/// this nucleus maps its own memory in would mean proving nothing else in that
+/// branch is live, and the mapping confers nothing on anybody — it is
+/// supervisor-only, and ring 0 could reach the same device through configuration
+/// space regardless. What the bound buys is that the set is finite and counted,
+/// which is the property `table_reserve` needs.
+pub fn register_nucleus_device_page(page: u64) -> Result<(), ()> {
+    if page == 0 || !page.is_multiple_of(FRAME_SIZE) {
+        return Err(());
+    }
+    if nucleus_device_page_registered(page) {
+        return Ok(());
+    }
+    // SAFETY: single-context nucleus with interrupts masked; the only writer.
+    let pages = unsafe { &mut *core::ptr::addr_of_mut!(NUCLEUS_DEVICE_PAGES) };
+    let slot = pages.iter_mut().find(|entry| **entry == 0).ok_or(())?;
+    *slot = page;
+    Ok(())
+}
+
+/// Gives back a registration that could not be completed.
+///
+/// The only path that removes one, and it exists so that a source whose page
+/// could not be mapped into every live space leaves the set exactly as it found
+/// it rather than holding a slot for a mapping nothing made.
+pub fn withdraw_nucleus_device_page(page: u64) {
+    // SAFETY: as above.
+    let pages = unsafe { &mut *core::ptr::addr_of_mut!(NUCLEUS_DEVICE_PAGES) };
+    for entry in pages.iter_mut() {
+        if *entry == page {
+            *entry = 0;
+        }
+    }
 }
 
 /// Reads the one address this space deliberately leaves absent.

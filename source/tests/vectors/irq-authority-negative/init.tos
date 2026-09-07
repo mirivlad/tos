@@ -1,0 +1,145 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4C-1b: the function-side interrupt-authority refusals (ADR-0082 §13).
+//
+// A successful wake alone is not evidence. What makes routed interrupt delivery
+// a *capability* is what cannot be reached: this module holds one bus capability
+// and the function it claims through it, and every refusal below is produced by
+// the ordinary resolution rules rather than by a rule about interrupts.
+//
+// **Two of §13's negatives are not in here, and their absence is stronger than
+// their presence would be.** "A process holding no `PciFunction` cannot obtain a
+// device interrupt" and "a numeric vector, GSI or address/data tuple is not
+// authority" are both unwritable: `pci_interrupt_claim` takes a
+// `platform.pci.FunctionConfig` and an entry index, so there is no program text
+// that asks for an interrupt without a function, and none that names a vector.
+// A checker rejects both before a verifier sees them.
+//
+// The device is never armed — no status is set and no MSI-X vector is given to
+// it — so nothing can fire and nothing here can block.
+
+module system.boot.init version 1.2 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 1048576,
+    stack: 32KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus,
+    bus_number: u64,
+    device: u64,
+    function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_interrupt_claim(
+    cap: platform.pci.FunctionConfig,
+    entry: u64
+) -> Result<platform.irq.Source, i64> uses [platform.pci.FunctionConfig];
+
+extern fn capability_attenuate(
+    cap: platform.pci.FunctionConfig,
+    rights: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [platform.pci.FunctionConfig];
+
+extern fn capability_release(cap: platform.irq.Source) -> i64
+    uses [platform.irq.Source];
+
+// `SYSTEM_ABI_V1` §4.
+const E_NO_CAPABILITY: i64 = -1i64;
+const E_BAD_ARGUMENT: i64 = -3i64;
+const E_LIMIT: i64 = -6i64;
+
+// `CAPABILITY_V1` §3's bits, as `PLATFORM_INTERFACE_V1` §4 assigns them. Named
+// here so an attenuation reads as the grant it makes rather than as a number.
+const RIGHT_CONFIG_READ: u64 = 4096u64;
+
+// The reference function reports a two-entry MSI-X table, so this index names no
+// entry of it — and names no entry of anybody else's either.
+const ENTRY_OUT_OF_RANGE: u64 = 99u64;
+const ENTRY_FIRST: u64 = 0u64;
+const ENTRY_SECOND: u64 = 1u64;
+
+fn refused(outcome: Result<platform.irq.Source, i64>, expected: i64, bit: i64) -> i64
+    uses [platform.irq.Source]
+{
+    match (outcome) {
+        Ok(source) => {
+            // A source that should not exist is released rather than leaked, so
+            // one failure does not exhaust the table for what follows.
+            let dropped: i64 = capability_release(source);
+            return 0i64;
+        }
+        Err(status) => {
+            if (status == expected) { return bit; }
+            return 0i64;
+        }
+    }
+}
+
+//   1  an entry index outside this function's own table is E_BAD_ARGUMENT
+//   2  a function capability without `interrupt` cannot obtain one
+//   4  a second live source for one entry is E_LIMIT
+//   8  and a source for a *different* entry is allowed, so 4 is about the entry
+//      and not about capacity
+//  16  the plain claim works at all, so the refusals are refusals and not a
+//      closure
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig, platform.irq.Source] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            let mut found: i64 = 0i64;
+
+            // 1. A fabricated index. Well formed, and it names nothing.
+            found = found + refused(
+                pci_interrupt_claim(function, ENTRY_OUT_OF_RANGE),
+                E_BAD_ARGUMENT, 1i64);
+
+            // 2. The same call through a name narrowed to configuration reads.
+            // Nothing about the request changed; what changed is what the
+            // capability confers.
+            match (capability_attenuate(function, RIGHT_CONFIG_READ)) {
+                Ok(narrowed) => {
+                    found = found + refused(
+                        pci_interrupt_claim(narrowed, ENTRY_FIRST),
+                        E_NO_CAPABILITY, 2i64);
+                }
+                Err(status) => { return status - 600i64; }
+            }
+
+            match (pci_interrupt_claim(function, ENTRY_FIRST)) {
+                Ok(first) => {
+                    found = found + 16i64;
+
+                    // 4. One live source per (assignment, entry).
+                    found = found + refused(
+                        pci_interrupt_claim(function, ENTRY_FIRST),
+                        E_LIMIT, 4i64);
+
+                    // 8. A different entry of the same function is not refused,
+                    // so the refusal above is about the entry.
+                    match (pci_interrupt_claim(function, ENTRY_SECOND)) {
+                        Ok(second) => {
+                            found = found + 8i64;
+                            let dropped: i64 = capability_release(second);
+                        }
+                        Err(status) => { found = found + 0i64; }
+                    }
+                    let dropped: i64 = capability_release(first);
+                }
+                Err(status) => { return status - 800i64; }
+            }
+            return found;
+        }
+        Err(status) => { return status - 100i64; }
+    }
+}

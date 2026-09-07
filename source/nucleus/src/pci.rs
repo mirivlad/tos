@@ -1151,6 +1151,165 @@ impl Needs {
         memory_decoding: true,
         bus_mastering: false,
     };
+
+    /// A routed MSI-X interrupt source. **Both**, and each for its own reason
+    /// (ADR-0082 §5b, §5d): the table it is programmed through is in a memory
+    /// BAR, so the function must decode; and the message it delivers *is* a
+    /// memory write the device issues, so the function must master the bus.
+    ///
+    /// This is the descendant class that makes keeping the two predicates apart
+    /// worth doing rather than merely tidy — it is the only one that moves both,
+    /// so a single counter would have looked right here and been wrong about the
+    /// window and the future DMA mapping either side of it.
+    pub const MSIX: Needs = Needs {
+        memory_decoding: true,
+        bus_mastering: true,
+    };
+}
+
+/// Why an interrupt source could not be derived from a function.
+pub enum InterruptRefused {
+    /// An entry index outside the table this function reports. A fact about the
+    /// argument, judged against the capability's own function — a fabricated
+    /// index in range still names an entry of the caller's own device.
+    BadArgument,
+    /// The assignment has gone, or this function has no MSI-X capability, or its
+    /// table is somewhere this nucleus cannot reach.
+    OutOfScope,
+}
+
+/// Where one MSI-X table entry is, in physical memory.
+///
+/// **Nucleus state, and never public** (ADR-0082 §6). No operation takes one, no
+/// object's description carries one, and the only thing that ever holds it is
+/// the source table.
+#[derive(Clone, Copy)]
+pub struct MsiXEntry {
+    /// The entry's own sixteen bytes.
+    pub physical: u64,
+    /// The page containing them, which is what ring 0 maps.
+    pub page: u64,
+}
+
+/// Locates one MSI-X table entry of an assigned function.
+///
+/// Derived entirely from what the device reported and what this nucleus measured
+/// at claim time: the capability's table word said which BAR and what offset,
+/// BAR sizing said where that BAR decodes, and the entry index is bounded by the
+/// table size the capability reports. **A caller supplies an index and nothing
+/// else** — no address, no vector, no message.
+pub fn msix_entry(
+    index: u32,
+    generation: u32,
+    entry: u64,
+) -> Result<MsiXEntry, InterruptRefused> {
+    let Some(assignment) = assignment(index, generation) else {
+        return Err(InterruptRefused::OutOfScope);
+    };
+    if !assignment.msix.present() {
+        return Err(InterruptRefused::OutOfScope);
+    }
+    if entry >= u64::from(assignment.msix.entries) {
+        return Err(InterruptRefused::BadArgument);
+    }
+    let bar = assignment.bars[assignment.msix.table_bar as usize % BARS];
+    if !bar.memory || bar.length == 0 {
+        return Err(InterruptRefused::OutOfScope);
+    }
+    let Some(offset) = assignment
+        .msix
+        .table_offset
+        .checked_add(entry * MSIX_ENTRY_BYTES)
+    else {
+        return Err(InterruptRefused::OutOfScope);
+    };
+    // The whole entry has to be inside the BAR the device says it is in. A table
+    // that claims to extend past its own BAR is malformed, and writing what
+    // would then be somebody else's memory is not something to do on a device's
+    // say-so.
+    let Some(end) = offset.checked_add(MSIX_ENTRY_BYTES) else {
+        return Err(InterruptRefused::OutOfScope);
+    };
+    if end > bar.length {
+        return Err(InterruptRefused::OutOfScope);
+    }
+    let Some(physical) = bar.base.checked_add(offset) else {
+        return Err(InterruptRefused::OutOfScope);
+    };
+    // One entry is sixteen bytes and the table is eight-byte aligned, so an
+    // entry never straddles a page — which is what makes "the page containing
+    // it" a complete answer rather than a first approximation.
+    Ok(MsiXEntry {
+        physical,
+        page: physical & !(FRAME_SIZE - 1),
+    })
+}
+
+/// Turns memory decoding on for the length of a source initialisation.
+///
+/// **The one permitted exception of ADR-0082 §5b**, and it is bounded exactly as
+/// that section bounds it: sanitising and programming an MSI-X table entry is a
+/// memory access to a BAR, so the function has to decode for the length of a
+/// critical section during which no CPL-3 instruction runs. The section ends in
+/// the state the invariant dictates — either the source's descendant is taken,
+/// which makes decoding the predicate's own answer, or [`restore_enables`] puts
+/// it back.
+///
+/// A window a process can observe is not such a section, and there is none here:
+/// the dispatcher runs with interrupts masked and returns to CPL 3 only after
+/// the source is complete or has failed.
+pub fn begin_source_initialisation(index: u32, generation: u32) {
+    let Some(entry) = assignment(index, generation) else {
+        return;
+    };
+    let command = read_config(&entry, COMMAND, 2);
+    let wanted = command | (1 << MEMORY_SPACE_BIT);
+    if wanted != command {
+        write_config(&entry, COMMAND, 2, wanted);
+    }
+}
+
+/// Puts the two enable bits back to what the two predicates say.
+///
+/// The end of the section [`begin_source_initialisation`] opened, on the paths
+/// where no descendant was taken: a failed initialisation must leave the
+/// function exactly as it found it, and "as it found it" is the predicate rather
+/// than a remembered value.
+pub fn restore_enables(index: u32, generation: u32) {
+    let Some(entry) = assignment(index, generation) else {
+        return;
+    };
+    apply_enables(&entry);
+}
+
+/// Sets or clears the function's MSI-X Enable, and its Function Mask with it.
+///
+/// **Nucleus-owned, and the only writer** (ADR-0082 §5, §5c). A CPL-3 write
+/// touching this capability is refused by [`write_is_permitted`], so what this
+/// register holds is decided here and by the claim's normalisation and nowhere
+/// else.
+///
+/// Enabled means Enable on and Function Mask off — the state in which an
+/// unmasked entry can deliver. Disabled means the state a claim leaves: Enable
+/// off and Function Mask on, both, because a function left enabled between two
+/// writes could deliver in the gap.
+pub fn set_msix_enabled(index: u32, generation: u32, enabled: bool) {
+    let Some(entry) = assignment(index, generation) else {
+        return;
+    };
+    if !entry.msix.present() {
+        return;
+    }
+    let control = u64::from(entry.msix.capability) + MSIX_MESSAGE_CONTROL;
+    let value = read_config(&entry, control, 2);
+    let wanted = if enabled {
+        (value | MSIX_ENABLE) & !MSIX_FUNCTION_MASK
+    } else {
+        (value & !MSIX_ENABLE) | MSIX_FUNCTION_MASK
+    };
+    if wanted != value {
+        write_config(&entry, control, 2, wanted);
+    }
 }
 
 /// Records that a descendant hardware object was created under an assignment.

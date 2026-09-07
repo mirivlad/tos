@@ -110,6 +110,19 @@ pub const OBJECT_PCI_FUNCTION: u32 = 10;
 /// nothing reclaims. Two forms of one kind, told apart by rights, because both
 /// declare the same operations and what differs is what the holder may do.
 pub const OBJECT_MMIO_REGION: u32 = 11;
+/// One routed interrupt of one assigned PCI function (ADR-0082 §6).
+///
+/// **Its own kind, and its scope is one interrupt of one function.** Not "an
+/// interrupt controller", not "a vector" and not "the interrupts of a device":
+/// the object exists because a driver asked its function for one of the entries
+/// that function has, and the only thing its holder can do with it is wait.
+///
+/// **Nothing about the hardware is in it.** The vector, the message address and
+/// the message data are nucleus state in the same sense a region's physical base
+/// is — they appear in no argument, no result and no description, because a
+/// number is not authority and a contract that handed one out would be inviting
+/// somebody to present it as authority later.
+pub const OBJECT_IRQ_SOURCE: u32 = 12;
 
 /// The one right a reply capability has: `endpoint_reply` (4) is the only
 /// operation that names one.
@@ -202,6 +215,25 @@ pub const RIGHT_CONFIG_WRITE: u32 = 1 << 13;
 pub const RIGHT_MAP: u32 = 1 << 14;
 pub const RIGHT_MMIO_READ: u32 = 1 << 15;
 pub const RIGHT_MMIO_WRITE: u32 = 1 << 16;
+
+/// The right to derive a routed interrupt source from an assigned function, and
+/// the one right the source itself has (ADR-0082 §3, §6).
+///
+/// **`interrupt` is separate from `map` and from both configuration rights**, by
+/// the rule that already separates those three from each other: a holder that
+/// may read a device's registers, or map its memory, is not thereby a holder
+/// that may have its interrupts delivered to itself. That is the attenuation a
+/// bus manager performs before handing a function to something that should
+/// inspect it and not drive it.
+///
+/// **`wait` is the source's only right.** There is deliberately no mask right
+/// and no acknowledge right: edge delivery into a one-bit latch needs neither
+/// for correctness, the nucleus masks an entry when its source is released, and
+/// an MSI-X interrupt is ended by the local APIC rather than by anything a
+/// process could do. A right with no operation would be a contract describing a
+/// system that does not exist.
+pub const RIGHT_INTERRUPT: u32 = 1 << 17;
+pub const RIGHT_WAIT: u32 = 1 << 18;
 
 /// One capability the launcher endowed this process with, described to the
 /// process that holds it.

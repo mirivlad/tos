@@ -191,6 +191,32 @@ const PCI_CONFIG_WRITE: u64 = 26;
 /// it hands out would be a contract that lies about what its holder can reach.
 const PCI_BAR_MAP: u64 = 27;
 
+/// Derives one routed interrupt source from an assigned function (ADR-0082 §3).
+///
+/// `rdi` = a function capability with `interrupt`, `rsi` = which MSI-X table
+/// entry of *that function*; the result is a capability naming the source.
+///
+/// **The entry index is the only number, and it is the same class of argument as
+/// operation 27's BAR index**: it selects among things the capability already
+/// covers and cannot reach outside them. There is no parameter for a vector, a
+/// GSI, a legacy IRQ, an MSI address/data pair or a BDF — not because those are
+/// forbidden but because there is nowhere to say them, which is the difference
+/// between a rule and a mechanism.
+const PCI_INTERRUPT_CLAIM: u64 = 28;
+
+/// Waits for the next interrupt of one source (ADR-0082 §7).
+///
+/// `rdi` = a source capability with `wait`. It returns `OK` when the device has
+/// fired, `E_CANCELLED` when the source was destroyed under the waiter, and
+/// `E_LIMIT` when a context is already waiting — at most one is, however many
+/// capabilities name the source.
+///
+/// **A latch, not a queue.** An interrupt that arrives with nobody waiting sets
+/// one bit; this call clears it and returns without blocking. That is what makes
+/// the completion impossible to lose by racing the call, and a bit rather than a
+/// count is what stays true of a device that coalesces.
+const IRQ_WAIT: u64 = 29;
+
 /// The one call flag this contract version has.
 ///
 /// Blocking is the default because it is what `IPC_V1` describes — §4's
@@ -1123,6 +1149,14 @@ fn answer_rest(operation: u64, frame: &mut TrapFrame, caller: usize) -> Answer {
             frame.r8,
         ),
 
+        // Routed interrupt authority (ADR-0082). The first descends a second
+        // class of hardware object from a live assignment; the second is the
+        // first blocking operation whose wake source is not a context.
+        PCI_INTERRUPT_CLAIM => {
+            pci_interrupt_claim(caller, arguments.first(), arguments.second())
+        }
+        IRQ_WAIT => irq_wait(caller, arguments.first(), frame),
+
         _ => Answer::status(E_NOT_SUPPORTED),
     }
 }
@@ -1156,7 +1190,10 @@ fn pci_function_claim(caller: usize, handle: u64, bus: u64, device: u64, functio
     match capability::grant(
         caller,
         Object::PciFunction { index, generation },
-        tos_launch::RIGHT_CONFIG_READ | tos_launch::RIGHT_CONFIG_WRITE | tos_launch::RIGHT_MAP,
+        tos_launch::RIGHT_CONFIG_READ
+            | tos_launch::RIGHT_CONFIG_WRITE
+            | tos_launch::RIGHT_MAP
+            | tos_launch::RIGHT_INTERRUPT,
         0,
     ) {
         Ok(granted) => {
@@ -1362,6 +1399,121 @@ fn pci_config_write(caller: usize, handle: u64, offset: u64, width: u64, value: 
         // caller lacks is the authority, and `SYSTEM_ABI_V1` §4 keeps "you named
         // nothing" and "you may not" apart on purpose.
         Err(crate::pci::WriteRefused::Reserved) => Answer::status(E_NO_CAPABILITY),
+    }
+}
+
+/// Operation 28: one routed interrupt out of one assigned function.
+///
+/// The source is a **descendant of the assignment** (ADR-0081 §14, ADR-0082 §6),
+/// so the function cannot be released and its BDF re-claimed while an interrupt
+/// of it is still routed somewhere. What comes back is a capability naming the
+/// source and carrying exactly one right.
+fn pci_interrupt_claim(caller: usize, handle: u64, entry: u64) -> Answer {
+    let (index, generation) = match capability::resolve(caller, handle, tos_launch::RIGHT_INTERRUPT)
+    {
+        Err(refused) => return refused.into(),
+        Ok(Object::PciFunction { index, generation }) => (index, generation),
+        // `interrupt` over something that is not a function is a right nobody
+        // granted over an object no interrupt descends from.
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+    };
+    let (source, source_generation) =
+        match crate::irq::claim(index, generation, caller, entry) {
+            Ok(made) => made,
+            Err(crate::irq::Refused::BadArgument) => return Answer::status(E_BAD_ARGUMENT),
+            Err(crate::irq::Refused::OutOfScope) => return Answer::status(E_NO_CAPABILITY),
+            Err(crate::irq::Refused::Limit) => return Answer::status(E_LIMIT),
+        };
+    // **One right, and the source has no others** (ADR-0082 §6). No mask right
+    // and no acknowledge right, because neither has an operation: edge delivery
+    // into a latch needs no masking for correctness, and an MSI-X interrupt is
+    // ended by the local APIC.
+    match capability::grant(
+        caller,
+        Object::IrqSource {
+            index: source,
+            generation: source_generation,
+        },
+        tos_launch::RIGHT_WAIT,
+        0,
+    ) {
+        Ok(granted) => {
+            report_source(caller, source, source_generation);
+            Answer::value(granted)
+        }
+        Err(_) => {
+            // A source nothing can name is an entry nothing can mask, so the
+            // failure to grant undoes it rather than stranding a live route.
+            crate::irq::abandon(source, source_generation);
+            Answer::status(E_LIMIT)
+        }
+    }
+}
+
+/// Puts one routed source on the audit record, by the function and entry it
+/// names.
+///
+/// **The vector is deliberately absent**, exactly as a window's physical base
+/// is (ADR-0081 §16): what a reader needs is which function and which of its
+/// entries, both of which are the authority. The vector is how the machine
+/// implements it.
+fn report_source(caller: usize, index: u32, generation: u32) {
+    let Some((segment, bus, device, function, entry)) = crate::irq::describe(index, generation)
+    else {
+        return;
+    };
+    tos_serial::puts(b"TOS.RUN.IRQ_SOURCE process=");
+    tos_serial::put_u32_decimal(caller as u32);
+    tos_serial::puts(b" segment=");
+    tos_serial::put_u32_decimal(u32::from(segment));
+    tos_serial::puts(b" bus=");
+    tos_serial::put_u32_decimal(u32::from(bus));
+    tos_serial::puts(b" device=");
+    tos_serial::put_u32_decimal(u32::from(device));
+    tos_serial::puts(b" function=");
+    tos_serial::put_u32_decimal(u32::from(function));
+    tos_serial::puts(b" entry=");
+    tos_serial::put_u32_decimal(entry as u32);
+    tos_serial::puts(b" transport=msix generation=");
+    tos_serial::put_u32_decimal(generation);
+    tos_serial::puts(b" asserted_by=nucleus\r\n");
+}
+
+/// Operation 29: wait for the next interrupt of one source.
+///
+/// Three answers and one of them is not an answer yet: the latch was set, so the
+/// call returns `OK` immediately; nobody has fired, so the context blocks; or a
+/// context is already waiting, which is `E_LIMIT` because §7 admits exactly one.
+fn irq_wait(caller: usize, handle: u64, frame: &TrapFrame) -> Answer {
+    let (index, generation) = match capability::resolve(caller, handle, tos_launch::RIGHT_WAIT) {
+        Err(refused) => return refused.into(),
+        Ok(Object::IrqSource { index, generation }) => (index, generation),
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+    };
+    match crate::irq::begin_wait(index, generation, caller) {
+        // The interrupt arrived before the driver got here, which is the race
+        // the latch exists to lose harmlessly.
+        crate::irq::Wait::Ready => Answer::status(OK),
+        crate::irq::Wait::Occupied => Answer::status(E_LIMIT),
+        // Between the resolve above and here the source cannot have gone — this
+        // context is the only one running — but the answer is produced rather
+        // than assumed, because it is the same answer a stale handle gets.
+        crate::irq::Wait::Gone => Answer::status(E_NO_CAPABILITY),
+        crate::irq::Wait::Blocked => {
+            // **The first block whose wake source is not a context**
+            // (ADR-0082 §8). The census the scheduler takes will find it routed
+            // while the source lives, which is what makes an idle system idle
+            // rather than stalled.
+            // SAFETY: this is the running context's own frame, the wait is on a
+            // handle it holds, and the source has recorded it as its one waiter.
+            unsafe {
+                crate::process::block(
+                    frame,
+                    crate::irq::waiting_on(index, generation),
+                    IRQ_WAIT as u32,
+                )
+            }
+        }
     }
 }
 

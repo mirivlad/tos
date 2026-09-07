@@ -284,13 +284,27 @@ pub enum Waiting {
     /// `SYSTEM_ABI_V1` §6 requires — the alternative it forbids is waiting on
     /// authority nobody granted.
     ChildOf(u64),
+    /// One routed device interrupt (ADR-0082 §7). It names the **source**, by
+    /// index and generation, because that is the handle the process holds and
+    /// because the liveness question below has to be asked of that source rather
+    /// than of the class: a wait whose source has been released is not waiting
+    /// for hardware any more, whatever it was waiting for a moment ago.
+    ///
+    /// **No vector, no message and no device address appears here.** Those are
+    /// nucleus state in the same sense a region's physical base is, and a
+    /// blocking reason that carried one would be a place a caller could learn it
+    /// from.
+    Interrupt(u32, u32),
 }
 
 impl Waiting {
     /// The object it is waiting on.
     fn endpoint(&self) -> u32 {
         match self {
-            Waiting::Nothing | Waiting::Reply | Waiting::ChildOf(_) => 0,
+            Waiting::Nothing
+            | Waiting::Reply
+            | Waiting::ChildOf(_)
+            | Waiting::Interrupt(_, _) => 0,
             Waiting::Message(endpoint) | Waiting::Room(endpoint) => *endpoint,
         }
     }
@@ -318,6 +332,25 @@ impl Waiting {
             // its waiter before the scheduler went looking for something to
             // run, so a pending ending is never what this state is waiting for.
             Waiting::ChildOf(_) => WakeSource::Peer,
+            // The first reason that is not a peer's (ADR-0082 §8). A device
+            // whose interrupt is routed to this wait can end it with nothing on
+            // the processor, which is exactly the case `SYSTEM_ABI_V1` §6's
+            // second clause exists for.
+            //
+            // **Asked of the source, not of the class.** A source that has been
+            // released — by its holder, by its assignment ending, or by the
+            // death of the process that claimed it — can wake nobody, so a wait
+            // still naming it falls back to the ordinary rule. In practice it
+            // never gets that far, because destroying a source cancels its
+            // waiter at that instant; the classification is written this way so
+            // that the rule stays true if it ever does.
+            Waiting::Interrupt(source, generation) => {
+                if crate::irq::is_live(*source, *generation) {
+                    WakeSource::Routed
+                } else {
+                    WakeSource::Peer
+                }
+            }
         }
     }
 }
@@ -347,15 +380,12 @@ pub enum WakeSource {
     /// A routed device interrupt can satisfy it with nothing running, and the
     /// route it names is still live.
     ///
-    /// **No blocking reason produces this yet, and that is the honest state of
-    /// this stage rather than an omission.** ADR-0049 routes one interrupt, the
-    /// timer, and the timer wakes nobody; until a device interrupt is routed to
-    /// a waiting context there is no wait of this class to classify. What the
-    /// value buys before its first producer exists is that the rule below is
-    /// written over the classification rather than over "is anything blocked",
-    /// so the first routed interrupt is a new arm in [`Waiting::wake_source`]
-    /// and not a rewrite of the scheduler's termination condition.
-    #[allow(dead_code)]
+    /// **Its first producer is `Waiting::Interrupt`** (ADR-0082 §8). The value
+    /// was written in Stage 4C-0 with no producer, so that the rule below would
+    /// be stated over the classification rather than over "is anything blocked",
+    /// and the first routed interrupt would be a new arm in
+    /// [`Waiting::wake_source`] instead of a rewrite of the scheduler's
+    /// termination condition. It was, and this is that arm's answer.
     Routed,
 }
 
@@ -1390,6 +1420,17 @@ pub unsafe fn terminate(by: usize, target: usize) -> bool {
 // SAFETY: the caller's promise about the nucleus's space is what makes the
 // return path survivable; each slot's own space is the launcher's promise.
 pub unsafe fn schedule(nucleus: &AddressSpace) {
+    // The space every retirement runs in, and the one a device page has to be
+    // mapped into as well as into each process's (ADR-0082 §4). Recorded here
+    // because this borrow is live for the whole of the only extent in which
+    // anything asks for it: nothing outside this call can reach the pointer,
+    // because nothing outside this call runs.
+    // SAFETY: single-context nucleus; the write is the only one, and the
+    // pointer's referent outlives every use of it.
+    unsafe {
+        core::ptr::addr_of_mut!(NUCLEUS_SPACE)
+            .write(nucleus as *const AddressSpace as *mut AddressSpace)
+    };
     // How many times the liveness rule has fired without a message being
     // delivered in between, and what the delivery count was when it last did.
     let mut firings = 0u32;
@@ -1710,6 +1751,13 @@ unsafe fn retire(index: usize) {
     // assignment whose driver died be released. The assignment's own state
     // stays auditable afterwards.
     crate::device::clear_process(index);
+    // **And no routed interrupt left pointing at a dead slot**
+    // (ADR-0082 §7). Sources this process claimed are destroyed — masking
+    // their entries, retiring their vectors and re-evaluating both enable
+    // predicates once — and a source somebody else holds forgets a waiter
+    // that has died. The capability sweep above released the names; this is
+    // what catches a source whose last name was somewhere else.
+    crate::irq::clear_process(index);
     crate::syscall::drain_reclaims();
     // And the authority that funded it is told, so what the tree says is
     // committed is what the pool has actually lost.
@@ -3262,6 +3310,73 @@ pub fn map_device(
         offset += FRAME_SIZE;
     }
     Ok(lane)
+}
+
+/// The nucleus's own address space, for as long as the scheduler is running it.
+///
+/// **Not an owner and not a second copy.** `schedule` borrows the space main
+/// built and never returns while that borrow is live, so a raw pointer taken
+/// there is valid for exactly the dynamic extent in which anything can ask for
+/// it: every system call, every retirement, and nothing outside them.
+static mut NUCLEUS_SPACE: *mut AddressSpace = core::ptr::null_mut();
+
+/// Maps one device page into **every** address space this nucleus is running.
+///
+/// ADR-0082 §4's mechanism, and the reason it has to be every one: ring 0
+/// programs an MSI-X table from whichever space happened to be live. A driver's,
+/// when it claims a source; its own, when a dead process's sources are swept by
+/// `retire`. A mapping present in only one of those would work until the day it
+/// mattered.
+///
+/// Supervisor-only, uncacheable and identity-mapped, exactly as the local APIC
+/// is. Spaces built *after* this returns pick the page up from the registry in
+/// `paging::fill`.
+pub fn map_nucleus_device_page(physical: u64) -> Result<(), ()> {
+    // SAFETY: single-context nucleus; nothing else holds these.
+    let tables = unsafe { crate::memory::tables() };
+    // SAFETY: as above.
+    let table = unsafe { table() };
+    for slot in table.iter_mut() {
+        let Some(space) = slot.space.as_mut() else {
+            continue;
+        };
+        space
+            .map_page(
+                tables,
+                physical,
+                physical,
+                crate::paging::NUCLEUS_DEVICE_FLAGS,
+            )
+            .map_err(|_| ())?;
+    }
+    // SAFETY: single-context nucleus; the pointer is the one `schedule` set from
+    // a borrow that outlives every caller of this function.
+    let nucleus = unsafe { core::ptr::addr_of!(NUCLEUS_SPACE).read() };
+    if nucleus.is_null() {
+        // Nothing can be claimed before the scheduler runs, so this is a nucleus
+        // defect rather than a caller's mistake — and it fails closed.
+        return Err(());
+    }
+    // SAFETY: the pointer names the space `schedule` borrowed, which is live for
+    // the whole call, and the nucleus is single-context so no second reference
+    // to it exists while this one does.
+    unsafe { &mut *nucleus }
+        .map_page(
+            tables,
+            physical,
+            physical,
+            crate::paging::NUCLEUS_DEVICE_FLAGS,
+        )
+        .map_err(|_| ())?;
+    // The live space may be any of the above, and a page that was absent has no
+    // stale entry to invalidate — but the walk that installed it did write
+    // interior tables, and the architecture is entitled to have cached their
+    // absence.
+    // SAFETY: single-context nucleus; this reloads CR3 with what it already
+    // holds, which is the architected way to discard the whole translation
+    // cache.
+    unsafe { AddressSpace::flush() };
+    Ok(())
 }
 
 /// Removes a process's device window.

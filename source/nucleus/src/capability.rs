@@ -137,6 +137,19 @@ pub enum Object {
     /// Counted like an assignment's names rather than affine: a manager may
     /// attenuate one to hand a driver a read-only view of the same window.
     MmioRegion { index: u32, generation: u32 },
+    /// One routed interrupt of one assigned function (ADR-0082 §6).
+    ///
+    /// **Not affine, and the exclusivity is the claim's rather than the
+    /// capability's** — exactly as for the function it descends from. At most one
+    /// live source exists per (assignment, entry), and `capability_attenuate`
+    /// makes another *name* for it; what stays singular is the wait, and a second
+    /// concurrent `irq_wait` is `E_LIMIT` rather than a second waiter.
+    ///
+    /// **No vector, no message address and no message data is in here.** Those
+    /// are nucleus state in the same sense a region's physical base is: the index
+    /// names a slot in the source table, and the table holds what the hardware
+    /// needs.
+    IrqSource { index: u32, generation: u32 },
     /// The same plan after operation 23 consumed the builder.
     ///
     /// A separate variant for the reason `SharedRegion` is one — the state is
@@ -165,6 +178,7 @@ impl Object {
             Object::PciBus(_) => tos_launch::OBJECT_PCI_BUS,
             Object::PciFunction { .. } => tos_launch::OBJECT_PCI_FUNCTION,
             Object::MmioRegion { .. } => tos_launch::OBJECT_MMIO_REGION,
+            Object::IrqSource { .. } => tos_launch::OBJECT_IRQ_SOURCE,
         }
     }
 
@@ -428,6 +442,12 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
         Object::MmioRegion { index, generation } => {
             crate::device::retain(index, generation).map_err(|_| NotGranted::NoRoom)
         }
+        // A source ends when its last name goes, through the same door, for the
+        // same reason: releasing one must mean the same thing however it was
+        // made.
+        Object::IrqSource { index, generation } => {
+            crate::irq::retain(index, generation).map_err(|_| NotGranted::NoRoom)
+        }
         // Affine or not, the **region** is what says so. Operation 5 refuses to
         // make a second handle to an affine one, but an operation that reached
         // `grant` by another road would too — so the refusal lives in the
@@ -512,6 +532,14 @@ fn release_capability(object: Object) {
                 crate::memory::note_divergence(b"mmio-name-release");
             }
         }
+        // The last name going masks the table entry, retires the vector, cancels
+        // any waiter and tells the assignment it has one fewer descendant
+        // (ADR-0082 §5f).
+        Object::IrqSource { index, generation } => {
+            if crate::irq::release(index, generation).is_err() {
+                crate::memory::note_divergence(b"irq-source-name-release");
+            }
+        }
         Object::PciFunction { index, generation } => {
             if crate::pci::release(index, generation).is_err() {
                 // The entry named an assignment the table does not recognise,
@@ -567,6 +595,9 @@ fn object_is_live(object: Object) -> bool {
         // gap names the first claim and finds nothing.
         Object::PciFunction { index, generation } => crate::pci::is_live(index, generation),
         Object::MmioRegion { index, generation } => crate::device::is_live(index, generation),
+        // Live only while its own generation matches **and** the assignment it
+        // descends from is still the one it was derived from.
+        Object::IrqSource { index, generation } => crate::irq::is_live(index, generation),
     }
 }
 
@@ -940,7 +971,9 @@ fn retain_transit(object: Object) -> Result<(), NotGranted> {
         Object::MemoryAuthority { .. } => retain_capability(object),
         // The same, for an assignment: a delegation makes another name for one
         // claim, and the claim outlives whichever name goes first.
-        Object::PciFunction { .. } | Object::MmioRegion { .. } => retain_capability(object),
+        Object::PciFunction { .. } | Object::MmioRegion { .. } | Object::IrqSource { .. } => {
+            retain_capability(object)
+        }
         // Unreachable: a region does not travel in the generic transfer table
         // at all. It has a bound of its own (`IPC_V1` §3) and a lifecycle of
         // its own — an internal reference rather than a name (ADR-0075 §6) —
@@ -968,9 +1001,10 @@ fn release_transit(object: Object) {
         | Object::Process { .. }
         | Object::Reply { .. }
         | Object::PciBus(_) => {}
-        Object::MemoryAuthority { .. } | Object::PciFunction { .. } | Object::MmioRegion { .. } => {
-            release_capability(object)
-        }
+        Object::MemoryAuthority { .. }
+        | Object::PciFunction { .. }
+        | Object::MmioRegion { .. }
+        | Object::IrqSource { .. } => release_capability(object),
         // As above: never taken, so never given back.
         Object::Region { .. }
         | Object::SharedRegion { .. }

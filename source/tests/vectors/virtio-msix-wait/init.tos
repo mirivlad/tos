@@ -1,0 +1,281 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4C-1b: a textual driver waits for its own device, and the device wakes
+// it (ADR-0082 §1, §13).
+//
+// The whole chain, in one module, with nothing outside it supplying an answer:
+//
+//   root PCI bus authority   →  the launcher minted it, and nothing else can
+//   pci_function_claim       →  one function of the real machine
+//   pci_config_read          →  the device's own capability list, walked here
+//   pci_bar_map_write        →  a bounded window on the BAR that list named
+//   pci_interrupt_claim      →  one interrupt of *that* function, entry 0
+//   mmio_write_*             →  the device is told which entry serves its
+//                               configuration change, through its own registers
+//   irq_wait                 →  the context blocks
+//   ... the device raises a real MSI-X interrupt ...
+//   irq_wait returns OK      →  and the module says so
+//
+// **Everything device-specific is in this file.** The nucleus performs PCI
+// transactions, programs an MSI-X table entry, allocates a CPU vector and
+// acknowledges through the local APIC. It does not know what `device_status`
+// means, what a feature bit is, that entry 0 is this device's configuration
+// vector, or that this is a block device — the module tells the *device* that,
+// through the window the module already maps.
+//
+// **No number is authority anywhere in here.** There is no vector, no GSI, no
+// message address and no message data in any argument or any result. The one
+// number passed to `pci_interrupt_claim` is an MSI-X table entry index of the
+// function this module's own capability already names.
+
+module system.boot.init version 1.2 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 1048576,
+    stack: 32KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus,
+    bus_number: u64,
+    device: u64,
+    function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig,
+    offset: u64,
+    width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_bar_map_write(
+    cap: platform.pci.FunctionConfig,
+    bar: u64,
+    offset: size,
+    length: size
+) -> Result<MmioRegionMut, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_interrupt_claim(
+    cap: platform.pci.FunctionConfig,
+    entry: u64
+) -> Result<platform.irq.Source, i64> uses [platform.pci.FunctionConfig];
+
+extern fn irq_wait(cap: platform.irq.Source) -> i64 uses [platform.irq.Source];
+
+// `SYSTEM_ABI_V1` §4.
+const OK: i64 = 0i64;
+
+// A well-formed capability chain has at most this many entries in 256 bytes.
+const MAX_CAPABILITIES: u64 = 64u64;
+const FIRST_CAPABILITY: u64 = 64u64;
+const LAST_CAPABILITY: u64 = 240u64;
+const CAPABILITY_POINTER: u64 = 52u64;
+
+fn byte_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 1u64)) {
+        Ok(value) => { return value; }
+        Err(status) => { return 256u64; }
+    }
+}
+
+// Where the common configuration lives, discovered rather than assumed: the BAR
+// index comes from the device's own VIRTIO capability structure.
+fn common_bar(function: platform.pci.FunctionConfig) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut at: u64 = byte_at(function, CAPABILITY_POINTER);
+    let mut steps: u64 = 0u64;
+    let mut found: u64 = 256u64;
+    while (steps < MAX_CAPABILITIES) {
+        if (at < FIRST_CAPABILITY) {
+            steps = MAX_CAPABILITIES;
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (at > LAST_CAPABILITY) {
+                steps = MAX_CAPABILITIES;
+            }
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (byte_at(function, at) == 9u64) {
+                if (byte_at(function, at + 3u64) == 1u64) {
+                    found = byte_at(function, at + 4u64);
+                    steps = MAX_CAPABILITIES;
+                }
+            }
+            if (steps < MAX_CAPABILITIES) {
+                at = byte_at(function, at + 1u64);
+                steps = steps + 1u64;
+            }
+        }
+    }
+    return found;
+}
+
+// The VirtIO common configuration, as the modern PCI transport lays it out.
+// **These offsets are this module's knowledge of the device**, and appear
+// nowhere else in the system:
+//
+//   0x00 device_feature_select   0x04 device_feature
+//   0x08 driver_feature_select   0x0C driver_feature
+//   0x10 config_msix_vector      0x12 num_queues
+//   0x14 device_status           0x15 config_generation
+//
+// The status bits, likewise:
+//   1 ACKNOWLEDGE   2 DRIVER   4 DRIVER_OK   8 FEATURES_OK
+const DEVICE_FEATURE_SELECT: size = 0B;
+const DEVICE_FEATURE: size = 4B;
+const DRIVER_FEATURE_SELECT: size = 8B;
+const DRIVER_FEATURE: size = 12B;
+const CONFIG_MSIX_VECTOR: size = 16B;
+const DEVICE_STATUS: size = 20B;
+const CONFIG_GENERATION: size = 21B;
+
+const STATUS_ACKNOWLEDGE: u64 = 1u64;
+const STATUS_DRIVER: u64 = 2u64;
+const STATUS_DRIVER_OK: u64 = 4u64;
+const STATUS_FEATURES_OK: u64 = 8u64;
+
+// `VIRTIO_F_VERSION_1` is feature bit 32 — bit 0 of the high dword. A modern
+// device refuses `FEATURES_OK` without it, which is why exactly this one is
+// accepted and nothing else is.
+const VERSION_1_IN_HIGH_DWORD: u64 = 1u64;
+
+// The vector index this driver gives the device for its configuration change.
+// **It is an MSI-X table entry index and not a CPU vector**: the same number the
+// module passed to `pci_interrupt_claim`, told to the device through the
+// device's own register. Which entry serves what is the driver's decision, and
+// the nucleus's whole statement is "this source is entry 0 of this function".
+const CONFIG_ENTRY: u64 = 0u64;
+const NO_VECTOR: u64 = 65535u64;
+
+// Brings the device up far enough to report a configuration change, and points
+// it at the entry this module claimed.
+//
+// Returns 0 when the device is armed, and a negative number naming the step
+// that did not hold otherwise. Nothing here is a queue, a descriptor or a
+// request: this is the smallest state in which a modern VirtIO device will
+// raise the interrupt it already has.
+fn arm(window: MmioRegionMut) -> i64 {
+    // Reset, so the state this module builds is the one it built and not
+    // whatever the firmware left.
+    mmio_write_u8(window, DEVICE_STATUS, 0u64);
+    if (mmio_read_u8(window, DEVICE_STATUS) != 0u64) {
+        return -11i64;
+    }
+    mmio_write_u8(window, DEVICE_STATUS, STATUS_ACKNOWLEDGE);
+    mmio_write_u8(window, DEVICE_STATUS, STATUS_ACKNOWLEDGE + STATUS_DRIVER);
+
+    // Feature negotiation, in the only shape a modern device accepts: the high
+    // dword carries `VERSION_1`, and the low dword is taken as nothing.
+    mmio_write_le_u32(window, DRIVER_FEATURE_SELECT, 0u64);
+    mmio_write_le_u32(window, DRIVER_FEATURE, 0u64);
+    mmio_write_le_u32(window, DEVICE_FEATURE_SELECT, 1u64);
+    let high: u64 = mmio_read_le_u32(window, DEVICE_FEATURE);
+    if ((high & VERSION_1_IN_HIGH_DWORD) == 0u64) {
+        // A device that does not offer VERSION_1 is not the modern transport
+        // this profile states, and the rest of this would be guesswork.
+        return -12i64;
+    }
+    mmio_write_le_u32(window, DRIVER_FEATURE_SELECT, 1u64);
+    mmio_write_le_u32(window, DRIVER_FEATURE, VERSION_1_IN_HIGH_DWORD);
+
+    mmio_write_u8(window, DEVICE_STATUS,
+        STATUS_ACKNOWLEDGE + STATUS_DRIVER + STATUS_FEATURES_OK);
+    if ((mmio_read_u8(window, DEVICE_STATUS) & STATUS_FEATURES_OK) == 0u64) {
+        return -13i64;
+    }
+
+    // **The one line that connects the two halves.** The module tells the
+    // device which of its MSI-X entries a configuration change goes to, and the
+    // nucleus separately programmed that entry to reach this process. Neither
+    // side learned anything about the other: the device was told an entry
+    // index, and the nucleus was told an entry index.
+    mmio_write_le_u16(window, CONFIG_MSIX_VECTOR, CONFIG_ENTRY);
+    if (mmio_read_le_u16(window, CONFIG_MSIX_VECTOR) == NO_VECTOR) {
+        // The device refused the assignment, which it does when MSI-X is not
+        // enabled — so this is also the check that the nucleus enabled it.
+        return -14i64;
+    }
+
+    mmio_write_u8(window, DEVICE_STATUS,
+        STATUS_ACKNOWLEDGE + STATUS_DRIVER + STATUS_FEATURES_OK + STATUS_DRIVER_OK);
+    if ((mmio_read_u8(window, DEVICE_STATUS) & STATUS_DRIVER_OK) == 0u64) {
+        return -15i64;
+    }
+    return OK;
+}
+
+// What the device's configuration generation says, packed for the harness. A
+// configuration change increments it, so this is the device's own evidence that
+// something really changed rather than the interrupt merely arriving.
+fn generation_of(window: MmioRegionMut) -> u64 {
+    return mmio_read_u8(window, CONFIG_GENERATION);
+}
+
+//   The result, when everything held:
+//     1        the first wait returned OK — the device woke this context
+//   + 2        the configuration generation moved across that wait
+//   + 4        a second wait returned OK as well, from a second real interrupt
+//
+// A negative result names the step that did not hold.
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig, platform.irq.Source] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            let bar: u64 = common_bar(function);
+            if (bar > 5u64) {
+                return -200i64;
+            }
+            match (pci_bar_map_write(function, bar, 0B, 4096B)) {
+                Ok(window) => {
+                    // Reset before the source is claimed, so that bringing the
+                    // device down cannot undo the table entry the nucleus is
+                    // about to program.
+                    mmio_write_u8(window, DEVICE_STATUS, 0u64);
+                    match (pci_interrupt_claim(function, CONFIG_ENTRY)) {
+                        Ok(source) => {
+                            let armed: i64 = arm(window);
+                            if (armed != OK) {
+                                return armed;
+                            }
+                            let before: u64 = generation_of(window);
+                            // **And here the context stops.** Nothing in this
+                            // system can end this wait: no peer holds anything
+                            // that would, and the scheduler's census says so on
+                            // the record before it halts the machine.
+                            let first: i64 = irq_wait(source);
+                            if (first != OK) {
+                                return first - 500i64;
+                            }
+                            let mut found: i64 = 1i64;
+                            if (generation_of(window) != before) {
+                                found = found + 2i64;
+                            }
+                            // A second one, because a latch that answered once
+                            // by accident would answer once.
+                            let second: i64 = irq_wait(source);
+                            if (second == OK) {
+                                found = found + 4i64;
+                            }
+                            return found;
+                        }
+                        Err(status) => { return status - 400i64; }
+                    }
+                }
+                Err(status) => { return status - 300i64; }
+            }
+        }
+        Err(status) => { return status - 100i64; }
+    }
+}

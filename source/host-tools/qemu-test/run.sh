@@ -23,6 +23,7 @@
 #                                    [--require "EV ..."] [--forbid "EV ..."]
 #                                    [--timeout SECONDS] [--event-timestamps FILE] [--accel tcg|kvm]
 #                                    [--stage4-block-device]
+#                                    [--await-line REGEX --then-qmp JSON ...]
 #                                    [--interactive --display gtk|sdl] [--no-framebuffer]
 #
 # --expect defaults to 33 (HALT_OK). --require/--forbid default to the event
@@ -47,6 +48,10 @@ QEMU_TIMEOUT=90
 INTERACTIVE=0
 DISPLAY_BACKEND=""
 EVENT_TIMESTAMPS=""
+# ADR-0082 §13: a line the guest emits when it is blocked with nothing
+# runnable, and the QMP commands to make a real device event once it has.
+AWAIT_LINE=""
+THEN_QMP=()
 # ADR-0083 measurement-only: one `name=value` published through the emulator's
 # firmware-configuration interface, so a single nucleus image can be told which
 # of two measured series this boot is without relinking it. It adds no device,
@@ -93,6 +98,8 @@ while [ $# -gt 0 ]; do
         --forbid)   FORBID="$2"; shift 2 ;;
         --timeout)  QEMU_TIMEOUT="$2"; shift 2 ;;
         --event-timestamps) EVENT_TIMESTAMPS="$2"; shift 2 ;;
+        --await-line) AWAIT_LINE="$2"; shift 2 ;;
+        --then-qmp) THEN_QMP+=("$2"); shift 2 ;;
         --fw-cfg)   FW_CFG="$2"; shift 2 ;;
         --accel)    QEMU_ACCEL="$2"; shift 2 ;;
         --no-framebuffer) NO_FRAMEBUFFER=1; shift ;;
@@ -400,6 +407,23 @@ else
             -serial chardev:tosserial -display none \
             -qmp "unix:$OUT/qmp.sock,server=on,wait=off" \
             -msg timestamp=on -trace "file=$OUT/serial.trace"
+    elif [ -n "$AWAIT_LINE" ]; then
+        # ADR-0082 §13's positive evidence needs a **real** device event while
+        # the guest is blocked, and the guest cannot cause one: a configuration
+        # change is something the outside world does to a device. The helper
+        # waits for the guest's own announcement that it is blocked with nothing
+        # runnable, then asks QEMU to change the device. It writes nothing to the
+        # guest and supplies no value the guest can read; everything after the
+        # command is the machine's own path.
+        python3 "$ROOT/host-tools/qemu-test/device-event.py" \
+            --serial-log "$OUT/serial.log" \
+            --stderr-log "$OUT/qemu.stderr" \
+            --qmp-socket "$OUT/qmp.sock" \
+            --timeout "$QEMU_TIMEOUT" \
+            --await-line "$AWAIT_LINE" \
+            "${THEN_QMP[@]/#/--then=}" \
+            -- qemu-system-x86_64 "${QEMU_ARGS[@]}" \
+            -qmp "unix:$OUT/qmp.sock,server=on,wait=off"
     elif [ -n "$EVENT_TIMESTAMPS" ]; then
         # This opt-in path retains the exact normal QEMU profile and verdict.
         # The helper only observes serial-byte arrival times for existing
