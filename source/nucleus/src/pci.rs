@@ -1198,11 +1198,7 @@ pub struct MsiXEntry {
 /// BAR sizing said where that BAR decodes, and the entry index is bounded by the
 /// table size the capability reports. **A caller supplies an index and nothing
 /// else** — no address, no vector, no message.
-pub fn msix_entry(
-    index: u32,
-    generation: u32,
-    entry: u64,
-) -> Result<MsiXEntry, InterruptRefused> {
+pub fn msix_entry(index: u32, generation: u32, entry: u64) -> Result<MsiXEntry, InterruptRefused> {
     let Some(assignment) = assignment(index, generation) else {
         return Err(InterruptRefused::OutOfScope);
     };

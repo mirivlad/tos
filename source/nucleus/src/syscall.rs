@@ -1152,9 +1152,7 @@ fn answer_rest(operation: u64, frame: &mut TrapFrame, caller: usize) -> Answer {
         // Routed interrupt authority (ADR-0082). The first descends a second
         // class of hardware object from a live assignment; the second is the
         // first blocking operation whose wake source is not a context.
-        PCI_INTERRUPT_CLAIM => {
-            pci_interrupt_claim(caller, arguments.first(), arguments.second())
-        }
+        PCI_INTERRUPT_CLAIM => pci_interrupt_claim(caller, arguments.first(), arguments.second()),
         IRQ_WAIT => irq_wait(caller, arguments.first(), frame),
 
         _ => Answer::status(E_NOT_SUPPORTED),
@@ -1417,13 +1415,12 @@ fn pci_interrupt_claim(caller: usize, handle: u64, entry: u64) -> Answer {
         // granted over an object no interrupt descends from.
         Ok(_) => return Answer::status(E_NO_CAPABILITY),
     };
-    let (source, source_generation) =
-        match crate::irq::claim(index, generation, caller, entry) {
-            Ok(made) => made,
-            Err(crate::irq::Refused::BadArgument) => return Answer::status(E_BAD_ARGUMENT),
-            Err(crate::irq::Refused::OutOfScope) => return Answer::status(E_NO_CAPABILITY),
-            Err(crate::irq::Refused::Limit) => return Answer::status(E_LIMIT),
-        };
+    let (source, source_generation) = match crate::irq::claim(index, generation, caller, entry) {
+        Ok(made) => made,
+        Err(crate::irq::Refused::BadArgument) => return Answer::status(E_BAD_ARGUMENT),
+        Err(crate::irq::Refused::OutOfScope) => return Answer::status(E_NO_CAPABILITY),
+        Err(crate::irq::Refused::Limit) => return Answer::status(E_LIMIT),
+    };
     // **One right, and the source has no others** (ADR-0082 §6). No mask right
     // and no acknowledge right, because neither has an operation: edge delivery
     // into a latch needs no masking for correctness, and an MSI-X interrupt is
