@@ -1,15 +1,24 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-//! The one interrupt this system routes (ADR-0049).
+//! The local APIC: the timer this system runs on, and the acknowledgement every
+//! routed interrupt ends with (ADR-0049, ADR-0082).
 //!
 //! ADR-0023 left maskable interrupts disabled and Stage 1 and Stage 2 were
 //! measured that way. ADR-0049 enables them once, after the process substrate
-//! exists and before the first process is entered, and admits exactly one
+//! exists and before the first process is entered, and admitted exactly one
 //! source: a timer, for preemption and for a monotonic tick.
+//!
+//! **A device is a second source now, and it is not this module's** (ADR-0082).
+//! Routed device interrupts are `crate::irq`'s: it owns the vectors, the source
+//! table and the delivery. What stays here is the controller — the timer, the
+//! spurious vector, and [`end_of_interrupt`], which is the whole of what ending
+//! an MSI-X interrupt takes.
 //!
 //! **The legacy controller is masked, not used.** The 8259 pair is masked
 //! entirely rather than reprogrammed, because a controller nobody routes
 //! anything through has nothing to configure and every line it could deliver
-//! would arrive on a vector this system has not claimed.
+//! would arrive on a vector this system has not claimed. That is unchanged by
+//! device interrupts existing: ADR-0082 §4 chose MSI-X, which is a memory write
+//! and reaches the local APIC without a line at all.
 //!
 //! **A tick is a tick.** It counts timer interrupts and nothing else. Stage 3
 //! claims no wall-clock time, no calibration against a reference and no trusted
@@ -35,7 +44,8 @@ const LVT_TIMER: u64 = 0x320;
 const TIMER_INITIAL: u64 = 0x380;
 const TIMER_DIVIDE: u64 = 0x3e0;
 
-/// The vectors this stage claims above 31, and nothing else.
+/// The two vectors this module claims above 31. The routed device range is
+/// `crate::irq`'s and is deliberately not named here.
 pub const TIMER_VECTOR: u8 = 32;
 pub const SPURIOUS_VECTOR: u8 = 255;
 

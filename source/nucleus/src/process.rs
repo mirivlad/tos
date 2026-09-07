@@ -1226,10 +1226,14 @@ fn blocked_census() -> (u32, u32) {
 /// **Both halves of the rule, and the second is not free any more.** "No
 /// runnable context" answers whether anything can run *now*; the census answers
 /// whether anything that is not a context could still change that. A stage that
-/// routes no device interrupt makes the two the same question, which is why the
+/// routed no device interrupt made the two the same question, which is why the
 /// first implementation of this rule could be written as "is anything blocked" —
-/// and is exactly why writing it that way stops being correct at the first
+/// and is exactly why writing it that way stopped being correct at the first
 /// routed interrupt rather than at some later redesign.
+///
+/// That interrupt exists (ADR-0082): a context inside `irq_wait` on a live
+/// source answers `Routed`, and this function returns `AwaitingHardware` for it
+/// where the earlier form would have cancelled the wait.
 fn liveness(blocked: u32, routed: u32) -> Liveness {
     if blocked == 0 {
         return Liveness::Finished;

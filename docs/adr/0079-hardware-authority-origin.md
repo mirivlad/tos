@@ -359,7 +359,7 @@ Three facts that are not the same fact:
 | | |
 |---|---|
 | physical device existence | the device is there whether or not anything names it |
-| assignment lifetime | the claim, from `pci_function_claim` to the loss of its last name |
+| assignment lifetime | the claim, from `pci_function_claim` to the loss of its last name — **superseded by ADR-0081 §14 and ADR-0082 §6**, which extend it to the loss of the last name *or* the last derived hardware descendant, whichever is later |
 | capability-handle lifetime | one process's name for it, with its own handle generation |
 
 The assignment carries a **generation** so that releasing a function and later
@@ -396,6 +396,12 @@ widening: BAR → MMIO mapping, device-memory region semantics, interrupt routin
 and acknowledgement, DMA authority, IOMMU semantics, reset, VirtIO feature
 negotiation, VirtIO queues, block reads and writes, device matching policy,
 `block.device.v1`, persistent state and repository handoff.
+
+**Three of these have since been decided, and this list is not rewritten to
+pretend it always knew.** BAR → MMIO mapping and device-memory region semantics
+by **ADR-0081** (§13, §5); interrupt routing and acknowledgement by **ADR-0082**.
+The rest remain open, and DMA authority, IOMMU semantics and the MMIO↔DMA
+ordering contract are Stage 4C-2's.
 
 **Device matching remains deliberately open.** Reading identifiers is discovery;
 deciding which driver should own them is policy, and it comes later.
@@ -485,9 +491,10 @@ Recorded here because a decision whose implementation state is invisible invites
 being re-derived. Full evidence:
 `docs/evidence/STAGE4A_HARDWARE_BOUNDARY.md`.
 
-**Built, green and gated**: the platform root and its lifecycle (§5, §9), the
-Bus → `PciFunction` derivation with exclusive assignment (§10), the nucleus
-mechanism and its CAM backend (§6, §7), `PLATFORM_INTERFACE_V1` (§8), and
+**Built, green and gated** *(as of Stage 4A; the ABI has grown since — 27 under
+ADR-0081 and 28–29 under ADR-0082)*: the platform root and its lifecycle (§5,
+§9), the Bus → `PciFunction` derivation with exclusive assignment (§10), the
+nucleus mechanism and its CAM backend (§6, §7), `PLATFORM_INTERFACE_V1` (§8), and
 `SYSTEM_ABI_V1` operations 24–26. A canonical textual module holds the root,
 claims real functions of the Stage 4 machine, and is refused in three distinct
 ways it cannot itself decide.

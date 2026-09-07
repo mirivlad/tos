@@ -34,7 +34,10 @@ of them. What it adds is a second set of **interfaces**, over platform objects
 rather than system ones.
 
 It is not an FFI and admits none of the things `SYSTEM_INTERFACE_V1` §1 refuses.
-Its target ABI is `SYSTEM_ABI_V1`, operations 24–26, and nothing else.
+Its target ABI is `SYSTEM_ABI_V1`, operations **24–29**, and nothing else. Version
+1 of this schema said 24–26, which was true of it: 27 arrived with ADR-0081 §13's
+device-memory mapping and 28–29 with ADR-0082's interrupt authority, each when
+its mechanism was decided.
 
 ## 2. What this version declares, and why so little
 
@@ -237,10 +240,13 @@ that happens**: a `FunctionConfig` names a function, not a way of reaching one.
 A configuration read returns a number the **device** reported. Two consequences
 worth stating, because both are places a reader might assume otherwise:
 
-- **A BAR is data.** Offsets `0x10`–`0x27` return base-address registers. No
-  operation of any accepted schema takes one, so a BAR value grants no mapping,
+- **A BAR is data.** Offsets `0x10`–`0x27` return base-address registers. **No
+  operation of any accepted schema takes one**, so a BAR value grants no mapping,
   no physical memory access, and cannot be presented where authority is
-  required. Mapping device memory is not in this contract version.
+  required. That is unchanged by `pci_bar_map_read` and `pci_bar_map_write`
+  existing: they take a BAR *index* and a window inside it, and the base comes
+  from what the nucleus measured when the function was claimed. A module that
+  read a BAR and passed the number back would be passing it to no parameter.
 - **Nothing read here is authority.** A vendor identifier, a class code and a
   capability pointer are facts about hardware. Deciding which driver should own
   a function is policy, evaluated by a bus manager, and ADR-0051 deliberately
@@ -334,7 +340,7 @@ Three facts, none of which implies another:
 | | |
 |---|---|
 | the device exists | true whether or not anything names it; this contract never asserts it |
-| the assignment lives | from a successful claim to the loss of its last name |
+| the assignment lives | from a successful claim until **neither a capability names it nor a derived hardware object descends from it** — a mapped window or a routed interrupt source (ADR-0081 §14, ADR-0082 §6) |
 | a handle resolves | one process's name for the assignment, with its own handle generation |
 
 **The assignment carries a generation.** Releasing a function and claiming the
@@ -343,11 +349,28 @@ across that gap resolves to nothing rather than to the new occupant — the same
 rule `CAPABILITY_V1` §2 states for every other object, applied to the one thing
 here that can be released and re-made.
 
+**Descendants keep it alive, and the row above says so because two of them now
+exist.** Version 1 of this schema described the assignment as lasting to the loss
+of its last name, which was exact while a `FunctionConfig` capability was the only
+thing that could reach one. It is superseded: a manager releasing its own handle
+must not destroy a driver's window, and releasing the last handle must not let the
+same BDF be claimed again while a window or an interrupt source is still reaching
+it. Only when both counts fall to zero does the claim end and the generation
+advance.
+
 ## 5. What this version does not declare
 
-No MMIO interface, no interrupt interface, no DMA interface, no reset operation
-and no device-class publisher. Each is open under ADR-0079 §11 and arrives when
-its mechanism is decided.
+No DMA interface, no reset operation and no device-class publisher. Each is open
+— DMA under ADR-0082 §12, the publisher under ADR-0051 — and arrives when its
+mechanism is decided.
+
+**Two of the four this list held in version 1 have arrived, and neither arrived
+as the name that was reserved for it.** Device memory became operations 27 on
+`platform.pci.FunctionConfig` rather than a `platform.mmio.RegionMap` interface
+(ADR-0081 §13), and interrupts became `platform.irq.Source` derived from an
+assignment rather than a `platform.irq.Binding` (ADR-0082 §3). That is the rule
+working: a mechanism decides its own shape, and a name reserved in advance would
+have been a decision made before the analysis.
 
 **No reset right is allocated.** A right with no operation would be exactly the
 speculative declaration §2 refuses, one layer down.

@@ -47,8 +47,8 @@ resource [fuel: 4000000, stack: 128KiB, allocation: 64KiB, tasks: 4, workers: 1,
           sync: 2, shared: 0B, cleanup: 32, recursion: 16, imports: 4]
 
 import capability platform.pci.FunctionConfig as pci;   // accepted
+import capability platform.irq.Source as irq;           // accepted
 import capability platform.mmio.RegionMap as mmio;      // ILLUSTRATIVE — not accepted
-import capability platform.irq.Binding as irq;          // ILLUSTRATIVE — not accepted
 import capability platform.dma.Allocator as dma;        // ILLUSTRATIVE — not accepted
 import capability net.adapter.V1Publisher as publisher; // ILLUSTRATIVE — not accepted
 ```
@@ -61,10 +61,20 @@ import capability net.adapter.V1Publisher as publisher; // ILLUSTRATIVE — not 
 > `E1801_FFI_NOT_AVAILABLE`.
 >
 > The accepted platform interfaces are exactly those in
-> `source/interfaces/platform/PLATFORM_INTERFACE_V1.md`, which as of Stage 4A is
-> `platform.pci.Bus` and `platform.pci.FunctionConfig` and nothing else. MMIO,
-> interrupts and DMA are open under ADR-0079 §11 and are added when their
-> mechanisms are decided, not when this example first showed a plausible name.
+> `source/interfaces/platform/PLATFORM_INTERFACE_V1.md`, which at version 2 is
+> `platform.pci.Bus`, `platform.pci.FunctionConfig` and `platform.irq.Source`.
+> They are added when their mechanisms are decided, not when this example first
+> showed a plausible name — which is why the interrupt line above changed *name*
+> as well as status: ADR-0082 decided a **source** derived from a function
+> assignment, not the `Binding` this example had sketched, and the sketch is not
+> what became real.
+>
+> **Device memory is no longer open**: ADR-0081 §13 decided it, and it arrived as
+> two operations on `platform.pci.FunctionConfig` rather than as a
+> `platform.mmio.RegionMap` interface, for the same reason. What remains open is
+> **DMA** — ADR-0082 §12 leaves DMA authority, device-visible addressing, the
+> IOMMU and the MMIO↔DMA ordering contract undecided — and the class publisher,
+> which ADR-0051 leaves open.
 >
 > This warning exists because the previous revision of this passage was mistaken
 > for a settled interface set during the Stage 4A audit: valid V1 syntax,
@@ -109,9 +119,45 @@ Bus managers and class services may be separate processes.
 
 The nucleus acknowledges and routes low-level interrupts to driver event endpoints. Drivers must not block interrupt routing indefinitely. Shared interrupts are mediated by a bus or interrupt service with explicit acknowledgement semantics.
 
+**Decided, and not quite as this section anticipated** (ADR-0082). Interrupt
+authority is a `platform.irq.Source` **derived from a live PCI function
+assignment and from nothing else**: no interrupt-controller capability exists, and
+a process holding no function cannot ask for anybody's interrupts. A driver waits
+with `irq_wait` on a one-bit latch rather than receiving on an event endpoint, so
+a completion cannot be lost by racing the wait, and one wake may cover any number
+of completions.
+
+Two sentences above are superseded by that decision and are kept because they
+describe the shape a later transport may still need:
+
+- *"driver event endpoints"* — delivery is a blocking operation on the source,
+  not a message to an endpoint. An endpoint would put an IPC hop and a queue on
+  the completion path, and the latch is what makes batching work instead;
+- *"shared interrupts … with explicit acknowledgement semantics"* — the accepted
+  transport is **MSI-X**, which is edge-delivered and unshared, so acknowledgement
+  is a local-APIC EOI and there is no acknowledge operation at all. ADR-0082 §4
+  records why INTx was refused: ending one requires reading the *device's* status
+  register, which is device knowledge in ring 0 or an interrupt storm a slow
+  driver can cause. A shared transport would need the mediation this section
+  describes, and would need it decided rather than inherited.
+
 ## DMA
 
 DMA regions are allocated through a trusted service or nucleus primitive. The driver receives a bounded region and device-visible address mapping. IOMMU support should later enforce hardware isolation without changing the driver contract.
+
+**Not decided.** ADR-0082 §12 leaves DMA authority, DMA allocation,
+device-visible addressing, the IOMMU and the MMIO↔DMA ordering contract open;
+Stage 4C-2 is where they are decided. What is already settled and inherited
+rather than restated there is the **bus-mastering predicate** of ADR-0082 §5d: a
+DMA mapping is a bus-mastering descendant, and Bus Master Enable is set if and
+only if at least one live bus-mastering descendant exists.
+
+**And one thing must not be written by accident** (ADR-0082 §5). On the no-IOMMU
+reference profile, TOS cannot claim hardware-enforced confinement of a malicious
+bus-mastering device: the capability model controls which sanctioned DMA objects
+and device-visible addresses software may *obtain*, and does not physically
+prevent a malicious driver from programming a device with some other address. The
+last sentence above therefore says "should later enforce" and means it.
 
 ## Crashes and restart
 
