@@ -119,6 +119,40 @@ Failure conditions:
 - hidden host I/O path;
 - performance is unmeasured or achieved by bypassing isolation.
 
+## Stage 4E — Interactive-console identity
+
+Question: does a person typing at the keyboard **in the QEMU window** reach a
+canonical textual shell running as an ordinary user-space process, with the
+nucleus holding none of the shell?
+
+Evidence:
+
+- a keystroke entered in the QEMU window is delivered to a user-space service
+  through the accepted platform contracts, with the path named end to end;
+- the console/terminal service and the shell are canonical text, launched under
+  the ordinary process and capability model and identified by source;
+- a command runs as a **separately launched utility**, so the command set is a
+  set of programs rather than a table inside one program;
+- introspection answers about real system state — processes, capabilities,
+  devices — rather than about a fixture;
+- the nucleus is checked mechanically for shell vocabulary, as Stage 4B and
+  Stage 4C check it for device vocabulary.
+
+Failure conditions:
+
+- the only usable interactive path is the host's serial terminal, which makes
+  the interactivity the host's;
+- command dispatch, line editing or command semantics live in the nucleus;
+- the shell is one process with a built-in table and no way to add a utility;
+- introspection is a canned answer rather than a reading of live state;
+- the shell reaches system state through anything other than a capability it was
+  granted.
+
+**Not asked here**, because Stage 5 has not happened: source editing, module
+validation from inside the shell, repository status/diff/commit, activation and
+rollback, recovery-shell parity. Those are Stage 6's, and asking them here would
+be asking for a commit tree that does not exist yet.
+
 ## Stage 5 — Commit-as-system identity
 
 Question: is the running `/system` genuinely the selected commit tree, with transactional history operations as runtime behavior?
@@ -142,6 +176,10 @@ Failure conditions:
 ## Stage 6 — Self-modifying open-system identity
 
 Question: can TOS inspect, modify, validate, commit and activate its own canonical textual system without an undocumented host workstation?
+
+**The interactive shell is Stage 4E's and is assumed here, not re-proved.** What
+this gate is about is the workflow the shell carries once there is a commit tree
+to carry it over.
 
 Evidence:
 

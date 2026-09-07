@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `79088bee12d8382e4914e0f719a9eed499feb98da262fb15d89c33ee70dba3b0`\
+Source-manifest SHA-256: `b0aabd622a24a57fe15d3c692ffab803b377435cde10599b9ac88800c0065ae4`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2617,9 +2617,14 @@ it exactly as before.
 
 **What this does not admit.** It is not a door for device policy: the nucleus
 knows how to perform a privileged configuration transaction and does not know
-which device is a VirtIO block device or what should drive it. Operations 24–26
-are this version's only instances, and each is checked against the five
+which device is a VirtIO block device or what should drive it. Operations
+**24–29** are this version's instances, and each is checked against the five
 conditions in its own row.
+
+The set grew as its mechanisms were decided rather than all at once: 24–26 under
+ADR-0079, 27 under ADR-0081 §13, and 28–29 under ADR-0082. Each addition is a
+new instance judged against the same five conditions — which is what the rule
+was stated generally for.
 
 ## 3. Entry
 
@@ -2818,15 +2823,19 @@ is pre-existing external hardware state that nothing funds and nothing reclaims.
 A process holding memory-allocation authority gains no device access, and a
 process holding device access gains no ordinary physical memory.
 
-**Operations 24–26 are hardware mechanism primitives under §2.1, and each meets
-the five conditions.** They cannot be performed at CPL 3: the configuration
-address and data ports are unreachable from ring 3 and stay so — no IOPL, no
-process-visible I/O bitmap, no mapping. They act only on the object a presented
-capability names. They choose nothing: which functions exist is the hardware's
-answer, which one is claimed is the caller's, and which driver should own it is
-a question this contract cannot express. They produce authority only from the
-bus authority presented, bounded by its scope. And they are the minimum: without
-them no textual service can read a device at all.
+**Operations 24–29 are hardware mechanism primitives under §2.1, and each meets
+the five conditions.** None can be performed at CPL 3: the configuration address
+and data ports are unreachable from ring 3 and stay so — no IOPL, no
+process-visible I/O bitmap, no mapping — a page table is written by the nucleus
+or by nobody, and an MSI-X table entry lives in a page no process has. They act
+only on the object a presented capability names. They choose nothing: which
+functions exist is the hardware's answer, which one is claimed is the caller's,
+which BAR window or interrupt entry is derived is the caller's within what its
+capability already covers, and which driver should own any of it is a question
+this contract cannot express. They produce authority only from the authority
+presented, bounded by its scope. And they are the minimum: without them no
+textual service can read a device, map its registers, or be told when it has
+something to say.
 
 **The BDF is in the object, never in an argument to 25 or 26.** A configuration
 operation names an offset and a width and nothing else, so a holder of a
@@ -2845,13 +2854,24 @@ model.
 same one again produces a new assignment at a new generation, so a handle kept
 across that gap resolves to nothing rather than to the new occupant. Three
 lifetimes stay separate and none implies another: the device exists whether or
-not anything names it; the assignment lasts from a claim to the loss of its last
-name; a handle is one process's name for it.
+not anything names it; the assignment lasts from a claim until **neither a
+capability names it nor a derived hardware object descends from it** (ADR-0081
+§14, ADR-0082 §6); a handle is one process's name for it.
+
+That second lifetime was written as "to the loss of its last name" while a
+function capability was the only thing that could reach an assignment. Operation
+27 made a mapping reach one and operation 28 made an interrupt source reach one,
+and the rule they need is the one stated here: a manager releasing its own handle
+must not destroy a driver's window, and releasing the last handle must not let
+the same BDF be claimed again while something is still reaching it.
 
 **A BAR is data.** Operation 25 over offsets `0x10`–`0x27` returns the numbers
-the device reports. No operation of this contract accepts one, so a BAR value is
-not a mapping, not physical memory access and not presentable where authority is
-required. Address-space mapping of device memory is not in this contract version.
+the device reports. **No operation of this contract accepts one**, so a BAR value
+is not a mapping, not physical memory access and not presentable where authority
+is required — and that stays true now that operation 27 maps device memory,
+because 27 takes a BAR *index* and a window inside it, never an address. The base
+comes from what the nucleus measured at claim time. The same rule governs
+operation 28: it takes an MSI-X entry index, never a vector or a message.
 
 **Conventional configuration space only** — the first 256 bytes. That is what
 this version's mechanism reaches and what it therefore promises; an offset past
@@ -4403,7 +4423,10 @@ of them. What it adds is a second set of **interfaces**, over platform objects
 rather than system ones.
 
 It is not an FFI and admits none of the things `SYSTEM_INTERFACE_V1` §1 refuses.
-Its target ABI is `SYSTEM_ABI_V1`, operations 24–26, and nothing else.
+Its target ABI is `SYSTEM_ABI_V1`, operations **24–29**, and nothing else. Version
+1 of this schema said 24–26, which was true of it: 27 arrived with ADR-0081 §13's
+device-memory mapping and 28–29 with ADR-0082's interrupt authority, each when
+its mechanism was decided.
 
 ## 2. What this version declares, and why so little
 
@@ -4606,10 +4629,13 @@ that happens**: a `FunctionConfig` names a function, not a way of reaching one.
 A configuration read returns a number the **device** reported. Two consequences
 worth stating, because both are places a reader might assume otherwise:
 
-- **A BAR is data.** Offsets `0x10`–`0x27` return base-address registers. No
-  operation of any accepted schema takes one, so a BAR value grants no mapping,
+- **A BAR is data.** Offsets `0x10`–`0x27` return base-address registers. **No
+  operation of any accepted schema takes one**, so a BAR value grants no mapping,
   no physical memory access, and cannot be presented where authority is
-  required. Mapping device memory is not in this contract version.
+  required. That is unchanged by `pci_bar_map_read` and `pci_bar_map_write`
+  existing: they take a BAR *index* and a window inside it, and the base comes
+  from what the nucleus measured when the function was claimed. A module that
+  read a BAR and passed the number back would be passing it to no parameter.
 - **Nothing read here is authority.** A vendor identifier, a class code and a
   capability pointer are facts about hardware. Deciding which driver should own
   a function is policy, evaluated by a bus manager, and ADR-0051 deliberately
@@ -4703,7 +4729,7 @@ Three facts, none of which implies another:
 | | |
 |---|---|
 | the device exists | true whether or not anything names it; this contract never asserts it |
-| the assignment lives | from a successful claim to the loss of its last name |
+| the assignment lives | from a successful claim until **neither a capability names it nor a derived hardware object descends from it** — a mapped window or a routed interrupt source (ADR-0081 §14, ADR-0082 §6) |
 | a handle resolves | one process's name for the assignment, with its own handle generation |
 
 **The assignment carries a generation.** Releasing a function and claiming the
@@ -4712,11 +4738,28 @@ across that gap resolves to nothing rather than to the new occupant — the same
 rule `CAPABILITY_V1` §2 states for every other object, applied to the one thing
 here that can be released and re-made.
 
+**Descendants keep it alive, and the row above says so because two of them now
+exist.** Version 1 of this schema described the assignment as lasting to the loss
+of its last name, which was exact while a `FunctionConfig` capability was the only
+thing that could reach one. It is superseded: a manager releasing its own handle
+must not destroy a driver's window, and releasing the last handle must not let the
+same BDF be claimed again while a window or an interrupt source is still reaching
+it. Only when both counts fall to zero does the claim end and the generation
+advance.
+
 ## 5. What this version does not declare
 
-No MMIO interface, no interrupt interface, no DMA interface, no reset operation
-and no device-class publisher. Each is open under ADR-0079 §11 and arrives when
-its mechanism is decided.
+No DMA interface, no reset operation and no device-class publisher. Each is open
+— DMA under ADR-0082 §12, the publisher under ADR-0051 — and arrives when its
+mechanism is decided.
+
+**Two of the four this list held in version 1 have arrived, and neither arrived
+as the name that was reserved for it.** Device memory became operations 27 on
+`platform.pci.FunctionConfig` rather than a `platform.mmio.RegionMap` interface
+(ADR-0081 §13), and interrupts became `platform.irq.Source` derived from an
+assignment rather than a `platform.irq.Binding` (ADR-0082 §3). That is the rule
+working: a mechanism decides its own shape, and a name reserved in advance would
+have been a decision made before the analysis.
 
 **No reset right is allocated.** A right with no operation would be exactly the
 speculative declaration §2 refuses, one layer down.
@@ -5002,6 +5045,40 @@ Failure conditions:
 - hidden host I/O path;
 - performance is unmeasured or achieved by bypassing isolation.
 
+## Stage 4E — Interactive-console identity
+
+Question: does a person typing at the keyboard **in the QEMU window** reach a
+canonical textual shell running as an ordinary user-space process, with the
+nucleus holding none of the shell?
+
+Evidence:
+
+- a keystroke entered in the QEMU window is delivered to a user-space service
+  through the accepted platform contracts, with the path named end to end;
+- the console/terminal service and the shell are canonical text, launched under
+  the ordinary process and capability model and identified by source;
+- a command runs as a **separately launched utility**, so the command set is a
+  set of programs rather than a table inside one program;
+- introspection answers about real system state — processes, capabilities,
+  devices — rather than about a fixture;
+- the nucleus is checked mechanically for shell vocabulary, as Stage 4B and
+  Stage 4C check it for device vocabulary.
+
+Failure conditions:
+
+- the only usable interactive path is the host's serial terminal, which makes
+  the interactivity the host's;
+- command dispatch, line editing or command semantics live in the nucleus;
+- the shell is one process with a built-in table and no way to add a utility;
+- introspection is a canned answer rather than a reading of live state;
+- the shell reaches system state through anything other than a capability it was
+  granted.
+
+**Not asked here**, because Stage 5 has not happened: source editing, module
+validation from inside the shell, repository status/diff/commit, activation and
+rollback, recovery-shell parity. Those are Stage 6's, and asking them here would
+be asking for a commit tree that does not exist yet.
+
 ## Stage 5 — Commit-as-system identity
 
 Question: is the running `/system` genuinely the selected commit tree, with transactional history operations as runtime behavior?
@@ -5025,6 +5102,10 @@ Failure conditions:
 ## Stage 6 — Self-modifying open-system identity
 
 Question: can TOS inspect, modify, validate, commit and activate its own canonical textual system without an undocumented host workstation?
+
+**The interactive shell is Stage 4E's and is assumed here, not re-proved.** What
+this gate is about is the workflow the shell carries once there is a commit tree
+to carry it over.
 
 Evidence:
 
@@ -8942,8 +9023,8 @@ resource [fuel: 4000000, stack: 128KiB, allocation: 64KiB, tasks: 4, workers: 1,
           sync: 2, shared: 0B, cleanup: 32, recursion: 16, imports: 4]
 
 import capability platform.pci.FunctionConfig as pci;   // accepted
+import capability platform.irq.Source as irq;           // accepted
 import capability platform.mmio.RegionMap as mmio;      // ILLUSTRATIVE — not accepted
-import capability platform.irq.Binding as irq;          // ILLUSTRATIVE — not accepted
 import capability platform.dma.Allocator as dma;        // ILLUSTRATIVE — not accepted
 import capability net.adapter.V1Publisher as publisher; // ILLUSTRATIVE — not accepted
 ```
@@ -8956,10 +9037,20 @@ import capability net.adapter.V1Publisher as publisher; // ILLUSTRATIVE — not 
 > `E1801_FFI_NOT_AVAILABLE`.
 >
 > The accepted platform interfaces are exactly those in
-> `source/interfaces/platform/PLATFORM_INTERFACE_V1.md`, which as of Stage 4A is
-> `platform.pci.Bus` and `platform.pci.FunctionConfig` and nothing else. MMIO,
-> interrupts and DMA are open under ADR-0079 §11 and are added when their
-> mechanisms are decided, not when this example first showed a plausible name.
+> `source/interfaces/platform/PLATFORM_INTERFACE_V1.md`, which at version 2 is
+> `platform.pci.Bus`, `platform.pci.FunctionConfig` and `platform.irq.Source`.
+> They are added when their mechanisms are decided, not when this example first
+> showed a plausible name — which is why the interrupt line above changed *name*
+> as well as status: ADR-0082 decided a **source** derived from a function
+> assignment, not the `Binding` this example had sketched, and the sketch is not
+> what became real.
+>
+> **Device memory is no longer open**: ADR-0081 §13 decided it, and it arrived as
+> two operations on `platform.pci.FunctionConfig` rather than as a
+> `platform.mmio.RegionMap` interface, for the same reason. What remains open is
+> **DMA** — ADR-0082 §12 leaves DMA authority, device-visible addressing, the
+> IOMMU and the MMIO↔DMA ordering contract undecided — and the class publisher,
+> which ADR-0051 leaves open.
 >
 > This warning exists because the previous revision of this passage was mistaken
 > for a settled interface set during the Stage 4A audit: valid V1 syntax,
@@ -9004,9 +9095,45 @@ Bus managers and class services may be separate processes.
 
 The nucleus acknowledges and routes low-level interrupts to driver event endpoints. Drivers must not block interrupt routing indefinitely. Shared interrupts are mediated by a bus or interrupt service with explicit acknowledgement semantics.
 
+**Decided, and not quite as this section anticipated** (ADR-0082). Interrupt
+authority is a `platform.irq.Source` **derived from a live PCI function
+assignment and from nothing else**: no interrupt-controller capability exists, and
+a process holding no function cannot ask for anybody's interrupts. A driver waits
+with `irq_wait` on a one-bit latch rather than receiving on an event endpoint, so
+a completion cannot be lost by racing the wait, and one wake may cover any number
+of completions.
+
+Two sentences above are superseded by that decision and are kept because they
+describe the shape a later transport may still need:
+
+- *"driver event endpoints"* — delivery is a blocking operation on the source,
+  not a message to an endpoint. An endpoint would put an IPC hop and a queue on
+  the completion path, and the latch is what makes batching work instead;
+- *"shared interrupts … with explicit acknowledgement semantics"* — the accepted
+  transport is **MSI-X**, which is edge-delivered and unshared, so acknowledgement
+  is a local-APIC EOI and there is no acknowledge operation at all. ADR-0082 §4
+  records why INTx was refused: ending one requires reading the *device's* status
+  register, which is device knowledge in ring 0 or an interrupt storm a slow
+  driver can cause. A shared transport would need the mediation this section
+  describes, and would need it decided rather than inherited.
+
 ## DMA
 
 DMA regions are allocated through a trusted service or nucleus primitive. The driver receives a bounded region and device-visible address mapping. IOMMU support should later enforce hardware isolation without changing the driver contract.
+
+**Not decided.** ADR-0082 §12 leaves DMA authority, DMA allocation,
+device-visible addressing, the IOMMU and the MMIO↔DMA ordering contract open;
+Stage 4C-2 is where they are decided. What is already settled and inherited
+rather than restated there is the **bus-mastering predicate** of ADR-0082 §5d: a
+DMA mapping is a bus-mastering descendant, and Bus Master Enable is set if and
+only if at least one live bus-mastering descendant exists.
+
+**And one thing must not be written by accident** (ADR-0082 §5). On the no-IOMMU
+reference profile, TOS cannot claim hardware-enforced confinement of a malicious
+bus-mastering device: the capability model controls which sanctioned DMA objects
+and device-visible addresses software may *obtain*, and does not physically
+prevent a malicious driver from programming a device with some other address. The
+last sentence above therefore says "should later enforce" and means it.
 
 ## Crashes and restart
 
@@ -9914,6 +10041,8 @@ A change adding a new boundary without a negative test leaves the stage open.
 - Stage 2 cache deletion regenerates executable state from text;
 - Stage 3 textual service holds only declared capabilities;
 - Stage 4 no hidden binary driver performs I/O;
+- Stage 4E a keystroke entered in the QEMU window reaches a user-space shell,
+  and the nucleus holds no command dispatch;
 - Stage 5 process identities and `/system` agree on active commit;
 - Stage 6 edit/commit/activate occurs without undocumented host tooling.
 
@@ -10353,6 +10482,8 @@ Mandatory examples:
 - Stage 2 runtime/cache trace terminates at canonical source;
 - Stage 3 textual service exercises real capability enforcement;
 - Stage 4 device I/O disappears if the textual driver is removed;
+- Stage 4E the interactive path disappears if the console service is removed,
+  and a command disappears if its utility is removed;
 - Stage 5 `/system` bytes are resolved from the active commit tree;
 - Stage 6 self-edit workflow does not call undocumented host tools.
 
@@ -10512,6 +10643,61 @@ Engineering exit: persistent storage works through a textual user-space driver.
 
 Identity exit: the textual driver performs actual I/O from canonical source; no binary shadow driver or hidden host path exists.
 
+## Stage 4E — Interactive console
+
+**After Stage 4 closes and before Stage 5 begins.** The first stage at which a
+person sits in front of TOS and it answers:
+
+```text
+TOS boots
+...
+tos> help
+tos> info
+tos> ps
+```
+
+typed **at the keyboard, in the QEMU window**. Serial may stay a diagnostic
+channel and must not be the primary way a person works with the shell — a system
+whose only interactive path is a host terminal is one whose interactivity belongs
+to the host.
+
+Deliverables:
+
+- an input path for the reference QEMU platform, reaching a user-space service
+  through the accepted platform contracts;
+- a console/terminal service owning the screen and the input stream;
+- a canonical textual shell in user space;
+- separately launched textual utilities, so a command is a program rather than a
+  branch;
+- system introspection sufficient for the first of them.
+
+Engineering exit: a person types a command in the QEMU window and a textual
+process answers.
+
+Identity exit: the shell and every utility are canonical text launched under the
+ordinary process and capability model; **no command dispatch, no line editing and
+no shell semantics of any kind live in the nucleus.**
+
+**The keyboard backend is deliberately not fixed here.** What Stage 4E owes is
+the contract and direct input from the QEMU window; whether that arrives over
+PS/2, a VirtIO input device or something else is an architectural analysis this
+stage performs, in the shape ADR-0082 §4 performed it for interrupt transport —
+measure the reference machine, state what it offers, and record why the losing
+options lost.
+
+**This is not Stage 6 arriving early**, and the boundary between them is the
+whole reason it is a separate stage. Stage 4E is an interactive shell over what
+already exists: processes, capabilities, drivers, introspection. Stage 6 is the
+shell becoming a **self-hosting system-management environment** — source
+inspection and editing, module validation, repository status/diff/commit,
+candidate activation and rollback, recovery-shell parity. Stage 4E cannot deliver
+those because Stage 5 has not happened: there is no commit tree to inspect, no
+repository transaction to commit into and nothing to roll back to.
+
+**Nor is it the user-space utility project.** A stable shell/userland boundary is
+what makes a coherent utility set worth designing; the utilities themselves come
+after Stage 4E has produced that boundary.
+
 ## Stage 5 — Git-native system tree
 
 Deliverables:
@@ -10529,18 +10715,25 @@ Engineering exit: running system is identified by a commit and can return from a
 
 Identity exit: commit tree is the installed `/system`, not metadata around another package/image authority.
 
-## Stage 6 — Native shell and self-editing workflow
+## Stage 6 — Native shell as a self-editing workflow
+
+**What Stage 4E already delivered, and what this stage adds to it.** The shell,
+the console and the input path exist from Stage 4E; a person can already type a
+command and get an answer. What Stage 6 is about is the shell becoming the
+environment in which TOS **modifies itself**: it needs the commit tree Stage 5
+builds, and it is a different exit condition rather than a better version of the
+same one.
 
 Deliverables:
 
-- textual shell and editor/protocol;
+- editor/protocol, and the shell's self-editing surface over Stage 4E's shell;
 - source inspection and module validation;
 - transactional service replacement;
 - commit creation inside TOS;
 - documentation browser;
 - recovery-shell parity for core operations.
 
-Engineering exit: TOS modifies, validates, commits and activates its own services without the host OS.
+Engineering exit: TOS modifies, validates, commits and activates its own services without the host OS. **Interactivity is not the exit here** — that was Stage 4E's; what is proved here is the self-editing workflow.
 
 Identity exit: owner-visible source is the actual installed system and changes flow through repository transactions.
 
@@ -26957,7 +27150,7 @@ Three facts that are not the same fact:
 | | |
 |---|---|
 | physical device existence | the device is there whether or not anything names it |
-| assignment lifetime | the claim, from `pci_function_claim` to the loss of its last name |
+| assignment lifetime | the claim, from `pci_function_claim` to the loss of its last name — **superseded by ADR-0081 §14 and ADR-0082 §6**, which extend it to the loss of the last name *or* the last derived hardware descendant, whichever is later |
 | capability-handle lifetime | one process's name for it, with its own handle generation |
 
 The assignment carries a **generation** so that releasing a function and later
@@ -26994,6 +27187,12 @@ widening: BAR → MMIO mapping, device-memory region semantics, interrupt routin
 and acknowledgement, DMA authority, IOMMU semantics, reset, VirtIO feature
 negotiation, VirtIO queues, block reads and writes, device matching policy,
 `block.device.v1`, persistent state and repository handoff.
+
+**Three of these have since been decided, and this list is not rewritten to
+pretend it always knew.** BAR → MMIO mapping and device-memory region semantics
+by **ADR-0081** (§13, §5); interrupt routing and acknowledgement by **ADR-0082**.
+The rest remain open, and DMA authority, IOMMU semantics and the MMIO↔DMA
+ordering contract are Stage 4C-2's.
 
 **Device matching remains deliberately open.** Reading identifiers is discovery;
 deciding which driver should own them is policy, and it comes later.
@@ -27083,9 +27282,10 @@ Recorded here because a decision whose implementation state is invisible invites
 being re-derived. Full evidence:
 `docs/evidence/STAGE4A_HARDWARE_BOUNDARY.md`.
 
-**Built, green and gated**: the platform root and its lifecycle (§5, §9), the
-Bus → `PciFunction` derivation with exclusive assignment (§10), the nucleus
-mechanism and its CAM backend (§6, §7), `PLATFORM_INTERFACE_V1` (§8), and
+**Built, green and gated** *(as of Stage 4A; the ABI has grown since — 27 under
+ADR-0081 and 28–29 under ADR-0082)*: the platform root and its lifecycle (§5,
+§9), the Bus → `PciFunction` derivation with exclusive assignment (§10), the
+nucleus mechanism and its CAM backend (§6, §7), `PLATFORM_INTERFACE_V1` (§8), and
 `SYSTEM_ABI_V1` operations 24–26. A canonical textual module holds the root,
 claims real functions of the Stage 4 machine, and is refused in three distinct
 ways it cannot itself decide.

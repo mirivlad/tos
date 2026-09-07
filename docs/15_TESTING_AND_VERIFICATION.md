@@ -86,6 +86,8 @@ A change adding a new boundary without a negative test leaves the stage open.
 - Stage 2 cache deletion regenerates executable state from text;
 - Stage 3 textual service holds only declared capabilities;
 - Stage 4 no hidden binary driver performs I/O;
+- Stage 4E a keystroke entered in the QEMU window reaches a user-space shell,
+  and the nucleus holds no command dispatch;
 - Stage 5 process identities and `/system` agree on active commit;
 - Stage 6 edit/commit/activate occurs without undocumented host tooling.
 

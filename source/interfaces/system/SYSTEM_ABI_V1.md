@@ -62,9 +62,14 @@ it exactly as before.
 
 **What this does not admit.** It is not a door for device policy: the nucleus
 knows how to perform a privileged configuration transaction and does not know
-which device is a VirtIO block device or what should drive it. Operations 24–26
-are this version's only instances, and each is checked against the five
+which device is a VirtIO block device or what should drive it. Operations
+**24–29** are this version's instances, and each is checked against the five
 conditions in its own row.
+
+The set grew as its mechanisms were decided rather than all at once: 24–26 under
+ADR-0079, 27 under ADR-0081 §13, and 28–29 under ADR-0082. Each addition is a
+new instance judged against the same five conditions — which is what the rule
+was stated generally for.
 
 ## 3. Entry
 
@@ -263,15 +268,19 @@ is pre-existing external hardware state that nothing funds and nothing reclaims.
 A process holding memory-allocation authority gains no device access, and a
 process holding device access gains no ordinary physical memory.
 
-**Operations 24–26 are hardware mechanism primitives under §2.1, and each meets
-the five conditions.** They cannot be performed at CPL 3: the configuration
-address and data ports are unreachable from ring 3 and stay so — no IOPL, no
-process-visible I/O bitmap, no mapping. They act only on the object a presented
-capability names. They choose nothing: which functions exist is the hardware's
-answer, which one is claimed is the caller's, and which driver should own it is
-a question this contract cannot express. They produce authority only from the
-bus authority presented, bounded by its scope. And they are the minimum: without
-them no textual service can read a device at all.
+**Operations 24–29 are hardware mechanism primitives under §2.1, and each meets
+the five conditions.** None can be performed at CPL 3: the configuration address
+and data ports are unreachable from ring 3 and stay so — no IOPL, no
+process-visible I/O bitmap, no mapping — a page table is written by the nucleus
+or by nobody, and an MSI-X table entry lives in a page no process has. They act
+only on the object a presented capability names. They choose nothing: which
+functions exist is the hardware's answer, which one is claimed is the caller's,
+which BAR window or interrupt entry is derived is the caller's within what its
+capability already covers, and which driver should own any of it is a question
+this contract cannot express. They produce authority only from the authority
+presented, bounded by its scope. And they are the minimum: without them no
+textual service can read a device, map its registers, or be told when it has
+something to say.
 
 **The BDF is in the object, never in an argument to 25 or 26.** A configuration
 operation names an offset and a width and nothing else, so a holder of a
@@ -290,13 +299,24 @@ model.
 same one again produces a new assignment at a new generation, so a handle kept
 across that gap resolves to nothing rather than to the new occupant. Three
 lifetimes stay separate and none implies another: the device exists whether or
-not anything names it; the assignment lasts from a claim to the loss of its last
-name; a handle is one process's name for it.
+not anything names it; the assignment lasts from a claim until **neither a
+capability names it nor a derived hardware object descends from it** (ADR-0081
+§14, ADR-0082 §6); a handle is one process's name for it.
+
+That second lifetime was written as "to the loss of its last name" while a
+function capability was the only thing that could reach an assignment. Operation
+27 made a mapping reach one and operation 28 made an interrupt source reach one,
+and the rule they need is the one stated here: a manager releasing its own handle
+must not destroy a driver's window, and releasing the last handle must not let
+the same BDF be claimed again while something is still reaching it.
 
 **A BAR is data.** Operation 25 over offsets `0x10`–`0x27` returns the numbers
-the device reports. No operation of this contract accepts one, so a BAR value is
-not a mapping, not physical memory access and not presentable where authority is
-required. Address-space mapping of device memory is not in this contract version.
+the device reports. **No operation of this contract accepts one**, so a BAR value
+is not a mapping, not physical memory access and not presentable where authority
+is required — and that stays true now that operation 27 maps device memory,
+because 27 takes a BAR *index* and a window inside it, never an address. The base
+comes from what the nucleus measured at claim time. The same rule governs
+operation 28: it takes an MSI-X entry index, never a vector or a message.
 
 **Conventional configuration space only** — the first 256 bytes. That is what
 this version's mechanism reaches and what it therefore promises; an offset past

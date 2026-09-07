@@ -111,6 +111,61 @@ Engineering exit: persistent storage works through a textual user-space driver.
 
 Identity exit: the textual driver performs actual I/O from canonical source; no binary shadow driver or hidden host path exists.
 
+## Stage 4E — Interactive console
+
+**After Stage 4 closes and before Stage 5 begins.** The first stage at which a
+person sits in front of TOS and it answers:
+
+```text
+TOS boots
+...
+tos> help
+tos> info
+tos> ps
+```
+
+typed **at the keyboard, in the QEMU window**. Serial may stay a diagnostic
+channel and must not be the primary way a person works with the shell — a system
+whose only interactive path is a host terminal is one whose interactivity belongs
+to the host.
+
+Deliverables:
+
+- an input path for the reference QEMU platform, reaching a user-space service
+  through the accepted platform contracts;
+- a console/terminal service owning the screen and the input stream;
+- a canonical textual shell in user space;
+- separately launched textual utilities, so a command is a program rather than a
+  branch;
+- system introspection sufficient for the first of them.
+
+Engineering exit: a person types a command in the QEMU window and a textual
+process answers.
+
+Identity exit: the shell and every utility are canonical text launched under the
+ordinary process and capability model; **no command dispatch, no line editing and
+no shell semantics of any kind live in the nucleus.**
+
+**The keyboard backend is deliberately not fixed here.** What Stage 4E owes is
+the contract and direct input from the QEMU window; whether that arrives over
+PS/2, a VirtIO input device or something else is an architectural analysis this
+stage performs, in the shape ADR-0082 §4 performed it for interrupt transport —
+measure the reference machine, state what it offers, and record why the losing
+options lost.
+
+**This is not Stage 6 arriving early**, and the boundary between them is the
+whole reason it is a separate stage. Stage 4E is an interactive shell over what
+already exists: processes, capabilities, drivers, introspection. Stage 6 is the
+shell becoming a **self-hosting system-management environment** — source
+inspection and editing, module validation, repository status/diff/commit,
+candidate activation and rollback, recovery-shell parity. Stage 4E cannot deliver
+those because Stage 5 has not happened: there is no commit tree to inspect, no
+repository transaction to commit into and nothing to roll back to.
+
+**Nor is it the user-space utility project.** A stable shell/userland boundary is
+what makes a coherent utility set worth designing; the utilities themselves come
+after Stage 4E has produced that boundary.
+
 ## Stage 5 — Git-native system tree
 
 Deliverables:
@@ -128,18 +183,25 @@ Engineering exit: running system is identified by a commit and can return from a
 
 Identity exit: commit tree is the installed `/system`, not metadata around another package/image authority.
 
-## Stage 6 — Native shell and self-editing workflow
+## Stage 6 — Native shell as a self-editing workflow
+
+**What Stage 4E already delivered, and what this stage adds to it.** The shell,
+the console and the input path exist from Stage 4E; a person can already type a
+command and get an answer. What Stage 6 is about is the shell becoming the
+environment in which TOS **modifies itself**: it needs the commit tree Stage 5
+builds, and it is a different exit condition rather than a better version of the
+same one.
 
 Deliverables:
 
-- textual shell and editor/protocol;
+- editor/protocol, and the shell's self-editing surface over Stage 4E's shell;
 - source inspection and module validation;
 - transactional service replacement;
 - commit creation inside TOS;
 - documentation browser;
 - recovery-shell parity for core operations.
 
-Engineering exit: TOS modifies, validates, commits and activates its own services without the host OS.
+Engineering exit: TOS modifies, validates, commits and activates its own services without the host OS. **Interactivity is not the exit here** — that was Stage 4E's; what is proved here is the self-editing workflow.
 
 Identity exit: owner-visible source is the actual installed system and changes flow through repository transactions.
 

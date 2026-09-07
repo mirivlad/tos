@@ -44,6 +44,8 @@ Mandatory examples:
 - Stage 2 runtime/cache trace terminates at canonical source;
 - Stage 3 textual service exercises real capability enforcement;
 - Stage 4 device I/O disappears if the textual driver is removed;
+- Stage 4E the interactive path disappears if the console service is removed,
+  and a command disappears if its utility is removed;
 - Stage 5 `/system` bytes are resolved from the active commit tree;
 - Stage 6 self-edit workflow does not call undocumented host tools.
 
