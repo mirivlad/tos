@@ -114,6 +114,7 @@ jobs:
             source/target/preflight-qemu/**/events.log
             source/target/preflight-qemu/**/capsule.meta.json
             source/target/preflight-qemu/*.log
+            source/target/preflight-qemu/irq-routed/**/events.log
             source/target/preflight-qemu/performance-adr-0083/**
             source/target/preflight-qemu/performance-adr-0026/**
             source/target/preflight-qemu/performance-stage3-observer/**

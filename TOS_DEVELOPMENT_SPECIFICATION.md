@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `7e73c369ad29a05d5e281968b4da7bf9b19b1a578e595fe2655530ec29417d7d`\
+Source-manifest SHA-256: `79088bee12d8382e4914e0f719a9eed499feb98da262fb15d89c33ee70dba3b0`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -1812,6 +1812,10 @@ own, because two vocabularies describing one system eventually disagree.
 | `TOS.RUN.LIVENESS` | `blocked=` `routed=` `verdict=` `asserted_by=nucleus` | The census ADR-0059's rule was decided from, at an instant when nothing was runnable. `blocked=` is how many contexts were waiting and `routed=` how many of those a **live routed source** could still wake; `verdict=` is `stalled` or `awaiting-hardware`. Emitted for every `stalled` verdict and on entry to `awaiting-hardware`. |
 | `TOS.RUN.PCI_NORMALISED` | `segment=` `bus=` `device=` `function=` `found_memory_space=` `found_bus_master=` `msix=` `msi=` `asserted_by=nucleus` | A claim put a function into the state ADR-0082 §5b–§5d dictate, discarding what firmware left. The two `found_` fields are what the firmware left, and **this is the only place they can be stated** — after the claim no process can observe them. `msix=` and `msi=` are `disabled_masked`, `disabled` or `absent`. |
 | `TOS.RUN.PCI_ENABLES` | `bus=` `device=` `function=` `memory_decoding=` `bus_mastering=` `memory_space=` `bus_master=` `asserted_by=nucleus` | A device-enable predicate changed. The first two counts are the live descendants of each kind; the last two are the bits that follow from them. Emitted only when a bit actually flips, so the log carries transitions rather than one line per descendant. |
+| `TOS.RUN.IRQ_SOURCE` | `process=` `segment=` `bus=` `device=` `function=` `entry=` `transport=` `generation=` `asserted_by=nucleus` | A routed interrupt source was derived from a live assignment (ADR-0082 §3). `entry=` is the MSI-X table entry it occupies and `transport=` is `msix`. **The CPU vector is deliberately absent**, exactly as a window's physical base is: what a reader needs is which function and which of its entries, and both of those are the authority. |
+| `TOS.RUN.IRQ_DELIVERED` | `source=` `entry=` `vector=` `deliveries=` `woke=` `latched=` `asserted_by=nucleus` | A routed device interrupt arrived and the nucleus matched it to a live source. `woke=1` when a context was waiting and was resumed; `latched=1` when nobody was and the one-bit latch was set instead. Asserted by the handler that took it, so it is the record of a delivery rather than an inference from one. Here the vector **is** stated: this is the low-level diagnostic view of a mechanism, not a capability's identity. |
+| `TOS.RUN.IRQ_SPURIOUS` | `vector=` `count=` `woke=` `asserted_by=nucleus` | An interrupt arrived on a device vector with no live source behind it — a late message on a **retired** vector (ADR-0082 §5f). It is acknowledged, counted and dropped; `woke=` is always 0, because waking whoever used to hold it would be delivering an event to authority that has ended. |
+| `TOS.RUN.IRQ_RELEASED` | `source=` `entry=` `vector=` `deliveries=` `cancelled_waiter=` `vector_retired=` `asserted_by=nucleus` | A source's last name went, so the entry was masked, the descendant dropped and the vector retired. `cancelled_waiter=1` when a context was waiting and was woken with `E_CANCELLED` at that instant. `vector_retired=1` always: a vector allocated to a device source is never returned to the allocator within a boot. |
 | `TOS.RUN.DEADLOCK` | `asserted_by=nucleus` | The liveness rule fired twice with no message delivered in between. The contexts are not waiting for something that has not happened yet. |
 | `TOS.RUN.PROCESS_DEADLOCKED` | `process=` `operation=` `endpoint=` `asserted_by=nucleus` | A context ended because the system could not continue. Not a fault, not its own claim and not another process's decision — a statement about the arrangement. |
 | `TOS.RUN.PROCESS_ENDOWED` | `process=` `capabilities=` `policy=` `asserted_by=launcher` | What authority the process was given, before it ran its first instruction (ADR-0055). `policy=` names where the decision came from — `launcher-constant` until `/system/policy/` exists (ADR-0051 §3). |
@@ -2744,12 +2748,24 @@ are marked and are exactly those a process can only apply to itself.
 
 | 27 | `pci_bar_map` | PCI function capability with `map` | maps BAR `rsi` of the function that capability names, from page-aligned offset `rdx` for page-aligned length `r10`, writable when `r8` is non-zero, and returns a device-memory capability in `rdx` (ADR-0081 §13). The physical base is taken from the assignment's own measured BAR state — **a caller never supplies an address** — and the window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime. `E_BAD_ARGUMENT` for a BAR index outside the architectural range or an unaligned, zero or overflowing window; `E_NO_CAPABILITY` for an I/O or unimplemented BAR, a range not inside the BAR's extent, or **a window overlapping the function's MSI-X table or pending-bit array** (ADR-0082 §5); `E_LIMIT` when no mapping slot is free or the caller already holds as many windows as it may |
 
+| 28 | `pci_interrupt_claim` | PCI function capability with `interrupt` | derives one routed interrupt of the function that capability names from its MSI-X table entry `rsi`, and returns a handle to the source in `rdx` (ADR-0082 §3). **The entry index is the only argument, and it selects among entries of the caller's own function** — there is no parameter for a vector, a GSI, a legacy IRQ, an MSI address/data pair or a BDF. `E_BAD_ARGUMENT` for an index outside the table the function reports; `E_NO_CAPABILITY` when the assignment has gone, the function has no MSI-X capability, or its table is not reachable; `E_LIMIT` when a live source already occupies that entry, the source table is full, or the device-vector supply is spent |
+
+| 29 | `irq_wait` | interrupt source capability with `wait` | waits for the next interrupt of the source that capability names, and returns `OK` when the device has fired (ADR-0082 §7). **A one-bit latch, not a queue**: an interrupt arriving with nobody waiting sets the bit, and the next call clears it and returns without blocking, so the completion cannot be lost by racing the call. `E_LIMIT` when a context is already waiting — at most one is, however many capabilities name the source; `E_CANCELLED` when the source is destroyed under the waiter. There is no acknowledge argument and no mask operation anywhere in this contract |
+
+
 **A mapping is a descendant of the assignment, not of the handle that made it**
 (ADR-0081 §14). The assignment stays live while *either* a function capability
-names it **or** a mapping exists under it, so releasing the last function handle
-does not let the same BDF be claimed again while a window is still reaching it,
-and a manager releasing its own handle does not destroy a driver's window. Only
-when both are gone does the assignment end and its generation advance.
+names it **or** a descendant exists under it, so releasing the last function
+handle does not let the same BDF be claimed again while a window is still
+reaching it, and a manager releasing its own handle does not destroy a driver's
+window. Only when both are gone does the assignment end and its generation
+advance.
+
+**An interrupt source is a descendant under exactly the same rule** (ADR-0082
+§6), which is why §14 was written generically rather than about windows: release
+the function, re-claim the same BDF, and an interrupt of the first assignment
+cannot reach the second, because the assignment did not end while a source
+descended from it.
 
 **The scope is page-granular and explicit.** Sub-page grants are refused rather
 than served by mapping a whole page behind the contract: what the holder can
@@ -3024,6 +3040,19 @@ implied: in a stage that routes no device interrupt, "no runnable context" and
 "a state nothing can leave" are the same thing, and in a stage that routes one
 they are not. An implementation whose rule reads only "nothing runnable" becomes
 wrong at the moment a driver exists.
+
+**Operation 29 is the first wait whose wake source is not a context**
+(ADR-0082 §8). A context inside `irq_wait` on a live source can be woken by the
+device with nothing running, so a system in that state is **idle rather than
+stopped** and no block is cancelled. The classification is per-wait and is asked
+of the source: a wait whose source has been released is not routed any more and
+falls back to the ordinary rule — in practice it never gets there, because
+destroying a source cancels its waiter with `E_CANCELLED` at that instant.
+
+The limitation this creates is named rather than discovered later: while a
+routed source is live, a peer deadlock beside it is not diagnosed. It is bounded
+by the source being an authority that dies with its process, with its
+assignment, and with any revocation its launcher performs.
 
 How long *a particular process* may wait is not this contract's question and not
 the nucleus's. It is a decision about a component, of the same class as restart
@@ -4340,12 +4369,20 @@ identifier. A reader must never have to guess which kind of claim it is holding.
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# TOS Platform Interface Schema — Version 1
+# TOS Platform Interface Schema — Version 2
 
 Status: **Accepted Tier 2 interface contract.**
 
 Accepted by ADR-0079 (Project Architect-approved, 2026-09-03), which fixes the
-authority model this schema declares operations over.
+authority model this schema declares operations over, and amended to version 2
+by ADR-0082 (Project Architect-approved, 2026-09-05), which decides the
+mechanism the third interface below is declared for.
+
+**What version 2 adds, and nothing else.** One interface — `platform.irq.Source`
+— one operation on `platform.pci.FunctionConfig` that produces it, and the two
+rights those need. Version 1's operations are unchanged in name, arity,
+parameter type, result type and effect; what version 1 already narrowed about
+operations 26 and 27 is restated here rather than re-decided.
 
 Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
 contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
@@ -4370,11 +4407,13 @@ Its target ABI is `SYSTEM_ABI_V1`, operations 24–26, and nothing else.
 
 ## 2. What this version declares, and why so little
 
-Two interfaces. `docs/11_DRIVER_MODEL.md` illustrates four more —
+Three interfaces. `docs/11_DRIVER_MODEL.md` illustrates several —
 `platform.mmio.RegionMap`, `platform.irq.Binding`, `platform.dma.Allocator` and
-a class publisher — and **none of them is declared here.** ADR-0079 §11 leaves
-MMIO, interrupts and DMA open, and `SYSTEM_INTERFACE_V1` §4's rule applies to
-this schema as much as to that one:
+a class publisher — and **none of those is declared here**, including the
+interrupt one: what version 2 declares is `platform.irq.Source`, whose mechanism
+ADR-0082 decided, and not the binding that document sketched. ADR-0079 §11 left
+MMIO, interrupts and DMA open; interrupts are now decided and DMA is not, and
+`SYSTEM_INTERFACE_V1` §4's rule applies to this schema as much as to that one:
 
 > Nothing speculative: an interface that declared an operation the system does
 > not perform would be a contract describing a system that does not exist.
@@ -4386,6 +4425,7 @@ first shows its name.
 |---|---|
 | `platform.pci.Bus` | pci bus |
 | `platform.pci.FunctionConfig` | pci function |
+| `platform.irq.Source` | irq source |
 
 ## 3. Where a capability of these comes from
 
@@ -4422,8 +4462,8 @@ ordinary Stage 3 lifecycle and re-delegation, not a re-mint.
 
 ## 4. The interfaces this version declares
 
-Two, and each declares which kind of object a capability of it names, exactly as
-`SYSTEM_INTERFACE_V1` §4 does — so a launcher answering a module's request can
+Three, and each declares which kind of object a capability of it names, exactly
+as `SYSTEM_INTERFACE_V1` §4 does — so a launcher answering a module's request can
 refuse a grant of the wrong kind at startup rather than letting the module
 discover it at its first call.
 
@@ -4475,6 +4515,7 @@ nucleus-owned state.
 | `pci_config_write` | `platform.pci.FunctionConfig` with `config_write` | `offset: u64`, `width: u64`, `value: u64` | `i64` | 26 |
 | `pci_bar_map_read` | `platform.pci.FunctionConfig` with `map` | `bar: u64`, `offset: size`, `length: size` | `Result<MmioRegion, i64>` | 27 |
 | `pci_bar_map_write` | `platform.pci.FunctionConfig` with `map` | `bar: u64`, `offset: size`, `length: size` | `Result<MmioRegionMut, i64>` | 27 |
+| `pci_interrupt_claim` | `platform.pci.FunctionConfig` with `interrupt` | `entry: u64` | `Result<platform.irq.Source, i64>` | 28 |
 | `endow_for_launch` | `platform.pci.FunctionConfig` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 | `capability_attenuate` | `platform.pci.FunctionConfig` with `none` | `rights: u64` | `Result<platform.pci.FunctionConfig, i64>` | 5 |
 | `capability_release` | `platform.pci.FunctionConfig` with `none` | *(none)* | `i64` | 6 |
@@ -4573,6 +4614,80 @@ worth stating, because both are places a reader might assume otherwise:
   capability pointer are facts about hardware. Deciding which driver should own
   a function is policy, evaluated by a bus manager, and ADR-0051 deliberately
   leaves it open.
+
+### `platform.irq.Source`
+
+A capability naming **one routed interrupt of one assigned function**: the
+assignment it descends from, the MSI-X table entry it occupies, and its own
+generation, all held in nucleus-owned state.
+
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `irq_wait` | `platform.irq.Source` with `wait` | *(none)* | `i64` | 29 |
+| `endow_for_launch` | `platform.irq.Source` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+| `capability_attenuate` | `platform.irq.Source` with `none` | `rights: u64` | `Result<platform.irq.Source, i64>` | 5 |
+| `capability_release` | `platform.irq.Source` with `none` | *(none)* | `i64` | 6 |
+
+**Where a capability of this comes from, and from nothing else.** Operation 28
+on a live `platform.pci.FunctionConfig` carrying `interrupt`. There is no
+interrupt-controller capability, no "may route anything" authority, and no rule
+anywhere naming which module may have interrupts: a holder of a function may ask
+for that function's interrupts, and a holder of no function cannot ask for
+anybody's.
+
+**A number is not authority, and this schema has nowhere to put one.** No
+operation of any accepted schema takes a CPU vector, a GSI, a legacy IRQ number,
+an MSI address/data pair or a BDF, and none of those appears in any result. The
+one number operation 28 takes is an **MSI-X table entry index within the function
+the caller's capability already names** — the same class of argument as
+operation 27's BAR index, selecting among things the capability covers and
+unable to reach outside them. A fabricated index is `E_BAD_ARGUMENT`, and a
+fabricated one that happens to be in range still names an entry of the caller's
+own device.
+
+**`wait` is the only right, and the two that are absent are absent for a
+reason.** There is no mask right and no acknowledge right, because neither has
+an operation: delivery is edge-triggered into a one-bit latch, which needs no
+masking for correctness; the nucleus masks a table entry when its source is
+released, which is mechanism rather than an exposed operation; and an MSI-X
+interrupt is ended by the local APIC before the handler returns, so there is
+nothing for a process to acknowledge. A right with no operation would be a
+contract describing a system that does not exist.
+
+**At most one live source per (assignment, entry), and at most one waiter.** A
+second claim of an occupied entry is `E_LIMIT` while the first lives; the
+exclusivity is a property of the claim rather than of the capability, so
+`capability_attenuate` may still make another **name**. What stays singular is
+the wait: a second concurrent `irq_wait` is `E_LIMIT`, however many capabilities
+name the source.
+
+**The latch is a bit and not a count.** An interrupt arriving with nobody
+waiting sets it, and the next `irq_wait` clears it and returns `OK` without
+blocking — so a completion cannot be lost by racing the call. A count would
+invite a holder to pair wakeups with completions, which is false of any device
+that coalesces, and coalescing is required rather than merely permitted by
+`docs/35` §Stage 4. The obligation a bit leaves is the one every queue driver
+already has: after a wake, drain until empty.
+
+**A source is a descendant of its assignment** (ADR-0081 §14, ADR-0082 §6), so
+the assignment does not end while one exists. Releasing the function and
+re-claiming the same BDF therefore cannot be reached by an interrupt of the
+first assignment: the generation advances only when nothing reaches it.
+
+**Waiting on a live source is not a stalled system.** `SYSTEM_ABI_V1` §6's
+liveness rule asks what could still end a wait, and this is the first blocking
+reason whose answer is not "a context of this system". A context inside
+`irq_wait` on a live source is idle, not stopped; destroying the source cancels
+the wait with `E_CANCELLED` at that instant.
+
+**Bus mastering, stated where a holder can see it.** An MSI-X message is a memory
+write the device issues, so a live source necessarily makes its function a bus
+master (ADR-0082 §5d). On a platform with no IOMMU, **TOS cannot claim
+hardware-enforced confinement of a malicious bus-mastering device**: the
+capability model controls which sanctioned DMA objects and device-visible
+addresses software may *obtain*; it does not physically prevent a malicious
+driver from programming a bus-mastering device with some other address. `docs/34`
+S5 governs this and is satisfied by saying it rather than by implying otherwise.
 
 ## 4.1 Assignment, and the three lifetimes it is not
 
@@ -9221,6 +9336,32 @@ Delegation cannot create greater authority than the delegator possesses. Rights 
 
 Drivers receive only explicitly mapped DMA regions and device resources. IOMMU absence or limitations are reported as a weaker security profile, not hidden.
 
+**On the no-IOMMU reference profile, said plainly rather than implied**
+(ADR-0082 §5). A routed interrupt necessarily makes its function a bus master —
+an MSI-X message *is* a memory write the device issues — so this is reachable
+from Stage 4C onwards and not only from a future DMA stage:
+
+> **With no IOMMU, TOS cannot claim hardware-enforced confinement of a malicious
+> bus-mastering device.** The capability model controls which sanctioned DMA
+> objects and device-visible addresses software may **obtain**; it does not
+> physically prevent a malicious driver from programming a bus-mastering device
+> with some other address.
+
+Two consequences, which are stated together and never separately:
+
+- **sanctioned DMA authority and device-visible address issuance** require
+  *both* memory funding authority and the live device assignment, and that is
+  mechanically enforced;
+- **hardware DMA confinement** is not provided by this profile, and no sentence
+  of any contract may imply that it is.
+
+It is therefore false, on this profile, to say that possession of only a
+`PciFunction` makes arbitrary RAM physically invisible to the device. What the
+capability model bounds is which addresses a driver can obtain *legitimately*,
+not which addresses the hardware will accept. An IOMMU backend later strengthens
+confinement **without changing the public DMA object model**, which is why that
+model must not be written in terms of identity-mapped physical addresses.
+
 ### S6 — Verified derived execution
 
 No IR or executable cache runs solely because it has a plausible filename or local origin. Identity, schema and verifier checks are mandatory.
@@ -9414,6 +9555,41 @@ Controls: a design threat, checked as docs/31 checks it — a dependency and
 surface inventory at Stage 3 close showing that no service logic entered the
 nucleus and that every privileged behaviour is exercised by a source-identified
 textual process. **E1**, honestly: a reviewable property, not a tested one.
+
+### X4.1 — Interrupt routing taken by writing a number (T2 → A3, A8, S3)
+
+A process that may map a device's memory or write its configuration space
+programs the structure that decides where an interrupt goes: an MSI-X table
+entry carries a message address and a message data word, so writing one is
+choosing which interrupt is delivered to which vector — authority nobody
+granted, taken by writing a number. The same holder could relocate the BAR the
+table lives in, moving it out from under any rule stated over the old address.
+
+Controls (ADR-0082 §5, §5a–§5f): interrupt authority is a capability derived
+from a live function assignment and from nothing else; a window overlapping the
+MSI-X table or its pending-bit array is refused in both map forms; a
+configuration write touching the MSI-X or the conventional MSI capability is
+refused; a write that would change a resource-placement register of the reported
+header type, or Memory Space Enable, or Bus Master Enable, is refused, judged
+byte by byte and bit by bit so that writing back an unchanged value proceeds. No
+operation of any accepted contract takes a vector, a GSI, an MSI address/data
+pair or a BDF, so the escalation has nowhere to be expressed. **E2**: exercised
+against the reference device, in both directions — each refusal, and each
+neighbouring access that must still work.
+
+### X4.2 — A device vector reused under a stale message (T7 → A9, S3)
+
+A message emitted before an entry was masked arrives after that vector has been
+given to another source, and is delivered to a process that never asked for it.
+
+Controls (ADR-0082 §5f): **a CPU vector allocated to a routed device source is
+retired for the rest of the boot and never returned to the allocator.** Every
+other stale-authority property in this system is proved by a generation, and
+this one cannot be — a stale MSI carries a vector and does not carry the
+source's generation — so the conservative rule stands in for the proof. The
+supply is finite and exhaustion is `E_LIMIT` rather than recycling. An interrupt
+on a retired vector keeps its IDT gate, is acknowledged, is counted as spurious
+and wakes nobody. **E2**.
 
 ### What Stage 3 does not claim
 

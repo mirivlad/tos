@@ -1,11 +1,19 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# TOS Platform Interface Schema — Version 1
+# TOS Platform Interface Schema — Version 2
 
 Status: **Accepted Tier 2 interface contract.**
 
 Accepted by ADR-0079 (Project Architect-approved, 2026-09-03), which fixes the
-authority model this schema declares operations over.
+authority model this schema declares operations over, and amended to version 2
+by ADR-0082 (Project Architect-approved, 2026-09-05), which decides the
+mechanism the third interface below is declared for.
+
+**What version 2 adds, and nothing else.** One interface — `platform.irq.Source`
+— one operation on `platform.pci.FunctionConfig` that produces it, and the two
+rights those need. Version 1's operations are unchanged in name, arity,
+parameter type, result type and effect; what version 1 already narrowed about
+operations 26 and 27 is restated here rather than re-decided.
 
 Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
 contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
@@ -30,11 +38,13 @@ Its target ABI is `SYSTEM_ABI_V1`, operations 24–26, and nothing else.
 
 ## 2. What this version declares, and why so little
 
-Two interfaces. `docs/11_DRIVER_MODEL.md` illustrates four more —
+Three interfaces. `docs/11_DRIVER_MODEL.md` illustrates several —
 `platform.mmio.RegionMap`, `platform.irq.Binding`, `platform.dma.Allocator` and
-a class publisher — and **none of them is declared here.** ADR-0079 §11 leaves
-MMIO, interrupts and DMA open, and `SYSTEM_INTERFACE_V1` §4's rule applies to
-this schema as much as to that one:
+a class publisher — and **none of those is declared here**, including the
+interrupt one: what version 2 declares is `platform.irq.Source`, whose mechanism
+ADR-0082 decided, and not the binding that document sketched. ADR-0079 §11 left
+MMIO, interrupts and DMA open; interrupts are now decided and DMA is not, and
+`SYSTEM_INTERFACE_V1` §4's rule applies to this schema as much as to that one:
 
 > Nothing speculative: an interface that declared an operation the system does
 > not perform would be a contract describing a system that does not exist.
@@ -46,6 +56,7 @@ first shows its name.
 |---|---|
 | `platform.pci.Bus` | pci bus |
 | `platform.pci.FunctionConfig` | pci function |
+| `platform.irq.Source` | irq source |
 
 ## 3. Where a capability of these comes from
 
@@ -82,8 +93,8 @@ ordinary Stage 3 lifecycle and re-delegation, not a re-mint.
 
 ## 4. The interfaces this version declares
 
-Two, and each declares which kind of object a capability of it names, exactly as
-`SYSTEM_INTERFACE_V1` §4 does — so a launcher answering a module's request can
+Three, and each declares which kind of object a capability of it names, exactly
+as `SYSTEM_INTERFACE_V1` §4 does — so a launcher answering a module's request can
 refuse a grant of the wrong kind at startup rather than letting the module
 discover it at its first call.
 
@@ -135,6 +146,7 @@ nucleus-owned state.
 | `pci_config_write` | `platform.pci.FunctionConfig` with `config_write` | `offset: u64`, `width: u64`, `value: u64` | `i64` | 26 |
 | `pci_bar_map_read` | `platform.pci.FunctionConfig` with `map` | `bar: u64`, `offset: size`, `length: size` | `Result<MmioRegion, i64>` | 27 |
 | `pci_bar_map_write` | `platform.pci.FunctionConfig` with `map` | `bar: u64`, `offset: size`, `length: size` | `Result<MmioRegionMut, i64>` | 27 |
+| `pci_interrupt_claim` | `platform.pci.FunctionConfig` with `interrupt` | `entry: u64` | `Result<platform.irq.Source, i64>` | 28 |
 | `endow_for_launch` | `platform.pci.FunctionConfig` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 | `capability_attenuate` | `platform.pci.FunctionConfig` with `none` | `rights: u64` | `Result<platform.pci.FunctionConfig, i64>` | 5 |
 | `capability_release` | `platform.pci.FunctionConfig` with `none` | *(none)* | `i64` | 6 |
@@ -233,6 +245,80 @@ worth stating, because both are places a reader might assume otherwise:
   capability pointer are facts about hardware. Deciding which driver should own
   a function is policy, evaluated by a bus manager, and ADR-0051 deliberately
   leaves it open.
+
+### `platform.irq.Source`
+
+A capability naming **one routed interrupt of one assigned function**: the
+assignment it descends from, the MSI-X table entry it occupies, and its own
+generation, all held in nucleus-owned state.
+
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `irq_wait` | `platform.irq.Source` with `wait` | *(none)* | `i64` | 29 |
+| `endow_for_launch` | `platform.irq.Source` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+| `capability_attenuate` | `platform.irq.Source` with `none` | `rights: u64` | `Result<platform.irq.Source, i64>` | 5 |
+| `capability_release` | `platform.irq.Source` with `none` | *(none)* | `i64` | 6 |
+
+**Where a capability of this comes from, and from nothing else.** Operation 28
+on a live `platform.pci.FunctionConfig` carrying `interrupt`. There is no
+interrupt-controller capability, no "may route anything" authority, and no rule
+anywhere naming which module may have interrupts: a holder of a function may ask
+for that function's interrupts, and a holder of no function cannot ask for
+anybody's.
+
+**A number is not authority, and this schema has nowhere to put one.** No
+operation of any accepted schema takes a CPU vector, a GSI, a legacy IRQ number,
+an MSI address/data pair or a BDF, and none of those appears in any result. The
+one number operation 28 takes is an **MSI-X table entry index within the function
+the caller's capability already names** — the same class of argument as
+operation 27's BAR index, selecting among things the capability covers and
+unable to reach outside them. A fabricated index is `E_BAD_ARGUMENT`, and a
+fabricated one that happens to be in range still names an entry of the caller's
+own device.
+
+**`wait` is the only right, and the two that are absent are absent for a
+reason.** There is no mask right and no acknowledge right, because neither has
+an operation: delivery is edge-triggered into a one-bit latch, which needs no
+masking for correctness; the nucleus masks a table entry when its source is
+released, which is mechanism rather than an exposed operation; and an MSI-X
+interrupt is ended by the local APIC before the handler returns, so there is
+nothing for a process to acknowledge. A right with no operation would be a
+contract describing a system that does not exist.
+
+**At most one live source per (assignment, entry), and at most one waiter.** A
+second claim of an occupied entry is `E_LIMIT` while the first lives; the
+exclusivity is a property of the claim rather than of the capability, so
+`capability_attenuate` may still make another **name**. What stays singular is
+the wait: a second concurrent `irq_wait` is `E_LIMIT`, however many capabilities
+name the source.
+
+**The latch is a bit and not a count.** An interrupt arriving with nobody
+waiting sets it, and the next `irq_wait` clears it and returns `OK` without
+blocking — so a completion cannot be lost by racing the call. A count would
+invite a holder to pair wakeups with completions, which is false of any device
+that coalesces, and coalescing is required rather than merely permitted by
+`docs/35` §Stage 4. The obligation a bit leaves is the one every queue driver
+already has: after a wake, drain until empty.
+
+**A source is a descendant of its assignment** (ADR-0081 §14, ADR-0082 §6), so
+the assignment does not end while one exists. Releasing the function and
+re-claiming the same BDF therefore cannot be reached by an interrupt of the
+first assignment: the generation advances only when nothing reaches it.
+
+**Waiting on a live source is not a stalled system.** `SYSTEM_ABI_V1` §6's
+liveness rule asks what could still end a wait, and this is the first blocking
+reason whose answer is not "a context of this system". A context inside
+`irq_wait` on a live source is idle, not stopped; destroying the source cancels
+the wait with `E_CANCELLED` at that instant.
+
+**Bus mastering, stated where a holder can see it.** An MSI-X message is a memory
+write the device issues, so a live source necessarily makes its function a bus
+master (ADR-0082 §5d). On a platform with no IOMMU, **TOS cannot claim
+hardware-enforced confinement of a malicious bus-mastering device**: the
+capability model controls which sanctioned DMA objects and device-visible
+addresses software may *obtain*; it does not physically prevent a malicious
+driver from programming a bus-mastering device with some other address. `docs/34`
+S5 governs this and is satisfied by saying it rather than by implying otherwise.
 
 ## 4.1 Assignment, and the three lifetimes it is not
 

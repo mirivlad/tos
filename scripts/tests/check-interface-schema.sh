@@ -152,7 +152,8 @@ kinds_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
         -e 's/MemoryAuthority$/memory authority/' \
         -e 's/LaunchPlanBuilder$/launch plan builder/' \
         -e 's/LaunchPlan$/launch plan/' \
-        -e 's/PciBus$/pci bus/' -e 's/PciFunction$/pci function/' |
+        -e 's/PciBus$/pci bus/' -e 's/PciFunction$/pci function/' \
+        -e 's/IrqSource$/irq source/' |
     tr '\t' ' ' | sort)
 
 [ -n "$kinds_in_doc" ] || fail "section 4 declares no interface-to-object-kind pairing"

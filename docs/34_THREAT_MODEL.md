@@ -135,6 +135,32 @@ Delegation cannot create greater authority than the delegator possesses. Rights 
 
 Drivers receive only explicitly mapped DMA regions and device resources. IOMMU absence or limitations are reported as a weaker security profile, not hidden.
 
+**On the no-IOMMU reference profile, said plainly rather than implied**
+(ADR-0082 §5). A routed interrupt necessarily makes its function a bus master —
+an MSI-X message *is* a memory write the device issues — so this is reachable
+from Stage 4C onwards and not only from a future DMA stage:
+
+> **With no IOMMU, TOS cannot claim hardware-enforced confinement of a malicious
+> bus-mastering device.** The capability model controls which sanctioned DMA
+> objects and device-visible addresses software may **obtain**; it does not
+> physically prevent a malicious driver from programming a bus-mastering device
+> with some other address.
+
+Two consequences, which are stated together and never separately:
+
+- **sanctioned DMA authority and device-visible address issuance** require
+  *both* memory funding authority and the live device assignment, and that is
+  mechanically enforced;
+- **hardware DMA confinement** is not provided by this profile, and no sentence
+  of any contract may imply that it is.
+
+It is therefore false, on this profile, to say that possession of only a
+`PciFunction` makes arbitrary RAM physically invisible to the device. What the
+capability model bounds is which addresses a driver can obtain *legitimately*,
+not which addresses the hardware will accept. An IOMMU backend later strengthens
+confinement **without changing the public DMA object model**, which is why that
+model must not be written in terms of identity-mapped physical addresses.
+
 ### S6 — Verified derived execution
 
 No IR or executable cache runs solely because it has a plausible filename or local origin. Identity, schema and verifier checks are mandatory.
@@ -328,6 +354,41 @@ Controls: a design threat, checked as docs/31 checks it — a dependency and
 surface inventory at Stage 3 close showing that no service logic entered the
 nucleus and that every privileged behaviour is exercised by a source-identified
 textual process. **E1**, honestly: a reviewable property, not a tested one.
+
+### X4.1 — Interrupt routing taken by writing a number (T2 → A3, A8, S3)
+
+A process that may map a device's memory or write its configuration space
+programs the structure that decides where an interrupt goes: an MSI-X table
+entry carries a message address and a message data word, so writing one is
+choosing which interrupt is delivered to which vector — authority nobody
+granted, taken by writing a number. The same holder could relocate the BAR the
+table lives in, moving it out from under any rule stated over the old address.
+
+Controls (ADR-0082 §5, §5a–§5f): interrupt authority is a capability derived
+from a live function assignment and from nothing else; a window overlapping the
+MSI-X table or its pending-bit array is refused in both map forms; a
+configuration write touching the MSI-X or the conventional MSI capability is
+refused; a write that would change a resource-placement register of the reported
+header type, or Memory Space Enable, or Bus Master Enable, is refused, judged
+byte by byte and bit by bit so that writing back an unchanged value proceeds. No
+operation of any accepted contract takes a vector, a GSI, an MSI address/data
+pair or a BDF, so the escalation has nowhere to be expressed. **E2**: exercised
+against the reference device, in both directions — each refusal, and each
+neighbouring access that must still work.
+
+### X4.2 — A device vector reused under a stale message (T7 → A9, S3)
+
+A message emitted before an entry was masked arrives after that vector has been
+given to another source, and is delivered to a process that never asked for it.
+
+Controls (ADR-0082 §5f): **a CPU vector allocated to a routed device source is
+retired for the rest of the boot and never returned to the allocator.** Every
+other stale-authority property in this system is proved by a generation, and
+this one cannot be — a stale MSI carries a vector and does not carry the
+source's generation — so the conservative rule stands in for the proof. The
+supply is finite and exhaustion is `E_LIMIT` rather than recycling. An interrupt
+on a retired vector keeps its IDT gate, is acknowledged, is counted as spurious
+and wakes nobody. **E2**.
 
 ### What Stage 3 does not claim
 
