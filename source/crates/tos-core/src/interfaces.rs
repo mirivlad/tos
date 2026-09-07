@@ -145,6 +145,9 @@ pub enum ObjectKind {
     PciBus,
     /// One assignment of one PCI function (`PLATFORM_INTERFACE_V1` §4).
     PciFunction,
+    /// One routed interrupt of one assigned function (`PLATFORM_INTERFACE_V1`
+    /// §4.2, ADR-0082 §6).
+    IrqSource,
 }
 
 /// One field of a record an accepted schema declares.
@@ -598,6 +601,22 @@ pub const ACCEPTED: &[Interface] = &[
                 ],
                 result: "Result<MmioRegionMut, i64>",
             },
+            // **The second class of authority that descends from an
+            // assignment** (ADR-0082 §3). Its one argument is an MSI-X table
+            // entry index of the function this capability already names — the
+            // same class of argument as the BAR index above, selecting among
+            // things the capability covers and unable to reach outside them.
+            // There is no parameter for a vector, a GSI or a message, and that
+            // absence is the mechanism rather than a rule about it.
+            Operation {
+                name: "pci_interrupt_claim",
+                capabilities: &[Requirement::of(
+                    "platform.pci.FunctionConfig",
+                    "interrupt",
+                )],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<platform.irq.Source, i64>",
+            },
             Operation {
                 name: "endow_for_launch",
                 capabilities: &[Requirement::held("platform.pci.FunctionConfig")],
@@ -617,6 +636,49 @@ pub const ACCEPTED: &[Interface] = &[
             Operation {
                 name: "capability_release",
                 capabilities: &[Requirement::held("platform.pci.FunctionConfig")],
+                parameters: &[],
+                result: "i64",
+            },
+        ],
+    },
+    // One routed interrupt of one function (ADR-0082 §6). Declared now and not
+    // before, by the rule `SYSTEM_INTERFACE_V1` §4 states and
+    // `PLATFORM_INTERFACE_V1` §2 repeated: an interface arrives when its
+    // mechanism is decided, not when a document first shows its name.
+    Interface {
+        path: "platform.irq.Source",
+        object: ObjectKind::IrqSource,
+        operations: &[
+            // **One operation, one right, no arguments.** There is no mask, no
+            // unmask and no acknowledge: edge delivery into a one-bit latch
+            // needs none of them for correctness, and an operation that did
+            // nothing would be a contract describing a system that does not
+            // exist.
+            Operation {
+                name: "irq_wait",
+                capabilities: &[Requirement::of("platform.irq.Source", "wait")],
+                parameters: &[],
+                result: "i64",
+            },
+            Operation {
+                name: "endow_for_launch",
+                capabilities: &[Requirement::held("platform.irq.Source")],
+                parameters: &[
+                    Parameter::fixed("system.process.LaunchPlanBuilder"),
+                    Parameter::fixed("u64"),
+                    Parameter::bounded("string", 64),
+                ],
+                result: "i64",
+            },
+            Operation {
+                name: "capability_attenuate",
+                capabilities: &[Requirement::held("platform.irq.Source")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<platform.irq.Source, i64>",
+            },
+            Operation {
+                name: "capability_release",
+                capabilities: &[Requirement::held("platform.irq.Source")],
                 parameters: &[],
                 result: "i64",
             },

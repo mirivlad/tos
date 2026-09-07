@@ -93,6 +93,8 @@ const PCI_FUNCTION_CLAIM: u64 = 24;
 const PCI_CONFIG_READ: u64 = 25;
 const PCI_CONFIG_WRITE: u64 = 26;
 const PCI_BAR_MAP: u64 = 27;
+const PCI_INTERRUPT_CLAIM: u64 = 28;
+const IRQ_WAIT: u64 = 29;
 const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
@@ -1479,6 +1481,59 @@ const PERFORMED: &[Performed] = &[
         ],
         result: Produced::Mapping { writable: true },
     },
+    // §5 row 28: one MSI-X table entry index of the function this capability
+    // names, and nothing else. What comes back is authority — a source — rather
+    // than a number, which is what keeps a vector from ever being expressible.
+    Performed {
+        interface: "platform.pci.FunctionConfig",
+        name: "pci_interrupt_claim",
+        operation: PCI_INTERRUPT_CLAIM,
+        capabilities: &[Reg::Rdi],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Authority,
+    },
+    // §5 row 29: no value at all. The capability decides which interrupt, and a
+    // wait has nothing else to say.
+    Performed {
+        interface: "platform.irq.Source",
+        name: "irq_wait",
+        operation: IRQ_WAIT,
+        capabilities: &[Reg::Rdi],
+        values: &[],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "platform.irq.Source",
+        name: "endow_for_launch",
+        operation: LAUNCH_PLAN_ENDOW,
+        capabilities: &[Reg::Rdi],
+        values: &[
+            Slot::Held(Reg::Rsi),
+            Slot::Number(Reg::R10),
+            Slot::Text {
+                length: Reg::Rdx,
+                at: tos_launch::LAUNCH_ENDOW_BINDING,
+                maximum: tos_launch::MAX_BINDING as usize,
+            },
+        ],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "platform.irq.Source",
+        name: "capability_attenuate",
+        operation: CAPABILITY_ATTENUATE,
+        capabilities: &[Reg::Rdi],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Authority,
+    },
+    Performed {
+        interface: "platform.irq.Source",
+        name: "capability_release",
+        operation: CAPABILITY_RELEASE,
+        capabilities: &[Reg::Rdi],
+        values: &[],
+        result: Produced::Status,
+    },
     Performed {
         interface: "platform.pci.FunctionConfig",
         name: "endow_for_launch",
@@ -1751,6 +1806,7 @@ impl System for Endowment<'_> {
                 interfaces::ObjectKind::LaunchPlan => tos_launch::OBJECT_LAUNCH_PLAN,
                 interfaces::ObjectKind::PciBus => tos_launch::OBJECT_PCI_BUS,
                 interfaces::ObjectKind::PciFunction => tos_launch::OBJECT_PCI_FUNCTION,
+                interfaces::ObjectKind::IrqSource => tos_launch::OBJECT_IRQ_SOURCE,
             })?;
         let capability = answer?;
         self.report.line(&alloc::format!(

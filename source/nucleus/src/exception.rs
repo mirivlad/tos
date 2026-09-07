@@ -228,6 +228,12 @@ unsafe extern "C" {
     fn spurious_stub();
 }
 
+// SAFETY: exception.S defines this exact table in the same nucleus image, with
+// one stub address per routed device vector, each passing its own index.
+unsafe extern "C" {
+    static device_stub_table: [u64; crate::irq::DEVICE_VECTORS];
+}
+
 /// Establish the nucleus-owned GDT/TSS and all Stage 1 exception gates.
 ///
 /// SAFETY: called exactly once at nucleus entry while maskable interrupts are
@@ -264,9 +270,21 @@ pub unsafe fn install() {
         entry.set(handler, if vector == 8 { DF_IST_INDEX } else { 0 });
     }
 
-    // The two vectors ADR-0049 claims above 31, and no others.
+    // The two vectors ADR-0049 claims above 31.
     IDT[apic::TIMER_VECTOR as usize].set(timer_stub as *const () as u64, 0);
     IDT[apic::SPURIOUS_VECTOR as usize].set(spurious_stub as *const () as u64, 0);
+
+    // And the range ADR-0082 claims for routed device sources. **Every one of
+    // them, from boot, whether or not any source exists.** Two properties depend
+    // on it: §5e requires the gate to be installed before a message is
+    // programmed, which is trivially true if it was installed before anything
+    // could program one; and §5f requires a retired vector to keep its handler
+    // for the rest of the boot, so that a late message lands somewhere defined
+    // and is counted rather than delivered.
+    for index in 0..crate::irq::DEVICE_VECTORS {
+        let vector = crate::irq::FIRST_DEVICE_VECTOR as usize + index;
+        IDT[vector].set(device_stub_table[index], 0);
+    }
 
     let gdt = DescriptorTablePointer {
         limit: (size_of::<[u64; 7]>() - 1) as u16,

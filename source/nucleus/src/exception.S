@@ -188,9 +188,73 @@ spurious_stub:
     pop rax
     iretq
 
+/* One stub per routed device vector (ADR-0082 §5f step 7).
+ *
+ * The handler has to know *which* vector arrived, and the architecture does not
+ * push one. Reading the local APIC's in-service register back would be asking
+ * the controller to re-derive something the gate already knew, so the gate
+ * carries it: each stub is identical apart from the index it puts in `edi`.
+ *
+ * A gate exists for every vector of the range from boot and is never removed,
+ * which is what makes a late message on a **retired** vector land somewhere
+ * defined instead of in an empty IDT slot.
+ */
+.macro DEVICE_STUB index
+.global device_stub_\index
+device_stub_\index:
+    NUCLEUS_FLAGS
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    mov edi, \index         /* which of the device vectors this gate is */
+    sub rsp, 8              /* the call wants RSP 16-aligned before it */
+    call device_interrupt
+    add rsp, 8
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+.endm
+
+DEVICE_STUB 0
+DEVICE_STUB 1
+DEVICE_STUB 2
+DEVICE_STUB 3
+DEVICE_STUB 4
+DEVICE_STUB 5
+DEVICE_STUB 6
+DEVICE_STUB 7
+DEVICE_STUB 8
+DEVICE_STUB 9
+DEVICE_STUB 10
+DEVICE_STUB 11
+DEVICE_STUB 12
+DEVICE_STUB 13
+DEVICE_STUB 14
+DEVICE_STUB 15
+
 /* A table of addresses, not code. */
 .section .rodata
 .p2align 3
+.global device_stub_table
+device_stub_table:
+.quad device_stub_0, device_stub_1, device_stub_2, device_stub_3
+.quad device_stub_4, device_stub_5, device_stub_6, device_stub_7
+.quad device_stub_8, device_stub_9, device_stub_10, device_stub_11
+.quad device_stub_12, device_stub_13, device_stub_14, device_stub_15
+
 .global exception_stub_table
 exception_stub_table:
 .quad exception_stub_0, exception_stub_1, exception_stub_2, exception_stub_3

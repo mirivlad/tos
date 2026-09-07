@@ -1,0 +1,130 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4C-1b: the source-side interrupt-authority refusals (ADR-0082 §13).
+//
+// The companion to `irq-authority-negative`, split from it because both need
+// `capability_attenuate` and each needs it over a different object: this module
+// attenuates and releases the **source**, that one the function.
+//
+// The device is never armed, so nothing can fire — which is what makes the two
+// waits below refusals rather than blocks.
+
+module system.boot.init version 1.2 profile full;
+
+import capability platform.pci.Bus as bus;
+
+resource [
+    fuel: 1048576,
+    stack: 32KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 4
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus,
+    bus_number: u64,
+    device: u64,
+    function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [bus];
+
+extern fn pci_interrupt_claim(
+    cap: platform.pci.FunctionConfig,
+    entry: u64
+) -> Result<platform.irq.Source, i64> uses [platform.pci.FunctionConfig];
+
+extern fn irq_wait(cap: platform.irq.Source) -> i64 uses [platform.irq.Source];
+
+extern fn capability_attenuate(
+    cap: platform.irq.Source,
+    rights: u64
+) -> Result<platform.irq.Source, i64> uses [platform.irq.Source];
+
+extern fn capability_release(cap: platform.irq.Source) -> i64
+    uses [platform.irq.Source];
+
+// `SYSTEM_ABI_V1` §4.
+const OK: i64 = 0i64;
+const E_NO_CAPABILITY: i64 = -1i64;
+
+// `platform.irq.Source` has exactly **one** right, so this is the whole of what
+// an attenuation could drop — and dropping it is refused, because a capability
+// with no rights is not an attenuation but a slot (`CAPABILITY_V1` §4).
+const RIGHT_NOTHING: u64 = 0u64;
+const RIGHT_WAIT: u64 = 262144u64;
+const ENTRY_FIRST: u64 = 0u64;
+
+//   1  a source name that cannot wait **cannot be made**: the object's one right
+//      is its only right, and attenuating it away is refused. ADR-0082 §13's
+//      "a source capability without `wait` cannot wait" is satisfied one step
+//      earlier than it asks — the dispatcher still checks the right, and no
+//      program can produce a name that would fail that check
+//   2  attenuating to `wait` itself succeeds, so 1 is about the rights and not
+//      about the object
+//   4  a released source refuses: its handle no longer resolves
+//   8  and releasing it frees the entry, which the same function can claim again
+//  16  the plain claim works at all
+pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig, platform.irq.Source] {
+    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            let mut found: i64 = 0i64;
+            match (pci_interrupt_claim(function, ENTRY_FIRST)) {
+                Ok(first) => {
+                    found = found + 16i64;
+
+                    // 1. The one right cannot be dropped.
+                    match (capability_attenuate(first, RIGHT_NOTHING)) {
+                        Ok(mute) => {
+                            let dropped: i64 = capability_release(mute);
+                        }
+                        Err(status) => {
+                            if (status == E_NO_CAPABILITY) {
+                                found = found + 1i64;
+                            }
+                        }
+                    }
+
+                    // 2. And a second name carrying that right is ordinary.
+                    match (capability_attenuate(first, RIGHT_WAIT)) {
+                        Ok(second) => {
+                            found = found + 2i64;
+                            let dropped: i64 = capability_release(second);
+                        }
+                        Err(status) => { found = found + 0i64; }
+                    }
+
+                    // 4. The last name goes, so the source goes with it, and
+                    // the handle that named it stops resolving. The slot is
+                    // still this process's, so the answer is `E_NO_CAPABILITY`
+                    // and not `E_BAD_HANDLE`: `SYSTEM_ABI_V1` §4 keeps "you
+                    // named nothing in your table" apart from "what you named
+                    // is not there any more", and this is the second.
+                    let released: i64 = capability_release(first);
+                    if (released == OK) {
+                        if (irq_wait(first) == E_NO_CAPABILITY) {
+                            found = found + 4i64;
+                        }
+                    }
+
+                    // 8. And the entry is claimable again, by exactly the event
+                    // that made it unreachable.
+                    match (pci_interrupt_claim(function, ENTRY_FIRST)) {
+                        Ok(again) => {
+                            found = found + 8i64;
+                            let dropped: i64 = capability_release(again);
+                        }
+                        Err(status) => { found = found + 0i64; }
+                    }
+                }
+                Err(status) => { return status - 800i64; }
+            }
+            return found;
+        }
+        Err(status) => { return status - 100i64; }
+    }
+}
