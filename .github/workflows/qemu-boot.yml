@@ -2,10 +2,11 @@
 name: QEMU boot gate
 
 # The `qemu` profile of the gate inventory in `scripts/preflight.sh`: the boot
-# artifacts and every gate that boots them, including the ADR-0026 performance
-# conformance run, whose evidence status is P2 here and P1 anywhere else —
-# ADR-0040 reserves P2 for the reference platform and the harness refuses to
-# emit it elsewhere.
+# artifacts and every gate that boots them, including the ADR-0083 paired
+# validation-performance conformance run and the retained ADR-0026 historical
+# series, whose evidence status is P2 here and P1 anywhere else — ADR-0040
+# reserves P2 for the reference platform and the harness refuses to emit it
+# elsewhere.
 #
 # Kept separate from Source CI on purpose: a boot failure must read as a boot
 # failure, not as a compile job that went red somewhere near the end. This job
@@ -113,6 +114,7 @@ jobs:
             source/target/preflight-qemu/**/events.log
             source/target/preflight-qemu/**/capsule.meta.json
             source/target/preflight-qemu/*.log
+            source/target/preflight-qemu/performance-adr-0083/**
             source/target/preflight-qemu/performance-adr-0026/**
             source/target/preflight-qemu/performance-stage3-observer/**
             source/target/preflight-qemu/performance-stage3-ipc/**

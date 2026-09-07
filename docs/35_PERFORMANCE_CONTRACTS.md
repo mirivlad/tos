@@ -50,27 +50,84 @@ Hard budgets:
 - parser performs no allocation proportional to attacker-declared count before validating total bounds;
 - lookup of one canonical path does not require copying every payload.
 
-Reference-platform evidence and conformance:
+#### Active validation-performance conformance (ADR-0083)
+
+On the mandatory q35/qemu64/one-vCPU/256-MiB/TCG profile, over the 1,000-file /
+exactly-16-MiB fixture:
+
+```text
+same_artifact_full_exact_p95 / same_artifact_unavoidable_crypto_p95 <= 1.30
+```
+
+The complete exact Stage 1 logical validation costs at most 30% more than the
+unavoidable cryptographic subset **of that same logical workload**. Both series
+come from **one measurement-only nucleus image** whose mode is chosen at run
+time, so linker layout, code addresses and the TCG translation environment are
+shared and cancel; the reporter refuses to compute the quotient unless the two
+series report exactly equal image SHA-256.
+
+The measured logical workload is fixed by ADR-0083 §4:
+
+- numerator — two fresh whole-capsule digests with the mirror check, two fresh
+  production `parse` passes with the first scoped out of the second, the
+  canonical `/system/boot/init.tos` lookup taken from the second pass, and a
+  fresh boot-text digest;
+- denominator — the cryptographic subset of exactly that workload: two fresh
+  parser-crypto passes, two fresh whole-capsule mirror digests, one fresh
+  boot-text digest. For the retained fixture that is exactly `101203397`
+  SHA-256 input bytes over `2007` invocations. No result may be cached or
+  shared between logical validators, and this accounting is not narrowed to
+  change the ratio.
+
+Both series begin at one common `TOS.TEST.PAIRED.START` boundary after an
+identical untimed prefix, retain 3 warmups and 21 measured samples with
+nearest-rank p95/p99, and record the median ratio beside the p95 ratio. **The
+p95 ratio is conformance; the median ratio is diagnostic.**
+
+The gate fails when the two image digests differ, when a series retains the
+wrong sample count, when the guest-reported mode disagrees with the series
+requested, when the workload-equivalence or accounting gates fail, or when the
+p95 ratio exceeds 1.30.
+
+Retained baseline (TCG, 2026-09-06): p95 ratio **1.0076**, median ratio
+**0.9977**, native p95 ratio **0.9988**. The "Regression policy" percentages
+below apply relative to that retained baseline, not to the constant 1.0.
+
+**This ratio is not production boot latency.** It is a validation-efficiency
+figure. It is also crypto-dominated over the current fixture: it detects
+catastrophic validation-architecture overhead and does not resolve small
+structural drift (ADR-0083 §9).
+
+#### Retained separately
 
 - the mandatory q35/qemu64/one-vCPU/256-MiB/TCG functional profile runs the
-  exact ordinary production boot path for a capsule fixture containing 1,000
-  files and exactly 16 MiB total payload. It retains raw 3-warmup/21-sample
-  median/p95/p99 wall-clock data, serial/event logs and segment decomposition;
-  its wall-clock latency is a retained regression metric, not a physical-CPU
-  absolute-latency assertion;
+  exact ordinary production boot path for the same fixture. It retains raw
+  3-warmup/21-sample median/p95/p99 wall-clock data, serial/event logs and
+  segment decomposition; its wall-clock latency is a retained regression
+  metric, not a physical-CPU absolute-latency assertion, and the ordinary
+  functional boot gates are unchanged by ADR-0083;
 - a declared native release/reference profile records the same exact two fresh
   validations and canonical `/system/boot/init.tos` lookup, including raw
-  3-warmup/21-sample median/p95/p99 data and environment/build identities;
-- each profile also measures the unavoidable SHA-256 baseline with the same
-  fixture/source/provenance identity: two parser whole-capsule traversals, two
-  loader/nucleus BootInfo-mirror whole-capsule traversals, two cumulative
-  per-file traversals, two detached-identity traversals where applicable and
-  the post-lookup boot-text digest. No result may be cached or shared between
-  logical validators; and
-- on the mandatory qemu64/TCG profile,
-  full-exact-validation-p95 / unavoidable-crypto-p95 is no more than 1.30.
-  This relative gate constrains validation-architecture overhead without
-  weakening the required validations or hard architectural budgets.
+  3-warmup/21-sample median/p95/p99 data and environment/build identities, and
+  the native same-artifact paired series as comparison evidence;
+- the historical ADR-0026 evidence, reproducible by
+  `stage1-performance-historical.sh`.
+
+#### The superseded ADR-0026 ratio
+
+Until 2026-09-06 the active rule was a quotient of the **production** nucleus's
+full series over a **separately linked** `test-crypto-baseline` nucleus's
+series, over two intervals that did not share a start event. ADR-0083 §1–§2
+records the controlled falsification: an inert layout displacement executing
+nothing and leaving the image length unchanged moved that quotient across its
+conformance boundary while native execution was unmoved.
+
+That construction is **no longer active conformance**. It is not deleted: it
+remains historical and reproduction evidence, and its measured numbers remain a
+valid record of what was measured. **The two thresholds are both `1.30` and
+that is a coincidence, not a retention** — the old number bounded a
+cross-artifact quotient, and the new one is derived from the corrected
+distribution above (ADR-0083 §9).
 
 The former 250 ms threshold was an empirically falsified initial reference
 estimate. ADR-0026 records the measurements and rationale; the absolute native

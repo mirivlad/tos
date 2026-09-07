@@ -15,12 +15,17 @@
 # across the conformance boundary while native execution is unmoved. Two images
 # do not cancel; one image does.
 #
-# **This script computes no conformance verdict and proposes no threshold.** It
-# measures, proves the two series came from the same bytes, and reports. The
-# threshold is ADR-0083's to propose and the Project Architect's to accept.
+# **The threshold is the caller's**, so this one measurement serves both roles
+# ADR-0083 §10 separates. `stage1-paired-conformance.sh` passes
+# `--max-p95-ratio 1.30` and this becomes the active Stage 1 gate; run without
+# it, the same script is the reproduction and research tool.
 #
 #   bash host-tools/qemu-test/paired-measurement.sh [--out DIR] [--label NAME]
 #                                                   [--samples N] [--warmups N]
+#                                                   [--max-p95-ratio R]
+#                                                   [--baseline-p95-ratio R]
+#                                                   [--baseline-median-ratio R]
+#                                                   [--evidence-status P1|P2]
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -30,6 +35,7 @@ OUT="$ROOT/target/paired-measurement"
 LABEL="paired"
 SAMPLES=21
 WARMUPS=3
+VERDICT=()
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -37,7 +43,9 @@ while [ "$#" -gt 0 ]; do
         --label) LABEL="$2"; shift 2 ;;
         --samples) SAMPLES="$2"; shift 2 ;;
         --warmups) WARMUPS="$2"; shift 2 ;;
-        -h|--help) sed -n '3,24p' "$0"; exit 0 ;;
+        --max-p95-ratio|--baseline-p95-ratio|--baseline-median-ratio|--evidence-status)
+            VERDICT+=("$1" "$2"); shift 2 ;;
+        -h|--help) sed -n '3,30p' "$0"; exit 0 ;;
         *) echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done
@@ -82,11 +90,13 @@ CAPSULE="$FIXTURE/capsule.bin"
 CAPSULE_SHA="$(sha256sum "$CAPSULE" | cut -d' ' -f1)"
 
 # ---- one series ---------------------------------------------------------------
-# `end` closes the timed interval for this mode; both series start at
-# TOS.NUCLEUS.ENTRY, so both cover the same component of the same image. The old
-# metric started its numerator at TOS.BOOT.ENTRY — including the UEFI loader,
-# a different binary doing its own hashing — and its denominator at
-# TOS.TEST.CRYPTO.BASELINE.START, which is a sub-interval of the nucleus alone.
+# `end` closes the timed interval for this mode. Both series *start* at
+# TOS.TEST.PAIRED.START, emitted after an identical untimed prefix, so the
+# loader, the ordinary boot and the common setup parse are outside both
+# intervals rather than inside one. The old metric started its numerator at
+# TOS.BOOT.ENTRY — including the UEFI loader, a different binary doing its own
+# hashing — and its denominator at TOS.TEST.CRYPTO.BASELINE.START, a
+# sub-interval of the nucleus alone; those two never began at the same instant.
 series() { # $1 = mode word, $2 = end event, $3 = out dir, $4 = required events
     local mode="$1" end="$2" dir="$3" require="$4"
     mkdir -p "$dir"
@@ -152,4 +162,5 @@ python3 "$HERE/paired-report.py" \
     --capsule-sha256 "$CAPSULE_SHA" \
     --warmups "$WARMUPS" --samples "$SAMPLES" \
     --repository "$GITROOT" \
-    --out "$OUT/paired-report.json"
+    --out "$OUT/paired-report.json" \
+    ${VERDICT[@]+"${VERDICT[@]}"}

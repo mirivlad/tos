@@ -309,6 +309,18 @@ def crypto_report(args: argparse.Namespace) -> None:
 
 
 def validation_ratio(args: argparse.Namespace) -> None:
+    """ADR-0026's cross-artifact quotient, computed and — since ADR-0083 —
+    normally not asserted.
+
+    `--max-p95-ratio` is optional. Supplied, this raises above the bound and the
+    report says which bound it met; omitted, the quotient is recorded as
+    historical evidence and nothing is asserted about it. ADR-0083 replaced this
+    construction as active Stage 1 conformance on 2026-09-06 because its two
+    halves come from separately linked images over intervals that do not share a
+    start event, so an inert layout change moves it. The consistency checks below
+    are about evidence integrity — same commit, same workload, same evidence
+    status, exact crypto accounting — and are asserted either way.
+    """
     full = json.loads(args.full.read_text(encoding="utf-8"))
     crypto = json.loads(args.crypto.read_text(encoding="utf-8"))
     if full.get("source_commit") != crypto.get("source_commit"):
@@ -335,9 +347,16 @@ def validation_ratio(args: argparse.Namespace) -> None:
     if accounting != expected_accounting:
         raise ValueError("crypto report does not attest the exact Stage 1 workload accounting")
     p95_ratio = full_stats["p95_ns"] / crypto_stats["p95_ns"]
-    if p95_ratio > args.max_p95_ratio:
+    if args.max_p95_ratio is not None and p95_ratio > args.max_p95_ratio:
         raise ValueError(
             f"full/crypto p95 ratio {p95_ratio:.9f} exceeds {args.max_p95_ratio:.9f}"
+        )
+    if args.max_p95_ratio is not None:
+        scope = "accepted ADR-0026 Stage 1 validation performance conformance"
+    else:
+        scope = (
+            "historical ADR-0026 cross-artifact ratio, recorded and not "
+            "asserted; superseded as active conformance by ADR-0083"
         )
     write_json(
         args.out,
@@ -350,7 +369,7 @@ def validation_ratio(args: argparse.Namespace) -> None:
                 "p99_ratio": full_stats["p99_ns"] / crypto_stats["p99_ns"],
             },
             "max_p95_ratio": args.max_p95_ratio,
-            "scope": "accepted ADR-0026 Stage 1 validation performance conformance",
+            "scope": scope,
             "source_commit": full["source_commit"],
             "workload": full["workload"],
         },
@@ -558,7 +577,9 @@ def main() -> None:
     validation_ratio_parser.add_argument("--full", required=True, type=Path)
     validation_ratio_parser.add_argument("--crypto", required=True, type=Path)
     validation_ratio_parser.add_argument("--out", required=True, type=Path)
-    validation_ratio_parser.add_argument("--max-p95-ratio", required=True, type=float)
+    # Optional since ADR-0083: the quotient is retained as historical evidence
+    # by default, and asserted only where a caller still names a bound.
+    validation_ratio_parser.add_argument("--max-p95-ratio", type=float, default=None)
     crypto_qemu_sample_parser = subcommands.add_parser("crypto-qemu-sample")
     crypto_qemu_sample_parser.add_argument("--timestamps", required=True, type=Path)
     crypto_qemu_sample_parser.add_argument("--phase", choices=("warmup", "measurement"), required=True)

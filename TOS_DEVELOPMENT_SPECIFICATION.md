@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `3c3cc7dc9f54e2ce6e72efc92c740a8beff62b17715479f20b5b8870c69b8d4f`\
+Source-manifest SHA-256: `6bf90861d962a73edab69abd311d48e5022a84ab45598f835b0b26e847077b22`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -9816,27 +9816,84 @@ Hard budgets:
 - parser performs no allocation proportional to attacker-declared count before validating total bounds;
 - lookup of one canonical path does not require copying every payload.
 
-Reference-platform evidence and conformance:
+#### Active validation-performance conformance (ADR-0083)
+
+On the mandatory q35/qemu64/one-vCPU/256-MiB/TCG profile, over the 1,000-file /
+exactly-16-MiB fixture:
+
+```text
+same_artifact_full_exact_p95 / same_artifact_unavoidable_crypto_p95 <= 1.30
+```
+
+The complete exact Stage 1 logical validation costs at most 30% more than the
+unavoidable cryptographic subset **of that same logical workload**. Both series
+come from **one measurement-only nucleus image** whose mode is chosen at run
+time, so linker layout, code addresses and the TCG translation environment are
+shared and cancel; the reporter refuses to compute the quotient unless the two
+series report exactly equal image SHA-256.
+
+The measured logical workload is fixed by ADR-0083 §4:
+
+- numerator — two fresh whole-capsule digests with the mirror check, two fresh
+  production `parse` passes with the first scoped out of the second, the
+  canonical `/system/boot/init.tos` lookup taken from the second pass, and a
+  fresh boot-text digest;
+- denominator — the cryptographic subset of exactly that workload: two fresh
+  parser-crypto passes, two fresh whole-capsule mirror digests, one fresh
+  boot-text digest. For the retained fixture that is exactly `101203397`
+  SHA-256 input bytes over `2007` invocations. No result may be cached or
+  shared between logical validators, and this accounting is not narrowed to
+  change the ratio.
+
+Both series begin at one common `TOS.TEST.PAIRED.START` boundary after an
+identical untimed prefix, retain 3 warmups and 21 measured samples with
+nearest-rank p95/p99, and record the median ratio beside the p95 ratio. **The
+p95 ratio is conformance; the median ratio is diagnostic.**
+
+The gate fails when the two image digests differ, when a series retains the
+wrong sample count, when the guest-reported mode disagrees with the series
+requested, when the workload-equivalence or accounting gates fail, or when the
+p95 ratio exceeds 1.30.
+
+Retained baseline (TCG, 2026-09-06): p95 ratio **1.0076**, median ratio
+**0.9977**, native p95 ratio **0.9988**. The "Regression policy" percentages
+below apply relative to that retained baseline, not to the constant 1.0.
+
+**This ratio is not production boot latency.** It is a validation-efficiency
+figure. It is also crypto-dominated over the current fixture: it detects
+catastrophic validation-architecture overhead and does not resolve small
+structural drift (ADR-0083 §9).
+
+#### Retained separately
 
 - the mandatory q35/qemu64/one-vCPU/256-MiB/TCG functional profile runs the
-  exact ordinary production boot path for a capsule fixture containing 1,000
-  files and exactly 16 MiB total payload. It retains raw 3-warmup/21-sample
-  median/p95/p99 wall-clock data, serial/event logs and segment decomposition;
-  its wall-clock latency is a retained regression metric, not a physical-CPU
-  absolute-latency assertion;
+  exact ordinary production boot path for the same fixture. It retains raw
+  3-warmup/21-sample median/p95/p99 wall-clock data, serial/event logs and
+  segment decomposition; its wall-clock latency is a retained regression
+  metric, not a physical-CPU absolute-latency assertion, and the ordinary
+  functional boot gates are unchanged by ADR-0083;
 - a declared native release/reference profile records the same exact two fresh
   validations and canonical `/system/boot/init.tos` lookup, including raw
-  3-warmup/21-sample median/p95/p99 data and environment/build identities;
-- each profile also measures the unavoidable SHA-256 baseline with the same
-  fixture/source/provenance identity: two parser whole-capsule traversals, two
-  loader/nucleus BootInfo-mirror whole-capsule traversals, two cumulative
-  per-file traversals, two detached-identity traversals where applicable and
-  the post-lookup boot-text digest. No result may be cached or shared between
-  logical validators; and
-- on the mandatory qemu64/TCG profile,
-  full-exact-validation-p95 / unavoidable-crypto-p95 is no more than 1.30.
-  This relative gate constrains validation-architecture overhead without
-  weakening the required validations or hard architectural budgets.
+  3-warmup/21-sample median/p95/p99 data and environment/build identities, and
+  the native same-artifact paired series as comparison evidence;
+- the historical ADR-0026 evidence, reproducible by
+  `stage1-performance-historical.sh`.
+
+#### The superseded ADR-0026 ratio
+
+Until 2026-09-06 the active rule was a quotient of the **production** nucleus's
+full series over a **separately linked** `test-crypto-baseline` nucleus's
+series, over two intervals that did not share a start event. ADR-0083 §1–§2
+records the controlled falsification: an inert layout displacement executing
+nothing and leaving the image length unchanged moved that quotient across its
+conformance boundary while native execution was unmoved.
+
+That construction is **no longer active conformance**. It is not deleted: it
+remains historical and reproduction evidence, and its measured numbers remain a
+valid record of what was measured. **The two thresholds are both `1.30` and
+that is a coincidence, not a retention** — the old number bounded a
+cross-artifact quotient, and the new one is derived from the corrected
+distribution above (ADR-0083 §9).
 
 The former 250 ms threshold was an empirically falsified initial reference
 estimate. ADR-0026 records the measurements and rationale; the absolute native
@@ -13471,7 +13528,15 @@ format or revise the budget requires a separate architect-reviewed ADR.
 
 # ADR-0026: Stage 1 validation-performance metric
 
-- Status: Accepted (Project Architect-approved)
+- Status: Accepted (Project Architect-approved). **Its metric's construction and
+  semantic interpretation are superseded by ADR-0083 (2026-09-06); its measured
+  evidence is not.** The cross-artifact quotient this ADR defined — the
+  production nucleus's full series over a separately linked
+  `test-crypto-baseline` nucleus's series — was falsified as a construct in
+  Stage 4C and is no longer active conformance. It is retained as historical and
+  reproduction evidence, and this document is not rewritten. That ADR-0083's
+  blocking line is also `1.30` is a coincidence of two distributions, not a
+  carried-over decision
 - Date: 2026-08-09
 - Change level: **Level 2** — revises the Stage 1 performance-conformance
   metric only if accepted; it does not change capsule v1, BootInfo v1, the
@@ -27478,10 +27543,17 @@ an ordinary region operand in an MMIO operation refused.
 
 # ADR-0083: Repairing the Stage 1 validation-performance metric after TCG layout falsified the cross-artifact ratio
 
-- Status: **Proposed — not Project Architect-approved.** It proposes no
-  threshold, and must not be marked accepted before the repaired metric's
-  evidence has been reviewed
-- Date: 2026-09-05
+- Status: **Accepted (Project Architect-approved, 2026-09-06).** The measurement
+  construction and one blocking conformance threshold are approved:
+
+  ```text
+  same_artifact_full_exact_p95 / same_artifact_unavoidable_crypto_p95 <= 1.30
+  ```
+
+  §9 states it, §10 records the gate transition that made it active
+- Date: 2026-09-05. Accepted 2026-09-06
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-06, on the
+  construction implemented at `09a35c4` and the evidence measured at `d580fe9`
 - Decision level: **2** — it replaces the construction of an accepted
   conformance metric and its gate, and amends ADR-0026 and
   `docs/35_PERFORMANCE_CONTRACTS.md`. It changes no invariant, no ABI, no
@@ -27678,26 +27750,54 @@ firmware-configuration interface.
 It adds **no device**, so the machine profile is identical between the two
 series; adding one would reintroduce a difference of exactly the kind this
 repair removes. It creates no authority, no capability and no public ABI, and it
-is never present in a production build. Absent, it means `FULL_EXACT` — so the
-artifact boots exactly as production does, and a harness that forgot to select a
-mode measures the numerator twice and reports a ratio near one, which is a
-visible mistake rather than a silent swap of the two series.
+is never present in a production build.
 
-## 6. D3 — production equivalence, proved rather than asserted
+**An absent selector means `FULL_EXACT`, which is the safe default and nothing
+more.** It is not a claim that the artifact then boots as production does — it
+does not; it runs the numerator's measured workload and halts. The earlier form
+of `FULL_EXACT` fell through into the ordinary production boot and that sentence
+was true of it; `09a35c4` replaced it and the sentence with it. What the default
+buys is that a harness which forgot to select a mode measures the numerator
+twice and reports a ratio near one, rather than silently swapping the two
+series.
+
+**The protection against measuring the wrong series is the guest's own report**,
+not the default: every sample carries `TOS.TEST.PAIRED.MODE ... asserted_by=nucleus`,
+and the harness fails the series when a sample it asked for one mode ran the
+other.
+
+## 6. D3 — workload equivalence, proved rather than asserted
 
 The measurement artifact is not the production nucleus, so equivalence is
-mechanical:
+mechanical. **What is proved is the workload, not the event sequence.** An
+earlier form of `FULL_EXACT` fell through into the ordinary production boot, and
+for that form equality of the complete ordered production event sequence was the
+right proof. `09a35c4` replaced it: `FULL_EXACT` is now the two-validator
+logical workload of §4, which is deliberately not the shape of one production
+boot. Ordered-event equality would now be the wrong question, and asking it
+would fail a correct artifact.
 
-- **no duplicated algorithm.** The feature adds a selector and a branch *into*
-  the crypto baseline. `FULL_EXACT` does not take that branch and falls through
-  into the same body, calling the same production implementations. A gate bounds
-  the feature's footprint in ring 0 and requires that the selector mention none
-  of the work it measures;
-- **the same reported work.** The production nucleus and the measurement
-  nucleus in `FULL_EXACT` are booted over the same capsule and must agree on
-  capsule digest, fixture identity, files validated, canonical lookup target,
-  boot-text digest, and the **ordered event sequence** — differing only by the
-  one line naming which series the measurement artifact is.
+`source/host-tools/qemu-test/paired-equivalence.sh` therefore boots production
+and both measurement modes over one fixture and proves:
+
+- **the shape of the numerator's workload**, reported by the guest that
+  performed it rather than read out of the source: `parses=2`,
+  `capsule_digests=2`, `lookup_from=second`;
+- **pass 1 is scoped out of pass 2** — the first parsed view is bound inside a
+  block yielding only its file count, so no parsed object and no digest can
+  cross between the two passes. This is a property of scope rather than of
+  output, so it is checked in the source;
+- **the values are production's values** for the same fixture: files validated,
+  canonical lookup path, boot-text digest and capsule digest all equal what the
+  production nucleus reports on the same capsule;
+- **the denominator's accounting is the accepted one**, exactly: `101203397`
+  bytes over `2007` invocations;
+- **both modes share the boundary** `TOS.TEST.PAIRED.START` after an identical
+  untimed prefix;
+- **no algorithm is duplicated.** The selector module may mention none of the
+  work it measures, the feature's ring-0 footprint is bounded, and the
+  orchestration must be seen calling the production `sha256`, `parse`,
+  `boot_file` and parser crypto replay.
 
 The memory account is deliberately not compared: the measurement artifact is a
 larger image, so it occupies one frame more and admits one fewer to the pool.
@@ -27734,9 +27834,19 @@ KVM remains optional research evidence and is not required while the recorded
 host cannot boot TOS under it — `/dev/kvm` is present and the nucleus fails
 identically on both trees with `TOS.RUN.UNSTARTABLE reason=no-address-space`.
 
-## 9. The threshold — proposed from the corrected distribution
+## 9. The threshold — accepted, from the corrected distribution
 
-**Proposed for review. Not adopted, and not mine to accept.**
+**Accepted 2026-09-06.** One blocking conformance line, and no second absolute
+line:
+
+```text
+same_artifact_full_exact_p95 / same_artifact_unavoidable_crypto_p95 <= 1.30
+```
+
+**Interpretation** — the one ADR-0026 always claimed and its construction could
+not deliver: the complete exact Stage 1 logical validation costs at most 30%
+more than the unavoidable cryptographic subset **of that same logical
+workload**, in one artifact, over one interval, from one boundary.
 
 Six complete TCG series — three clean rebuilds of each tree — and six native
 series, all in `docs/evidence/stage4c1-adr0083-paired-metric/`:
@@ -27749,77 +27859,121 @@ between trees     mean difference 0.0075, against a pooled stdev of 0.0401
 ```
 
 The sanity property of §4 holds: the centre is 1.00, where the mismatched form
-sat at 0.35.
-
-```text
-same_artifact_full_exact_p95 / same_artifact_unavoidable_crypto_p95
-
-    <= 1.15   regression requires explanation
-    <= 1.30   blocking
-```
-
-**Interpretation** — the one ADR-0026 always claimed and its construction could
-not deliver: the complete Stage 1 logical validation costs no more than 30%
-above the unavoidable cryptographic subset **of that same workload**, in one
-artifact, over one interval, from one boundary. Because the centre is 1.00 the
-two lines are exactly the corpus's existing policy, with no change of units.
-
-| | headroom over worst observed (1.0746) | σ over pooled mean |
-|---|---|---|
-| 1.15 | 7.0% | 3.55 |
-| 1.30 | 21.0% | 7.29 |
+sat at 0.35. The blocking line sits **21% above the worst of the six series**,
+which is the headroom it was chosen for.
 
 **`1.30` is not carried over, and is not the same decision.** The old number
 bounded a quotient of two artifacts over two incomparable intervals, where it
-meant nothing checkable. It is proposed again only because this distribution
-centres on 1.00 and 30% is the policy the corpus already states — derived from
-the evidence, not inherited from the superseded metric.
+meant nothing checkable. The numerical coincidence is exactly that: this
+distribution centres on 1.00, 30% is the budget the corpus already states for a
+hard-gated metric, and the line is derived from the evidence above rather than
+inherited from the superseded construction.
 
-### Two caveats this proposal carries
+### There is deliberately no second absolute line
+
+An earlier draft of this section proposed `> 1.15` as an absolute
+"explanation required" threshold beside the blocking one. **That is rejected**,
+because it conflates two different quantities:
+
+1. **absolute structural overhead** relative to the unavoidable cryptographic
+   subset — governed by the hard `1.30` conformance budget here;
+2. **regression** relative to a retained accepted baseline — governed by
+   `docs/35_PERFORMANCE_CONTRACTS.md`, "Regression policy": above 15% requires
+   explanation, above 30% blocks unless an ADR changes the contract.
+
+The repository's percentages apply to the **retained baseline** (§10), not to
+the mathematical constant `1.0`. A metric whose centre happens to sit near one
+does not make those two readings the same statement, and writing them as one
+line would have made a future 15% regression argument about arithmetic instead
+of about the baseline.
+
+### The conformance statistic stays the nearest-rank p95
+
+The median ratio is retained beside it as **diagnostic and regression evidence**
+and is not the conformance statistic. The measured noise difference below is a
+recorded limitation, not a reason to substitute one for the other: the
+separation between the observed distribution and the `1.30` budget is large
+enough for what this gate is for.
+
+The σ figures are **descriptive of six series and are not a normative
+statistical guarantee.** Six is too few to make a distributional claim, and
+none is made.
+
+### Two limitations this threshold carries
 
 **The structural overhead is below the measurement's resolution.** In two of six
 series the numerator came out *below* the denominator, and the pooled mean is
-1.0076 with a 4.0% stdev. Stage 1 validation over this fixture is overwhelmingly
-cryptographic: hashing 16 MiB across 1000 files dominates parsing and lookup so
-completely that the structural remainder is around or under one percent. These
-lines therefore **bound** structural cost; they do not resolve it, and they will
-not detect drift. Making the metric resolve structural cost would mean a fixture
-that shifts work away from hashing, which is a larger change than this ADR
-should make.
+1.0076 with a 4.0% stdev. Stage 1 validation over the current 1,000-file /
+16-MiB fixture is overwhelmingly cryptographic: hashing dominates parsing and
+lookup so completely that the structural remainder is around or under one
+percent. **This gate therefore detects catastrophic validation-architecture
+overhead and does not resolve small structural drift.** The line bounds
+catastrophe; it is not a figure tracking a real trend.
+
+Making the metric resolve structural cost would need a fixture that shifts work
+away from hashing. That is deliberately **not** done here: it is a later
+performance-research item, and it blocks neither this ADR nor Stage 4C.
 
 **The p95-of-ratio is three times noisier than the median-of-ratio** — 4.0%
 against 1.2% — because it divides two independently drawn tail estimates, so
 both tails' noise enters the quotient. §8's accepted discipline names nearest-rank
-p95 and this proposal keeps it; the measured alternative is recorded because the
-ruling admits a change where the experiment demonstrates a specific defect, and
-this is a measured one.
+p95 and this ADR keeps it, for the reason above: the distance between the
+observed distribution and `1.30` is large compared with either noise figure.
 
 ## 10. Gate transition
 
-Until this ADR is accepted:
+Performed atomically on acceptance, in one change:
 
-- the old ADR-0026 gate is preserved as historical and superseded evidence, and
-  is not deleted to make Stage 4C pass;
-- the paired harness computes and reports but applies no verdict;
-- the ownership-repair branch is not merged while it would leave required CI
-  red.
+- **the old ADR-0026 cross-artifact ratio stops being active conformance.** It
+  is not deleted. `stage1-performance-historical.sh` still measures the
+  production TCG series, the separately linked crypto series and the native
+  series, still records the quotient, and asserts nothing about it. Stage 4C
+  does not become green by removing the thing that failed; it becomes green
+  because the thing that failed was measuring the linker;
+- **the same-artifact paired p95 ratio becomes Stage 1 validation-performance
+  conformance**, as `stage1-paired-conformance.sh`.
 
-After approval of the metric **and** a threshold, atomically in one change:
+The active gate fails when:
 
-- the old cross-artifact `≤ 1.30` gate becomes a historical
-  regression/reproduction tool and stops being active conformance;
-- the same-artifact paired metric becomes Stage 1 validation-performance
-  conformance;
-- ADR-0026, `docs/35_PERFORMANCE_CONTRACTS.md`, the preflight inventory and CI
-  change together.
+1. the two series' image SHA-256 differ;
+2. either series retains the wrong sample count;
+3. the guest-reported mode disagrees with the series the harness asked for;
+4. the workload-equivalence or accounting gates of §6 fail;
+5. the p95 ratio exceeds `1.30`.
+
+**Retained separately, and not replaced by any of this:** the ordinary
+production functional QEMU boot gates; production absolute boot timing as
+observational and regression evidence; the native paired series; and the
+historical ADR-0026 evidence.
+
+### Retained baseline
+
+The accepted corrected distribution of §9 is the retained baseline. Both figures
+are recorded per run — **the p95 ratio, which is conformance, and the median
+ratio, which is diagnostic** — and the repository's regression policy applies to
+both *relative to that baseline*, not relative to 1.0.
+
+```text
+retained baseline, TCG, 2026-09-06, from d580fe9
+
+  p95 ratio      1.0076   (six series, 0.9549 – 1.0746)
+  median ratio   0.9977   (six series, 0.9826 – 1.0109)
+  native p95     0.9988   (six series, 0.9900 – 1.0146)
+```
 
 ## Architecture impact statement
 
 - **Change level:** 2. **Invariants affected:** none. No ABI, no language
   contract, no capability, no production code path.
-- **Trusted-base impact:** none in production. The nucleus gains a
-  measurement-only module, compiled only under a feature no production build
-  selects, which reads two emulator ports and branches.
+- **Trusted-base impact:** none in production. The measurement feature is absent
+  from every production artifact, which is why the impact is none — not because
+  the feature is small. **It is no longer merely a selector and a branch.** It
+  is a selector module that reads two emulator ports, plus measurement-only
+  orchestration of the accepted logical workload: the order in which the
+  production `sha256`, `parse`, `boot_file` and parser crypto replay are called,
+  the scoping that keeps the two passes independent, and the events a gate reads
+  the shape from. It implements none of the work it sequences, and §6's gate
+  proves that mechanically rather than by inspection.
 - **Source-to-runtime impact:** none.
 - **Threat-model impact:** none. The selector confers nothing and is absent from
   production images.
@@ -27831,22 +27985,33 @@ After approval of the metric **and** a threshold, atomically in one change:
 
 ## 11. Conformance evidence
 
-1. both series report the same image SHA-256, and the reporter refuses when they
-   do not;
-2. `FULL_EXACT` and a production boot agree on capsule digest, fixture identity,
-   files validated, canonical lookup, boot-text digest and ordered event
-   identity;
-3. the selector's ring-0 footprint stays a selector and a branch, and reimplements
-   none of the measured work;
-4. the guest names its own series on every sample;
-5. three complete TCG paired series from clean rebuilds of each tree;
-6. three native paired series;
-7. raw 3+21 samples, medians, p95, p99 and repeatability retained for every
-   series;
-8. segment decomposition for `FULL_EXACT`;
-9. **the pre-ownership tree and the Stage 4C ownership-repair tree are no longer
-   materially distinguished** when their Stage 1 executed work is unchanged. If
-   they still are, the construct is still confounded and this ADR is not ready.
+Every run of the active gate:
+
+1. both series report the same image SHA-256, and the reporter refuses to
+   compute a quotient when they do not;
+2. **the workload-equivalence gates of §6** — `parses=2`, `capsule_digests=2`,
+   `lookup_from=second`, pass 1 scoped out of pass 2, files/path/boot-text
+   digest/capsule digest equal to production's on the same fixture, the
+   denominator's exact `101203397`/`2007` accounting, one common boundary, and
+   no duplicated algorithm;
+3. the guest names its own series on every sample, and the harness fails the
+   series when a sample ran a mode other than the one requested;
+4. raw 3+21 samples with medians, p95 and p99 retained for both series;
+5. the p95 ratio against `1.30`, and the median ratio recorded beside it as
+   diagnostic.
+
+Collected once for acceptance, and retained:
+
+6. three complete TCG paired series from clean rebuilds of each tree;
+7. three native paired series;
+8. **the pre-ownership tree and the Stage 4C ownership-repair tree are no longer
+   materially distinguished** when their Stage 1 executed work is unchanged —
+   0.0075 apart, where the old cross-artifact metric separated them by about
+   1.9×. This is the construct-validity test the repair had to pass.
+
+Segment decomposition belongs to the production boot series, which retains it,
+and not to this metric: `FULL_EXACT` is a measured logical workload rather than
+a boot with phases.
 
 <!-- END docs/adr/0083-repairing-the-stage1-validation-performance-metric.md -->
 

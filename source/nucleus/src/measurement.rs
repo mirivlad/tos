@@ -54,8 +54,10 @@ const NAME_BYTES: usize = 56;
 /// Which of the two measured series this boot is.
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub enum Mode {
-    /// Everything a production boot validates, through the production
-    /// implementations, up to the canonical boot-text digest.
+    /// The complete exact Stage 1 logical validation workload, through the
+    /// production implementations: two fresh whole-capsule digests with the
+    /// mirror check, two fresh independent parses, the canonical lookup taken
+    /// from the second, and the boot-text digest.
     FullExact,
     /// Exactly the unavoidable cryptographic work of that same boot, over the
     /// same bytes, with the same hashing implementation, and with no result
@@ -123,11 +125,16 @@ unsafe fn read_key(key: u16, into: &mut [u8]) {
 
 /// Which series this boot is, read from the emulator's firmware configuration.
 ///
-/// **Absence means [`Mode::FullExact`]**, so this artifact boots and validates
-/// exactly like a production nucleus when nothing selects a mode. A measurement
-/// harness that forgot to pass the selector therefore measures the numerator
+/// **Absence means [`Mode::FullExact`]**, which is the safe default rather than
+/// a claim that the artifact then boots as production does — it does not; it
+/// runs the numerator's measured workload and halts. What the default buys is
+/// that a harness which forgot to pass the selector measures the numerator
 /// twice and reports a ratio of about one, which is a visible mistake rather
 /// than a silent swap of the two series.
+///
+/// The protection against measuring the wrong series is [`report`], not this
+/// default: the guest states which mode it ran, and the harness fails a sample
+/// that ran a mode other than the one asked for.
 pub fn mode() -> Mode {
     // SAFETY: the ports are fixed registers of the accepted measurement
     // profile's machine, reachable only from ring 0, read in the single context

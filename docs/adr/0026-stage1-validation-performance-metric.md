@@ -2,7 +2,15 @@
 
 # ADR-0026: Stage 1 validation-performance metric
 
-- Status: Accepted (Project Architect-approved)
+- Status: Accepted (Project Architect-approved). **Its metric's construction and
+  semantic interpretation are superseded by ADR-0083 (2026-09-06); its measured
+  evidence is not.** The cross-artifact quotient this ADR defined — the
+  production nucleus's full series over a separately linked
+  `test-crypto-baseline` nucleus's series — was falsified as a construct in
+  Stage 4C and is no longer active conformance. It is retained as historical and
+  reproduction evidence, and this document is not rewritten. That ADR-0083's
+  blocking line is also `1.30` is a coincidence of two distributions, not a
+  carried-over decision
 - Date: 2026-08-09
 - Change level: **Level 2** — revises the Stage 1 performance-conformance
   metric only if accepted; it does not change capsule v1, BootInfo v1, the
