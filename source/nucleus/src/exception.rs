@@ -281,9 +281,9 @@ pub unsafe fn install() {
     // could program one; and §5f requires a retired vector to keep its handler
     // for the rest of the boot, so that a late message lands somewhere defined
     // and is counted rather than delivered.
-    for index in 0..crate::irq::DEVICE_VECTORS {
+    for (index, stub) in device_stub_table.iter().enumerate() {
         let vector = crate::irq::FIRST_DEVICE_VECTOR as usize + index;
-        IDT[vector].set(device_stub_table[index], 0);
+        IDT[vector].set(*stub, 0);
     }
 
     let gdt = DescriptorTablePointer {

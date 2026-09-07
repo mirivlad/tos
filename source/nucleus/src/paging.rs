@@ -869,8 +869,7 @@ pub const MAX_NUCLEUS_DEVICE_PAGES: usize = crate::pci::MAX_ASSIGNMENTS;
 
 /// The pages themselves. Physical, identity-mapped, page-aligned; zero is empty,
 /// which is unambiguous because no device BAR decodes at physical zero.
-static mut NUCLEUS_DEVICE_PAGES: [u64; MAX_NUCLEUS_DEVICE_PAGES] =
-    [0; MAX_NUCLEUS_DEVICE_PAGES];
+static mut NUCLEUS_DEVICE_PAGES: [u64; MAX_NUCLEUS_DEVICE_PAGES] = [0; MAX_NUCLEUS_DEVICE_PAGES];
 
 /// The registered set, copied out rather than borrowed.
 pub fn nucleus_device_pages() -> [u64; MAX_NUCLEUS_DEVICE_PAGES] {

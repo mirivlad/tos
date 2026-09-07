@@ -610,10 +610,7 @@ pub const ACCEPTED: &[Interface] = &[
             // absence is the mechanism rather than a rule about it.
             Operation {
                 name: "pci_interrupt_claim",
-                capabilities: &[Requirement::of(
-                    "platform.pci.FunctionConfig",
-                    "interrupt",
-                )],
+                capabilities: &[Requirement::of("platform.pci.FunctionConfig", "interrupt")],
                 parameters: &[Parameter::fixed("u64")],
                 result: "Result<platform.irq.Source, i64>",
             },

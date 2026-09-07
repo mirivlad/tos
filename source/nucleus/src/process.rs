@@ -301,10 +301,7 @@ impl Waiting {
     /// The object it is waiting on.
     fn endpoint(&self) -> u32 {
         match self {
-            Waiting::Nothing
-            | Waiting::Reply
-            | Waiting::ChildOf(_)
-            | Waiting::Interrupt(_, _) => 0,
+            Waiting::Nothing | Waiting::Reply | Waiting::ChildOf(_) | Waiting::Interrupt(_, _) => 0,
             Waiting::Message(endpoint) | Waiting::Room(endpoint) => *endpoint,
         }
     }
