@@ -490,14 +490,37 @@ reclaim, and ADR-0085 (Accepted 2026-09-08) fixed how such an authority is
 represented in TOS Core.
 
 What is still absent is the row for `SYSTEM_ABI_V1` operation 30, which
-allocates one. The mechanism is decided and the nucleus performs it; what is not
-decided is its **declared result**. ADR-0084 writes it abstractly as
-`DmaRegion<mut T>`, and every result an accepted schema declares is a concrete
-type text — so declaring it would either invent schema polymorphism, which
-`SYSTEM_INTERFACE_V1` §4.3 refuses, or pick a spelling nobody decided. ADR-0085
-§18 leaves it open deliberately and Stage 4C-2 is where it is resolved. An
-interface that declared an operation on terms the system has not accepted would
-be exactly what §2 refuses, one layer along.
+allocates one. The mechanism is decided and the nucleus performs it, and **its
+declared result is now decided too** — ADR-0085 §18 left it open, and it is
+resolved rather than left:
+
+```text
+dma_region_allocate(...) -> Result<DmaRegion<mut u8>, i64>
+```
+
+(Project Architect-approved, 2026-09-09.) No schema polymorphism and no new
+language mechanism: ADR-0084 writes the result abstractly as `DmaRegion<mut T>`,
+which is its **abstract semantic shape**, and the V1 concrete surface
+instantiates it at `T = u8`. Operation 30 allocates a contiguous run measured in
+bytes, and `u8` is the only concrete element type for which every ABI-valid byte
+length has an exact representation without inventing a divisibility, alignment,
+tail or element-count rule a driver would then have to obey. A driver encodes
+its protocol-defined structures into bytes explicitly, which is better than
+implying that a TOS nominal or layout type has a device-visible binary layout.
+
+**The narrowing is stated here so it cannot be mistaken for something more
+general:**
+
+> **V1 has no generic DMA allocation.** No operation of any accepted schema
+> produces a `DmaRegion<mut T>` for a caller-chosen `T`, and no family of
+> `_u16`/`_u32`/`_u64` rows is pre-allocated against a requirement nobody has
+> demonstrated. A later driver that genuinely needs typed allocation or typed
+> views must first define the element-count, alignment and layout semantics that
+> would make one meaningful, and is considered separately.
+
+The row itself arrives with the Stage 4C-2 implementation that performs it, by
+§2's rule: an interface that declared an operation the system does not perform
+would be a contract describing a system that does not exist.
 
 Reset and the publisher remain undecided — the publisher under ADR-0051.
 
