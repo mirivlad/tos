@@ -221,12 +221,19 @@ Bootstrap recovery.
 
 ## 4. Language, IR, runtime, and cache compatibility
 
-Language source declares `1.0` or `1.1`. A frontend declares the exact source
-versions, profiles, feature set, and conformance revision it implements. It
-rejects an unknown language major and rejects any minor feature it does not
-advertise. A source has no "best effort" downgrade path. Additive V1 minor
-extensions must have an accepted contract and cannot reinterpret existing token
-sequences.
+Language source declares an accepted TOS Core V1 major/minor version — §1 is
+where the accepted minors are listed, and this section states the invariant
+rather than repeating them. A frontend declares the exact source-language minors,
+profiles, feature set, and conformance revision **it implements**, which is not
+the same set: a minor is accepted by a decision and implemented by a frontend,
+and until both have happened a module declaring it is rejected whole with
+`E1602_UNSUPPORTED_LANGUAGE_MINOR`.
+
+A frontend rejects an unknown language major, and rejects any minor or minor
+feature it does not advertise. **A source has no "best effort" downgrade path and
+receives no newer minor's semantics implicitly**, whatever the frontend
+compiling it happens to implement. Additive V1 minor extensions must have an
+accepted contract and cannot reinterpret existing token sequences.
 
 **1.1 is the first such extension, and it meets both requirements.** ADR-0080 is
 its accepted contract, and it reinterprets no token sequence: a `uses` item that
