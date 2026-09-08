@@ -86,10 +86,44 @@ pub struct Admission {
     pub frames: u64,
 }
 
+/// How many returned contiguous runs the pool will hold for re-carving.
+///
+/// **A bound, not a heap** (ADR-0084 §6a). DMA backing must be physically
+/// contiguous, and a `carve` that could only ever move a frontier forward would
+/// make every DMA region a permanent loss of contiguous memory — which would
+/// make the quarantine that returns them achieve nothing. This table is what a
+/// returned run comes back through, and it is fixed-size for the same reason
+/// every other nucleus table is.
+pub const MAX_RETURNED_RUNS: usize = 8;
+
+/// One contiguous run that was handed out and given back.
+#[derive(Clone, Copy)]
+struct Returned {
+    start: u64,
+    end: u64,
+}
+
+impl Returned {
+    const EMPTY: Self = Self { start: 0, end: 0 };
+
+    fn bytes(&self) -> u64 {
+        self.end - self.start
+    }
+
+    fn live(&self) -> bool {
+        self.end > self.start
+    }
+}
+
 /// The nucleus's physical frame allocator.
 pub struct Frames {
     pieces: [Piece; MAX_SPANS],
     count: usize,
+    /// Contiguous runs returned by [`Frames::release_run`], available to
+    /// [`Frames::carve`] again. **Deliberately separate from the released-frame
+    /// list**: that list threads a link through each frame and loses adjacency,
+    /// which is exactly the property a contiguous carve needs.
+    returned: [Returned; MAX_RETURNED_RUNS],
     /// Head of the released-frame list, `None` when empty. The link to the
     /// next released frame lives in the first eight bytes of each released
     /// frame; no frame in the pool has physical address zero, so a stored zero
@@ -117,6 +151,7 @@ impl Frames {
         Frames {
             pieces: [Piece::EMPTY; MAX_SPANS],
             count: 0,
+            returned: [Returned::EMPTY; MAX_RETURNED_RUNS],
             released: None,
             frames_total: 0,
             frames_carved: 0,
@@ -301,6 +336,11 @@ impl Frames {
 
     /// Gives a carved run back, frame by frame.
     ///
+    /// **The frames come back and their adjacency does not**: each one is
+    /// threaded onto the released list, which a later [`Frames::carve`] cannot
+    /// use. For a run that must be re-carvable as a run, use
+    /// [`Frames::release_run`].
+    ///
     /// # Safety
     ///
     /// The caller states that `run` was carved from this pool, that no
@@ -315,6 +355,137 @@ impl Frames {
             unsafe { self.release_frame(frame) };
             frame += FRAME_SIZE;
         }
+    }
+
+    /// Gives a carved run back **as a run**, so a later carve can use it whole.
+    ///
+    /// ADR-0084 §6a's obligation: DMA backing is physically contiguous, and a
+    /// pool that could not take contiguous memory back would spend it once per
+    /// boot. Adjacent runs coalesce, so releasing two halves of a region leaves
+    /// one entry rather than two.
+    ///
+    /// **When the table cannot hold it, this falls back to threading the frames
+    /// onto the released list** rather than refusing. The frames are never lost;
+    /// what is lost is their adjacency, which is a bounded degradation and not a
+    /// leak.
+    ///
+    /// # Safety
+    ///
+    /// As [`Frames::release`].
+    // SAFETY: the caller's promise that the run is unreachable is what makes it
+    // safe to hand out again.
+    pub unsafe fn release_run(&mut self, run: Span) {
+        if run.end <= run.start {
+            return;
+        }
+        // **The invariant this table is kept under**: a run sitting in it has
+        // already been taken out of `frames_carved`, so it counts as not in use
+        // exactly once. Every path in and out of the table adjusts the count on
+        // the way, and coalescing therefore adjusts nothing — the neighbour it
+        // absorbs was accounted when *it* was returned.
+        self.frames_carved -= (run.end - run.start) / FRAME_SIZE;
+        if self.keep_returned(run.start, run.end) {
+            return;
+        }
+        // The table could not hold it, and nothing was absorbed, so this run is
+        // the only thing to give back frame by frame.
+        self.frames_carved += (run.end - run.start) / FRAME_SIZE;
+        let mut frame = run.start;
+        while frame < run.end {
+            // SAFETY: per the contract; every frame of a run this pool carved
+            // satisfies `release_frame`'s contract exactly when the run does.
+            unsafe { self.release_frame(frame) };
+            frame += FRAME_SIZE;
+        }
+    }
+
+    /// Puts one already-accounted run into the returned table, coalescing.
+    ///
+    /// Returns whether it fits. **It cannot fail after absorbing anything**: an
+    /// absorbed neighbour frees its own slot, so a coalescing insertion always
+    /// has somewhere to go, and a failure therefore leaves the table exactly as
+    /// it found it.
+    fn keep_returned(&mut self, start: u64, end: u64) -> bool {
+        let mut start = start;
+        let mut end = end;
+        let mut reuse: Option<usize> = None;
+        for index in 0..MAX_RETURNED_RUNS {
+            let entry = self.returned[index];
+            if !entry.live() {
+                continue;
+            }
+            if entry.end == start {
+                start = entry.start;
+                self.returned[index] = Returned::EMPTY;
+                reuse = Some(index);
+            } else if entry.start == end {
+                end = entry.end;
+                self.returned[index] = Returned::EMPTY;
+                reuse = Some(index);
+            }
+        }
+        let slot = reuse.or_else(|| self.returned.iter().position(|entry| !entry.live()));
+        match slot {
+            Some(index) => {
+                self.returned[index] = Returned { start, end };
+                true
+            }
+            // Nothing was absorbed — `reuse` is `None` — so the table is
+            // untouched and the caller's run is all there is to deal with.
+            None => false,
+        }
+    }
+
+    /// The largest returned run this pool could hand out contiguously.
+    pub fn largest_returned(&self) -> u64 {
+        self.returned
+            .iter()
+            .filter(|entry| entry.live())
+            .map(|entry| entry.bytes())
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Takes a run out of the returned table, putting the remainders back.
+    fn carve_returned(&mut self, bytes: u64, alignment: u64) -> Option<Span> {
+        let mut chosen: Option<(usize, u64, u64)> = None;
+        for (index, entry) in self.returned.iter().enumerate() {
+            if !entry.live() {
+                continue;
+            }
+            let base = entry.start.div_ceil(alignment) * alignment;
+            let Some(end) = base.checked_add(bytes) else {
+                continue;
+            };
+            if end > entry.end {
+                continue;
+            }
+            // Best fit, so a large returned run is not spent on a small request
+            // while a snug one sits beside it.
+            let waste = (base - entry.start) + (entry.end - end);
+            if chosen.is_none_or(|(_, _, best)| waste < best) {
+                chosen = Some((index, base, waste));
+            }
+        }
+        let (index, base, _) = chosen?;
+        let entry = self.returned[index];
+        self.returned[index] = Returned::EMPTY;
+        // The whole entry leaves the table, so all of it becomes carved; the
+        // pieces that go back are then released again by the same door. Doing it
+        // in that order is what keeps one rule — "in the table means not in
+        // use" — true at every step instead of nearly always.
+        self.frames_carved += entry.bytes() / FRAME_SIZE;
+        // SAFETY: both remainders are parts of a run this pool handed out and
+        // has taken back, and nothing references either.
+        unsafe {
+            if base > entry.start {
+                self.release_run(Span::new(entry.start, base));
+            }
+            if entry.end > base + bytes {
+                self.release_run(Span::new(base + bytes, entry.end));
+            }
+        }
+        Some(Span::new(base, base + bytes))
     }
 
     /// The region a Stage 2 grant is made of.
@@ -348,6 +519,13 @@ impl Frames {
     /// Takes `bytes` of never-carved memory from the piece that leaves the
     /// least behind, so a large carve does not have to be the first one made.
     fn carve_run(&mut self, bytes: u64, alignment: u64) -> Option<Span> {
+        // **Returned runs first**, so contiguous memory that came back is spent
+        // before the frontier moves again. A pool that preferred the frontier
+        // would keep a returned run for a request that never comes while
+        // consuming memory it cannot get back.
+        if let Some(run) = self.carve_returned(bytes, alignment) {
+            return Some(run);
+        }
         let mut chosen: Option<(usize, u64, u64)> = None;
         for (index, piece) in self.pieces[..self.count].iter().enumerate() {
             let base = piece.frontier.div_ceil(alignment) * alignment;
