@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `73a83eb4909807de8da7f7d4dd748e2b99c9ad69d0e8c424a988602d6f68e0f3`\
+Source-manifest SHA-256: `cb6216133c76510fc2b3615bca493944d06f01432394aeaef9a10a300a68327c`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -29338,7 +29338,7 @@ holding only memory authority must not be able to make any memory reachable by
 any device, and a process holding only a function must not be able to spend
 somebody's memory to do it.
 
-**`dma` is a fourth right on the function**, separate from `config_read`,
+**`dma` is a fifth right on the function**, separate from `config_read`,
 `config_write`, `map` and `interrupt`, by the rule that already separates those:
 a holder that may map a device's registers is not thereby a holder that may put
 host memory where that device can write it.

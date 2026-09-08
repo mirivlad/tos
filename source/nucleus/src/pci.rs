@@ -393,6 +393,111 @@ static mut ROOT: Option<Bus> = None;
 
 static mut ASSIGNMENTS: [Assignment; MAX_ASSIGNMENTS] = [Assignment::EMPTY; MAX_ASSIGNMENTS];
 
+/// How many functions the compatibility profile may qualify for DMA.
+///
+/// A fixed nucleus bound, like every other table here.
+pub const MAX_DMA_QUALIFIED: usize = 4;
+
+/// One function the **compatibility profile** has qualified for DMA authority.
+///
+/// ADR-0084 §5c.1's P5, made mechanical: TC0-only requester traffic is a
+/// property established *about the profile*, and no architected register reports
+/// it. So it arrives the only way such a fact can — declared at the
+/// boot/platform boundary, alongside the root that is declared there for the
+/// same reason (ADR-0079 §9, `CAPABILITY_V1` §2's third origin class).
+///
+/// **This is a BDF and not a device.** The nucleus compares four numbers and
+/// asks nothing about what answers at them: no vendor, no class, no capability
+/// pattern, nothing that would be device semantics in ring 0. A profile that
+/// qualifies the wrong function has made a mistake about its own machine, which
+/// is the kind of mistake a profile is allowed to be responsible for; a nucleus
+/// that inferred the answer would have made a different kind.
+#[derive(Clone, Copy)]
+struct DmaQualified {
+    segment: u16,
+    bus: u8,
+    device: u8,
+    function: u8,
+    live: bool,
+}
+
+impl DmaQualified {
+    const EMPTY: Self = Self {
+        segment: 0,
+        bus: 0,
+        device: 0,
+        function: 0,
+        live: false,
+    };
+}
+
+static mut DMA_QUALIFIED: [DmaQualified; MAX_DMA_QUALIFIED] =
+    [DmaQualified::EMPTY; MAX_DMA_QUALIFIED];
+
+/// Declares that the compatibility profile has qualified one function for DMA.
+///
+/// **The only door, and it is not an operation** (ADR-0084 §5c.1). Called once
+/// per qualified function by the launcher, from the constant that decides what
+/// the boot is endowed with, and never from a dispatcher. `SYSTEM_ABI_V1` has no
+/// operation that reaches it, which is what keeps P5 a property of the profile
+/// rather than something a process could assert about itself.
+///
+/// **It grants nothing on its own.** What it does is make `pci_function_claim`
+/// able to include `dma` in the rights of *that* function's assignment. A
+/// function nobody qualified is claimable exactly as before and gets no DMA
+/// right, so the default is the safe one and the exception is written down.
+#[allow(dead_code)]
+pub fn qualify_dma(segment: u16, bus: u8, device: u8, function: u8) -> bool {
+    // SAFETY: single-context nucleus; this runs before the first process is
+    // entered and there is no other writer.
+    let table = unsafe { &mut *core::ptr::addr_of_mut!(DMA_QUALIFIED) };
+    let Some(slot) = table.iter_mut().find(|entry| !entry.live) else {
+        return false;
+    };
+    *slot = DmaQualified {
+        segment,
+        bus,
+        device,
+        function,
+        live: true,
+    };
+    tos_serial::puts(b"TOS.RUN.PCI_DMA_QUALIFIED segment=");
+    tos_serial::put_u32_decimal(u32::from(segment));
+    tos_serial::puts(b" bus=");
+    tos_serial::put_u32_decimal(u32::from(bus));
+    tos_serial::puts(b" device=");
+    tos_serial::put_u32_decimal(u32::from(device));
+    tos_serial::puts(b" function=");
+    tos_serial::put_u32_decimal(u32::from(function));
+    tos_serial::puts(b" reason=tc0-only-requester asserted_by=profile\r\n");
+    true
+}
+
+/// Whether the profile qualified this function.
+fn dma_qualified(segment: u16, bus: u8, device: u8, function: u8) -> bool {
+    // SAFETY: single-context nucleus; a read of a plain table.
+    let table = unsafe { core::ptr::addr_of!(DMA_QUALIFIED).read() };
+    table.iter().any(|entry| {
+        entry.live
+            && entry.segment == segment
+            && entry.bus == bus
+            && entry.device == device
+            && entry.function == function
+    })
+}
+
+/// Whether the assignment a capability names was made of a function the profile
+/// qualified for DMA (ADR-0084 §5c.1, P5).
+///
+/// **Asked at claim time and answered into the rights**, not asked at allocation
+/// time: the point of P5 is that the *capability* a driver holds says whether it
+/// may reach memory, so that an attenuation which drops `dma` is a real
+/// narrowing and a holder without it is refused by the ordinary rights check.
+pub fn is_dma_qualified(index: u32, generation: u32) -> bool {
+    assignment(index, generation)
+        .is_some_and(|entry| dma_qualified(entry.segment, entry.bus, entry.device, entry.function))
+}
+
 /// The assignment table.
 ///
 /// # Safety

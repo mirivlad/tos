@@ -1216,10 +1216,7 @@ fn pci_function_claim(caller: usize, handle: u64, bus: u64, device: u64, functio
     match capability::grant(
         caller,
         Object::PciFunction { index, generation },
-        tos_launch::RIGHT_CONFIG_READ
-            | tos_launch::RIGHT_CONFIG_WRITE
-            | tos_launch::RIGHT_MAP
-            | tos_launch::RIGHT_INTERRUPT,
+        function_rights(index, generation),
         0,
     ) {
         Ok(granted) => {
@@ -1233,6 +1230,38 @@ fn pci_function_claim(caller: usize, handle: u64, bus: u64, device: u64, functio
             Answer::status(E_LIMIT)
         }
     }
+}
+
+/// What a fresh assignment's capability carries.
+///
+/// Four rights unconditionally, and **`dma` only for a function the
+/// compatibility profile qualified** (ADR-0084 §5c.1). The provenance is
+///
+/// ```text
+/// compatibility/profile policy  →  qualified PCI assignment
+///                               →  FunctionConfig with `dma`
+///                               →  dma_region_allocate + MemoryAuthority/spend
+/// ```
+///
+/// **Not "every PCIe function".** The PCI Express capability is P1 — it is what
+/// makes a *reclaim* provable — and P5 is a different property that no register
+/// reports: TC0-only requester traffic, established about the profile and not
+/// derivable from anything the nucleus may look at. A root bus covers far more
+/// than the one reference function, so granting `dma` to everything under it
+/// would be answering P5 by assuming it.
+///
+/// Both still have to hold: this decides whether the *capability* carries the
+/// right, and operation 30 separately refuses a function with no PCI Express
+/// capability.
+fn function_rights(index: u32, generation: u32) -> u32 {
+    let mut rights = tos_launch::RIGHT_CONFIG_READ
+        | tos_launch::RIGHT_CONFIG_WRITE
+        | tos_launch::RIGHT_MAP
+        | tos_launch::RIGHT_INTERRUPT;
+    if crate::pci::is_dma_qualified(index, generation) {
+        rights |= tos_launch::RIGHT_DMA;
+    }
+    rights
 }
 
 /// Puts one assignment on the audit record, by the function it names.
