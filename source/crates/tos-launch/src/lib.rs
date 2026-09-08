@@ -618,6 +618,123 @@ pub struct MmioMapRecord {
     pub length: u64,
 }
 
+/// How many device mappings one process may hold at once.
+///
+/// A fixed table rather than an allocation: the runtime image holds this before
+/// any allocator exists, and a bound the image cannot exceed is one a module
+/// cannot spend.
+pub const MAX_DEVICE_MAPPINGS: usize = 4;
+
+/// One window this process holds, filed under the capability that names it.
+///
+/// **The side table of ADR-0085 §9**, and it is what makes a mapped region *one
+/// object with two ways of reaching it*: the capability crosses the ABI as a
+/// handle, and the very same handle is the key here — so `region[i]` and an
+/// operation on `region` are two things done with one authority, with no second
+/// value and no conversion anywhere.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DeviceMapping {
+    /// The capability the module names it by, or zero for an empty slot. A
+    /// handle of all zeros names nothing in any table, so zero is safe as the
+    /// empty marker rather than needing a flag beside it.
+    pub handle: u64,
+    /// Where the nucleus mapped it in this address space.
+    pub base: u64,
+    /// How many bytes it covers. Every access is checked against this.
+    pub length: u64,
+    /// Whether the mapping is writable. The page table enforces this too — a
+    /// read-only grant has no `WRITABLE` bit — and this is the check that
+    /// refuses *before* the processor faults.
+    pub writable: bool,
+}
+
+impl DeviceMapping {
+    pub const EMPTY: Self = Self {
+        handle: 0,
+        base: 0,
+        length: 0,
+        writable: false,
+    };
+}
+
+/// Every device mapping one process holds.
+///
+/// It lives here rather than in the runtime image because it is the other half
+/// of [`MmioMapRecord`]: the nucleus writes a base and a length to the argument
+/// region, and this is what the image files them under. Two halves of one
+/// handoff in one contract, and — being a library — a thing that can be tested
+/// rather than only booted.
+#[derive(Clone, Copy, Debug)]
+pub struct DeviceMappings {
+    held: [DeviceMapping; MAX_DEVICE_MAPPINGS],
+}
+
+impl Default for DeviceMappings {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl DeviceMappings {
+    pub const fn new() -> Self {
+        Self {
+            held: [DeviceMapping::EMPTY; MAX_DEVICE_MAPPINGS],
+        }
+    }
+
+    /// Records a window this process was just granted.
+    ///
+    /// Refuses rather than overwriting when the table is full: a mapping
+    /// silently dropped would leave a capability the module holds and this host
+    /// cannot serve, which is a worse failure than the refusal.
+    pub fn remember(&mut self, handle: u64, record: MmioMapRecord, writable: bool) -> bool {
+        let Some(slot) = self.held.iter_mut().find(|slot| slot.handle == 0) else {
+            return false;
+        };
+        *slot = DeviceMapping {
+            handle,
+            base: record.base,
+            length: record.length,
+            writable,
+        };
+        true
+    }
+
+    /// The mapping a capability names, if this process holds it.
+    pub fn mapping(&self, handle: u64) -> Option<DeviceMapping> {
+        if handle == 0 {
+            return None;
+        }
+        self.held
+            .iter()
+            .find(|mapping| mapping.handle == handle)
+            .copied()
+    }
+
+    /// Retires the entry a handle names, answering whether one was there.
+    ///
+    /// **ADR-0085 §8a.** The nucleus invalidating a handle settles a later
+    /// *operation*; it does not settle a later indexed access, because an
+    /// indexed access is served from here and never reaches the nucleus. So a
+    /// successful release retires the entry, and every later access through
+    /// that handle is refused as a mapping this process does not hold —
+    /// deterministically, before the processor is asked for anything.
+    ///
+    /// **The page table is not the mechanism.** Relying on a fault from the old
+    /// base would be relying on the nucleus having already unmapped the lane
+    /// *and* on a fault being the answer, and neither is a contract.
+    pub fn retire(&mut self, handle: u64) -> bool {
+        if handle == 0 {
+            return false;
+        }
+        let Some(slot) = self.held.iter_mut().find(|slot| slot.handle == handle) else {
+            return false;
+        };
+        *slot = DeviceMapping::EMPTY;
+        true
+    }
+}
+
 /// The argument region is one frame, and every fixed result has to fit inside
 /// it without overlapping another. Checked rather than counted: two contracts
 /// drifting apart is exactly what a fixed offset exists to prevent.
@@ -737,3 +854,83 @@ pub struct ImageHeader {
 /// so a nucleus that reads an image of another version refuses it by the same
 /// comparison that finds one that is not an image at all.
 pub const IMAGE_MAGIC: u64 = 0x53_4f_54_49_4d_47_31_00;
+
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+mod device_mapping_tests {
+    use super::*;
+
+    const WINDOW: MmioMapRecord = MmioMapRecord {
+        base: 0x4000,
+        length: 0x1000,
+    };
+
+    /// One handle, one entry, and it is the same handle the capability is.
+    ///
+    /// ADR-0085 §9: a mapped region is **one** object with two ways of reaching
+    /// it. There is no second handle to keep in step, so an operation and an
+    /// indexed access cannot disagree about which window they mean.
+    #[test]
+    fn a_remembered_window_is_found_by_the_handle_that_names_it() {
+        let mut mappings = DeviceMappings::new();
+        assert!(mappings.remember(7, WINDOW, true));
+        let held = mappings.mapping(7).expect("the window was filed under 7");
+        assert_eq!(held.base, WINDOW.base);
+        assert_eq!(held.length, WINDOW.length);
+        assert!(held.writable);
+        // And under no other handle, including the zero that marks a free slot.
+        assert_eq!(mappings.mapping(8), None);
+        assert_eq!(mappings.mapping(0), None);
+    }
+
+    /// **A successful release retires the entry** (ADR-0085 §8a).
+    ///
+    /// Afterwards the handle names no mapping, so the bridge's own check —
+    /// "a device access names a mapping this process does not hold" — refuses
+    /// every later access through it, before the processor is asked for
+    /// anything. The page table is not the mechanism and no fault is relied on.
+    #[test]
+    fn retiring_a_window_leaves_the_handle_naming_nothing() {
+        let mut mappings = DeviceMappings::new();
+        assert!(mappings.remember(7, WINDOW, true));
+        assert!(mappings.retire(7));
+        assert_eq!(mappings.mapping(7), None);
+        // And the slot is free again rather than merely blanked, so a release
+        // does not cost a process one of the windows it may hold.
+        assert!(mappings.remember(9, WINDOW, false));
+        assert_eq!(mappings.mapping(9).map(|held| held.writable), Some(false));
+    }
+
+    /// **A failed release leaves the entry intact**, and this is the half that
+    /// says so: retiring a handle that holds no mapping answers `false` and
+    /// touches nothing else. The caller retires only after the nucleus said
+    /// `OK`, so the two together are §8a's pair of rules.
+    #[test]
+    fn retiring_something_that_is_not_there_disturbs_nothing() {
+        let mut mappings = DeviceMappings::new();
+        assert!(mappings.remember(7, WINDOW, true));
+        assert!(!mappings.retire(9));
+        assert!(!mappings.retire(0));
+        assert!(mappings.mapping(7).is_some());
+    }
+
+    /// The table refuses rather than overwriting when it is full.
+    ///
+    /// A mapping silently dropped would leave a capability the module holds and
+    /// this host cannot serve, which is a worse failure than the refusal — and
+    /// retiring one is what makes room again.
+    #[test]
+    fn a_full_table_refuses_and_a_retirement_makes_room() {
+        let mut mappings = DeviceMappings::new();
+        for handle in 1..=MAX_DEVICE_MAPPINGS as u64 {
+            assert!(mappings.remember(handle, WINDOW, false), "{handle}");
+        }
+        assert!(!mappings.remember(99, WINDOW, false));
+        assert!(mappings.retire(1));
+        assert!(mappings.remember(99, WINDOW, false));
+        assert_eq!(mappings.mapping(1), None);
+        assert!(mappings.mapping(99).is_some());
+    }
+}
