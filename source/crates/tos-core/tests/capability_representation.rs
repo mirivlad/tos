@@ -114,3 +114,64 @@ fn no_language_minor_makes_the_declaration_valid() {
         );
     }
 }
+
+/// A module that reaches `platform.dma.Region` through the values that
+/// represent it.
+///
+/// The region is a parameter because nothing produces one yet: `SYSTEM_ABI_V1`
+/// operation 30's schema row waits on ADR-0085 §18. The capability *position*
+/// is the thing under test, and a parameter fills it exactly as an
+/// operation-produced value would.
+fn reaching(minor: &str, argument: &str) -> String {
+    format!(
+        "module app.representation version {minor} profile full; \
+         resource [fuel: 1000, stack: 8KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 4, recursion: 4, imports: 0] \
+         extern fn dma_device_address(region: platform.dma.Region, offset: size) \
+             -> Result<u64, i64> uses [platform.dma.Region]; \
+         pub fn translate(area: DmaRegion<mut u64>) -> Result<u64, i64> \
+             uses [platform.dma.Region] {{ return dma_device_address({argument}, 0B); }}"
+    )
+}
+
+/// **A 1.2 module does not receive the 1.3 rule**, however capable the frontend
+/// compiling it is (ADR-0085 §13, `docs/42` §1).
+///
+/// The diagnostic names the feature and the minor it needs rather than the form
+/// it happened to see, which is what makes it readable by somebody who did not
+/// know the rule existed.
+#[test]
+fn a_module_below_the_minor_may_not_reach_a_represented_interface() {
+    for minor in ["1.0", "1.1", "1.2"] {
+        let text = reaching(minor, "area");
+        let all = diagnostics(&text);
+        // Selected by the **feature** rather than by being the first `E1608`:
+        // a 1.0 module writing a dotted effect is also short of ADR-0080's
+        // minor, and that is a true and separate finding about the same line.
+        let finding = all
+            .iter()
+            .find(|d| {
+                d.code() == "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR"
+                    && d.field("feature") == Some("capability representation")
+            })
+            .unwrap_or_else(|| panic!("{minor}: {:?}", codes(&text)));
+        assert_eq!(finding.field("declared"), Some(&minor[2..3]));
+        assert_eq!(finding.field("requires"), Some("3"));
+    }
+}
+
+/// And every module that reaches no represented interface is untouched.
+///
+/// §14: the amendment makes strictly more programs well-typed and rejects none
+/// that were, so an ordinary 1.0 module must not acquire a diagnostic from a
+/// feature it does not use.
+#[test]
+fn an_ordinary_module_gains_no_version_diagnostic() {
+    let text = "module app.ordinary version 1.0 profile full; \
+         import capability system.ipc.Endpoint as endpoint; \
+         resource [fuel: 1000, stack: 8KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 4, recursion: 4, imports: 1] \
+         extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 uses [endpoint]; \
+         pub fn main() -> i64 uses [endpoint] { return endpoint_send(endpoint, 8u64); }";
+    assert_eq!(codes(text), Vec::<&str>::new());
+}

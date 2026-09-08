@@ -103,3 +103,28 @@ pub(crate) fn resolved_set(
         .map(|effect| resolve(source, imports, effect).recorded().to_string())
         .collect()
 }
+
+/// What a module requested, by the name each request was bound to.
+///
+/// The map [`resolve`] resolves a binding against. It is built the same way
+/// wherever it is needed — the checker's version gate, the boundary pass and the
+/// lowerer all ask the same question — so it is built once, here, beside the
+/// function that consumes it.
+pub(crate) fn requested_capabilities(
+    source: &SourceUnit,
+    schema: &crate::parser::Schema,
+) -> BTreeMap<String, String> {
+    let mut requested = BTreeMap::new();
+    for import in schema.outline().prefix().imports() {
+        if import.kind() != crate::parser::ImportKind::Capability {
+            continue;
+        }
+        let path: alloc::vec::Vec<&str> = import
+            .path()
+            .iter()
+            .map(|segment| segment.text(source))
+            .collect();
+        requested.insert(import.binding().text(source).to_string(), path.join("."));
+    }
+    requested
+}

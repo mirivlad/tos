@@ -808,6 +808,27 @@ pub fn representation_of(path: &str) -> Representation {
     }
 }
 
+/// The interface a value of this type represents, if the type is a member of a
+/// non-default representation family (`SYSTEM_INTERFACE_V1` §4.3).
+///
+/// **Answers with one interface because a family belongs to at most one**
+/// (§4.3 rule 1), which is what makes this a function rather than a search that
+/// could find two. `TypeDef::Capability` is not answered here: that is the
+/// default representation, and the caller resolves it through the interface's
+/// own path.
+pub fn interface_of_representation(ty: &tos_ir::TypeDef) -> Option<&'static str> {
+    let family = match ty {
+        tos_ir::TypeDef::DmaRegion(_) | tos_ir::TypeDef::DmaRegionMut(_) => {
+            Representation::DmaRegionFamily
+        }
+        _ => return None,
+    };
+    ACCEPTED
+        .iter()
+        .find(|interface| interface.representation == family)
+        .map(|interface| interface.path)
+}
+
 /// The interface with this path, if an accepted schema declares one.
 pub fn interface(path: &str) -> Option<&'static Interface> {
     ACCEPTED.iter().find(|interface| interface.path == path)
