@@ -150,6 +150,7 @@ pub(crate) fn check_ownership_with<'source>(
             .filter(|import| import.kind() == ImportKind::Capability)
             .map(|import| import.binding().text(source).to_string())
             .collect(),
+        capability_positions: capability_positions(source, schema),
         bindings: BTreeMap::new(),
         scopes: Vec::new(),
         diagnostics: Vec::new(),
@@ -178,6 +179,16 @@ struct OwnershipChecker<'source> {
     types: &'source BTreeMap<usize, Type>,
     fields: BTreeMap<String, Vec<(String, Type)>>,
     capabilities: BTreeSet<String>,
+    /// How many leading arguments of each `extern` operation are **capability
+    /// positions** (`SYSTEM_INTERFACE_V1` §4.1).
+    ///
+    /// Read from the accepted schema rather than counted from the declared
+    /// types, because those two differ: `launch_plan_seal` takes a
+    /// `system.process.Control` capability and then a
+    /// `system.process.LaunchPlanBuilder` *value*, and both are written as
+    /// interface paths. Only the first is a capability position, and only the
+    /// second is consumed.
+    capability_positions: BTreeMap<String, usize>,
     bindings: BTreeMap<BindingId, BindingInfo>,
     scopes: Vec<Vec<(String, BindingId)>>,
     diagnostics: Vec<Diagnostic>,
@@ -1077,12 +1088,77 @@ impl<'source> OwnershipChecker<'source> {
                 return;
             }
         }
+        // **A capability position borrows for the call** (`SYSTEM_INTERFACE_V1`
+        // §8, ADR-0085 §8). Use, copy and consume are three things: a
+        // capability supplied to an operation is read, its handle crosses the
+        // ABI, and the binding is still live afterwards. Affinity is about how
+        // many *values* name the object, and using one value twice creates no
+        // second value.
+        //
+        // **Only the capability positions**, which is where the difference
+        // shows. `launch_plan_seal` is declared to consume the builder it seals
+        // (§8), and the builder is a *value* parameter — so it goes on being
+        // consumed here, and the handle a module used afterwards goes on being
+        // `E1301_USE_AFTER_MOVE`.
+        //
+        // Until ADR-0085 no capability-typed value was affine, so nothing
+        // observed this: `DmaRegion` is the first, and a rule that consumed it
+        // would let a region be translated once and then never indexed.
+        let borrowed = expression
+            .callee()
+            .filter(|callee| callee.form() == ExpressionForm::Name)
+            .and_then(|callee| {
+                self.capability_positions
+                    .get(callee.span().text(self.source))
+            })
+            .copied()
+            .unwrap_or(0);
         // Every argument position takes ownership unless it is written as a
         // borrow, which the parser records as a unary operand.
-        for argument in expression.arguments() {
+        for (position, argument) in expression.arguments().iter().enumerate() {
+            if position < borrowed {
+                self.walk_expression(argument.value(), state);
+                continue;
+            }
             self.consume(argument.value(), state);
         }
     }
+}
+
+/// How many leading arguments of each `extern` operation this module declares
+/// are capability positions.
+///
+/// Resolved through the operation the accepted schema declares, which is the
+/// only place that knows where a capability parameter stops and a value
+/// parameter begins. A name declared by more than one interface —
+/// `endow_for_launch` is — takes the smallest count any of its declarations
+/// has, so an ambiguity can only ever consume more, never less.
+fn capability_positions(source: &SourceUnit, schema: &Schema) -> BTreeMap<String, usize> {
+    let requested = crate::effects::requested_capabilities(source, schema);
+    let mut positions: BTreeMap<String, usize> = BTreeMap::new();
+    for signature in schema.extern_functions() {
+        let name = signature.name().text(source);
+        let Some(first) = signature.effects().first() else {
+            continue;
+        };
+        let Some(path) = crate::effects::resolve(source, &requested, first)
+            .interface()
+            .map(alloc::string::ToString::to_string)
+        else {
+            continue;
+        };
+        let Some(operation) =
+            crate::interfaces::interface(&path).and_then(|interface| interface.operation(name))
+        else {
+            continue;
+        };
+        let count = operation.capabilities.len();
+        positions
+            .entry(name.to_string())
+            .and_modify(|held| *held = (*held).min(count))
+            .or_insert(count);
+    }
+    positions
 }
 
 /// The borrow an expression takes, if it is one.

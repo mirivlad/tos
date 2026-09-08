@@ -1,0 +1,17 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.capability_representation_before_minor version 1.2 profile full;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// The same module as the accepted vector, declaring 1.2. A module receives the
+// language its header claims, so the capability-representation rule of ADR-0085
+// is not available to it however capable the frontend compiling it is — and the
+// diagnostic names the feature and the minor it needs rather than the form it
+// happened to see.
+extern fn dma_device_address(region: platform.dma.Region, offset: size)
+    -> Result<u64, i64> uses [platform.dma.Region];
+
+pub fn translate(area: DmaRegion<mut u64>) -> Result<u64, i64>
+    uses [platform.dma.Region] {
+    return dma_device_address(area, 0B);
+}

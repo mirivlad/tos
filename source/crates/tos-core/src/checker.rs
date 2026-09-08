@@ -523,12 +523,21 @@ fn diagnostic(code: &'static str, stage: Stage, span: Span, source: &SourceUnit)
 
 /// The source-language version this frontend implements (docs/42 section 1).
 ///
-/// **1.2 since ADR-0081**, which adds device memory. 1.1 added the
-/// direct-interface effect form (ADR-0080). Every earlier minor remains
+/// **1.3 since ADR-0085**, which separates an interface's identity from the
+/// class of values that represents it. 1.2 added device memory (ADR-0081) and
+/// 1.1 the direct-interface effect form (ADR-0080). Every earlier minor remains
 /// supported and unchanged: a module declaring one keeps its meaning, its
 /// diagnostics and its digest, and is refused only if it uses a form its own
 /// header did not claim (`E1608`).
-const LANGUAGE_VERSION: (u32, u32) = (1, 2);
+///
+/// **A frontend advertises a minor when it performs it**, not when a decision
+/// naming it is approved (`docs/42` §1). This constant moved last of ADR-0085's
+/// implementation, after the schema field and its gate, the verifier's
+/// independent derivation and its forged-IR negatives, `E1503`, the release-time
+/// mapping retirement and the feature gate above — because until all of those
+/// existed, accepting a 1.3 module would have been accepting one whose semantics
+/// were partly absent.
+const LANGUAGE_VERSION: (u32, u32) = (1, 3);
 
 /// The minor in which a direct interface effect became legal (ADR-0080 §5).
 const DIRECT_INTERFACE_EFFECT_MINOR: u32 = 1;

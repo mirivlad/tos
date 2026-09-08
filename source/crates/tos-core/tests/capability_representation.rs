@@ -175,3 +175,91 @@ fn an_ordinary_module_gains_no_version_diagnostic() {
          pub fn main() -> i64 uses [endpoint] { return endpoint_send(endpoint, 8u64); }";
     assert_eq!(codes(text), Vec::<&str>::new());
 }
+
+/// **A 1.3 module reaches the interface through the values that represent it.**
+///
+/// `DmaRegion<T>` and `DmaRegion<mut T>` both satisfy a `platform.dma.Region`
+/// position, for any element type: the representation is the family, and an
+/// element type is not part of membership in it.
+#[test]
+fn a_one_three_module_may_fill_the_position_with_either_region_mode() {
+    for written in [
+        "DmaRegion<mut u64>",
+        "DmaRegion<u64>",
+        "DmaRegion<mut u8>",
+        "DmaRegion<i32>",
+    ] {
+        let text = format!(
+            "module app.representation version 1.3 profile full; \
+             resource [fuel: 1000, stack: 8KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+             sync: 0, shared: 0B, cleanup: 4, recursion: 4, imports: 0] \
+             extern fn dma_device_address(region: platform.dma.Region, offset: size) \
+                 -> Result<u64, i64> uses [platform.dma.Region]; \
+             pub fn translate(area: {written}) -> Result<u64, i64> \
+                 uses [platform.dma.Region] {{ return dma_device_address(area, 0B); }}"
+        );
+        assert_eq!(codes(&text), Vec::<&str>::new(), "{written}");
+    }
+}
+
+/// **Use is not consumption** (ADR-0085 §8): one binding, used as many times as
+/// the module writes it.
+///
+/// No operation of this interface consumes its receiver, and affinity is about
+/// how many *values* name the object — using one value twice creates no second
+/// value. The `capability_attenuate`/`capability_release` pair has always relied
+/// on this; here it is for the interface the amendment adds.
+#[test]
+fn one_region_binding_may_be_used_more_than_once() {
+    let text = "module app.representation version 1.3 profile full; \
+         resource [fuel: 1000, stack: 8KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 4, recursion: 4, imports: 0] \
+         extern fn dma_device_address(region: platform.dma.Region, offset: size) \
+             -> Result<u64, i64> uses [platform.dma.Region]; \
+         extern fn capability_release(region: platform.dma.Region) -> i64 \
+             uses [platform.dma.Region]; \
+         pub fn translate(area: DmaRegion<mut u64>) -> i64 uses [platform.dma.Region] { \
+             let first: Result<u64, i64> = dma_device_address(area, 0B); \
+             let second: Result<u64, i64> = dma_device_address(area, 64B); \
+             return capability_release(area); }";
+    assert_eq!(codes(text), Vec::<&str>::new());
+}
+
+/// A region is not accepted at an `AsInterface` position (§16.2), and the
+/// refusal is the frontend's rather than the verifier's.
+#[test]
+fn a_region_does_not_fill_an_ordinary_capability_position() {
+    let text = "module app.representation version 1.3 profile full; \
+         import capability system.ipc.Endpoint as endpoint; \
+         resource [fuel: 1000, stack: 8KiB, allocation: 1KiB, tasks: 1, workers: 1, \
+         sync: 0, shared: 0B, cleanup: 4, recursion: 4, imports: 1] \
+         extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 uses [endpoint]; \
+         pub fn main(area: DmaRegion<mut u64>) -> i64 uses [endpoint] { \
+             return endpoint_send(area, 8u64); }";
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("the fixture parses");
+    // It checks clean — the checker has no types with which to tell a region
+    // from an ordinary local at a call site — and the **lowerer** refuses to
+    // build the instruction, which is where the types are.
+    assert!(Checker::check(&source, &schema)
+        .iter()
+        .all(|d| d.severity() != tos_core::Severity::Error));
+    let gap = tos_core::lower_module(
+        &source,
+        &schema,
+        &tos_core::ModuleContext {
+            source_set: String::from("capability-representation-test"),
+            path: String::from("app/representation.tos"),
+            content_id: String::from("test"),
+            dependency_digest: String::from("test"),
+            capability_interface_digest: String::from("test"),
+        },
+    )
+    .expect_err("a region does not fill an ordinary capability position");
+    assert!(
+        gap.construct.contains("declares no operation of this name"),
+        "{gap:?}"
+    );
+}

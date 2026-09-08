@@ -69,7 +69,18 @@ fn accepted_source_lowers_or_names_the_construct_it_cannot_lower() {
                 Ok(module) => {
                     lowered += 1;
                     assert_eq!(module.header.schema_id, tos_ir::SCHEMA_ID);
-                    assert_eq!(module.header.language_version, tos_ir::LANGUAGE_VERSION);
+                    // **A minor this schema represents**, not the base one.
+                    // Every accept vector declared 1.0 until ADR-0085 added one
+                    // that declares 1.3, and the assertion was reading "the
+                    // corpus happens to be all 1.0" as "an artifact carries the
+                    // default version". What `tos-ir/v1` guarantees is that the
+                    // declared minor is one it can represent.
+                    assert!(
+                        tos_ir::LANGUAGE_VERSIONS
+                            .contains(&module.header.language_version.as_str()),
+                        "{name}: {} is not a minor this schema represents",
+                        module.header.language_version
+                    );
                     assert_eq!(
                         module.header.unicode_normalization_baseline,
                         tos_ir::UNICODE_BASELINE

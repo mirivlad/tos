@@ -2553,14 +2553,15 @@ pub fn main() -> i64 uses [SPELLING] {
         );
     }
 
-    /// The supported range is **1.0, 1.1 and 1.2** (ADR-0080 §5, ADR-0081 §6). A module declaring
-    /// either is accepted; a newer minor is refused whole, by its header, before
-    /// any of its syntax is read.
+    /// The supported range is **1.0 through 1.3** (ADR-0080 §5, ADR-0081 §6,
+    /// ADR-0085 §13). A module declaring any of them is accepted; a newer minor
+    /// is refused whole, by its header, before any of its syntax is read.
     #[test]
     fn the_declared_language_version_must_be_a_supported_one() {
         assert!(check_header("1.0").is_empty());
         assert!(check_header("1.1").is_empty());
         assert!(check_header("1.2").is_empty());
+        assert!(check_header("1.3").is_empty());
 
         let major = check_header("2.0");
         assert_eq!(major.len(), 1);
@@ -2568,11 +2569,15 @@ pub fn main() -> i64 uses [SPELLING] {
         assert_eq!(major[0].field("declared"), Some("2"));
         assert_eq!(major[0].stage(), Stage::Type);
 
-        let minor = check_header("1.3");
+        // **Whole, by its header**, and this is the property rather than the
+        // number: a minor this implementation does not perform is refused before
+        // any of the module's syntax is read, so a module never receives part of
+        // a language.
+        let minor = check_header("1.4");
         assert_eq!(minor.len(), 1);
         assert_eq!(minor[0].code(), "E1602_UNSUPPORTED_LANGUAGE_MINOR");
-        assert_eq!(minor[0].field("declared"), Some("3"));
-        assert_eq!(minor[0].field("supported"), Some("2"));
+        assert_eq!(minor[0].field("declared"), Some("4"));
+        assert_eq!(minor[0].field("supported"), Some("3"));
     }
 
     #[test]
