@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `65361d7d1dc1eb7d5c564694c276d874f3cf0eebcff15794b8537da993fa5e1d`\
+Source-manifest SHA-256: `02c928ad575a7289ad704dbab9817b6b7d70a2e5c771eccb033e75dfcbd8ad35`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -29848,7 +29848,7 @@ the no-IOMMU confinement statement; and ordering left to Stage 4C-3.
 
 # ADR-0085: Capability representation, separated from interface identity
 
-- Status: **Proposed — not Project Architect-approved. Revision 3 (C′).**
+- Status: **Proposed — not Project Architect-approved. Revision 4 (C′).**
   Nothing is implemented; Stage 4C-2's surface stays stopped
 - Date: 2026-09-08
 - Decision level: **3** (§13), and it requires **TOS Core 1.3**. Revision 1
@@ -29974,11 +29974,34 @@ capabilities a process was granted; a launcher could not mint one before the
 process exists, because the memory has not been charged and the assignment has
 not been claimed. The restriction describes what was already true.
 
-**Frontend diagnostic.** An `import capability platform.dma.Region` declaration
-is rejected where the import is resolved, with the reason named — the interface
-has a representation that no import can produce — rather than as a
-capability-not-found. `E1801_FFI_NOT_AVAILABLE`'s neighbourhood is where this
-belongs; the exact code is the frontend's to assign against `docs/44`.
+### The diagnostic, allocated here rather than delegated
+
+This is a Level-3, TOS Core 1.3 decision, so the primary diagnostic is part of
+the language contract and is settled by this ADR:
+
+```text
+E1503_NONIMPORTABLE_CAPABILITY
+stage:      effect
+
+condition:  an `import capability` names an accepted interface whose capability
+            representation is not startup-importable
+
+fields:     interface        the path the declaration named
+            representation   the representation that cannot be imported
+```
+
+`E1501` and `E1502` are the capability/effect band's occupied codes and
+**`E1503` is free**, so the code is allocated in the band the condition belongs
+to rather than borrowed from the FFI band next door.
+
+**Deliberately not `CapabilityDenied`.** That is a launcher's answer to a
+request it declined — the request was well formed and policy said no. This
+request is **invalid before any policy is consulted**: no launcher could satisfy
+it, whatever it decided. Reporting the two the same way would make an
+unsatisfiable declaration look like a decision somebody made.
+
+Acceptance must land the registry entry in `docs/44` and a source conformance
+vector with it, in the same commit as the rule.
 
 **And no general `requestable` mechanism is introduced.** Importability follows
 from the representation: `AsInterface` is importable because an import is exactly
@@ -30012,38 +30035,60 @@ depends on the operand's type.
 position is not a lowering a frontend produces, which is exactly why the verifier
 has to refuse it independently — §17.2.
 
-## 7. Verifier rule
+## 7. Verifier rule — the existing derivation, extended
+
+**Revision 3 said the predicate must invert. That claim is withdrawn.** It does
+not need to, and inverting it would have discarded a property the verifier
+already has and should keep.
+
+`Instruction::unsafe_interface` is an **artifact claim**, and the verifier
+deliberately does not believe it: for a capability source it derives the
+interface independently and compares. C′ extends the derivation and leaves the
+comparison exactly where it is:
 
 ```text
-capability_representation_matches(required_interface, operand_type) :=
-    match representation_of(required_interface) {
-        AsInterface     => operand_type == Capability(required_interface),
-        DmaRegionFamily => operand_type is DmaRegion(_) or DmaRegionMut(_),
-    }
+interface_of_capability_source(source) :=
+
+    Import(index)
+        validate the import as today            -> import.interface
+
+    Value(operand), type(operand) = Capability(I)
+                                                -> I
+
+    Value(operand), type(operand) = DmaRegion(_)
+                                                -> platform.dma.Region
+
+    Value(operand), type(operand) = DmaRegionMut(_)
+                                                -> platform.dma.Region
+
+    otherwise                                   -> reject
 ```
 
-Two properties this has to have, and does:
-
-- **for every interface that exists today it is the old predicate**, character
-  for character: `AsInterface` reduces to the exact equality of ADR-0080 §7;
-- **it does not trust the frontend, and §7a says mechanically why.**
-
-**The predicate's shape changes, and that is worth stating exactly.** Today the
-verifier *derives* an interface from the source and then compares:
+and then, unchanged:
 
 ```text
-Value(operand) => match type_of(operand) {
-    Capability(interface) => interface,       // then compared to the required one
-    _ => reject,
-}
+derived_interface == instruction.unsafe_interface     // the artifact's claim, checked
+derived_interface ∈ enclosing Signature.effects       // the effect check
 ```
 
-A `DmaRegion` type names no interface, so derivation has no answer for it. The
-predicate therefore inverts: it **checks the source against the required
-interface** instead of deriving one from the source. The two forms are
-equivalent for `AsInterface`, and §4's uniqueness rule — one family belongs to at
-most one interface — is what makes a derive-form available for
-`DmaRegionFamily` too, should an implementation prefer it.
+**The two `DmaRegion` arms come only from the verifier-owned closed table**
+(§7a), never from the artifact and never from the frontend.
+
+**This is where §4's uniqueness rule is load-bearing rather than decorative.**
+Derivation needs a *function* from representation to interface, and rule 1 — one
+family belongs to at most one accepted interface — is exactly what makes
+`DmaRegionFamily → platform.dma.Region` a function. Without it there would be no
+interface to derive and the predicate would have had to invert after all.
+
+**And `Import` is still refused at a `DmaRegionFamily` position** (§4a). That is
+a separate arm from the derivation: an import derives its declared interface
+perfectly well, so the refusal is a rule about which *sources* the representation
+admits, checked beside the derivation and not inside it.
+
+**No new verifier dependency.** The verifier does not gain the frontend's schema
+and does not duplicate the operation table; it gains one closed table of at most
+one row per representation, and §7a's gate proves that table agrees with the
+canonical accepted schema.
 
 ## 7a. Where `representation_of` lives
 
@@ -30060,11 +30105,11 @@ assignments and capability requirements, and fails when they disagree. The
 representation column joins those. The verifier keeps no dependency on the
 frontend, and the two tables cannot drift without a gate going red.
 
-**What the verifier reads per position** is therefore: the required interface
-from the accepted operation row, the representation from its own table, and
-`operand_type` from the artifact's own type table. All three are independent of
-whoever produced the module, which is what makes §17's forged artifacts
-detectable rather than believed.
+**What the verifier reads per position** is therefore: `operand_type` from the
+artifact's own type table, and the representation→interface map from its own
+table. Neither comes from the producer, and neither is the artifact's
+`unsafe_interface` claim — which is the thing being checked. That is what makes
+§17's forged artifacts detectable rather than believed.
 
 ## 8. Ownership: use, copy and consume are three things
 
@@ -30245,12 +30290,28 @@ ADR-0081 established **1.2** for the device-memory features, so this amendment i
   1.2 and a 1.3 module are different artifacts even where their source text
   matches.
 
-**And documentation drift is repaired while the version contract is open.**
-`docs/42` still enumerates "`TOS Core 1.0` and `TOS Core 1.1` (ADR-0080)" despite
-ADR-0081 having accepted 1.2 and the implementation supporting it, and `docs/44`
-carries the same gap. History is not rewritten: 1.2 is documented as ADR-0081's
-extension, at the date it was accepted, and 1.3 as this ADR's — so the sequence
-reads as what happened rather than as a list corrected after the fact.
+**The documentation drift is real and this ADR does not repair it yet.**
+`docs/42` still enumerates "`TOS Core 1.0` and `TOS Core 1.1` (ADR-0080)" though
+**ADR-0081 already accepted 1.2** and the implementation supports it; `docs/44`
+carries the same gap. Those are accepted Tier-2 documents and a *proposed*
+decision must not rewrite them — an unapproved ADR editing the accepted corpus is
+the failure mode the whole review sequence exists to prevent.
+
+So the repair is scheduled rather than performed:
+
+> **On acceptance, and in the same commit as the rule**, `docs/42` and `docs/44`
+> record the sequence whole:
+>
+> ```text
+> 1.0   original V1
+> 1.1   ADR-0080
+> 1.2   ADR-0081
+> 1.3   ADR-0085
+> ```
+
+with **1.2 attributed to ADR-0081**, which accepted it, and not retroactively to
+this one. Until approval nothing here is normative anywhere else, and no document
+outside this ADR mentions 1.3.
 
 **Interface-schema version.** `SYSTEM_INTERFACE_V1` gains an exception clause to
 §5 and one field in the schema type. **Its version should move**, on the same
@@ -30326,15 +30387,32 @@ The verifier must reject each of these in an artifact no frontend produced:
 2. **`Import(index)` at a `DmaRegionFamily` position**, whatever the import's
    declared interface (§4a). No frontend emits it, which is precisely why the
    verifier must refuse it on its own;
-3. `Value(operand)` at an `AsInterface` position whose operand type is
+3. **`Value(DmaRegion<_>)` with `instruction.unsafe_interface` naming some other
+   interface** — rejected even when that interface is otherwise accepted **and**
+   appears in the function's effects. The derivation answers
+   `platform.dma.Region` and the artifact's claim does not match it, which is the
+   whole point of deriving rather than believing;
+4. `Value(operand)` at an `AsInterface` position whose operand type is
    `DmaRegion` or `DmaRegionMut`;
-4. `Value(operand)` whose operand type is a region or a scalar at any capability
+5. `Value(operand)` whose operand type is a region or a scalar at any capability
    position;
-5. a correct representation with the interface absent from the enclosing
+6. a correct representation with the interface absent from the enclosing
    `Signature.effects`;
-6. a module whose header declares `1.2` and whose body uses a `DmaRegionFamily`
+7. a module whose header declares `1.2` and whose body uses a `DmaRegionFamily`
    capability position — the version gate is a verifier obligation and not only a
    frontend one.
+
+## 18. One thing this ADR deliberately does not solve
+
+ADR-0084 writes operation 30's result abstractly as `DmaRegion<mut T>`, and every
+result in the accepted interface schema is a **concrete type text**. That gap is
+real and it is **not** solved here: adding schema polymorphism inside this
+amendment would widen a decision whose whole value is being narrow.
+
+It is Stage 4C-2 surface work, to be resolved when that resumes — and if the
+concrete source form of operation 30's result turns out to need a new language or
+schema mechanism, that is another **STOP**, not something to be settled by
+whichever spelling happens to compile.
 
 ## Architecture impact statement
 
@@ -30351,9 +30429,12 @@ logic is not**.
 - **Interface-path ↔ capability-representation relation:** **changed.** This is
   the amendment: an accepted semantic rule of `SYSTEM_INTERFACE_V1` §5 and
   ADR-0080 §7 now has one closed exception.
-- **Verifier trusted predicate:** **changed.** The capability-position check
-  becomes representation-aware (§7), reads a verifier-owned closed table (§7a),
-  and refuses `Import` at a `DmaRegionFamily` position (§4a). An older verifier
+- **Verifier trusted predicate:** **changed, and narrowly.** The existing
+  derive-then-compare structure is kept: two arms are added to the interface
+  derivation (§7), fed by a verifier-owned closed table (§7a), and `Import` is
+  refused at a `DmaRegionFamily` position (§4a). The comparison against
+  `instruction.unsafe_interface` and the effect check are untouched, so the
+  verifier goes on believing nothing the artifact claims. An older verifier
   rejects a valid 1.3 artifact, which is the conformance difference the language
   minor gates.
 - **Runtime bridge:** **changed**, narrowly: a successful release retires the
