@@ -390,6 +390,41 @@ supply is finite and exhaustion is `E_LIMIT` rather than recycling. An interrupt
 on a retired vector keeps its IDT gate, is acknowledged, is counted as spurious
 and wakes nobody. **E2**.
 
+### X4.3 — Memory returned to the pool while a device can still write it (T7 → A4, A9, S5)
+
+A driver releases a DMA region; the frames go back to the allocator and are
+handed to another process; the device still holds the address in a register and
+writes into memory that is now somebody else's. Clearing Bus Master Enable is not
+by itself a defence: it blocks new requests and says nothing about requests
+already issued.
+
+Controls (ADR-0084 §5b–§5d): frames are **quarantined** rather than returned, and
+return only when the assignment is provably quiescent — no live bus-mastering
+descendant, and a configuration read of the function's PCI Express Capability
+observing **Transactions Pending = 0**, whose value proves no outstanding
+non-posted request and whose completion flushes earlier posted writes. The
+function's ordering and coherency bits are nucleus-owned so a driver cannot
+weaken that proof. **Fail-closed**: if the proof cannot be established the frames
+stay out, the charge stays outstanding and the assignment does not end, so the
+device cannot be handed to a second driver. There is no timeout and no reset
+fallback. **E1** until Stage 4C-2's evidence exists; the residual risk is
+ADR-0084 §5c.1's TC0-only profile requirement, which is qualified about the
+platform rather than checked in ring 0.
+
+### X4.4 — One memory budget spent twice through quarantine churn (T2 → A9, S5)
+
+A holder allocates a DMA region, releases it into quarantine, and allocates
+again from a refunded budget — accumulating physically occupied frames above the
+`MemoryAuthority` that was supposed to bound them.
+
+Controls (ADR-0084 §5f): the allocation charge **stays outstanding** while the
+backing is quarantined, and the funding lineage is refunded at the same moment
+the frames actually return. This is ADR-0075's existing rule — physical
+reclamation before accounting refund — with a longer interval, so
+`allocated + reserved + free == budget` holds throughout. **E2** once the churn
+case of ADR-0084 §8.12 is exercised, which a refund-on-release implementation
+fails and every other item passes.
+
 ### What Stage 3 does not claim
 
 - no protection against T7 or T8, which remain outside containment;

@@ -56,6 +56,19 @@ docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md — это рабочий лог, а н�
   и жизненный цикл источника при release, смерти процесса и конце assignment'а.
   `PLATFORM_INTERFACE_V1` → версия 2. Дальше по декомпозиции: 4C-2 (DMA
   authority) — **не начат**.
+- **ADR-0084 Accepted** (Vladimir Tomashevskiy, 2026-09-08, revision 4) — DMA
+  authority. Полномочие требует **двух** способностей сразу: `FunctionConfig` с
+  правом `dma` и `MemoryAuthority` со `spend`. `DmaRegion` — первый объект с
+  двумя происхождениями сразу (funding lineage и hardware-assignment lineage),
+  один непрерывный device-visible extent; адрес внутри него берётся как
+  region + bounded offset, вызывающая сторона адрес не предъявляет никогда.
+  Device-visible address — данные, не полномочие. Освобождение региона **не**
+  возвращает память: кадры уходят в quarantine и остаются charged, пока не
+  доказано `DRAINED(assignment)` — прекращение bus mastering, `Transactions
+  Pending = 0` и flush ранее выпущенных posted writes одним configuration read.
+  Fail-closed: если доказать нельзя, кадры, charge и assignment удерживаются, и
+  функция не может быть заявлена повторно. Ни timeout, ни reset fallback.
+  Реализация — Stage 4C-2. MMIO ↔ DMA ordering остаётся Stage 4C-3.
 - **ADR-0083 Accepted** (Vladimir Tomashevskiy, 2026-09-06). Stage 4C-1 обнажил
   несостоятельность **конструкции** принятой метрики ADR-0026, а не её чисел:
   числитель и знаменатель компоновались в разные образы и мерились на

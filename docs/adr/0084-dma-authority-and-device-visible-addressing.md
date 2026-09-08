@@ -2,9 +2,13 @@
 
 # ADR-0084: Where DMA authority comes from, and what a device-visible address is allowed to be
 
-- Status: **Proposed — not Project Architect-approved. Revision 4.** Written
-  before the mechanism, which is the order ADR-0081 §0 recorded going wrong once
-  and ADR-0082 restored. Nothing in it is implemented.
+- Status: **Accepted (Project Architect-approved, 2026-09-08)**, at revision 4.
+  Written before the mechanism, which is the order ADR-0081 §0 recorded going
+  wrong once and ADR-0082 restored: at the moment of approval nothing in it was
+  implemented, and Stage 4C-2 is the implementation of what is decided here.
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-08, on revision 4.
+- Revision history, kept because a decision that was corrected twice is more
+  useful with the corrections visible than without them:
 
   **Revision 2** answered three findings: `BME=0` is not a teardown proof;
   quarantined memory stays charged until the frames actually return (§5f); and a
@@ -290,11 +294,6 @@ function that originated DMA writes in a Traffic Class other than TC0 would have
 those writes unordered against the flush, and the reclaim condition would pass
 without covering them. That is the residual risk of this profile, and it is
 recorded here rather than dissolved into an argument that does not hold.
-
-**P5 is the one that is declared, and it is the honest weak point.** It is not a
-hidden assumption — it is written here as a property of the profile, with the
-mechanism that makes it true today and the mechanism that would let it be
-verified later.
 
 ### 5d. Fail-closed, and what happens to memory that cannot be proved safe
 
