@@ -117,9 +117,17 @@ pub fn map(
         .iter()
         .position(|mapping| !mapping.live)
         .ok_or(Refused::Limit)?;
-    // The lane is the process's own, and is free because the count above says
-    // this process holds fewer windows than there are lanes.
-    let lane = held as u32;
+    // **A free lane, not the count of live ones.** The count is only a bound;
+    // with two windows mapped and the first released, a count would hand the
+    // next request the lane the second is already in. Same defect and same
+    // repair as `dma::allocate`'s.
+    let lane = (0..crate::process::MAX_DEVICE_MAPPINGS as u32)
+        .find(|lane| {
+            !table
+                .iter()
+                .any(|entry| entry.live && entry.holder == holder as u32 && entry.lane == *lane)
+        })
+        .ok_or(Refused::Limit)?;
     let base = crate::process::map_device(holder, lane, physical, length, writable)
         .map_err(|()| Refused::Paging)?;
     // The descendant is recorded **after** the mapping exists and before the

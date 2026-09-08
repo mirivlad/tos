@@ -268,7 +268,17 @@ impl Frames {
     }
 
     /// The largest physically contiguous run the pool could still carve.
+    ///
+    /// **Both sources, because `carve` consults both.** A figure that described
+    /// only the frontier would under-report a pool holding a large returned run,
+    /// and an allocator whose "largest" is smaller than what it will actually
+    /// hand out is one whose callers refuse requests it could serve.
     pub fn largest_contiguous(&self) -> u64 {
+        self.largest_frontier().max(self.largest_returned())
+    }
+
+    /// The largest run the never-handed-out frontier could still carve.
+    fn largest_frontier(&self) -> u64 {
         self.pieces[..self.count]
             .iter()
             .map(Piece::room)
@@ -325,8 +335,14 @@ impl Frames {
 
     /// A physically contiguous run of `bytes`, aligned to `alignment`.
     ///
-    /// Not cleared, and never satisfied from released frames — see the module
-    /// header. `alignment` must be a power of two and at least a frame.
+    /// **It carries no previous owner's bytes**, which is the invariant that
+    /// matters and is not the same as "it is zeroed". A run may come from memory
+    /// this pool has never handed out — untouched since firmware, and not
+    /// cleared — or from the returned table, which [`Frames::release_run`]
+    /// cleared on the way in. Never from the released-frame *list*, whose
+    /// entries carry a link written into their first bytes.
+    ///
+    /// `alignment` must be a power of two and at least a frame.
     pub fn carve(&mut self, bytes: u64, alignment: u64) -> Option<Span> {
         if bytes == 0 || alignment < FRAME_SIZE || !alignment.is_power_of_two() {
             return None;
@@ -384,6 +400,26 @@ impl Frames {
         // the way, and coalescing therefore adjusts nothing — the neighbour it
         // absorbs was accounted when *it* was returned.
         self.frames_carved -= (run.end - run.start) / FRAME_SIZE;
+        // **Cleared here, at the boundary, and not by whoever carves it next.**
+        // Before returned runs existed, `carve` could honestly say it clears
+        // nothing: everything it handed out was memory this pool had never
+        // handed out before. A run coming back breaks that, and the invariant
+        // worth keeping is the one about *owners* rather than about zeroes —
+        // memory returned to the pool and later given to somebody else carries
+        // none of the previous owner's bytes. Putting it here means no present
+        // or future caller of `carve` has to remember, which is the only version
+        // of this rule that stays true.
+        //
+        // SAFETY: the caller states the run was carved from this pool, is
+        // identity-mapped and unreachable, so this writes memory nothing else
+        // references.
+        unsafe {
+            core::ptr::write_bytes(
+                core::ptr::with_exposed_provenance_mut::<u8>(run.start as usize),
+                0,
+                (run.end - run.start) as usize,
+            )
+        };
         if self.keep_returned(run.start, run.end) {
             return;
         }
@@ -596,4 +632,134 @@ unsafe fn clear(base: u64, bytes: u64) {
             bytes as usize,
         )
     };
+}
+
+#[cfg(test)]
+extern crate std;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::vec;
+
+    /// A pool over memory this test owns, so the allocator may write to it.
+    ///
+    /// Leaked deliberately: the pool writes links into released frames and
+    /// zeroes returned runs, so the buffer must outlive every call.
+    fn pool(frames: usize) -> Frames {
+        let bytes = (frames + 1) * FRAME_SIZE as usize;
+        let buffer = vec![0xAAu8; bytes].leak();
+        let base = buffer.as_ptr() as u64;
+        let start = base.div_ceil(FRAME_SIZE) * FRAME_SIZE;
+        let mut frames_pool = Frames::new();
+        // SAFETY: the span is memory this test owns and leaked, mapped
+        // readable and writable at its own address, and referenced by nothing
+        // else after `leak`.
+        unsafe {
+            frames_pool.admit(
+                [Span::new(start, start + (frames as u64) * FRAME_SIZE)],
+                &[],
+            )
+        };
+        frames_pool
+    }
+
+    /// ADR-0084 §6a's whole point: a returned run can be carved again.
+    #[test]
+    fn a_returned_run_can_be_carved_again() {
+        let mut pool = pool(8);
+        let first = pool.carve(2 * FRAME_SIZE, FRAME_SIZE).expect("carve");
+        // SAFETY: the run is this pool's and nothing references it.
+        unsafe { pool.release_run(first) };
+        let again = pool.carve(2 * FRAME_SIZE, FRAME_SIZE).expect("re-carve");
+        assert_eq!(again.start, first.start);
+    }
+
+    /// **The invariant the returned table could otherwise break.** Before it,
+    /// `carve` only ever produced memory this pool had never handed out. A
+    /// caller that wrote a pattern and gave the run back must not have that
+    /// pattern reappear in somebody else's allocation.
+    #[test]
+    fn a_returned_run_carries_no_previous_owners_bytes() {
+        let mut pool = pool(8);
+        let first = pool.carve(2 * FRAME_SIZE, FRAME_SIZE).expect("carve");
+        let length = (first.end - first.start) as usize;
+        // SAFETY: the run is this pool's, owned by this test for its lifetime.
+        let bytes = unsafe { core::slice::from_raw_parts_mut(first.start as *mut u8, length) };
+        bytes.fill(0x5A);
+        // SAFETY: nothing references the run once the pattern is written.
+        unsafe { pool.release_run(first) };
+        let again = pool.carve(2 * FRAME_SIZE, FRAME_SIZE).expect("re-carve");
+        // SAFETY: as above.
+        let seen = unsafe { core::slice::from_raw_parts(again.start as *const u8, length) };
+        assert!(
+            seen.iter().all(|byte| *byte == 0),
+            "a re-carved run carried the previous owner's bytes"
+        );
+    }
+
+    /// Accounting exactly once, across a release and a re-carve.
+    #[test]
+    fn a_run_is_accounted_once_through_the_returned_table() {
+        let mut pool = pool(8);
+        let free = pool.available();
+        let run = pool.carve(3 * FRAME_SIZE, FRAME_SIZE).expect("carve");
+        assert_eq!(pool.available(), free - 3);
+        // SAFETY: as above.
+        unsafe { pool.release_run(run) };
+        assert_eq!(
+            pool.available(),
+            free,
+            "a returned run was not credited once"
+        );
+        let again = pool.carve(3 * FRAME_SIZE, FRAME_SIZE).expect("re-carve");
+        assert_eq!(
+            pool.available(),
+            free - 3,
+            "a re-carved run was not debited once"
+        );
+        // SAFETY: as above.
+        unsafe { pool.release_run(again) };
+        assert_eq!(pool.available(), free);
+    }
+
+    /// Coalescing must not credit the neighbour a second time.
+    #[test]
+    fn coalescing_two_halves_credits_each_once() {
+        let mut pool = pool(8);
+        let free = pool.available();
+        let whole = pool.carve(4 * FRAME_SIZE, FRAME_SIZE).expect("carve");
+        let low = Span::new(whole.start, whole.start + 2 * FRAME_SIZE);
+        let high = Span::new(low.end, whole.end);
+        // SAFETY: both halves are parts of a run this pool carved.
+        unsafe {
+            pool.release_run(low);
+            pool.release_run(high);
+        }
+        assert_eq!(pool.available(), free, "coalescing double-counted a half");
+        // And they really did coalesce: the whole run is carvable again.
+        assert_eq!(pool.largest_returned(), 4 * FRAME_SIZE);
+        let again = pool
+            .carve(4 * FRAME_SIZE, FRAME_SIZE)
+            .expect("re-carve whole");
+        assert_eq!(again.start, whole.start);
+    }
+
+    /// `largest_contiguous` must describe what `carve` will actually serve.
+    #[test]
+    fn largest_contiguous_sees_the_returned_table() {
+        let mut pool = pool(8);
+        // Spend the frontier entirely, then give half of it back.
+        let all = pool.carve(8 * FRAME_SIZE, FRAME_SIZE).expect("carve");
+        assert_eq!(pool.largest_contiguous(), 0);
+        let half = Span::new(all.start, all.start + 4 * FRAME_SIZE);
+        // SAFETY: the half is part of a run this pool carved.
+        unsafe { pool.release_run(half) };
+        assert_eq!(
+            pool.largest_contiguous(),
+            4 * FRAME_SIZE,
+            "the pool under-reported memory it would have handed out"
+        );
+        assert!(pool.carve(4 * FRAME_SIZE, FRAME_SIZE).is_some());
+    }
 }

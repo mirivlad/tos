@@ -210,8 +210,36 @@ impl Object {
     pub fn is_affine(&self) -> bool {
         matches!(
             self,
-            Object::Region { .. } | Object::LaunchPlanBuilder { .. } | Object::LaunchPlan { .. }
+            Object::Region { .. }
+                | Object::LaunchPlanBuilder { .. }
+                | Object::LaunchPlan { .. }
+                // ADR-0037 §2 fixes **both** `DmaRegion` forms as neither
+                // shareable nor transferable, and that is a property of the
+                // object rather than of the language that names it. A second
+                // name is exactly what generic attenuation would make, so it is
+                // refused here — in the nucleus — and not only by a checker the
+                // nucleus does not run.
+                | Object::DmaRegion { .. }
         )
+    }
+
+    /// Whether this object may be **copied to another holder** at all.
+    ///
+    /// Distinct from [`Object::is_region`], and deliberately not folded into it:
+    /// a `DmaRegion` is not a region in the memory tree — different table,
+    /// different storage, different lifecycle — and saying it was would put it
+    /// where every rule about `RegionId` would be wrong about it. What it shares
+    /// with a region is only this: no generic path may hand a second holder a
+    /// name for it.
+    ///
+    /// Refused by every path that copies: generic capability transfer in a
+    /// message, `Endowment::Existing`, and a launch plan's entries. For a region
+    /// the reason is that the capability is half of what a holder needs and the
+    /// other half is a mapping in an address space that may not exist yet; for a
+    /// DMA region it is that **and** ADR-0037's affinity, which exists so that a
+    /// handle cannot cross a task boundary while a device is writing through it.
+    pub fn is_delegable(&self) -> bool {
+        !self.is_region() && !matches!(self, Object::DmaRegion { .. })
     }
 
     /// The plan this names, in either state.
@@ -992,10 +1020,9 @@ fn retain_transit(object: Object) -> Result<(), NotGranted> {
         Object::MemoryAuthority { .. } => retain_capability(object),
         // The same, for an assignment: a delegation makes another name for one
         // claim, and the claim outlives whichever name goes first.
-        Object::PciFunction { .. }
-        | Object::MmioRegion { .. }
-        | Object::IrqSource { .. }
-        | Object::DmaRegion { .. } => retain_capability(object),
+        Object::PciFunction { .. } | Object::MmioRegion { .. } | Object::IrqSource { .. } => {
+            retain_capability(object)
+        }
         // Unreachable: a region does not travel in the generic transfer table
         // at all. It has a bound of its own (`IPC_V1` §3) and a lifecycle of
         // its own — an internal reference rather than a name (ADR-0075 §6) —
@@ -1008,10 +1035,13 @@ fn retain_transit(object: Object) -> Result<(), NotGranted> {
         // different one underneath: it is affine, so a delegation that copied
         // it would produce a second holder of the decision *and* a second
         // release of every reference its entries took.
+        // And a DMA region for a third reason on top of both: it is affine by
+        // ADR-0037, and its backing is mapped in exactly one address space.
         Object::Region { .. }
         | Object::SharedRegion { .. }
         | Object::LaunchPlanBuilder { .. }
-        | Object::LaunchPlan { .. } => Err(NotGranted::NoRoom),
+        | Object::LaunchPlan { .. }
+        | Object::DmaRegion { .. } => Err(NotGranted::NoRoom),
     }
 }
 
@@ -1026,10 +1056,10 @@ fn release_transit(object: Object) {
         Object::MemoryAuthority { .. }
         | Object::PciFunction { .. }
         | Object::MmioRegion { .. }
-        | Object::IrqSource { .. }
-        | Object::DmaRegion { .. } => release_capability(object),
+        | Object::IrqSource { .. } => release_capability(object),
         // As above: never taken, so never given back.
         Object::Region { .. }
+        | Object::DmaRegion { .. }
         | Object::SharedRegion { .. }
         | Object::LaunchPlanBuilder { .. }
         | Object::LaunchPlan { .. } => {}
@@ -1242,7 +1272,7 @@ pub fn endowable(endowment: &[Endowment]) -> Result<(), NotGranted> {
         // when the endowment is decided. Operations 19 and 20 are where a
         // process is created *with* a region, and until they exist there is no
         // honest way to say it here.
-        if object.is_region() {
+        if !object.is_delegable() {
             return Err(NotGranted::ReceiverExists);
         }
         // And a plan is refused because a plan is what this *is*. An entry
