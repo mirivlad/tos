@@ -807,7 +807,7 @@ fn launch_plan_endow(caller: usize, frame: &TrapFrame) -> Answer {
     // does not exist yet — and a plan is what this is. A reply names one call of
     // one caller and is single-use; no accepted contract makes one a startup
     // endowment, so it is refused rather than quietly admitted here.
-    if object.is_region() || object.plan().is_some() || matches!(object, Object::Reply { .. }) {
+    if !object.is_delegable() || object.plan().is_some() || matches!(object, Object::Reply { .. }) {
         return Answer::status(E_NO_CAPABILITY);
     }
     let plan = match capability::resolve(caller, frame.rsi, 0) {
@@ -1562,6 +1562,18 @@ fn dma_region_allocate(caller: usize, function: u64, authority: u64, bytes: u64)
         }
         Ok(_) => return Answer::status(E_NO_CAPABILITY),
     };
+    // **Everything fallible before anything is spent** (ADR-0084 §8). After a
+    // `grant` the object has a name, so undoing it is a release rather than a
+    // rollback — and a caller that got an error must not be left holding a
+    // hidden capability, a stranded mapping, an outstanding charge or a
+    // quarantine nobody asked for. So the two things that could fail *after* the
+    // region exists are checked before it does.
+    if crate::process::arguments_region() == 0 {
+        return Answer::status(E_BAD_ARGUMENT);
+    }
+    if !capability::has_room(caller) {
+        return Answer::status(E_LIMIT);
+    }
     let (region, region_generation, base, length) =
         match crate::dma::allocate(index, generation, funding, caller, bytes) {
             Ok(made) => made,
@@ -1570,6 +1582,14 @@ fn dma_region_allocate(caller: usize, function: u64, authority: u64, bytes: u64)
             Err(crate::dma::Refused::Limit) => return Answer::status(E_LIMIT),
             Err(crate::dma::Refused::Paging) => return Answer::status(E_LIMIT),
         };
+    // The record is written **before** the name exists, because it is the last
+    // thing that could fail and the checks above have already made it cannot.
+    if !report_mapping(caller, base, length) {
+        // Unreachable given the preflight, and handled rather than asserted:
+        // the region has no name yet, so this is a real rollback.
+        crate::dma::abandon(region, region_generation);
+        return Answer::status(E_BAD_ARGUMENT);
+    }
     match capability::grant(
         caller,
         Object::DmaRegion {
@@ -1580,16 +1600,13 @@ fn dma_region_allocate(caller: usize, function: u64, authority: u64, bytes: u64)
         0,
     ) {
         Ok(granted) => {
-            if !report_mapping(caller, base, length) {
-                crate::dma::abandon(region, region_generation);
-                return Answer::status(E_BAD_ARGUMENT);
-            }
             report_dma_region(caller, region, region_generation, length);
             Answer::value(granted)
         }
         Err(_) => {
-            // A region nothing can name is memory nothing can quarantine, so
-            // the failure to grant undoes it rather than stranding it.
+            // Also unreachable: `has_room` was true and nothing else runs
+            // between. A region nothing can name is memory nothing can
+            // quarantine, so it is undone rather than stranded.
             crate::dma::abandon(region, region_generation);
             Answer::status(E_LIMIT)
         }
@@ -2650,7 +2667,7 @@ fn resolve_transfers(
         // mapping in the receiver for both — and neither is expressible as a
         // delegated capability. Refused rather than quietly accepted into the
         // generic bound, which would let one message spend the other's.
-        if object.is_region() {
+        if !object.is_delegable() {
             return Err(Answer::status(E_NO_CAPABILITY));
         }
         *entry = (object, capability::rights_of(caller, handle), 0);

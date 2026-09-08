@@ -1577,7 +1577,17 @@ pub fn drop_descendant(index: u32, generation: u32, needs: Needs) {
     // gone must stop decoding and stop mastering while there is still an
     // assignment to say so; afterwards there is no object left to act through.
     apply_enables(&settled);
-    // SAFETY: as above; re-borrowed because `apply_enables` reads the device.
+    // **And every descendant's departure re-asks the DMA question**, whichever
+    // kind of descendant it was (ADR-0084 §5d). This is deliberately here and
+    // not in the DMA teardown path: the predicate that frees quarantined memory
+    // is `no live bus-mastering descendant`, and the descendant that clears it
+    // is often *not* a DMA region — a driver that released its buffers while
+    // holding an interrupt source frees them by releasing the source, and a
+    // sweep that only ran from the DMA path would leave those frames, their
+    // charge and their assignment pinned for the rest of the boot.
+    crate::dma::sweep(index, generation);
+    // SAFETY: as above; re-borrowed because `apply_enables` and the sweep read
+    // the device and the tables.
     let entry = &mut unsafe { table() }[usable];
     end_if_unreachable(index, entry);
 }

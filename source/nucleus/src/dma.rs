@@ -260,7 +260,15 @@ pub fn allocate(
             (run.end - run.start) as usize,
         )
     };
-    let lane = held as u32;
+    let mut taken = [false; crate::process::MAX_DMA_REGIONS];
+    for region in slots.iter() {
+        if region.live && region.holder == holder as u32 {
+            if let Some(slot) = taken.get_mut(region.lane as usize) {
+                *slot = true;
+            }
+        }
+    }
+    let lane = first_free_lane(&taken).ok_or(Refused::Limit)?;
     let base = match crate::process::map_dma(holder, lane, run.start, bytes) {
         Ok(base) => base,
         Err(()) => {
@@ -293,6 +301,17 @@ pub fn allocate(
     region.names = 0;
     region.live = true;
     Ok((index as u32, region.generation, base, bytes))
+}
+
+/// The lowest lane this process is not already using.
+///
+/// **Not the count of live regions**, which is the shape this started as and is
+/// wrong the moment a lifecycle is not last-in-first-out: with A at lane 0 and B
+/// at lane 1, releasing A leaves one live region, and a count would put the next
+/// allocation at lane 1 — on top of B. Separated out so the arithmetic can be
+/// tested without a machine under it.
+fn first_free_lane(taken: &[bool]) -> Option<u32> {
+    taken.iter().position(|used| !used).map(|lane| lane as u32)
 }
 
 /// The live region a capability names, as the facts a reader may copy.
@@ -502,8 +521,8 @@ pub fn sweep(assignment: u32, generation: u32) {
             // more — the region's lane went with `destroy` — and no part of it
             // has been released.
             unsafe { crate::memory::frames().release_run(run) };
-            // SAFETY: single-context nucleus; nothing else holds the tree.
             if let Some(charge) = charge {
+                // SAFETY: single-context nucleus; nothing else holds the tree.
                 if unsafe { crate::memory::authority() }
                     .refund_grant(charge)
                     .is_err()
@@ -573,4 +592,33 @@ fn report_reclaimed(holder: u32, run: Span) {
     tos_serial::puts(b" frames=");
     tos_serial::put_u32_decimal(((run.end - run.start) / FRAME_SIZE) as u32);
     tos_serial::puts(b" drained=1 refunded=1 asserted_by=nucleus\r\n");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The non-LIFO lifecycle the count-as-lane form got wrong: allocate A and
+    /// B, release A, allocate C while B is live.
+    #[test]
+    fn a_freed_lane_is_reused_and_a_live_one_is_not() {
+        // A at 0, B at 1.
+        let mut taken = [false; 4];
+        taken[0] = true;
+        assert_eq!(first_free_lane(&taken), Some(1));
+        taken[1] = true;
+        // A goes; B stays at lane 1.
+        taken[0] = false;
+        assert_eq!(
+            first_free_lane(&taken),
+            Some(0),
+            "the next region was put on top of a live one"
+        );
+    }
+
+    #[test]
+    fn a_full_process_has_no_lane() {
+        assert_eq!(first_free_lane(&[true, true, true, true]), None);
+        assert_eq!(first_free_lane(&[]), None);
+    }
 }
