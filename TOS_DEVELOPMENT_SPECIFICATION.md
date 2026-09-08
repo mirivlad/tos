@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `3b4a29d6d24bdff72c22ba313e044c8917e9558e924b2503d0bc227431907a29`\
+Source-manifest SHA-256: `5e7ddc7ff819a8ce8ddd05a9309e610370401f08f1ffb3f8e2c57cd0608e9e57`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -6025,7 +6025,7 @@ declaration. Its canonical identity consists of:
 source_set_identity
 canonical repository path
 sha256(normalized_source_bytes)
-language version (1.0 or 1.1, as the module's header declares)
+language version (as the module's header declares — docs/42 lists the minors)
 profile declaration
 ```
 
@@ -7193,9 +7193,18 @@ module system.example version 1.0 profile bootstrap;
 The version is the source-language major/minor version, not a module release
 number. For V1 the major MUST be `1`; any other is
 `E1601_UNSUPPORTED_LANGUAGE_VERSION`, and a minor the frontend does not
-implement is `E1602_UNSUPPORTED_LANGUAGE_MINOR`. The accepted minors are **0 and
-1**: 1.1 adds the direct-interface effect form of docs/39 and nothing else
-(ADR-0080).
+implement is `E1602_UNSUPPORTED_LANGUAGE_MINOR`. The accepted minors are **0, 1,
+2 and 3**, and each adds exactly what its decision decided: 1.1 the
+direct-interface effect form of docs/39 (ADR-0080), 1.2 device memory and region
+indexed access (ADR-0081), 1.3 capability representation separated from interface
+identity (ADR-0085).
+
+**Accepted and implemented are two different statements**, and this one is worth
+keeping apart because it is currently false in one direction: **1.3 is accepted
+and is not yet implemented.** Until its slice lands, a module declaring it is
+rejected whole by its header with `E1602_UNSUPPORTED_LANGUAGE_MINOR` — which is
+the fail-closed direction, and is what `E1602` is for. A frontend advertises a
+minor when it performs it, not when a decision naming it is approved.
 
 **A module receives the language its header declares**, not the newest the
 frontend implements. A 1.0 module using a 1.1 form is
