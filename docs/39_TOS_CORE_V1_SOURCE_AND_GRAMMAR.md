@@ -41,7 +41,7 @@ declaration. Its canonical identity consists of:
 source_set_identity
 canonical repository path
 sha256(normalized_source_bytes)
-language version (1.0 or 1.1, as the module's header declares)
+language version (as the module's header declares — docs/42 lists the minors)
 profile declaration
 ```
 
