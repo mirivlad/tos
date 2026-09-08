@@ -125,6 +125,11 @@ struct Assignment {
     /// two refusals it feeds (ADR-0082 §5) must hold for the first mapping and
     /// the first configuration write, not from the second onwards.
     msix: MsiX,
+    /// Where this function's PCI Express capability is, read once at claim time
+    /// (ADR-0084 §5c). Absent means the function is not DMA-capable under this
+    /// contract, and the refusal is a fact about the function rather than a
+    /// policy about it.
+    express: Express,
     /// Where this function's conventional MSI capability is, if it has one.
     ///
     /// Reserved for the same reason as MSI-X and by the same rule (ADR-0082
@@ -242,6 +247,67 @@ impl MsiX {
     }
 }
 
+/// Where a function keeps its PCI Express capability, and which version of it.
+///
+/// **This is what makes a function DMA-capable at all** (ADR-0084 §5c). Its
+/// Device Status carries `Transactions Pending`, the architected bit that says
+/// whether the function still has non-posted requests outstanding — obligation
+/// (1) of the teardown proof, and a bit a conventional PCI function does not
+/// have. A function without this capability gets no DMA authority: refused,
+/// not approximated.
+///
+/// Its Device Control also carries the ordering and coherency bits the proof
+/// depends on, which is why they become nucleus-owned.
+#[derive(Clone, Copy)]
+struct Express {
+    /// The capability's offset, or zero when the function has none.
+    capability: u8,
+    /// The capability version, from its own Capabilities register. Device
+    /// Control 2 exists from version 2, and reserving a register a function
+    /// does not implement would reserve whatever follows it.
+    version: u8,
+}
+
+impl Express {
+    const ABSENT: Self = Self {
+        capability: 0,
+        version: 0,
+    };
+
+    fn present(&self) -> bool {
+        self.capability != 0
+    }
+}
+
+/// The PCI Express capability's identifier, and the registers of it this
+/// nucleus reads or owns. All offsets are from the capability's own start.
+const CAP_ID_EXPRESS: u64 = 0x10;
+/// Capabilities register; its low four bits are the capability version.
+const EXPRESS_CAPABILITIES: u64 = 0x02;
+const EXPRESS_DEVICE_CONTROL: u64 = 0x08;
+const EXPRESS_DEVICE_STATUS: u64 = 0x0A;
+const EXPRESS_DEVICE_CONTROL_2: u64 = 0x28;
+const EXPRESS_V1_BYTES: u64 = 0x24;
+const EXPRESS_V2_BYTES: u64 = 0x3C;
+
+/// Device Control bit 4. **An ordering condition** (ADR-0084 §5c, P2): a
+/// requester permitted to relax ordering can have its posted writes overtake
+/// the completion the teardown proof flushes with.
+const EXPRESS_RELAXED_ORDERING_BIT: u64 = 4;
+/// Device Control bit 11. **A coherency condition and not an ordering one**
+/// (P4): the DMA frames are mapped write-back, and a non-snooping device write
+/// may leave the CPU reading stale data — which would make "the write arrived"
+/// true and useless. The drain proof does not depend on it; correctness of what
+/// arrived does.
+const EXPRESS_NO_SNOOP_BIT: u64 = 11;
+/// Device Control 2 bits 8 and 9. **Ordering conditions** (P3), on version 2
+/// and later only.
+const EXPRESS_IDO_REQUEST_BIT: u64 = 8;
+const EXPRESS_IDO_COMPLETION_BIT: u64 = 9;
+/// Device Status bit 5: the function has issued non-posted requests that have
+/// not completed.
+const EXPRESS_TRANSACTIONS_PENDING: u64 = 1 << 5;
+
 /// One MSI-X table entry: message address low, high, message data, vector
 /// control.
 const MSIX_ENTRY_BYTES: u64 = 16;
@@ -310,6 +376,7 @@ impl Assignment {
         bars: [Bar::EMPTY; BARS],
         msix: MsiX::ABSENT,
         msi: Msi::ABSENT,
+        express: Express::ABSENT,
         header: Header::Unknown,
         names: 0,
         live: false,
@@ -469,6 +536,7 @@ pub fn claim(
     entry.bars = [Bar::EMPTY; BARS];
     entry.msix = MsiX::ABSENT;
     entry.msi = Msi::ABSENT;
+    entry.express = Express::ABSENT;
     entry.header = Header::Unknown;
     entry.live = true;
     let measured = *entry;
@@ -481,9 +549,10 @@ pub fn claim(
     // BAR sizing: nothing else holds this function, so nothing else is walking
     // its capability list at the same time.
     table[index].header = read_header(&measured);
-    let (msix, msi) = find_interrupt_capabilities(&measured);
+    let (msix, msi, express) = find_interrupt_capabilities(&measured);
     table[index].msix = msix;
     table[index].msi = msi;
+    table[index].express = express;
     let measured = table[index];
     // **The function is put into a defined state before CPL 3 can name it**
     // (ADR-0082 §5b, §5c, §5d). Whatever the firmware left is discarded rather
@@ -650,6 +719,83 @@ fn normalise(entry: &Assignment) {
         let value = read_config(entry, control, 2);
         write_config(entry, control, 2, value & !MSI_ENABLE);
     }
+    normalise_express(entry);
+}
+
+/// Puts the ordering and coherency bits into the state the DMA teardown proof
+/// needs, before any capability naming the assignment exists (ADR-0084 §5c).
+///
+/// **Three of these are ordering conditions and one is not**, and the difference
+/// is kept because getting it wrong would explain the right action with the
+/// wrong reason. Relaxed Ordering and ID-Based Ordering let a requester's posted
+/// writes overtake the completion §5b flushes with; No Snoop lets a write arrive
+/// without the CPU seeing it, which leaves the flush true and useless.
+///
+/// After this the four bits are the nucleus's: [`write_is_permitted`] refuses a
+/// CPL-3 write that would change any of them, so a driver cannot invalidate the
+/// teardown proof of a region it no longer holds.
+fn normalise_express(entry: &Assignment) {
+    if !entry.express.present() {
+        return;
+    }
+    let control = u64::from(entry.express.capability) + EXPRESS_DEVICE_CONTROL;
+    let value = read_config(entry, control, 2);
+    let wanted = value & !((1 << EXPRESS_RELAXED_ORDERING_BIT) | (1 << EXPRESS_NO_SNOOP_BIT));
+    if wanted != value {
+        write_config(entry, control, 2, wanted);
+    }
+    // Device Control 2 exists from capability version 2. On version 1 there is
+    // no ID-Based Ordering to disable, and writing the offset anyway would be
+    // writing whatever the device keeps there.
+    if entry.express.version >= 2 {
+        let control2 = u64::from(entry.express.capability) + EXPRESS_DEVICE_CONTROL_2;
+        let value = read_config(entry, control2, 2);
+        let wanted = value & !((1 << EXPRESS_IDO_REQUEST_BIT) | (1 << EXPRESS_IDO_COMPLETION_BIT));
+        if wanted != value {
+            write_config(entry, control2, 2, wanted);
+        }
+    }
+}
+
+/// Whether this function is DMA-capable under ADR-0084 §5c's P1.
+///
+/// **A fact about the function, checked rather than assumed.** Without the PCI
+/// Express capability there is no `Transactions Pending` bit, so obligation (1)
+/// of the teardown proof has no architected evidence — and a DMA region whose
+/// reclaim could never be proved is one that must not be created.
+pub fn supports_dma(index: u32, generation: u32) -> bool {
+    assignment(index, generation).is_some_and(|entry| entry.express.present())
+}
+
+/// Whether the function still has non-posted requests outstanding.
+///
+/// **The whole of obligation (1)**, and half of the whole drain (ADR-0084 §5b):
+/// the value of this read proves no non-posted request the function issued is
+/// still outstanding, and the *completion* of the same read proves its earlier
+/// posted writes reached their destination — because a completion may not pass a
+/// previously issued posted request travelling the same way.
+///
+/// `None` means **the question was not answered**, which is not the same as a
+/// negative answer and is never treated as one: a function that has stopped
+/// responding returns all-ones, and all-ones is not an observation of a clear
+/// bit. Every `None` is a fail-closed outcome at the caller.
+pub fn transactions_pending(index: u32, generation: u32) -> Option<bool> {
+    let entry = assignment(index, generation)?;
+    if !entry.express.present() {
+        return None;
+    }
+    let status = read_config(
+        &entry,
+        u64::from(entry.express.capability) + EXPRESS_DEVICE_STATUS,
+        2,
+    );
+    // A configuration read that did not complete reads as all ones. Treating
+    // that as "Transactions Pending is clear" is exactly the mistake §5d exists
+    // to forbid.
+    if status == 0xFFFF {
+        return None;
+    }
+    Some(status & EXPRESS_TRANSACTIONS_PENDING != 0)
 }
 
 /// MSI-X Message Control: the enable bit, and the mask that silences every entry
@@ -730,15 +876,16 @@ const PLACEMENT_RANGES: usize = 6;
 /// the two refusals it feeds simply have nothing to refuse.
 /// One walk, both capabilities, because walking the list twice would read a
 /// device-supplied structure twice and could reach two different answers.
-fn find_interrupt_capabilities(entry: &Assignment) -> (MsiX, Msi) {
+fn find_interrupt_capabilities(entry: &Assignment) -> (MsiX, Msi, Express) {
     // Bit 4 of the status register says whether there is a capability list at
     // all. A device without one may leave 0x34 holding anything.
     const STATUS: u64 = 0x06;
     const HAS_CAPABILITY_LIST: u64 = 1 << 4;
     let mut msix = MsiX::ABSENT;
     let mut msi = Msi::ABSENT;
+    let mut express = Express::ABSENT;
     if read_config(entry, STATUS, 2) & HAS_CAPABILITY_LIST == 0 {
-        return (msix, msi);
+        return (msix, msi, express);
     }
     let mut at = read_config(entry, CAPABILITY_POINTER, 1) & !0x3;
     let mut steps = 0;
@@ -749,6 +896,7 @@ fn find_interrupt_capabilities(entry: &Assignment) -> (MsiX, Msi) {
         match read_config(entry, at, 1) {
             CAP_ID_MSIX => msix = read_msix_at(entry, at),
             CAP_ID_MSI => msi = read_msi_at(entry, at),
+            CAP_ID_EXPRESS => express = read_express_at(entry, at),
             _ => {}
         }
         let next = read_config(entry, at + 1, 1) & !0x3;
@@ -761,7 +909,32 @@ fn find_interrupt_capabilities(entry: &Assignment) -> (MsiX, Msi) {
         at = next;
         steps += 1;
     }
-    (msix, msi)
+    (msix, msi, express)
+}
+
+/// Reads one PCI Express capability, taking its version from its own
+/// Capabilities register (ADR-0084 §5c).
+///
+/// The version decides how much of the structure exists, and therefore how much
+/// of it this nucleus may state a rule over: reserving Device Control 2 on a
+/// version-1 capability would reserve whatever capability follows it, which is
+/// the mistake ADR-0082 §5c already refused for conventional MSI.
+fn read_express_at(entry: &Assignment, capability: u64) -> Express {
+    let version = (read_config(entry, capability + EXPRESS_CAPABILITIES, 2) & 0xF) as u8;
+    let bytes = if version >= 2 {
+        EXPRESS_V2_BYTES
+    } else {
+        EXPRESS_V1_BYTES
+    };
+    // A capability claiming to extend past conventional space is malformed, and
+    // a partial reservation would be worse than none.
+    if capability + bytes > CONVENTIONAL_CONFIG_BYTES {
+        return Express::ABSENT;
+    }
+    Express {
+        capability: capability as u8,
+        version,
+    }
 }
 
 /// Reads one conventional MSI capability, deriving its extent from its own
@@ -1043,6 +1216,27 @@ fn write_is_permitted(entry: &Assignment, offset: u64, width: u64, value: u64) -
             return false;
         }
     }
+    // The ordering and coherency bits the DMA teardown proof rests on
+    // (ADR-0084 §5c). **Four bits of two registers, and not the registers**: a
+    // driver has ordinary business in Device Control — maximum payload size,
+    // extended tags, maximum read request — and reserving all of it would be the
+    // wide narrowing ADR-0082 §5a already refused for a Command register.
+    if entry.express.present() {
+        let control = u64::from(entry.express.capability) + EXPRESS_DEVICE_CONTROL;
+        for bit in [EXPRESS_RELAXED_ORDERING_BIT, EXPRESS_NO_SNOOP_BIT] {
+            if changes_bit_of_word(entry, offset, width, value, control, bit) {
+                return false;
+            }
+        }
+        if entry.express.version >= 2 {
+            let control2 = u64::from(entry.express.capability) + EXPRESS_DEVICE_CONTROL_2;
+            for bit in [EXPRESS_IDO_REQUEST_BIT, EXPRESS_IDO_COMPLETION_BIT] {
+                if changes_bit_of_word(entry, offset, width, value, control2, bit) {
+                    return false;
+                }
+            }
+        }
+    }
     // A bridge forwards, and four of its Bridge Control bits decide what and to
     // whom. The other four in that byte are parity, SERR, master-abort mode and
     // fast back-to-back — a driver's ordinary business, and deliberately left
@@ -1125,6 +1319,26 @@ fn changes_bit(
     written != current
 }
 
+/// Whether a write would change one bit of a **two-byte** register.
+///
+/// [`changes_bit`] is stated over one byte because the Command register's owned
+/// bits are all in its low one. The PCI Express bits are not — No Snoop is bit
+/// 11 and the IDO pair is bits 8 and 9 — so the bit is located inside the
+/// register and then compared against the byte that actually holds it. The
+/// "unchanged is permitted" rule is the same one: a caller reading a register
+/// and writing it back has changed nothing.
+fn changes_bit_of_word(
+    entry: &Assignment,
+    offset: u64,
+    width: u64,
+    value: u64,
+    word: u64,
+    bit: u64,
+) -> bool {
+    let byte = word + bit / 8;
+    changes_bit(entry, offset, width, value, byte, bit % 8)
+}
+
 /// A page, as this mechanism measures one.
 const FRAME_SIZE: u64 = 4096;
 
@@ -1163,6 +1377,18 @@ impl Needs {
     /// window and the future DMA mapping either side of it.
     pub const MSIX: Needs = Needs {
         memory_decoding: true,
+        bus_mastering: true,
+    };
+
+    /// A DMA region (ADR-0084 §4). The **device** initiates every access, so it
+    /// must master the bus; nothing about it requires the function to decode a
+    /// CPU access to itself, so memory decoding is untouched.
+    ///
+    /// This is the third answer to the same two questions and the reason they
+    /// were kept apart: a window moves the first, an interrupt source moves
+    /// both, and this moves only the second.
+    pub const DMA: Needs = Needs {
+        memory_decoding: false,
         bus_mastering: true,
     };
 }
@@ -1353,7 +1579,7 @@ pub fn drop_descendant(index: u32, generation: u32, needs: Needs) {
     apply_enables(&settled);
     // SAFETY: as above; re-borrowed because `apply_enables` reads the device.
     let entry = &mut unsafe { table() }[usable];
-    end_if_unreachable(entry);
+    end_if_unreachable(index, entry);
 }
 
 /// Makes the function's two enable bits agree with its two predicates.
@@ -1408,8 +1634,16 @@ fn apply_enables(entry: &Assignment) {
 /// The one rule, applied wherever either count falls: an assignment is live
 /// while *something* reaches it, and the generation advances only when nothing
 /// does. That is what makes a re-claimed BDF a different assignment.
-fn end_if_unreachable(entry: &mut Assignment) {
+fn end_if_unreachable(index: u32, entry: &mut Assignment) {
     if entry.names != 0 || entry.descendants != 0 {
+        return;
+    }
+    // **And not while memory is quarantined against it** (ADR-0084 §5d). Frames
+    // whose drain has not been proved keep the assignment alive, so the BDF
+    // cannot be claimed again, no second driver is handed a device that was
+    // never shown to be quiescent, and the quarantine keeps an owner that can
+    // retry. Bus mastering is already clear, so a pinned assignment is inert.
+    if crate::dma::quarantined_under(index, entry.generation) != 0 {
         return;
     }
     entry.live = false;
@@ -1437,6 +1671,17 @@ fn assignment(index: u32, generation: u32) -> Option<Assignment> {
     // SAFETY: single-context nucleus; a read under a checked index.
     let entry = unsafe { table() }[index];
     (entry.live && entry.generation == generation).then_some(entry)
+}
+
+/// Whether this function is currently a bus master, by its own predicate.
+///
+/// `None` when the assignment has gone. Asked by the DMA teardown proof
+/// (ADR-0084 §5b step 1), which needs "nothing may still be issuing" and not
+/// "this particular descendant went": an interrupt source of the same function
+/// keeps the answer `true`, and that is the sibling case the quarantine exists
+/// for.
+pub fn bus_mastering(index: u32, generation: u32) -> Option<bool> {
+    assignment(index, generation).map(|entry| entry.bus_mastering > 0)
 }
 
 /// Whether the assignment a capability names is still usable authority.
@@ -1478,7 +1723,7 @@ pub fn release(index: u32, generation: u32) -> Result<(), ()> {
     // mapping keeps it live: releasing the last function handle while a driver
     // still holds a window must not let the same BDF be claimed again and
     // reached through that window.
-    end_if_unreachable(entry);
+    end_if_unreachable(index, entry);
     Ok(())
 }
 
@@ -1502,7 +1747,7 @@ pub fn abandon(index: u32, generation: u32) {
         // would be worse than the leak this exists to prevent.
         return;
     }
-    end_if_unreachable(entry);
+    end_if_unreachable(index, entry);
 }
 
 /// The function an assignment names, for the audit record.
