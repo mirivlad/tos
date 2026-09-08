@@ -274,6 +274,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 |---|---|
 | `E1501_UNDECLARED_CAPABILITY_EFFECT` | an operation requires a capability whose name is not in the enclosing function's effect set, or a call requires an effect the caller's `uses` set does not include; the `required_by` field names the callee, or `operation` for a direct use |
 | `E1502_FORGED_CAPABILITY` | a capability interface is constructed or cast into existence rather than received through its declared import; the `interface` field names it and `operation` says which |
+| `E1503_NONIMPORTABLE_CAPABILITY` | an `import capability` names an accepted interface whose capability representation is not startup-importable (`SYSTEM_INTERFACE_V1` §4.3, ADR-0085 §4a). Fields: `interface`, `representation`. **Not `CapabilityDenied`**, which is a launcher declining a well-formed request under policy: this declaration is invalid *before* any policy is consulted, because no import can produce a value of that representation — there is nowhere in the declaration for the element type or the mutability to come from. Reporting the two alike would make an unsatisfiable declaration look like a decision somebody made |
 
 ### Unsafe and FFI boundary (stage `effect`)
 

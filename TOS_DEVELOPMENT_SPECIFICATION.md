@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `aca8f12343bfa90de6071bccb212562fd2d5d9404064e36dac85bf197fd5ca5a`\
+Source-manifest SHA-256: `56c5d5ea8206803cccd49fc08aa9bfe86d26fb06c18c7cd3fced4f421052ef76`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -8301,6 +8301,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 |---|---|
 | `E1501_UNDECLARED_CAPABILITY_EFFECT` | an operation requires a capability whose name is not in the enclosing function's effect set, or a call requires an effect the caller's `uses` set does not include; the `required_by` field names the callee, or `operation` for a direct use |
 | `E1502_FORGED_CAPABILITY` | a capability interface is constructed or cast into existence rather than received through its declared import; the `interface` field names it and `operation` says which |
+| `E1503_NONIMPORTABLE_CAPABILITY` | an `import capability` names an accepted interface whose capability representation is not startup-importable (`SYSTEM_INTERFACE_V1` §4.3, ADR-0085 §4a). Fields: `interface`, `representation`. **Not `CapabilityDenied`**, which is a launcher declining a well-formed request under policy: this declaration is invalid *before* any policy is consulted, because no import can produce a value of that representation — there is nowhere in the declaration for the element type or the mutability to come from. Reporting the two alike would make an unsatisfiable declaration look like a decision somebody made |
 
 ### Unsafe and FFI boundary (stage `effect`)
 

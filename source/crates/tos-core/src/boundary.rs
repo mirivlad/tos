@@ -50,7 +50,35 @@ pub(crate) fn check_boundary(source: &SourceUnit, schema: &Schema) -> Vec<Diagno
             .iter()
             .map(|segment| segment.text(source))
             .collect();
-        requested.insert(import.binding().text(source).to_string(), path.join("."));
+        let path = path.join(".");
+        // **An import of an authority no import can produce** (ADR-0085 §4a,
+        // `SYSTEM_INTERFACE_V1` §4.3). An import is typed
+        // `TypeDef::Capability(interface)`, so an interface represented by
+        // something else has no import that could be one: there is nowhere in
+        // the declaration for the element type or the mutability of the value to
+        // come from.
+        //
+        // **Reported here rather than left to the launcher**, and the difference
+        // is the whole reason this code exists. `CapabilityDenied` is a
+        // launcher's answer to a request it declined — the request was well
+        // formed and policy said no. This one is invalid before any policy is
+        // consulted: no launcher could satisfy it, whatever it decided.
+        if let Some(interface) = interfaces::interface(&path) {
+            if !interface.representation.startup_importable() {
+                diagnostics.push(
+                    Diagnostic::new(
+                        "E1503_NONIMPORTABLE_CAPABILITY",
+                        Severity::Error,
+                        Stage::Effect,
+                        import.span(),
+                        source,
+                    )
+                    .with_field("interface", interface.path)
+                    .with_field("representation", interface.representation.name()),
+                );
+            }
+        }
+        requested.insert(import.binding().text(source).to_string(), path);
     }
     for signature in schema.extern_functions() {
         if let Some(reason) = unavailable(source, signature, &requested) {

@@ -203,6 +203,7 @@ def main() -> int:
             ("E1410_INVALID_ATOMIC_ORDER", "type"),
             ("E1501_UNDECLARED_CAPABILITY_EFFECT", "effect"),
             ("E1502_FORGED_CAPABILITY", "effect"),
+            ("E1503_NONIMPORTABLE_CAPABILITY", "effect"),
             ("E1801_FFI_NOT_AVAILABLE", "effect"),
             ("E1802_UNSAFE_RATIONALE_REQUIRED", "effect"),
             ("E1700_RESOURCE_DECLARATION_REQUIRED", "resource"),
