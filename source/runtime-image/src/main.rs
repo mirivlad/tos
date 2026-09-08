@@ -748,7 +748,7 @@ unsafe fn bundle_entry(launch: &tos_launch::BundleLaunch) -> ! {
         )
     };
     let mut endowment = Endowment {
-        mappings: [DeviceMapping::EMPTY; MAX_DEVICE_MAPPINGS],
+        mappings: tos_launch::DeviceMappings::new(),
         held,
         arguments: launch.arguments_base,
         report: Report {
@@ -923,7 +923,7 @@ pub unsafe extern "C" fn runtime_entry(launch: *const Launch) -> ! {
         )
     };
     let mut endowment = Endowment {
-        mappings: [DeviceMapping::EMPTY; MAX_DEVICE_MAPPINGS],
+        mappings: tos_launch::DeviceMappings::new(),
         held,
         arguments: launch.arguments_base,
         report,
@@ -1665,67 +1665,23 @@ struct Endowment<'a> {
     /// become a window. `docs/42` §2's rule that a process never observes a
     /// region's address is about the *program*; something has to perform the
     /// access, and it is this.
-    mappings: [DeviceMapping; MAX_DEVICE_MAPPINGS],
-}
-
-/// How many device mappings one process may hold at once.
-const MAX_DEVICE_MAPPINGS: usize = 4;
-
-/// One mapped device window, as the host needs it (ADR-0081 §7).
-#[derive(Clone, Copy)]
-struct DeviceMapping {
-    /// The capability the module names it by, or zero for an empty slot. A
-    /// handle of all zeros names nothing in any table, so zero is safe as the
-    /// empty marker rather than needing a flag beside it.
-    handle: u64,
-    /// Where the nucleus mapped it in this address space.
-    base: u64,
-    /// How many bytes it covers. Every access is checked against this.
-    length: u64,
-    /// Whether the mapping is writable. The page table enforces this too — a
-    /// read-only grant has no `WRITABLE` bit — and this is the check that
-    /// refuses *before* the processor faults.
-    writable: bool,
-}
-
-impl DeviceMapping {
-    const EMPTY: Self = Self {
-        handle: 0,
-        base: 0,
-        length: 0,
-        writable: false,
-    };
+    ///
+    /// The table itself is `tos-launch`'s (`DeviceMappings`), beside the
+    /// `MmioMapRecord` the nucleus writes into it: two halves of one handoff in
+    /// one contract, and — being a library — a thing that can be tested rather
+    /// than only booted.
+    mappings: tos_launch::DeviceMappings,
 }
 
 impl Endowment<'_> {
     /// Records a window this process was just granted.
-    ///
-    /// Refuses rather than overwriting when the table is full: a bridge that
-    /// silently dropped one would leave a capability the module holds and this
-    /// host cannot serve, which is a worse failure than the refusal.
     fn remember(&mut self, handle: u64, record: tos_launch::MmioMapRecord, writable: bool) -> bool {
-        let Some(slot) = self.mappings.iter_mut().find(|slot| slot.handle == 0) else {
-            return false;
-        };
-        *slot = DeviceMapping {
-            handle,
-            base: record.base,
-            length: record.length,
-            writable,
-        };
-        true
+        self.mappings.remember(handle, record, writable)
     }
 
     /// The mapping a capability names, if this process holds it.
-    fn mapping(&self, handle: Handle) -> Option<DeviceMapping> {
-        let named = handle.get();
-        if named == 0 {
-            return None;
-        }
-        self.mappings
-            .iter()
-            .find(|mapping| mapping.handle == named)
-            .copied()
+    fn mapping(&self, handle: Handle) -> Option<tos_launch::DeviceMapping> {
+        self.mappings.mapping(handle.get())
     }
 }
 
@@ -1838,6 +1794,13 @@ impl System for Endowment<'_> {
                 interfaces::ObjectKind::PciBus => tos_launch::OBJECT_PCI_BUS,
                 interfaces::ObjectKind::PciFunction => tos_launch::OBJECT_PCI_FUNCTION,
                 interfaces::ObjectKind::IrqSource => tos_launch::OBJECT_IRQ_SOURCE,
+                // Mapped for completeness of the kind table and reached by no
+                // startup request: `platform.dma.Region` is not importable
+                // (`SYSTEM_INTERFACE_V1` §4.3), so this arm answers a question
+                // nobody can ask. Answering it with the right kind rather than
+                // omitting it keeps "which object does this interface name" a
+                // total function, which is what the object-kind check is.
+                interfaces::ObjectKind::DmaRegion => tos_launch::OBJECT_DMA_REGION,
             })?;
         let capability = answer?;
         self.report.line(&alloc::format!(
@@ -2019,6 +1982,29 @@ impl System for Endowment<'_> {
                 "TOS.RUN.INTERFACE operation={} status={status}",
                 call.operation
             )),
+        }
+        // **A successful release retires the mapping before control returns to
+        // TOS Core** (ADR-0085 §8a). The nucleus invalidating a handle settles a
+        // later *operation* — it answers `E_NO_CAPABILITY` — but it does not
+        // settle a later indexed access, because an indexed access is served
+        // from the table above and never reaches the nucleus. Both stale paths
+        // have to close, and they close differently.
+        //
+        // **Keyed on the release rather than on the interface**, which is
+        // deliberate: a mapping filed under a handle whose object has just been
+        // destroyed cannot be served by anything, whatever interface the handle
+        // was of. For `platform.dma.Region` that is §8a's normative
+        // requirement; for an interface that holds no mapping it retires
+        // nothing. A third statement of which representations own a mapping
+        // would be a third thing to keep in step with the schema.
+        //
+        // **A failed release leaves the entry intact**, because the object did
+        // not end and the mapping is still this process's — which is why this
+        // reads `status` rather than assuming the call did what it was asked.
+        if performed.name == "capability_release" && status == OK {
+            if let Some(register) = performed.capabilities.first() {
+                self.mappings.retire(registers[*register as usize]);
+            }
         }
         if let Produced::Status = performed.result {
             return Ok(Value::Int(IntKind::I64, status.into()));
