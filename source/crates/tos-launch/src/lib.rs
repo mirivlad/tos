@@ -36,7 +36,15 @@
 /// the endowment (ADR-0055) and that slot; version 1 carried memory and text and
 /// no authority at all, which is the state in which no process could ever hold a
 /// capability.
-/// Version 7 adds the device-memory kind and its three rights (ADR-0081).
+/// Version 8 adds the routed-interrupt kind with its two rights (ADR-0082) and
+/// the DMA-region kind with its three (ADR-0084). **It should have moved twice
+/// and moved once**: Stage 4C-1b added the interrupt kind without bumping this
+/// constant, which is exactly the misreading the version exists to prevent — an
+/// older image would take a rights mask carrying `interrupt` for one carrying
+/// something it knows. Both are covered here, and the omission is recorded
+/// rather than quietly folded in.
+///
+/// Version 7 added the device-memory kind and its three rights (ADR-0081).
 /// Version 6 added the two platform object kinds and the three rights over them
 /// (ADR-0079). A record naming a PCI bus or function means nothing to a nucleus
 /// that has no such kind, and a nucleus that has them would misread an older
@@ -50,7 +58,7 @@
 /// version disagreement that fails closed — it is an ordinary launch record read
 /// as a bundle, which is a set of pointers into whatever happened to be laid out
 /// there. A number here must therefore be free in **both** sequences.
-pub const LAUNCH_VERSION: u32 = 7;
+pub const LAUNCH_VERSION: u32 = 8;
 
 /// What kind of object a capability names (`CAPABILITY_V1` §3).
 ///
@@ -123,6 +131,15 @@ pub const OBJECT_MMIO_REGION: u32 = 11;
 /// number is not authority and a contract that handed one out would be inviting
 /// somebody to present it as authority later.
 pub const OBJECT_IRQ_SOURCE: u32 = 12;
+/// One DMA region: memory a device may reach, funded by a `MemoryAuthority` and
+/// descended from a PCI function assignment (ADR-0084 §4).
+///
+/// **The first kind with two ancestries at once.** Every other object has one
+/// origin; this one is charged to an account *and* is a bus-mastering descendant
+/// of an assignment, and neither can be dropped — without the first nothing funds
+/// it, without the second the assignment could end while the device still held
+/// the address.
+pub const OBJECT_DMA_REGION: u32 = 13;
 
 /// The one right a reply capability has: `endpoint_reply` (4) is the only
 /// operation that names one.
@@ -234,6 +251,20 @@ pub const RIGHT_MMIO_WRITE: u32 = 1 << 16;
 /// system that does not exist.
 pub const RIGHT_INTERRUPT: u32 = 1 << 17;
 pub const RIGHT_WAIT: u32 = 1 << 18;
+
+/// The right to put host memory where an assigned function can reach it
+/// (ADR-0084 §3), and the two rights over the region itself.
+///
+/// **`dma` is a fifth right on a function**, separate from `config_read`,
+/// `config_write`, `map` and `interrupt`, by the rule that already separates
+/// those four: a holder that may map a device's registers is not thereby a
+/// holder that may make host memory writable by that device. And it is never
+/// sufficient alone — operation 30 requires a `MemoryAuthority` with `spend`
+/// beside it, because the memory that pays and the device that reaches it are
+/// two grants.
+pub const RIGHT_DMA: u32 = 1 << 19;
+pub const RIGHT_DMA_READ: u32 = 1 << 20;
+pub const RIGHT_DMA_WRITE: u32 = 1 << 21;
 
 /// One capability the launcher endowed this process with, described to the
 /// process that holds it.

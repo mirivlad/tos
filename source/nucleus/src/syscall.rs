@@ -217,6 +217,27 @@ const PCI_INTERRUPT_CLAIM: u64 = 28;
 /// count is what stays true of a device that coalesces.
 const IRQ_WAIT: u64 = 29;
 
+/// Allocates one DMA region under **two** capabilities (ADR-0084 §3).
+///
+/// `rdi` = a function capability with `dma`, `rsi` = a memory authority with
+/// `spend`, `rdx` = the bytes wanted; the result is a capability naming the
+/// region, and where it landed goes to the caller's argument region.
+///
+/// **Neither capability is sufficient**, and that is the operation rather than a
+/// rule about it: a process holding only memory authority cannot make any memory
+/// reachable by any device, and a process holding only a function cannot spend
+/// somebody else's memory to do it.
+const DMA_REGION_ALLOCATE: u64 = 30;
+
+/// The device-visible address of a bounded offset inside one DMA region
+/// (ADR-0084 §6b). `rdi` = the region, `rsi` = the offset; `rdx` returns it.
+///
+/// **The caller presents a capability and an offset, never an address.** The
+/// nucleus does the arithmetic and checks the offset against the region's own
+/// extent, failing closed. What comes back is data a driver writes into its own
+/// device — no operation of any contract accepts one back.
+const DMA_DEVICE_ADDRESS: u64 = 31;
+
 /// The one call flag this contract version has.
 ///
 /// Blocking is the default because it is what `IPC_V1` describes — §4's
@@ -1155,6 +1176,13 @@ fn answer_rest(operation: u64, frame: &mut TrapFrame, caller: usize) -> Answer {
         PCI_INTERRUPT_CLAIM => pci_interrupt_claim(caller, arguments.first(), arguments.second()),
         IRQ_WAIT => irq_wait(caller, arguments.first(), frame),
 
+        // DMA authority (ADR-0084). The first operation of this ABI requiring a
+        // hardware capability and a funding capability together.
+        DMA_REGION_ALLOCATE => {
+            dma_region_allocate(caller, arguments.first(), arguments.second(), frame.rdx)
+        }
+        DMA_DEVICE_ADDRESS => dma_device_address(caller, arguments.first(), arguments.second()),
+
         _ => Answer::status(E_NOT_SUPPORTED),
     }
 }
@@ -1511,6 +1539,105 @@ fn irq_wait(caller: usize, handle: u64, frame: &TrapFrame) -> Answer {
                 )
             }
         }
+    }
+}
+
+/// Operation 30: one DMA region, funded by one authority and reachable by one
+/// function.
+///
+/// **Both capabilities are resolved before either is used** (ADR-0063's rule,
+/// and here it is not merely tidiness): a half-performed allocation would either
+/// charge an authority for memory no device can reach or make memory reachable
+/// that nothing paid for.
+fn dma_region_allocate(caller: usize, function: u64, authority: u64, bytes: u64) -> Answer {
+    let (index, generation) = match capability::resolve(caller, function, tos_launch::RIGHT_DMA) {
+        Err(refused) => return refused.into(),
+        Ok(Object::PciFunction { index, generation }) => (index, generation),
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+    };
+    let funding = match capability::resolve(caller, authority, tos_launch::RIGHT_SPEND) {
+        Err(refused) => return refused.into(),
+        Ok(Object::MemoryAuthority { index, generation }) => {
+            crate::region::AuthorityId { index, generation }
+        }
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+    };
+    let (region, region_generation, base, length) =
+        match crate::dma::allocate(index, generation, funding, caller, bytes) {
+            Ok(made) => made,
+            Err(crate::dma::Refused::BadArgument) => return Answer::status(E_BAD_ARGUMENT),
+            Err(crate::dma::Refused::OutOfScope) => return Answer::status(E_NO_CAPABILITY),
+            Err(crate::dma::Refused::Limit) => return Answer::status(E_LIMIT),
+            Err(crate::dma::Refused::Paging) => return Answer::status(E_LIMIT),
+        };
+    match capability::grant(
+        caller,
+        Object::DmaRegion {
+            index: region,
+            generation: region_generation,
+        },
+        tos_launch::RIGHT_DMA_READ | tos_launch::RIGHT_DMA_WRITE,
+        0,
+    ) {
+        Ok(granted) => {
+            if !report_mapping(caller, base, length) {
+                crate::dma::abandon(region, region_generation);
+                return Answer::status(E_BAD_ARGUMENT);
+            }
+            report_dma_region(caller, region, region_generation, length);
+            Answer::value(granted)
+        }
+        Err(_) => {
+            // A region nothing can name is memory nothing can quarantine, so
+            // the failure to grant undoes it rather than stranding it.
+            crate::dma::abandon(region, region_generation);
+            Answer::status(E_LIMIT)
+        }
+    }
+}
+
+/// Puts one DMA region on the audit record, by the function it reaches.
+///
+/// **The device-visible address is deliberately absent**, exactly as a window's
+/// physical base is: what a reader needs is which function and how much memory,
+/// and both of those are the authority. The address is what a driver writes into
+/// its own device.
+fn report_dma_region(caller: usize, index: u32, generation: u32, length: u64) {
+    let Some((segment, bus, device, function)) = crate::dma::describe(index, generation) else {
+        return;
+    };
+    tos_serial::puts(b"TOS.RUN.DMA_REGION process=");
+    tos_serial::put_u32_decimal(caller as u32);
+    tos_serial::puts(b" segment=");
+    tos_serial::put_u32_decimal(u32::from(segment));
+    tos_serial::puts(b" bus=");
+    tos_serial::put_u32_decimal(u32::from(bus));
+    tos_serial::puts(b" device=");
+    tos_serial::put_u32_decimal(u32::from(device));
+    tos_serial::puts(b" function=");
+    tos_serial::put_u32_decimal(u32::from(function));
+    tos_serial::puts(b" bytes=");
+    tos_serial::put_u32_decimal(length as u32);
+    tos_serial::puts(b" contiguous=1 asserted_by=nucleus\r\n");
+}
+
+/// Operation 31: the device-visible address of a bounded offset.
+///
+/// Possession of the region is what issues it, which is why no right beyond
+/// holding the capability is required: an address is not authority, so there is
+/// nothing to refine, and making it obtainable through one name and not another
+/// would imply otherwise.
+fn dma_device_address(caller: usize, handle: u64, offset: u64) -> Answer {
+    let (index, generation) = match capability::resolve(caller, handle, 0) {
+        Err(refused) => return refused.into(),
+        Ok(Object::DmaRegion { index, generation }) => (index, generation),
+        Ok(_) => return Answer::status(E_NO_CAPABILITY),
+    };
+    match crate::dma::device_address(index, generation, offset) {
+        Some(address) => Answer::value(address),
+        // Outside the region's own extent. A fact about the argument, and it
+        // yields no address at all rather than a clamped one.
+        None => Answer::status(E_BAD_ARGUMENT),
     }
 }
 

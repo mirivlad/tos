@@ -145,6 +145,10 @@ mod console;
 /// assignment, and not an ordinary region: nothing funds it and nothing
 /// reclaims it to the pool.
 mod device;
+/// DMA regions: memory a device may reach, and the proof that it no longer can
+/// (ADR-0084). The first object funded by a `MemoryAuthority` **and** descended
+/// from a device assignment.
+mod dma;
 mod exception;
 mod framebuffer;
 #[cfg(feature = "test-creation-rollback")]

@@ -696,6 +696,7 @@ pub fn table_reserve(bi: &BootInfo, descs: &[MemoryRange], admitted: u64) -> u64
             * (paging::build_tables(bi, descs)
                 + process_window_tables()
                 + device_mapping_bound()
+                + dma_mapping_bound()
                 + region_mapping_bound(admitted))
 }
 
@@ -1759,6 +1760,11 @@ unsafe fn retire(index: usize) {
     // that has died. The capability sweep above released the names; this is
     // what catches a source whose last name was somewhere else.
     crate::irq::clear_process(index);
+    // **And no DMA region left mapped, or silently returned** (ADR-0084 §5f).
+    // Death is not a proof of quiescence: the mapping goes with the address
+    // space, the descendant goes, and the frames go to the quarantine like any
+    // other release — a dead driver's device is no quieter than a live one's.
+    crate::dma::clear_process(index);
     crate::syscall::drain_reclaims();
     // And the authority that funded it is told, so what the tree says is
     // committed is what the pool has actually lost.
@@ -1793,6 +1799,11 @@ unsafe fn retire(index: usize) {
     // so a boot that ends with plans still live has leaked a decision.
     tos_serial::puts(b" plans_live=");
     tos_serial::put_u32_decimal(crate::plan::live() as u32);
+    // **Quarantined memory is neither in the pool nor reachable by anybody**
+    // (ADR-0084 §5f), so a reader comparing `available` against what was endowed
+    // would otherwise see a shortfall with no name. This is that name.
+    tos_serial::puts(b" dma_quarantined=");
+    tos_serial::put_u32_decimal(crate::dma::quarantined_frames() as u32);
     tos_serial::puts(b"\r\n");
 }
 
@@ -3378,6 +3389,77 @@ pub fn map_nucleus_device_page(physical: u64) -> Result<(), ()> {
     // cache.
     unsafe { AddressSpace::flush() };
     Ok(())
+}
+
+/// Where a process's DMA regions begin: above every device window.
+///
+/// **A third aperture, because a DMA region is a third kind** (ADR-0084 §4). It
+/// is ordinary write-back memory the device also reaches, so it is neither a
+/// region lane — nothing in the region tree describes its backing — nor a device
+/// lane, whose pages are uncacheable because a register is not memory.
+pub const DMA_APERTURE: u64 = DEVICE_APERTURE + (MAX_DEVICE_MAPPINGS as u64) * DEVICE_LANE_SPAN;
+
+/// One lane per DMA region, on the same span as a device window's.
+pub const DMA_LANE_SPAN: u64 = DEVICE_LANE_SPAN;
+
+/// How many DMA regions one process may hold.
+pub const MAX_DMA_REGIONS: usize = 4;
+
+/// Where DMA region `index` is mapped, in the process that holds it.
+pub const fn dma_lane(index: u32) -> u64 {
+    DMA_APERTURE + (index as u64) * DMA_LANE_SPAN
+}
+
+/// What one process's DMA regions can cost the page-table reserve.
+pub fn dma_mapping_bound() -> u64 {
+    3 * MAX_DMA_REGIONS as u64
+}
+
+/// Maps a DMA region into a process, **write-back** (ADR-0084 §4).
+///
+/// Not `UC`, and the difference from [`map_device`] is the whole point: a device
+/// register is not memory and an access to one is an observation, but DMA memory
+/// *is* memory and x86-64 is DMA-coherent for write-back. Making it uncacheable
+/// would pay for a coherence problem this architecture does not have — and would
+/// be the wrong fix on one that does, where the answer is explicit
+/// synchronisation.
+pub fn map_dma(process: usize, slot: u32, physical: u64, length: u64) -> Result<u64, ()> {
+    let lane = dma_lane(slot);
+    let flags = PRESENT_USER | WRITABLE | NO_EXECUTE;
+    // SAFETY: single-context nucleus; nothing else holds these.
+    let tables = unsafe { crate::memory::tables() };
+    // SAFETY: as above; nothing else touches the table.
+    let table = unsafe { table() };
+    let Some(space) = table.get_mut(process).and_then(|slot| slot.space.as_mut()) else {
+        return Err(());
+    };
+    let mut offset = 0;
+    while offset < length {
+        if space
+            .map_page(tables, lane + offset, physical + offset, flags)
+            .is_err()
+        {
+            // SAFETY: nothing outside this call reached the partial lane.
+            unsafe { space.release_branch(tables, lane) };
+            return Err(());
+        }
+        offset += FRAME_SIZE;
+    }
+    Ok(lane)
+}
+
+/// Removes a process's DMA region mapping.
+pub fn unmap_dma(process: usize, slot: u32) {
+    let lane = dma_lane(slot);
+    // SAFETY: single-context nucleus; nothing else holds these.
+    let tables = unsafe { crate::memory::tables() };
+    // SAFETY: as above.
+    let table = unsafe { table() };
+    let Some(space) = table.get_mut(process).and_then(|slot| slot.space.as_mut()) else {
+        return;
+    };
+    // SAFETY: the lane is this process's own and nothing else names it.
+    unsafe { space.release_branch(tables, lane) };
 }
 
 /// Removes a process's device window.

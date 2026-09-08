@@ -150,6 +150,14 @@ pub enum Object {
     /// names a slot in the source table, and the table holds what the hardware
     /// needs.
     IrqSource { index: u32, generation: u32 },
+    /// One DMA region (ADR-0084 §4), named by its slot in the DMA table.
+    ///
+    /// **Counted rather than affine at the capability layer.** ADR-0037 makes
+    /// `DmaRegion<T>` neither shareable nor transferable in the *language*, which
+    /// is what stops a handle crossing a task boundary; what the nucleus counts
+    /// is names, so that the backing is quarantined by exactly the event that
+    /// makes it unreachable.
+    DmaRegion { index: u32, generation: u32 },
     /// The same plan after operation 23 consumed the builder.
     ///
     /// A separate variant for the reason `SharedRegion` is one — the state is
@@ -179,6 +187,7 @@ impl Object {
             Object::PciFunction { .. } => tos_launch::OBJECT_PCI_FUNCTION,
             Object::MmioRegion { .. } => tos_launch::OBJECT_MMIO_REGION,
             Object::IrqSource { .. } => tos_launch::OBJECT_IRQ_SOURCE,
+            Object::DmaRegion { .. } => tos_launch::OBJECT_DMA_REGION,
         }
     }
 
@@ -448,6 +457,9 @@ fn retain_capability(object: Object) -> Result<(), NotGranted> {
         Object::IrqSource { index, generation } => {
             crate::irq::retain(index, generation).map_err(|_| NotGranted::NoRoom)
         }
+        Object::DmaRegion { index, generation } => {
+            crate::dma::retain(index, generation).map_err(|_| NotGranted::NoRoom)
+        }
         // Affine or not, the **region** is what says so. Operation 5 refuses to
         // make a second handle to an affine one, but an operation that reached
         // `grant` by another road would too — so the refusal lives in the
@@ -540,6 +552,14 @@ fn release_capability(object: Object) {
                 crate::memory::note_divergence(b"irq-source-name-release");
             }
         }
+        // The last name going unmaps the region and puts its backing into
+        // quarantine — **not** back into the pool, and **not** refunded
+        // (ADR-0084 §5f).
+        Object::DmaRegion { index, generation } => {
+            if crate::dma::release(index, generation).is_err() {
+                crate::memory::note_divergence(b"dma-region-name-release");
+            }
+        }
         Object::PciFunction { index, generation } => {
             if crate::pci::release(index, generation).is_err() {
                 // The entry named an assignment the table does not recognise,
@@ -598,6 +618,7 @@ fn object_is_live(object: Object) -> bool {
         // Live only while its own generation matches **and** the assignment it
         // descends from is still the one it was derived from.
         Object::IrqSource { index, generation } => crate::irq::is_live(index, generation),
+        Object::DmaRegion { index, generation } => crate::dma::is_live(index, generation),
     }
 }
 
@@ -971,9 +992,10 @@ fn retain_transit(object: Object) -> Result<(), NotGranted> {
         Object::MemoryAuthority { .. } => retain_capability(object),
         // The same, for an assignment: a delegation makes another name for one
         // claim, and the claim outlives whichever name goes first.
-        Object::PciFunction { .. } | Object::MmioRegion { .. } | Object::IrqSource { .. } => {
-            retain_capability(object)
-        }
+        Object::PciFunction { .. }
+        | Object::MmioRegion { .. }
+        | Object::IrqSource { .. }
+        | Object::DmaRegion { .. } => retain_capability(object),
         // Unreachable: a region does not travel in the generic transfer table
         // at all. It has a bound of its own (`IPC_V1` §3) and a lifecycle of
         // its own — an internal reference rather than a name (ADR-0075 §6) —
@@ -1004,7 +1026,8 @@ fn release_transit(object: Object) {
         Object::MemoryAuthority { .. }
         | Object::PciFunction { .. }
         | Object::MmioRegion { .. }
-        | Object::IrqSource { .. } => release_capability(object),
+        | Object::IrqSource { .. }
+        | Object::DmaRegion { .. } => release_capability(object),
         // As above: never taken, so never given back.
         Object::Region { .. }
         | Object::SharedRegion { .. }
