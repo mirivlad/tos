@@ -603,6 +603,24 @@ fn check_limits(module: &Module, limits: &Limits) -> Result<(), Finding> {
 
 // ------------------------------------------------------------------ step 2
 
+/// Whether the artifact's declared language version is TOS Core 1.`minor` or
+/// later.
+///
+/// Read from the header the module carries rather than from what this verifier
+/// happens to implement: `docs/42` §1's rule is that a module receives the
+/// language *its header declared*, and a form of a later minor in an earlier
+/// module is refused however capable the tool that met it. A version this
+/// verifier does not recognise has already been refused by `check_schema`, so
+/// an unparsable one here answers `false` — the fail-closed direction.
+fn declares_minor_at_least(version: &str, minor: u32) -> bool {
+    match version.split_once('.') {
+        Some(("1", declared)) => declared
+            .parse::<u32>()
+            .is_ok_and(|declared| declared >= minor),
+        _ => false,
+    }
+}
+
 fn check_schema(module: &Module) -> Result<(), Finding> {
     let header = &module.header;
     if header.schema_id != tos_ir::SCHEMA_ID {
@@ -1188,6 +1206,28 @@ fn check_instruction(
                                 "a capability operation names an import outside the table",
                             ));
                         };
+                        // **Which sources a representation admits, checked
+                        // beside the derivation and not inside it** (ADR-0085
+                        // §4a, §7). An import derives its declared interface
+                        // perfectly well; what is wrong is that a
+                        // representation no import can *be* admits `Value`
+                        // only, and there is nowhere in an
+                        // `import capability` for the element type or the
+                        // mutability of such a value to come from. No frontend
+                        // emits this, which is exactly why the verifier has to
+                        // refuse it on its own rather than assume it away.
+                        let representation = representation::representation_of(&import.interface);
+                        if !representation::startup_importable(representation) {
+                            return Err(Finding::new(
+                                "V2013_CAPABILITY",
+                                at(),
+                                alloc::format!(
+                                    "capability position {position} is filled by an import of \
+                                     {}, which no import can produce a value of",
+                                    import.interface
+                                ),
+                            ));
+                        }
                         import.interface.clone()
                     }
                     // A value's interface is **its own type**, checked against
@@ -1199,8 +1239,57 @@ fn check_instruction(
                     CapabilitySource::Value(operand) => {
                         let ty = operand_type(module, function, operand);
                         match ty.and_then(|ty| module.type_of(ty)) {
-                            Some(TypeDef::Capability(interface)) => interface.clone(),
-                            _ => {
+                            Some(TypeDef::Capability(interface)) => {
+                                // **The interface's own path is not always a
+                                // member of the family that represents it**
+                                // (ADR-0085 §17.1). Where the representation is
+                                // something other than `AsInterface`, a value
+                                // of `Capability(I)` is not a value of `I` at
+                                // all, and admitting it here would be admitting
+                                // the one form §4.3 exists to exclude.
+                                if !matches!(
+                                    representation::representation_of(interface),
+                                    representation::Representation::AsInterface
+                                ) {
+                                    return Err(Finding::new(
+                                        "V2013_CAPABILITY",
+                                        at(),
+                                        alloc::format!(
+                                            "capability position {position} is filled by a \
+                                             capability of {interface}, which is not how a \
+                                             capability of that interface is represented"
+                                        ),
+                                    ));
+                                }
+                                interface.clone()
+                            }
+                            // **The arms ADR-0085 §7 adds, fed by this crate's
+                            // own closed table and by nothing else.** The
+                            // operand's type comes from the artifact's own type
+                            // table and the map from this crate's `REPRESENTED`
+                            // — neither is the producer's word, and neither is
+                            // `unsafe_interface`, which is the claim being
+                            // checked below.
+                            //
+                            // It answers with one interface rather than a set
+                            // because a family belongs to at most one
+                            // (`SYSTEM_INTERFACE_V1` §4.3 rule 1). That
+                            // uniqueness is what makes this a derivation at all
+                            // rather than a predicate that had to be inverted.
+                            Some(other) => match representation::interface_of(other) {
+                                Some(path) => String::from(path),
+                                None => {
+                                    return Err(Finding::new(
+                                        "V2013_CAPABILITY",
+                                        at(),
+                                        alloc::format!(
+                                            "capability position {position} is filled by a \
+                                             value that is not of any capability type"
+                                        ),
+                                    ))
+                                }
+                            },
+                            None => {
                                 return Err(Finding::new(
                                     "V2013_CAPABILITY",
                                     at(),
@@ -1264,6 +1353,38 @@ fn check_instruction(
                         "V2013_CAPABILITY",
                         at(),
                         "an operation names one capability more than once",
+                    ));
+                }
+                // **The language minor is a verifier obligation and not only a
+                // frontend one** (ADR-0085 §13, §17.7). A module receives the
+                // language its header declared, so an artifact whose header
+                // says 1.2 and whose body fills a capability position by the
+                // capability-representation rule is refused here — a
+                // hand-written artifact never met the frontend that would have
+                // refused it in source.
+                //
+                // **Checked last of the position's rules on purpose.**
+                // Everything above is wrong about the operation itself: the
+                // wrong source, the wrong representation, an interface the
+                // artifact misnames, an effect the function never declared.
+                // Only an artifact that is right about all of those has one
+                // thing left wrong with it, and that thing is its version — so
+                // this reports the version rather than masking a defect that
+                // would be there at any minor.
+                if !matches!(
+                    representation::representation_of(&interface),
+                    representation::Representation::AsInterface
+                ) && !declares_minor_at_least(&module.header.language_version, 3)
+                {
+                    return Err(Finding::new(
+                        "V2013_CAPABILITY",
+                        at(),
+                        alloc::format!(
+                            "capability position {position} is filled by the capability \
+                             representation of {interface}, which the declared language \
+                             version {} does not have",
+                            module.header.language_version
+                        ),
                     ));
                 }
             }
