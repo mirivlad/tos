@@ -1,12 +1,22 @@
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# TOS System Interface Schema — Version 1
+# TOS System Interface Schema — Version 2
 
 Status: **Accepted Tier 2 interface contract.**
 
 Accepted by ADR-0060 (Project Architect-approved, 2026-08-19), which admits the
 interface schema as a class of document and fixes the three things a schema
-cannot decide for itself.
+cannot decide for itself, and amended to version 2 by ADR-0085
+(Project Architect-approved, 2026-09-08), which separates an interface's
+identity from the class of values that represents it.
+
+**What version 2 adds, and nothing else.** One field on the schema type —
+`capability_representation`, §4.3 — drawn from a closed enumeration this
+document fixes, together with the one exception clause §5 now carries. Every
+interface version 1 declared keeps its path, its object kind, its operations and
+their names, arities, parameter types, results and effects, and every one of
+them has the default representation. No operation is added, removed or changed
+here.
 
 Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
 contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
@@ -31,11 +41,21 @@ This is the first accepted schema and it will not be the last. A Stage 4 driver
 interface is another instance of these rules, not a special case of this
 document, and the rules below are written to be read that way.
 
-A schema declares **interfaces**. An interface has a path, a capability type,
-and a finite set of operations. Nothing else in the system may declare an
-operation: an `extern` item naming no accepted schema is rejected exactly as
-`docs/44` states, and that rejection is unchanged for everything this document
-does not declare.
+A schema declares **interfaces**. An interface has a path, a **capability
+representation** (§4.3), an object kind, and a finite set of operations.
+Nothing else in the system may declare an operation: an `extern` item naming no
+accepted schema is rejected exactly as `docs/44` states, and that rejection is
+unchanged for everything this document does not declare.
+
+```text
+Interface {
+    path                       identity of operations and of effects
+    capability_representation  the exact class of TOS Core values this
+                               authority is represented by (§4.3)
+    object_kind                the runtime object a grant must name (§4)
+    operations
+}
+```
 
 ## 3. How a module reaches one
 
@@ -103,14 +123,18 @@ discover it at its first call.
 answers which request is decided by the binding the module declared (ADR-0061),
 because two imports of one interface are legal and a kind cannot tell them apart.
 
-| Interface | Object kind |
-|---|---|
-| `system.ipc.Endpoint` | endpoint |
-| `system.ipc.Reply` | reply |
-| `system.memory.Authority` | memory authority |
-| `system.process.LaunchPlanBuilder` | launch plan builder |
-| `system.process.LaunchPlan` | launch plan |
-| `system.process.Control` | process |
+| Interface | Object kind | Capability representation |
+|---|---|---|
+| `system.ipc.Endpoint` | endpoint | `AsInterface` |
+| `system.ipc.Reply` | reply | `AsInterface` |
+| `system.memory.Authority` | memory authority | `AsInterface` |
+| `system.process.LaunchPlanBuilder` | launch plan builder | `AsInterface` |
+| `system.process.LaunchPlan` | launch plan | `AsInterface` |
+| `system.process.Control` | process | `AsInterface` |
+
+The third column is version 2's addition and §4.3 is what it means. Every
+interface this document declares has the default, which is the version 1
+semantics stated rather than changed.
 
 **Every operation declares the right each capability it takes must carry**
 (ADR-0063). `docs/42` §2 requires that "the capability type, requested
@@ -120,6 +144,123 @@ state until an operation needed two capabilities and "which one may I receive
 on" stopped having an obvious answer. Stating it for one operation and not the
 others would leave the rule true of the newest thing only, so it is stated for
 all of them.
+
+## 4.3 Capability representation (ADR-0085)
+
+Version 1 had one rule and never had to say it: an interface path *is* the
+capability type of that authority, so identity and representation were one fact
+under one name. ADR-0085 separates them, because one accepted authority needs a
+representation the interface path cannot spell — a DMA region is reached by an
+operation *and* indexed from TOS Core, and the second needs the nominal region
+family (ADR-0081 §2) while the first needs an interface path (ADR-0084 §6b).
+
+So an interface declares **which class of TOS Core values represents it**, and
+that class is drawn from a **closed enumeration this document fixes**:
+
+```text
+capability_representation ::= AsInterface
+                            | DmaRegionFamily
+```
+
+| Representation | The values that are it |
+|---|---|
+| `AsInterface` | exactly `TypeDef::Capability(interface_path)` |
+| `DmaRegionFamily` | `TypeDef::DmaRegion(_)` or `TypeDef::DmaRegionMut(_)`, any element type |
+
+**Not "an interface admits a type".** A representation is a named member of a
+closed enumeration, chosen per interface by an accepted schema — never a
+relation a module, an attribute, an annotation or an artifact can establish.
+Adding a member is a decision of ADR-0085's weight, which is the mechanism that
+keeps the set closed rather than a promise that it will stay small.
+
+**The cardinality rules, which are normative** (ADR-0085 §4):
+
+1. **one representation family belongs to at most one accepted interface.**
+   `DmaRegionFamily` belongs to `platform.dma.Region` and to nothing else, so a
+   value of that family has exactly one interface it can satisfy. This is what
+   makes representation → interface a *function*, which is what a verifier
+   deriving an interface from an operand's type needs;
+2. **an interface has exactly one representation.** No interface has two
+   unrelated families;
+3. **the association exists only in an accepted schema.** There is no attribute,
+   annotation or declaration by which a module could create one;
+4. **an ordinary or program-defined nominal type can never be a
+   representation.** The enumeration's members are fixed by ADR-0085 and name
+   only families the language contract already defines;
+5. **absence means exactly the version 1 semantics** — `AsInterface`.
+
+Refused, and each would be a different model: arbitrary nominal representations,
+structural typing, `AnyCapability`, erased handles, user-defined representation
+relations, implicit conversion, automatic promotion, traits, and schema
+polymorphism.
+
+**What a capability position accepts.** At a capability position of an operation
+requiring interface `I`:
+
+```text
+representation_of(I) = AsInterface       => the argument's type is exactly
+                                            Capability(I)
+representation_of(I) = DmaRegionFamily   => the argument's type is DmaRegion<T>
+                                            or DmaRegion<mut T>, any T
+```
+
+No other type is accepted in either case, and **there is no conversion in either
+direction**. The effect check — `I` in the enclosing `uses` — is unchanged and
+separate, and so is the object-kind check a launcher makes at grant and the
+right check the nucleus makes per call. Four dimensions, refusing independently.
+
+**Which sources a representation admits.** §4.1 says every capability position
+may be supplied by an `import capability` binding or by a capability *value* an
+operation produced (ADR-0078). Version 2 narrows that for one representation,
+because for it the first form cannot exist:
+
+```text
+representation = AsInterface       Import or Value, under §4.1's rules
+representation = DmaRegionFamily   Value only; Import is invalid
+```
+
+An import is typed `TypeDef::Capability(interface)` and there is nowhere in
+
+```tos
+import capability platform.dma.Region as region;
+```
+
+for the element type or the mutability of a `DmaRegion<T>` to come from. So
+**`platform.dma.Region` is operation-produced and not startup-requestable**: a
+region is made out of two capabilities a process was granted, and a launcher
+could not mint one before the process exists, because the memory has not been
+charged and the assignment has not been claimed. The rule describes what was
+already true.
+
+Such a declaration is refused **in source**, as
+`E1503_NONIMPORTABLE_CAPABILITY` at stage `effect`, carrying the `interface` the
+declaration named and the `representation` that cannot be imported.
+
+**Deliberately not `CapabilityDenied`.** That is a launcher's answer to a
+request it declined — the request was well formed and policy said no. This
+request is invalid *before any policy is consulted*: no launcher could satisfy
+it, whatever it decided, and reporting the two the same way would make an
+unsatisfiable declaration look like a decision somebody made.
+
+**And no general `requestable` flag is introduced.** Importability follows from
+the representation — `AsInterface` is importable because an import is exactly
+that type, and `DmaRegionFamily` is not because no import can be that type. A
+separate per-interface flag would be a second thing to keep in step with the
+first, and nothing in the accepted contracts needs one.
+
+**Where the mapping lives, and who may read it.** The frontend keeps the
+representation of every accepted interface, and **the verifier keeps its own
+closed table** of at most one row per non-default representation. The verifier
+does not read the frontend's, does not take a producer's word for an operand's
+representation, and does not believe `Instruction::unsafe_interface`: it derives
+the interface from the artifact's own type table and its own mapping, and
+compares. A repository gate pairs both tables against this document line for
+line, so neither can drift from it without a gate going red (ADR-0085 §7a).
+
+**The language minor.** The capability-representation rule is TOS Core 1.3
+(ADR-0085 §13). A module declaring 1.0, 1.1 or 1.2 does not receive it, whatever
+frontend compiles it, and an implementation that does not support 1.3 rejects
+such a module whole by its header.
 
 ### `system.ipc.Endpoint`
 
@@ -452,6 +593,18 @@ capability type it is rather than to a nominal record that merely shares its
 name. A reader of the artifact learns from the type table that a value is
 authority — which is what `docs/42` §2 admits into provenance, the interface and
 never the handle.
+
+**Version 2's one exception to that sentence** (§4.3, ADR-0085). "An interface
+path written as a type resolves to the capability type it is" holds of every
+interface whose representation is `AsInterface`, which is every interface this
+document declares and every one declared before ADR-0085. It does **not** hold
+of an interface whose representation is some other member of §4.3's closed
+enumeration: there the values of that authority are the family the
+representation names, and the interface's own path written as a value type is
+refused at its own capability position rather than accepted there. The path is
+still the interface's identity everywhere identity is what is wanted — in
+`Signature.effects`, in an `extern` item's `uses`, and as the declared type of an
+operation's capability parameter in this schema's own tables.
 
 ## 6. Determinism, and what it costs
 
