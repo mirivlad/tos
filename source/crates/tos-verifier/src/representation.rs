@@ -25,6 +25,8 @@
 //! non-default representation and nothing else: no operation names, no
 //! parameter types, no rights, no ABI numbers.
 
+use tos_ir::TypeDef;
+
 /// The closed set of capability representations ADR-0085 fixes.
 ///
 /// **Closed is the control.** An open relation between an interface and the
@@ -62,3 +64,134 @@ pub const REPRESENTED: &[Represented] = &[Represented {
     interface: "platform.dma.Region",
     representation: Representation::DmaRegionFamily,
 }];
+
+/// How a capability of this interface is represented.
+///
+/// Absence means the default, which is exactly `SYSTEM_INTERFACE_V1` §4.3 rule
+/// 5: an interface with no non-default row has the version 1 semantics.
+pub fn representation_of(interface: &str) -> Representation {
+    match REPRESENTED.iter().find(|row| row.interface == interface) {
+        Some(row) => row.representation,
+        None => Representation::AsInterface,
+    }
+}
+
+/// Whether an `import capability` could produce a value of this
+/// representation (ADR-0085 §4a).
+///
+/// An import is typed `TypeDef::Capability(interface)`. `AsInterface` is
+/// importable because an import is exactly that type; `DmaRegionFamily` is not,
+/// because no import can be. Derived rather than declared, so there is no
+/// second flag to keep in step.
+pub fn startup_importable(representation: Representation) -> bool {
+    matches!(representation, Representation::AsInterface)
+}
+
+/// The interface a value of this type represents, if the type is a member of a
+/// non-default representation family.
+///
+/// **This is the half of the derivation the artifact cannot supply.** Given the
+/// operand type from the module's own type table, it answers which interface —
+/// and only ever one, because a family belongs to at most one interface. A
+/// `TypeDef::Capability` is not answered here: that case is the default
+/// representation and the derivation handles it directly.
+pub fn interface_of(ty: &TypeDef) -> Option<&'static str> {
+    let family = match ty {
+        TypeDef::DmaRegion(_) | TypeDef::DmaRegionMut(_) => Representation::DmaRegionFamily,
+        _ => return None,
+    };
+    REPRESENTED
+        .iter()
+        .find(|row| row.representation == family)
+        .map(|row| row.interface)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rule 1, over this table: a family belongs to at most one interface.
+    ///
+    /// It is what makes `interface_of` a function rather than a search with
+    /// more than one answer, and the derivation in `lib.rs` relies on that being
+    /// true — so it is proved here rather than assumed from the table being
+    /// short today.
+    #[test]
+    fn a_family_belongs_to_at_most_one_interface() {
+        for (at, row) in REPRESENTED.iter().enumerate() {
+            assert!(
+                !REPRESENTED[..at]
+                    .iter()
+                    .any(|earlier| earlier.representation == row.representation),
+                "{} shares a representation family with an earlier interface",
+                row.interface
+            );
+        }
+    }
+
+    /// And the default is what absence means (rule 5), which is the whole of
+    /// why this table carries the non-default rows only.
+    #[test]
+    fn an_interface_with_no_row_is_as_interface() {
+        assert_eq!(
+            representation_of("system.ipc.Endpoint"),
+            Representation::AsInterface
+        );
+        assert_eq!(
+            representation_of("platform.pci.FunctionConfig"),
+            Representation::AsInterface
+        );
+        // Including a path no accepted schema declares. The caller has already
+        // refused those; answering the default here means this table never
+        // decides whether an interface exists.
+        assert_eq!(
+            representation_of("nothing.declares.This"),
+            Representation::AsInterface
+        );
+        assert_eq!(
+            representation_of("platform.dma.Region"),
+            Representation::DmaRegionFamily
+        );
+    }
+
+    /// Importability follows from the representation and from nothing else
+    /// (ADR-0085 §4a): there is no per-interface flag to disagree with it.
+    #[test]
+    fn only_the_default_representation_is_startup_importable() {
+        assert!(startup_importable(Representation::AsInterface));
+        assert!(!startup_importable(Representation::DmaRegionFamily));
+    }
+
+    /// The two arms of the derivation ADR-0085 §7 adds, and everything that is
+    /// not one of them.
+    #[test]
+    fn the_region_family_derives_its_one_interface_and_nothing_else_does() {
+        assert_eq!(
+            interface_of(&TypeDef::DmaRegion(0)),
+            Some("platform.dma.Region")
+        );
+        assert_eq!(
+            interface_of(&TypeDef::DmaRegionMut(0)),
+            Some("platform.dma.Region")
+        );
+        // The element type is not part of the family membership: `any T`.
+        assert_eq!(
+            interface_of(&TypeDef::DmaRegion(7)),
+            Some("platform.dma.Region")
+        );
+        // And nothing else is a member of any family — an ordinary region, a
+        // device window, a scalar, or a capability of the very interface this
+        // family represents. The last is the one that matters: the interface's
+        // own path is **not** a member of the family that represents it.
+        for outside in [
+            TypeDef::Region(0),
+            TypeDef::RegionMut(0),
+            TypeDef::MmioRegion,
+            TypeDef::MmioRegionMut,
+            TypeDef::Unit,
+            TypeDef::Capability(alloc::string::String::from("platform.dma.Region")),
+        ] {
+            assert_eq!(interface_of(&outside), None, "{outside:?} is not a family");
+        }
+    }
+}
