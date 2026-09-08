@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `1900db056ddcc3adc1d3c4d04133728f551b93634004b313c6802087353e944c`\
+Source-manifest SHA-256: `aca8f12343bfa90de6071bccb212562fd2d5d9404064e36dac85bf197fd5ca5a`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2757,6 +2757,10 @@ are marked and are exactly those a process can only apply to itself.
 
 | 29 | `irq_wait` | interrupt source capability with `wait` | waits for the next interrupt of the source that capability names, and returns `OK` when the device has fired (ADR-0082 §7). **A one-bit latch, not a queue**: an interrupt arriving with nobody waiting sets the bit, and the next call clears it and returns without blocking, so the completion cannot be lost by racing the call. `E_LIMIT` when a context is already waiting — at most one is, however many capabilities name the source; `E_CANCELLED` when the source is destroyed under the waiter. There is no acknowledge argument and no mask operation anywhere in this contract |
 
+| 30 | `dma_region_allocate` | **two**: `rdi` = PCI function capability with `dma`, `rsi` = memory-authority capability with `spend` | allocates a contiguous run of `rdx` bytes, charges it to the authority, makes it reachable by the function that capability names, and returns a DMA region capability in `rdx` (ADR-0084 §4, §5). The window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime, exactly as 27 does, so the region is indexable from TOS Core. **Neither capability is sufficient alone**: a process holding only memory authority cannot make any memory reachable by any device, and one holding only a function cannot spend somebody else's memory to do it. `E_BAD_ARGUMENT` for a zero, overflowing or unrepresentable length and for a function with no PCI Express capability; `E_NO_CAPABILITY` for either handle naming the wrong kind of object or an assignment that has gone; `E_LIMIT` when the frame pool cannot answer a contiguous run, the charge exceeds the authority, no page-table reserve is left, or the capability table is full. Everything fallible happens before anything is spent (ADR-0084 §8) |
+
+| 31 | `dma_device_address` | DMA region capability at no particular right | returns in `rdx` the device-visible address of offset `rsi` inside the region `rdi` names (ADR-0084 §6b). **The caller presents a capability and an offset, never an address**, and the nucleus does the arithmetic against the region's own extent. `E_BAD_ARGUMENT` for an offset outside that extent — no address at all rather than a clamped one; `E_NO_CAPABILITY` for a handle that does not resolve to a live region. **No right is required beyond holding the region**: an address is not authority, so there is nothing to refine, and making one obtainable through one name of a region and not another would imply otherwise. What comes back is data a driver writes into its own device; no operation of any contract accepts one back |
+
 
 **A mapping is a descendant of the assignment, not of the handle that made it**
 (ADR-0081 §14). The assignment stays live while *either* a function capability
@@ -3115,6 +3119,16 @@ Operations 21, 22 and 23 (ADR-0077) are additions of the same kind. They were
 decided by that ADR, which fixed the object, its two states and its lifetime and
 left the numbers and the register shape to be carried here.
 
+Operations 30 and 31 (ADR-0084) are additions of the same kind. That decision
+fixed where DMA authority comes from, that both a function and a funding
+authority are required, what a device-visible address is allowed to be and how a
+region is proved safe to reclaim; the names, the numbers and the register shape
+are carried here. **Only 31 is reachable from an accepted interface schema so
+far**, as the one operation of `platform.dma.Region`
+(`PLATFORM_INTERFACE_V1` §4.4). 30's schema row waits on ADR-0085 §18 — the ABI
+assignment is not what is open, the concrete declared result is — and a number
+this table has assigned is spent whether or not a schema names it.
+
 Operations 24, 25 and 26 (ADR-0079) are additions of the same kind, and are the
 first admitted under §2.1. That ADR fixed the authority model — a platform root,
 an exclusive assignment, separate read and write rights, a BDF held in the object
@@ -3195,13 +3209,23 @@ A conforming implementation demonstrates, as automated tests:
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# TOS System Interface Schema — Version 1
+# TOS System Interface Schema — Version 2
 
 Status: **Accepted Tier 2 interface contract.**
 
 Accepted by ADR-0060 (Project Architect-approved, 2026-08-19), which admits the
 interface schema as a class of document and fixes the three things a schema
-cannot decide for itself.
+cannot decide for itself, and amended to version 2 by ADR-0085
+(Project Architect-approved, 2026-09-08), which separates an interface's
+identity from the class of values that represents it.
+
+**What version 2 adds, and nothing else.** One field on the schema type —
+`capability_representation`, §4.3 — drawn from a closed enumeration this
+document fixes, together with the one exception clause §5 now carries. Every
+interface version 1 declared keeps its path, its object kind, its operations and
+their names, arities, parameter types, results and effects, and every one of
+them has the default representation. No operation is added, removed or changed
+here.
 
 Authority is assigned only by `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`; this
 contract is subordinate to Tier 0 invariants and accepted Tier 1 ADRs, and to
@@ -3226,11 +3250,21 @@ This is the first accepted schema and it will not be the last. A Stage 4 driver
 interface is another instance of these rules, not a special case of this
 document, and the rules below are written to be read that way.
 
-A schema declares **interfaces**. An interface has a path, a capability type,
-and a finite set of operations. Nothing else in the system may declare an
-operation: an `extern` item naming no accepted schema is rejected exactly as
-`docs/44` states, and that rejection is unchanged for everything this document
-does not declare.
+A schema declares **interfaces**. An interface has a path, a **capability
+representation** (§4.3), an object kind, and a finite set of operations.
+Nothing else in the system may declare an operation: an `extern` item naming no
+accepted schema is rejected exactly as `docs/44` states, and that rejection is
+unchanged for everything this document does not declare.
+
+```text
+Interface {
+    path                       identity of operations and of effects
+    capability_representation  the exact class of TOS Core values this
+                               authority is represented by (§4.3)
+    object_kind                the runtime object a grant must name (§4)
+    operations
+}
+```
 
 ## 3. How a module reaches one
 
@@ -3298,14 +3332,18 @@ discover it at its first call.
 answers which request is decided by the binding the module declared (ADR-0061),
 because two imports of one interface are legal and a kind cannot tell them apart.
 
-| Interface | Object kind |
-|---|---|
-| `system.ipc.Endpoint` | endpoint |
-| `system.ipc.Reply` | reply |
-| `system.memory.Authority` | memory authority |
-| `system.process.LaunchPlanBuilder` | launch plan builder |
-| `system.process.LaunchPlan` | launch plan |
-| `system.process.Control` | process |
+| Interface | Object kind | Capability representation |
+|---|---|---|
+| `system.ipc.Endpoint` | endpoint | `AsInterface` |
+| `system.ipc.Reply` | reply | `AsInterface` |
+| `system.memory.Authority` | memory authority | `AsInterface` |
+| `system.process.LaunchPlanBuilder` | launch plan builder | `AsInterface` |
+| `system.process.LaunchPlan` | launch plan | `AsInterface` |
+| `system.process.Control` | process | `AsInterface` |
+
+The third column is version 2's addition and §4.3 is what it means. Every
+interface this document declares has the default, which is the version 1
+semantics stated rather than changed.
 
 **Every operation declares the right each capability it takes must carry**
 (ADR-0063). `docs/42` §2 requires that "the capability type, requested
@@ -3315,6 +3353,123 @@ state until an operation needed two capabilities and "which one may I receive
 on" stopped having an obvious answer. Stating it for one operation and not the
 others would leave the rule true of the newest thing only, so it is stated for
 all of them.
+
+## 4.3 Capability representation (ADR-0085)
+
+Version 1 had one rule and never had to say it: an interface path *is* the
+capability type of that authority, so identity and representation were one fact
+under one name. ADR-0085 separates them, because one accepted authority needs a
+representation the interface path cannot spell — a DMA region is reached by an
+operation *and* indexed from TOS Core, and the second needs the nominal region
+family (ADR-0081 §2) while the first needs an interface path (ADR-0084 §6b).
+
+So an interface declares **which class of TOS Core values represents it**, and
+that class is drawn from a **closed enumeration this document fixes**:
+
+```text
+capability_representation ::= AsInterface
+                            | DmaRegionFamily
+```
+
+| Representation | The values that are it |
+|---|---|
+| `AsInterface` | exactly `TypeDef::Capability(interface_path)` |
+| `DmaRegionFamily` | `TypeDef::DmaRegion(_)` or `TypeDef::DmaRegionMut(_)`, any element type |
+
+**Not "an interface admits a type".** A representation is a named member of a
+closed enumeration, chosen per interface by an accepted schema — never a
+relation a module, an attribute, an annotation or an artifact can establish.
+Adding a member is a decision of ADR-0085's weight, which is the mechanism that
+keeps the set closed rather than a promise that it will stay small.
+
+**The cardinality rules, which are normative** (ADR-0085 §4):
+
+1. **one representation family belongs to at most one accepted interface.**
+   `DmaRegionFamily` belongs to `platform.dma.Region` and to nothing else, so a
+   value of that family has exactly one interface it can satisfy. This is what
+   makes representation → interface a *function*, which is what a verifier
+   deriving an interface from an operand's type needs;
+2. **an interface has exactly one representation.** No interface has two
+   unrelated families;
+3. **the association exists only in an accepted schema.** There is no attribute,
+   annotation or declaration by which a module could create one;
+4. **an ordinary or program-defined nominal type can never be a
+   representation.** The enumeration's members are fixed by ADR-0085 and name
+   only families the language contract already defines;
+5. **absence means exactly the version 1 semantics** — `AsInterface`.
+
+Refused, and each would be a different model: arbitrary nominal representations,
+structural typing, `AnyCapability`, erased handles, user-defined representation
+relations, implicit conversion, automatic promotion, traits, and schema
+polymorphism.
+
+**What a capability position accepts.** At a capability position of an operation
+requiring interface `I`:
+
+```text
+representation_of(I) = AsInterface       => the argument's type is exactly
+                                            Capability(I)
+representation_of(I) = DmaRegionFamily   => the argument's type is DmaRegion<T>
+                                            or DmaRegion<mut T>, any T
+```
+
+No other type is accepted in either case, and **there is no conversion in either
+direction**. The effect check — `I` in the enclosing `uses` — is unchanged and
+separate, and so is the object-kind check a launcher makes at grant and the
+right check the nucleus makes per call. Four dimensions, refusing independently.
+
+**Which sources a representation admits.** §4.1 says every capability position
+may be supplied by an `import capability` binding or by a capability *value* an
+operation produced (ADR-0078). Version 2 narrows that for one representation,
+because for it the first form cannot exist:
+
+```text
+representation = AsInterface       Import or Value, under §4.1's rules
+representation = DmaRegionFamily   Value only; Import is invalid
+```
+
+An import is typed `TypeDef::Capability(interface)` and there is nowhere in
+
+```tos
+import capability platform.dma.Region as region;
+```
+
+for the element type or the mutability of a `DmaRegion<T>` to come from. So
+**`platform.dma.Region` is operation-produced and not startup-requestable**: a
+region is made out of two capabilities a process was granted, and a launcher
+could not mint one before the process exists, because the memory has not been
+charged and the assignment has not been claimed. The rule describes what was
+already true.
+
+Such a declaration is refused **in source**, as
+`E1503_NONIMPORTABLE_CAPABILITY` at stage `effect`, carrying the `interface` the
+declaration named and the `representation` that cannot be imported.
+
+**Deliberately not `CapabilityDenied`.** That is a launcher's answer to a
+request it declined — the request was well formed and policy said no. This
+request is invalid *before any policy is consulted*: no launcher could satisfy
+it, whatever it decided, and reporting the two the same way would make an
+unsatisfiable declaration look like a decision somebody made.
+
+**And no general `requestable` flag is introduced.** Importability follows from
+the representation — `AsInterface` is importable because an import is exactly
+that type, and `DmaRegionFamily` is not because no import can be that type. A
+separate per-interface flag would be a second thing to keep in step with the
+first, and nothing in the accepted contracts needs one.
+
+**Where the mapping lives, and who may read it.** The frontend keeps the
+representation of every accepted interface, and **the verifier keeps its own
+closed table** of at most one row per non-default representation. The verifier
+does not read the frontend's, does not take a producer's word for an operand's
+representation, and does not believe `Instruction::unsafe_interface`: it derives
+the interface from the artifact's own type table and its own mapping, and
+compares. A repository gate pairs both tables against this document line for
+line, so neither can drift from it without a gate going red (ADR-0085 §7a).
+
+**The language minor.** The capability-representation rule is TOS Core 1.3
+(ADR-0085 §13). A module declaring 1.0, 1.1 or 1.2 does not receive it, whatever
+frontend compiles it, and an implementation that does not support 1.3 rejects
+such a module whole by its header.
 
 ### `system.ipc.Endpoint`
 
@@ -3647,6 +3802,18 @@ capability type it is rather than to a nominal record that merely shares its
 name. A reader of the artifact learns from the type table that a value is
 authority — which is what `docs/42` §2 admits into provenance, the interface and
 never the handle.
+
+**Version 2's one exception to that sentence** (§4.3, ADR-0085). "An interface
+path written as a type resolves to the capability type it is" holds of every
+interface whose representation is `AsInterface`, which is every interface this
+document declares and every one declared before ADR-0085. It does **not** hold
+of an interface whose representation is some other member of §4.3's closed
+enumeration: there the values of that authority are the family the
+representation names, and the interface's own path written as a value type is
+refused at its own capability position rather than accepted there. The path is
+still the interface's identity everywhere identity is what is wanted — in
+`Signature.effects`, in an `extern` item's `uses`, and as the declared type of an
+operation's capability parameter in this schema's own tables.
 
 ## 6. Determinism, and what it costs
 
@@ -4389,16 +4556,36 @@ identifier. A reader must never have to guess which kind of claim it is holding.
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# TOS Platform Interface Schema — Version 2
+# TOS Platform Interface Schema — Version 3
 
 Status: **Accepted Tier 2 interface contract.**
 
 Accepted by ADR-0079 (Project Architect-approved, 2026-09-03), which fixes the
-authority model this schema declares operations over, and amended to version 2
+authority model this schema declares operations over, amended to version 2
 by ADR-0082 (Project Architect-approved, 2026-09-05), which decides the
-mechanism the third interface below is declared for.
+mechanism the third interface below is declared for, and to version 3 by
+ADR-0085 (Project Architect-approved, 2026-09-08), which separates an
+interface's identity from the class of values that represents it.
 
-**What version 2 adds, and nothing else.** One interface — `platform.irq.Source`
+**What version 3 adds, and nothing else.** One interface —
+`platform.dma.Region` — with the two operations a holder of one can perform:
+the bounded-offset translation ADR-0084 §6b puts in the nucleus, and the
+generic release. It is the first and only interface of any accepted schema whose
+capability representation is not `AsInterface` (`SYSTEM_INTERFACE_V1` §4.3).
+Versions 1 and 2 are unchanged in every operation's name, arity, parameter type,
+result type and effect, and every interface they declared keeps the default
+representation.
+
+**What version 3 deliberately does not add**: the operation that *makes* a DMA
+region. `SYSTEM_ABI_V1` operation 30 is the mechanism and ADR-0084 decided it,
+but ADR-0084 writes its result abstractly as `DmaRegion<mut T>` while every
+result an accepted schema declares is a concrete type text. ADR-0085 §18 leaves
+that gap open on purpose rather than closing it with schema polymorphism nobody
+decided, and it is resolved when Stage 4C-2's surface resumes. Declaring the
+region interface does not depend on it: the two operations below are concrete,
+and a region reaches a module as a value either way.
+
+**What version 2 added.** One interface — `platform.irq.Source`
 — one operation on `platform.pci.FunctionConfig` that produces it, and the two
 rights those need. Version 1's operations are unchanged in name, arity,
 parameter type, result type and effect; what version 1 already narrowed about
@@ -4430,7 +4617,7 @@ its mechanism was decided.
 
 ## 2. What this version declares, and why so little
 
-Three interfaces. `docs/11_DRIVER_MODEL.md` illustrates several —
+Four interfaces. `docs/11_DRIVER_MODEL.md` illustrates several —
 `platform.mmio.RegionMap`, `platform.irq.Binding`, `platform.dma.Allocator` and
 a class publisher — and **none of those is declared here**, including the
 interrupt one: what version 2 declares is `platform.irq.Source`, whose mechanism
@@ -4444,11 +4631,16 @@ MMIO, interrupts and DMA open; interrupts are now decided and DMA is not, and
 An interface arrives here when its mechanism is decided, not when a document
 first shows its name.
 
-| Interface | Object kind |
-|---|---|
-| `platform.pci.Bus` | pci bus |
-| `platform.pci.FunctionConfig` | pci function |
-| `platform.irq.Source` | irq source |
+| Interface | Object kind | Capability representation |
+|---|---|---|
+| `platform.pci.Bus` | pci bus | `AsInterface` |
+| `platform.pci.FunctionConfig` | pci function | `AsInterface` |
+| `platform.irq.Source` | irq source | `AsInterface` |
+| `platform.dma.Region` | dma region | `DmaRegionFamily` |
+
+The third column is `SYSTEM_INTERFACE_V1` §4.3, which applies to this schema as
+every other rule of that document does. **`platform.dma.Region` is the one
+non-default row in the whole accepted corpus**, and §4.4 below is why.
 
 ## 3. Where a capability of these comes from
 
@@ -4485,10 +4677,11 @@ ordinary Stage 3 lifecycle and re-delegation, not a re-mint.
 
 ## 4. The interfaces this version declares
 
-Three, and each declares which kind of object a capability of it names, exactly
+Four, and each declares which kind of object a capability of it names, exactly
 as `SYSTEM_INTERFACE_V1` §4 does — so a launcher answering a module's request can
 refuse a grant of the wrong kind at startup rather than letting the module
-discover it at its first call.
+discover it at its first call. Each also declares its capability representation
+(`SYSTEM_INTERFACE_V1` §4.3), and for three of the four that is the default.
 
 ### `platform.pci.Bus`
 
@@ -4715,6 +4908,98 @@ addresses software may *obtain*; it does not physically prevent a malicious
 driver from programming a bus-mastering device with some other address. `docs/34`
 S5 governs this and is satisfied by saying it rather than by implying otherwise.
 
+### `platform.dma.Region`
+
+A capability naming one DMA region: a bounded run of physical memory, charged to
+a `MemoryAuthority` and made reachable by one assigned function (ADR-0084). Two
+operations, and no third — everything else a holder does with a region is
+ordinary indexed access from TOS Core, which is not an operation of any schema.
+
+| Operation | Capabilities | Values after them | Result | `SYSTEM_ABI_V1` |
+|---|---|---|---|---|
+| `dma_device_address` | `platform.dma.Region` with `none` | `offset: size` | `Result<u64, i64>` | 31 |
+| `capability_release` | `platform.dma.Region` with `none` | *(none)* | `i64` | 6 |
+
+**Possession is what issues an address, so no right is declared.** ADR-0084 §6b
+puts the bounded-offset arithmetic in the nucleus and the nucleus requires no
+right beyond resolving the handle: an address is not authority, so there is
+nothing to refine, and making one obtainable through one name of a region and
+not another would imply otherwise. `E_BAD_ARGUMENT` for an offset outside the
+region's own extent — no address at all rather than a clamped one — and
+`E_NO_CAPABILITY` for a handle that does not resolve to a live region.
+
+**`capability_release` is `SYSTEM_ABI_V1` operation 6, declared here for the
+reason it is declared on every other releasable interface** (ADR-0085 §10).
+Omitting it would mean a DMA region could never be released from text, which is
+not symmetry — it is the difference between an object with a lifetime and one
+without.
+
+**There is no `endow_for_launch` and no `capability_attenuate`.** A region cannot
+be a startup endowment for the same reason it cannot be imported (§4.4), and
+there is no right on it to refine.
+
+## 4.4 `platform.dma.Region` is represented by the region family
+
+This is the one interface of the whole accepted corpus whose capability
+representation is not `AsInterface` (`SYSTEM_INTERFACE_V1` §4.3, ADR-0085), and
+the reason is that a DMA region must be two things the accepted model expressed
+one of per object:
+
+| | |
+|---|---|
+| ADR-0081 §2 | indexed CPU access, which needs the nominal region family |
+| ADR-0084 §6b | a bounded-offset translation done by the nucleus, reached by an operation, which needs an interface path |
+
+So the interface path stays the identity — it is what `Signature.effects`
+carries, what an `extern` item's `uses` names, and what the capability parameter
+of the two operations above is declared as — while the **values** of that
+authority are `DmaRegion<T>` and `DmaRegion<mut T>`:
+
+```text
+representation_of(platform.dma.Region) = DmaRegionFamily
+```
+
+Concretely, and each of these is checked independently:
+
+- at a `platform.dma.Region` capability position the argument's type must be
+  `DmaRegion<T>` or `DmaRegion<mut T>`, for any element type `T`. There is no
+  conversion, in either direction;
+- `Capability("platform.dma.Region")` written directly at that position is
+  **refused**. The interface's own path is not a member of the family that
+  represents it;
+- an `import capability platform.dma.Region` is refused **in source** with
+  `E1503_NONIMPORTABLE_CAPABILITY`, because no startup import could produce a
+  value of that family: there is nowhere in the declaration for an element type
+  or a mutability to come from;
+- a `CapabilitySource::Import` at such a position is refused by the verifier on
+  its own, whatever interface the import declared. No frontend emits one, which
+  is exactly why the verifier must refuse it rather than assume it;
+- the enclosing function must still declare `platform.dma.Region` in its `uses`,
+  the runtime object must still be a DMA region, and the nucleus still checks the
+  handle, the object, the generation and the liveness per call.
+
+**One handle, no alias and no second authority.** A `DmaRegion` value is one
+runtime capability handle (ADR-0085 §9): `region[i]` resolves that handle to a
+base through the runtime's own mapping metadata and loads, and a capability
+position passes the same handle to the nucleus. There is no second object, no
+alias capability, no hidden conversion and no promotion — two things done with
+one authority, which is what a capability is for.
+
+**Release ends both paths, and they end differently** (ADR-0085 §8a). A
+successful `capability_release` invalidates the nucleus authority *and* retires
+that handle's runtime mapping entry before control returns to TOS Core.
+Afterwards `dma_device_address` answers `E_NO_CAPABILITY` at the nucleus, and
+`region[index]` is refused by the runtime bridge **before any memory access** —
+deterministically, as a mapping this process does not hold, and never by relying
+on a page fault or an eventual unmapping. A **failed** release leaves both
+intact, because the object did not end.
+
+**Use is not consumption.** No operation of this interface consumes its
+receiver, so a binding may be used as many times as a module writes it —
+`dma_device_address`, then an indexed write, then `dma_device_address` again.
+Affinity is about how many values name the object, and using one value twice
+creates no second value.
+
 ## 4.1 Assignment, and the three lifetimes it is not
 
 **At most one live assignment exists for a function under one root.** A claim of
@@ -4749,15 +5034,34 @@ advance.
 
 ## 5. What this version does not declare
 
-No DMA interface, no reset operation and no device-class publisher.
+No operation that **makes** a DMA region, no reset operation and no
+device-class publisher.
 
-**DMA's mechanism is decided and its interface is not declared yet**, and the
-difference is this schema's own rule rather than an oversight. ADR-0084
-(Accepted 2026-09-08) fixes where DMA authority comes from, what a device-visible
-address is allowed to be and how a region is proved safe to reclaim; the
-interface arrives at version 3, with the implementation, because an interface
-declared before the system performs it would be exactly what §2 refuses. Reset
-and the publisher remain undecided — the publisher under ADR-0051.
+**The DMA interface has arrived and its allocating operation has not**, and both
+halves are this schema's own rule rather than an oversight. Version 2 said the
+interface would arrive at version 3 with the implementation, and §4.4 above is
+that: ADR-0084 (Accepted 2026-09-08) fixed where DMA authority comes from, what a
+device-visible address is allowed to be and how a region is proved safe to
+reclaim, and ADR-0085 (Accepted 2026-09-08) fixed how such an authority is
+represented in TOS Core.
+
+What is still absent is the row for `SYSTEM_ABI_V1` operation 30, which
+allocates one. The mechanism is decided and the nucleus performs it; what is not
+decided is its **declared result**. ADR-0084 writes it abstractly as
+`DmaRegion<mut T>`, and every result an accepted schema declares is a concrete
+type text — so declaring it would either invent schema polymorphism, which
+`SYSTEM_INTERFACE_V1` §4.3 refuses, or pick a spelling nobody decided. ADR-0085
+§18 leaves it open deliberately and Stage 4C-2 is where it is resolved. An
+interface that declared an operation on terms the system has not accepted would
+be exactly what §2 refuses, one layer along.
+
+Reset and the publisher remain undecided — the publisher under ADR-0051.
+
+**No right is allocated for either operation of `platform.dma.Region`.** Both
+declare `none`, which is what the nucleus requires: possession of the region is
+what issues an address, and release needs the capability rather than a right
+over it. A right with no operation would be the speculative declaration §2
+refuses.
 
 **Two of the four this list held in version 1 have arrived, and neither arrived
 as the name that was reserved for it.** Device memory became operations 27 on

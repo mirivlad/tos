@@ -20,6 +20,12 @@ DOC="$ROOT/source/interfaces/system/SYSTEM_INTERFACE_V1.md"
 PLATFORM="$ROOT/source/interfaces/platform/PLATFORM_INTERFACE_V1.md"
 TABLE="$ROOT/source/crates/tos-core/src/interfaces.rs"
 HOST="$ROOT/source/runtime-image/src/main.rs"
+# The verifier's own closed representation table (ADR-0085 §7a). It is a third
+# statement of one fact and is here for the reason the other two are: the
+# verifier must not read the frontend's table, so it keeps its own, and the only
+# thing that can hold two independent tables to one document is a gate that
+# reads all three.
+VERIFIER="$ROOT/source/crates/tos-verifier/src/representation.rs"
 
 fail() {
     echo "check-interface-schema: FAIL: $*" >&2
@@ -141,13 +147,17 @@ ending_fields=$(sed -n '/path: "system.process.ChildEnding"/,/^    },$/p' "$TABL
 # agreed on which interfaces exist while disagreeing on what kind of object each
 # one names would let a grant of the wrong kind through the startup check that
 # exists to refuse it.
-kinds_in_doc=$( { sed -n 's/^| `\(system\.[a-zA-Z.]*\)` | \([a-z ]*\) |$/\1 \2/p' "$DOC";
-    sed -n 's/^| `\(platform\.[a-zA-Z.]*\)` | \([a-z ]*\) |$/\1 \2/p' "$PLATFORM"; } | sort)
+# The third column is §4.3's capability representation and is read separately
+# below; a row is matched whole so that a table gaining or losing a column is a
+# gate failure rather than something the pattern quietly tolerates.
+kinds_in_doc=$( { sed -n 's/^| `\(system\.[a-zA-Z.]*\)` | \([a-z ]*\) | `[A-Za-z]*` |$/\1 \2/p' "$DOC";
+    sed -n 's/^| `\(platform\.[a-zA-Z.]*\)` | \([a-z ]*\) | `[A-Za-z]*` |$/\1 \2/p' "$PLATFORM"; } | sort)
 kinds_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
     -e 's/^ *path: "\([a-z.A-Z]*\)",$/\1/p' \
     -e 's/^ *object: ObjectKind::\([A-Za-z]*\),$/\1/p' |
     paste - - |
     sed -e 's/Endpoint$/endpoint/' -e 's/Reply$/reply/' -e 's/Process$/process/' \
+        -e 's/DmaRegion$/dma region/' \
         -e 's/Region$/region/' -e 's/InterfacePublication$/interface publication/' \
         -e 's/MemoryAuthority$/memory authority/' \
         -e 's/LaunchPlanBuilder$/launch plan builder/' \
@@ -164,6 +174,101 @@ kinds_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
     echo "$kinds_in_table" >&2
     fail "the accepted schema and the frontend's table disagree about object kinds"
 }
+
+# --- §4.3's capability representation, in all three places it is stated --------
+#
+# ADR-0085 separates an interface's identity from the class of TOS Core values
+# that represents it, and the association exists **only in the accepted schema**
+# (§4.3 rule 3). Two implementations mirror it — the frontend, which decides what
+# a capability position accepts, and the verifier, which derives an interface
+# from an operand's type and must not read the frontend's table to do it. Three
+# statements of one fact, so all three are read here.
+#
+# The closed enumeration itself is read from the document rather than written
+# here, so that a member added to an implementation and not to §4.3 is caught by
+# the same comparison as a mis-assigned row.
+enum_in_doc=$(sed -n '/^capability_representation ::=/,/^$/p' "$DOC" |
+    sed -n -e 's/^capability_representation ::= \([A-Za-z]*\) *$/\1/p' \
+        -e 's/^ *| \([A-Za-z]*\) *$/\1/p' | sort)
+[ -n "$enum_in_doc" ] || fail "section 4.3 declares no capability-representation enumeration"
+
+enum_of() {
+    sed -n '/^pub enum Representation {$/,/^}$/p' "$1" |
+        sed -n 's/^    \([A-Za-z]*\),$/\1/p' | sort
+}
+for party in "$TABLE" "$VERIFIER"; do
+    theirs=$(enum_of "$party")
+    [ "$enum_in_doc" = "$theirs" ] || {
+        echo "the document admits:" >&2
+        echo "$enum_in_doc" >&2
+        echo "$(basename "$party") admits:" >&2
+        echo "$theirs" >&2
+        fail "$(basename "$party") does not implement the closed representation enumeration"
+    }
+done
+
+# Every interface, with the representation the document gives it.
+representations_in_doc=$( {
+    sed -n 's/^| `\(system\.[a-zA-Z.]*\)` | [a-z ]* | `\([A-Za-z]*\)` |$/\1 \2/p' "$DOC";
+    sed -n 's/^| `\(platform\.[a-zA-Z.]*\)` | [a-z ]* | `\([A-Za-z]*\)` |$/\1 \2/p' "$PLATFORM";
+} | sort)
+[ -n "$representations_in_doc" ] || fail "section 4 pairs no interface with a representation"
+
+# **Exactly one representation per interface** (§4.3 rule 2). A path named twice
+# would be an interface with two, which is the thing the rule forbids and which
+# every check below would then silently pick one of.
+duplicated=$(printf '%s\n' "$representations_in_doc" | awk '{print $1}' | uniq -d)
+[ -z "$duplicated" ] ||
+    fail "an interface is given more than one representation: $duplicated"
+
+# **Every value is a member of the closed enumeration** (§4.3, and §16.12 asks
+# for this structurally so the amendment cannot be read as a general relation).
+while read -r pair; do
+    [ -n "$pair" ] || continue
+    value=${pair#* }
+    printf '%s\n' "$enum_in_doc" | grep -qx "$value" ||
+        fail "an interface is given a representation outside the closed enumeration: $pair"
+done <<EOF
+$representations_in_doc
+EOF
+
+representations_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
+    -e 's/^ *path: "\([a-z.A-Z]*\)",$/P \1/p' \
+    -e 's/^ *representation: Representation::\([A-Za-z]*\),$/R \1/p' |
+    awk '$1 == "P" { name = $2; next } { print name, $2 }' | sort)
+[ "$representations_in_doc" = "$representations_in_table" ] || {
+    echo "the document represents:" >&2
+    echo "$representations_in_doc" >&2
+    echo "the frontend table represents:" >&2
+    echo "$representations_in_table" >&2
+    fail "the accepted schema and the frontend's table disagree about capability representations"
+}
+
+# The verifier carries the **non-default rows only**, which is the narrowest
+# form its independence allows: a row per interface would be a second copy of
+# the interface set, and the default needs no row because absence means it
+# (§4.3 rule 5).
+nondefault_in_doc=$(printf '%s\n' "$representations_in_doc" | awk '$2 != "AsInterface"')
+representations_in_verifier=$(sed -n '/^pub const REPRESENTED/,/^}];$/p' "$VERIFIER" |
+    sed -n -e 's/^ *interface: "\([a-zA-Z.]*\)",$/P \1/p' \
+        -e 's/^ *representation: Representation::\([A-Za-z]*\),$/R \1/p' |
+    awk '$1 == "P" { name = $2; next } { print name, $2 }' | sort)
+[ "$nondefault_in_doc" = "$representations_in_verifier" ] || {
+    echo "the document represents, other than as AsInterface:" >&2
+    echo "$nondefault_in_doc" >&2
+    echo "the verifier's own table represents:" >&2
+    echo "$representations_in_verifier" >&2
+    fail "the accepted schema and the verifier's table disagree about capability representations"
+}
+
+# **One family belongs to at most one accepted interface** (§4.3 rule 1). This is
+# the rule the verifier's derivation rests on: it is what makes
+# representation -> interface a *function*, so an operand's type answers with one
+# interface rather than with a set. `AsInterface` is exempt by construction —
+# it resolves through the interface's own path — so the rule bites on the rest.
+shared=$(printf '%s\n' "$nondefault_in_doc" | awk '{print $2}' | sort | uniq -d)
+[ -z "$shared" ] ||
+    fail "a representation family is claimed by more than one interface: $shared"
 
 # And the `SYSTEM_ABI_V1` call each operation is performed by (ADR-0060 §8).
 #
@@ -237,5 +342,7 @@ requirements_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
 count=$(printf '%s\n' "$declared" | grep -c .)
 paired=$(printf '%s\n' "$kinds_in_doc" | grep -c .)
 required=$(printf '%s\n' "$requirements_in_doc" | grep -c .)
+represented=$(printf '%s\n' "$representations_in_doc" | grep -c .)
 echo "check-interface-schema: PASS ($count operation(s), $paired object kind(s)," \
-     "$count ABI assignment(s) and $required capability requirement(s) checked)"
+     "$count ABI assignment(s), $required capability requirement(s) and" \
+     "$represented capability representation(s) checked)"

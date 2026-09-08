@@ -459,3 +459,104 @@ fn device_memory_is_a_distinct_ir_kind() {
         );
     }
 }
+
+/// §4.3's cardinality rules, over the tables rather than over a document.
+///
+/// The shell gate pairs both implementations against the accepted schema line
+/// for line; this proves the properties the schema's rules are *for*, in the
+/// form the code has them, so that "one family, one interface" is a fact about
+/// the thing the verifier derives from rather than about a table of text.
+///
+/// ADR-0085 §16.12 asks for the closure to be checked **structurally**, so that
+/// the amendment cannot be read as a general relation between an interface and
+/// arbitrary value families. Structurally is what an enumeration is.
+#[test]
+fn the_capability_representation_relation_is_closed_and_one_to_one() {
+    use std::collections::BTreeMap;
+    use tos_core::interfaces::{Representation, ACCEPTED};
+
+    // Rule 2: an interface has **exactly one** representation. It is a field
+    // rather than a list, so the type says it and this only has to prove that
+    // reading it is total — every accepted interface has one.
+    let mut by_family: BTreeMap<Representation, Vec<&str>> = BTreeMap::new();
+    for interface in ACCEPTED {
+        // Rule 4, and the closure: the value is a member of the enumeration and
+        // there is nowhere else for it to come from. A match with no wildcard is
+        // what makes adding a member a compile error here rather than a silent
+        // widening.
+        match interface.representation {
+            Representation::AsInterface | Representation::DmaRegionFamily => {}
+        }
+        if interface.representation != Representation::AsInterface {
+            by_family
+                .entry(interface.representation)
+                .or_default()
+                .push(interface.path);
+        }
+    }
+
+    // Rule 1: **one family belongs to at most one accepted interface.** This is
+    // the load-bearing one — it is what makes representation -> interface a
+    // function, which is what the verifier's derivation needs to answer with one
+    // interface rather than with a set. `AsInterface` is exempt by construction:
+    // it resolves through the interface's own path, so it names no shared
+    // family.
+    for (family, interfaces) in &by_family {
+        assert_eq!(
+            interfaces.len(),
+            1,
+            "{family:?} is claimed by more than one interface: {interfaces:?}"
+        );
+    }
+
+    // And the one non-default row is the one ADR-0085 accepted, in both tables
+    // that carry it — the frontend's, which decides what a capability position
+    // takes, and the verifier's own, which must not read the frontend's.
+    assert_eq!(
+        by_family
+            .get(&Representation::DmaRegionFamily)
+            .map(Vec::as_slice),
+        Some(["platform.dma.Region"].as_slice())
+    );
+    let verifier: Vec<(&str, &str)> = tos_verifier::REPRESENTED
+        .iter()
+        .map(|row| (row.interface, representation_name(row.representation)))
+        .collect();
+    assert_eq!(
+        verifier,
+        vec![("platform.dma.Region", "DmaRegionFamily")],
+        "the verifier's own closed table is not the accepted non-default row"
+    );
+}
+
+/// The verifier's enumeration, as a name a comparison can be made on.
+///
+/// Written as an exhaustive match on purpose: a member added to the verifier's
+/// enumeration and to nothing else stops compiling here.
+fn representation_name(representation: tos_verifier::Representation) -> &'static str {
+    match representation {
+        tos_verifier::Representation::AsInterface => "AsInterface",
+        tos_verifier::Representation::DmaRegionFamily => "DmaRegionFamily",
+    }
+}
+
+/// Every interface accepted before ADR-0085 still has the default.
+///
+/// §14's first compatibility claim, checked structurally: if this holds, the
+/// verifier's extended derivation is the old derivation on the same inputs for
+/// every one of them, and no existing program can have changed meaning.
+#[test]
+fn every_interface_but_the_one_amendment_is_as_interface() {
+    use tos_core::interfaces::{Representation, ACCEPTED};
+    for interface in ACCEPTED {
+        if interface.path == "platform.dma.Region" {
+            continue;
+        }
+        assert_eq!(
+            interface.representation,
+            Representation::AsInterface,
+            "{} acquired a representation no decision gave it",
+            interface.path
+        );
+    }
+}

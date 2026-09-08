@@ -39,9 +39,11 @@ use tos_ir::{
 
 mod image;
 mod limits;
+mod representation;
 
 pub use image::{verify_image, ImageRefusal, VerifiedImage};
 pub use limits::Limits;
+pub use representation::{Representation, Represented, REPRESENTED};
 
 /// Which verifier produced a receipt.
 pub const VERIFIER_IDENTITY: &str = "tos-verifier-reference/0.1.0";

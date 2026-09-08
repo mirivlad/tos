@@ -95,6 +95,10 @@ const PCI_CONFIG_WRITE: u64 = 26;
 const PCI_BAR_MAP: u64 = 27;
 const PCI_INTERRUPT_CLAIM: u64 = 28;
 const IRQ_WAIT: u64 = 29;
+/// The device-visible address of a bounded offset inside a DMA region
+/// (ADR-0084 §6b). The caller presents a capability and an offset, never an
+/// address; the nucleus does the arithmetic against the region's own extent.
+const DMA_DEVICE_ADDRESS: u64 = 31;
 const PROCESS_TERMINATE: u64 = 9;
 const CONTEXT_YIELD: u64 = 10;
 const TIME_MONOTONIC: u64 = 11;
@@ -1560,6 +1564,33 @@ const PERFORMED: &[Performed] = &[
     },
     Performed {
         interface: "platform.pci.FunctionConfig",
+        name: "capability_release",
+        operation: CAPABILITY_RELEASE,
+        capabilities: &[Reg::Rdi],
+        values: &[],
+        result: Produced::Status,
+    },
+    // `platform.dma.Region` (`PLATFORM_INTERFACE_V1` §4.4). Two rows, because
+    // the interface declares two operations — the operation that *makes* a
+    // region is `SYSTEM_ABI_V1` 30 and no schema declares it yet (ADR-0085
+    // §18), so nothing here performs it.
+    //
+    // **The capability crosses exactly as every other one does.** A DMA region
+    // is a `Value::Capability(handle)` in the engine, whatever the type table
+    // calls it, so the loop above writes its handle into `rdi` without knowing
+    // that the operand's type was `DmaRegion` rather than `Capability` — which
+    // is ADR-0085 §9's one-handle claim, visible here as the absence of a
+    // special case.
+    Performed {
+        interface: "platform.dma.Region",
+        name: "dma_device_address",
+        operation: DMA_DEVICE_ADDRESS,
+        capabilities: &[Reg::Rdi],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Number,
+    },
+    Performed {
+        interface: "platform.dma.Region",
         name: "capability_release",
         operation: CAPABILITY_RELEASE,
         capabilities: &[Reg::Rdi],

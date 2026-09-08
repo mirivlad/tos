@@ -202,6 +202,10 @@ are marked and are exactly those a process can only apply to itself.
 
 | 29 | `irq_wait` | interrupt source capability with `wait` | waits for the next interrupt of the source that capability names, and returns `OK` when the device has fired (ADR-0082 §7). **A one-bit latch, not a queue**: an interrupt arriving with nobody waiting sets the bit, and the next call clears it and returns without blocking, so the completion cannot be lost by racing the call. `E_LIMIT` when a context is already waiting — at most one is, however many capabilities name the source; `E_CANCELLED` when the source is destroyed under the waiter. There is no acknowledge argument and no mask operation anywhere in this contract |
 
+| 30 | `dma_region_allocate` | **two**: `rdi` = PCI function capability with `dma`, `rsi` = memory-authority capability with `spend` | allocates a contiguous run of `rdx` bytes, charges it to the authority, makes it reachable by the function that capability names, and returns a DMA region capability in `rdx` (ADR-0084 §4, §5). The window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime, exactly as 27 does, so the region is indexable from TOS Core. **Neither capability is sufficient alone**: a process holding only memory authority cannot make any memory reachable by any device, and one holding only a function cannot spend somebody else's memory to do it. `E_BAD_ARGUMENT` for a zero, overflowing or unrepresentable length and for a function with no PCI Express capability; `E_NO_CAPABILITY` for either handle naming the wrong kind of object or an assignment that has gone; `E_LIMIT` when the frame pool cannot answer a contiguous run, the charge exceeds the authority, no page-table reserve is left, or the capability table is full. Everything fallible happens before anything is spent (ADR-0084 §8) |
+
+| 31 | `dma_device_address` | DMA region capability at no particular right | returns in `rdx` the device-visible address of offset `rsi` inside the region `rdi` names (ADR-0084 §6b). **The caller presents a capability and an offset, never an address**, and the nucleus does the arithmetic against the region's own extent. `E_BAD_ARGUMENT` for an offset outside that extent — no address at all rather than a clamped one; `E_NO_CAPABILITY` for a handle that does not resolve to a live region. **No right is required beyond holding the region**: an address is not authority, so there is nothing to refine, and making one obtainable through one name of a region and not another would imply otherwise. What comes back is data a driver writes into its own device; no operation of any contract accepts one back |
+
 
 **A mapping is a descendant of the assignment, not of the handle that made it**
 (ADR-0081 §14). The assignment stays live while *either* a function capability
@@ -559,6 +563,16 @@ addition; what changed is that its row now states the semantics ADR-0037 §4 and
 Operations 21, 22 and 23 (ADR-0077) are additions of the same kind. They were
 decided by that ADR, which fixed the object, its two states and its lifetime and
 left the numbers and the register shape to be carried here.
+
+Operations 30 and 31 (ADR-0084) are additions of the same kind. That decision
+fixed where DMA authority comes from, that both a function and a funding
+authority are required, what a device-visible address is allowed to be and how a
+region is proved safe to reclaim; the names, the numbers and the register shape
+are carried here. **Only 31 is reachable from an accepted interface schema so
+far**, as the one operation of `platform.dma.Region`
+(`PLATFORM_INTERFACE_V1` §4.4). 30's schema row waits on ADR-0085 §18 — the ABI
+assignment is not what is open, the concrete declared result is — and a number
+this table has assigned is spent whether or not a schema names it.
 
 Operations 24, 25 and 26 (ADR-0079) are additions of the same kind, and are the
 first admitted under §2.1. That ADR fixed the authority model — a platform root,

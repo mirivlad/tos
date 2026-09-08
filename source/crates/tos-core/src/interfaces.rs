@@ -111,7 +111,62 @@ pub struct Interface {
     /// one interface are legal, so a kind cannot tell them apart, and what
     /// answers a request is the binding it was declared with.
     pub object: ObjectKind,
+    /// Which class of TOS Core values represents a capability of this interface
+    /// (`SYSTEM_INTERFACE_V1` §4.3, ADR-0085).
+    ///
+    /// Version 1 of the schema never had to say this, because an interface path
+    /// *was* the capability type of that authority. Version 2 separates
+    /// identity from representation for the one authority that needs it, and
+    /// says so for all of them rather than only for the newest.
+    pub representation: Representation,
     pub operations: &'static [Operation],
+}
+
+/// The closed set of capability representations ADR-0085 fixes.
+///
+/// **Closed, and that is the whole control.** An open relation between an
+/// interface and the value families that satisfy it would let a later schema
+/// edit widen what may occupy a capability position without a decision; a named
+/// member of an enumeration makes each widening an ADR of ADR-0085's weight.
+/// Nothing outside this type is a representation: not an arbitrary nominal
+/// type, not a program-defined record, not a structural shape, not an erased
+/// handle, and no relation a module, an attribute or an artifact can establish.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Representation {
+    /// `TypeDef::Capability(path)`, exactly — the version 1 semantics, which
+    /// every interface declared before ADR-0085 has and keeps.
+    AsInterface,
+    /// `TypeDef::DmaRegion(_)` or `TypeDef::DmaRegionMut(_)`, any element type.
+    ///
+    /// **One family, one interface** (`SYSTEM_INTERFACE_V1` §4.3 rule 1). It
+    /// belongs to `platform.dma.Region` and to nothing else, which is what makes
+    /// representation → interface a function — and that is what a verifier
+    /// deriving an interface from an operand's type needs.
+    DmaRegionFamily,
+}
+
+impl Representation {
+    /// Whether an `import capability` can produce a value of this
+    /// representation (`SYSTEM_INTERFACE_V1` §4.3, ADR-0085 §4a).
+    ///
+    /// **Derived rather than declared.** An import is typed
+    /// `TypeDef::Capability(interface)`, so `AsInterface` is importable because
+    /// an import is exactly that type and `DmaRegionFamily` is not because no
+    /// import can be that type — there is nowhere in the declaration for an
+    /// element type or a mutability to come from. A separate per-interface
+    /// `requestable` flag would be a second thing to keep in step with the
+    /// first, and nothing in the accepted contracts needs one.
+    pub const fn startup_importable(self) -> bool {
+        matches!(self, Representation::AsInterface)
+    }
+
+    /// The name the accepted schema writes, which is what a diagnostic reports.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Representation::AsInterface => "AsInterface",
+            Representation::DmaRegionFamily => "DmaRegionFamily",
+        }
+    }
 }
 
 /// The kinds `CAPABILITY_V1` §3 names.
@@ -148,6 +203,10 @@ pub enum ObjectKind {
     /// One routed interrupt of one assigned function (`PLATFORM_INTERFACE_V1`
     /// §4.2, ADR-0082 §6).
     IrqSource,
+    /// One DMA region: a bounded contiguous run charged to a memory authority
+    /// and reachable by one assigned function (`PLATFORM_INTERFACE_V1` §4.4,
+    /// ADR-0084).
+    DmaRegion,
 }
 
 /// One field of a record an accepted schema declares.
@@ -265,6 +324,7 @@ pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "system.ipc.Endpoint",
         object: ObjectKind::Endpoint,
+        representation: Representation::AsInterface,
         operations: &[
             Operation {
                 name: "endpoint_send",
@@ -320,6 +380,7 @@ pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "system.ipc.Reply",
         object: ObjectKind::Reply,
+        representation: Representation::AsInterface,
         operations: &[
             Operation {
                 name: "endpoint_reply",
@@ -344,6 +405,7 @@ pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "system.memory.Authority",
         object: ObjectKind::MemoryAuthority,
+        representation: Representation::AsInterface,
         operations: &[
             Operation {
                 name: "endow_for_launch",
@@ -376,6 +438,7 @@ pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "system.process.LaunchPlanBuilder",
         object: ObjectKind::LaunchPlanBuilder,
+        representation: Representation::AsInterface,
         // A capability type with no operations of its own. Everything done to a
         // builder is done *through* the authority that made it — 22 endows one
         // through the capability being delegated, 23 seals one through the
@@ -388,11 +451,13 @@ pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "system.process.LaunchPlan",
         object: ObjectKind::LaunchPlan,
+        representation: Representation::AsInterface,
         operations: &[],
     },
     Interface {
         path: "system.process.Control",
         object: ObjectKind::Process,
+        representation: Representation::AsInterface,
         operations: &[
             Operation {
                 name: "process_terminate",
@@ -499,6 +564,7 @@ pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "platform.pci.Bus",
         object: ObjectKind::PciBus,
+        representation: Representation::AsInterface,
         operations: &[
             // The only operation that names a bus, a device and a function.
             // Possession of a bus capability *is* the authority to address
@@ -545,6 +611,7 @@ pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "platform.pci.FunctionConfig",
         object: ObjectKind::PciFunction,
+        representation: Representation::AsInterface,
         operations: &[
             // **No parameter names a function.** An offset and a width, and the
             // capability decides the rest — so a holder cannot address a
@@ -645,6 +712,7 @@ pub const ACCEPTED: &[Interface] = &[
     Interface {
         path: "platform.irq.Source",
         object: ObjectKind::IrqSource,
+        representation: Representation::AsInterface,
         operations: &[
             // **One operation, one right, no arguments.** There is no mask, no
             // unmask and no acknowledge: edge delivery into a one-bit latch
@@ -681,7 +749,64 @@ pub const ACCEPTED: &[Interface] = &[
             },
         ],
     },
+    // One DMA region (`PLATFORM_INTERFACE_V1` §4.4, ADR-0084, ADR-0085).
+    //
+    // **The one interface of the accepted corpus whose representation is not
+    // `AsInterface`.** Its identity is the path — that is what
+    // `Signature.effects` carries, what an `extern` item's `uses` names and what
+    // the capability parameter of both operations below is declared as — while
+    // its *values* are `DmaRegion<T>` and `DmaRegion<mut T>`. A DMA region has
+    // to be reachable both ways: indexed from TOS Core (ADR-0081 §2), which
+    // needs the nominal region family, and through an operation whose
+    // bounded-offset arithmetic the nucleus performs (ADR-0084 §6b), which needs
+    // an interface path.
+    //
+    // **No `endow_for_launch` and no `capability_attenuate`.** A region cannot
+    // be a startup endowment for the same reason it cannot be imported — no
+    // import can be a value of the family — and there is no right on it to
+    // refine. Declaring either would advertise something that does not work.
+    //
+    // **The operation that *makes* one is deliberately absent.**
+    // `SYSTEM_ABI_V1` operation 30 is decided and the nucleus performs it, but
+    // ADR-0084 writes its result abstractly as `DmaRegion<mut T>` while every
+    // result declared here is a concrete type text. ADR-0085 §18 leaves that
+    // open rather than closing it with schema polymorphism nobody accepted.
+    Interface {
+        path: "platform.dma.Region",
+        object: ObjectKind::DmaRegion,
+        representation: Representation::DmaRegionFamily,
+        operations: &[
+            // Possession is what issues an address, so no right is declared:
+            // an address is not authority, so there is nothing to refine, and
+            // making one obtainable through one name of a region and not
+            // another would imply otherwise.
+            Operation {
+                name: "dma_device_address",
+                capabilities: &[Requirement::held("platform.dma.Region")],
+                parameters: &[Parameter::fixed("size")],
+                result: "Result<u64, i64>",
+            },
+            Operation {
+                name: "capability_release",
+                capabilities: &[Requirement::held("platform.dma.Region")],
+                parameters: &[],
+                result: "i64",
+            },
+        ],
+    },
 ];
+
+/// How a capability of this interface is represented in TOS Core
+/// (`SYSTEM_INTERFACE_V1` §4.3).
+///
+/// `AsInterface` for a path no accepted schema declares, because the question
+/// only arises for one that does and the caller has already refused the rest.
+pub fn representation_of(path: &str) -> Representation {
+    match interface(path) {
+        Some(interface) => interface.representation,
+        None => Representation::AsInterface,
+    }
+}
 
 /// The interface with this path, if an accepted schema declares one.
 pub fn interface(path: &str) -> Option<&'static Interface> {
