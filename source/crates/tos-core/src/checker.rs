@@ -540,6 +540,17 @@ const DIRECT_INTERFACE_EFFECT_MINOR: u32 = 1;
 /// all, so it is additive and takes one.
 const DEVICE_MEMORY_MINOR: u32 = 2;
 
+/// The minor in which an interface stopped having to be its own value type
+/// (ADR-0085 §13, `SYSTEM_INTERFACE_V1` §4.3).
+///
+/// **It takes a minor because it changes an acceptance rule.** There is no new
+/// syntax and no new type constructor, and that is not the test: a capability
+/// position a conforming pre-amendment frontend and verifier reject becomes
+/// valid, so an implementation that does not support it must not accept such a
+/// module, and one that does must not apply the rule to a module that did not
+/// ask for it.
+const CAPABILITY_REPRESENTATION_MINOR: u32 = 3;
+
 /// Checks the declared source-language version.
 ///
 /// docs/42 section 1 requires exactly `1.0` for V1: another major is
@@ -620,6 +631,92 @@ fn check_features_against_minor(
     }
     if minor < DEVICE_MEMORY_MINOR {
         refuse_device_memory(source, schema, &signatures, minor, out);
+    }
+    if minor < CAPABILITY_REPRESENTATION_MINOR {
+        refuse_capability_representation(source, schema, &signatures, minor, out);
+    }
+}
+
+/// Refuses the capability-representation feature in a module that did not claim
+/// it (ADR-0085 §13).
+///
+/// **The feature is reaching an interface whose capability representation is not
+/// `AsInterface`** — that is the whole of what 1.3 makes valid, and it is
+/// visible in source wherever such an interface is named: in an `extern` item's
+/// `uses`, and in the declared type of the capability parameter that item takes.
+/// A module that could name one but not call it would still be a 1.2 module
+/// holding a 1.3 declaration.
+///
+/// **`import capability` is deliberately not one of the places.** An import of
+/// such an interface is invalid at *every* minor, because no import can produce
+/// a value of that representation — it is
+/// `E1503_NONIMPORTABLE_CAPABILITY` and not a form a later minor unlocks
+/// (`SYSTEM_INTERFACE_V1` §4.3).
+fn refuse_capability_representation(
+    source: &SourceUnit,
+    schema: &Schema,
+    signatures: &[&crate::parser::FunctionSignature],
+    minor: u32,
+    out: &mut Vec<Diagnostic>,
+) {
+    let requested = crate::effects::requested_capabilities(source, schema);
+    let mut report = |span| {
+        out.push(
+            diagnostic(
+                "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR",
+                Stage::Type,
+                span,
+                source,
+            )
+            .with_field("feature", "capability representation")
+            .with_field("declared", minor)
+            .with_field("requires", CAPABILITY_REPRESENTATION_MINOR),
+        );
+    };
+    for signature in signatures {
+        for effect in signature.effects() {
+            if let Some(path) = crate::effects::resolve(source, &requested, effect).interface() {
+                if !is_as_interface(path) {
+                    report(effect.span());
+                }
+            }
+        }
+        for parameter in signature.parameters() {
+            if names_a_represented_interface(source, parameter.ty()) {
+                report(parameter.span());
+            }
+        }
+        if names_a_represented_interface(source, signature.result()) {
+            report(signature.span());
+        }
+    }
+}
+
+/// Whether an accepted interface of this path is represented as itself.
+///
+/// A path no accepted schema declares answers `true`: it names no interface, so
+/// it has no representation, and whatever is wrong with such a module is wrong
+/// for a different reason.
+fn is_as_interface(path: &str) -> bool {
+    crate::interfaces::representation_of(path) == crate::interfaces::Representation::AsInterface
+}
+
+/// Whether a written type names an accepted interface whose representation is
+/// not the default.
+///
+/// The interface path is what an operation's capability parameter is declared
+/// as, whatever represents its values — so this catches the declaration even
+/// though the *argument* at the call site is written as a region.
+fn names_a_represented_interface(source: &SourceUnit, ty: &crate::parser::TypeSyntax) -> bool {
+    match ty {
+        crate::parser::TypeSyntax::Name { path, .. } => {
+            let written: Vec<&str> = path.iter().map(|segment| segment.text(source)).collect();
+            !is_as_interface(&written.join("."))
+        }
+        crate::parser::TypeSyntax::Constructed { arguments, .. } => arguments
+            .iter()
+            .any(|inner| names_a_represented_interface(source, inner)),
+        _ => false,
     }
 }
 

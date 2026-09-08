@@ -40,7 +40,7 @@ pub(crate) fn check_boundary(source: &SourceUnit, schema: &Schema) -> Vec<Diagno
     let mut diagnostics = Vec::new();
     // What this module requested, by the name it bound: an `extern` item's
     // `uses` list names one of these, and the interface is that request's type.
-    let mut requested: BTreeMap<String, String> = BTreeMap::new();
+    let requested = crate::effects::requested_capabilities(source, schema);
     for import in schema.outline().prefix().imports() {
         if import.kind() != ImportKind::Capability {
             continue;
@@ -78,7 +78,6 @@ pub(crate) fn check_boundary(source: &SourceUnit, schema: &Schema) -> Vec<Diagno
                 );
             }
         }
-        requested.insert(import.binding().text(source).to_string(), path);
     }
     for signature in schema.extern_functions() {
         if let Some(reason) = unavailable(source, signature, &requested) {

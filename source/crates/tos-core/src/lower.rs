@@ -3204,22 +3204,33 @@ impl<'source> Lowerer<'source> {
         builder: &mut BodyBuilder,
         at: usize,
     ) -> Result<Operand, Gap> {
-        // How many the schema says this operation takes. The checker has already
-        // refused a declaration that does not match one, so this is the number
-        // the source's arguments were checked against.
         let arguments = expression.arguments();
-        // Resolved through the first argument, which is the operation's own
-        // capability: the checker has already refused a declaration that does
-        // not match one, so this is the entry the source's arguments were
-        // checked against.
-        let required = arguments
-            .first()
-            .map(|argument| argument.value())
-            .filter(|written| written.form() == ExpressionForm::Name)
-            .and_then(|written| self.operation_through(name, written.span().text(self.source)))
-            .or_else(|| self.extern_operation(name))
-            .map(|operation| operation.capabilities.len())
-            .unwrap_or(1);
+        let Some(first) = arguments.first().map(|argument| argument.value()) else {
+            return Err(self.gap(
+                "interface operation without its capabilities",
+                expression.span(),
+            ));
+        };
+        // **Which interface this call reaches is decided by its first
+        // capability**, and since ADR-0085 that is decided by the argument's
+        // *representation* rather than by its spelling: a binding names the
+        // interface it imported, and a value denotes the interface its type
+        // represents. Reading it here rather than resolving the operation by
+        // name alone is what keeps one name declared by several interfaces —
+        // `capability_release` is declared by six — from being checked against
+        // whichever declaration happened to be recorded last.
+        let (first_source, interface) = self.lower_capability_argument(first, builder)?;
+        let Some(operation) =
+            crate::interfaces::interface(&interface).and_then(|reached| reached.operation(name))
+        else {
+            return Err(self.gap(
+                "interface operation reached through a capability whose interface \
+                 declares no operation of this name",
+                first.span(),
+            ));
+        };
+        // How many the schema says this operation takes.
+        let required = operation.capabilities.len();
         if arguments.len() < required {
             return Err(self.gap(
                 "interface operation without its capabilities",
@@ -3228,47 +3239,22 @@ impl<'source> Lowerer<'source> {
         }
         let (capabilities, values) = arguments.split_at(required);
         let mut sources = Vec::with_capacity(required);
-        let mut interface = None;
-        for capability in capabilities {
+        sources.push(first_source);
+        for (position, capability) in capabilities.iter().enumerate().skip(1) {
             let named = capability.value();
-            // An `import capability` binding, which is what every capability
-            // position was before ADR-0078 and what most of them still are.
-            if named.form() == ExpressionForm::Name {
-                let binding = named.span().text(self.source);
-                if let Some(import) = self.capability_import_index.get(binding).copied() {
-                    if interface.is_none() {
-                        interface = Some(self.capability_imports[import].clone());
-                    }
-                    sources.push(tos_ir::CapabilitySource::Import(import));
-                    continue;
-                }
-            }
-            // Otherwise a capability the module **holds as a value**, because
-            // an operation produced it. Its interface is its own type, and it
-            // must be exactly the one this position requires — a value of some
-            // other interface, or of no capability type at all, is not a
-            // capability of this position and is refused here rather than
-            // lowered into an artifact for a verifier to catch.
-            let operand = self.lower_expression(named, builder)?;
-            let ty = builder.type_of(&operand);
-            let Some(TypeDef::Capability(path)) = self.types.get(ty).cloned() else {
+            let (source, supplied) = self.lower_capability_argument(named, builder)?;
+            // Every capability an operation requires is its own authority with
+            // its own interface (ADR-0063), and what the position requires is an
+            // interface — so what is compared is the interface the argument
+            // denotes, whichever way it was supplied.
+            if supplied != operation.capabilities[position].interface {
                 return Err(self.gap(
-                    "interface operation on something that is neither a capability import \
-                     nor a capability value",
+                    "a capability position is filled by a capability of another interface",
                     named.span(),
                 ));
-            };
-            if interface.is_none() {
-                interface = Some(path);
             }
-            sources.push(tos_ir::CapabilitySource::Value(operand));
+            sources.push(source);
         }
-        let Some(interface) = interface else {
-            return Err(self.gap(
-                "interface operation without its capabilities",
-                expression.span(),
-            ));
-        };
         let mut operands = Vec::new();
         for argument in values {
             operands.push(self.lower_expression(argument.value(), builder)?);
@@ -3295,31 +3281,103 @@ impl<'source> Lowerer<'source> {
         Ok(Operand::Value(value))
     }
 
-    /// The accepted operation an `extern` item of this name is, if a schema
-    /// declares one.
+    /// One capability argument, as the source it lowers to and the interface it
+    /// denotes.
     ///
-    /// Read from the schema rather than from the declaration: how many
-    /// capabilities an operation takes is the *interface's* statement, and a
-    /// declaration that disagreed was already refused by the checker.
-    fn extern_operation(&self, name: &str) -> Option<&'static crate::interfaces::Operation> {
-        let interface = self.externs.get(name)?;
-        crate::interfaces::interface(interface)?.operation(name)
-    }
-
-    /// The same, resolved through the interface a *call site* reaches it by.
+    /// **The frontend half of `SYSTEM_INTERFACE_V1` §4.3** (ADR-0085 §5, §6).
+    /// A capability position is filled by exactly the class of values the
+    /// required interface's representation names, and there is **no conversion
+    /// in either direction**:
     ///
-    /// One operation may be declared by several interfaces — `endow_for_launch`
-    /// is, because it is reached through the capability being delegated
-    /// (ADR-0077 §3) — so the name alone does not decide which entry a call
-    /// uses. The first argument does, and §4.1 makes it the operation's own
-    /// capability.
-    fn operation_through(
-        &self,
-        name: &str,
-        binding: &str,
-    ) -> Option<&'static crate::interfaces::Operation> {
-        let interface = self.capability_interfaces.get(binding)?;
-        crate::interfaces::interface(interface)?.operation(name)
+    /// ```text
+    /// representation_of(I) = AsInterface      the argument is Capability(I)
+    /// representation_of(I) = DmaRegionFamily  the argument is DmaRegion<T>
+    ///                                         or DmaRegion<mut T>, any T
+    /// ```
+    ///
+    /// Read from the argument rather than from the position, which is what
+    /// makes it a *derivation*: a family belongs to at most one accepted
+    /// interface (§4.3 rule 1), so the argument's type answers with one
+    /// interface and the caller compares that against what the position wants.
+    /// It is the same shape the verifier uses on the artifact, reached
+    /// independently — the frontend from the source's types, the verifier from
+    /// the artifact's.
+    fn lower_capability_argument(
+        &mut self,
+        named: &'source Expression,
+        builder: &mut BodyBuilder,
+    ) -> Result<(tos_ir::CapabilitySource, String), Gap> {
+        // An `import capability` binding, which is what every capability
+        // position was before ADR-0078 and what most of them still are.
+        if named.form() == ExpressionForm::Name {
+            let binding = named.span().text(self.source);
+            if let Some(import) = self.capability_import_index.get(binding).copied() {
+                let interface = self.capability_imports[import].clone();
+                // **`Import` is not a source a non-default representation
+                // admits** (ADR-0085 §4a, §6). The checker already refused the
+                // declaration with `E1503_NONIMPORTABLE_CAPABILITY`, so nothing
+                // reaches here — and the lowerer still will not build one,
+                // because "the frontend emits `Value` only at such a position"
+                // is a property of this function rather than of the diagnostic
+                // that usually gets there first.
+                if !crate::interfaces::representation_of(&interface).startup_importable() {
+                    return Err(self.gap(
+                        "a capability position filled by an import of an interface \
+                         no import can produce a value of",
+                        named.span(),
+                    ));
+                }
+                return Ok((tos_ir::CapabilitySource::Import(import), interface));
+            }
+        }
+        // Otherwise a capability the module **holds as a value**, because an
+        // operation produced it or a parameter carried it.
+        let operand = self.lower_expression(named, builder)?;
+        let ty = builder.type_of(&operand);
+        let interface = match self.types.get(ty) {
+            Some(TypeDef::Capability(path)) => {
+                let path = path.clone();
+                // **The interface's own path is not always a member of the
+                // family that represents it** (ADR-0085 §17.1). Where the
+                // representation is not `AsInterface`, a value of
+                // `Capability(I)` is not a value of `I` at all — no source form
+                // produces one, and admitting it here would be admitting the
+                // one shape §4.3 exists to exclude.
+                if crate::interfaces::representation_of(&path)
+                    != crate::interfaces::Representation::AsInterface
+                {
+                    return Err(self.gap(
+                        "a capability position filled by the interface's own capability \
+                         type, which is not how that interface is represented",
+                        named.span(),
+                    ));
+                }
+                path
+            }
+            // The arms ADR-0085 §4.3 adds, from the frontend's own copy of the
+            // accepted representation table. A `DmaRegion<T>` and a
+            // `DmaRegion<mut T>` are the values of `platform.dma.Region`,
+            // whatever their element type, and they lower to `Value` — never to
+            // `Import`, because there is no import they could be.
+            Some(other) => match crate::interfaces::interface_of_representation(other) {
+                Some(path) => String::from(path),
+                None => {
+                    return Err(self.gap(
+                        "interface operation on something that is neither a capability import \
+                         nor a capability value",
+                        named.span(),
+                    ))
+                }
+            },
+            None => {
+                return Err(self.gap(
+                    "interface operation on something that is neither a capability import \
+                     nor a capability value",
+                    named.span(),
+                ))
+            }
+        };
+        Ok((tos_ir::CapabilitySource::Value(operand), interface))
     }
 
     fn extern_result_type(&mut self, name: &str) -> Result<TypeId, Gap> {
