@@ -2,10 +2,12 @@
 
 # ADR-0085: Capability representation, separated from interface identity
 
-- Status: **Proposed — not Project Architect-approved. Revision 4 (C′).**
-  Nothing is implemented; Stage 4C-2's surface stays stopped
+- Status: **Accepted (Project Architect-approved, 2026-09-08)**, at revision 4.
+  The capability-representation STOP is lifted. Implementation lands under the
+  acceptance obligations below; Stage 4C-2's surface resumes after it
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-08, on revision 4
 - Date: 2026-09-08
-- Decision level: **3** (§13), and it requires **TOS Core 1.3**. Revision 1
+- Decision level: **3** (§13). **TOS Core 1.3.** Revision 1
   claimed Level 2 and revision 2 left the language minor open; both are settled
   here
 - Related: **ADR-0078** (`CapabilitySource::Value`), **ADR-0080** (§4, §5, §7),
@@ -453,8 +455,7 @@ the failure mode the whole review sequence exists to prevent.
 
 So the repair is scheduled rather than performed:
 
-> **On acceptance, and in the same commit as the rule**, `docs/42` and `docs/44`
-> record the sequence whole:
+> **On acceptance**, `docs/42` and `docs/44` record the sequence whole:
 >
 > ```text
 > 1.0   original V1

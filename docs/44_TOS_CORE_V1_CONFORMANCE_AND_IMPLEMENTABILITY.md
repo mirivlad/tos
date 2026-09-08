@@ -3,7 +3,8 @@
 # TOS Core V1 — conformance, limits, and implementation review
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
-- Language versions: `TOS Core 1.0` and `TOS Core 1.1` (ADR-0080)
+- Language versions: `TOS Core 1.0` (original V1), `1.1` (ADR-0080),
+  `1.2` (ADR-0081), `1.3` (ADR-0085)
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` through
   `docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`

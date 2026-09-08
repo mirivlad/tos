@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `02c928ad575a7289ad704dbab9817b6b7d70a2e5c771eccb033e75dfcbd8ad35`\
+Source-manifest SHA-256: `3b4a29d6d24bdff72c22ba313e044c8917e9558e924b2503d0bc227431907a29`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -7151,11 +7151,36 @@ events. A full registry and conformance expectations are in docs/44.
 # TOS Core V1 — modules, capabilities, and versioning
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
-- Language versions: `TOS Core 1.0` and `TOS Core 1.1` (ADR-0080)
+- Language versions: `TOS Core 1.0` (original V1), `1.1` (ADR-0080),
+  `1.2` (ADR-0081), `1.3` (ADR-0085)
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`,
   `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`, and
   `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`
+
+### The minor sequence, recorded whole
+
+It had drifted: this line named only 1.0 and 1.1 while ADR-0081 had accepted 1.2
+and the implementation supported it. Repaired here rather than left, and **1.2 is
+attributed to the decision that accepted it**:
+
+| Minor | Decision | What it added |
+|---|---|---|
+| 1.0 | ADR-0027/ADR-0028 | original V1 |
+| 1.1 | ADR-0080 | a capability as an operation result, and effects naming interfaces |
+| 1.2 | **ADR-0081** | device memory: `MmioRegion`, region and `DmaRegion` indexed access |
+| 1.3 | **ADR-0085** | capability representation separated from interface identity |
+
+**A module receives the language its header claims.** A 1.0, 1.1 or 1.2 module
+does not acquire a later minor's semantics from the frontend that happens to
+compile it — `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` refuses a later form in an
+earlier module — and an implementation that does not support a minor rejects the
+module whole by its header with `E1602_UNSUPPORTED_LANGUAGE_MINOR`.
+
+**1.3's frontend and verifier support lands with ADR-0085's rule**, not before:
+until then a module may not declare it, which is the fail-closed direction. The
+version sequence is recorded here because the decision is accepted; the
+acceptance obligations that make it usable are listed in ADR-0085.
 
 ## 1. Module identity and deterministic resolution
 
@@ -7685,7 +7710,8 @@ frontend, verifier, source maps, capability contract, or recovery semantics.
 # TOS Core V1 — conformance, limits, and implementation review
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
-- Language versions: `TOS Core 1.0` and `TOS Core 1.1` (ADR-0080)
+- Language versions: `TOS Core 1.0` (original V1), `1.1` (ADR-0080),
+  `1.2` (ADR-0081), `1.3` (ADR-0085)
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` through
   `docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`
@@ -29848,10 +29874,12 @@ the no-IOMMU confinement statement; and ordering left to Stage 4C-3.
 
 # ADR-0085: Capability representation, separated from interface identity
 
-- Status: **Proposed — not Project Architect-approved. Revision 4 (C′).**
-  Nothing is implemented; Stage 4C-2's surface stays stopped
+- Status: **Accepted (Project Architect-approved, 2026-09-08)**, at revision 4.
+  The capability-representation STOP is lifted. Implementation lands under the
+  acceptance obligations below; Stage 4C-2's surface resumes after it
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-08, on revision 4
 - Date: 2026-09-08
-- Decision level: **3** (§13), and it requires **TOS Core 1.3**. Revision 1
+- Decision level: **3** (§13). **TOS Core 1.3.** Revision 1
   claimed Level 2 and revision 2 left the language minor open; both are settled
   here
 - Related: **ADR-0078** (`CapabilitySource::Value`), **ADR-0080** (§4, §5, §7),
@@ -30299,8 +30327,7 @@ the failure mode the whole review sequence exists to prevent.
 
 So the repair is scheduled rather than performed:
 
-> **On acceptance, and in the same commit as the rule**, `docs/42` and `docs/44`
-> record the sequence whole:
+> **On acceptance**, `docs/42` and `docs/44` record the sequence whole:
 >
 > ```text
 > 1.0   original V1
