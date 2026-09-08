@@ -2,16 +2,23 @@
 
 # ADR-0084: Where DMA authority comes from, and what a device-visible address is allowed to be
 
-- Status: **Proposed — not Project Architect-approved. Revision 2.** Written
+- Status: **Proposed — not Project Architect-approved. Revision 3.** Written
   before the mechanism, which is the order ADR-0081 §0 recorded going wrong once
   and ADR-0082 restored. Nothing in it is implemented.
 
-  **Revision 2** answers three findings of the first review, and two of them
-  changed a decision rather than a wording: `BME=0` is **not** a teardown proof
-  and §5a replaces it with one; quarantined memory **stays charged** until the
-  frames actually return (§5e); and a `DmaRegion` is **one contiguous
-  device-visible extent** whose interior a driver can address (§6a, §6b). §9
-  lists what moved
+  **Revision 2** answered three findings: `BME=0` is not a teardown proof;
+  quarantined memory stays charged until the frames actually return (§5f); and a
+  `DmaRegion` is one contiguous device-visible extent whose interior a driver can
+  address (§6a, §6b). The second and third were accepted.
+
+  **Revision 3** repairs the teardown proof itself, which revision 2 got half
+  right. A configuration read flushes **posted writes in TC0** and proves nothing
+  about the function's own outstanding **non-posted** requests, and Relaxed
+  Ordering or ID-Based Ordering can weaken even the part it does prove. §5b now
+  states one reclaim condition discharging **both** obligations, §5c fixes the
+  ordering profile it requires and says which of its five properties is checked
+  and which is declared, and §5d states the fail-closed outcome and why a
+  quarantine cannot be orphaned. §9 lists what moved
 - Date: 2026-09-08
 - Decision level: **3** — it admits a third class of authority descending from a
   device assignment, it is the first object with **two** ancestries at once, and
@@ -157,99 +164,142 @@ Only the third threatens the pool, and `BME=0` does not address it. A posted
 write is fire-and-forget: the function considers it done when it is handed to
 the fabric, and the fabric may still be carrying it.
 
-### 5a. The generic mechanism that does prove it
+### 5a. Two obligations, and why a flush alone discharges only one
 
-**It exists, it is ordinary PCI, and the nucleus already performs it.**
-
-> A **completion may not pass a previously issued posted request** travelling in
-> the same direction. A configuration read of the function produces a completion
-> that travels **upstream**, along the path the function's DMA writes travel. So
-> when the CPU observes the value of that read, every posted write the function
-> issued earlier has already been accepted ahead of it.
-
-This is the "a read flushes posted writes" rule every operating system relies on
-to stop DMA, expressed over the one transaction type this nucleus can already
-issue against any function: `pci_config_read`. So the proposed drain is
+Before the mechanism, the two things that have to be proved, stated apart
+because a proof of one is not a proof of the other:
 
 ```text
-1  the region's last name goes; its mapping is removed
-2  it stops being a bus-mastering descendant; ADR-0082 §5d re-evaluates
-3  if the function is now not a bus master:
-      a  a configuration read of **that function** is performed and observed
-      b  by the ordering rule, its earlier posted writes are at their destination
-      c  only now may the quarantine for that assignment be drained
-4  if the function is still a bus master, nothing is drained
+(1)  no non-posted request the function issued is still outstanding
+(2)  every posted write the function issued has reached its destination
 ```
 
-**Order matters in both directions.** The read must come *after* `BME=0`, or new
-writes could be issued behind the flush; and the read must reach the function
-while it still answers configuration cycles, which is why nothing about
+**A configuration read discharges (2) and not (1).** The ordering rule is that a
+**completion may not pass a previously issued posted request** travelling in the
+same direction: a configuration read of the function produces a completion
+travelling **upstream**, along the path the function's DMA writes travel, so
+observing that read's value proves the earlier writes were accepted ahead of it.
+That is the "a read flushes posted writes" rule every operating system stops DMA
+with. It says nothing about the function's own outstanding reads, whose
+completions travel the other way.
+
+**PCIe provides an architected bit for (1), and it is exactly what it is for.**
+The PCI Express Capability's Device Status register carries **Transactions
+Pending**: set while the Function has issued Non-Posted Requests that have not
+completed. It is the bit an FLR waits on, and this ADR uses it without entering
+reset.
+
+### 5b. The reclaim condition, as one condition
+
+> **`DRAINED(assignment)`** — evaluated in this order, each step after the last:
+>
+> ```text
+> 1  the assignment has no live bus-mastering descendant
+>       ⇒ ADR-0082 §5d has cleared Bus Master Enable
+>       ⇒ no further request of any kind can be issued
+> 2  a configuration read of that function's PCI Express Capability
+>    Device Status is performed, and returns Transactions Pending = 0
+> ```
+
+**Two obligations, one transaction, and that is not a coincidence.** The read in
+step 2 is both the observation and the flush:
+
+- its **value** discharges (1) — the function reports no outstanding non-posted
+  requests;
+- its **completion** discharges (2) — it could not pass posted writes issued
+  before it, and step 1 guarantees none can be issued after it.
+
+Step 1 before step 2 is load-bearing in both directions. Without `BME = 0`
+first, a write could be posted behind the flush; and the read must reach a
+function that still answers configuration cycles, which is why nothing in
 teardown may power it down or remove it.
 
-**No device knowledge is involved.** A configuration read of an arbitrary
-architected offset — the vendor/device word is the obvious choice, because every
-function has one and its value means nothing to the nucleus. Ring 0 learns
-nothing about what the device is.
+**The wait is bounded in reads, not in time.** If Transactions Pending is still
+set, the condition is simply not met yet: it is re-evaluated at the next point
+the predicate is evaluated. There is no timeout that converts "not proved" into
+"proceed", because a timeout is a guess wearing a number.
 
-### 5b. What this proof does *not* cover, stated rather than assumed
+**No device knowledge is involved.** The PCI Express Capability is capability id
+`0x10` and its layout is in the PCI Express base specification; ring 0 reads two
+architected registers of it and learns nothing about what the device is.
 
-- **Non-posted reads the function had already issued.** Their data goes to the
-  device, so they cannot corrupt a freed frame — but they can *read* one, which
-  is a disclosure to the device rather than a corruption of the pool. The
-  quarantine covers the window: frames are out of the pool for the whole of it,
-  and the flush above orders the completions of those reads behind the same
-  boundary.
-- **A function that has stopped answering configuration cycles.** The proof is a
-  read that completes; a function in D3cold, hot-removed, or behind a link that
-  is down cannot produce one. This ADR does not enter device reset or power
-  management (ADR-0082 §12), so the honest statement is the compatibility
-  restriction below rather than a fallback that would be a reset by another
-  name.
-- **A platform whose root complex reorders across the boundary.** The ordering
-  rule is a requirement on conforming hierarchies, and a platform that violates
-  it is outside the profile.
+### 5c. What the proof requires of the function and the platform
 
-### 5c. The compatibility restriction, fixed honestly
+The review is right that "a conforming hierarchy" is not enough: the ordering
+rule the flush rests on holds **within one Traffic Class**, and Relaxed Ordering
+and ID-Based Ordering exist precisely to relax it. So these are properties of a
+**DMA-capable function on a DMA-capable platform**, established or declared
+rather than assumed:
 
-> **The DMA teardown proof of §5a is valid on a conforming PCI/PCIe hierarchy in
-> which the function is still reachable by configuration access at the moment of
-> teardown.** A profile that cannot meet both conditions does not get a weaker
-> proof; it gets no DMA authority, and this contract says so rather than
-> lowering what "safe to return" means.
+| | Property | How it holds |
+|---|---|---|
+| **P1** | the function implements the **PCI Express Capability** (`0x10`) in conventional configuration space | **Checked at claim.** Without it there is no Transactions Pending bit and no architected way to prove (1). A conventional PCI function gets **no DMA authority** — refused, not approximated |
+| **P2** | **Relaxed Ordering is disabled** — Device Control bit 4 | **Cleared by the nucleus at claim**, and the bit becomes nucleus-owned under ADR-0082 §5's rule, so CPL 3 cannot re-enable it. Bit-precise, by §5a's rule that neighbours sharing a register are not reserved with it |
+| **P3** | **No Snoop is disabled** — Device Control bit 11 | Same. A non-snooping write may leave the CPU reading stale data, which would make "the write arrived" true and useless |
+| **P4** | **ID-Based Ordering is disabled** — Device Control 2 bits 8 and 9, where the capability version has that register | Same |
+| **P5** | **TC0-only traffic** | **Declared, not checked**, and the document says which it is. The nucleus enables no additional Virtual Channel and programs no TC/VC map, so the default TC0→VC0 mapping is the only one that exists; a function emitting another Traffic Class would be emitting one nothing mapped, and is outside this profile. The Virtual Channel capability is an **extended** capability, which Configuration Mechanism #1 cannot reach at all — so this becomes checkable when ADR-0079 §7's ECAM backend arrives, and it should be checked then |
 
-That is a real narrowing and it is the right one: the alternative is either a
-timeout — which is a guess wearing a number — or a function reset, which
-ADR-0082 §12 puts out of scope and which would silence a live interrupt source
-belonging to the same driver.
+**P2–P4 are a narrowing of operation 26** in exactly the shape ADR-0082 §5
+established, and are added to the reserved set for the same reason those were:
+the hardware happens to keep the platform's ordering guarantees inside a range a
+`config_write` holder reaches, and a driver that could re-enable Relaxed
+Ordering could invalidate the teardown proof of a region it no longer holds.
 
-**On the reference machine the proof is honest but is not stressed.** QEMU's
-`q35` model completes device writes synchronously, so the drain will pass there
-whatever the fabric would have done on hardware. The evidence therefore proves
-that the *mechanism is performed in the right order*, and does not claim to have
-observed a real posted write in flight. Saying so is the difference between
-evidence and decoration.
+**P5 is the one that is declared, and it is the honest weak point.** It is not a
+hidden assumption — it is written here as a property of the profile, with the
+mechanism that makes it true today and the mechanism that would let it be
+verified later.
 
-### 5d. The gap the review found, and the sibling case
+### 5d. Fail-closed, and what happens to memory that cannot be proved safe
+
+> **If `DRAINED` cannot be established, the frames do not return and the charge
+> is not refunded.** There is no path from "not proved" to "proceed".
+
+That covers every way it can fail, and each is the same outcome:
+
+- Transactions Pending never clears;
+- the configuration read does not complete — a function that has stopped
+  answering returns all-ones, which is not an observation of a zero bit and is
+  not treated as one;
+- the function or platform does not satisfy P1–P5, in which case DMA authority
+  was refused at claim and there are no frames to return.
+
+**And the quarantine cannot be orphaned.** Quarantined frames attach to the
+assignment, and — by ADR-0081 §14's existing rule, reused rather than
+reinvented — **an assignment does not end while something reaches it**. So a
+function whose drain has not been proved stays claimed: its BDF cannot be
+claimed again, no second driver can be handed a device that was never shown to
+be quiescent, and the frames keep an owner that can retry. Bus Master Enable is
+already clear, so a pinned assignment is inert rather than dangerous.
+
+The condition is re-evaluated whenever the assignment's descendants change, so a
+device that becomes quiescent later does return its memory. If it never does,
+the frames are lost for the boot and **the account says so** — outstanding
+charge, reduced pool, an assignment that will not release. That is the correct
+outcome rather than a regrettable one: memory the system cannot prove is
+unreachable by a device is memory it must not hand to anybody.
+
+### 5e. The sibling case, and what the quarantine is released by
 
 **`BME` does not clear when another bus-mastering descendant lives.** An
 interrupt source is bus-mastering too (ADR-0082 §5d), so a driver holding one
 keeps the function a master, and a DMA region released beside it must not return
 its frames.
 
-So the quarantine's release condition is **the predicate, not the region**: an
-assignment's quarantined frames are returned when that assignment has no live
-bus-mastering descendant *and* the §5a flush has been performed for it. Until
-then they stay out of the pool — and, by §5e, stay charged.
+So the quarantine's release condition is **`DRAINED(assignment)` of §5b, not the
+region**: an assignment's quarantined frames return when that assignment has no
+live bus-mastering descendant *and* the read of §5b has observed Transactions
+Pending clear. Until then they stay out of the pool — and, by §5f, stay charged.
 
 Three candidates were weighed and quarantine remains the proposal:
 
 | | | |
 |---|---|---|
-| **A. Retire the frames** | never return them within a boot, as §5f retires a vector | A vector is one of sixteen and a queue's buffers are megabytes: a leak with a rationale, not a bounded trade |
-| **B. Quarantine until the predicate clears and the flush completes** *(proposed)* | frames held out of the pool, charge outstanding | Cost proportional to the risk: unavailable exactly while a device could still reach them |
+| **A. Retire the frames** | never return them within a boot, as ADR-0082 §5f retires a vector | A vector is one of sixteen and a queue's buffers are megabytes: a leak with a rationale, not a bounded trade |
+| **B. Quarantine until `DRAINED`** *(proposed)* | frames held out of the pool, charge outstanding | Cost proportional to the risk: unavailable exactly while a device could still reach them, and released the moment it provably cannot |
 | **C. Reset the function** | clear mastering regardless | Out of scope, and it would silence a sibling interrupt source nobody asked to silence |
 
-## 5e. D3a — quarantined memory stays charged
+## 5f. D3a — quarantined memory stays charged
 
 **The review's second point, and it is a correctness bug rather than a
 refinement.** If destroying a `DmaRegion` refunded the funding lineage while the
@@ -397,9 +447,10 @@ Positive, from canonical text on the real device:
 2. the assignment becomes a bus master when it does, and not before;
 3. the backing is **one contiguous device-visible extent**, and the address of a
    bounded offset inside it is obtainable and is that base plus that offset;
-4. teardown performs §5a in order: mastering stops, **then** the configuration
-   read of that function is performed, **then** the frames return — and the
-   record shows the three in that order rather than merely all three present;
+4. teardown establishes `DRAINED` in §5b's order: mastering stops, **then** the
+   Device Status read observes Transactions Pending clear, **then** the frames
+   return — and the record shows the three in that order rather than merely all
+   three present;
 5. the account is exactly where it started once the quarantine has drained.
 
 Negative, and a successful allocation alone is not sufficient:
@@ -410,6 +461,12 @@ Negative, and a successful allocation alone is not sufficient:
    and `interrupt` all present;
 9. **no operation anywhere accepts a device address** — checked structurally
    over the accepted schema, as "a BAR is data" is;
+9a. a claim of a function with **no PCI Express Capability** yields no DMA
+    authority — P1 refused rather than approximated, on a real function of the
+    reference machine that lacks one;
+9b. a `config_write` that would set Relaxed Ordering, No Snoop or an IDO enable
+    is refused, and its **neighbours in the same register remain writable** —
+    the narrowing shown to be a narrowing, as ADR-0082 §5's was;
 10. an offset outside the region's extent is refused and yields no address;
 11. a released DMA region's frames are **not** in the pool while an interrupt
     source keeps the function mastering, and **are** once it goes;
@@ -420,7 +477,11 @@ Negative, and a successful allocation alone is not sufficient:
     exactly the quarantined frames. A refund-on-release implementation passes
     every other item on this list and fails this one, which is why it is here;
 13. process death runs the same path, and leaves neither a charge nor a
-    quarantined frame behind once the predicate clears;
+    quarantined frame behind once `DRAINED` holds;
+13a. **fail-closed, exercised rather than described.** With `DRAINED`
+    unestablished, the frames are not in the pool, the charge is outstanding, the
+    assignment does **not** end, and a second claim of that BDF is refused — so
+    a quarantine can never lose the owner that would retry it;
 14. ring 0 still contains no device vocabulary.
 
 ## 9. What revision 2 changed
@@ -431,12 +492,36 @@ revised decision nobody can review.
 | | Revision 1 | Revision 2 |
 |---|---|---|
 | **teardown proof** | `BME=0` was treated as sufficient | **Changed decision.** `BME=0` blocks new requests and proves nothing about posted writes already issued. §5a adds an explicit drain: after mastering stops, a **configuration read of that function** is performed, and by PCIe's rule that a completion may not pass a previously issued posted request, observing its value proves those writes reached their destination. §5b names what the proof does not cover; §5c fixes the compatibility restriction it costs |
-| **quarantine accounting** | left unstated, and the natural reading was refund-on-release | **Changed decision.** §5e: the charge stays outstanding until the frames actually return, and the refund happens at that same moment. This is ADR-0075's existing two-step reclaim with a longer interval, not a new mechanism, so `allocated + reserved + free == budget` holds throughout |
+| **quarantine accounting** | left unstated, and the natural reading was refund-on-release | **Changed decision.** §5f: the charge stays outstanding until the frames actually return, and the refund happens at that same moment. This is ADR-0075's existing two-step reclaim with a longer interval, not a new mechanism, so `allocated + reserved + free == budget` holds throughout |
 | **quarantine release condition** | "when the last bus-mastering descendant goes" | Sharpened to **the predicate plus the flush**, per assignment — a live interrupt source keeps the frames quarantined and charged (§5d) |
 | **region extent** | undefined | **New decision.** §6a: a `DmaRegion` is **one contiguous device-visible extent**. On the no-IOMMU backend that requires a physically contiguous run; under an IOMMU it is a contiguous IOVA range, and the public sentence is unchanged |
 | **addressing part of a region** | "no arithmetic on it is meaningful", with no way to address a subobject | **Resolved contradiction.** §6b: the driver presents a **region capability and a bounded offset**, checked against the extent; the nucleus does the arithmetic. The API form is deliberately left open, and the input rule is unchanged — no address is accepted anywhere |
 | **allocator obligation** | absent | **New.** §6a records that `tos-frames` cannot re-carve a released run today, so Stage 4C-2 must make returned runs re-carvable or the quarantine achieves nothing |
 | **evidence** | 10 items | 14, including the **churn case** (§8.12), which a refund-on-release implementation fails and every other item passes, and the **ordering** of the teardown steps (§8.4) rather than their mere presence |
+
+### Revision 3
+
+| | Revision 2 | Revision 3 |
+|---|---|---|
+| **what the flush proves** | a configuration read was treated as the whole drain | **Corrected.** It discharges only "posted writes have arrived", and only **within TC0**. It says nothing about the function's own outstanding non-posted requests, whose completions travel the other way |
+| **outstanding non-posted requests** | not addressed | **New.** PCIe's architected **Transactions Pending** bit, in the PCI Express Capability's Device Status, is exactly the proof of their absence — the bit an FLR waits on, used here without entering reset |
+| **the reclaim condition** | two informal steps | **One condition, `DRAINED`** (§5b): `BME = 0` first, then a read of Device Status returning Transactions Pending clear. One transaction discharges both obligations — its *value* proves the first, its *completion* proves the second — and that is stated rather than left to be noticed |
+| **ordering profile** | "a conforming hierarchy", which the review correctly called insufficient | **Five properties of a DMA-capable function/platform** (§5c): the PCI Express Capability **checked at claim**; Relaxed Ordering, No Snoop and IDO **cleared and made nucleus-owned**, bit-precisely, so a `config_write` holder cannot invalidate the proof; and **TC0-only traffic declared** — with the document saying it is declared, why it holds today, and that ECAM would make it checkable |
+| **operation 26** | unchanged | Narrowed again, in ADR-0082 §5's shape: four ordering bits added to the set it refuses, with their register-neighbours left writable |
+| **fail-closed** | implied | **Explicit** (§5d): no path from "not proved" to "proceed"; an all-ones read is not an observation of a zero bit; there is no timeout, only re-evaluation. Frames stay out, the charge stays outstanding, and — reusing ADR-0081 §14 rather than inventing anything — **the assignment does not end while quarantined frames attach to it**, so the BDF cannot be re-claimed and a quarantine can never lose the owner that would retry it |
+| **evidence** | 14 items | 17: a function with no PCI Express Capability gets no DMA authority, the four ordering bits are refused while their neighbours stay writable, and the fail-closed state is **exercised** — frames out, charge outstanding, assignment pinned, second claim refused |
+
+**Audit for revision 3**, because the profile is only honest if the reference
+machine meets it: the Stage 4 function is a PCI Express endpoint —
+`x-disable-pcie = false` on `virtio-blk-pci` at `00:04.0` under `q35`, so QEMU
+initialises the PCI Express Capability on it and Device Status carries
+Transactions Pending. **P1 is satisfiable on the reference machine**, which is
+what makes §5c a restriction rather than a refusal of the platform this project
+runs on.
+
+**This remains a generic PCI/PCIe mechanism.** Capability id `0x10`, two
+architected registers, one configuration read. No device-specific cooperation, no
+reset, no VirtIO. **Not an architecture STOP.**
 
 Unchanged, and not re-argued: two capabilities with a separate `dma` right; two
 ancestries; ADR-0082 §5d inherited whole; quarantine preferred to permanent
@@ -451,16 +536,18 @@ the no-IOMMU confinement statement; and ordering left to Stage 4C-3.
 - **Trusted-base impact:** the nucleus gains a DMA region kind with two
   ancestries, a per-assignment frame quarantine with its drain proof, the
   issuing of one number per region and the checked resolution of an offset
-  inside one. The drain proof is a configuration read the nucleus already knows
-  how to perform.
+  inside one. It also gains the PCI Express Capability to its capability walk,
+  and four ordering bits to the set it owns. The drain proof itself is **one
+  configuration read** the nucleus already knows how to perform.
 - **Threat-model impact:** `docs/34` S5 already carries ADR-0082 §5's wording;
   this adds two exploitation paths — "frames returned to the pool while a
   posted write is still in flight" and "one budget spent twice through
   quarantine churn" — and the control that closes each.
 - **Compatibility profile:** `PLATFORM_INTERFACE_V1` at version 3, one new
-  object kind, two new rights, and new `SYSTEM_ABI_V1` operations. **And a
-  narrowing**: §5c restricts DMA authority to a conforming hierarchy in which
-  the function still answers configuration cycles at teardown.
+  object kind, two new rights, and new `SYSTEM_ABI_V1` operations. **And two
+  narrowings**: §5c makes DMA authority conditional on a PCI Express function
+  under a TC0-only, Relaxed-Ordering-free, IDO-free ordering profile, and adds
+  the bits that enforce it to the set operation 26 refuses.
 - **Bounded-resource impact:** quarantined frames are unavailable **and remain
   charged** while a function masters the bus. Bounded by driver lifetime rather
   than by the boot, and visible in the account rather than silent.
