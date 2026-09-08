@@ -2,7 +2,7 @@
 
 # ADR-0084: Where DMA authority comes from, and what a device-visible address is allowed to be
 
-- Status: **Proposed — not Project Architect-approved. Revision 3.** Written
+- Status: **Proposed — not Project Architect-approved. Revision 4.** Written
   before the mechanism, which is the order ADR-0081 §0 recorded going wrong once
   and ADR-0082 restored. Nothing in it is implemented.
 
@@ -11,14 +11,17 @@
   `DmaRegion` is one contiguous device-visible extent whose interior a driver can
   address (§6a, §6b). The second and third were accepted.
 
-  **Revision 3** repairs the teardown proof itself, which revision 2 got half
-  right. A configuration read flushes **posted writes in TC0** and proves nothing
-  about the function's own outstanding **non-posted** requests, and Relaxed
-  Ordering or ID-Based Ordering can weaken even the part it does prove. §5b now
-  states one reclaim condition discharging **both** obligations, §5c fixes the
-  ordering profile it requires and says which of its five properties is checked
-  and which is declared, and §5d states the fail-closed outcome and why a
-  quarantine cannot be orphaned. §9 lists what moved
+  **Revision 3** repaired the teardown proof itself: §5b states one reclaim
+  condition discharging **both** obligations, §5c the profile it requires, §5d
+  the fail-closed outcome. All of that was accepted.
+
+  **Revision 4** is narrow. P5's argument was wrong — several Traffic Classes may
+  share one VC, so the Virtual Channel configuration proves nothing about the TC a
+  function labels its own requests with, and ECAM would not settle it either.
+  §5c.1 replaces the derivation with a **profile requirement** and names the
+  residual risk. And No Snoop is reclassified: it is a **coherency** condition,
+  not an ordering relaxation, and is held off for the right reason. §9 lists what
+  moved
 - Date: 2026-09-08
 - Decision level: **3** — it admits a third class of authority descending from a
   device assignment, it is the first object with **two** ancestries at once, and
@@ -225,25 +228,68 @@ architected registers of it and learns nothing about what the device is.
 
 ### 5c. What the proof requires of the function and the platform
 
-The review is right that "a conforming hierarchy" is not enough: the ordering
-rule the flush rests on holds **within one Traffic Class**, and Relaxed Ordering
-and ID-Based Ordering exist precisely to relax it. So these are properties of a
-**DMA-capable function on a DMA-capable platform**, established or declared
-rather than assumed:
+"A conforming hierarchy" is not enough. The ordering rule the flush rests on
+holds **within one Traffic Class**, and Relaxed Ordering and ID-Based Ordering
+exist precisely to relax transaction ordering. A fourth condition is not about
+ordering at all and is listed here because it is required for the same frames to
+be safe. So these are properties of a **DMA-capable function on a DMA-capable
+platform**, and the table says for each one whether it is checked, enforced or
+required by profile — the three are not the same thing:
 
-| | Property | How it holds |
-|---|---|---|
-| **P1** | the function implements the **PCI Express Capability** (`0x10`) in conventional configuration space | **Checked at claim.** Without it there is no Transactions Pending bit and no architected way to prove (1). A conventional PCI function gets **no DMA authority** — refused, not approximated |
-| **P2** | **Relaxed Ordering is disabled** — Device Control bit 4 | **Cleared by the nucleus at claim**, and the bit becomes nucleus-owned under ADR-0082 §5's rule, so CPL 3 cannot re-enable it. Bit-precise, by §5a's rule that neighbours sharing a register are not reserved with it |
-| **P3** | **No Snoop is disabled** — Device Control bit 11 | Same. A non-snooping write may leave the CPU reading stale data, which would make "the write arrived" true and useless |
-| **P4** | **ID-Based Ordering is disabled** — Device Control 2 bits 8 and 9, where the capability version has that register | Same |
-| **P5** | **TC0-only traffic** | **Declared, not checked**, and the document says which it is. The nucleus enables no additional Virtual Channel and programs no TC/VC map, so the default TC0→VC0 mapping is the only one that exists; a function emitting another Traffic Class would be emitting one nothing mapped, and is outside this profile. The Virtual Channel capability is an **extended** capability, which Configuration Mechanism #1 cannot reach at all — so this becomes checkable when ADR-0079 §7's ECAM backend arrives, and it should be checked then |
+| | Property | Kind | How it holds |
+|---|---|---|---|
+| **P1** | the function implements the **PCI Express Capability** (`0x10`) in conventional configuration space | **checked** | Read at claim. Without it there is no Transactions Pending bit and no architected way to prove obligation (1). A conventional PCI function gets **no DMA authority** — refused, not approximated |
+| **P2** | **Relaxed Ordering is disabled** — Device Control bit 4 | **enforced** | *An ordering condition.* Cleared by the nucleus at claim, and the bit becomes nucleus-owned under ADR-0082 §5's rule so CPL 3 cannot re-enable it. Bit-precise, by §5a's rule that neighbours sharing a register are not reserved with it |
+| **P3** | **ID-Based Ordering is disabled** — Device Control 2 bits 8 and 9, where the capability version has that register | **enforced** | *An ordering condition*, and the same treatment |
+| **P4** | **No Snoop is disabled** — Device Control bit 11 | **enforced** | **Not an ordering relaxation, and calling it one would be wrong.** It is a *coherency* condition: our DMA frames are mapped write-back (§4), and a non-snooping device write may leave the CPU reading stale data — which would make "the write arrived" true and useless. It is held off for that reason, and the drain proof does not depend on it |
+| **P5** | **TC0-only requester traffic** | **required by profile** | See below. Neither checked nor enforceable by this contract |
 
 **P2–P4 are a narrowing of operation 26** in exactly the shape ADR-0082 §5
 established, and are added to the reserved set for the same reason those were:
-the hardware happens to keep the platform's ordering guarantees inside a range a
-`config_write` holder reaches, and a driver that could re-enable Relaxed
-Ordering could invalidate the teardown proof of a region it no longer holds.
+the hardware happens to keep the platform's ordering and coherency guarantees
+inside a range a `config_write` holder reaches, and a driver that could
+re-enable Relaxed Ordering could invalidate the teardown proof of a region it no
+longer holds.
+
+### 5c.1 P5 — what can honestly be said about Traffic Class
+
+**An earlier revision argued this from the Virtual Channel configuration, and
+that argument was wrong.** PCIe permits **several Traffic Classes on one VC**, so
+"no additional Virtual Channel is enabled" does not mean only TC0 exists, and a
+TC→VC map does not say which Traffic Class a function *chooses* for its own DMA
+requests. The map describes where traffic goes, not what the requester labels it.
+
+**Nor would ECAM settle it**, and the earlier revision was wrong about that too.
+Reaching extended configuration space would let the nucleus read the Virtual
+Channel capability and the mapping; it would still not read the Traffic Class a
+device puts in the TLPs it originates. There is no architected register that
+reports it.
+
+So the honest boundary for Stage 4 is a requirement rather than a derivation:
+
+> **DMA authority on the no-IOMMU reference profile is granted only to a function
+> for which the compatibility profile separately establishes TC0-only requester
+> traffic.**
+
+On the current QEMU reference machine that is a **qualified property of the
+platform and device model**, established once about the profile and recorded
+with it. It is deliberately not established by anything in ring 0: a nucleus that
+inferred a Traffic Class from what a device is would be holding device semantics,
+which is the boundary Stage 4B and Stage 4C exist to keep.
+
+**A physical-hardware profile will need more**, and this ADR does not design it.
+Either an independent way to qualify the property of a given function, or a
+platform mechanism that genuinely restricts or filters the Traffic Classes a
+requester may use. Which of those is right is a question for the profile that
+needs it, and inventing one here would be deciding it without the hardware in
+front of us.
+
+**What this costs, stated plainly.** P5 is the one condition of the five that is
+neither checked nor enforced, and the drain proof is only as good as it. A
+function that originated DMA writes in a Traffic Class other than TC0 would have
+those writes unordered against the flush, and the reclaim condition would pass
+without covering them. That is the residual risk of this profile, and it is
+recorded here rather than dissolved into an argument that does not hold.
 
 **P5 is the one that is declared, and it is the honest weak point.** It is not a
 hidden assumption — it is written here as a property of the profile, with the
@@ -506,10 +552,21 @@ revised decision nobody can review.
 | **what the flush proves** | a configuration read was treated as the whole drain | **Corrected.** It discharges only "posted writes have arrived", and only **within TC0**. It says nothing about the function's own outstanding non-posted requests, whose completions travel the other way |
 | **outstanding non-posted requests** | not addressed | **New.** PCIe's architected **Transactions Pending** bit, in the PCI Express Capability's Device Status, is exactly the proof of their absence — the bit an FLR waits on, used here without entering reset |
 | **the reclaim condition** | two informal steps | **One condition, `DRAINED`** (§5b): `BME = 0` first, then a read of Device Status returning Transactions Pending clear. One transaction discharges both obligations — its *value* proves the first, its *completion* proves the second — and that is stated rather than left to be noticed |
-| **ordering profile** | "a conforming hierarchy", which the review correctly called insufficient | **Five properties of a DMA-capable function/platform** (§5c): the PCI Express Capability **checked at claim**; Relaxed Ordering, No Snoop and IDO **cleared and made nucleus-owned**, bit-precisely, so a `config_write` holder cannot invalidate the proof; and **TC0-only traffic declared** — with the document saying it is declared, why it holds today, and that ECAM would make it checkable |
+| **ordering profile** | "a conforming hierarchy", which the review correctly called insufficient | **Five properties of a DMA-capable function/platform** (§5c): the PCI Express Capability **checked at claim**; Relaxed Ordering, No Snoop and IDO **cleared and made nucleus-owned**, bit-precisely, so a `config_write` holder cannot invalidate the proof; and TC0-only traffic separated out — revision 4 corrects how that last one is justified |
 | **operation 26** | unchanged | Narrowed again, in ADR-0082 §5's shape: four ordering bits added to the set it refuses, with their register-neighbours left writable |
 | **fail-closed** | implied | **Explicit** (§5d): no path from "not proved" to "proceed"; an all-ones read is not an observation of a zero bit; there is no timeout, only re-evaluation. Frames stay out, the charge stays outstanding, and — reusing ADR-0081 §14 rather than inventing anything — **the assignment does not end while quarantined frames attach to it**, so the BDF cannot be re-claimed and a quarantine can never lose the owner that would retry it |
 | **evidence** | 14 items | 17: a function with no PCI Express Capability gets no DMA authority, the four ordering bits are refused while their neighbours stay writable, and the fail-closed state is **exercised** — frames out, charge outstanding, assignment pinned, second claim refused |
+
+### Revision 4
+
+| | Revision 3 | Revision 4 |
+|---|---|---|
+| **P5's argument** | derived from Virtual Channel configuration: "no additional VC is enabled, so TC0→VC0 is the only mapping, so a function emitting another TC is emitting one nothing mapped" | **Withdrawn as wrong.** PCIe permits several Traffic Classes on one VC, so the VC configuration does not say which TC a function labels its own DMA requests with. A map describes where traffic goes, not how a requester labels it |
+| **P5's future** | "ECAM makes this checkable, and it should be checked then" | **Withdrawn as wrong.** ECAM would read the VC capability and the mapping; no architected register reports the Traffic Class a device originates. A physical-hardware profile needs an independent way to qualify the function, or a platform mechanism that genuinely restricts requester Traffic Classes — and this ADR deliberately designs neither |
+| **P5's status** | "declared" | **A profile requirement** (§5c.1): DMA authority is granted only to a function for which the compatibility profile *separately establishes* TC0-only requester traffic. On the QEMU reference machine that is a qualified property of the platform and device model, established about the profile and **not** inferred in ring 0 — a nucleus deriving a Traffic Class from what a device is would be holding device semantics |
+| **residual risk** | implicit in "declared" | **Named** (§5c.1): P5 is the one condition of the five neither checked nor enforced, and the drain proof is only as good as it. Writes originated in another TC would be unordered against the flush and the reclaim condition would pass without covering them |
+| **No Snoop** | listed among the ordering conditions | **Reclassified.** It is a **coherency** condition, not an ordering relaxation: the frames are mapped write-back (§4), and a non-snooping write may leave the CPU reading stale data — which makes "the write arrived" true and useless. Still held off, now for the stated reason, and the drain proof does not depend on it |
+| **the table** | "checked or declared" | Three kinds, because they are three different things: **checked** (P1), **enforced** (P2–P4), **required by profile** (P5) |
 
 **Audit for revision 3**, because the profile is only honest if the reference
 machine meets it: the Stage 4 function is a PCI Express endpoint —
