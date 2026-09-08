@@ -3,11 +3,36 @@
 # TOS Core V1 — modules, capabilities, and versioning
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
-- Language versions: `TOS Core 1.0` and `TOS Core 1.1` (ADR-0080)
+- Language versions: `TOS Core 1.0` (original V1), `1.1` (ADR-0080),
+  `1.2` (ADR-0081), `1.3` (ADR-0085)
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`,
   `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`, and
   `docs/41_TOS_CORE_V1_CONCURRENCY_RESOURCES_AND_DIAGNOSTICS.md`
+
+### The minor sequence, recorded whole
+
+It had drifted: this line named only 1.0 and 1.1 while ADR-0081 had accepted 1.2
+and the implementation supported it. Repaired here rather than left, and **1.2 is
+attributed to the decision that accepted it**:
+
+| Minor | Decision | What it added |
+|---|---|---|
+| 1.0 | ADR-0027/ADR-0028 | original V1 |
+| 1.1 | ADR-0080 | a capability as an operation result, and effects naming interfaces |
+| 1.2 | **ADR-0081** | device memory: `MmioRegion`, region and `DmaRegion` indexed access |
+| 1.3 | **ADR-0085** | capability representation separated from interface identity |
+
+**A module receives the language its header claims.** A 1.0, 1.1 or 1.2 module
+does not acquire a later minor's semantics from the frontend that happens to
+compile it — `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` refuses a later form in an
+earlier module — and an implementation that does not support a minor rejects the
+module whole by its header with `E1602_UNSUPPORTED_LANGUAGE_MINOR`.
+
+**1.3's frontend and verifier support lands with ADR-0085's rule**, not before:
+until then a module may not declare it, which is the fail-closed direction. The
+version sequence is recorded here because the decision is accepted; the
+acceptance obligations that make it usable are listed in ADR-0085.
 
 ## 1. Module identity and deterministic resolution
 
