@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.import_nonimportable_capability version 1.0 profile bootstrap;
+
+// `platform.dma.Region` is an accepted interface, and its capability
+// representation is the region family rather than its own path
+// (`SYSTEM_INTERFACE_V1` §4.3, ADR-0085 §4a). An import is typed
+// `TypeDef::Capability(interface)`, and there is nowhere here for the element
+// type or the mutability of a `DmaRegion<T>` to come from — so no startup
+// import could produce one, whatever a launcher decided.
+//
+// **Refused in source, and deliberately not as `CapabilityDenied`.** That is a
+// launcher declining a well-formed request under policy; this request is
+// invalid before any policy is consulted.
+//
+// The minor is 1.0 on purpose: this declaration is invalid at every minor, so
+// it is not the capability-representation *feature* that refuses it. What 1.3
+// makes valid is a capability position filled by the family, which this vector
+// does not write.
+import capability platform.dma.Region as region;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 1]
+
+pub fn main() -> unit { }

@@ -126,6 +126,7 @@
 | R079 | `reject/refutable-enum-let.tos` | Bootstrap | `E1223_REFUTABLE_PATTERN` | ADR-0046 refutable binding pattern |
 | R080 | `reject/refutable-component-in-tuple-let.tos` | Bootstrap | `E1223_REFUTABLE_PATTERN` | ADR-0046 refutable binding pattern |
 | R081 | `reject/predeclared-type-in-value-position.tos` | Bootstrap | `E1202_UNKNOWN_VALUE_NAME` with `name=Event` | ADR-0064: a predeclared type written alone constructs nothing, so it is an unresolved value name and not `E1213`. R070 is the same boundary from the other side |
+| R082 | `reject/import-nonimportable-capability.tos` | Bootstrap | `E1503_NONIMPORTABLE_CAPABILITY` with `interface=platform.dma.Region`, `representation=DmaRegionFamily` | ADR-0085 §4a: an `import capability` naming an interface whose representation no import can produce is invalid **before** launch policy is consulted, and is therefore a source diagnostic rather than a `CapabilityDenied` at startup |
 
 R029 and R030 also fix the precedence between the two codes for a character that
 cannot be tokenized: a non-ASCII scalar value outside a literal or comment is

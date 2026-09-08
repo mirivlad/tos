@@ -87,7 +87,7 @@ fn is_frontend_code(code: &str) -> bool {
 /// A vector recording one of these must now be rejected rather than merely
 /// parse; the list grows as each check lands, so a check cannot be implemented
 /// without its corpus evidence starting to bind.
-const IMPLEMENTED_CHECKS: [&str; 44] = [
+const IMPLEMENTED_CHECKS: [&str; 45] = [
     "E1402_INVALID_GUARD_LIFETIME",
     "E1215_ARGUMENT_TYPE_MISMATCH",
     "E1213_NONCONSTRUCTIBLE_TYPE",
@@ -109,6 +109,7 @@ const IMPLEMENTED_CHECKS: [&str; 44] = [
     "E1410_INVALID_ATOMIC_ORDER",
     "E1501_UNDECLARED_CAPABILITY_EFFECT",
     "E1502_FORGED_CAPABILITY",
+    "E1503_NONIMPORTABLE_CAPABILITY",
     "E1303_MUTATE_WHILE_BORROWED",
     "E1305_INVALID_CLOSURE_CAPTURE",
     "E1302_CONFLICTING_BORROW",
