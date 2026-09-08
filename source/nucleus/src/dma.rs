@@ -474,10 +474,13 @@ fn destroy(index: usize, entry: View) {
     // The descendant goes **after** the backing is safely accounted for, so the
     // predicate that may clear bus mastering is re-evaluated once, with the
     // quarantine already recorded.
+    // **This is also what re-evaluates the quarantine**, and it is the only path
+    // that does. `drop_descendant` sweeps whatever kind of descendant left, so a
+    // driver that released its last DMA region gets its memory back inside this
+    // call and one that released it while holding an interrupt source gets it
+    // back when that source goes. A second sweep here would be a second place to
+    // keep in step with a predicate that lives somewhere else.
     pci::drop_descendant(entry.assignment, entry.assignment_generation, Needs::DMA);
-    // And the condition is tried immediately: a driver that released its only
-    // DMA region and holds nothing else gets its memory back in the same call.
-    sweep(entry.assignment, entry.assignment_generation);
 }
 
 /// Whether an assignment is provably quiet (ADR-0084 §5b).

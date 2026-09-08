@@ -112,7 +112,7 @@ holding only memory authority must not be able to make any memory reachable by
 any device, and a process holding only a function must not be able to spend
 somebody's memory to do it.
 
-**`dma` is a fourth right on the function**, separate from `config_read`,
+**`dma` is a fifth right on the function**, separate from `config_read`,
 `config_write`, `map` and `interrupt`, by the rule that already separates those:
 a holder that may map a device's registers is not thereby a holder that may put
 host memory where that device can write it.

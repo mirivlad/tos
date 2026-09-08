@@ -1369,6 +1369,19 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         };
         tos_serial::puts(b"TOS.RUN.PCI_ROOT segment=0 first_bus=0 last_bus=255 rights=claim");
         tos_serial::puts(b" asserted_by=launcher\r\n");
+        // **P5, declared here because there is nowhere else it can come from**
+        // (ADR-0084 §5c.1). TC0-only requester traffic is a property the
+        // compatibility profile establishes about a function; no architected
+        // register reports it, and a nucleus that inferred it from what a device
+        // is would be holding device semantics. So the profile names the BDF, at
+        // the same boundary and for the same reason the root itself is named
+        // here — and the nucleus compares four numbers.
+        //
+        // The root covers every bus of segment 0; this covers one function of
+        // it. Everything else claimable under that root gets a capability
+        // without `dma`, which is the safe default with the exception written
+        // down beside it.
+        pci::qualify_dma(0, 0, 4, 0);
         [capability::Endowment::Existing {
             binding: binding(b"bus"),
             object: capability::Object::PciBus(bus),
