@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `56c5d5ea8206803cccd49fc08aa9bfe86d26fb06c18c7cd3fced4f421052ef76`\
+Source-manifest SHA-256: `206d30b4c16db96c1b8da07ead14ee7cafbef548d874b338673c6180f27277ab`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -7481,10 +7481,12 @@ compile it — `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` refuses a later form in a
 earlier module — and an implementation that does not support a minor rejects the
 module whole by its header with `E1602_UNSUPPORTED_LANGUAGE_MINOR`.
 
-**1.3's frontend and verifier support lands with ADR-0085's rule**, not before:
-until then a module may not declare it, which is the fail-closed direction. The
-version sequence is recorded here because the decision is accepted; the
-acceptance obligations that make it usable are listed in ADR-0085.
+**1.3's frontend and verifier support landed with ADR-0085's rule**, not
+before. Until the whole path existed — the schema field and its gate, the
+verifier's independent derivation, `E1503`, the release-time mapping
+retirement and the feature gate — a module declaring 1.3 was refused whole by
+its header, which is the fail-closed direction. The minor was advertised last,
+after all of it was implemented and green.
 
 ## 1. Module identity and deterministic resolution
 
@@ -7503,12 +7505,14 @@ direct-interface effect form of docs/39 (ADR-0080), 1.2 device memory and region
 indexed access (ADR-0081), 1.3 capability representation separated from interface
 identity (ADR-0085).
 
-**Accepted and implemented are two different statements**, and this one is worth
-keeping apart because it is currently false in one direction: **1.3 is accepted
-and is not yet implemented.** Until its slice lands, a module declaring it is
-rejected whole by its header with `E1602_UNSUPPORTED_LANGUAGE_MINOR` — which is
-the fail-closed direction, and is what `E1602` is for. A frontend advertises a
-minor when it performs it, not when a decision naming it is approved.
+**Accepted and implemented are two different statements**, and they are worth
+keeping apart even where they now agree: every accepted minor through 1.3 is
+implemented. A frontend advertises a minor **when it performs it**, not when a
+decision naming it is approved — so between ADR-0085's approval and the end of
+its implementation slice, a module declaring 1.3 was rejected whole by its
+header with `E1602_UNSUPPORTED_LANGUAGE_MINOR`, which is the fail-closed
+direction and is what `E1602` is for. A minor a future decision accepts is in
+exactly that state until its own slice lands.
 
 **A module receives the language its header declares**, not the newest the
 frontend implements. A 1.0 module using a 1.1 form is

@@ -49,7 +49,7 @@ pub const LANGUAGE_VERSION: &str = "1.0";
 /// resolves to an interface path, which is what `Signature.effects` has always
 /// carried — so one schema represents both minors, and an artifact records
 /// which of them its module declared.
-pub const LANGUAGE_VERSIONS: &[&str] = &["1.0", "1.1", "1.2"];
+pub const LANGUAGE_VERSIONS: &[&str] = &["1.0", "1.1", "1.2", "1.3"];
 
 /// The Unicode baseline docs/43 section 2 fixes for V1.
 pub const UNICODE_BASELINE: &str = "UCD-17.0.0/UAX15-r57/NFC";

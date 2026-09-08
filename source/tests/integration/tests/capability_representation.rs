@@ -14,11 +14,11 @@
 //! own closed table. Neither comes from the producer. `unsafe_interface` is
 //! read too — as the claim being checked, never as an answer.
 //!
-//! **Every case here is a rejection, and that is the state this slice is in.**
-//! `1.3` is not yet a language version any implementation admits, so a
-//! correctly formed capability-representation artifact is still refused — by
-//! its header if it declares 1.3, and by the version gate below if it declares
-//! 1.2 and uses the rule anyway. The acceptances arrive with the minor.
+//! **The acceptances are here too**, now that `1.3` is a minor this
+//! implementation performs: a correctly formed capability-representation
+//! artifact verifies, and each forgery below differs from it in exactly one
+//! field. That is what makes each rejection evidence about the thing it names
+//! rather than about the artifact being damaged in general.
 
 use tos_ir::{CapabilityImport, CapabilitySource, Module, Op, Operand, TypeDef};
 use tos_verifier::{verify, Limits, ResolutionSnapshot};
@@ -31,11 +31,41 @@ use tos_verifier::{verify, Limits, ResolutionSnapshot};
 /// what the tests need is an SSA value of the family, with a real type in the
 /// artifact's own table, defined the way the verifier expects values to be.
 ///
-/// It declares **1.2**, which is what the frontend implements while this slice
-/// is in progress, and every case below either fails before the version is
-/// consulted or fails on the version itself.
+/// It declares **1.2** on purpose. Every forgery below is refused for its own
+/// reason before the version is consulted, and the last of them is refused *for*
+/// the version — a 1.2 module does not receive the 1.3 rule, whatever
+/// implementation it met.
 const MODULE: &str = "\
 module system.test.representation version 1.2 profile full;
+import capability system.ipc.Endpoint as endpoint;
+
+resource [
+    fuel: 1024,
+    stack: 4KiB,
+    allocation: 1KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 4,
+    imports: 1
+]
+
+extern fn endpoint_send(cap: system.ipc.Endpoint, length: u64) -> i64 uses [endpoint];
+
+pub fn reach(area: DmaRegion<mut u64>) -> i64 uses [endpoint] {
+    return endpoint_send(endpoint, 8u64);
+}
+";
+
+/// The same module, declaring the minor the amendment introduced.
+///
+/// Lowered rather than produced by rewriting the header of the 1.2 one: the
+/// language contract is in the source map as well as in the header, and an
+/// artifact whose two disagree is refused as the inconsistency it is.
+const MODULE_1_3: &str = "\
+module system.test.representation version 1.3 profile full;
 import capability system.ipc.Endpoint as endpoint;
 
 resource [
@@ -353,16 +383,67 @@ fn a_one_two_artifact_does_not_receive_the_representation_rule() {
 /// §16.11 — an implementation that does not admit a minor rejects the module
 /// **whole, by its header**, rather than part-way through a function.
 ///
-/// While this slice is in progress that is exactly the state of `1.3`: no
-/// implementation admits it yet, so a correctly formed capability-representation
-/// artifact is refused for its version and never for its body.
+/// `1.3` is admitted now, so the property is shown with the minor after it: what
+/// is being proved is that an unimplemented minor is refused before any of the
+/// body is read, not that any particular number is unimplemented.
 #[test]
 fn an_unadmitted_minor_is_refused_by_the_header_alone() {
     let mut module = lower(MODULE);
-    module.header.language_version = String::from("1.3");
+    module.header.language_version = String::from("1.4");
     let finding = refuse(&module);
     assert_eq!(finding.code, "V2002_SCHEMA");
     assert_eq!(finding.location, "header.language_version");
+}
+
+/// §16.3 — **the acceptance the whole amendment is for.**
+///
+/// `Value(DmaRegion<mut T>)` at a `platform.dma.Region` position, in a module
+/// that declares 1.3 and declares the effect. The derivation answers
+/// `platform.dma.Region` from the operand's type, the artifact's claim matches
+/// it, the function's effects carry it, and the version admits the rule — so it
+/// verifies. Every forgery above is this artifact with exactly one field
+/// changed.
+#[test]
+fn a_correct_region_capability_position_verifies() {
+    let mut module = lower(MODULE_1_3);
+    let function = reaching(&module);
+    let region = region_value(&module, function);
+    forge(
+        &mut module,
+        CapabilitySource::Value(region),
+        "platform.dma.Region",
+        &["platform.dma.Region"],
+    );
+    verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect("a region value at its own interface's position verifies");
+}
+
+/// §16.3 again, for the other mode: **any `T`, either mutability.**
+///
+/// The element type and the granted mode are not part of membership in the
+/// family, so retyping the same SSA value to the immutable form changes nothing
+/// about which interface it represents.
+#[test]
+fn either_region_mode_and_any_element_type_verifies() {
+    for family in [TypeDef::DmaRegion(0), TypeDef::DmaRegionMut(0)] {
+        let mut module = lower(MODULE_1_3);
+        let function = reaching(&module);
+        let Operand::Value(value) = region_value(&module, function) else {
+            unreachable!("the region parameter is an SSA value")
+        };
+        module.types.push(family.clone());
+        let retyped = module.types.len() - 1;
+        module.functions[function].values[value] = retyped;
+        module.functions[function].signature.parameters[0].ty = retyped;
+        forge(
+            &mut module,
+            CapabilitySource::Value(Operand::Value(value)),
+            "platform.dma.Region",
+            &["platform.dma.Region"],
+        );
+        verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+            .unwrap_or_else(|finding| panic!("{family:?}: {finding:?}"));
+    }
 }
 
 /// Nothing the amendment adds touches an artifact that does not use it.
@@ -375,4 +456,90 @@ fn an_ordinary_artifact_is_untouched_by_the_amendment() {
     let module = lower(MODULE);
     verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect("a module that uses no representation rule verifies as it always did");
+}
+
+/// **End to end, with no forgery at all**: a 1.3 module that fills a
+/// `platform.dma.Region` position from source, lowers, and verifies.
+///
+/// Every other acceptance above starts from an artifact this file edited. This
+/// one is what the frontend actually emits, checked by the verifier that
+/// believes none of it — the two halves of ADR-0085's implementation meeting
+/// over a real module.
+const REACHING_SOURCE: &str = "\
+module system.test.representation version 1.3 profile full;
+
+resource [
+    fuel: 1024,
+    stack: 4KiB,
+    allocation: 1KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 4,
+    imports: 0
+]
+
+extern fn dma_device_address(region: platform.dma.Region, offset: size)
+    -> Result<u64, i64> uses [platform.dma.Region];
+
+pub fn reach(area: DmaRegion<mut u64>) -> Result<u64, i64>
+    uses [platform.dma.Region] {
+    return dma_device_address(area, 0B);
+}
+";
+
+#[test]
+fn a_one_three_module_reaches_the_interface_and_verifies() {
+    let module = lower(REACHING_SOURCE);
+    let function = reaching(&module);
+    let region = region_value(&module, function);
+
+    // **`Value`, never `Import`** (§6). There is no import that could be a value
+    // of this representation, so the frontend emits the only source that can
+    // exist at such a position.
+    let performed: Vec<&Op> = module.functions[function]
+        .blocks
+        .iter()
+        .flat_map(|block| &block.instructions)
+        .map(|instruction| &instruction.op)
+        .filter(|op| matches!(op, Op::Capability { .. }))
+        .collect();
+    assert_eq!(performed.len(), 1);
+    let Op::Capability { capabilities, .. } = performed[0] else {
+        unreachable!("filtered above")
+    };
+    assert_eq!(capabilities, &[CapabilitySource::Value(region.clone())]);
+
+    // **One handle, no alias and no hidden copy** (§9). The capability position
+    // names the region binding's own SSA value — there is no second value, no
+    // conversion instruction and no second operand naming the same authority.
+    let Operand::Value(named) = region else {
+        unreachable!("the region parameter is an SSA value")
+    };
+    assert_eq!(
+        module.functions[function]
+            .values
+            .iter()
+            .enumerate()
+            .filter(|(_, ty)| matches!(
+                module.type_of(**ty),
+                Some(TypeDef::DmaRegion(_)) | Some(TypeDef::DmaRegionMut(_))
+            ))
+            .map(|(value, _)| value)
+            .collect::<Vec<_>>(),
+        vec![named],
+        "a second value naming one region would be the alias section 9 refuses"
+    );
+
+    // And the effect is the interface path, exactly as for every other
+    // interface: identity did not move, only representation.
+    assert_eq!(
+        module.functions[function].signature.effects,
+        vec!["platform.dma.Region"]
+    );
+
+    verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect("a 1.3 module reaching platform.dma.Region verifies");
 }

@@ -126,6 +126,8 @@
 | R079 | `reject/refutable-enum-let.tos` | Bootstrap | `E1223_REFUTABLE_PATTERN` | ADR-0046 refutable binding pattern |
 | R080 | `reject/refutable-component-in-tuple-let.tos` | Bootstrap | `E1223_REFUTABLE_PATTERN` | ADR-0046 refutable binding pattern |
 | R081 | `reject/predeclared-type-in-value-position.tos` | Bootstrap | `E1202_UNKNOWN_VALUE_NAME` with `name=Event` | ADR-0064: a predeclared type written alone constructs nothing, so it is an unresolved value name and not `E1213`. R070 is the same boundary from the other side |
+| A013 | `accept/capability-representation.tos` | Full | accepted | ADR-0085: a `platform.dma.Region` capability position filled by the region family, and one binding used three times — use is not consumption |
+| R083 | `reject/capability-representation-before-minor.tos` | Full | `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` with `feature=capability representation`, `declared=2`, `requires=3` | ADR-0085 §13: a module receives the language its header claims, so the same body is refused at 1.2 and accepted at 1.3 |
 | R082 | `reject/import-nonimportable-capability.tos` | Bootstrap | `E1503_NONIMPORTABLE_CAPABILITY` with `interface=platform.dma.Region`, `representation=DmaRegionFamily` | ADR-0085 §4a: an `import capability` naming an interface whose representation no import can produce is invalid **before** launch policy is consulted, and is therefore a source diagnostic rather than a `CapabilityDenied` at startup |
 
 R029 and R030 also fix the precedence between the two codes for a character that
