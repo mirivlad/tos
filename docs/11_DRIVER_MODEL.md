@@ -145,12 +145,28 @@ describe the shape a later transport may still need:
 
 DMA regions are allocated through a trusted service or nucleus primitive. The driver receives a bounded region and device-visible address mapping. IOMMU support should later enforce hardware isolation without changing the driver contract.
 
-**Not decided.** ADR-0082 §12 leaves DMA authority, DMA allocation,
-device-visible addressing, the IOMMU and the MMIO↔DMA ordering contract open;
-Stage 4C-2 is where they are decided. What is already settled and inherited
-rather than restated there is the **bus-mastering predicate** of ADR-0082 §5d: a
-DMA mapping is a bus-mastering descendant, and Bus Master Enable is set if and
-only if at least one live bus-mastering descendant exists.
+**Decided by ADR-0084** (Accepted 2026-09-08), and not quite as this section
+sketched. DMA authority requires **two** capabilities at once — a
+`platform.pci.FunctionConfig` with a `dma` right and a `system.memory.Authority`
+with `spend` — so neither "a trusted service" nor "a nucleus primitive" alone
+describes it: the memory that pays and the device that may reach it are two
+grants, and a holder of one cannot obtain a region. The bus-mastering predicate
+of ADR-0082 §5d is inherited rather than restated.
+
+Three properties this section did not anticipate, each load-bearing:
+
+- a `DmaRegion` is **one contiguous device-visible extent**, and a driver
+  addresses part of it by presenting the region capability and a bounded offset.
+  It never supplies or computes an address;
+- the device-visible address is **data and never authority**, issued from the
+  region and accepted back by no operation of any contract;
+- releasing a region does **not** immediately return its memory. The frames are
+  quarantined and stay charged until the assignment is provably quiescent —
+  bus mastering off, no outstanding non-posted requests, earlier posted writes
+  flushed. If that cannot be proved, the frames, the charge and the assignment
+  are all held, and the function cannot be claimed again.
+
+The MMIO↔DMA ordering contract is still open and is Stage 4C-3's.
 
 **And one thing must not be written by accident** (ADR-0082 §5). On the no-IOMMU
 reference profile, TOS cannot claim hardware-enforced confinement of a malicious

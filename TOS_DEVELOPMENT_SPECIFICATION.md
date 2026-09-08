@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `3c3e79cd940938f9794422f39230fb60b1b5fc83750c4004cc3cdfd3c9c7748c`\
+Source-manifest SHA-256: `73a83eb4909807de8da7f7d4dd748e2b99c9ad69d0e8c424a988602d6f68e0f3`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -4749,9 +4749,15 @@ advance.
 
 ## 5. What this version does not declare
 
-No DMA interface, no reset operation and no device-class publisher. Each is open
-— DMA under ADR-0082 §12, the publisher under ADR-0051 — and arrives when its
-mechanism is decided.
+No DMA interface, no reset operation and no device-class publisher.
+
+**DMA's mechanism is decided and its interface is not declared yet**, and the
+difference is this schema's own rule rather than an oversight. ADR-0084
+(Accepted 2026-09-08) fixes where DMA authority comes from, what a device-visible
+address is allowed to be and how a region is proved safe to reclaim; the
+interface arrives at version 3, with the implementation, because an interface
+declared before the system performs it would be exactly what §2 refuses. Reset
+and the publisher remain undecided — the publisher under ADR-0051.
 
 **Two of the four this list held in version 1 have arrived, and neither arrived
 as the name that was reserved for it.** Device memory became operations 27 on
@@ -9121,12 +9127,28 @@ describe the shape a later transport may still need:
 
 DMA regions are allocated through a trusted service or nucleus primitive. The driver receives a bounded region and device-visible address mapping. IOMMU support should later enforce hardware isolation without changing the driver contract.
 
-**Not decided.** ADR-0082 §12 leaves DMA authority, DMA allocation,
-device-visible addressing, the IOMMU and the MMIO↔DMA ordering contract open;
-Stage 4C-2 is where they are decided. What is already settled and inherited
-rather than restated there is the **bus-mastering predicate** of ADR-0082 §5d: a
-DMA mapping is a bus-mastering descendant, and Bus Master Enable is set if and
-only if at least one live bus-mastering descendant exists.
+**Decided by ADR-0084** (Accepted 2026-09-08), and not quite as this section
+sketched. DMA authority requires **two** capabilities at once — a
+`platform.pci.FunctionConfig` with a `dma` right and a `system.memory.Authority`
+with `spend` — so neither "a trusted service" nor "a nucleus primitive" alone
+describes it: the memory that pays and the device that may reach it are two
+grants, and a holder of one cannot obtain a region. The bus-mastering predicate
+of ADR-0082 §5d is inherited rather than restated.
+
+Three properties this section did not anticipate, each load-bearing:
+
+- a `DmaRegion` is **one contiguous device-visible extent**, and a driver
+  addresses part of it by presenting the region capability and a bounded offset.
+  It never supplies or computes an address;
+- the device-visible address is **data and never authority**, issued from the
+  region and accepted back by no operation of any contract;
+- releasing a region does **not** immediately return its memory. The frames are
+  quarantined and stay charged until the assignment is provably quiescent —
+  bus mastering off, no outstanding non-posted requests, earlier posted writes
+  flushed. If that cannot be proved, the frames, the charge and the assignment
+  are all held, and the function cannot be claimed again.
+
+The MMIO↔DMA ordering contract is still open and is Stage 4C-3's.
 
 **And one thing must not be written by accident** (ADR-0082 §5). On the no-IOMMU
 reference profile, TOS cannot claim hardware-enforced confinement of a malicious
@@ -9717,6 +9739,41 @@ source's generation — so the conservative rule stands in for the proof. The
 supply is finite and exhaustion is `E_LIMIT` rather than recycling. An interrupt
 on a retired vector keeps its IDT gate, is acknowledged, is counted as spurious
 and wakes nobody. **E2**.
+
+### X4.3 — Memory returned to the pool while a device can still write it (T7 → A4, A9, S5)
+
+A driver releases a DMA region; the frames go back to the allocator and are
+handed to another process; the device still holds the address in a register and
+writes into memory that is now somebody else's. Clearing Bus Master Enable is not
+by itself a defence: it blocks new requests and says nothing about requests
+already issued.
+
+Controls (ADR-0084 §5b–§5d): frames are **quarantined** rather than returned, and
+return only when the assignment is provably quiescent — no live bus-mastering
+descendant, and a configuration read of the function's PCI Express Capability
+observing **Transactions Pending = 0**, whose value proves no outstanding
+non-posted request and whose completion flushes earlier posted writes. The
+function's ordering and coherency bits are nucleus-owned so a driver cannot
+weaken that proof. **Fail-closed**: if the proof cannot be established the frames
+stay out, the charge stays outstanding and the assignment does not end, so the
+device cannot be handed to a second driver. There is no timeout and no reset
+fallback. **E1** until Stage 4C-2's evidence exists; the residual risk is
+ADR-0084 §5c.1's TC0-only profile requirement, which is qualified about the
+platform rather than checked in ring 0.
+
+### X4.4 — One memory budget spent twice through quarantine churn (T2 → A9, S5)
+
+A holder allocates a DMA region, releases it into quarantine, and allocates
+again from a refunded budget — accumulating physically occupied frames above the
+`MemoryAuthority` that was supposed to bound them.
+
+Controls (ADR-0084 §5f): the allocation charge **stays outstanding** while the
+backing is quarantined, and the funding lineage is refunded at the same moment
+the frames actually return. This is ADR-0075's existing rule — physical
+reclamation before accounting refund — with a longer interval, so
+`allocated + reserved + free == budget` holds throughout. **E2** once the churn
+case of ADR-0084 §8.12 is exercised, which a refund-on-release implementation
+fails and every other item passes.
 
 ### What Stage 3 does not claim
 
@@ -29171,9 +29228,13 @@ a boot with phases.
 
 # ADR-0084: Where DMA authority comes from, and what a device-visible address is allowed to be
 
-- Status: **Proposed — not Project Architect-approved. Revision 4.** Written
-  before the mechanism, which is the order ADR-0081 §0 recorded going wrong once
-  and ADR-0082 restored. Nothing in it is implemented.
+- Status: **Accepted (Project Architect-approved, 2026-09-08)**, at revision 4.
+  Written before the mechanism, which is the order ADR-0081 §0 recorded going
+  wrong once and ADR-0082 restored: at the moment of approval nothing in it was
+  implemented, and Stage 4C-2 is the implementation of what is decided here.
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-08, on revision 4.
+- Revision history, kept because a decision that was corrected twice is more
+  useful with the corrections visible than without them:
 
   **Revision 2** answered three findings: `BME=0` is not a teardown proof;
   quarantined memory stays charged until the frames actually return (§5f); and a
@@ -29459,11 +29520,6 @@ function that originated DMA writes in a Traffic Class other than TC0 would have
 those writes unordered against the flush, and the reclaim condition would pass
 without covering them. That is the residual risk of this profile, and it is
 recorded here rather than dissolved into an argument that does not hold.
-
-**P5 is the one that is declared, and it is the honest weak point.** It is not a
-hidden assumption — it is written here as a property of the profile, with the
-mechanism that makes it true today and the mechanism that would let it be
-verified later.
 
 ### 5d. Fail-closed, and what happens to memory that cannot be proved safe
 

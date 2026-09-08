@@ -360,9 +360,15 @@ advance.
 
 ## 5. What this version does not declare
 
-No DMA interface, no reset operation and no device-class publisher. Each is open
-— DMA under ADR-0082 §12, the publisher under ADR-0051 — and arrives when its
-mechanism is decided.
+No DMA interface, no reset operation and no device-class publisher.
+
+**DMA's mechanism is decided and its interface is not declared yet**, and the
+difference is this schema's own rule rather than an oversight. ADR-0084
+(Accepted 2026-09-08) fixes where DMA authority comes from, what a device-visible
+address is allowed to be and how a region is proved safe to reclaim; the
+interface arrives at version 3, with the implementation, because an interface
+declared before the system performs it would be exactly what §2 refuses. Reset
+and the publisher remain undecided — the publisher under ADR-0051.
 
 **Two of the four this list held in version 1 have arrived, and neither arrived
 as the name that was reserved for it.** Device memory became operations 27 on
