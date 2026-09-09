@@ -49,7 +49,7 @@ use alloc::vec::Vec;
 
 use tos_ir::{
     BinaryOp, CallTarget, CapabilitySource, Constant, Instruction, IntKind, Module, Op, Operand,
-    Place, PlaceStep, SourceRef, Terminator, UnaryOp,
+    Place, PlaceStep, SourceRef, Terminator, TypeDef, TypeId, UnaryOp,
 };
 use tos_residency::{
     Failure, ModuleProvider, Residency, VerifiedClosureManifest, VerifiedModuleRecord,
@@ -321,6 +321,69 @@ pub struct Observe {
     pub value: Option<u64>,
 }
 
+/// One indexed access to a region the host holds the mapping for (ADR-0081 §2).
+///
+/// **Ordinary checked memory, and deliberately not [`Observe`].** A DMA region
+/// is coherent RAM on the accepted reference profile, and an indexed access to
+/// it is an ordinary load or store: it may be eliminated, coalesced, repeated
+/// or reordered exactly as any other memory access of the language may be.
+/// [`Observe`] carries the opposite contract — one hardware transaction,
+/// non-elided, non-coalesced, non-reordered, of a declared width and byte order
+/// — and routing a region access through it would give ordinary memory
+/// guarantees nothing asked for and no ADR grants.
+///
+/// **The engine supplies a position, never an offset and never an address.**
+/// Which bytes the region covers is the host's, exactly as it is for a device
+/// window; what crosses is the capability, the element's index and the element's
+/// shape.
+#[derive(Clone, Debug)]
+pub struct Access {
+    /// The region, as the capability the module holds.
+    pub region: Handle,
+    /// **Which element**, counted in elements rather than in bytes. The host
+    /// multiplies, because the host is the only side that knows the extent the
+    /// product has to fit inside.
+    pub index: u64,
+    /// What one element is, which decides both the width and how the bytes
+    /// become a value.
+    pub element: Element,
+    /// The value to write, or `None` for a read.
+    pub value: Option<Value>,
+}
+
+/// What one element of a region is.
+///
+/// The ADR-0081 §2 set exactly: the integers and `bool`. A region of anything
+/// else is refused by the frontend, because an element without a fixed
+/// representation has no width for an index to be multiplied by.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Element {
+    Bool,
+    Int(IntKind),
+}
+
+impl Element {
+    /// How many bytes one element occupies.
+    pub const fn width(self) -> u64 {
+        match self {
+            Element::Bool => 1,
+            Element::Int(IntKind::I8) | Element::Int(IntKind::U8) => 1,
+            Element::Int(IntKind::I16) | Element::Int(IntKind::U16) => 2,
+            Element::Int(IntKind::I32) | Element::Int(IntKind::U32) => 4,
+            Element::Int(IntKind::I64) | Element::Int(IntKind::U64) => 8,
+        }
+    }
+
+    /// The element an accessed type is, when it is one.
+    pub fn of(ty: &TypeDef) -> Option<Element> {
+        match ty {
+            TypeDef::Bool => Some(Element::Bool),
+            TypeDef::Int(kind) => Some(Element::Int(*kind)),
+            _ => None,
+        }
+    }
+}
+
 pub trait System {
     /// Which capability answers one of the module's requests.
     ///
@@ -365,6 +428,29 @@ pub trait System {
     /// happen and there is no value to stand for one that did.
     fn observe(&mut self, access: Observe) -> Result<Value, Trap>;
 
+    /// Performs one **ordinary** indexed access to a region (ADR-0081 §2).
+    ///
+    /// Distinct from [`System::observe`] on purpose, and the distinction is the
+    /// contract rather than a naming choice. `observe` is a device transaction:
+    /// exactly one, of the declared width, not elided, coalesced, repeated or
+    /// reordered. This is a load or a store in coherent memory, with none of
+    /// those obligations and none of that cost — a DMA region is RAM, and a
+    /// region access that quietly acquired MMIO ordering would be a semantic
+    /// nothing in the accepted contracts asked for.
+    ///
+    /// **What the host must prove before touching memory**, because the engine
+    /// cannot: that it holds a mapping for this capability, that the index
+    /// multiplied by the element's width does not overflow, that the byte range
+    /// lies inside the mapping's extent, and — for a write — that the mapping is
+    /// writable. A handle it does not hold, or has retired, is refused
+    /// deterministically **before any access**, never by relying on a fault.
+    ///
+    /// A read answers with the element's value; a write answers with
+    /// [`Value::Unit`]. A refusal is a [`Trap`], as it is for `observe`: the
+    /// access did not happen, and there is no status a module could have
+    /// handled standing for one that did.
+    fn access(&mut self, access: Access) -> Result<Value, Trap>;
+
     /// Marks the instant before one TOS Core call, for an external observer.
     ///
     /// **The seam of ADR-0066 milestone 6b, and it exists only when this crate
@@ -407,6 +493,14 @@ impl System for Unreachable {
         Err(Trap::new(
             "RUNTIME_DEVICE_UNREACHABLE",
             String::from("a device access was made on a run with no device to reach"),
+            0,
+        ))
+    }
+
+    fn access(&mut self, _access: Access) -> Result<Value, Trap> {
+        Err(Trap::new(
+            "RUNTIME_DEVICE_UNREACHABLE",
+            String::from("a region access was made on a run with no region to reach"),
             0,
         ))
     }
@@ -1689,11 +1783,20 @@ impl Engine<'_> {
             // the same location, and the verifier already proved that a moved
             // place is not read again on the same path.
             Op::Read { place } | Op::Move { place } | Op::Borrow { place, .. } => {
-                Some(self.read_place(place, values, source)?)
+                match self.region_access(module, place, instruction.ty, None, values, source)? {
+                    Some(element) => Some(element),
+                    None => Some(self.read_place(place, values, source)?),
+                }
             }
             Op::Write { place, value } => {
                 let value = self.operand(module, value, values, source)?;
-                self.write_place(place, value, values, source)?;
+                let element = value_type(module, &value);
+                if self
+                    .region_access(module, place, element, Some(value.clone()), values, source)?
+                    .is_none()
+                {
+                    self.write_place(place, value, values, source)?;
+                }
                 None
             }
             Op::Drop { .. } => None,
@@ -2104,6 +2207,78 @@ impl Engine<'_> {
         }
     }
 
+    /// Serves an indexed access whose place is rooted at a **region**, or says
+    /// it is not one.
+    ///
+    /// A region is one capability handle and nothing else (ADR-0085 §9): the
+    /// engine holds `Value::Capability`, and where the bytes are is the host's.
+    /// So a place rooted at a handle cannot be walked the way an aggregate is —
+    /// there is no value graph under it — and the access goes to the host,
+    /// through [`System::access`] and never through [`System::observe`].
+    ///
+    /// `Ok(None)` means the place is not one of these and the ordinary path
+    /// applies. Detected from the **runtime root**, which is exact: nothing but
+    /// a region is both a capability and indexable, and the verifier refuses an
+    /// index step on a root that admits none.
+    ///
+    /// **One index step, and the element the instruction declares.** A deeper
+    /// path would be a projection inside an element, which V1 has no region of;
+    /// an element the type table does not give a fixed representation for is
+    /// refused by the frontend and refused again here rather than guessed at.
+    fn region_access(
+        &mut self,
+        module: &Module,
+        place: &Place,
+        element: TypeId,
+        value: Option<Value>,
+        values: &mut [Option<Value>],
+        source: SourceRef,
+    ) -> Result<Option<Value>, Trap> {
+        let Some(Some(Value::Capability(handle))) = values.get(place.root) else {
+            return Ok(None);
+        };
+        let handle = *handle;
+        let [step] = place.path.as_slice() else {
+            if place.path.is_empty() {
+                return Ok(None);
+            }
+            return Err(Trap::new(
+                "RUNTIME_TYPE_CONFUSION",
+                "a place reaches through a region into something it has no parts of",
+                source,
+            ));
+        };
+        let (PlaceStep::Index(_) | PlaceStep::DynamicIndex(_)) = step else {
+            return Err(Trap::new(
+                "RUNTIME_TYPE_CONFUSION",
+                "a place step does not apply to a region",
+                source,
+            ));
+        };
+        let PlaceStep::Index(Some(index)) = self.resolve_step(step, values, source)? else {
+            return Err(Trap::new(
+                "RUNTIME_TYPE_CONFUSION",
+                "an index step reached execution without a value",
+                source,
+            ));
+        };
+        let Some(element) = module.type_of(element).and_then(Element::of) else {
+            return Err(Trap::new(
+                "RUNTIME_TYPE_CONFUSION",
+                "a region access names an element with no fixed representation",
+                source,
+            ));
+        };
+        self.system
+            .access(Access {
+                region: handle,
+                index,
+                element,
+                value,
+            })
+            .map(Some)
+    }
+
     fn read_place(
         &self,
         place: &Place,
@@ -2289,6 +2464,25 @@ impl Engine<'_> {
             source,
         ))
     }
+}
+
+/// The type table entry a runtime value is of, for the element of a write.
+///
+/// A write carries its value rather than its type, and the element width has to
+/// come from somewhere: this is the value's own shape, looked up in the module's
+/// table. A value of no representable element answers with a type index the
+/// caller will refuse — it does not guess a width.
+fn value_type(module: &Module, value: &Value) -> TypeId {
+    let wanted = match value {
+        Value::Bool(_) => TypeDef::Bool,
+        Value::Int(kind, _) => TypeDef::Int(*kind),
+        _ => TypeDef::Unit,
+    };
+    module
+        .types
+        .iter()
+        .position(|ty| *ty == wanted)
+        .unwrap_or(usize::MAX)
 }
 
 fn step_into(value: Value, step: &PlaceStep, source: SourceRef) -> Result<Value, Trap> {

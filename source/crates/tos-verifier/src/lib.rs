@@ -1065,7 +1065,38 @@ fn check_instruction(
     // place. It does now, for the region families, which are the roots whose
     // element width leaves the artifact.
     if let Some(place) = places_of(&instruction.op).first() {
+        // **An index step only applies to something with elements.** The check
+        // below reads a region's element type from the place, and a run serving
+        // an indexed access decides it is a region from the *root's runtime
+        // value* — so a place that indexes a root admitting no index would put
+        // the two out of step, and the artifact would be asking a host to index
+        // an authority that has no elements at all.
+        if !indexable(module, function, place) {
+            return Err(Finding::new(
+                "V2010_TYPE",
+                at(),
+                "a place indexes a value of a type that has no elements",
+            ));
+        }
         if let Some(element) = region_element(module, function, place) {
+            // **A write needs a mutably granted region** (ADR-0037 §1,
+            // ADR-0081 §2). The frontend refuses one in source, and a host
+            // refuses one against a mapping that is not writable — but neither
+            // is the artifact's own proof, and an artifact that asked a host to
+            // store into a read-only grant would be asking on the strength of a
+            // type it does not have.
+            if matches!(instruction.op, Op::Write { .. })
+                && !matches!(
+                    module.type_of(function.values[place.root]),
+                    Some(TypeDef::RegionMut(_)) | Some(TypeDef::DmaRegionMut(_))
+                )
+            {
+                return Err(Finding::new(
+                    "V2021_REGION",
+                    at(),
+                    "an indexed write goes through a region that was not granted mutably",
+                ));
+            }
             let claimed = match &instruction.op {
                 // A write moves the operand's type into the element, so that is
                 // the type to compare. A read, a move and a borrow answer with
@@ -2168,6 +2199,54 @@ fn operands_of(op: &Op) -> Vec<Operand> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// Whether every index step of a place applies to something with elements.
+///
+/// An array, a slice and the four region families have elements; a capability,
+/// a record, a scalar and a handle do not. A step whose root is one of those is
+/// refused rather than projected, because a projection that cannot be taken is
+/// not a place — and the run below would otherwise decide what to do from the
+/// root's runtime shape instead of from its declared type.
+///
+/// A root or a field the table cannot resolve answers `true`: that is a
+/// different defect with a finding of its own, and reporting it twice would
+/// name the wrong one first.
+fn indexable(module: &Module, function: &Function, place: &tos_ir::Place) -> bool {
+    let Some(mut current) = function.values.get(place.root).copied() else {
+        return true;
+    };
+    for step in &place.path {
+        let Some(ty) = module.type_of(current) else {
+            return true;
+        };
+        current = match step {
+            tos_ir::PlaceStep::Field(index) => match ty {
+                TypeDef::Nominal { fields, .. } => match fields.get(*index) {
+                    Some(field) => *field,
+                    None => return true,
+                },
+                TypeDef::Tuple(elements) => match elements.get(*index) {
+                    Some(element) => *element,
+                    None => return true,
+                },
+                // A variant payload is reached by a field step too, and the
+                // shapes it may have are the enum's rather than one type's.
+                _ => return true,
+            },
+            tos_ir::PlaceStep::Index(_) | tos_ir::PlaceStep::DynamicIndex(_) => match ty {
+                TypeDef::Array(element, _)
+                | TypeDef::Slice(element)
+                | TypeDef::Region(element)
+                | TypeDef::RegionMut(element)
+                | TypeDef::DmaRegion(element)
+                | TypeDef::DmaRegionMut(element) => *element,
+                TypeDef::Bytes => return true,
+                _ => return false,
+            },
+        };
+    }
+    true
 }
 
 /// The element type an indexed access through a region reads or writes, when the

@@ -79,7 +79,8 @@ pub use source::{
 };
 use tos_engine::{run_closure, Accounting, Closure, Refusal};
 pub use tos_engine::{
-    Handle, Observe, Reach, Request as CapabilityRequest, System, Trap, Unreachable, Value,
+    Access, Element, Handle, Observe, Reach, Request as CapabilityRequest, System, Trap,
+    Unreachable, Value,
 };
 /// The integer widths a value carries, for a host building one.
 pub use tos_ir::IntKind;

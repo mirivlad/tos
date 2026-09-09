@@ -36,9 +36,9 @@ use core::panic::PanicInfo;
 
 use tos_launch::{Launch, LaunchCapability, LaunchUnit, ReportHeader, LAUNCH_VERSION};
 use tos_pipeline::{
-    interfaces, prepare_from_source, render, run_prepared, CapabilityRequest, Handle, IntKind,
-    Observe, PipelineStage, Preparation, Reach, ResidencyLimits, SetError, SetRequest, System,
-    Trace, Trap, Unit, Value,
+    interfaces, prepare_from_source, render, run_prepared, Access, CapabilityRequest, Element,
+    Handle, IntKind, Observe, PipelineStage, Preparation, Reach, ResidencyLimits, SetError,
+    SetRequest, System, Trace, Trap, Unit, Value,
 };
 use tos_runtime::{stack, GlobalHeap};
 
@@ -1712,7 +1712,127 @@ impl Endowment<'_> {
     }
 }
 
+/// Reads one element of an integer type from an address inside a mapping.
+///
+/// SAFETY: the caller passes an `at` naming `kind`'s width of readable bytes
+/// inside a mapping this process holds — which is exactly what
+/// `DeviceMappings::extent` proved, with checked arithmetic, before this is
+/// reached. There is no other caller and no other way to obtain the address.
+unsafe fn read_element(at: usize, kind: IntKind) -> i128 {
+    match kind {
+        IntKind::I8 => i128::from(core::ptr::with_exposed_provenance::<i8>(at).read()),
+        IntKind::I16 => i128::from(core::ptr::with_exposed_provenance::<i16>(at).read_unaligned()),
+        IntKind::I32 => i128::from(core::ptr::with_exposed_provenance::<i32>(at).read_unaligned()),
+        IntKind::I64 => i128::from(core::ptr::with_exposed_provenance::<i64>(at).read_unaligned()),
+        IntKind::U8 => i128::from(core::ptr::with_exposed_provenance::<u8>(at).read()),
+        IntKind::U16 => i128::from(core::ptr::with_exposed_provenance::<u16>(at).read_unaligned()),
+        IntKind::U32 => i128::from(core::ptr::with_exposed_provenance::<u32>(at).read_unaligned()),
+        IntKind::U64 => i128::from(core::ptr::with_exposed_provenance::<u64>(at).read_unaligned()),
+    }
+}
+
+/// Writes one element of an integer type at an address inside a mapping.
+///
+/// The value is narrowed to the element's own width by `as`, which is exactly
+/// what the type says it is: the engine holds every integer as `i128` and the
+/// element decides how many of those bits exist.
+///
+/// SAFETY: as [`read_element`], for bytes the same proof showed writable —
+/// `extent` refuses a write against a mapping that is not.
+unsafe fn write_element(at: usize, kind: IntKind, number: i128) {
+    match kind {
+        IntKind::I8 => core::ptr::with_exposed_provenance_mut::<i8>(at).write(number as i8),
+        IntKind::I16 => {
+            core::ptr::with_exposed_provenance_mut::<i16>(at).write_unaligned(number as i16)
+        }
+        IntKind::I32 => {
+            core::ptr::with_exposed_provenance_mut::<i32>(at).write_unaligned(number as i32)
+        }
+        IntKind::I64 => {
+            core::ptr::with_exposed_provenance_mut::<i64>(at).write_unaligned(number as i64)
+        }
+        IntKind::U8 => core::ptr::with_exposed_provenance_mut::<u8>(at).write(number as u8),
+        IntKind::U16 => {
+            core::ptr::with_exposed_provenance_mut::<u16>(at).write_unaligned(number as u16)
+        }
+        IntKind::U32 => {
+            core::ptr::with_exposed_provenance_mut::<u32>(at).write_unaligned(number as u32)
+        }
+        IntKind::U64 => {
+            core::ptr::with_exposed_provenance_mut::<u64>(at).write_unaligned(number as u64)
+        }
+    }
+}
+
 impl System for Endowment<'_> {
+    /// One **ordinary** indexed access to a region this process holds
+    /// (ADR-0081 §2).
+    ///
+    /// **Not a device access, and the difference is the whole reason this is a
+    /// separate method.** `observe` below performs exactly one hardware
+    /// transaction and may not elide, coalesce, repeat, widen, narrow or
+    /// reorder it. A DMA region is coherent RAM on the accepted reference
+    /// profile, so this is a plain load or store — the ordering obligations of a
+    /// device register are not free, and nothing in the accepted contracts asks
+    /// for them here.
+    ///
+    /// **Every bound is proved before the address is formed**, by the mapping
+    /// table rather than here: a mapping this process holds, a checked
+    /// index-times-width, a checked byte range inside the extent, and a writable
+    /// mapping for a write. A handle this process never held — or one a
+    /// successful `capability_release` retired (ADR-0085 §8a) — is refused
+    /// deterministically, **before any memory access**. No page fault is relied
+    /// on and no address is returned to anybody.
+    fn access(&mut self, access: Access) -> Result<Value, Trap> {
+        let refuse = |detail: &str| {
+            Err(Trap::new(
+                "RUNTIME_DEVICE_REFUSED",
+                alloc::string::String::from(detail),
+                0,
+            ))
+        };
+        let width = access.element.width();
+        let Some((at, _)) = self.mappings.extent(
+            access.region.get(),
+            access.index,
+            width,
+            access.value.is_some(),
+        ) else {
+            return refuse(
+                "a region access this process holds no mapping for, or past the end of one",
+            );
+        };
+        let at = at as usize;
+        // SAFETY: the nucleus mapped `[base, base + length)` into this address
+        // space, and `extent` put this whole access inside it with checked
+        // arithmetic. Ordinary reads and writes, not volatile: this is coherent
+        // memory and the contract asks for no transaction property.
+        unsafe {
+            match access.value {
+                None => Ok(match access.element {
+                    Element::Bool => {
+                        Value::Bool(core::ptr::with_exposed_provenance::<u8>(at).read() != 0)
+                    }
+                    Element::Int(kind) => Value::Int(kind, read_element(at, kind)),
+                }),
+                Some(value) => {
+                    match (&value, access.element) {
+                        (Value::Bool(set), Element::Bool) => {
+                            core::ptr::with_exposed_provenance_mut::<u8>(at).write(*set as u8)
+                        }
+                        (Value::Int(_, number), Element::Int(kind)) => {
+                            write_element(at, kind, *number)
+                        }
+                        _ => {
+                            return refuse("a region write does not match the element it names");
+                        }
+                    }
+                    Ok(Value::Unit)
+                }
+            }
+        }
+    }
+
     /// One device access, of exactly the declared width (ADR-0081 §9).
     ///
     /// **Checked before the device is touched, and never partially** (§12): a

@@ -711,6 +711,36 @@ impl DeviceMappings {
             .copied()
     }
 
+    /// The byte range an indexed access of `width` bytes at `index` covers,
+    /// inside the mapping this handle names.
+    ///
+    /// **Every check ADR-0081 §2 requires, before any memory is touched**, and
+    /// each one refuses rather than clamping or wrapping:
+    ///
+    /// - a mapping this process holds — a handle it never held, or one a
+    ///   successful release retired, answers `None` (ADR-0085 §8a);
+    /// - `index * width` computed **checked**, so a position no extent could
+    ///   contain is a refusal rather than a small number;
+    /// - `offset + width` computed checked, for the same reason;
+    /// - the range inside the mapping's own length, so the last element is
+    ///   reachable and the one after it is not;
+    /// - for a write, a mapping that is writable.
+    ///
+    /// The page table is not the mechanism and no fault is relied on: this
+    /// answers before the address is formed.
+    pub fn extent(&self, handle: u64, index: u64, width: u64, writing: bool) -> Option<(u64, u64)> {
+        let mapping = self.mapping(handle)?;
+        if writing && !mapping.writable {
+            return None;
+        }
+        let offset = index.checked_mul(width)?;
+        let end = offset.checked_add(width)?;
+        if end > mapping.length {
+            return None;
+        }
+        Some((mapping.base.checked_add(offset)?, width))
+    }
+
     /// Retires the entry a handle names, answering whether one was there.
     ///
     /// **ADR-0085 §8a.** The nucleus invalidating a handle settles a later
@@ -914,6 +944,93 @@ mod device_mapping_tests {
         assert!(!mappings.retire(9));
         assert!(!mappings.retire(0));
         assert!(mappings.mapping(7).is_some());
+    }
+
+    /// **The exact extent, and nothing past it** (ADR-0081 §2).
+    ///
+    /// The last element is reachable and the one after it is not. Written as
+    /// three positions because that is the boundary: a check written `<=` and a
+    /// check written `<` differ by exactly the element this proves is refused.
+    #[test]
+    fn the_last_element_is_reachable_and_the_next_is_not() {
+        let mut mappings = DeviceMappings::new();
+        assert!(mappings.remember(7, WINDOW, true));
+        let length = WINDOW.length;
+        // Bytes: every position from 0 to length - 1, and not length.
+        assert_eq!(mappings.extent(7, 0, 1, false), Some((WINDOW.base, 1)));
+        assert_eq!(
+            mappings.extent(7, length - 1, 1, false),
+            Some((WINDOW.base + length - 1, 1))
+        );
+        assert_eq!(mappings.extent(7, length, 1, false), None);
+        // A wider element ends earlier, because what has to fit is the whole
+        // access rather than its first byte.
+        assert_eq!(
+            mappings.extent(7, length / 8 - 1, 8, false),
+            Some((WINDOW.base + length - 8, 8))
+        );
+        assert_eq!(mappings.extent(7, length / 8, 8, false), None);
+    }
+
+    /// **Checked, not wrapped and not clamped.**
+    ///
+    /// A position whose product with the element width overflows is a refusal.
+    /// Wrapping would turn an absurd index into a small one and hand back an
+    /// address inside the mapping, which is the failure this arithmetic exists
+    /// to make impossible.
+    #[test]
+    fn an_index_that_overflows_its_extent_is_refused() {
+        let mut mappings = DeviceMappings::new();
+        assert!(mappings.remember(7, WINDOW, true));
+        assert_eq!(mappings.extent(7, u64::MAX, 8, false), None);
+        assert_eq!(mappings.extent(7, u64::MAX / 2 + 1, 2, false), None);
+        // And the near miss: a product that fits a `u64` and not the mapping.
+        assert_eq!(mappings.extent(7, WINDOW.length, 1, false), None);
+    }
+
+    /// A write needs a writable mapping, and a read does not.
+    #[test]
+    fn a_write_through_a_read_only_mapping_is_refused() {
+        let mut mappings = DeviceMappings::new();
+        assert!(mappings.remember(7, WINDOW, false));
+        assert!(mappings.extent(7, 0, 1, false).is_some());
+        assert_eq!(mappings.extent(7, 0, 1, true), None);
+    }
+
+    /// **Both stale paths, at this one** (ADR-0085 §8a).
+    ///
+    /// After a successful release retires the entry, an access through the same
+    /// handle is refused **before any address is formed** — this function
+    /// answers `None` rather than an address, which is what "before any memory
+    /// access" means where the access is performed. No page fault is involved
+    /// and none is relied on.
+    #[test]
+    fn an_access_after_a_release_is_refused_before_an_address_exists() {
+        let mut mappings = DeviceMappings::new();
+        assert!(mappings.remember(7, WINDOW, true));
+        assert!(mappings.extent(7, 0, 1, false).is_some());
+        assert!(mappings.retire(7));
+        assert_eq!(mappings.extent(7, 0, 1, false), None);
+        assert_eq!(mappings.extent(7, 0, 1, true), None);
+        // A handle this process never held is refused the same way, so a
+        // retired one is not a distinguishable state a module could probe for.
+        assert_eq!(mappings.extent(11, 0, 1, false), None);
+    }
+
+    /// **A failed release preserves the mapping**, which is the other half of
+    /// §8a and is what §16.9 asks for: the object did not end, so the entry is
+    /// still the process's and an access through it still works.
+    #[test]
+    fn a_failed_release_leaves_the_mapping_usable() {
+        let mut mappings = DeviceMappings::new();
+        assert!(mappings.remember(7, WINDOW, true));
+        // A release the nucleus refused retires nothing: the bridge acts on
+        // `OK` alone, so the table never hears about the attempt.
+        assert!(mappings.extent(7, 0, 1, true).is_some());
+        assert_eq!(
+            mappings.extent(7, WINDOW.length - 1, 1, true),
+            Some((WINDOW.base + WINDOW.length - 1, 1))
+        );
     }
 
     /// The table refuses rather than overwriting when it is full.
