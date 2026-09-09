@@ -138,7 +138,7 @@ fn allocate(function: platform.pci.FunctionConfig) -> i64
 pub fn main() -> i64
     uses [device, platform.pci.FunctionConfig, budget, platform.dma.Region]
 {
-    match (pci_function_claim(device, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(device, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             return allocate(function);
         }

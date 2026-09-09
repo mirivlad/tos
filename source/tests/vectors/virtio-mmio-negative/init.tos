@@ -46,7 +46,7 @@ fn refused(outcome: Result<MmioRegion, i64>, expected: i64, bit: i64) -> i64 {
 //  64  an offset+length that overflows                  E_BAD_ARGUMENT
 // 128  a function with no BARs at all cannot be mapped  E_NO_CAPABILITY
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             let mut found: i64 = 0i64;
             found = found + refused(pci_bar_map_read(function, 6u64, 0B, 4096B), -3i64, 1i64);

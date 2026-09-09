@@ -97,7 +97,7 @@ fn flip_bit(value: u64, bit: u64) -> u64 {
 // 128  reads are unaffected, and the register really did change where a write
 //      was allowed and really did not where one was refused
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             let mut found: i64 = 0i64;
             // What the function holds before anything is written. Read as one

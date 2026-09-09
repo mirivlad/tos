@@ -23,6 +23,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# The reference profile decides which function these assertions are about
+# (ADR-0084 revision 5). Sourced rather than retyped: revision 2 moved the
+# endpoint behind a PCIe root port, and every number below follows it.
+# shellcheck source=/dev/null
+. "$HERE/stage4-profile.sh"
+STAGE4_TARGET="$(stage4_target_fields)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 GITROOT="$(cd "$ROOT/.." && pwd)"
 OUT="${1:-$ROOT/target/qemu-pci-placement}"
@@ -92,7 +98,7 @@ permitted 2048 "an ordinary unrelated configuration field is no longer writable"
 # --- the claim leaves the function in a defined state -------------------------
 # ADR-0082 §5b, §5c, §5d. The nucleus is the only party that sees what firmware
 # left, so it is the only party that can say so.
-grep -q '^TOS\.RUN\.PCI_NORMALISED .* device=4 function=0 .* msix=disabled_masked ' \
+grep -q "^TOS\.RUN\.PCI_NORMALISED .* device=$STAGE4_TARGET_DEVICE function=$STAGE4_TARGET_FUNCTION .* msix=disabled_masked " \
     "$OUT/events.log" ||
     fail "the claim did not normalise the function's interrupt state: $(grep PCI_NORMALISED "$OUT/events.log")"
 

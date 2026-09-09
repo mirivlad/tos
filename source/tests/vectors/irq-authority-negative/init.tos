@@ -95,7 +95,7 @@ fn refused(outcome: Result<platform.irq.Source, i64>, expected: i64, bit: i64) -
 //  16  the plain claim works at all, so the refusals are refusals and not a
 //      closure
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig, platform.irq.Source] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             let mut found: i64 = 0i64;
 

@@ -70,7 +70,7 @@ const ENTRY_FIRST: u64 = 0u64;
 //   8  and releasing it frees the entry, which the same function can claim again
 //  16  the plain claim works at all
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig, platform.irq.Source] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             let mut found: i64 = 0i64;
             match (pci_interrupt_claim(function, ENTRY_FIRST)) {

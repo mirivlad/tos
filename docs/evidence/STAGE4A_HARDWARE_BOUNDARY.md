@@ -267,6 +267,11 @@ An extension of the ADR-0040 base platform, never a change to it: it is reached
 only through `run.sh --stage4-block-device`, and every Stage 1–3 gate runs the
 same profile it was measured on.
 
+**This section records revision 1, on which this closure was measured, and it is
+not rewritten.** The profile has since moved to revision 2 — §9a — and Stage 4A's
+invariants were re-measured there rather than assumed to carry over. What is
+below is what the machine was when this document's evidence was taken.
+
 ```text
 machine        q35                       unchanged from ADR-0040
 cpu            qemu64                    unchanged
@@ -288,6 +293,92 @@ iommu_platform off, and recorded because the later DMA contract must not change
                when it becomes on (docs/11 §DMA)
 observed on    QEMU 10.0.11 (Debian 1:10.0.11+ds-0+deb13u1)
 ```
+
+## 9a. Profile revision 2, and why it exists
+
+**Adopted 2026-09-10**, under ADR-0084 revision 5, after Stage 4C-2's
+real-nucleus boot proved a premise of revision 1 false.
+
+```text
+Profile revision 1   the endpoint attached directly to `pcie.0`, at 00:04.0
+                     Stage 4A, 4B and 4C-1 evidence was measured here
+Profile revision 2   an explicit q35 PCIe root port at 00:04.0, with the
+                     endpoint on the bus behind it
+```
+
+**What forced it.** ADR-0084 §5c's P1 requires the DMA-capable function to
+implement the PCI Express Capability, because its Device Status carries the
+Transactions Pending bit that makes a reclaim provable. Revision 3 of that ADR
+audited the then-current topology and concluded P1 was satisfiable. It is not:
+attached directly to the root-complex bus the function has no Express Capability
+at all, and the first module ever to ask for DMA authority was refused
+`E_NO_CAPABILITY` for it. The instrumented boot separated the two conditions —
+
+```text
+TOS.RUN.PCI_ASSIGNED ... express=0 dma=1 asserted_by=nucleus
+```
+
+— so the profile's own qualification (P5) held while the capability (P1) was
+absent, and the nucleus's capability walk was not at fault: the same walk found
+the function's MSI-X on the same boot.
+
+**P1 did not give way; the machine did.** That is the whole decision.
+
+```text
+-device pcie-root-port,id=stage4rp,bus=pcie.0,addr=0x4,chassis=1,slot=4
+-device virtio-blk-pci,drive=stage4blk,bus=stage4rp,addr=0x0,
+        disable-legacy=on,disable-modern=off,num-queues=1,iommu_platform=off
+```
+
+Everything else is unchanged: machine, cpu, vcpus, memory, accelerator,
+firmware, transport, queue count, `iommu_platform`, and the backing image.
+
+**The endpoint's address is measured, not predicted.** The root port keeps the
+slot the endpoint used to occupy, and the firmware assigns the bus behind it.
+What the machine reports:
+
+```text
+root port   00:04.0   PCI bridge 1b36:000c, secondary bus 1, subordinate bus 1
+endpoint    01:00.0   1af4:1042, modern virtio-blk
+```
+
+`host-tools/qemu-test/stage4-profile.sh` is the single place that decides this,
+and `check-stage4-target.sh` holds the copies that cannot read it — the nucleus's
+qualification constant and each fixture's claim, since TOS Core has no include.
+
+**The root port is topology, not the assigned device.** Every Stage 4 invariant
+— vendor, device and class; BAR placement; VirtIO capability parsing; MSI-X;
+bus-mastering precision; DMA qualification — remains about the **endpoint**. No
+gate identifies the port as the target, and the one fixture that deliberately
+claims another function names it in its own text (`check-stage4-target.sh`
+enforces that).
+
+### Re-measured on revision 2, not assumed
+
+A topology change is not evidence that old observed values still hold, so every
+Stage 4 gate was re-run and every number re-read:
+
+| Gate | On revision 2 |
+|---|---|
+| `pci-discovery` | **PASS.** vendor `0x1AF4`, device `0x1042`, class `0x01`, subclass `0x00`, capability pointer `0xDC` — re-read, and the pointer differs from revision 1's because the device's own capability list does. The absent-device negative still reads all-ones, and the no-endowment negative is still refused before the first instruction |
+| `virtio-caps` | **PASS.** The modern VirtIO capability structures are found in BAR 4, common configuration at offset `0x0`; the transitional device still reports none |
+| `virtio-mmio` | **PASS.** The window maps, the enable predicates still move independently, and the memory account is exactly where it started |
+| `pci-placement` | **PASS.** Placement registers still refuse relocation and the narrowing still reports `3840` where the pre-narrowing fixture reported `434` |
+| `irq-routed` | **PASS.** MSI-X still routes: the driver blocked, the real device raised a real interrupt behind the root port, the nucleus matched entry 0 of the endpoint and woke the one waiter. The nine interrupt-authority negatives hold |
+
+**Two defects this re-run found, neither caused by the topology:**
+
+- **`irq-routed` had been red on `main` since `710469c`**, a full-only gate
+  nobody had run since. Its ring-0 vocabulary check forbids `device_status`,
+  which matched `EXPRESS_DEVICE_STATUS` — the **PCI Express** Device Status
+  register, which is ring 0's business by ADR-0084 §5b and has nothing to do
+  with VirtIO's identically named one. The check now blanks that token before
+  matching, so a genuine leak sharing a line with it still fails;
+- **`virtio-msix-wait` moved an affine device window and used it again.** The
+  fixture passed an `MmioRegionMut` by value to two helpers and kept using it.
+  That was invisible while a match-arm payload had no inferred type; once it had
+  one, the ownership pass saw a real use-after-move. The helpers borrow now,
+  which is what ADR-0037 says a non-`Copy` window requires.
 
 ## 10. One defect this round found in an existing boundary
 

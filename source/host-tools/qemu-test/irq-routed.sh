@@ -25,6 +25,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# The reference profile decides which function these assertions are about
+# (ADR-0084 revision 5). Sourced rather than retyped: revision 2 moved the
+# endpoint behind a PCIe root port, and every number below follows it.
+# shellcheck source=/dev/null
+. "$HERE/stage4-profile.sh"
+STAGE4_TARGET="$(stage4_target_fields)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 GITROOT="$(cd "$ROOT/.." && pwd)"
 OUT="${1:-$ROOT/target/qemu-irq-routed}"
@@ -87,7 +93,7 @@ LOG="$OUT/routed/events.log"
 # --- and the record shows where the delivery came from -------------------------
 # **The source is entry 0 of the function the module claimed**, and the nucleus
 # says so — not the harness, and not the module.
-grep -q '^TOS\.RUN\.IRQ_SOURCE process=0 segment=0 bus=0 device=4 function=0 entry=0 transport=msix generation=1 asserted_by=nucleus$' \
+grep -q "^TOS\.RUN\.IRQ_SOURCE process=0 $STAGE4_TARGET entry=0 transport=msix generation=1 asserted_by=nucleus\$" \
     "$LOG" || fail "no routed source was derived from the claimed function: $(grep IRQ_SOURCE "$LOG" || true)"
 [ "$(grep -c '^TOS\.RUN\.IRQ_SOURCE ' "$LOG")" = 1 ] ||
     fail "more sources were derived than the module asked for"
@@ -116,7 +122,7 @@ grep -q "^$READY" "$LOG" ||
 # message is a memory write the device issues. A window moved only the first
 # (proved by `virtio-mmio.sh`); this moves both, which is what makes the two
 # predicates observably independent rather than merely described as such.
-grep -q '^TOS\.RUN\.PCI_ENABLES .* device=4 function=0 memory_decoding=. bus_mastering=1 memory_space=1 bus_master=1 asserted_by=nucleus$' \
+grep -q "^TOS\.RUN\.PCI_ENABLES .* device=$STAGE4_TARGET_DEVICE function=$STAGE4_TARGET_FUNCTION memory_decoding=. bus_mastering=1 memory_space=1 bus_master=1 asserted_by=nucleus\$" \
     "$LOG" || fail "claiming a source did not turn bus mastering on: $(grep PCI_ENABLES "$LOG" || true)"
 # And the last one going takes both back, on the process-death path: the module
 # dies holding its source.
@@ -197,8 +203,17 @@ grep -q 'capability-denied' "$OUT/denied/events.log" ||
 # acknowledge through the local APIC; it may not know what a queue is, that
 # entry 0 is a configuration vector, or that this is a block device. Checked
 # over ring-0 source with comments stripped, exactly as Stage 4B's gate does.
+# **`EXPRESS_DEVICE_STATUS` is not VirtIO's `DEVICE_STATUS`**, and the two share
+# a name across two unrelated specifications. PCI Express' own Device Status
+# register is ring 0's business by ADR-0084 §5b — its Transactions Pending bit
+# is how the nucleus proves a function has no non-posted request outstanding
+# before that function's memory returns to the pool. Ring 0 may know that
+# register; what §9 forbids is knowing what a *device* is.
+#
+# The token is blanked rather than the line dropped, so a genuine leak sharing a
+# line with it still matches.
 leaked="$(find "$ROOT/nucleus/src" -name '*.rs' -print0 |
-    xargs -0 sed -e 's://.*::' -e 's:/\*.*\*/::' |
+    xargs -0 sed -e 's://.*::' -e 's:/\*.*\*/::' -e 's:EXPRESS_DEVICE_STATUS::g' |
     grep -niE "virtio|virtqueue|device_status|driver_ok|feature_select|blk" || true)"
 [ -z "$leaked" ] || fail "ring 0 mentions device vocabulary: $leaked"
 
@@ -210,7 +225,8 @@ echo "  the scheduler announced blocked=1 routed=1 verdict=awaiting-hardware —
 echo "  first census in this system's history that answers routed=1 — and halted"
 echo "  the machine instead of cancelling the wait"
 echo "  a real configuration change on the real device then raised a real MSI-X"
-echo "  interrupt; the nucleus took it on vector 48, matched entry 0 of 00:04.0,"
+echo "  interrupt; the nucleus took it on vector 48, matched entry 0 of the"
+echo "  target function $(stage4_target_fields),"
 echo "  and woke the one context waiting on that source ($delivered deliveries)"
 echo "  the device's own configuration generation moved across the wait, and a"
 echo "  second interrupt was delivered and waited for"

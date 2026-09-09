@@ -17,6 +17,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# The reference profile decides which function these assertions are about
+# (ADR-0084 revision 5). Sourced rather than retyped: revision 2 moved the
+# endpoint behind a PCIe root port, and every number below follows it.
+# shellcheck source=/dev/null
+. "$HERE/stage4-profile.sh"
+STAGE4_TARGET="$(stage4_target_fields)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 GITROOT="$(cd "$ROOT/.." && pwd)"
 OUT="${1:-$ROOT/target/qemu-virtio-caps}"

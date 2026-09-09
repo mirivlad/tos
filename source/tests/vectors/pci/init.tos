@@ -121,7 +121,7 @@ fn observation(function: platform.pci.FunctionConfig) -> i64
 // The device at the Stage 4 profile's fixed location, read through authority
 // derived from the bus root.
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             return observation(function);
         }

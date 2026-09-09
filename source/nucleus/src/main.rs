@@ -1350,7 +1350,12 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         // it. Everything else claimable under that root gets a capability
         // without `dma`, which is the safe default with the exception written
         // down beside it.
-        pci::qualify_dma(0, 0, 4, 0);
+        pci::qualify_dma(
+            pci::STAGE4_TARGET.0,
+            pci::STAGE4_TARGET.1,
+            pci::STAGE4_TARGET.2,
+            pci::STAGE4_TARGET.3,
+        );
         [capability::Endowment::Existing {
             binding: binding(b"bus"),
             object: capability::Object::PciBus(bus),
@@ -1394,7 +1399,12 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         // generation, one right short. Nothing in the production path is
         // weakened to arrange it: the profile simply does not speak.
         #[cfg(not(feature = "test-dma-unqualified"))]
-        pci::qualify_dma(0, 0, 4, 0);
+        pci::qualify_dma(
+            pci::STAGE4_TARGET.0,
+            pci::STAGE4_TARGET.1,
+            pci::STAGE4_TARGET.2,
+            pci::STAGE4_TARGET.3,
+        );
         // **The wrong-kind negative grants a real object of the wrong kind
         // under the right name.** The launch record says `pci function`, which
         // is what the schema declares for the binding, so the runtime image's

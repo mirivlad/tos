@@ -17,6 +17,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# The reference profile decides which function these assertions are about
+# (ADR-0084 revision 5). Sourced rather than retyped: revision 2 moved the
+# endpoint behind a PCIe root port, and every number below follows it.
+# shellcheck source=/dev/null
+. "$HERE/stage4-profile.sh"
+STAGE4_TARGET="$(stage4_target_fields)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 GITROOT="$(cd "$ROOT/.." && pwd)"
 OUT="${1:-$ROOT/target/qemu-virtio-mmio}"
@@ -72,7 +78,7 @@ features="$(field "$value" 48 32767)"
 # The BAR the *device's own capability structure* named, and the window the
 # nucleus derived from that BAR's measured extent. Neither number is the
 # module's and neither is the harness's.
-grep -q '^TOS\.RUN\.MMIO_MAPPED process=0 segment=0 bus=0 device=4 function=0 bar=4 offset=0 length=4096 access=read_only asserted_by=nucleus$' \
+grep -q "^TOS\.RUN\.MMIO_MAPPED process=0 $STAGE4_TARGET bar=4 offset=0 length=4096 access=read_only asserted_by=nucleus\$" \
     "$OUT/probe/events.log" ||
     fail "the window was not derived from BAR 4 read-only: $(grep MMIO_MAPPED "$OUT/probe/events.log")"
 [ "$(grep -c '^TOS\.RUN\.MMIO_MAPPED ' "$OUT/probe/events.log")" = 1 ] ||
@@ -147,7 +153,7 @@ bme="$(run bme-precision pci-bme-precision 33 --stage4-block-device)"
 # not observable from a module — that is the point — and the nucleus states it.
 [ $(( bme >> 8 )) = 0 ] ||
     fail "a claimed function reached CPL 3 already bus-mastering"
-grep -q '^TOS\.RUN\.PCI_NORMALISED .* device=4 function=0 found_memory_space=1 found_bus_master=1 ' \
+grep -q "^TOS\.RUN\.PCI_NORMALISED .* device=$STAGE4_TARGET_DEVICE function=$STAGE4_TARGET_FUNCTION found_memory_space=1 found_bus_master=1 " \
     "$OUT/bme-precision/events.log" ||
     fail "the nucleus did not report discarding the firmware's enable state: $(grep PCI_NORMALISED "$OUT/bme-precision/events.log")"
 
@@ -188,7 +194,7 @@ grep -q '^TOS\.RUN\.PCI_NORMALISED .* device=31 function=2 .* msi=disabled msi_b
 # window must turn memory decoding on and leave bus mastering exactly where it
 # was. A nucleus that had merged the predicates would set both here, and would
 # then be wrong about a DMA mapping — which needs the other one and not this one.
-grep -q '^TOS\.RUN\.PCI_ENABLES .* device=4 function=0 memory_decoding=1 bus_mastering=0 memory_space=1 bus_master=0 asserted_by=nucleus$' \
+grep -q "^TOS\.RUN\.PCI_ENABLES .* device=$STAGE4_TARGET_DEVICE function=$STAGE4_TARGET_FUNCTION memory_decoding=1 bus_mastering=0 memory_space=1 bus_master=0 asserted_by=nucleus\$" \
     "$OUT/probe/events.log" ||
     fail "mapping a window did not move memory decoding alone: $(grep PCI_ENABLES "$OUT/probe/events.log")"
 # Anchored on the leading space so this does not match `found_bus_master=1`,

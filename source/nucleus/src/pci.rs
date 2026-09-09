@@ -512,6 +512,27 @@ unsafe fn table() -> &'static mut [Assignment; MAX_ASSIGNMENTS] {
     unsafe { &mut *core::ptr::addr_of_mut!(ASSIGNMENTS) }
 }
 
+/// The Stage 4 reference profile's target function, as the **test** constants
+/// name it (ADR-0084 §5c.1, profile revision 2).
+///
+/// **Not device policy in the nucleus.** What ring 0 understands is a segment,
+/// a bus, a device and a function; it has no idea what a block device is, and
+/// this constant does not teach it one. It is the reference *profile's* choice
+/// of which function to qualify, kept beside the qualification it feeds so that
+/// a topology change moves one number rather than several — and
+/// `check-stage4-target.sh` holds it to the profile the harness declares.
+///
+/// Reachable only from the launcher constants of a test build. No dispatcher
+/// reads it, and the production nucleus qualifies nothing.
+#[cfg(any(
+    feature = "test-pci-discovery",
+    feature = "test-dma-region",
+    feature = "test-dma-wrong-kind",
+    feature = "test-dma-unqualified",
+    feature = "test-dma-no-spend"
+))]
+pub const STAGE4_TARGET: (u16, u8, u8, u8) = (0, 1, 0, 0);
+
 /// Names one bus object. There is one, and the index says so rather than being
 /// implied — the same shape `Object::Endpoint` uses, and the same reason: a kind
 /// that names its object by index reads the same whether there is one or many.
