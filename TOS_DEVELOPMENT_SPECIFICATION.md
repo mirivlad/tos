@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `beac22450abadf8e231182daf64c8235e4b20fa286a7066fa93dd651f697b6ab`\
+Source-manifest SHA-256: `b296da7b57f38ee930a50dfa01501aefe19f29e01c7f68ca2769532f67d12dc8`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -4556,18 +4556,28 @@ identifier. A reader must never have to guess which kind of claim it is holding.
 
 <!-- SPDX-License-Identifier: Apache-2.0 -->
 
-# TOS Platform Interface Schema — Version 3
+# TOS Platform Interface Schema — Version 4
 
 Status: **Accepted Tier 2 interface contract.**
 
 Accepted by ADR-0079 (Project Architect-approved, 2026-09-03), which fixes the
 authority model this schema declares operations over, amended to version 2
 by ADR-0082 (Project Architect-approved, 2026-09-05), which decides the
-mechanism the third interface below is declared for, and to version 3 by
+mechanism the third interface below is declared for, to version 3 by
 ADR-0085 (Project Architect-approved, 2026-09-08), which separates an
-interface's identity from the class of values that represents it.
+interface's identity from the class of values that represents it, and to
+version 4, which declares the operation that makes a DMA region under
+ADR-0084's authority model and ADR-0085 §18's approved concrete result
+(Project Architect-approved, 2026-09-09).
 
-**What version 3 adds, and nothing else.** One interface —
+**What version 4 adds, and nothing else.** One operation on
+`platform.pci.FunctionConfig` — `dma_region_allocate` — which is
+`SYSTEM_ABI_V1` operation 30, the one version 3 named as decided and not yet
+declarable. Nothing else moves: no interface is added, no representation
+changes, and every operation of versions 1 to 3 keeps its name, arity,
+parameter types, result type and effect.
+
+**What version 3 added.** One interface —
 `platform.dma.Region` — with the two operations a holder of one can perform:
 the bounded-offset translation ADR-0084 §6b puts in the nucleus, and the
 generic release. It is the first and only interface of any accepted schema whose
@@ -4575,15 +4585,6 @@ capability representation is not `AsInterface` (`SYSTEM_INTERFACE_V1` §4.3).
 Versions 1 and 2 are unchanged in every operation's name, arity, parameter type,
 result type and effect, and every interface they declared keeps the default
 representation.
-
-**What version 3 deliberately does not add**: the operation that *makes* a DMA
-region. `SYSTEM_ABI_V1` operation 30 is the mechanism and ADR-0084 decided it,
-but ADR-0084 writes its result abstractly as `DmaRegion<mut T>` while every
-result an accepted schema declares is a concrete type text. ADR-0085 §18 leaves
-that gap open on purpose rather than closing it with schema polymorphism nobody
-decided, and it is resolved when Stage 4C-2's surface resumes. Declaring the
-region interface does not depend on it: the two operations below are concrete,
-and a region reaches a module as a value either way.
 
 **What version 2 added.** One interface — `platform.irq.Source`
 — one operation on `platform.pci.FunctionConfig` that produces it, and the two
@@ -4610,19 +4611,23 @@ of them. What it adds is a second set of **interfaces**, over platform objects
 rather than system ones.
 
 It is not an FFI and admits none of the things `SYSTEM_INTERFACE_V1` §1 refuses.
-Its target ABI is `SYSTEM_ABI_V1`, operations **24–29**, and nothing else. Version
-1 of this schema said 24–26, which was true of it: 27 arrived with ADR-0081 §13's
-device-memory mapping and 28–29 with ADR-0082's interrupt authority, each when
-its mechanism was decided.
+Its target ABI is `SYSTEM_ABI_V1`, operations **24–31**, and nothing else.
+Version 1 of this schema said 24–26, which was true of it: 27 arrived with
+ADR-0081 §13's device-memory mapping, 28–29 with ADR-0082's interrupt authority,
+31 with ADR-0085's DMA region interface and 30 with version 4's allocating
+operation — each when its mechanism, and then its declared surface, was
+decided.
 
 ## 2. What this version declares, and why so little
 
 Four interfaces. `docs/11_DRIVER_MODEL.md` illustrates several —
 `platform.mmio.RegionMap`, `platform.irq.Binding`, `platform.dma.Allocator` and
 a class publisher — and **none of those is declared here**, including the
-interrupt one: what version 2 declares is `platform.irq.Source`, whose mechanism
+interrupt one: what version 2 declared is `platform.irq.Source`, whose mechanism
 ADR-0082 decided, and not the binding that document sketched. ADR-0079 §11 left
-MMIO, interrupts and DMA open; interrupts are now decided and DMA is not, and
+MMIO, interrupts and DMA open, and all three are now decided — DMA as
+`platform.dma.Region` (§4.4) with the allocating operation on the assignment it
+descends from, rather than as the `platform.dma.Allocator` that document showed.
 `SYSTEM_INTERFACE_V1` §4's rule applies to this schema as much as to that one:
 
 > Nothing speculative: an interface that declared an operation the system does
@@ -4732,6 +4737,7 @@ nucleus-owned state.
 | `pci_bar_map_read` | `platform.pci.FunctionConfig` with `map` | `bar: u64`, `offset: size`, `length: size` | `Result<MmioRegion, i64>` | 27 |
 | `pci_bar_map_write` | `platform.pci.FunctionConfig` with `map` | `bar: u64`, `offset: size`, `length: size` | `Result<MmioRegionMut, i64>` | 27 |
 | `pci_interrupt_claim` | `platform.pci.FunctionConfig` with `interrupt` | `entry: u64` | `Result<platform.irq.Source, i64>` | 28 |
+| `dma_region_allocate` | `platform.pci.FunctionConfig` with `dma`, then `system.memory.Authority` with `spend` | `bytes: size` | `Result<DmaRegion<mut u8>, i64>` | 30 |
 | `endow_for_launch` | `platform.pci.FunctionConfig` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 | `capability_attenuate` | `platform.pci.FunctionConfig` with `none` | `rights: u64` | `Result<platform.pci.FunctionConfig, i64>` | 5 |
 | `capability_release` | `platform.pci.FunctionConfig` with `none` | *(none)* | `i64` | 6 |
@@ -4761,6 +4767,55 @@ that lies about what its holder can reach.
 only `config_read` refuses operation 26 with `E_NO_CAPABILITY`. This is the
 attenuation a manager performs before handing a function to something that
 should only look at it.
+
+**Allocation takes two authorities and neither is sufficient** (ADR-0084 §4).
+`dma_region_allocate` is declared here, on the assignment, because that is what
+a DMA region descends from: memory becomes reachable *by a device*, and the
+device is the one this capability names. The second capability is the
+`system.memory.Authority` the run is charged to, at `spend`.
+
+> a process holding only memory authority cannot make any memory reachable by
+> any device, and a process holding only a function cannot spend somebody
+> else's memory to do it
+
+`dma` is its own right for the reason `map` is: a holder that may read a
+device's configuration, or map its registers, is not thereby a holder that may
+give it access to this machine's memory. A capability without `dma` refuses
+operation 30 with `E_NO_CAPABILITY`, and so does an authority without `spend` —
+independently, and neither refusal is the other's.
+
+**The result is `DmaRegion<mut u8>`, and the byte is the decision**
+(ADR-0085 §18, Project Architect-approved 2026-09-09). Operation 30 allocates a
+contiguous run measured in **bytes**, and `u8` is the only concrete element type
+for which every ABI-valid byte length has an exact representation — no invented
+divisibility, alignment, tail or element-count rule for a caller to obey. A
+driver encodes its protocol-defined structures into bytes explicitly, which is
+better than implying that a TOS nominal or layout type has a device-visible
+binary layout. ADR-0084's `DmaRegion<mut T>` is the abstract semantic shape;
+this is its V1 instantiation, and §5 says what that does and does not mean.
+
+**Everything fallible happens before anything is spent.** A refused allocation
+leaves no region, no charge, no mapping and no capability — there is no partial
+outcome a caller has to undo, which is why the two capabilities are resolved and
+the caller's table checked before any memory is taken.
+
+**Region grant facts** (`docs/42` §2). That document admits a
+`Region<T>`/`DmaRegion<T>` grant **only** through a capability operation whose
+accepted interface declares element type, alignment, access, size, DMA domain,
+lifetime and transfer/share rules. Until version 4 no accepted operation
+originated a region, so the requirement was met by there being nothing to meet
+it for. One does now, and all seven are declared here rather than left to be
+inferred from the nucleus:
+
+| Fact | `dma_region_allocate` |
+|---|---|
+| element type | `u8`, and only `u8` (ADR-0085 §18). The result type says it, and no operation of any accepted schema produces a region of another element type |
+| alignment | the region begins at a frame boundary, and one base plus an offset is one address because the run is **physically contiguous** (ADR-0084 §6a) |
+| access | read and write, which is what `mut` in `DmaRegion<mut u8>` says. There is no read-only form of this operation and no right to attenuate to one |
+| size | the whole frames covering `bytes`, which is **at least** what was asked for and is exactly what the holder may reach. A grant narrower than the extent it hands out would be a contract that lies about what its holder can reach; `bytes` of zero, or more than the contract's maximum, is `E_BAD_ARGUMENT` |
+| DMA domain | the one assigned function the first capability names, and no other device. There is no parameter through which to name a second, and a function with no PCI Express capability is refused rather than given memory it could not be proved to have stopped reaching (ADR-0084 §5c) |
+| lifetime | from the successful allocation until a successful `capability_release` of the region, which quarantines the backing before it returns to the pool. The region is a descendant of the assignment, so the assignment does not end while one lives (§4.1) |
+| transfer/share rules | **neither** (ADR-0037). `DmaRegion<T>` and `DmaRegion<mut T>` are non-transferable and non-shareable in both modes: a region does not cross a task boundary and `share` does not accept one |
 
 **What a `FunctionConfig` does not confer, even with every right** (ADR-0082 §5,
 §5a–§5d). These are not exceptions carved out of the rights model. They are
@@ -5034,21 +5089,15 @@ advance.
 
 ## 5. What this version does not declare
 
-No operation that **makes** a DMA region, no reset operation and no
-device-class publisher.
+No reset operation and no device-class publisher.
 
-**The DMA interface has arrived and its allocating operation has not**, and both
-halves are this schema's own rule rather than an oversight. Version 2 said the
-interface would arrive at version 3 with the implementation, and §4.4 above is
-that: ADR-0084 (Accepted 2026-09-08) fixed where DMA authority comes from, what a
-device-visible address is allowed to be and how a region is proved safe to
-reclaim, and ADR-0085 (Accepted 2026-09-08) fixed how such an authority is
-represented in TOS Core.
-
-What is still absent is the row for `SYSTEM_ABI_V1` operation 30, which
-allocates one. The mechanism is decided and the nucleus performs it, and **its
-declared result is now decided too** — ADR-0085 §18 left it open, and it is
-resolved rather than left:
+**The DMA surface is complete as of version 4**, in three decisions that each
+had to land before the next could: ADR-0084 (Accepted 2026-09-08) fixed where
+DMA authority comes from, what a device-visible address is allowed to be and how
+a region is proved safe to reclaim; ADR-0085 (Accepted 2026-09-08) fixed how
+such an authority is represented in TOS Core; and ADR-0085 §18's resolution
+fixed the one thing neither had — the concrete result of the operation that
+makes one:
 
 ```text
 dma_region_allocate(...) -> Result<DmaRegion<mut u8>, i64>
@@ -5074,9 +5123,10 @@ general:**
 > views must first define the element-count, alignment and layout semantics that
 > would make one meaningful, and is considered separately.
 
-The row itself arrives with the Stage 4C-2 implementation that performs it, by
-§2's rule: an interface that declared an operation the system does not perform
-would be a contract describing a system that does not exist.
+The row is declared in §4 above, with the Stage 4C-2 implementation that
+performs it — by §2's rule, and not before it: an interface that declared an
+operation the system does not perform would be a contract describing a system
+that does not exist.
 
 Reset and the publisher remain undecided — the publisher under ADR-0051.
 
