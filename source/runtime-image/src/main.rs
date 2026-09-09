@@ -1684,14 +1684,31 @@ struct Endowment<'a> {
     /// Its own copy, not a borrow: see [`Report`]. The trace holds one too, and
     /// both write to the one region the launcher named.
     report: Report,
-    /// Where each device mapping this process holds actually is.
+    /// Where each mapping this process holds is **in this process's own
+    /// address space**.
     ///
-    /// **The only place in ring 3 that knows a device address**, and it is
+    /// **The only place in ring 3 that knows a CPU mapping window**, and it is
     /// below the language: a module names a capability and an offset, the
     /// engine carries them without reading either, and this is where they
     /// become a window. `docs/42` §2's rule that a process never observes a
     /// region's address is about the *program*; something has to perform the
     /// access, and it is this.
+    ///
+    /// **Three addresses, and they are not each other.** This is the first:
+    ///
+    /// ```text
+    /// CPU virtual mapping base   here. Runtime-private, and used for one
+    ///                            thing: performing an indexed CPU access
+    /// device-visible address     data `dma_device_address` returns. A driver
+    ///                            writes it into its own device; no operation
+    ///                            of any contract accepts one back
+    /// physical address           nucleus and platform state. Nothing in ring 3
+    ///                            holds one, here or anywhere
+    /// ```
+    ///
+    /// Letting those collapse into one word is how a runtime-private base
+    /// becomes something a module could be told, so they are named apart here
+    /// and stay named apart in the evidence.
     ///
     /// The table itself is `tos-launch`'s (`DeviceMappings`), beside the
     /// `MmioMapRecord` the nucleus writes into it: two halves of one handoff in
@@ -4234,6 +4251,16 @@ impl tos_pipeline::System for Marked {
         Err(Trap::new(
             "RUNTIME_DEVICE_UNREACHABLE",
             "a device access was made on a measurement run with no device to reach",
+            0,
+        ))
+    }
+
+    /// And no region either, for the same reason and by the same argument: a
+    /// run that holds no capability holds no region to index into.
+    fn access(&mut self, _access: tos_pipeline::Access) -> Result<tos_engine::Value, Trap> {
+        Err(Trap::new(
+            "RUNTIME_DEVICE_UNREACHABLE",
+            "a region access was made on a measurement run with no region to reach",
             0,
         ))
     }

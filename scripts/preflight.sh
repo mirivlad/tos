@@ -103,6 +103,9 @@ interface_schema() {
 abi_operations() {
     bash "$ROOT/scripts/tests/check-abi-operations.sh"
 }
+endowment_constants() {
+    bash "$ROOT/scripts/tests/check-endowment-constants.sh"
+}
 closure_audit() {
     bash "$ROOT/scripts/tests/check-closure-audit.sh"
 }
@@ -474,6 +477,7 @@ gate docs       default   "release manifest and SHA256SUMS"            release_m
 gate docs       default   "interface-contract authority"               interface_contract_authority
 gate docs       default   "accepted interface schema"                  interface_schema
 gate docs       default   "system ABI operation numbers"               abi_operations
+gate docs       default   "launcher endowment constants"               endowment_constants
 gate docs       default   "Boot ABI event contract"                    boot_event_contract
 gate docs       default   "operator important-error view"              operator_journal
 gate docs       default   "Stage 3 closure audit"                      closure_audit

@@ -17,85 +17,69 @@
 #![no_std]
 #![no_main]
 
-// The two launcher constants describe different systems — a pair sharing an
-// endpoint, and one process able to create others — and a build asking for both
-// would be asking which of two decisions the launcher made.
+// **At most one launcher endowment constant.** Each of these decides what the
+// boot process is endowed with, by binding `first_endowment`; two of them
+// enabled together do not fail to compile — the second `let` shadows the first
+// — so the evidence would be a boot nobody asked for, reported as the boot that
+// was. That is the failure this guard exists to make impossible, and counting is
+// how it covers every constant at once.
+//
+// **It replaces ninety hand-written pairs, and it is stronger than they were.**
+// The pair list stated this one fact `n^2` times and had gone partial: it named
+// 17 of the 32 test features, and `test-pci-discovery`, `test-supervision`,
+// `test-runtime-authority` and `test-build-topology` — every constant added
+// since Stage 4A — appeared in it nowhere. A list that has to be extended by
+// hand in `n` places per addition is a list that stops being extended;
+// `check-endowment-constants.sh` now holds this one against the source it is
+// about, so a constant cannot be added without joining it.
+const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
+    + cfg!(feature = "test-supervisor") as usize
+    + cfg!(feature = "test-deadlock") as usize
+    + cfg!(feature = "test-call-reply") as usize
+    + cfg!(feature = "test-deputy") as usize
+    + cfg!(feature = "test-second-receiver") as usize
+    + cfg!(feature = "test-module-operation") as usize
+    + cfg!(feature = "test-wrong-kind") as usize
+    + cfg!(feature = "test-process-control") as usize
+    + cfg!(feature = "test-process-terminate") as usize
+    + cfg!(feature = "test-process-launch") as usize
+    + cfg!(feature = "test-lifecycle") as usize
+    + cfg!(feature = "test-region-transport") as usize
+    + cfg!(feature = "test-runtime-authority") as usize
+    + cfg!(feature = "test-supervision") as usize
+    + cfg!(feature = "test-build-topology") as usize
+    + cfg!(feature = "test-bundle-launch") as usize
+    + cfg!(feature = "test-pci-discovery") as usize
+    // ADR-0084/ADR-0085: the DMA constants. The three negatives differ from the
+    // positive in exactly one fact each — a mislabelled object kind, a function
+    // the profile did not qualify, an authority without `spend` — which is what
+    // makes each dimension refuse independently rather than together.
+    + cfg!(feature = "test-dma-region") as usize
+    + cfg!(feature = "test-dma-wrong-kind") as usize
+    + cfg!(feature = "test-dma-unqualified") as usize
+    + cfg!(feature = "test-dma-no-spend") as usize
+    // These two share one binding, so they are one constant and are counted
+    // once: the rollback boot is the memory-authority boot with a failure
+    // injected, not a different endowment.
+    + cfg!(any(
+        feature = "test-memory-authority",
+        feature = "test-creation-rollback"
+    )) as usize;
+
+// Written as a match rather than as `<= 1` because a build with no test
+// constant makes the count zero, and a comparison against the minimum of a type
+// is one clippy const-folds to "always true" — which is exactly what an
+// invariant must not look like.
+const _: () = assert!(
+    matches!(ENDOWMENT_CONSTANTS, 0 | 1),
+    "these are different launcher constants, and a build must be one of them"
+);
+
+// The conflicts that are **not** about the first process's endowment, and so
+// are not counted above: `test-region-faults` endows a second and a third
+// process, and a boot whose extra processes end in a fault cannot also be a boot
+// measuring something else.
 #[cfg(any(
-    all(feature = "test-deputy", feature = "test-two-processes"),
-    all(feature = "test-deputy", feature = "test-supervisor"),
-    all(feature = "test-deputy", feature = "test-deadlock"),
-    all(feature = "test-deputy", feature = "test-call-reply"),
-    all(feature = "test-two-processes", feature = "test-supervisor"),
-    all(feature = "test-two-processes", feature = "test-deadlock"),
-    all(feature = "test-two-processes", feature = "test-call-reply"),
-    all(feature = "test-supervisor", feature = "test-deadlock"),
-    all(feature = "test-supervisor", feature = "test-call-reply"),
-    all(feature = "test-deadlock", feature = "test-call-reply"),
-    all(feature = "test-second-receiver", feature = "test-two-processes"),
-    all(feature = "test-second-receiver", feature = "test-supervisor"),
-    all(feature = "test-second-receiver", feature = "test-deadlock"),
-    all(feature = "test-second-receiver", feature = "test-call-reply"),
-    all(feature = "test-second-receiver", feature = "test-deputy"),
-    all(feature = "test-module-operation", feature = "test-two-processes"),
-    all(feature = "test-module-operation", feature = "test-supervisor"),
-    all(feature = "test-module-operation", feature = "test-deadlock"),
-    all(feature = "test-module-operation", feature = "test-call-reply"),
-    all(feature = "test-module-operation", feature = "test-deputy"),
-    all(feature = "test-module-operation", feature = "test-second-receiver"),
-    all(feature = "test-wrong-kind", feature = "test-two-processes"),
-    all(feature = "test-wrong-kind", feature = "test-supervisor"),
-    all(feature = "test-wrong-kind", feature = "test-deadlock"),
-    all(feature = "test-wrong-kind", feature = "test-call-reply"),
-    all(feature = "test-wrong-kind", feature = "test-deputy"),
-    all(feature = "test-wrong-kind", feature = "test-second-receiver"),
-    all(feature = "test-wrong-kind", feature = "test-module-operation"),
-    all(feature = "test-process-control", feature = "test-two-processes"),
-    all(feature = "test-process-control", feature = "test-supervisor"),
-    all(feature = "test-process-control", feature = "test-deadlock"),
-    all(feature = "test-process-control", feature = "test-call-reply"),
-    all(feature = "test-process-control", feature = "test-deputy"),
-    all(feature = "test-process-control", feature = "test-second-receiver"),
-    all(feature = "test-process-control", feature = "test-module-operation"),
-    all(feature = "test-process-control", feature = "test-wrong-kind"),
-    all(feature = "test-process-terminate", feature = "test-two-processes"),
-    all(feature = "test-process-terminate", feature = "test-supervisor"),
-    all(feature = "test-process-terminate", feature = "test-deadlock"),
-    all(feature = "test-process-terminate", feature = "test-call-reply"),
-    all(feature = "test-process-terminate", feature = "test-deputy"),
-    all(feature = "test-process-terminate", feature = "test-second-receiver"),
-    all(feature = "test-process-terminate", feature = "test-module-operation"),
-    all(feature = "test-process-terminate", feature = "test-wrong-kind"),
-    all(feature = "test-process-control", feature = "test-process-terminate"),
-    all(feature = "test-process-launch", feature = "test-two-processes"),
-    all(feature = "test-process-launch", feature = "test-supervisor"),
-    all(feature = "test-process-launch", feature = "test-deadlock"),
-    all(feature = "test-process-launch", feature = "test-call-reply"),
-    all(feature = "test-process-launch", feature = "test-deputy"),
-    all(feature = "test-process-launch", feature = "test-second-receiver"),
-    all(feature = "test-process-launch", feature = "test-module-operation"),
-    all(feature = "test-process-launch", feature = "test-wrong-kind"),
-    all(feature = "test-process-launch", feature = "test-process-control"),
-    all(feature = "test-process-launch", feature = "test-process-terminate"),
-    all(feature = "test-lifecycle", feature = "test-process-launch"),
-    all(feature = "test-lifecycle", feature = "test-two-processes"),
-    all(feature = "test-lifecycle", feature = "test-supervisor"),
-    all(feature = "test-lifecycle", feature = "test-call-reply"),
-    all(feature = "test-lifecycle", feature = "test-process-control"),
-    all(feature = "test-lifecycle", feature = "test-process-terminate"),
-    all(feature = "test-region-transport", feature = "test-two-processes"),
-    all(feature = "test-region-transport", feature = "test-supervisor"),
-    all(feature = "test-region-transport", feature = "test-deadlock"),
-    all(feature = "test-region-transport", feature = "test-call-reply"),
-    all(feature = "test-region-transport", feature = "test-deputy"),
-    all(feature = "test-region-transport", feature = "test-second-receiver"),
-    all(feature = "test-region-transport", feature = "test-module-operation"),
-    all(feature = "test-region-transport", feature = "test-wrong-kind"),
-    all(feature = "test-region-transport", feature = "test-process-control"),
-    all(feature = "test-region-transport", feature = "test-process-terminate"),
-    all(feature = "test-region-transport", feature = "test-process-launch"),
-    all(feature = "test-region-transport", feature = "test-lifecycle"),
-    all(feature = "test-region-transport", feature = "test-memory-authority"),
-    all(feature = "test-region-transport", feature = "test-creation-rollback"),
     all(feature = "test-region-faults", feature = "test-two-processes"),
     all(feature = "test-region-faults", feature = "test-supervisor"),
     all(feature = "test-region-faults", feature = "test-deadlock"),
@@ -111,21 +95,6 @@
     all(feature = "test-region-faults", feature = "test-memory-authority"),
     all(feature = "test-region-faults", feature = "test-creation-rollback"),
     all(feature = "test-region-faults", feature = "test-region-transport"),
-    all(feature = "test-bundle-launch", feature = "test-two-processes"),
-    all(feature = "test-bundle-launch", feature = "test-supervisor"),
-    all(feature = "test-bundle-launch", feature = "test-deadlock"),
-    all(feature = "test-bundle-launch", feature = "test-call-reply"),
-    all(feature = "test-bundle-launch", feature = "test-deputy"),
-    all(feature = "test-bundle-launch", feature = "test-second-receiver"),
-    all(feature = "test-bundle-launch", feature = "test-module-operation"),
-    all(feature = "test-bundle-launch", feature = "test-wrong-kind"),
-    all(feature = "test-bundle-launch", feature = "test-process-control"),
-    all(feature = "test-bundle-launch", feature = "test-process-terminate"),
-    all(feature = "test-bundle-launch", feature = "test-process-launch"),
-    all(feature = "test-bundle-launch", feature = "test-lifecycle"),
-    all(feature = "test-bundle-launch", feature = "test-memory-authority"),
-    all(feature = "test-bundle-launch", feature = "test-creation-rollback"),
-    all(feature = "test-bundle-launch", feature = "test-region-transport"),
     all(feature = "test-bundle-launch", feature = "test-region-faults")
 ))]
 compile_error!("these are different launcher constants, and a build must be one of them");
@@ -1389,6 +1358,95 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             scope: 0,
         }]
     };
+    // **The two authorities operation 30 requires, and neither alone**
+    // (ADR-0084 §4). A process holding only memory authority cannot make any
+    // memory reachable by any device, and one holding only a function cannot
+    // spend somebody else's memory to do it — so the DMA boot endows both, and
+    // the three negatives beside it each remove exactly one fact.
+    //
+    // The bus root is granted with `claim` and **not** a function: which device
+    // is worth claiming is policy, and a launcher that picked one would be the
+    // nucleus choosing a device (ADR-0079 §5). The module claims it.
+    #[cfg(any(
+        feature = "test-dma-region",
+        feature = "test-dma-wrong-kind",
+        feature = "test-dma-unqualified",
+        feature = "test-dma-no-spend"
+    ))]
+    let first_endowment = {
+        let Some(bus) = pci::endow_root(0, 0, 255) else {
+            tos_serial::puts(
+                b"TOS.RUN.UNSTARTABLE reason=no-pci-root
+",
+            );
+            mem_fail();
+        };
+        tos_serial::puts(b"TOS.RUN.PCI_ROOT segment=0 first_bus=0 last_bus=255 rights=claim");
+        tos_serial::puts(
+            b" asserted_by=launcher
+",
+        );
+        // **P5, and the negative that withholds it.** TC0-only requester
+        // traffic is a property the compatibility profile establishes about a
+        // function; no architected register reports it. Under
+        // `test-dma-unqualified` the profile says nothing, so the claim
+        // produces a capability without `dma` — the same object, the same
+        // generation, one right short. Nothing in the production path is
+        // weakened to arrange it: the profile simply does not speak.
+        #[cfg(not(feature = "test-dma-unqualified"))]
+        pci::qualify_dma(0, 0, 4, 0);
+        // **The wrong-kind negative grants a real object of the wrong kind
+        // under the right name.** The launch record says `pci function`, which
+        // is what the schema declares for the binding, so the runtime image's
+        // startup check passes and the module reaches the call — and the
+        // nucleus refuses, because what the handle resolves to is a process.
+        //
+        // Nothing is minted, forged or cast: this is authority over a real
+        // object this process really holds, described inaccurately by a
+        // test-only launcher constant. That is exactly the condition §16.5
+        // asks about — every static fact right, the runtime object wrong.
+        // **The wrong-kind negative grants a real object of the wrong kind
+        // under the right name** — authority over this *process*, bound to the
+        // name the module imports its PCI function under. Nothing is minted,
+        // forged, cast or mislabelled: the launch record reports the kind the
+        // object actually is, because `Endowment` has no way to say otherwise
+        // and must not gain one.
+        //
+        // **The refusal is therefore the grant check's, and that is the layer
+        // ADR-0085 §16.5 names**: "wrong runtime object kind *at grant*". The
+        // runtime image compares the kind the record reports against the kind
+        // the schema declares for the interface, before the module's first
+        // instruction — so the call is never made and the nucleus never sees a
+        // handle. Its own object-kind check remains the backstop for a handle
+        // that did not come from a grant at all, which is a forged artifact
+        // rather than a boot.
+        #[cfg(feature = "test-dma-wrong-kind")]
+        let device = capability::Endowment::Own {
+            binding: binding(b"device"),
+            rights: tos_launch::RIGHT_TERMINATE,
+        };
+        #[cfg(not(feature = "test-dma-wrong-kind"))]
+        let device = capability::Endowment::Existing {
+            binding: binding(b"device"),
+            object: capability::Object::PciBus(bus),
+            rights: tos_launch::RIGHT_CLAIM,
+            scope: 0,
+        };
+        // The funding half. Under `test-dma-no-spend` it is the same authority
+        // without the one right operation 30 requires of it, which is how that
+        // dimension refuses on its own rather than beside the other.
+        #[cfg(feature = "test-dma-no-spend")]
+        let funding = capability::Endowment::Remainder {
+            binding: capability::Binding::new(b"budget").expect("a short name"),
+            rights: 0,
+        };
+        #[cfg(not(feature = "test-dma-no-spend"))]
+        let funding = capability::Endowment::Remainder {
+            binding: capability::Binding::new(b"budget").expect("a short name"),
+            rights: tos_launch::RIGHT_SPEND,
+        };
+        [device, funding]
+    };
     // Under the request/reply constant the first process may **receive** on an
     // endpoint and the second may **call** on it. Neither can do the other's
     // half, and the right to answer a call is not in either endowment: it is
@@ -1776,7 +1834,11 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-supervision",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
-        feature = "test-lifecycle"
+        feature = "test-lifecycle",
+        feature = "test-dma-region",
+        feature = "test-dma-wrong-kind",
+        feature = "test-dma-unqualified",
+        feature = "test-dma-no-spend"
     )))]
     // **Nothing, because the module asks for nothing.** ADR-0055 makes an
     // endowment what a launcher decided, and ADR-0061 makes each entry the
@@ -1803,7 +1865,11 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-supervision",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
-        feature = "test-bundle-launch"
+        feature = "test-bundle-launch",
+        feature = "test-dma-region",
+        feature = "test-dma-wrong-kind",
+        feature = "test-dma-unqualified",
+        feature = "test-dma-no-spend"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];
     // The same chain, given to a process, so operation 16 can be asked for from
