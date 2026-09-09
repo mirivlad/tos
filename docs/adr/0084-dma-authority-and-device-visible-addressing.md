@@ -2,11 +2,13 @@
 
 # ADR-0084: Where DMA authority comes from, and what a device-visible address is allowed to be
 
-- Status: **Accepted (Project Architect-approved, 2026-09-08)**, at revision 4.
+- Status: **Accepted (Project Architect-approved, 2026-09-08)**, at revision 5
+  (Project Architect-approved, 2026-09-10).
   Written before the mechanism, which is the order ADR-0081 §0 recorded going
   wrong once and ADR-0082 restored: at the moment of approval nothing in it was
   implemented, and Stage 4C-2 is the implementation of what is decided here.
-- Project Architect approval: Vladimir Tomashevskiy, 2026-09-08, on revision 4.
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-08, on revision 4;
+  2026-09-10 on revision 5.
 - Revision history, kept because a decision that was corrected twice is more
   useful with the corrections visible than without them:
 
@@ -50,9 +52,12 @@ through it. So the *type* is decided, the *access* is decided, and the
 
 **The reference machine has no IOMMU, and that is measured rather than
 assumed.** The Stage 4 profile is `q35` with no `intel-iommu` and no `amd-iommu`
-device, and the function is `virtio-blk-pci` at `00:04.0` with
-`iommu_platform=off` — so the device does not negotiate
+device, and the function is `virtio-blk-pci` **behind an explicit PCIe root
+port** with `iommu_platform=off` — so the device does not negotiate
 `VIRTIO_F_ACCESS_PLATFORM` and the addresses it is given are guest-physical.
+Which bus the endpoint lands on is the firmware's to assign and the profile's to
+record; `host-tools/qemu-test/stage4-profile.sh` carries what the machine
+actually reports.
 Anything this ADR decides about device-visible addressing is therefore decided
 on a platform where a device address **is** a physical address, and must be
 written so that it stays true where it is not.
@@ -567,13 +572,61 @@ revised decision nobody can review.
 | **No Snoop** | listed among the ordering conditions | **Reclassified.** It is a **coherency** condition, not an ordering relaxation: the frames are mapped write-back (§4), and a non-snooping write may leave the CPU reading stale data — which makes "the write arrived" true and useless. Still held off, now for the stated reason, and the drain proof does not depend on it |
 | **the table** | "checked or declared" | Three kinds, because they are three different things: **checked** (P1), **enforced** (P2–P4), **required by profile** (P5) |
 
-**Audit for revision 3**, because the profile is only honest if the reference
-machine meets it: the Stage 4 function is a PCI Express endpoint —
-`x-disable-pcie = false` on `virtio-blk-pci` at `00:04.0` under `q35`, so QEMU
-initialises the PCI Express Capability on it and Device Status carries
-Transactions Pending. **P1 is satisfiable on the reference machine**, which is
-what makes §5c a restriction rather than a refusal of the platform this project
-runs on.
+**Audit for revision 3 — and it was wrong.** It read:
+
+> the Stage 4 function is a PCI Express endpoint — `x-disable-pcie = false` on
+> `virtio-blk-pci` at `00:04.0` under `q35`, so QEMU initialises the PCI Express
+> Capability on it and Device Status carries Transactions Pending. **P1 is
+> satisfiable on the reference machine.**
+
+That inference does not hold for the topology revision 3 described. Attached
+directly to `pcie.0`, q35's root-complex bus, the function has **no PCI Express
+Capability at all**. Revision 5 records the correction rather than quietly
+replacing the sentence, because the shape of the error is the useful part.
+
+**The chronology, in order:**
+
+1. **revision 3 required P1 correctly.** Nothing about the condition was wrong:
+   without the Express Capability there is no Transactions Pending bit and no
+   architected way to prove obligation (1);
+2. **revision 3's audit of the then-current QEMU topology was factually wrong.**
+   It reasoned from a device option to a capability's presence instead of
+   measuring the machine;
+3. **Stage 4C-2's real-nucleus boot exposed it.** The first module to ask for
+   DMA authority was refused `E_NO_CAPABILITY`, and the instrumented boot said
+   why: `express=0 dma=1` — the profile's qualification (P5) held and the
+   capability (P1) was absent. The nucleus's capability walk was not at fault
+   and the same line proved it, finding the function's MSI-X on the same boot;
+4. **P1 remains mandatory.** It is not the thing that gives way. A conventional
+   PCI function still receives no DMA authority, and operation 30 still fails
+   closed when P1 does not hold;
+5. **the reference machine changes instead.** Profile revision 2 puts the
+   endpoint behind an explicit q35 PCIe root port, where it is a real PCI
+   Express endpoint.
+
+**Current state**, replacing the sentence above:
+
+> The Stage 4 no-IOMMU reference profile places the modern `virtio-blk-pci`
+> endpoint **behind an explicit q35 PCIe root port**. The endpoint's PCI Express
+> Capability is measured at boot and at claim, and remains a required P1
+> condition: **topology is not trusted in place of the check.**
+
+Those are two layers and they stay two. Profile design makes success *possible*;
+the runtime check proves the *actual* function satisfies it. A profile that
+happened to provide PCIe would not entitle the nucleus to assume it, which is
+precisely the assumption revision 3 made one level up.
+
+**P5 is undisturbed** (§5c.1). Moving the endpoint behind a root port changes
+nothing about the factual basis of its qualification: TC0-only requester traffic
+is a property of the compatibility profile, no architected register reports it,
+and a root port neither reports it nor confers it. The qualification is the same
+statement about the same function, made by the same profile, and the nucleus
+still infers none of it.
+
+**P1 is satisfiable on the reference machine**, which is what makes §5c a
+restriction rather than a refusal of the platform this project runs on — and it
+is satisfiable because the profile was changed to make it so, measured rather
+than inferred.
 
 **This remains a generic PCI/PCIe mechanism.** Capability id `0x10`, two
 architected registers, one configuration read. No device-specific cooperation, no

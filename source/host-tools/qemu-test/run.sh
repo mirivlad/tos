@@ -306,8 +306,11 @@ fi
 #                  transitional 0x1001, which is the transport Stage 4 intends
 #                  to continue with rather than the one whose config is easier
 #                  to read
-#   pci location   fixed at 00:04.0, so the evidence names one function instead
-#                  of whichever slot enumeration happened to find
+#   pci location   fixed by `stage4-profile.sh`, so the evidence names one
+#                  function rather than whichever slot enumeration happened to
+#                  find. Since profile revision 2 the endpoint sits behind an
+#                  explicit PCIe root port: the port keeps the slot, and the
+#                  endpoint's own bus is what the firmware assigned
 #   backing        a raw image of a stated size with deterministic content
 #   queues         one, recorded because feature negotiation is part of the
 #                  surface QEMU exposes
@@ -327,8 +330,23 @@ if [ "$STAGE4_BLOCK" -eq 1 ]; then
             -device "virtio-blk-pci,drive=stage4blk,addr=0x4,disable-legacy=off,disable-modern=on"
         )
     else
+        # **Profile revision 2 (ADR-0084 revision 5, 2026-09-10): the endpoint
+        # sits behind an explicit PCIe root port.**
+        #
+        # Revision 1 attached it directly to `pcie.0`, q35's root-complex bus,
+        # where QEMU gives it no PCI Express Capability at all — the Stage 4C-2
+        # boot measured `express=0` on it while the same capability walk found
+        # its MSI-X. ADR-0084 §5c's P1 makes that capability the thing that lets
+        # a reclaim be *proved*, so on revision 1 no DMA authority could be
+        # granted at all, and P1 is not the thing that gives way.
+        #
+        # The root port keeps the slot the endpoint used to occupy, so the
+        # topology reads the way the old one did from the outside; the endpoint
+        # moves to the bus behind it. Which BDF that is, is measured rather than
+        # assumed — see the Stage 4 profile evidence.
         QEMU_ARGS+=(
-            -device "virtio-blk-pci,drive=stage4blk,addr=0x4,disable-legacy=on,disable-modern=off,num-queues=1,iommu_platform=off"
+            -device "pcie-root-port,id=stage4rp,bus=pcie.0,addr=0x4,chassis=1,slot=4"
+            -device "virtio-blk-pci,drive=stage4blk,bus=stage4rp,addr=0x0,disable-legacy=on,disable-modern=off,num-queues=1,iommu_platform=off"
         )
     fi
 fi

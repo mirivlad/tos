@@ -27,7 +27,7 @@ extern fn pci_bar_map_read(
 ) -> Result<MmioRegion, i64> uses [platform.pci.FunctionConfig];
 
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             match (pci_bar_map_read(function, 4u64, 0B, 4096B)) {
                 Ok(window) => {

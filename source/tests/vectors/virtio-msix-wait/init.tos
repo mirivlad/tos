@@ -167,7 +167,7 @@ const NO_VECTOR: u64 = 65535u64;
 // that did not hold otherwise. Nothing here is a queue, a descriptor or a
 // request: this is the smallest state in which a modern VirtIO device will
 // raise the interrupt it already has.
-fn arm(window: MmioRegionMut) -> i64 {
+fn arm(borrow mut window: MmioRegionMut) -> i64 {
     // Reset, so the state this module builds is the one it built and not
     // whatever the firmware left.
     mmio_write_u8(window, DEVICE_STATUS, 0u64);
@@ -220,7 +220,7 @@ fn arm(window: MmioRegionMut) -> i64 {
 // What the device's configuration generation says, packed for the harness. A
 // configuration change increments it, so this is the device's own evidence that
 // something really changed rather than the interrupt merely arriving.
-fn generation_of(window: MmioRegionMut) -> u64 {
+fn generation_of(borrow window: MmioRegionMut) -> u64 {
     return mmio_read_u8(window, CONFIG_GENERATION);
 }
 
@@ -231,7 +231,7 @@ fn generation_of(window: MmioRegionMut) -> u64 {
 //
 // A negative result names the step that did not hold.
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig, platform.irq.Source] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             let bar: u64 = common_bar(function);
             if (bar > 5u64) {
@@ -245,11 +245,11 @@ pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig, platform.irq.Source
                     mmio_write_u8(window, DEVICE_STATUS, 0u64);
                     match (pci_interrupt_claim(function, CONFIG_ENTRY)) {
                         Ok(source) => {
-                            let armed: i64 = arm(window);
+                            let armed: i64 = arm(borrow mut window);
                             if (armed != OK) {
                                 return armed;
                             }
-                            let before: u64 = generation_of(window);
+                            let before: u64 = generation_of(borrow window);
                             // **And here the context stops.** Nothing in this
                             // system can end this wait: no peer holds anything
                             // that would, and the scheduler's census says so on
@@ -259,7 +259,7 @@ pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig, platform.irq.Source
                                 return first - 500i64;
                             }
                             let mut found: i64 = 1i64;
-                            if (generation_of(window) != before) {
+                            if (generation_of(borrow window) != before) {
                                 found = found + 2i64;
                             }
                             // A second one, because a latch that answered once

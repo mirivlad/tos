@@ -9,17 +9,17 @@ is not complete**, and this record says exactly which rows are not and why,
 because "conformance complete" is a claim the repository has to be able to
 check.
 
-**Do not read this as ADR-0085 conformance complete.** Three §16 rows are
-recorded `BLOCKED` below and one is `PARTIAL`. They are not waived, not N/A, and
-not satisfied by the analogous tests other interfaces have.
+**ADR-0085 §16 conformance is complete.** Every row below is closed by direct
+evidence, and the four that were open until 2026-09-10 are closed against the
+**real nucleus** on the real reference machine — not by a stand-in, and not by
+the analogous tests other interfaces have.
 
-Every one of them is blocked on the same single thing, and **§6 records what
-that turned out to be**: the accepted Stage 4 reference machine's function has
-no PCI Express capability, so ADR-0084 §5c's P1 cannot hold and the nucleus
-refuses to grant DMA authority at all. Nothing is missing from the language, the
-schema, the verifier, the bridge or the boot — the machine cannot answer the
-question. That is a profile decision, and it is a STOP rather than something to
-route around.
+They were blocked on one thing, and **§6 records what it turned out to be**: the
+Stage 4 reference machine's function had no PCI Express Capability, so ADR-0084
+§5c's P1 could not hold and the nucleus refused DMA authority outright. Nothing
+was missing from the language, the schema, the verifier, the bridge or the boot.
+P1 did not give way — the machine did, as profile revision 2 under ADR-0084
+revision 5.
 
 ## 1. The obligations, and where each is
 
@@ -48,70 +48,72 @@ frontend (§7a).
 | 16.4 `import capability platform.dma.Region` refused in source | CLOSED | `E1503`, corpus R082 |
 | 16.5 wrong **effect** refuses independently | CLOSED | `the_right_representation_without_the_effect_is_refused` |
 | 16.5 wrong **representation** refuses independently | CLOSED | `the_interfaces_own_capability_type_is_refused_at_its_position`, `nothing_outside_a_representation_fills_a_capability_position` |
-| 16.5 wrong **runtime object kind at grant** | **BLOCKED — a real-nucleus boot** | §3 |
-| 16.5 wrong **right** on operation 30 (`dma`, `spend`) | **BLOCKED — a real-nucleus boot** | §3 |
+| 16.5 wrong **runtime object kind at grant** | CLOSED | `dma-region.sh`, `test-dma-wrong-kind`: a real granted object of the wrong kind under the name the module imports, refused before the first instruction |
+| 16.5 wrong **right**: the function's `dma` | CLOSED | `test-dma-unqualified`: `express=1 dma=0`, so P1 holds and P5 does not — the same endpoint, one right short, refused by the real nucleus |
+| 16.5 wrong **right**: the authority's `spend` | CLOSED | `test-dma-no-spend`: `express=1 dma=1`, a fully qualified function, and the refusal is the authority's own right and nothing else |
 | 16.6 one binding, one handle, one bridge mapping | CLOSED | `dma_region_path.rs` records the handle each call carried and compares the numbers rather than inferring sameness from both succeeding |
-| 16.6 one **nucleus capability-table entry** | **BLOCKED — a real-nucleus boot** | §3 |
+| 16.6 one **nucleus capability-table entry** | CLOSED | `capability_delta=1 aliases=0`, reported by the nucleus itself: one allocation, one entry, no auxiliary authority and no alias |
 | 16.7 a second use of the same binding is accepted | CLOSED | corpus A013; `one_region_binding_may_be_used_more_than_once` |
 | 16.8 stale **indexed-access** path | CLOSED | `a_successful_release_closes_both_paths`; `an_access_after_a_release_is_refused_before_an_address_exists` — refused before an address is formed, never by a fault |
-| 16.8 stale **operation** path | PARTIAL | closed at the bridge and against a stand-in; the `E_NO_CAPABILITY` itself is the nucleus's generation check and wants the boot of §3 |
+| 16.8 stale **operation** path | CLOSED | the live boot returns `-1` (`E_NO_CAPABILITY`) from `dma_device_address` through a released handle, decided by the real nucleus's generation check |
 | 16.9 a failed release preserves the mapping | CLOSED | `a_failed_release_leaves_both_paths_alive`, and the bridge retires only on `OK` |
 | 16.10 version gating; a 1.2 module does not acquire the rule | CLOSED | corpus R083; `a_one_two_artifact_does_not_receive_the_representation_rule` |
 | 16.11 an implementation without a minor rejects the module whole, by its header | CLOSED | `an_unadmitted_minor_is_refused_by_the_header_alone` |
 | 16.12 no representation outside the closed enumeration | CLOSED | the gate reads the enumeration from §4.3; `the_capability_representation_relation_is_closed_and_one_to_one` matches exhaustively |
 
-## 3. Why three rows are blocked, and what unblocks them
+## 3. How the four remaining rows were closed
 
-**The producer exists now.** `PLATFORM_INTERFACE_V1` version 4 declares
-operation 30, the frontend lowers it, the verifier accepts it and the bridge
-serves indexed access to what it returns — so the path ADR-0085 specifies runs
-end to end:
+**The whole path, with nothing replaced.** Since profile revision 2 the boot
+runs end to end against the real nucleus:
 
 ```text
 source -> frontend representation rule -> lowering -> IR
        -> independent verifier -> engine -> runtime bridge -> nucleus
 ```
 
-`dma_region_path.rs` exercises all of it **with only the last box replaced**. The
-stand-in mints a handle for a successful allocation and records the handles it is
-asked to act on; the bridge's mapping table in it is `tos_launch::DeviceMappings`
-— the real one the runtime image uses, not a model of it. That is what closes
-§16.6's handle identity and §16.8's indexed-access half.
+`host-tools/qemu-test/dma-region.sh` is five boots of the same source, differing
+only in what the launcher decided:
 
-**What a stand-in cannot close**, and why these three rows stay blocked: they are
-refusals the **nucleus** makes, and a double that made them would be evidence
-about the double.
+| Boot | What it establishes | Asserted by |
+|---|---|---|
+| `test-dma-region` | P1 `express=1` and P5 `dma=1`, **separately** | the nucleus |
+| | allocation, an indexed write and read, a device address, a release | the nucleus and the runtime workload |
+| | `capability_delta=1 aliases=0` | nucleus test instrumentation |
+| | `dma_device_address` through the released handle answers `E_NO_CAPABILITY` | the nucleus |
+| `test-dma-region` (stale fixture) | `region[0B]` after the same release is `RUNTIME_DEVICE_REFUSED` **before any memory access** | the runtime bridge |
+| `test-dma-wrong-kind` | a real object of the wrong kind, refused before the first instruction | the runtime image, against the accepted schema |
+| `test-dma-unqualified` | `express=1 dma=0`: operation 30 refused for the function's missing right | the nucleus |
+| `test-dma-no-spend` | `express=1 dma=1`: operation 30 refused for the authority's missing right | the nucleus |
 
-- **wrong runtime object kind at grant.** The nucleus refuses a handle naming
-  the wrong object with `E_NO_CAPABILITY`. Nothing above it decides that;
-- **wrong right on operation 30.** `dma` on the function and `spend` on the
-  authority are checked by `capability::resolve`, and each refuses
-  independently. The relevant rights are operation 30's: **`platform.dma.Region`
-  legitimately requires no right beyond possession**, and inventing one on the
-  region to make a row green would be inventing authority to test for it;
-- **§16.6's capability-table half.** That one allocation occupies *one* entry of
-  the caller's table is a fact about the nucleus's table, which no host above it
-  can see.
+**Each dimension refuses on its own.** The two right negatives are separate
+boots because they are two independent authority requirements; a test that
+removed both would prove only that removing something refuses. And each asserts
+the *other* conditions still hold, so a refusal cannot be mistaken for a wrong
+object kind, a wrong representation, a missing effect, a stale generation, an
+invalid length, or a failed qualification.
 
-**A test-only minting path is not an acceptable substitute**, and none is
-introduced. Existing object-kind and right refusals for other interfaces are
-inherited **mechanism** evidence, never closure evidence for this one.
+**P1 and P5 stay two facts.** They refuse identically, and a boot reporting only
+the refusal could not say which it was — which is exactly how revision 1's
+missing Express Capability hid behind an `E_NO_CAPABILITY` for as long as it
+did. The instrumentation reports them side by side.
 
-**The boot was built**, and it does not close them — §6 says why. All of this
-exists and is green:
+**§16.5's enforcement layer, stated precisely.** ADR-0085 §16.5 says *wrong
+runtime object kind **at grant***, and that is where it is enforced: the runtime
+image compares the kind the launch record reports against the kind the accepted
+schema declares for the interface, before the module's first instruction. The
+nucleus's own object-kind check is defence-in-depth for a handle that never came
+from a grant — a forged artifact rather than a boot — and is not the mechanism
+of this row. Nothing bypasses the grant check to drive a malformed grant deeper.
 
-1. four launcher constants endowing a process with the PCI bus root and a
-   memory authority, one positive and three negatives differing in one fact
-   each;
-2. `tests/vectors/dma-region` and `dma-region-stale`, running the accepted
-   operation-30 source path;
-3. `host-tools/qemu-test/dma-region.sh`, which asserts each dimension
-   independently;
-4. nucleus instrumentation reporting the capability-table delta, the alias
-   count, and which of P1/P5 holds — counts and verdicts, never a handle.
+**Nothing is minted, forged or mislabelled to make any of this happen.**
+`Endowment` has no way to misreport an object's kind and gains none; the
+wrong-kind boot grants authority over a real process under the name the module
+imports its bus under, and the record reports the kind that object actually is.
 
-What it reports instead is the STOP. These rows are replaced with direct
-evidence when the reference machine can answer.
+**No handle value is ever printed.** `docs/42` §2 admits an interface path into
+the record and keeps the concrete handle representation out of it, so the
+instrumentation reports a count and an identity verdict — which is what the
+claim is about.
 
 ## 4. Operation 30's V1 concrete surface (ADR-0085 §18, resolved)
 
@@ -180,95 +182,51 @@ returned, never a value, and never accepted as authority. The device-visible
 address is data operation 31 returns, and no operation of any accepted schema
 takes one back — nor a physical address, a mapping base or a frame number.
 
-## 6. STOP — the reference machine cannot grant DMA authority
+## 6. The STOP, and how it was resolved
 
-**Reported rather than worked around**, under the rule the Stage 4C-2 brief §2
-states: if the existing reference-machine qualification cannot actually grant
-DMA authority through the accepted mechanism, that is a STOP, and a profile
-requirement must not become a test-only assumption inside production logic.
+**Recorded rather than deleted**, because the shape of the error is the useful
+part and ADR-0084 revision 5 turns on it.
 
-### What was observed
-
-The real nucleus, the accepted Stage 4 reference machine, and the ordinary
-source path. One boot, one line, and the two halves of ADR-0084 §5c side by
-side:
+Stage 4C-2's first real-nucleus boot was refused DMA authority outright. The
+instrumented line said which of ADR-0084 §5c's conditions failed:
 
 ```text
-TOS.RUN.PCI_NORMALISED ... msix=disabled_masked msi=absent ...
-TOS.RUN.PCI_ASSIGNED   ... generation=1 express=0 dma=1 asserted_by=nucleus
-TOS.RUN.COMPLETED      value=i64:-101
+TOS.RUN.PCI_ASSIGNED ... generation=1 express=0 dma=1 asserted_by=nucleus
+TOS.RUN.COMPLETED    value=i64:-101
 ```
 
-- **`dma=1`** — P5 holds. The compatibility profile qualified the function for
-  TC0-only requester traffic, so the capability the claim produced carries the
-  `dma` right;
-- **`express=0`** — **P1 does not hold.** The function has no PCI Express
-  capability, so `dma_region_allocate` refuses with `E_NO_CAPABILITY`
-  (`Refused::OutOfScope`), and `-101` is that status as the module reports it;
-- the capability walk is **not** at fault, and the same line proves it: it found
-  MSI-X (`0x11`) on the same function on the same boot, which is the capability
-  `irq-routed` has been claiming interrupts through since Stage 4C-1b. The chain
-  is walked correctly and `0x10` is not in it.
+- **`dma=1`** — P5 held. The compatibility profile qualified the function;
+- **`express=0`** — **P1 did not.** No PCI Express Capability, so no Transactions
+  Pending bit, so no way to prove a reclaim, so `E_NO_CAPABILITY`;
+- the capability walk was not at fault, and the same boot proved it by finding
+  the function's MSI-X.
 
-### Why it is a decision and not a defect
+**P1 was not weakened, and nothing was special-cased.** Quiescence is not
+inferred from BME, no timeout substitutes for it, Transactions Pending is not
+fabricated, no Express Capability is assumed, `supports_dma` still answers from
+the function's own configuration space, and QEMU is nowhere named in the
+nucleus. Operation 30 still fails closed when P1 does not hold — which is
+exactly what the `test-dma-unqualified` boot now exercises deliberately.
 
-The reference machine attaches its device as
+**The reference machine changed instead** (ADR-0084 revision 5, Project
+Architect-approved 2026-09-10): the endpoint moved behind an explicit q35 PCIe
+root port, and profile revision 2 is recorded in
+`docs/evidence/STAGE4A_HARDWARE_BOUNDARY.md` §9a with every Stage 4 invariant
+re-measured on it rather than assumed to carry over.
 
-```text
--machine q35 -device virtio-blk-pci,drive=stage4blk,addr=0x4,
-             disable-legacy=on,disable-modern=off,num-queues=1
-```
+On revision 2 the same boot reports `express=1 dma=1`, and §3's five boots close
+the rows that were open.
 
-which places it on q35's root-complex bus. It is not a PCI Express endpoint
-there, and no register the nucleus may read makes it one.
+## 7. ADR-0085 §16 conformance complete
 
-**P1 is not a formality.** ADR-0084 §5c makes the Express capability the thing
-that lets a *reclaim* be proved — Device Status' Transactions Pending bit is how
-the nucleus establishes that a function has no non-posted request outstanding
-before its memory returns to the pool. A function without it is a function whose
-DMA memory could never be proved safe to reclaim, which is exactly why operation
-30 refuses it. Granting DMA anyway would be granting authority the system cannot
-end.
+Every row of §2 is CLOSED, by direct evidence, at the layer the decision names.
+The four that needed the real nucleus have it; the ones the host could prove
+keep their host evidence; and no row is closed by a test-only construction path,
+a synthetic object, a bypassed check or an analogous test for another interface.
 
-So the fix is to the **machine**, not to the nucleus: the device must be behind
-a `pcie-root-port` to be an Express endpoint. That is a change to the accepted
-Stage 4 reference profile, and it is not one to make in passing —
+**ADR-0085 implementation and conformance work is complete.**
 
-- **every existing Stage 4 gate hard-codes the BDF `0:0:4.0`**: the profile's
-  `qualify_dma(0, 0, 4, 0)`, `pci-discovery`, `pci-placement`, `pci-bme-precision`,
-  `pci-bar-relocation`, `pci-msi-reserved`, `irq-routed`, `virtio-caps` and
-  `virtio-mmio`. Behind a root port the device moves to another bus, and every
-  one of those numbers moves with it;
-- the root port is itself a device with its own configuration space, its own
-  BAR placement and its own interrupt routing, all of which the Stage 4A/4B
-  placement and precision gates measure.
-
-### What was **not** done
-
-- P1–P5 are unweakened, and no qualification was bypassed, relaxed or made
-  conditional on a test feature;
-- no fake DMA device and no synthetic production path was introduced;
-- `supports_dma` still answers from the function's own configuration space;
-- nothing in the nucleus was taught to assume an Express capability it did not
-  find.
-
-### What is ready and waiting on the decision
-
-Everything except the machine:
-
-| Piece | State |
-|---|---|
-| `platform.dma.Region` schema, lowering, verifier, bridge | landed and green |
-| the four launcher constants, one positive and three negatives | landed, each buildable, each excluded from every other constant |
-| `tests/vectors/dma-region`, `dma-region-stale` | check clean and lower |
-| `host-tools/qemu-test/dma-region.sh` | written, and refuses with the STOP named |
-| nucleus instrumentation for §16.6 and for P1/P5 | landed, test-feature-gated, reporting counts and never a handle |
-
-The script is deliberately **not** registered in the preflight inventory or CI:
-a gate that cannot pass is not a gate. It runs on request, and the first thing
-it reports is this STOP.
-
-**The four §16 rows therefore stay open**, and ADR-0085 §16 conformance stays
-incomplete. They are blocked on one decision — whether the Stage 4 reference
-machine gains a PCI Express root port, and what that costs the gates that
-measure the device where it is today.
+What this slice does *not* claim is first-virtqueue readiness. It converts the
+plumbing into a real-system fact — two authorities, one region, one nucleus
+entry, one bridge mapping, indexed CPU access, a bounded device-visible address,
+a release that closes both stale paths — and stops there.

@@ -38,7 +38,7 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 474
+- files in the release package: 475
 - active system invariants: 21
 - architecture decision records: 85 (40 accepted)
 
@@ -127,7 +127,7 @@ Architecture decision records
 - docs/adr/0081-region-access-and-device-memory.md — ADR-0081: Region access and device-memory observation [**Accepted (Project Architect-approved)**]
 - docs/adr/0082-routed-interrupt-authority.md — ADR-0082: Where routed interrupt authority comes from, and how a textual driver waits for its device [**Accepted (Project Architect-approved, 2026-09-05)**]
 - docs/adr/0083-repairing-the-stage1-validation-performance-metric.md — ADR-0083: Repairing the Stage 1 validation-performance metric after TCG layout falsified the cross-artifact ratio [**Accepted (Project Architect-approved, 2026-09-06).** The measurement]
-- docs/adr/0084-dma-authority-and-device-visible-addressing.md — ADR-0084: Where DMA authority comes from, and what a device-visible address is allowed to be [**Accepted (Project Architect-approved, 2026-09-08)**, at revision 4.]
+- docs/adr/0084-dma-authority-and-device-visible-addressing.md — ADR-0084: Where DMA authority comes from, and what a device-visible address is allowed to be [**Accepted (Project Architect-approved, 2026-09-08)**, at revision 5]
 - docs/adr/0085-an-interface-that-is-not-its-own-value-type.md — ADR-0085: Capability representation, separated from interface identity [**Accepted (Project Architect-approved, 2026-09-08)**, at revision 4.]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a

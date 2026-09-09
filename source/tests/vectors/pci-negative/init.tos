@@ -136,11 +136,11 @@ fn released(function: platform.pci.FunctionConfig) -> i64
 // **Authority for one function does not reach another.** There is no parameter
 // through which to name a different function, so the only way to reach a second
 // one is to claim it — and what each capability reads is decided by the object
-// it names. The machine puts a device behind one of these addresses and nothing
-// behind the other, so two capabilities of the same kind, used identically,
-// return different things.
+// it names. The machine puts the reference block device at `01:00.0` and
+// nothing at all at `00:05.0`, so two capabilities of the same kind, used
+// identically, return different things.
 fn two_functions() -> i64 uses [bus, platform.pci.FunctionConfig] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(present) => {
             match (pci_function_claim(bus, 0u64, 5u64, 0u64)) {
                 Ok(absent) => {
@@ -184,7 +184,7 @@ pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
     found = found + two_functions();
     // Claiming an already-assigned function is refused while the first claim
     // lives, whether or not the table has room.
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(again) => { }
         Err(status) => {
             if (status == -6i64) {

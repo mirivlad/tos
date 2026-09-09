@@ -103,7 +103,7 @@ fn accepts_write(function: platform.pci.FunctionConfig, offset: u64) -> u64
 //1024  a window on BAR4 still derives the original measured extent
 //2048  an ordinary unrelated writable field is still writable
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             let mut found: i64 = 0i64;
             // Recorded so the finding is scoped honestly: the offsets below are

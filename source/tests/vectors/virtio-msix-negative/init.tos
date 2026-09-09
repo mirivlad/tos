@@ -152,7 +152,7 @@ fn is(status: i64, expected: i64, bit: i64) -> i64 {
 //  16  and the capability is still *readable* — a fact is not authority
 //  32  and an ordinary command-register write that changes nothing still works
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             let cap_at: u64 = msix_capability(function);
             if (cap_at > LAST_CAPABILITY) {

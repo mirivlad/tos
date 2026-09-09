@@ -96,7 +96,7 @@ const FIRST_CAPABILITY: u64 = 64u64;
 const LAST_CAPABILITY: u64 = 240u64;
 
 pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
-    match (pci_function_claim(bus, 0u64, 4u64, 0u64)) {
+    match (pci_function_claim(bus, 1u64, 0u64, 0u64)) {
         Ok(function) => {
             return walk(function);
         }

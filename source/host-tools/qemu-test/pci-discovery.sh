@@ -33,6 +33,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# The reference profile decides which function these assertions are about
+# (ADR-0084 revision 5). Sourced rather than retyped: revision 2 moved the
+# endpoint behind a PCIe root port, and every number below follows it.
+# shellcheck source=/dev/null
+. "$HERE/stage4-profile.sh"
+STAGE4_TARGET="$(stage4_target_fields)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 GITROOT="$(cd "$ROOT/.." && pwd)"
 OUT="${1:-$ROOT/target/qemu-pci-discovery}"
@@ -102,8 +108,8 @@ count() { grep -c "$1" "$LOG" || true; }
     fail "the module requested authority beyond the bus root"
 
 # --- the nucleus named which function it assigned ------------------------------
-[ "$(count '^TOS\.RUN\.PCI_ASSIGNED process=0 segment=0 bus=0 device=4 function=0 generation=1 asserted_by=nucleus$')" = 1 ] ||
-    fail "the function at 00:04.0 was not assigned to the textual process exactly once"
+[ "$(count "^TOS\.RUN\.PCI_ASSIGNED process=0 $STAGE4_TARGET generation=1 asserted_by=nucleus\$")" = 1 ] ||
+    fail "the target function was not assigned to the textual process exactly once"
 
 # --- and what the device said about itself -------------------------------------
 # The guest packed five fields it read; this decodes them. The host supplies
@@ -201,7 +207,7 @@ echo "PCI-DISCOVERY PASS: canonical text read a real PCI device under a capabili
 echo "  the launcher minted one root bus authority, scope named in the record"
 echo "  the module asked for the bus alone; it reached platform.pci.FunctionConfig"
 echo "  through an effect declaration and the value the claim returned (ADR-0080)"
-echo "  it read 00:04.0 and reported vendor=0x$(printf %04X "$vendor") device=0x$(printf %04X "$device")"
+echo "  it read $(stage4_target_fields) and reported vendor=0x$(printf %04X "$vendor") device=0x$(printf %04X "$device")"
 echo "  class=0x$(printf %02X "$class") subclass=0x$(printf %02X "$subclass") capabilities=0x$(printf %02X "$capabilities")"
 echo "  without the device the same module reports vendor=0xFFFF, so the values are the hardware's"
 echo "  eight authority negatives hold, executed rather than asserted"

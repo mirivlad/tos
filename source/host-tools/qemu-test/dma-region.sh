@@ -29,6 +29,12 @@
 set -euo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
+# The reference profile decides which function these assertions are about
+# (ADR-0084 revision 5). Sourced rather than retyped: revision 2 moved the
+# endpoint behind a PCIe root port, and every number below follows it.
+# shellcheck source=/dev/null
+. "$HERE/stage4-profile.sh"
+STAGE4_TARGET="$(stage4_target_fields)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 GITROOT="$(cd "$ROOT/.." && pwd)"
 OUT="${1:-$ROOT/target/qemu-dma-region}"
@@ -39,6 +45,13 @@ TOOL="$ROOT/target/release/tos-capsule-tool"
 PRODUCTION="$ROOT/target/x86_64-unknown-none/release/tos-nucleus"
 
 fail() { echo "dma-region: FAIL: $*" >&2; exit 1; }
+
+# **Every evidence build is its own target directory, and none of them outlive
+# this run.** A release nucleus target tree is hundreds of megabytes and this
+# gate makes four; leaving them behind is how a machine runs out of disk.
+BUILT=""
+cleanup() { [ -z "$BUILT" ] || rm -rf $BUILT; }
+trap cleanup EXIT
 
 [ -x "$TOOL" ] || (cd "$ROOT" && cargo build --release -p tos-capsule-tool)
 [ -f "$PRODUCTION" ] || { echo "missing production nucleus: $PRODUCTION" >&2; exit 2; }
@@ -51,6 +64,7 @@ before="$(sha256sum "$PRODUCTION" | awk '{print $1}')"
 nucleus_for() {
     local feature="$1"
     local target="$ROOT/target/$feature"
+    BUILT="$BUILT $target"
     (cd "$ROOT" && CARGO_TARGET_DIR="$target" cargo build --release \
         -p tos-nucleus --target x86_64-unknown-none --features "$feature" >/dev/null 2>&1) ||
         fail "the nucleus does not build with $feature"
@@ -117,6 +131,17 @@ grep -q "TOS.RUN.PCI_ASSIGNED .*express=1" "$OUT/live/events.log" || {
        test-only assumption inside the nucleus is what that record refuses."
 }
 
+# **P1 and P5 are two facts and stay two.** Both refuse operation 30 the same
+# way, so a boot that reported only the refusal could not say which one it was —
+# which is exactly the confusion that hid profile revision 1's missing Express
+# capability behind an `E_NO_CAPABILITY`.
+grep -q "TOS.RUN.PCI_ASSIGNED .*express=1 " "$OUT/live/events.log" ||
+    fail "P1 does not hold: the target endpoint reports no PCI Express capability"
+grep -q "TOS.RUN.PCI_ASSIGNED .*dma=1 " "$OUT/live/events.log" ||
+    fail "P5 does not hold: the profile did not qualify the target endpoint"
+echo "dma-region: P1 express=1 and P5 dma=1 on $(stage4_target_fields)" \
+     "— asserted separately by the nucleus"
+
 grep -q "TOS.RUN.DMA_REGION" "$OUT/live/events.log" ||
     fail "no region was made, though the two authorities were held"
 
@@ -155,8 +180,8 @@ bash "$HERE/run.sh" \
     --capsule "$OUT/stale.bin" \
     --nucleus "$(nucleus_for test-dma-region)" \
     --stage4-block-device \
-    --expect 34 \
-    --require "TOS.NUCLEUS.ENTRY TOS.RUN.DMA_REGION TOS.RUN.TRAP TOS.HALT" \
+    --expect 75 \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.DMA_REGION TOS.RUN.TRAP TOS.BOOTMODULE.FAIL" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.COMPLETED" \
     > /dev/null
 
@@ -178,8 +203,8 @@ bash "$HERE/run.sh" \
     --capsule "$OUT/live.bin" \
     --nucleus "$(nucleus_for test-dma-wrong-kind)" \
     --stage4-block-device \
-    --expect 35 \
-    --require "TOS.NUCLEUS.ENTRY TOS.RUN.REQUEST TOS.HALT" \
+    --expect 75 \
+    --require "TOS.NUCLEUS.ENTRY TOS.RUN.REQUEST TOS.RUN.REFUSED TOS.BOOTMODULE.FAIL" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.COMPLETED TOS.RUN.DMA_REGION" \
     > /dev/null
 echo "dma-region: a grant of the wrong object kind is refused before the first" \
@@ -201,6 +226,10 @@ bash "$HERE/run.sh" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.DMA_REGION TOS.RUN.PCI_DMA_QUALIFIED" \
     > /dev/null
 
+# **P1 still holds here and P5 does not**, which is what makes this the right
+# negative: the same endpoint, the same Express capability, one right short.
+grep -q "TOS.RUN.PCI_ASSIGNED .*express=1 dma=0 " "$OUT/unqualified/events.log" ||
+    fail "the unqualified boot does not differ from the positive in P5 alone"
 value="$(completed unqualified)"
 [ "$value" = "$((E_NO_CAPABILITY - 100))" ] ||
     fail "a function without dma reported $value, not the allocation refusal"
@@ -220,6 +249,11 @@ bash "$HERE/run.sh" \
     --forbid "TOS.EXCEPTION TOS.PANIC TOS.RUN.DMA_REGION" \
     > /dev/null
 
+# The function is fully qualified here — both P1 and P5 hold — so the only
+# thing missing is the authority's own right, and the refusal is that and
+# nothing else.
+grep -q "TOS.RUN.PCI_ASSIGNED .*express=1 dma=1 " "$OUT/no-spend/events.log" ||
+    fail "the no-spend boot does not have a fully qualified function"
 value="$(completed no-spend)"
 [ "$value" = "$((E_NO_CAPABILITY - 100))" ] ||
     fail "an authority without spend reported $value, not the allocation refusal"
