@@ -388,6 +388,19 @@ struct Runtime {
 impl tos_engine::System for Runtime {
     /// No device is reachable on this run, and saying so is the only honest
     /// answer: a device access here has reached hardware that does not exist.
+    /// This host grants no region, so an indexed access to one is a run
+    /// reaching something that does not exist rather than a bound it failed.
+    fn access(
+        &mut self,
+        _access: tos_engine::Access,
+    ) -> Result<tos_engine::Value, tos_engine::Trap> {
+        Err(tos_engine::Trap::new(
+            "RUNTIME_DEVICE_UNREACHABLE",
+            String::from("a region access was made on a run with no region to reach"),
+            0,
+        ))
+    }
+
     fn observe(
         &mut self,
         _access: tos_engine::Observe,

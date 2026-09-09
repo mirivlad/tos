@@ -19,3 +19,4 @@ tos-engine = { path = "../../crates/tos-engine" }
 tos-cache = { path = "../../crates/tos-cache" }
 tos-pipeline = { path = "../../crates/tos-pipeline" }
 tos-residency = { path = "../../crates/tos-residency" }
+tos-launch = { path = "../../crates/tos-launch" }
