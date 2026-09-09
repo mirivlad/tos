@@ -681,6 +681,29 @@ pub const ACCEPTED: &[Interface] = &[
                 parameters: &[Parameter::fixed("u64")],
                 result: "Result<platform.irq.Source, i64>",
             },
+            // **The third class of authority that descends from an assignment**
+            // (ADR-0084 §4), and the only operation of any accepted schema that
+            // requires two capabilities of two *different* subsystems. Neither
+            // is sufficient: a process holding only memory authority cannot make
+            // any memory reachable by any device, and one holding only a
+            // function cannot spend somebody else's memory to do it.
+            //
+            // **The result is `DmaRegion<mut u8>` and the byte is the
+            // decision** (ADR-0085 §18, Project Architect-approved 2026-09-09).
+            // Operation 30 allocates a run measured in bytes, and `u8` is the
+            // only concrete element type for which every ABI-valid length has an
+            // exact representation. It is the V1 instantiation of ADR-0084's
+            // abstract `DmaRegion<mut T>`, not a generic allocation: no
+            // operation here produces a region of a caller-chosen element type.
+            Operation {
+                name: "dma_region_allocate",
+                capabilities: &[
+                    Requirement::of("platform.pci.FunctionConfig", "dma"),
+                    Requirement::of("system.memory.Authority", "spend"),
+                ],
+                parameters: &[Parameter::fixed("size")],
+                result: "Result<DmaRegion<mut u8>, i64>",
+            },
             Operation {
                 name: "endow_for_launch",
                 capabilities: &[Requirement::held("platform.pci.FunctionConfig")],

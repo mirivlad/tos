@@ -95,6 +95,13 @@ const PCI_CONFIG_WRITE: u64 = 26;
 const PCI_BAR_MAP: u64 = 27;
 const PCI_INTERRUPT_CLAIM: u64 = 28;
 const IRQ_WAIT: u64 = 29;
+/// Makes a DMA region: a contiguous run of `rdx` bytes, charged to the memory
+/// authority in `rsi` and made reachable by the assigned function in `rdi`
+/// (ADR-0084 §4). **Neither capability is sufficient alone.** The window is
+/// written to the argument region exactly as operation 27 writes one, which is
+/// what lets the bridge below serve indexed access to it.
+const DMA_REGION_ALLOCATE: u64 = 30;
+
 /// The device-visible address of a bounded offset inside a DMA region
 /// (ADR-0084 §6b). The caller presents a capability and an offset, never an
 /// address; the nucleus does the arithmetic against the region's own extent.
@@ -1581,6 +1588,26 @@ const PERFORMED: &[Performed] = &[
     // that the operand's type was `DmaRegion` rather than `Capability` — which
     // is ADR-0085 §9's one-handle claim, visible here as the absence of a
     // special case.
+    // Operation 30, declared on the **assignment** because that is what a DMA
+    // region descends from (`PLATFORM_INTERFACE_V1` §4). Two capabilities of two
+    // different subsystems, in the order the schema declares them.
+    //
+    // `Produced::Mapping` is exactly right and is not a special case made for
+    // this: the nucleus writes the window to `MMIO_MAP_RECORD` on success and
+    // returns a capability handle, so the same row shape that serves a BAR
+    // mapping serves this — remember the window under the returned handle, then
+    // answer with the handle. **One allocation, one nucleus object, one
+    // capability-table entry, one source value, one `DeviceMappings` entry keyed
+    // by that same handle** (ADR-0085 §9), and no second handle anywhere,
+    // because there is nowhere here for one to come from.
+    Performed {
+        interface: "platform.pci.FunctionConfig",
+        name: "dma_region_allocate",
+        operation: DMA_REGION_ALLOCATE,
+        capabilities: &[Reg::Rdi, Reg::Rsi],
+        values: &[Slot::Number(Reg::Rdx)],
+        result: Produced::Mapping { writable: true },
+    },
     Performed {
         interface: "platform.dma.Region",
         name: "dma_device_address",

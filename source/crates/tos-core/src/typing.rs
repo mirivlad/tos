@@ -682,8 +682,30 @@ impl<'source> TypeChecker<'source> {
         if let Some(nested) = statement.else_if() {
             self.check_statement(nested, result);
         }
+        // What the arms below are matching on. A statement with no branches has
+        // no subject to compute, and asking for one would type an `if` head as
+        // though it were a scrutinee.
+        let subject = match statement.branches().is_empty() {
+            true => Type::Unknown,
+            false => statement
+                .expression()
+                .map(|head| self.type_of(head))
+                .unwrap_or(Type::Unknown),
+        };
         for branch in statement.branches() {
             self.push_scope();
+            // **An arm's pattern binds, and it had not.** A scope was pushed and
+            // the body checked inside it, but nothing was ever declared in it —
+            // so `match (made) { Ok(region) => ... }` gave `region` no type at
+            // all, and every slice that asks what a binding is got `Unknown`.
+            //
+            // Invisible while a payload was only ever a scalar or a record: the
+            // slices that care read a *type*, and nothing they decide about an
+            // `i64` differs from what they decide about nothing. It stops being
+            // invisible when the payload is a mutably granted region, because
+            // writing through one is permitted by its type (ADR-0037 §1) and by
+            // nothing else.
+            self.bind_pattern(branch.pattern(), &subject);
             self.check_block(branch.body(), result);
             self.pop_scope();
         }
@@ -824,11 +846,48 @@ impl<'source> TypeChecker<'source> {
                 }
             }
             PatternForm::Destructure => {
-                for element in pattern.elements() {
-                    self.bind_pattern(element, &Type::Unknown);
+                // **A destructured payload is typed, and it had not been.**
+                // Every element was bound `Unknown`, so `match (made) { Ok(r) =>
+                // ... }` gave `r` no type at all — and a slice that asks what a
+                // binding is got no answer. That was invisible while the only
+                // way to hold a region was a parameter, whose type is written;
+                // once an operation *returns* one, the region a driver actually
+                // uses is a payload, and "no type" is the wrong answer to a
+                // question the mutability rule has to ask.
+                let payload = self.payload_types(pattern, bound);
+                for (position, element) in pattern.elements().iter().enumerate() {
+                    let ty = payload.get(position).cloned().unwrap_or(Type::Unknown);
+                    self.bind_pattern(element, &ty);
                 }
             }
             _ => {}
+        }
+    }
+
+    /// The types a constructor pattern's elements bind to.
+    ///
+    /// Two sources, because there are two kinds of constructor. A variant this
+    /// module declared carries its payload in the declaration table. A built-in
+    /// one — `Ok`, `Err`, `Some`, `Completed` — carries no declaration at all:
+    /// its payload is an argument of the *bound* type, so it is read from there
+    /// and from nowhere else. Anything unresolved answers with nothing, and the
+    /// caller binds `Unknown`, exactly as it did for everything before.
+    fn payload_types(&self, pattern: &'source Pattern, bound: &Type) -> Vec<Type> {
+        let Some(name) = pattern.path().last().map(|last| last.text(self.source)) else {
+            return Vec::new();
+        };
+        if let Some((_, payload)) = self.declarations.variants.get(name) {
+            return payload.clone();
+        }
+        let Type::Constructed(constructor, arguments) = bound else {
+            return Vec::new();
+        };
+        match (constructor.as_str(), name) {
+            ("Result", "Ok") | ("Option", "Some") | ("TaskResult", "Completed") => {
+                arguments.first().cloned().into_iter().collect()
+            }
+            ("Result", "Err") => arguments.get(1).cloned().into_iter().collect(),
+            _ => Vec::new(),
         }
     }
 

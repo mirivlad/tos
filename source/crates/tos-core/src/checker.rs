@@ -117,7 +117,9 @@ impl Checker {
         diagnostics.extend(crate::ownership::check_ownership_with(
             source, schema, &bindings,
         ));
-        diagnostics.extend(crate::mutability::check_mutability(source, schema));
+        diagnostics.extend(crate::mutability::check_mutability_with(
+            source, schema, &bindings,
+        ));
         diagnostics.extend(crate::concurrency::check_concurrency(source, schema));
         diagnostics.extend(crate::guards::check_guards_with(source, schema, &bindings));
         diagnostics.extend(crate::capability::check_capabilities(source, schema));

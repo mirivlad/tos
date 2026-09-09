@@ -222,6 +222,7 @@ fn no_accepted_interface_admits_a_region() {
     // message with too many regions, and it is checked here rather than asserted
     // in prose — a schema that quietly grew a region parameter would make §9.6
     // reachable and unevidenced in the same commit.
+    let mut originating: Vec<(&str, &str)> = Vec::new();
     for interface in tos_core::interfaces::ACCEPTED {
         assert_ne!(
             interface.object,
@@ -241,20 +242,33 @@ fn no_accepted_interface_admits_a_region() {
             }
             // §5 no longer fixes every result at `i64` — an operation returns
             // the semantic value it produced, and `Result<T, i64>` is the
-            // refusal model. What is still fixed is that a region is not one of
-            // those values, for the same reason it is not a parameter: the
-            // seven facts `docs/42` §2 requires a region grant's interface to
-            // declare are declared nowhere in this schema.
-            assert!(
-                !names_a_memory_region(operation.result),
-                "{}::{} returns {}, so a region originates through an interface that \
-                 declares no rules for one",
-                interface.path,
-                operation.name,
-                operation.result
-            );
+            // refusal model.
+            //
+            // **A region may now be one of those values, through exactly one
+            // operation.** `docs/42` §2 admits a region grant through a
+            // capability operation whose accepted interface declares element
+            // type, alignment, access, size, DMA domain, lifetime and
+            // transfer/share rules — and until `PLATFORM_INTERFACE_V1` version 4
+            // that requirement was met by there being nothing to meet it for.
+            // Version 4 declares all seven for `dma_region_allocate`, which
+            // `check-interface-schema.sh` holds it to fact by fact.
+            //
+            // So what is asserted here is what the Rust table can see: the
+            // exception is **one named operation**, and every other result is
+            // still region-free. A second one appearing here is a schema change
+            // that has to argue for itself.
+            if names_a_memory_region(operation.result) {
+                originating.push((interface.path, operation.name));
+                continue;
+            }
         }
     }
+    assert_eq!(
+        originating,
+        vec![("platform.pci.FunctionConfig", "dma_region_allocate")],
+        "the operations that originate a region are not the ones the accepted \
+         schema declares grant facts for"
+    );
 }
 
 /// A module reaching the two-capability operation, with a body the caller picks.

@@ -325,10 +325,9 @@ requirements_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
     -e 's/^ *Requirement::of("\([a-zA-Z.]*\)", "\([a-z_]*\)"),$/REQ \1 \2/p' \
     -e 's/^ *capabilities: &\[Requirement::held("\([a-zA-Z.]*\)")\],$/REQ \1 none/p' \
     -e 's/^ *Requirement::held("\([a-zA-Z.]*\)"),$/REQ \1 none/p' |
-    awk '$1 == "OP" { if (name != "") print line; name = $2; line = $2; next }
-         $1 == "REQ" { line = line " " $2 " " $3 }
-         END { if (name != "") print line }' |
-    sed 's/\(system[a-zA-Z.]* [a-z]*\) \(system\)/\1 + \2/' | sort)
+    awk '$1 == "OP" { if (name != "") print line; name = $2; line = $2; held = 0; next }
+         $1 == "REQ" { line = line (held++ ? " + " : " ") $2 " " $3 }
+         END { if (name != "") print line }' | sort)
 
 [ -n "$requirements_in_doc" ] || fail "section 4 declares no capability requirements"
 [ "$requirements_in_doc" = "$requirements_in_table" ] || {
@@ -338,6 +337,29 @@ requirements_in_table=$(printf '%s\n' "$operations_in_table" | sed -n \
     echo "$requirements_in_table" >&2
     fail "the accepted schema and the frontend's table disagree about capability requirements"
 }
+
+# --- `docs/42` §2's region-grant facts, where a region originates ------------
+#
+# That document admits a `Region<T>`/`DmaRegion<T>` grant **only** through a
+# capability operation whose accepted interface declares seven things. Until an
+# operation originated one the requirement was met by there being nothing to
+# meet it for; one does now, so the seven are checked rather than trusted to
+# prose — and the check is over *every* region-returning operation, so a second
+# one cannot be added without them.
+region_results=$( { sed -n '/^### /,/^## 4.1/p' "$DOC"; sed -n '/^### /,/^## 4.1/p' "$PLATFORM"; } |
+    sed -n 's/^| `\([a-z_]*\)` |.*| `\([^`]*\)` | [0-9]* |$/\1 \2/p' |
+    awk '$2 ~ /(^|[^A-Za-z.])(Region|DmaRegion)</ { print $1 }' | sort -u)
+if [ -n "$region_results" ]; then
+    facts=$( { sed -n '/^| Fact |/,/^$/p' "$DOC"; sed -n '/^| Fact |/,/^$/p' "$PLATFORM"; } |
+        sed -n 's/^| \([a-zA-Z/ ]*\) | .* |$/\1/p' | sed 's/ *$//' | sort -u)
+    for required in "element type" "alignment" "access" "size" "DMA domain" \
+        "lifetime" "transfer/share rules"; do
+        printf '%s\n' "$facts" | grep -qx "$required" ||
+            fail "an operation originates a region and no accepted schema declares its $required"
+    done
+    echo "check-interface-schema: $(printf '%s\n' "$region_results" | grep -c .)" \
+         "region-originating operation(s), all seven docs/42 §2 grant facts declared"
+fi
 
 count=$(printf '%s\n' "$declared" | grep -c .)
 paired=$(printf '%s\n' "$kinds_in_doc" | grep -c .)
