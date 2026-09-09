@@ -169,3 +169,124 @@ fn indexing_does_not_weaken_the_ownership_model() {
         "a mutable region became shareable once it was indexable"
     );
 }
+
+/// An indexed access carries the **element's** type, not the region's.
+///
+/// It did not. `r[0B]` on a `Region<i32>` lowered to an `Op::Read` whose
+/// declared type was `Region<i32>` — the container it read out of — and nothing
+/// caught it: region access is unreachable at runtime until an operation
+/// produces a region, and the verifier did not project a place.
+///
+/// It is load-bearing once a region is reachable, because a host serving an
+/// indexed access takes the **element width** from that type. There is nothing
+/// else it could take it from: the extent is the host's and the index is a
+/// position rather than an offset.
+#[test]
+fn an_indexed_access_is_typed_as_the_element() {
+    use tos_ir::{Op, PlaceStep, TypeDef};
+    let module = lower(&module(
+        "pub fn get(r: Region<i32>, d: DmaRegion<mut u8>, at: size) -> i32 {\n\
+         \x20   d[0B] = 3u8;\n\
+         \x20   let dynamic: u8 = d[at];\n\
+         \x20   return r[0B];\n\
+         }",
+    ));
+    let function = &module.functions[0];
+    let mut indexed = 0usize;
+    for instruction in function.blocks.iter().flat_map(|block| &block.instructions) {
+        let (place, claimed) = match &instruction.op {
+            Op::Read { place } => (place, instruction.ty),
+            Op::Write { place, value } => {
+                let ty = match value {
+                    tos_ir::Operand::Value(id) => function.values[*id],
+                    tos_ir::Operand::Constant(id) => match &module.constants[*id] {
+                        tos_ir::Constant::Int(kind, _) => module
+                            .types
+                            .iter()
+                            .position(|ty| *ty == TypeDef::Int(*kind))
+                            .expect("the constant's type is in the table"),
+                        other => panic!("unexpected constant {other:?}"),
+                    },
+                };
+                (place, ty)
+            }
+            _ => continue,
+        };
+        if !place
+            .path
+            .iter()
+            .any(|step| matches!(step, PlaceStep::Index(_) | PlaceStep::DynamicIndex(_)))
+        {
+            continue;
+        }
+        indexed += 1;
+        let root = module.type_of(function.values[place.root]);
+        let element = match root {
+            Some(TypeDef::Region(inner))
+            | Some(TypeDef::RegionMut(inner))
+            | Some(TypeDef::DmaRegion(inner))
+            | Some(TypeDef::DmaRegionMut(inner)) => *inner,
+            other => panic!("an indexed root is not a region: {other:?}"),
+        };
+        assert_eq!(
+            claimed,
+            element,
+            "an indexed access claims {:?} where the element is {:?}",
+            module.type_of(claimed),
+            module.type_of(element)
+        );
+    }
+    // A literal position, a computed one, and a write: three, so the assertion
+    // above is about something rather than vacuously true of an empty loop.
+    assert_eq!(indexed, 3);
+    verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect("correctly typed region access verifies");
+}
+
+/// And an artifact that claims a wider element than the region has is refused.
+///
+/// This is the forgery the check exists for: a `u64` read through a
+/// `DmaRegion<u8>` would ask a host to move eight bytes for a one-byte element,
+/// and every bound it then checked would be checking the wrong number. No
+/// frontend emits it, which is why the verifier refuses it rather than trusting
+/// the declared type.
+#[test]
+fn an_indexed_access_claiming_the_wrong_element_width_is_refused() {
+    use tos_ir::{Op, PlaceStep, TypeDef};
+    let mut module = lower(&module(
+        "pub fn get(d: DmaRegion<mut u8>) -> u8 {\n    return d[0B];\n}",
+    ));
+    let wider = module
+        .types
+        .iter()
+        .position(|ty| *ty == TypeDef::Int(tos_ir::IntKind::U64))
+        .unwrap_or_else(|| {
+            module.types.push(TypeDef::Int(tos_ir::IntKind::U64));
+            module.types.len() - 1
+        });
+    let function = &mut module.functions[0];
+    for instruction in function
+        .blocks
+        .iter_mut()
+        .flat_map(|block| &mut block.instructions)
+    {
+        let Op::Read { place } = &instruction.op else {
+            continue;
+        };
+        if !place
+            .path
+            .iter()
+            .any(|step| matches!(step, PlaceStep::Index(_) | PlaceStep::DynamicIndex(_)))
+        {
+            continue;
+        }
+        instruction.ty = wider;
+        if let Some(result) = instruction.result {
+            function.values[result] = wider;
+        }
+    }
+    let finding = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
+        .expect_err("a read claiming the wrong element width is refused");
+    assert_eq!(finding.code, "V2010_TYPE");
+    assert!(finding.detail.contains("element type"), "{finding:?}");
+}
