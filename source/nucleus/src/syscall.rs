@@ -1285,6 +1285,7 @@ fn report_assignment(caller: usize, index: u32, generation: u32) {
     tos_serial::put_u32_decimal(u32::from(function));
     tos_serial::puts(b" generation=");
     tos_serial::put_u32_decimal(generation);
+    report_dma_qualification(index, generation);
     tos_serial::puts(b" asserted_by=nucleus\r\n");
 }
 
@@ -1611,6 +1612,11 @@ fn dma_region_allocate(caller: usize, function: u64, authority: u64, bytes: u64)
             Err(crate::dma::Refused::Limit) => return Answer::status(E_LIMIT),
             Err(crate::dma::Refused::Paging) => return Answer::status(E_LIMIT),
         };
+    // How many names this process holds before operation 30 grants one, so the
+    // record below can report a **delta** rather than a total (§16.6). Read
+    // here rather than after the checks, because everything between is either
+    // a refusal or the grant itself.
+    let held_before = capability::held(caller);
     // The record is written **before** the name exists, because it is the last
     // thing that could fail and the checks above have already made it cannot.
     if !report_mapping(caller, base, length) {
@@ -1629,7 +1635,7 @@ fn dma_region_allocate(caller: usize, function: u64, authority: u64, bytes: u64)
         0,
     ) {
         Ok(granted) => {
-            report_dma_region(caller, region, region_generation, length);
+            report_dma_region(caller, region, region_generation, length, held_before);
             Answer::value(granted)
         }
         Err(_) => {
@@ -1648,7 +1654,7 @@ fn dma_region_allocate(caller: usize, function: u64, authority: u64, bytes: u64)
 /// physical base is: what a reader needs is which function and how much memory,
 /// and both of those are the authority. The address is what a driver writes into
 /// its own device.
-fn report_dma_region(caller: usize, index: u32, generation: u32, length: u64) {
+fn report_dma_region(caller: usize, index: u32, generation: u32, length: u64, held_before: usize) {
     let Some((segment, bus, device, function)) = crate::dma::describe(index, generation) else {
         return;
     };
@@ -1664,8 +1670,100 @@ fn report_dma_region(caller: usize, index: u32, generation: u32, length: u64) {
     tos_serial::put_u32_decimal(u32::from(function));
     tos_serial::puts(b" bytes=");
     tos_serial::put_u32_decimal(length as u32);
-    tos_serial::puts(b" contiguous=1 asserted_by=nucleus\r\n");
+    tos_serial::puts(b" contiguous=1");
+    report_region_identity(caller, index, generation, held_before);
+    tos_serial::puts(b" asserted_by=nucleus\r\n");
 }
+
+/// Whether this assignment satisfies the two things operation 30 needs of it,
+/// reported where a reader can see which one is missing (ADR-0084 §5c).
+///
+/// ```text
+/// express   P1: the function has a PCI Express capability, which is what
+///               makes a *reclaim* provable
+/// dma       P5: the compatibility profile qualified this function for
+///               TC0-only requester traffic, so the capability carries `dma`
+/// ```
+///
+/// Both must hold and they fail the same way — `E_NO_CAPABILITY` — so a boot
+/// that reported only the refusal could not say which one it was. Test-only,
+/// and an observation of state the nucleus already holds: nothing here grants,
+/// widens or qualifies anything.
+#[cfg(any(
+    feature = "test-dma-region",
+    feature = "test-dma-wrong-kind",
+    feature = "test-dma-unqualified",
+    feature = "test-dma-no-spend"
+))]
+fn report_dma_qualification(index: u32, generation: u32) {
+    tos_serial::puts(b" express=");
+    tos_serial::puts(match crate::pci::supports_dma(index, generation) {
+        true => b"1" as &[u8],
+        false => b"0",
+    });
+    tos_serial::puts(b" dma=");
+    tos_serial::puts(match crate::pci::is_dma_qualified(index, generation) {
+        true => b"1" as &[u8],
+        false => b"0",
+    });
+}
+
+#[cfg(not(any(
+    feature = "test-dma-region",
+    feature = "test-dma-wrong-kind",
+    feature = "test-dma-unqualified",
+    feature = "test-dma-no-spend"
+)))]
+fn report_dma_qualification(_index: u32, _generation: u32) {}
+
+/// The two facts about the caller's capability table that only the nucleus can
+/// report (ADR-0085 §16.6).
+///
+/// A host above the nucleus can see one source binding, one engine handle and
+/// one bridge mapping, and it can see that both operations carried the same
+/// number. What it cannot see is whether *this* table gained one entry or two —
+/// whether operation 30 left an auxiliary authority, an alias, or a second
+/// handle for indexed access behind it.
+///
+/// ```text
+/// capability_delta   how many entries the caller's table gained
+/// aliases            how many further names it holds for this same region
+/// ```
+///
+/// **No handle value is printed**, here or anywhere. `docs/42` §2 admits an
+/// interface path into the record and keeps "the concrete secret/handle
+/// representation" out of it, and a count answers the question a handle would
+/// have been quoted for.
+///
+/// Test-only, and it is an *observation* rather than a mechanism: nothing here
+/// grants, mints, replaces or widens anything, and no operation reaches it. A
+/// process cannot ask for these numbers — they are put on the audit record by
+/// the nucleus, for a boot whose whole purpose is to be read.
+#[cfg(any(
+    feature = "test-dma-region",
+    feature = "test-dma-wrong-kind",
+    feature = "test-dma-unqualified",
+    feature = "test-dma-no-spend"
+))]
+fn report_region_identity(caller: usize, index: u32, generation: u32, held_before: usize) {
+    let held_now = capability::held(caller);
+    tos_serial::puts(b" capability_delta=");
+    tos_serial::put_u32_decimal(held_now.saturating_sub(held_before) as u32);
+    // Every name this process holds for this exact object. One is the region
+    // it was just given; anything beyond that is an alias operation 30 must
+    // not have made.
+    let names = capability::names_held(caller, Object::DmaRegion { index, generation });
+    tos_serial::puts(b" aliases=");
+    tos_serial::put_u32_decimal(names.saturating_sub(1) as u32);
+}
+
+#[cfg(not(any(
+    feature = "test-dma-region",
+    feature = "test-dma-wrong-kind",
+    feature = "test-dma-unqualified",
+    feature = "test-dma-no-spend"
+)))]
+fn report_region_identity(_caller: usize, _index: u32, _generation: u32, _held_before: usize) {}
 
 /// Operation 31: the device-visible address of a bounded offset.
 ///
