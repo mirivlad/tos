@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4C-2: a textual driver makes a DMA region and reaches it both ways.
+//
+// The whole of ADR-0084's authority model and ADR-0085's representation, in one
+// module and on one binding:
+//
+//   two authorities, neither sufficient  ->  one DmaRegion<mut u8>
+//   indexed CPU access                   ->  ordinary checked memory
+//   dma_device_address                   ->  the nucleus resolves an offset
+//   capability_release                   ->  both stale paths close
+//
+// **`platform.dma.Region` is never imported**, and could not be: no startup
+// import can produce a value of the region family (ADR-0085 §4a), and asking is
+// `E1503_NONIMPORTABLE_CAPABILITY` in source. It is named as an *effect*
+// instead, which says which class of authority this module may exercise and
+// grants none of it — the capability every operation acts on is the value
+// operation 30 returned.
+//
+// **Every status below comes from the nucleus.** This module contains no
+// expectation about which of them it will see; it reports what it was told, and
+// the harness — which cannot reach into the guest — decides whether that is the
+// contract. That is what makes the same source serve the positive boot and the
+// three negatives: only the launcher constant differs.
+
+module system.boot.init version 1.3 profile full;
+
+import capability platform.pci.Bus as device;
+import capability system.memory.Authority as budget;
+
+resource [
+    fuel: 65536,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+// The function is **claimed by the module, not granted to it**: which device is
+// worth claiming is policy, and a launcher that picked one would be the nucleus
+// choosing a device (ADR-0079 §5). What the launcher gives is the bus root.
+extern fn pci_function_claim(
+    cap: platform.pci.Bus,
+    bus_number: u64,
+    device_number: u64,
+    function_number: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [device];
+
+extern fn dma_region_allocate(
+    function: platform.pci.FunctionConfig,
+    authority: system.memory.Authority,
+    bytes: size
+) -> Result<DmaRegion<mut u8>, i64> uses [platform.pci.FunctionConfig, budget];
+
+extern fn dma_device_address(
+    region: platform.dma.Region,
+    offset: size
+) -> Result<u64, i64> uses [platform.dma.Region];
+
+extern fn capability_release(region: platform.dma.Region) -> i64
+    uses [platform.dma.Region];
+
+// What one region's whole life reports, as the one value a module returns.
+//
+//   -1        the byte read back is not the byte written
+//   -2        an address was issued for a region that had been released
+//   -2xx      the claim failed, with the nucleus status in xx
+//   -1xx      the allocation failed — what the two right negatives report
+//   -3xx      the release itself failed
+//   -4xx      the device address failed while the region was live
+//   otherwise the status the **stale** operation answered, which the contract
+//             says is `E_NO_CAPABILITY`
+//
+// The stale status is the return value rather than a flag because it is the one
+// observation this boot exists to make: everything before it is a precondition
+// for asking the question.
+fn lifecycle(region: DmaRegion<mut u8>) -> i64 uses [platform.dma.Region] {
+    // Ordinary checked CPU memory (ADR-0081 §2). Not a device observation: a
+    // DMA region is coherent RAM, and this is a store followed by a load.
+    region[0B] = 200u8;
+    let read_back: u8 = region[0B];
+    if (read_back != 200u8) {
+        return -1i64;
+    }
+    // The nucleus resolves a bounded offset (ADR-0084 §6b). What comes back is
+    // **data** — a device-visible address a driver writes into its own device —
+    // and no operation of any contract accepts one back.
+    match (dma_device_address(region, 0B)) {
+        Ok(address) => { }
+        Err(status) => {
+            return status - 400i64;
+        }
+    }
+    let ended: i64 = capability_release(region);
+    if (ended != 0i64) {
+        return ended - 300i64;
+    }
+    // **The stale operation path** (ADR-0085 §8a). The handle no longer
+    // resolves, so the nucleus refuses by generation. An address issued here
+    // would be an address for memory this process has given back.
+    match (dma_device_address(region, 0B)) {
+        Ok(address) => {
+            return -2i64;
+        }
+        Err(status) => {
+            return status;
+        }
+    }
+}
+
+// The two authorities, and the region they make together.
+//
+// `dma_region_allocate` is the only operation of any accepted schema requiring
+// two capabilities of two different subsystems, and neither is sufficient
+// (ADR-0084 §4). The negatives remove one fact each: the function's `dma`
+// right, or the authority's `spend`.
+fn allocate(function: platform.pci.FunctionConfig) -> i64
+    uses [platform.pci.FunctionConfig, budget, platform.dma.Region]
+{
+    match (dma_region_allocate(function, budget, 4096B)) {
+        Ok(region) => {
+            return lifecycle(region);
+        }
+        Err(status) => {
+            // The two right negatives end here, each with the status its one
+            // missing fact earns. -1xx keeps them apart from every other
+            // failure this module can report.
+            return status - 100i64;
+        }
+    }
+}
+
+pub fn main() -> i64
+    uses [device, platform.pci.FunctionConfig, budget, platform.dma.Region]
+{
+    match (pci_function_claim(device, 0u64, 4u64, 0u64)) {
+        Ok(function) => {
+            return allocate(function);
+        }
+        Err(status) => {
+            return status - 200i64;
+        }
+    }
+}

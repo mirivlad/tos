@@ -11,10 +11,15 @@ check.
 
 **Do not read this as ADR-0085 conformance complete.** Three §16 rows are
 recorded `BLOCKED` below and one is `PARTIAL`. They are not waived, not N/A, and
-not satisfied by the analogous tests other interfaces have. Every one of them is
-now blocked on the same single thing — a boot against the real nucleus — rather
-than on anything missing from the language, the schema, the verifier or the
-bridge.
+not satisfied by the analogous tests other interfaces have.
+
+Every one of them is blocked on the same single thing, and **§6 records what
+that turned out to be**: the accepted Stage 4 reference machine's function has
+no PCI Express capability, so ADR-0084 §5c's P1 cannot hold and the nucleus
+refuses to grant DMA authority at all. Nothing is missing from the language, the
+schema, the verifier, the bridge or the boot — the machine cannot answer the
+question. That is a profile decision, and it is a STOP rather than something to
+route around.
 
 ## 1. The obligations, and where each is
 
@@ -92,17 +97,21 @@ about the double.
 introduced. Existing object-kind and right refusals for other interfaces are
 inherited **mechanism** evidence, never closure evidence for this one.
 
-**The unblock condition is a boot**, and it is the only thing left:
+**The boot was built**, and it does not close them — §6 says why. All of this
+exists and is green:
 
-1. a nucleus feature endowing a process with an assigned function carrying `dma`
-   and a memory authority carrying `spend`;
-2. a runtime-image workload running the accepted operation-30 source path;
-3. the negatives beside it — the same call with the wrong object kind, without
-   `dma`, and without `spend` — each refused independently and not conflated
-   with a wrong representation, a missing effect or a stale generation;
-4. the released region's `dma_device_address` answering `E_NO_CAPABILITY` from
-   the nucleus itself;
-5. replace these rows with that evidence.
+1. four launcher constants endowing a process with the PCI bus root and a
+   memory authority, one positive and three negatives differing in one fact
+   each;
+2. `tests/vectors/dma-region` and `dma-region-stale`, running the accepted
+   operation-30 source path;
+3. `host-tools/qemu-test/dma-region.sh`, which asserts each dimension
+   independently;
+4. nucleus instrumentation reporting the capability-table delta, the alias
+   count, and which of P1/P5 holds — counts and verdicts, never a handle.
+
+What it reports instead is the STOP. These rows are replaced with direct
+evidence when the reference machine can answer.
 
 ## 4. Operation 30's V1 concrete surface (ADR-0085 §18, resolved)
 
@@ -170,3 +179,96 @@ runtime-private and is used only to perform an indexed access; it is never
 returned, never a value, and never accepted as authority. The device-visible
 address is data operation 31 returns, and no operation of any accepted schema
 takes one back — nor a physical address, a mapping base or a frame number.
+
+## 6. STOP — the reference machine cannot grant DMA authority
+
+**Reported rather than worked around**, under the rule the Stage 4C-2 brief §2
+states: if the existing reference-machine qualification cannot actually grant
+DMA authority through the accepted mechanism, that is a STOP, and a profile
+requirement must not become a test-only assumption inside production logic.
+
+### What was observed
+
+The real nucleus, the accepted Stage 4 reference machine, and the ordinary
+source path. One boot, one line, and the two halves of ADR-0084 §5c side by
+side:
+
+```text
+TOS.RUN.PCI_NORMALISED ... msix=disabled_masked msi=absent ...
+TOS.RUN.PCI_ASSIGNED   ... generation=1 express=0 dma=1 asserted_by=nucleus
+TOS.RUN.COMPLETED      value=i64:-101
+```
+
+- **`dma=1`** — P5 holds. The compatibility profile qualified the function for
+  TC0-only requester traffic, so the capability the claim produced carries the
+  `dma` right;
+- **`express=0`** — **P1 does not hold.** The function has no PCI Express
+  capability, so `dma_region_allocate` refuses with `E_NO_CAPABILITY`
+  (`Refused::OutOfScope`), and `-101` is that status as the module reports it;
+- the capability walk is **not** at fault, and the same line proves it: it found
+  MSI-X (`0x11`) on the same function on the same boot, which is the capability
+  `irq-routed` has been claiming interrupts through since Stage 4C-1b. The chain
+  is walked correctly and `0x10` is not in it.
+
+### Why it is a decision and not a defect
+
+The reference machine attaches its device as
+
+```text
+-machine q35 -device virtio-blk-pci,drive=stage4blk,addr=0x4,
+             disable-legacy=on,disable-modern=off,num-queues=1
+```
+
+which places it on q35's root-complex bus. It is not a PCI Express endpoint
+there, and no register the nucleus may read makes it one.
+
+**P1 is not a formality.** ADR-0084 §5c makes the Express capability the thing
+that lets a *reclaim* be proved — Device Status' Transactions Pending bit is how
+the nucleus establishes that a function has no non-posted request outstanding
+before its memory returns to the pool. A function without it is a function whose
+DMA memory could never be proved safe to reclaim, which is exactly why operation
+30 refuses it. Granting DMA anyway would be granting authority the system cannot
+end.
+
+So the fix is to the **machine**, not to the nucleus: the device must be behind
+a `pcie-root-port` to be an Express endpoint. That is a change to the accepted
+Stage 4 reference profile, and it is not one to make in passing —
+
+- **every existing Stage 4 gate hard-codes the BDF `0:0:4.0`**: the profile's
+  `qualify_dma(0, 0, 4, 0)`, `pci-discovery`, `pci-placement`, `pci-bme-precision`,
+  `pci-bar-relocation`, `pci-msi-reserved`, `irq-routed`, `virtio-caps` and
+  `virtio-mmio`. Behind a root port the device moves to another bus, and every
+  one of those numbers moves with it;
+- the root port is itself a device with its own configuration space, its own
+  BAR placement and its own interrupt routing, all of which the Stage 4A/4B
+  placement and precision gates measure.
+
+### What was **not** done
+
+- P1–P5 are unweakened, and no qualification was bypassed, relaxed or made
+  conditional on a test feature;
+- no fake DMA device and no synthetic production path was introduced;
+- `supports_dma` still answers from the function's own configuration space;
+- nothing in the nucleus was taught to assume an Express capability it did not
+  find.
+
+### What is ready and waiting on the decision
+
+Everything except the machine:
+
+| Piece | State |
+|---|---|
+| `platform.dma.Region` schema, lowering, verifier, bridge | landed and green |
+| the four launcher constants, one positive and three negatives | landed, each buildable, each excluded from every other constant |
+| `tests/vectors/dma-region`, `dma-region-stale` | check clean and lower |
+| `host-tools/qemu-test/dma-region.sh` | written, and refuses with the STOP named |
+| nucleus instrumentation for §16.6 and for P1/P5 | landed, test-feature-gated, reporting counts and never a handle |
+
+The script is deliberately **not** registered in the preflight inventory or CI:
+a gate that cannot pass is not a gate. It runs on request, and the first thing
+it reports is this STOP.
+
+**The four §16 rows therefore stay open**, and ADR-0085 §16 conformance stays
+incomplete. They are blocked on one decision — whether the Stage 4 reference
+machine gains a PCI Express root port, and what that costs the gates that
+measure the device where it is today.
