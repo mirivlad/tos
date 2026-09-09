@@ -93,6 +93,27 @@ test-module-operation = []
 # because the machine has one, and this is the one lawful moment to say who may
 # address it. No operation of any contract produces one.
 test-pci-discovery = []
+# ADR-0084/ADR-0085 Stage 4C-2: the boot in which a textual driver makes a DMA
+# region and reaches it both ways. The process holds the PCI bus root with
+# `claim` **and** the root memory authority's remainder with `spend`, which are
+# the two authorities operation 30 requires and neither of which is sufficient.
+# The reference function is qualified for DMA by the profile (P5), so the
+# capability the claim produces carries `dma`.
+test-dma-region = []
+# The same boot with one fact changed: the function binding is answered by a
+# handle naming a **process** rather than an assignment, under the object kind
+# the schema declares. Everything static is right — the interface, the effect,
+# the representation, the call — and the nucleus refuses because the object
+# behind the handle is not the one operation 30 acts on.
+test-dma-wrong-kind = []
+# The same boot with the profile qualification withheld. The claim then produces
+# a `FunctionConfig` **without** `dma`, so operation 30 is refused by the rights
+# mask: the object is right, the generation is right, the effect is right, and
+# the one missing thing is the right.
+test-dma-unqualified = []
+# The same boot with the memory authority endowed without `spend`. The other
+# half of the two-authority rule, refused independently of the first.
+test-dma-no-spend = []
 # A grant of the wrong *kind* under the right name: authority over a process,
 # bound to the name a module asks for an endpoint under. The name matches and
 # the object does not, which is the one case `SYSTEM_INTERFACE_V1` §4's object
