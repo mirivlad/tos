@@ -2686,6 +2686,12 @@ impl<'source> Lowerer<'source> {
     fn place_type(&self, place: &Place, builder: &BodyBuilder) -> TypeId {
         let mut current = builder.values.get(place.root).copied().unwrap_or(0);
         for step in &place.path {
+            // **Both index steps, not only the constant one.** A literal
+            // position is `Index` and a computed one is `DynamicIndex`, and they
+            // name the same element of the same container — so a projection that
+            // recognised one and not the other typed `a[i]` as `a` whenever the
+            // position was not a literal.
+            let indexed = matches!(step, PlaceStep::Index(_) | PlaceStep::DynamicIndex(_));
             current = match (self.types.get(current), step) {
                 (Some(TypeDef::Nominal { fields, .. }), PlaceStep::Field(index)) => {
                     fields.get(*index).copied().unwrap_or(current)
@@ -2693,8 +2699,27 @@ impl<'source> Lowerer<'source> {
                 (Some(TypeDef::Tuple(elements)), PlaceStep::Field(index)) => {
                     elements.get(*index).copied().unwrap_or(current)
                 }
-                (Some(TypeDef::Array(element, _)), PlaceStep::Index(_)) => *element,
-                (Some(TypeDef::Slice(element)), PlaceStep::Index(_)) => *element,
+                (Some(TypeDef::Array(element, _)), _) if indexed => *element,
+                (Some(TypeDef::Slice(element)), _) if indexed => *element,
+                // **A region projects to its element, like every other indexed
+                // type** (ADR-0081 §2, ADR-0037). This was missing, and the
+                // fallthrough below made `r[0B]` type as `Region<i32>` rather
+                // than as `i32` — an instruction whose declared type was the
+                // container it read out of. Nothing caught it because region
+                // access is unreachable at runtime until an operation produces
+                // a region, and the verifier does not project a place.
+                //
+                // It is load-bearing now: a runtime serving an indexed access
+                // takes the **element width** from the read's declared type, so
+                // a container-typed read is a read of the wrong size.
+                (Some(TypeDef::Region(element)), _)
+                | (Some(TypeDef::RegionMut(element)), _)
+                | (Some(TypeDef::DmaRegion(element)), _)
+                | (Some(TypeDef::DmaRegionMut(element)), _)
+                    if indexed =>
+                {
+                    *element
+                }
                 _ => current,
             };
         }

@@ -1049,6 +1049,39 @@ fn check_instruction(
             }
         }
     }
+    // **What an indexed access through a region reads, checked rather than
+    // believed** (ADR-0081 §2).
+    //
+    // A runtime serving `region[i]` takes the **element width** from the
+    // instruction's declared type: it has no other way to know how many bytes
+    // one element is, because the region's extent is the host's and the index
+    // is a position rather than an offset. So an artifact claiming a `u64` read
+    // through a `DmaRegion<u8>` would be asking a host to move eight bytes for a
+    // one-byte element, and every bound the host then checks would be checking
+    // the wrong number.
+    //
+    // The verifier already had everything needed to refuse that — the type
+    // table, the value table and the place — and simply never projected the
+    // place. It does now, for the region families, which are the roots whose
+    // element width leaves the artifact.
+    if let Some(place) = places_of(&instruction.op).first() {
+        if let Some(element) = region_element(module, function, place) {
+            let claimed = match &instruction.op {
+                // A write moves the operand's type into the element, so that is
+                // the type to compare. A read, a move and a borrow answer with
+                // the element, so the instruction's own type is.
+                Op::Write { value, .. } => operand_type(module, function, value),
+                _ => Some(instruction.ty),
+            };
+            if claimed != Some(element) {
+                return Err(Finding::new(
+                    "V2010_TYPE",
+                    at(),
+                    "an indexed region access does not carry the region's element type",
+                ));
+            }
+        }
+    }
     match &instruction.op {
         Op::Call { target, .. } => match target {
             CallTarget::Local(index) => {
@@ -2135,6 +2168,61 @@ fn operands_of(op: &Op) -> Vec<Operand> {
             .collect(),
         _ => Vec::new(),
     }
+}
+
+/// The element type an indexed access through a region reads or writes, when the
+/// place is one.
+///
+/// `None` for every place that does not project a region by an index step —
+/// a field of a record, an element of an array, or the region value itself with
+/// no projection at all. Those are checked, where they are checked, by the rules
+/// that own them; this answers only the question whose answer leaves the
+/// artifact.
+///
+/// **The last index step decides**, because that is the one whose element the
+/// access is of. A place reaching further — a field of an element — is not an
+/// access of the element and is left alone.
+fn region_element(module: &Module, function: &Function, place: &tos_ir::Place) -> Option<TypeId> {
+    let mut current = function.values.get(place.root).copied()?;
+    let mut element = None;
+    for step in &place.path {
+        let indexed = matches!(
+            step,
+            tos_ir::PlaceStep::Index(_) | tos_ir::PlaceStep::DynamicIndex(_)
+        );
+        let inner = match module.type_of(current) {
+            Some(TypeDef::Region(inner))
+            | Some(TypeDef::RegionMut(inner))
+            | Some(TypeDef::DmaRegion(inner))
+            | Some(TypeDef::DmaRegionMut(inner))
+                if indexed =>
+            {
+                element = Some(*inner);
+                *inner
+            }
+            Some(TypeDef::Array(inner, _)) | Some(TypeDef::Slice(inner)) if indexed => {
+                element = None;
+                *inner
+            }
+            Some(TypeDef::Nominal { fields, .. }) => match step {
+                tos_ir::PlaceStep::Field(index) => {
+                    element = None;
+                    *fields.get(*index)?
+                }
+                _ => return None,
+            },
+            Some(TypeDef::Tuple(elements)) => match step {
+                tos_ir::PlaceStep::Field(index) => {
+                    element = None;
+                    *elements.get(*index)?
+                }
+                _ => return None,
+            },
+            _ => return None,
+        };
+        current = inner;
+    }
+    element
 }
 
 fn places_of(op: &Op) -> Vec<&tos_ir::Place> {
