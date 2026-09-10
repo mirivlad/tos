@@ -475,13 +475,30 @@ Premise 5 is an architectural property of the target rather than a TOS document,
 and the implementation slice must cite the specific architecture-manual rule it
 relies on, in the ADR, before this section can be called a proof.
 
-**Corroboration, explicitly not normative.** Linux on x86 implements the same
-two edges as compiler barriers — `dma_wmb()` and `dma_rmb()` — which is
-independent evidence that the conclusion is not eccentric. **This citation is
-recorded as unverified.** It must be checked against the actual kernel source
-and cited by file before acceptance, and it carries no weight in the argument
-either way: Linux is corroborating implementation evidence and is not the TOS
-normative contract.
+**Corroboration, explicitly not normative — and read rather than remembered.**
+Linux on x86 implements exactly these two edges as compiler barriers and no
+instruction. The chain was followed to the end in the kernel source present on
+the development machine, Linux 6.5.0 as packaged
+(`linux-headers-6.5.0-1mx-ahs-common`):
+
+```text
+arch/x86/include/asm/barrier.h:54   #define __dma_rmb()  barrier()
+arch/x86/include/asm/barrier.h:55   #define __dma_wmb()  barrier()
+include/asm-generic/barrier.h:46    dma_rmb() -> kcsan_rmb(); __dma_rmb()
+include/asm-generic/barrier.h:50    dma_wmb() -> kcsan_wmb(); __dma_wmb()
+include/linux/compiler.h:85         #define barrier() __asm__ __volatile__("": : :"memory")
+```
+
+So the whole of `dma_wmb()` on x86 is a compiler clobber — no fence, no
+serialising instruction — which is independent evidence that §11's conclusion is
+not eccentric. **It carries no weight in the argument.** Linux is corroborating
+implementation evidence and is not the TOS normative contract; if the citation
+were wrong, premises 1–6 would still have to stand on their own, and if Linux
+changed its mind tomorrow nothing here would move.
+
+The version is named because a corroboration without one is an appeal rather
+than a citation, and an implementation slice landing against a different kernel
+should re-read the same five lines rather than trusting this paragraph.
 
 **The reason for that paragraph.** ADR-0084 revision 3 turned a plausible
 platform statement — the Virtual Channel argument for TC0 — into an accepted
