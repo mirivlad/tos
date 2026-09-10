@@ -4,7 +4,7 @@
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
 - Language versions: `TOS Core 1.0` (original V1), `1.1` (ADR-0080),
-  `1.2` (ADR-0081), `1.3` (ADR-0085)
+  `1.2` (ADR-0081), `1.3` (ADR-0085), `1.4` (ADR-0086)
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md`,
   `docs/40_TOS_CORE_V1_TYPES_EVALUATION_AND_MEMORY.md`, and
@@ -22,6 +22,7 @@ attributed to the decision that accepted it**:
 | 1.1 | ADR-0080 | a capability as an operation result, and effects naming interfaces |
 | 1.2 | **ADR-0081** | device memory: `MmioRegion`, region and `DmaRegion` indexed access |
 | 1.3 | **ADR-0085** | capability representation separated from interface identity |
+| 1.4 | **ADR-0086** | DMA publication and consumption ordering |
 
 **A module receives the language its header claims.** A 1.0, 1.1 or 1.2 module
 does not acquire a later minor's semantics from the frontend that happens to
@@ -48,14 +49,17 @@ The version is the source-language major/minor version, not a module release
 number. For V1 the major MUST be `1`; any other is
 `E1601_UNSUPPORTED_LANGUAGE_VERSION`, and a minor the frontend does not
 implement is `E1602_UNSUPPORTED_LANGUAGE_MINOR`. The accepted minors are **0, 1,
-2 and 3**, and each adds exactly what its decision decided: 1.1 the
+2, 3 and 4**, and each adds exactly what its decision decided: 1.1 the
 direct-interface effect form of docs/39 (ADR-0080), 1.2 device memory and region
 indexed access (ADR-0081), 1.3 capability representation separated from interface
-identity (ADR-0085).
+identity (ADR-0085), 1.4 the two DMA ordering operations (ADR-0086).
 
 **Accepted and implemented are two different statements**, and they are worth
 keeping apart even where they now agree: every accepted minor through 1.3 is
-implemented. A frontend advertises a minor **when it performs it**, not when a
+implemented. **1.4 is accepted and is the current example of the difference** —
+ADR-0086 was approved on 2026-09-10 and a frontend advertises minor 4 only when
+it performs the whole of it, so until that slice is green a 1.4 module is
+refused whole by its header with `E1602_UNSUPPORTED_LANGUAGE_MINOR`. A frontend advertises a minor **when it performs it**, not when a
 decision naming it is approved — so between ADR-0085's approval and the end of
 its implementation slice, a module declaring 1.3 was rejected whole by its
 header with `E1602_UNSUPPORTED_LANGUAGE_MINOR`, which is the fail-closed

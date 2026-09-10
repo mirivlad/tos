@@ -166,10 +166,23 @@ Three properties this section did not anticipate, each load-bearing:
   flushed. If that cannot be proved, the frames, the charge and the assignment
   are all held, and the function cannot be claimed again.
 
-The MMIO↔DMA ordering contract is still open and is Stage 4C-3's. **A
-proposed decision now exists and is not accepted** — ADR-0086 (Proposed,
-2026-09-10), two directional visibility operations over an existing
-`DmaRegion` — so this sentence stands until that decision is approved.
+**The MMIO↔DMA ordering contract is decided** — ADR-0086, Accepted 2026-09-10,
+which is Stage 4C-3. A driver publishes and consumes explicitly:
+
+```tos
+write_descriptor(region);
+dma_publish(region);
+mmio_write_le_u16(notify_window, QUEUE_NOTIFY_OFFSET, queue_index);
+```
+
+Two directional visibility operations over a region the driver already holds:
+`dma_publish` makes this context's writes visible to the device, `dma_consume`
+makes the device's completed writes visible to this context. They are language
+operations rather than nucleus services — no `SYSTEM_ABI_V1` selector, no schema
+row, no ring transition — and they expose no address. **Ordering is not
+inherited from the notify**: a device may observe an ownership marker without
+being notified, so descriptor bytes are published before the marker and the
+marker before the notification.
 
 **And one thing must not be written by accident** (ADR-0082 §5). On the no-IOMMU
 reference profile, TOS cannot claim hardware-enforced confinement of a malicious

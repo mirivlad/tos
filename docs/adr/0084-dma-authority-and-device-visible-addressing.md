@@ -488,10 +488,12 @@ negotiation, queues, block I/O, scatter-gather beyond one contiguous region,
 IOMMU domain management, and any device-matching policy. A second DMA backend
 under an IOMMU is anticipated by §6's wording and is not designed here.
 
-**Forward reference, added 2026-09-10.** Stage 4C-3 has a proposal — ADR-0086,
-*Proposed and not accepted*. It rests on §4's write-back mapping and on §5c's P2,
-P3 and P4 as the premises of its reference-profile argument, and it adds no
-authority, no right and no operation to anything decided here.
+**Stage 4C-3 is decided by ADR-0086** (Accepted 2026-09-10). It rests on §4's
+write-back mapping and on §5c's P2, P3 and P4 as premises of its
+reference-profile argument — the conjunction is load-bearing there, and P4 in
+particular is what makes a coherent consume edge possible at all — and it adds no
+authority, no right and no operation to anything decided here. The list above is
+recorded as it stood; one item of it now has its own decision.
 
 ## 8. Conformance evidence this ADR will require
 

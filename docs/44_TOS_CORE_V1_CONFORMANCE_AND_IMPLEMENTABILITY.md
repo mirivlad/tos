@@ -4,7 +4,7 @@
 
 - Status: **Accepted Tier 2 contract — production implementation in progress**
 - Language versions: `TOS Core 1.0` (original V1), `1.1` (ADR-0080),
-  `1.2` (ADR-0081), `1.3` (ADR-0085)
+  `1.2` (ADR-0081), `1.3` (ADR-0085), `1.4` (ADR-0086)
 - Governing Tier 1 decision: ADR-0027
 - Depends on: `docs/39_TOS_CORE_V1_SOURCE_AND_GRAMMAR.md` through
   `docs/43_TOS_CORE_V1_IR_AND_VERIFIER.md`
@@ -258,7 +258,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1605_AMBIGUOUS_IMPORT` | an import has candidates nothing orders: the declared source set holds the requested name more than once inside one module root, or more than one reachable declared dependency source set provides it. Candidates in different roots are settled by the declared root order and are not ambiguous (ADR-0038) |
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 | `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
-| `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` | the module uses a source form added in a later minor than its own header declares. Fields: `feature`, `declared`, `requires`. A module receives the language its header claims, so a 1.1 form in a 1.0 module is refused here rather than accepted by a frontend that happens to implement both (ADR-0080) |
+| `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` | the module uses a source form added in a later minor than its own header declares. Fields: `feature`, `declared`, `requires`. The accepted feature names are `direct interface effect` (1.1), `device memory` (1.2), `capability representation` (1.3) and `DMA ordering` (1.4, ADR-0086). A module receives the language its header claims, so a 1.1 form in a 1.0 module is refused here rather than accepted by a frontend that happens to implement both (ADR-0080) |
 
 ### Concurrency (stage `type`)
 

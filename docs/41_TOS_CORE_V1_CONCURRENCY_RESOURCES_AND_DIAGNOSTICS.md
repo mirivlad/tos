@@ -107,6 +107,14 @@ to one of these contracts or a later accepted version.
 | task spawn/join | Capture initialization is sequenced-before child entry; child completion is happens-before successful join. |
 | cancellation | Cancellation request is visible at a defined safe point. All cleanup/completion actions happen-before the join that observes cancellation. |
 
+**`dma_publish` and `dma_consume` are not in this table and do not belong in
+it** (ADR-0086). They create **no** happens-before between two TOS Core
+contexts, are no partner for any release or acquire, and add no row to the
+synchronizes-with relation: their far side is a device, which performs no TOS
+operation and reads no TOS atomic. The table above is therefore still
+exhaustive for what it covers — ordering among TOS Core contexts — and the DMA
+ordering contract composes with it rather than extending it.
+
 An engine MAY serialize any of these operations when that preserves the same
 allowed result. It MUST still enforce the lock/guard/resource rules and must
 not treat serialized execution as permission for a source program with an

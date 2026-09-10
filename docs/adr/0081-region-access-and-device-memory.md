@@ -268,10 +268,13 @@ fencing, DMA synchronisation — is what a queue path needs, and deciding it und
 pressure from a read-only configuration probe would be deciding the portable DMA
 memory model by accident. It belongs to the DMA/queue slice.
 
-**Forward reference, added 2026-09-10 and deciding nothing here.** That slice
-arrived, and the proposal for it is ADR-0086 — *Proposed, not accepted*. Nothing
-in this section is amended by its existence, and §11 remains what Stage 4B
-decided until ADR-0086 is approved.
+**Closed by ADR-0086, Accepted 2026-09-10, and this section is not amended.**
+The DMA/queue slice arrived and decided the cross-domain rule as two directional
+region-scoped operations — `dma_publish` and `dma_consume`, TOS Core 1.4 — rather
+than as the release/acquire or general fencing this paragraph declined to settle
+early. What §11 decided for Stage 4B is still exactly what it decided; what it
+recorded as not yet asserted is now asserted elsewhere, by a decision that had
+the queue in front of it.
 
 ## 12. Bounds and alignment
 
