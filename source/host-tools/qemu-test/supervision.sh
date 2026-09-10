@@ -239,7 +239,11 @@ grep -q '^TOS\.RUN\.COMPLETED value=i64:1302$' "$LOG" ||
     fail "the supervisor did not report the run this policy produces"
 
 # --- the machine reached rest, and the account closed -------------------------
-grep -q '^TOS\.RUN\.PROCESS_RECLAIMED process=0 .* plans_live=0$' "$LOG" ||
+# **Not anchored at the end of the line.** The event gained
+# `dma_quarantined=` when DMA regions did (ADR-0084 §5f), and an assertion that
+# ended at `plans_live=0$` stopped matching a line it was still true of. What
+# this is about is the plan table, so it asks about the plan table.
+grep -q '^TOS\.RUN\.PROCESS_RECLAIMED process=0 .* plans_live=0\b' "$LOG" ||
     fail "a launch plan outlived the process that made it"
 
 echo "SUPERVISION PASS: a textual supervisor supervised real services"

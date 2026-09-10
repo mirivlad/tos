@@ -69,10 +69,10 @@ use alloc::vec::Vec;
 
 use tos_ir::{
     AtomicOp, BinaryOp, Block, BorrowKind, CallTarget, CapabilityImport, CapabilitySource,
-    CleanupCall, Constant, Function, FunctionOrigin, Header, Import, Instruction, IntKind,
-    LockMode, MemoryOrder, Module, NominalKind, Op, Operand, Parameter, PassMode, Place, PlaceStep,
-    Profile, ResourceEnvelope, ResourceKind, Signature, SourceMapEntry, Terminator, TypeDef,
-    UnaryOp, Variant, Visibility,
+    CleanupCall, Constant, DmaSyncDirection, Function, FunctionOrigin, Header, Import, Instruction,
+    IntKind, LockMode, MemoryOrder, Module, NominalKind, Op, Operand, Parameter, PassMode, Place,
+    PlaceStep, Profile, ResourceEnvelope, ResourceKind, Signature, SourceMapEntry, Terminator,
+    TypeDef, UnaryOp, Variant, Visibility,
 };
 
 mod parse;
@@ -97,7 +97,11 @@ pub const MAGIC: [u8; 8] = *b"TOSIMAGE";
 /// operations (ADR-0081 §6). New tags rather than changed ones, so an older
 /// reader given a version-5 image must refuse it rather than meet a tag it does
 /// not know — which is what ADR-0070's fail-closed unknown-version rule is for.
-pub const ENCODING_VERSION: u32 = 5;
+/// Version 6 carries [`Op::DmaSync`] and its direction discriminator (ADR-0086
+/// §14), for that reason and under that rule: one new operation tag, nothing
+/// renumbered, and an older reader refuses the container rather than meeting
+/// tag 40 without knowing what follows it.
+pub const ENCODING_VERSION: u32 = 6;
 
 /// The container versions this reader still decodes.
 ///
@@ -106,9 +110,12 @@ pub const ENCODING_VERSION: u32 = 5;
 /// came from an import, because that was the only source the representation
 /// had. The decoding is bounded and canonical — an index becomes
 /// `CapabilitySource::Import(index)`, one for one, with nothing invented — so
-/// admitting it adds no way for an old image to mean something new. Anything
+/// admitting it adds no way for an old image to mean something new. **5 is
+/// readable for the plainer reason**: no writer that emitted version 5 knew tag
+/// 40, so a version-5 image cannot contain a `DmaSync` and its meaning is
+/// unchanged by the tag existing. Anything
 /// else is refused by [`ImageError::UnknownEncodingVersion`].
-pub const READABLE_ENCODING_VERSIONS: &[u32] = &[3, 4, ENCODING_VERSION];
+pub const READABLE_ENCODING_VERSIONS: &[u32] = &[3, 4, 5, ENCODING_VERSION];
 
 /// Which semantic schema the payload claims. `1` is `tos-ir/v1`.
 pub const SCHEMA_VERSION: u32 = 1;

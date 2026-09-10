@@ -816,6 +816,14 @@ fn write_op(out: &mut Out<'_>, op: &Op) {
             out.tag(*width);
             out.tag(u8::from(*little_endian));
         }
+        Op::DmaSync { region, direction } => {
+            out.tag(40);
+            write_operand(out, region);
+            out.tag(match direction {
+                DmaSyncDirection::Publish => 0,
+                DmaSyncDirection::Consume => 1,
+            });
+        }
         Op::Move { place } => {
             out.tag(4);
             write_place(out, place);

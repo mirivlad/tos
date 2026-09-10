@@ -383,13 +383,15 @@ fn a_one_two_artifact_does_not_receive_the_representation_rule() {
 /// §16.11 — an implementation that does not admit a minor rejects the module
 /// **whole, by its header**, rather than part-way through a function.
 ///
-/// `1.3` is admitted now, so the property is shown with the minor after it: what
-/// is being proved is that an unimplemented minor is refused before any of the
-/// body is read, not that any particular number is unimplemented.
+/// `1.3` is admitted now, and so is `1.4` since ADR-0086 — so the property is
+/// shown with the minor after those. What is being proved is that an
+/// unimplemented minor is refused before any of the body is read, not that any
+/// particular number is unimplemented, and this line moves each time the
+/// language gains one.
 #[test]
 fn an_unadmitted_minor_is_refused_by_the_header_alone() {
     let mut module = lower(MODULE);
-    module.header.language_version = String::from("1.4");
+    module.header.language_version = String::from("1.5");
     let finding = refuse(&module);
     assert_eq!(finding.code, "V2002_SCHEMA");
     assert_eq!(finding.location, "header.language_version");

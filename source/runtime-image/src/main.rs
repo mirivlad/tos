@@ -36,9 +36,9 @@ use core::panic::PanicInfo;
 
 use tos_launch::{Launch, LaunchCapability, LaunchUnit, ReportHeader, LAUNCH_VERSION};
 use tos_pipeline::{
-    interfaces, prepare_from_source, render, run_prepared, Access, CapabilityRequest, Element,
-    Handle, IntKind, Observe, PipelineStage, Preparation, Reach, ResidencyLimits, SetError,
-    SetRequest, System, Trace, Trap, Unit, Value,
+    interfaces, prepare_from_source, render, run_prepared, Access, CapabilityRequest, DmaSync,
+    DmaSyncDirection, Element, Handle, IntKind, Observe, PipelineStage, Preparation, Reach,
+    ResidencyLimits, SetError, SetRequest, System, Trace, Trap, Unit, Value,
 };
 use tos_runtime::{stack, GlobalHeap};
 
@@ -1848,6 +1848,71 @@ impl System for Endowment<'_> {
                 }
             }
         }
+    }
+
+    /// One DMA visibility boundary (ADR-0086 §10, §11).
+    ///
+    /// **The mapping is proved live before anything is ordered.** A handle this
+    /// process does not hold, or has retired, is refused here — before any
+    /// synchronisation and before any memory is touched — which is the same
+    /// deterministic refusal the stale indexed-access path gives and not a
+    /// reliance on a fault.
+    ///
+    /// **The x86-64 asymmetry, implemented exactly** (ADR-0086 §11):
+    ///
+    /// ```text
+    /// Publish   compiler ordering barrier, no hardware fence
+    /// Consume   compiler ordering barrier and LFENCE
+    /// ```
+    ///
+    /// `Publish` needs no instruction because the reference profile's DMA
+    /// memory is write-back and coherent (ADR-0084 §4), No Snoop is held
+    /// disabled (§5c P4), and Intel SDM Vol. 3A §11.2.2 (253668-092US, June
+    /// 2026, p. 11-7) states that for write-back memory "Writes to memory are
+    /// not reordered with other writes" — so once the compiler may not move the
+    /// stores, nothing else does.
+    ///
+    /// `Consume` needs one, and this is the half a compiler barrier cannot
+    /// serve: `dma_consume` is a **standalone** point with nothing before it to
+    /// anchor an ordering on, so a later load must be stopped from executing
+    /// early. `LFENCE` is what stops it — Vol. 2A p. 3-552: "no later
+    /// instruction begins execution until LFENCE completes", and instructions
+    /// after it "will not execute (even speculatively) until the LFENCE
+    /// completes". That the same page excludes speculative *cache fills* from
+    /// LFENCE's ordering is exactly why the coherence premises above are
+    /// load-bearing with it rather than replaced by it: the line is coherent,
+    /// so a device write invalidates it, and LFENCE keeps the load from running
+    /// before the point. Neither fact carries this edge alone.
+    fn dma_sync(&mut self, sync: DmaSync) -> Result<(), Trap> {
+        if self.mappings.mapping(sync.region.get()).is_none() {
+            return Err(Trap::new(
+                "RUNTIME_DEVICE_REFUSED",
+                alloc::string::String::from(
+                    "a region synchronisation this process holds no mapping for",
+                ),
+                0,
+            ));
+        }
+        match sync.direction {
+            DmaSyncDirection::Publish => {
+                // A compiler ordering barrier and nothing else: it emits no
+                // instruction, performs no access, and forbids the compiler
+                // from moving memory operations across this point — which is
+                // the whole of the boundary ADR-0086 §9 requires be preserved,
+                // and on this profile the whole of what `Publish` costs.
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            }
+            DmaSyncDirection::Consume => {
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+                // SAFETY: `lfence` is an unprivileged SSE2 instruction with no
+                // operands and no memory access. It requires no privilege
+                // transition, touches nothing, and cannot fault on any CPU this
+                // profile runs on — SSE2 is architectural on x86-64.
+                unsafe { core::arch::asm!("lfence", options(nostack, preserves_flags)) };
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+            }
+        }
+        Ok(())
     }
 
     /// One device access, of exactly the declared width (ADR-0081 §9).
@@ -4261,6 +4326,16 @@ impl tos_pipeline::System for Marked {
         Err(Trap::new(
             "RUNTIME_DEVICE_UNREACHABLE",
             "a region access was made on a measurement run with no region to reach",
+            0,
+        ))
+    }
+
+    /// Nor a region to synchronise. A run holding no capability holds no
+    /// `DmaRegion`, so there is no mapping this could prove live.
+    fn dma_sync(&mut self, _sync: tos_pipeline::DmaSync) -> Result<(), Trap> {
+        Err(Trap::new(
+            "RUNTIME_DEVICE_UNREACHABLE",
+            "a region was synchronised on a measurement run with no region to reach",
             0,
         ))
     }

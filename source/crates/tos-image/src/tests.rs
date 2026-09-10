@@ -92,6 +92,7 @@ fn variants_present(module: &Module) -> BTreeSet<&'static str> {
                     Op::Read { .. } => "Op::Read",
                     Op::MmioRead { .. } => "Op::MmioRead",
                     Op::MmioWrite { .. } => "Op::MmioWrite",
+                    Op::DmaSync { .. } => "Op::DmaSync",
                     Op::Move { .. } => "Op::Move",
                     Op::Write { .. } => "Op::Write",
                     Op::Borrow { .. } => "Op::Borrow",

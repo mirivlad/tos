@@ -972,6 +972,7 @@ fn write_op(out: &mut Out<'_>, op: &Op) -> Result<(), ImageError> {
         // This prototype predates device memory and does not encode it.
         Op::MmioRead { .. } => return Err(ImageError::Unsupported("Op::MmioRead")),
         Op::MmioWrite { .. } => return Err(ImageError::Unsupported("Op::MmioWrite")),
+        Op::DmaSync { .. } => return Err(ImageError::Unsupported("Op::DmaSync")),
         Op::Move { place } => {
             out.tag(4);
             write_place(out, place);
@@ -2107,7 +2108,7 @@ pub fn coverage(module: &Module) -> BTreeMap<&'static str, usize> {
 fn places_of(op: &Op) -> Vec<&Place> {
     match op {
         Op::Read { place } | Op::Move { place } | Op::Drop { place } => std::vec![place],
-        Op::MmioRead { .. } | Op::MmioWrite { .. } => std::vec![],
+        Op::MmioRead { .. } | Op::MmioWrite { .. } | Op::DmaSync { .. } => std::vec![],
         Op::Write { place, .. } | Op::Borrow { place, .. } => std::vec![place],
         _ => Vec::new(),
     }
@@ -2176,6 +2177,7 @@ fn op_name(op: &Op) -> &'static str {
         Op::Read { .. } => "Op::Read",
         Op::MmioRead { .. } => "Op::MmioRead",
         Op::MmioWrite { .. } => "Op::MmioWrite",
+        Op::DmaSync { .. } => "Op::DmaSync",
         Op::Move { .. } => "Op::Move",
         Op::Write { .. } => "Op::Write",
         Op::Borrow { .. } => "Op::Borrow",
