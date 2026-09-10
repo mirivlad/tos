@@ -100,6 +100,14 @@ test-pci-discovery = []
 # The reference function is qualified for DMA by the profile (P5), so the
 # capability the claim produces carries `dma`.
 test-dma-region = []
+# The same two authorities, given to a driver that builds a device queue out of
+# them. The endowment is the DMA positive's, unchanged — which is the evidence
+# that a live queue needs no authority the DMA slice did not already establish.
+#
+# **Named for what the launcher decided and not for the device protocol.** The
+# constant that ran this boot must not tell a reader of ring 0 which device
+# class the module drives: the nucleus does not know, and a feature name is code.
+test-dma-driver = []
 # The same boot with one fact changed: the function binding is answered by a
 # handle naming a **process** rather than an assignment, under the object kind
 # the schema declares. Everything static is right — the interface, the effect,

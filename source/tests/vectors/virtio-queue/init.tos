@@ -1,0 +1,627 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Stage 4D-1: one real split virtqueue, configured by canonical TOS text.
+//
+// The whole modern VirtIO PCI initialization, in one module, against the real
+// reference `virtio-blk-pci` endpoint — and ending with an **empty, enabled**
+// queue. No descriptor is exposed, nothing is notified, and no block request is
+// made: what this boot proves is that the device accepted the substrate.
+//
+//   pci_function_claim     ->  the reference endpoint, from the bus root
+//   pci_config_read        ->  the device's own VirtIO capability structure
+//   pci_bar_map_write      ->  the common configuration, where that said
+//   pci_interrupt_claim    ->  one MSI-X table entry of that same function
+//   dma_region_allocate    ->  one 4 KiB region, from two authorities
+//   region[i] = ...        ->  the split ring, written as little-endian bytes
+//   dma_publish            ->  ADR-0086, before the device can see any of it
+//   dma_device_address     ->  three bounded offsets in that one region
+//   mmio_write_*           ->  the common configuration, in protocol order
+//
+// **The device protocol lives here and nowhere else.** The nucleus performs PCI
+// transactions, maps a window, programs an MSI-X entry and allocates DMA
+// memory. It does not know what a virtqueue is, what a feature bit means, that
+// queue 0 is a block queue, or that a descriptor table is 16 bytes per entry.
+//
+// The external contract this implements is cited exactly:
+//
+//   Virtual I/O Device (VIRTIO) Version 1.4
+//   Committee Specification 01, 8 April 2026
+//   OASIS, docs.oasis-open.org/virtio/virtio/v1.4/cs01/
+//
+// §3.1.1 gives the initialization order, §4.1.4.3 the common configuration
+// layout, §4.1.4.1 the capability structure, §2.7 the split-ring geometry, and
+// §4.1.5.1.2 the MSI-X vector rules. **This module implements that cited modern
+// PCI / split-virtqueue subset.** It does not claim the device "implements
+// VirtIO 1.4": a device exposes feature negotiation, not a protocol minor.
+
+module system.boot.init version 1.4 profile full;
+
+import capability platform.pci.Bus as device;
+import capability system.memory.Authority as budget;
+
+resource [
+    fuel: 4194304,
+    stack: 32KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 16,
+    imports: 8
+]
+
+extern fn pci_function_claim(
+    cap: platform.pci.Bus,
+    bus_number: u64,
+    device: u64,
+    function: u64
+) -> Result<platform.pci.FunctionConfig, i64> uses [device];
+
+extern fn pci_config_read(
+    cap: platform.pci.FunctionConfig,
+    offset: u64,
+    width: u64
+) -> Result<u64, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_bar_map_write(
+    cap: platform.pci.FunctionConfig,
+    bar: u64,
+    offset: size,
+    length: size
+) -> Result<MmioRegionMut, i64> uses [platform.pci.FunctionConfig];
+
+extern fn pci_interrupt_claim(
+    cap: platform.pci.FunctionConfig,
+    entry: u64
+) -> Result<platform.irq.Source, i64> uses [platform.pci.FunctionConfig];
+
+extern fn dma_region_allocate(
+    function: platform.pci.FunctionConfig,
+    authority: system.memory.Authority,
+    bytes: size
+) -> Result<DmaRegion<mut u8>, i64> uses [platform.pci.FunctionConfig, budget];
+
+extern fn dma_device_address(
+    region: platform.dma.Region,
+    offset: size
+) -> Result<u64, i64> uses [platform.dma.Region];
+
+const OK: i64 = 0i64;
+
+// --- the device's capability list (PCI, and VIRTIO §4.1.4.1) ------------------
+//
+// A well-formed chain has at most this many entries in 256 bytes.
+const MAX_CAPABILITIES: u64 = 64u64;
+const FIRST_CAPABILITY: u64 = 64u64;
+const LAST_CAPABILITY: u64 = 240u64;
+const CAPABILITY_POINTER: u64 = 52u64;
+const UNREADABLE: u64 = 256u64;
+
+// `struct virtio_pci_cap`: cap_vndr, cap_next, cap_len, cfg_type, bar, id,
+// padding[2], le32 offset, le32 length. `cap_vndr` 0x09 is a vendor-specific
+// capability and `cfg_type` 1 is VIRTIO_PCI_CAP_COMMON_CFG.
+const CAP_VENDOR: u64 = 9u64;
+const CFG_TYPE_COMMON: u64 = 1u64;
+const CAP_CFG_TYPE: u64 = 3u64;
+const CAP_BAR: u64 = 4u64;
+const CAP_OFFSET: u64 = 8u64;
+const CAP_LENGTH: u64 = 12u64;
+
+// --- the common configuration (VIRTIO §4.1.4.3) --------------------------------
+//
+//   0x00 device_feature_select  0x04 device_feature
+//   0x08 driver_feature_select  0x0C driver_feature
+//   0x10 config_msix_vector     0x12 num_queues
+//   0x14 device_status          0x15 config_generation
+//   0x16 queue_select           0x18 queue_size
+//   0x1A queue_msix_vector      0x1C queue_enable
+//   0x1E queue_notify_off       0x20 queue_desc
+//   0x28 queue_driver           0x30 queue_device
+//
+// Version 1.4 adds `queue_notif_config_data` at 0x38 and `queue_reset` at 0x3A,
+// each live only under a feature this module does not negotiate, and the
+// administration-queue fields after them. **Nothing here reaches past 0x38**,
+// so the fields this module touches are the ones every modern device has.
+const DEVICE_FEATURE_SELECT: size = 0B;
+const DEVICE_FEATURE: size = 4B;
+const DRIVER_FEATURE_SELECT: size = 8B;
+const DRIVER_FEATURE: size = 12B;
+const DEVICE_STATUS: size = 20B;
+const QUEUE_SELECT: size = 22B;
+const QUEUE_SIZE: size = 24B;
+const QUEUE_MSIX_VECTOR: size = 26B;
+const QUEUE_ENABLE: size = 28B;
+const QUEUE_DESC: size = 32B;
+const QUEUE_DRIVER: size = 40B;
+const QUEUE_DEVICE: size = 48B;
+// The last byte this module reads or writes, one past the end of `queue_device`.
+const COMMON_CFG_USED: u64 = 56u64;
+
+const STATUS_ACKNOWLEDGE: u64 = 1u64;
+const STATUS_DRIVER: u64 = 2u64;
+const STATUS_DRIVER_OK: u64 = 4u64;
+const STATUS_FEATURES_OK: u64 = 8u64;
+const STATUS_FAILED: u64 = 128u64;
+
+// `VIRTIO_F_VERSION_1` is feature bit 32 — bit 0 of the high dword (§6.3).
+// **Exactly one feature is accepted.** Every optional ring feature changes the
+// layout or the notification rules, and a queue that silently depended on one
+// the driver never accepted would be a queue nobody could reason about.
+const VERSION_1_IN_HIGH_DWORD: u64 = 1u64;
+
+// The MSI-X table entry this driver gives the queue. An entry index of this
+// function, never a CPU vector.
+const QUEUE_ENTRY: u64 = 0u64;
+const NO_VECTOR: u64 = 65535u64;
+
+// --- this driver's own bounds --------------------------------------------------
+//
+// **A Stage 4 driver cap, not an architectural maximum.** 128 descriptors is a
+// real, useful queue whose whole split-ring substrate fits one 4 KiB DMA
+// region: 2048 + 262 + (2 padding) + 1030 = 3342 bytes.
+const QUEUE_CAP: u64 = 128u64;
+const QUEUE_FLOOR: u64 = 4u64;
+const REGION_BYTES: size = 4096B;
+const QUEUE_ENABLED: u64 = 1u64;
+
+// The reference profile's assertion about where the common configuration is
+// (Stage 4 profile revision 2). The capability structure is what the module
+// reads; this is what it requires that structure to say, so a device that put
+// it elsewhere is refused rather than silently accommodated.
+const PROFILE_COMMON_OFFSET: u64 = 0u64;
+
+fn byte_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 1u64)) {
+        Ok(value) => { return value; }
+        Err(status) => { return UNREADABLE; }
+    }
+}
+
+fn dword_at(function: platform.pci.FunctionConfig, offset: u64) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    match (pci_config_read(function, offset, 4u64)) {
+        Ok(value) => { return value; }
+        Err(status) => { return 4294967296u64; }
+    }
+}
+
+// Where the device says its common configuration is: the capability list is
+// walked, and the first `VIRTIO_PCI_CAP_COMMON_CFG` decides. Returns the
+// capability's own offset in configuration space, or 0 when there is none.
+fn common_capability(function: platform.pci.FunctionConfig) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut at: u64 = byte_at(function, CAPABILITY_POINTER);
+    let mut steps: u64 = 0u64;
+    let mut found: u64 = 0u64;
+    while (steps < MAX_CAPABILITIES) {
+        if (at < FIRST_CAPABILITY) {
+            steps = MAX_CAPABILITIES;
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (at > LAST_CAPABILITY) {
+                steps = MAX_CAPABILITIES;
+            }
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (byte_at(function, at) == CAP_VENDOR) {
+                if (byte_at(function, at + CAP_CFG_TYPE) == CFG_TYPE_COMMON) {
+                    found = at;
+                    steps = MAX_CAPABILITIES;
+                }
+            }
+            if (steps < MAX_CAPABILITIES) {
+                at = byte_at(function, at + 1u64);
+                steps = steps + 1u64;
+            }
+        }
+    }
+    return found;
+}
+
+// Rounds a size up to a multiple of `to`, with the language's checked
+// arithmetic. VIRTIO §2.7 gives each ring part a minimum alignment, and every
+// offset below is placed by this rather than by a constant somebody computed.
+fn align_up(value: size, to: size) -> size {
+    let rest: size = value % to;
+    if (rest == 0B) {
+        return value;
+    }
+    return (value - rest) + to;
+}
+
+// Multiplies a size by a device-reported count.
+//
+// **A loop rather than an operator**, and the reason is a real boundary rather
+// than a preference: `size` is the exact type of every region index and every
+// bounded offset, and TOS Core V1 has no checked conversion whose destination
+// is `size` (`docs/40` §3 fixes the set at `to_i8`..`to_u64`). So a count the
+// device reported cannot enter the `size` domain by conversion, and it enters
+// by counting instead. Bounded by the caller's own cap, checked at every step.
+fn scale(unit: size, count: u64) -> size {
+    let mut total: size = 0B;
+    let mut done: u64 = 0u64;
+    while (done < count) {
+        total = total + unit;
+        done = done + 1u64;
+    }
+    return total;
+}
+
+// Whether a device-reported queue size is one this driver will use: nonzero, a
+// power of two (VIRTIO §4.1.4.3.1, absent `VIRTIO_F_RING_PACKED`), and not
+// below this driver's floor.
+fn usable_queue(maximum: u64) -> bool {
+    if (maximum == 0u64) {
+        return false;
+    }
+    if ((maximum & (maximum - 1u64)) != 0u64) {
+        return false;
+    }
+    return maximum >= QUEUE_FLOOR;
+}
+
+// Sets the FAILED status bit, which §3.1.1 permits after initialization has
+// begun and irrecoverably failed. It is a statement to the device and not a TOS
+// mechanism: nothing in the system's authority depends on it.
+fn give_up(borrow mut window: MmioRegionMut) -> unit {
+    mmio_write_u8(window, DEVICE_STATUS, STATUS_FAILED);
+}
+
+// Zeroes the whole region, byte by byte.
+//
+// **Written rather than assumed.** A driver that relied on freshly allocated
+// pages being zero would be depending on an allocator property no accepted
+// document states, and the ring's flags and indices must be zero before the
+// device is allowed to look at them.
+fn zero_region(borrow mut region: DmaRegion<mut u8>, extent: size) -> unit {
+    let mut at: size = 0B;
+    while (at < extent) {
+        region[at] = 0u8;
+        at = at + 1B;
+    }
+}
+
+// Writes one little-endian 16-bit value into the region.
+//
+// **The protocol representation is bytes**, deliberately. A typed DMA record
+// would publish the frontend's layout choice as a binary format shared with a
+// device, which ADR-0081 §3 refuses.
+fn put_le16(borrow mut region: DmaRegion<mut u8>, at: size, value: u64) -> unit {
+    region[at] = to_le_low(value);
+    region[at + 1B] = to_le_high(value);
+}
+
+fn to_le_low(value: u64) -> u8 {
+    match (to_u8(value % 256u64)) {
+        Ok(byte) => { return byte; }
+        Err(bad) => { return 0u8; }
+    }
+}
+
+fn to_le_high(value: u64) -> u8 {
+    match (to_u8((value / 256u64) % 256u64)) {
+        Ok(byte) => { return byte; }
+        Err(bad) => { return 0u8; }
+    }
+}
+
+fn read_le16(borrow region: DmaRegion<mut u8>, at: size) -> u64 {
+    let low: u8 = region[at];
+    let high: u8 = region[at + 1B];
+    return (high as u64) * 256u64 + (low as u64);
+}
+
+// Brings the device up to the point where a queue may be configured: reset,
+// ACKNOWLEDGE, DRIVER, feature negotiation, FEATURES_OK — VIRTIO §3.1.1 steps
+// 1 through 6, in that order and no other.
+//
+// Returns 0, or a negative naming the step that did not hold.
+fn negotiate(borrow mut window: MmioRegionMut) -> i64 {
+    // Step 1. **Reset, and wait for the device to say so.** §4.1.4.3.2: after
+    // writing 0 the driver must wait for a read of device_status to return 0
+    // before reinitializing. Bounded: a device that never reports reset is a
+    // refusal rather than a hang.
+    mmio_write_u8(window, DEVICE_STATUS, 0u64);
+    let mut waited: u64 = 0u64;
+    let mut reset: bool = false;
+    while (waited < 1024u64) {
+        if (mmio_read_u8(window, DEVICE_STATUS) == 0u64) {
+            reset = true;
+            waited = 1024u64;
+        }
+        if (waited < 1024u64) {
+            waited = waited + 1u64;
+        }
+    }
+    if (!reset) {
+        return -11i64;
+    }
+
+    // Steps 2 and 3.
+    mmio_write_u8(window, DEVICE_STATUS, STATUS_ACKNOWLEDGE);
+    mmio_write_u8(window, DEVICE_STATUS, STATUS_ACKNOWLEDGE + STATUS_DRIVER);
+
+    // Step 4. The device must have offered `VERSION_1`; this driver accepts it
+    // and nothing else. Optional features the device offers and this driver
+    // does not select are not an error — they are simply not negotiated, and
+    // the queue below therefore depends on none of them.
+    mmio_write_le_u32(window, DEVICE_FEATURE_SELECT, 1u64);
+    let high: u64 = mmio_read_le_u32(window, DEVICE_FEATURE);
+    if ((high & VERSION_1_IN_HIGH_DWORD) == 0u64) {
+        give_up(borrow mut window);
+        return -12i64;
+    }
+    mmio_write_le_u32(window, DRIVER_FEATURE_SELECT, 0u64);
+    mmio_write_le_u32(window, DRIVER_FEATURE, 0u64);
+    mmio_write_le_u32(window, DRIVER_FEATURE_SELECT, 1u64);
+    mmio_write_le_u32(window, DRIVER_FEATURE, VERSION_1_IN_HIGH_DWORD);
+
+    // Steps 5 and 6.
+    mmio_write_u8(window, DEVICE_STATUS,
+        STATUS_ACKNOWLEDGE + STATUS_DRIVER + STATUS_FEATURES_OK);
+    if ((mmio_read_u8(window, DEVICE_STATUS) & STATUS_FEATURES_OK) == 0u64) {
+        give_up(borrow mut window);
+        return -13i64;
+    }
+    return OK;
+}
+
+// Everything the boot proved, one bit each, so a value nobody can produce by
+// accident stands for the whole sequence.
+const PROVED_RESET: i64 = 1i64;
+const PROVED_VERSION_1: i64 = 2i64;
+const PROVED_FEATURES_OK: i64 = 4i64;
+const PROVED_QUEUE_EXISTS: i64 = 8i64;
+const PROVED_SIZE_ACCEPTED: i64 = 16i64;
+const PROVED_LAYOUT_FITS: i64 = 32i64;
+const PROVED_ALIGNMENT: i64 = 64i64;
+const PROVED_DESC_READBACK: i64 = 128i64;
+const PROVED_DRIVER_READBACK: i64 = 256i64;
+const PROVED_DEVICE_READBACK: i64 = 512i64;
+const PROVED_MSIX_ACCEPTED: i64 = 1024i64;
+const PROVED_ENABLED: i64 = 2048i64;
+const PROVED_DRIVER_OK: i64 = 4096i64;
+const PROVED_NO_DESCRIPTOR: i64 = 8192i64;
+
+// The one function that builds a queue, from a negotiated device and the two
+// authorities a DMA region needs.
+//
+// **The order is the protocol's** (VIRTIO §3.1.1 step 7, then step 8): the
+// queue is completely configured — size, three addresses, its MSI-X entry — and
+// enabled, and only then does `DRIVER_OK` make the device live. The Stage 4C-1
+// configuration-interrupt fixture set `DRIVER_OK` earlier because it had no
+// queue at all; a queue path that copied that order would tell the device it
+// was live before its ring existed.
+fn build_queue(
+    borrow mut window: MmioRegionMut,
+    function: platform.pci.FunctionConfig,
+    region: DmaRegion<mut u8>
+) -> i64 uses [platform.dma.Region, platform.pci.FunctionConfig] {
+    let mut proved: i64 = PROVED_RESET + PROVED_VERSION_1 + PROVED_FEATURES_OK;
+
+    // Queue 0, and what the device offers for it. A device presents 0 in
+    // `queue_size` for a virtqueue that is unavailable (§4.1.4.3.1).
+    mmio_write_le_u16(window, QUEUE_SELECT, 0u64);
+    let maximum: u64 = mmio_read_le_u16(window, QUEUE_SIZE);
+    if (!usable_queue(maximum)) {
+        give_up(borrow mut window);
+        return -21i64;
+    }
+    proved = proved + PROVED_QUEUE_EXISTS;
+
+    // This driver's cap, and never more than the device offers.
+    let mut chosen: u64 = QUEUE_CAP;
+    if (maximum < QUEUE_CAP) {
+        chosen = maximum;
+    }
+    if (chosen < QUEUE_FLOOR) {
+        give_up(borrow mut window);
+        return -22i64;
+    }
+
+    // The split-ring geometry, derived (VIRTIO §2.7):
+    //
+    //   Descriptor Table   alignment 16   16 * queue_size
+    //   Available Ring     alignment  2    6 + 2 * queue_size
+    //   Used Ring          alignment  4    6 + 8 * queue_size
+    let desc_offset: size = align_up(0B, 16B);
+    let desc_bytes: size = scale(16B, chosen);
+    let avail_offset: size = align_up(desc_offset + desc_bytes, 2B);
+    let avail_bytes: size = 6B + scale(2B, chosen);
+    let used_offset: size = align_up(avail_offset + avail_bytes, 4B);
+    let used_bytes: size = 6B + scale(8B, chosen);
+    let end: size = used_offset + used_bytes;
+    if (end > REGION_BYTES) {
+        give_up(borrow mut window);
+        return -23i64;
+    }
+    proved = proved + PROVED_LAYOUT_FITS;
+
+    // **The ring is written before the device is told where it is.** Zeroing
+    // the whole extent makes every flag, index and descriptor field defined,
+    // and `avail.idx = 0` is what says no buffer is available: with nothing in
+    // the available ring the device has nothing to process, which is the whole
+    // boundary of this slice.
+    zero_region(borrow mut region, REGION_BYTES);
+    put_le16(borrow mut region, avail_offset, 0u64);
+    put_le16(borrow mut region, avail_offset + 2B, 0u64);
+    if (read_le16(borrow region, avail_offset + 2B) != 0u64) {
+        give_up(borrow mut window);
+        return -24i64;
+    }
+    proved = proved + PROVED_NO_DESCRIPTOR;
+
+    // **ADR-0086, on a real device for the first time.** Every byte above is a
+    // CPU write to DMA memory, and the device is about to be given the
+    // addresses of that memory. This is the publication point that makes those
+    // writes visible to it before any transaction that follows.
+    dma_publish(region);
+
+    // Three bounded offsets in one region, resolved by the nucleus
+    // (ADR-0084 §6b). No address is computed here and none is added to.
+    let mut desc_address: u64 = 0u64;
+    match (dma_device_address(region, desc_offset)) {
+        Ok(address) => { desc_address = address; }
+        Err(status) => { give_up(borrow mut window); return status - 300i64; }
+    }
+    let mut driver_address: u64 = 0u64;
+    match (dma_device_address(region, avail_offset)) {
+        Ok(address) => { driver_address = address; }
+        Err(status) => { give_up(borrow mut window); return status - 310i64; }
+    }
+    let mut device_address: u64 = 0u64;
+    match (dma_device_address(region, used_offset)) {
+        Ok(address) => { device_address = address; }
+        Err(status) => { give_up(borrow mut window); return status - 320i64; }
+    }
+    if ((desc_address % 16u64) != 0u64) {
+        give_up(borrow mut window);
+        return -25i64;
+    }
+    if ((driver_address % 2u64) != 0u64) {
+        give_up(borrow mut window);
+        return -26i64;
+    }
+    if ((device_address % 4u64) != 0u64) {
+        give_up(borrow mut window);
+        return -27i64;
+    }
+    proved = proved + PROVED_ALIGNMENT;
+
+    // The queue's own configuration. §4.1.4.3.2: every other field is
+    // configured before `queue_enable`, and MMIO-against-MMIO ordering is
+    // ADR-0081 §9's — no barrier belongs between these writes.
+    mmio_write_le_u16(window, QUEUE_SIZE, chosen);
+    if (mmio_read_le_u16(window, QUEUE_SIZE) != chosen) {
+        give_up(borrow mut window);
+        return -28i64;
+    }
+    proved = proved + PROVED_SIZE_ACCEPTED;
+
+    mmio_write_le_u64(window, QUEUE_DESC, desc_address);
+    if (mmio_read_le_u64(window, QUEUE_DESC) != desc_address) {
+        give_up(borrow mut window);
+        return -29i64;
+    }
+    proved = proved + PROVED_DESC_READBACK;
+
+    mmio_write_le_u64(window, QUEUE_DRIVER, driver_address);
+    if (mmio_read_le_u64(window, QUEUE_DRIVER) != driver_address) {
+        give_up(borrow mut window);
+        return -30i64;
+    }
+    proved = proved + PROVED_DRIVER_READBACK;
+
+    mmio_write_le_u64(window, QUEUE_DEVICE, device_address);
+    if (mmio_read_le_u64(window, QUEUE_DEVICE) != device_address) {
+        give_up(borrow mut window);
+        return -31i64;
+    }
+    proved = proved + PROVED_DEVICE_READBACK;
+
+    // **One MSI-X table entry index, told to the device through its own
+    // register.** The nucleus separately programmed that entry to reach this
+    // process; neither side learned anything about the other. §4.1.5.1.2.2
+    // requires the driver to verify the mapping by reading the field back, and
+    // a device that could not satisfy it answers NO_VECTOR.
+    // **The source stays held for the life of this process.** A capability is
+    // given back by `capability_release` and by nothing else — a binding going
+    // out of scope releases no authority — so the entry the nucleus programmed
+    // is still live through `queue_enable` and `DRIVER_OK` below, which is what
+    // makes this an enabled queue with a real interrupt behind it rather than
+    // one whose vector was withdrawn a line later.
+    match (pci_interrupt_claim(function, QUEUE_ENTRY)) {
+        Ok(source) => {
+            mmio_write_le_u16(window, QUEUE_MSIX_VECTOR, QUEUE_ENTRY);
+            if (mmio_read_le_u16(window, QUEUE_MSIX_VECTOR) != QUEUE_ENTRY) {
+                give_up(borrow mut window);
+                return -32i64;
+            }
+        }
+        Err(status) => {
+            give_up(borrow mut window);
+            return status - 330i64;
+        }
+    }
+    proved = proved + PROVED_MSIX_ACCEPTED;
+
+    // The queue becomes live. §4.1.4.3.2: the driver must not write 0 here.
+    mmio_write_le_u16(window, QUEUE_ENABLE, QUEUE_ENABLED);
+    if (mmio_read_le_u16(window, QUEUE_ENABLE) != QUEUE_ENABLED) {
+        give_up(borrow mut window);
+        return -33i64;
+    }
+    proved = proved + PROVED_ENABLED;
+
+    // Step 8, and last. The device is live, with an empty queue and no buffer
+    // to find in it.
+    mmio_write_u8(window, DEVICE_STATUS,
+        STATUS_ACKNOWLEDGE + STATUS_DRIVER + STATUS_FEATURES_OK + STATUS_DRIVER_OK);
+    if ((mmio_read_u8(window, DEVICE_STATUS) & STATUS_DRIVER_OK) == 0u64) {
+        give_up(borrow mut window);
+        return -34i64;
+    }
+    proved = proved + PROVED_DRIVER_OK;
+    return proved;
+}
+
+// The whole boot: 16383 when every one of the fourteen facts held, and a
+// negative naming the step that did not.
+pub fn main() -> i64
+    uses [device, budget, platform.pci.FunctionConfig, platform.irq.Source,
+          platform.dma.Region]
+{
+    match (pci_function_claim(device, 1u64, 0u64, 0u64)) {
+        Ok(function) => {
+            let cap_at: u64 = common_capability(function);
+            if (cap_at == 0u64) {
+                return -1i64;
+            }
+            // Where the device says the common configuration is. The BAR index
+            // and the offset come from the capability structure; the profile's
+            // assertion is what this driver requires them to be, so a device
+            // that placed it elsewhere is refused rather than accommodated.
+            let bar: u64 = byte_at(function, cap_at + CAP_BAR);
+            let offset: u64 = dword_at(function, cap_at + CAP_OFFSET);
+            let length: u64 = dword_at(function, cap_at + CAP_LENGTH);
+            if (bar > 5u64) {
+                return -2i64;
+            }
+            if (offset != PROFILE_COMMON_OFFSET) {
+                return -3i64;
+            }
+            if (length < COMMON_CFG_USED) {
+                return -4i64;
+            }
+            match (pci_bar_map_write(function, bar, 0B, 4096B)) {
+                Ok(window) => {
+                    let ready: i64 = negotiate(borrow mut window);
+                    if (ready != OK) {
+                        return ready;
+                    }
+                    match (dma_region_allocate(function, budget, REGION_BYTES)) {
+                        Ok(region) => {
+                            return build_queue(borrow mut window, function, region);
+                        }
+                        Err(status) => {
+                            give_up(borrow mut window);
+                            return status - 100i64;
+                        }
+                    }
+                }
+                Err(status) => {
+                    return status - 200i64;
+                }
+            }
+        }
+        Err(status) => {
+            return status - 400i64;
+        }
+    }
+}
