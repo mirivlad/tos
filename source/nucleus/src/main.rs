@@ -915,6 +915,15 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // nobody can check.
     tos_serial::puts(b" process_device_mapping_frames=");
     tos_serial::put_u32_decimal(process::device_mapping_bound() as u32);
+    // And DMA regions are their own kind again (ADR-0084 §4): mapped
+    // **write-back** rather than `UC`, into their own aperture, and costing
+    // tables like any other mapping. **This line was missing**, and the reserve
+    // it belongs to has included the term since the DMA slice landed — so the
+    // decomposition summed to 48 frames less than the reserve it decomposed,
+    // and said nothing about why. A reserve whose parts do not sum to it is a
+    // reserve nobody can check, which is the whole point of printing the parts.
+    tos_serial::puts(b" process_dma_mapping_frames=");
+    tos_serial::put_u32_decimal(process::dma_mapping_bound() as u32);
     tos_serial::puts(b" region_backing_frames=");
     tos_serial::put_u32_decimal(process::region_backing_bound(admitted_bytes) as u32);
     tos_serial::puts(b" processes=");

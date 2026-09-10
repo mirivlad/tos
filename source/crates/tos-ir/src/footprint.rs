@@ -353,6 +353,10 @@ fn op_bytes(op: &Op) -> usize {
             width: _,
             little_endian: _,
         } => operand_bytes(region) + operand_bytes(offset) + operand_bytes(value),
+        Op::DmaSync {
+            region,
+            direction: _,
+        } => operand_bytes(region),
         Op::Write { place, value } => place_bytes(place) + operand_bytes(value),
         Op::Borrow { place, kind: _ } => place_bytes(place),
         Op::Binary { op: _, left, right } => operand_bytes(left) + operand_bytes(right),

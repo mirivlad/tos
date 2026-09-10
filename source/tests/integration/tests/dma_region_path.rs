@@ -64,6 +64,60 @@ pub fn main() -> i64 uses [device, budget, platform.dma.Region] {
 }
 ";
 
+/// The same path, at 1.4, with the ordering points a queue driver writes
+/// (ADR-0086 §6b, §7).
+///
+/// **The region is used after every one of them**, which is the property the
+/// operations exist to have: a ring is published once per batch for the life of
+/// the queue, so an operation that consumed it would be usable once.
+const ORDERING_MODULE: &str = "\
+module system.test.dma version 1.4 profile full;
+import capability platform.pci.FunctionConfig as device;
+import capability system.memory.Authority as budget;
+
+resource [
+    fuel: 65536, stack: 16KiB, allocation: 4KiB, tasks: 1, workers: 1,
+    sync: 0, shared: 0B, cleanup: 0, recursion: 8, imports: 2
+]
+
+extern fn dma_region_allocate(
+    function: platform.pci.FunctionConfig,
+    authority: system.memory.Authority,
+    bytes: size
+) -> Result<DmaRegion<mut u8>, i64> uses [device, budget];
+
+extern fn capability_release(region: platform.dma.Region) -> i64
+    uses [platform.dma.Region];
+
+pub fn main() -> i64 uses [device, budget, platform.dma.Region] {
+    let made: Result<DmaRegion<mut u8>, i64> = dma_region_allocate(device, budget, 4096B);
+    match (made) {
+        Ok(region) => {
+            // Descriptor bytes first, then the point that publishes them.
+            region[0B] = 7u8;
+            region[1B] = 9u8;
+            dma_publish(region);
+            // Only now can the ownership marker be written: a device may
+            // observe it without being notified.
+            region[2B] = 1u8;
+            dma_publish(region);
+            // The completion side, standing alone: nothing precedes it that
+            // the hardware could anchor an ordering on.
+            dma_consume(region);
+            let status: u8 = region[2B];
+            let ended: i64 = capability_release(region);
+            if (status != 1u8) {
+                return -1i64;
+            }
+            return ended;
+        }
+        Err(status) => {
+            return status;
+        }
+    }
+}
+";
+
 fn lower(text: &str) -> tos_ir::Module {
     let source = tos_core::SourceReader::read(text.as_bytes()).expect("transport-valid source");
     let schema = tos_core::Parser::parse_schema(&source)
@@ -110,6 +164,9 @@ struct Nucleus {
     reached: Vec<(String, u64)>,
     /// Which handle each indexed access named, in order.
     accessed: Vec<u64>,
+    /// Which handle and direction each synchronisation named, in order
+    /// (ADR-0086 §10). One source operation must produce exactly one of these.
+    synced: Vec<(u64, tos_ir::DmaSyncDirection)>,
     /// What a `capability_release` answers, so the successful and the failed
     /// lifecycle are the same test with one number changed.
     release: i64,
@@ -125,6 +182,7 @@ impl Nucleus {
             mappings: tos_launch::DeviceMappings::new(),
             reached: Vec::new(),
             accessed: Vec::new(),
+            synced: Vec::new(),
             release,
         }
     }
@@ -258,6 +316,25 @@ impl tos_engine::System for Nucleus {
         }
     }
 
+    /// The ADR-0086 §10 boundary: prove the mapping is live, then record that
+    /// exactly one synchronisation happened for one source operation.
+    ///
+    /// **No memory is touched and no address is computed.** The whole of what
+    /// this host does for a `DmaSync` is decide whether it still holds the
+    /// mapping, which is the deterministic refusal the stale path needs.
+    fn dma_sync(&mut self, sync: tos_engine::DmaSync) -> Result<(), tos_engine::Trap> {
+        let handle = sync.region.get();
+        if self.mappings.mapping(handle).is_none() {
+            return Err(tos_engine::Trap::new(
+                "RUNTIME_DEVICE_REFUSED",
+                String::from("a region synchronisation this process holds no mapping for"),
+                0,
+            ));
+        }
+        self.synced.push((handle, sync.direction));
+        Ok(())
+    }
+
     fn observe(
         &mut self,
         _access: tos_engine::Observe,
@@ -271,7 +348,11 @@ impl tos_engine::System for Nucleus {
 }
 
 fn run(release: i64) -> (i64, Nucleus) {
-    let module = lower(MODULE);
+    run_text(MODULE, release)
+}
+
+fn run_text(text: &str, release: i64) -> (i64, Nucleus) {
+    let module = lower(text);
     verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect("the artifact verifies");
     let mut system = Nucleus::new(release);
@@ -464,4 +545,77 @@ fn an_index_past_the_extent_is_refused_from_source() {
     // And the release never ran, so the mapping is still the process's — the
     // refusal ended the run rather than unwinding through the lifecycle.
     assert!(system.mappings.mapping(REGION_HANDLE).is_some());
+}
+
+/// **ADR-0086 §16 — one source operation, exactly one backend
+/// synchronisation.**
+///
+/// Observed through the host rather than inferred from the artifact: the whole
+/// content of a `DmaSync` is that it reaches the boundary, so a count that came
+/// from counting instructions would be assuming the thing under test. Three
+/// operations are written; three arrive, in the order and with the directions
+/// the source gives them, on the handle the allocation returned.
+#[test]
+fn each_ordering_point_reaches_the_host_exactly_once() {
+    let (produced, system) = run_text(ORDERING_MODULE, OK);
+    assert_eq!(produced, OK);
+    assert_eq!(
+        system.synced,
+        std::vec![
+            (REGION_HANDLE, tos_ir::DmaSyncDirection::Publish),
+            (REGION_HANDLE, tos_ir::DmaSyncDirection::Publish),
+            (REGION_HANDLE, tos_ir::DmaSyncDirection::Consume),
+        ]
+    );
+}
+
+/// **ADR-0086 §10 — a retired mapping refuses before anything is ordered.**
+///
+/// The release above succeeded, so the bridge no longer holds the mapping. A
+/// synchronisation on that handle is refused deterministically, by the table,
+/// and not by relying on a fault — the same rule and the same mechanism the
+/// stale indexed access already has.
+#[test]
+fn a_synchronisation_after_release_is_refused() {
+    let (_, mut system) = run_text(ORDERING_MODULE, OK);
+    let before = system.synced.len();
+    let refused = tos_engine::System::dma_sync(
+        &mut system,
+        tos_engine::DmaSync {
+            region: tos_engine::Handle::new(REGION_HANDLE),
+            direction: tos_ir::DmaSyncDirection::Consume,
+        },
+    );
+    assert!(refused.is_err(), "a retired mapping does not synchronise");
+    assert_eq!(
+        system.synced.len(),
+        before,
+        "and nothing was recorded for it"
+    );
+}
+
+/// A handle this process never held is refused the same way.
+#[test]
+fn a_synchronisation_on_an_unknown_handle_is_refused() {
+    let (_, mut system) = run_text(ORDERING_MODULE, E_NO_CAPABILITY);
+    let refused = tos_engine::System::dma_sync(
+        &mut system,
+        tos_engine::DmaSync {
+            region: tos_engine::Handle::new(0xDEAD),
+            direction: tos_ir::DmaSyncDirection::Publish,
+        },
+    );
+    assert!(refused.is_err());
+}
+
+/// **The region outlives every ordering point**, proved by the run rather than
+/// by the type checker: the module reads byte 2 back after publishing twice and
+/// consuming once, and returns a status that depends on that read.
+#[test]
+fn the_region_is_still_usable_after_three_ordering_points() {
+    let (produced, system) = run_text(ORDERING_MODULE, OK);
+    assert_eq!(produced, OK, "the read after the ordering points succeeded");
+    assert_eq!(system.backing[0], 7);
+    assert_eq!(system.backing[1], 9);
+    assert_eq!(system.backing[2], 1);
 }

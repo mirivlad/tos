@@ -401,6 +401,14 @@ impl tos_engine::System for Runtime {
         ))
     }
 
+    fn dma_sync(&mut self, _sync: tos_engine::DmaSync) -> Result<(), tos_engine::Trap> {
+        Err(tos_engine::Trap::new(
+            "RUNTIME_DEVICE_UNREACHABLE",
+            String::from("a region was synchronised on a run with no region to reach"),
+            0,
+        ))
+    }
+
     fn observe(
         &mut self,
         _access: tos_engine::Observe,

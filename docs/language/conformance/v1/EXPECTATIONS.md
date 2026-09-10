@@ -32,6 +32,7 @@
 | C024 | `accept/closure-valid-captures.tos` | Full | accepts a Copy capture by copy and an affine capture by move, with the Copy value still usable afterwards | closure capture follows the ownership rules |
 | C026 | `accept/capability-effects.tos` | Bootstrap | accepts a declared effect set, a caller that declares the same effect, and a pure call chain | declared authority is exact and transitive |
 | C027 | `accept/atomic-orders.tos` | Full | accepts every order each atomic operation class admits, including a compare-exchange whose failure order is no stronger than its success order | typed atomic order legality |
+| C028 | `accept/dma-ordering.tos` | Full | accepts `dma_publish` and `dma_consume` over `DmaRegion<T>` and `DmaRegion<mut T>`, with the region still usable after four ordering points | ADR-0086 §3, §6b, §7: two directional visibility operations over the closed region family, non-consuming, taking no address and requiring no capability effect |
 | C025 | `accept/defer-cleanup-order.tos` | Full | accepts a resource used after its cleanup is registered, two cleanups released in reverse registration order, and a returning path that runs its cleanup | `defer` registers without taking ownership and runs on the exit path reached |
 | R001 | `reject/use-after-move.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | affine ownership negative |
 | R002 | `reject/borrow-escape.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` | a mutable borrow cannot coexist with later borrow/use |
@@ -129,6 +130,8 @@
 | A013 | `accept/capability-representation.tos` | Full | accepted | ADR-0085: a `platform.dma.Region` capability position filled by the region family, and one binding used three times — use is not consumption |
 | R083 | `reject/capability-representation-before-minor.tos` | Full | `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` with `feature=capability representation`, `declared=2`, `requires=3` | ADR-0085 §13: a module receives the language its header claims, so the same body is refused at 1.2 and accepted at 1.3 |
 | R082 | `reject/import-nonimportable-capability.tos` | Bootstrap | `E1503_NONIMPORTABLE_CAPABILITY` with `interface=platform.dma.Region`, `representation=DmaRegionFamily` | ADR-0085 §4a: an `import capability` naming an interface whose representation no import can produce is invalid **before** launch policy is consulted, and is therefore a source diagnostic rather than a `CapabilityDenied` at startup |
+| R084 | `reject/dma-ordering-before-minor.tos` | Full | `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` with `feature=DMA ordering`, `declared=3`, `requires=4` | ADR-0086 §13: the same body is refused at 1.3 and accepted at 1.4. The `DmaRegion` parameter is a 1.2 form and stays legal; the ordering point is the feature |
+| R085 | `reject/dma-ordering-wrong-region.tos` | Full | `E1215_ARGUMENT_TYPE_MISMATCH` with `expected=DmaRegion` | ADR-0086 §3: the rule is over the closed `DmaRegion` family and is nominal — an ordinary `Region` has no device to publish to, and an `MmioRegion` keeps ADR-0081 §9's ordering rather than acquiring this one |
 
 R029 and R030 also fix the precedence between the two codes for a character that
 cannot be tokenized: a non-ASCII scalar value outside a literal or comment is

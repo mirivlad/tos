@@ -42,6 +42,7 @@ use crate::parser::{
     Statement, StatementForm, TypeSyntax,
 };
 use crate::{Diagnostic, Severity, SourceUnit, Stage};
+use tos_ir::DmaSyncDirection;
 
 /// The exact fixed-width integer type names (docs/40 section 1).
 const INTEGER_TYPES: [&str; 8] = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"];
@@ -107,6 +108,20 @@ pub(crate) fn mmio_access(name: &str) -> Option<MmioAccess> {
         "mmio_write_le_u16" => access(2, true),
         "mmio_write_le_u32" => access(4, true),
         "mmio_write_le_u64" => access(8, true),
+        _ => None,
+    }
+}
+
+/// Which DMA visibility edge one predeclared name establishes (ADR-0086 §3).
+///
+/// **The element type is irrelevant to synchronisation**, so unlike
+/// [`mmio_access`] this carries no width and no byte order: what a `DmaSync`
+/// names is a direction and a region, and the bytes in the region are not its
+/// business.
+pub(crate) fn dma_direction(name: &str) -> Option<DmaSyncDirection> {
+    match name {
+        "dma_publish" => Some(DmaSyncDirection::Publish),
+        "dma_consume" => Some(DmaSyncDirection::Consume),
         _ => None,
     }
 }
@@ -1294,6 +1309,52 @@ impl<'source> TypeChecker<'source> {
     /// every other bounded index in this language is. **A write requires
     /// `MmioRegionMut`** — the read-only form is read-only in the type as well
     /// as in the page table, and this is the half of that the checker owns.
+    /// Types `dma_publish(region)` and `dma_consume(region)` (ADR-0086 §3).
+    ///
+    /// **The rule is over the closed existing family and is nominal.** The
+    /// operand's type is `DmaRegion<T>` or `DmaRegion<mut T>` and nothing else:
+    /// not an ordinary `Region`, not an `MmioRegion`, not a capability, and not
+    /// "some type that looks region-like". Both mutabilities are accepted,
+    /// because mutability is current CPU write authority and this operation is
+    /// a visibility boundary rather than a write — on an immutable region with
+    /// nothing ordered before it, the publication set is simply empty.
+    fn dma_sync_type(
+        &mut self,
+        expression: &'source Expression,
+        actual: &[Type],
+        name: &str,
+    ) -> Type {
+        if actual.len() != 1 {
+            return Type::Unit;
+        }
+        let region = &actual[0];
+        if matches!(region, Type::Unknown) {
+            return Type::Unit;
+        }
+        let named = match region {
+            Type::Constructed(name, _) | Type::Nominal(name) => name.as_str(),
+            _ => "",
+        };
+        if named != "DmaRegion" && named != DMA_REGION_MUT {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    "E1215_ARGUMENT_TYPE_MISMATCH",
+                    Severity::Error,
+                    Stage::Type,
+                    expression
+                        .arguments()
+                        .first()
+                        .map_or(expression.span(), |a| a.span()),
+                    self.source,
+                )
+                .with_field("requirement", name)
+                .with_field("expected", "DmaRegion")
+                .with_field("actual", region.spell()),
+            );
+        }
+        Type::Unit
+    }
+
     fn mmio_type(
         &mut self,
         expression: &'source Expression,
@@ -1465,6 +1526,9 @@ impl<'source> TypeChecker<'source> {
         }
         if let Some(access) = mmio_access(name) {
             return self.mmio_type(expression, &actual, access);
+        }
+        if dma_direction(name).is_some() {
+            return self.dma_sync_type(expression, &actual, name);
         }
         if let Some((parameters, result)) = self.declarations.functions.get(name) {
             let result = result.clone();

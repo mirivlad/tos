@@ -12,6 +12,16 @@
 //!   canonical stream has discriminants of its own, so a tag renumbered
 //!   consistently in encoder and parser would round-trip and rehash the same.
 //!
+//! **ADR-0086 moved the container version 5 → 6, and that is visible here.**
+//! A container version bump cannot leave a re-encoded old image byte-identical,
+//! and ADR-0086 §14 says so rather than claiming otherwise. What is stable is
+//! stated exactly: the module digest, the image length, and every byte of the
+//! image except the container's own version field. The pinned image hashes are
+//! therefore compared against the bytes with that field put back to 5 and the
+//! artifact digest resealed — which reproduces the pre-ADR-0086 image exactly
+//! if and only if nothing else changed. A renumbered tag or a changed
+//! instruction stream still fails, which is what the pin is for.
+//!
 //! **The constants were taken from before the slice, not from after it.** Each
 //! was read by running the same four modules at `28c661f` — the last commit
 //! before ADR-0085's implementation began — and compared with the value the
@@ -162,15 +172,28 @@ fn lower(text: &str) -> Module {
     .expect("the module lowers")
 }
 
-/// The digest, the image length and the image's own hash, as one line.
+/// The container version an image's header carries, as a big-endian `u32` at
+/// the fixed offset every reader takes it from.
+const VERSION_FIELD: core::ops::Range<usize> = 8..12;
+
+/// The digest, the image length and the image's own hash **at container
+/// version 5**, as one line.
+///
+/// The version field is put back and the frame resealed, so what is hashed is
+/// the image this module produced before ADR-0086 moved the container — byte
+/// for byte, including the instruction stream, the tables and the framing.
+/// Everything except that one field is therefore still pinned exactly.
 fn identity(text: &str) -> (String, usize, String) {
     let module = lower(text);
-    let (bytes, _) = tos_image::encode(&module);
+    let (mut bytes, _) = tos_image::encode(&module);
+    let length = bytes.len();
+    bytes[VERSION_FIELD].copy_from_slice(&5u32.to_be_bytes());
+    tos_image::reseal(&mut bytes);
     let mut hex = [0u8; 64];
     tos_hash::hex(&tos_hash::sha256(&bytes), &mut hex);
     (
         tos_ir::digest::module_digest(&module),
-        bytes.len(),
+        length,
         String::from(std::str::from_utf8(&hex).expect("hex is ASCII")),
     )
 }

@@ -675,6 +675,22 @@ impl In<'_> {
                 width: self.byte("mmio width")?,
                 little_endian: self.byte("mmio byte order")? != 0,
             },
+            // ADR-0086 §4. An unknown direction is a malformed artifact and
+            // never a default: a byte this reader does not know is refused,
+            // exactly as `BorrowKind` above refuses one.
+            40 => Op::DmaSync {
+                region: self.operand()?,
+                direction: match self.byte("DmaSyncDirection")? {
+                    0 => DmaSyncDirection::Publish,
+                    1 => DmaSyncDirection::Consume,
+                    tag => {
+                        return Err(ImageError::UnknownTag {
+                            family: "DmaSyncDirection",
+                            tag,
+                        })
+                    }
+                },
+            },
             4 => Op::Move {
                 place: self.place()?,
             },

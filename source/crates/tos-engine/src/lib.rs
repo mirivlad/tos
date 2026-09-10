@@ -48,8 +48,8 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_ir::{
-    BinaryOp, CallTarget, CapabilitySource, Constant, Instruction, IntKind, Module, Op, Operand,
-    Place, PlaceStep, SourceRef, Terminator, TypeDef, TypeId, UnaryOp,
+    BinaryOp, CallTarget, CapabilitySource, Constant, DmaSyncDirection, Instruction, IntKind,
+    Module, Op, Operand, Place, PlaceStep, SourceRef, Terminator, TypeDef, TypeId, UnaryOp,
 };
 use tos_residency::{
     Failure, ModuleProvider, Residency, VerifiedClosureManifest, VerifiedModuleRecord,
@@ -351,6 +351,26 @@ pub struct Access {
     pub value: Option<Value>,
 }
 
+/// One DMA visibility boundary the host must establish (ADR-0086 §10).
+///
+/// **A fourth kind of thing the host does, and the separation is the contract.**
+/// [`System::reach`] performs an accepted interface operation and crosses into
+/// ring 0; [`System::observe`] performs one MMIO hardware transaction;
+/// [`System::access`] performs one ordinary load or store in coherent region
+/// memory. This performs **none of those**: no transaction, no access, no
+/// selector. It establishes that memory already written is visible across a
+/// boundary the CPU is on one side of.
+///
+/// What crosses is the capability and the direction. **No address of any kind
+/// crosses** — not the CPU mapping base, not the device-visible address.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DmaSync {
+    /// The region, as the capability the module holds.
+    pub region: Handle,
+    /// Which edge to establish.
+    pub direction: DmaSyncDirection,
+}
+
 /// What one element of a region is.
 ///
 /// The ADR-0081 §2 set exactly: the integers and `bool`. A region of anything
@@ -451,6 +471,30 @@ pub trait System {
     /// handled standing for one that did.
     fn access(&mut self, access: Access) -> Result<Value, Trap>;
 
+    /// Establishes one DMA visibility boundary (ADR-0086 §10).
+    ///
+    /// **Not a transaction, not an access, and not an interface operation.**
+    /// `Publish` makes writes to the region that happen-before this point
+    /// visible to the device before any device transaction that follows;
+    /// `Consume` makes device writes complete before this point visible to
+    /// reads of the region that follow. Everything else is out of scope:
+    /// unrelated memory, atomics, another region, another context, and MMIO
+    /// against MMIO (ADR-0086 §6, §7).
+    ///
+    /// **The host proves the mapping is live before it synchronises.** A handle
+    /// it does not hold, or has retired, is refused deterministically *before*
+    /// any synchronisation and before any memory is touched — the same rule the
+    /// stale indexed-access path already applies, and never by relying on a
+    /// fault. A refusal is a [`Trap`] for [`System::access`]'s reason: the
+    /// operation did not happen and no status stands for one that did.
+    ///
+    /// **A backend may emit no machine instruction** when its profile proves
+    /// the relation already holds, provided it still preserves the ordering
+    /// boundary (ADR-0086 §9). That permission is per direction and per target:
+    /// on the accepted x86-64 profile `Publish` needs none and `Consume` needs
+    /// an execution barrier.
+    fn dma_sync(&mut self, sync: DmaSync) -> Result<(), Trap>;
+
     /// Marks the instant before one TOS Core call, for an external observer.
     ///
     /// **The seam of ADR-0066 milestone 6b, and it exists only when this crate
@@ -501,6 +545,14 @@ impl System for Unreachable {
         Err(Trap::new(
             "RUNTIME_DEVICE_UNREACHABLE",
             String::from("a region access was made on a run with no region to reach"),
+            0,
+        ))
+    }
+
+    fn dma_sync(&mut self, _sync: DmaSync) -> Result<(), Trap> {
+        Err(Trap::new(
+            "RUNTIME_DEVICE_UNREACHABLE",
+            String::from("a region was synchronised on a run with no region to reach"),
             0,
         ))
     }
@@ -1750,6 +1802,20 @@ impl Engine<'_> {
                     width: *width,
                     little_endian: *little_endian,
                     value: Some(number_of(&value, source)?),
+                })?;
+                Some(Value::Unit)
+            }
+            // **A boundary, not an access** (ADR-0086 §4). The engine performs
+            // no memory operation here and knows no address: it hands the host
+            // the capability and the direction, and the host establishes the
+            // edge. One source operation is exactly one call, which is what
+            // makes "the ordering point may not be treated as absent" a
+            // property of the representation rather than a hope.
+            Op::DmaSync { region, direction } => {
+                let region = self.operand(module, region, values, source)?;
+                self.system.dma_sync(DmaSync {
+                    region: capability_of(&region, source)?,
+                    direction: *direction,
                 })?;
                 Some(Value::Unit)
             }

@@ -1077,10 +1077,18 @@ impl<'source> OwnershipChecker<'source> {
         // that produced it, not to the access.
         //
         // `share` is the operation that *does* consume, and it still does: this
-        // names the eight accesses and nothing else.
+        // names the eight accesses, the two DMA ordering points, and nothing
+        // else.
+        //
+        // **The DMA points are non-consuming for a sharper reason** (ADR-0086
+        // §3): a driver publishes one ring many times, so an operation that
+        // took ownership of the region would be usable once and then never
+        // again — which is not an ordering primitive at all.
         if let Some(callee) = expression.callee() {
+            let predeclared = callee.span().text(self.source);
             if callee.form() == ExpressionForm::Name
-                && crate::typing::mmio_access(callee.span().text(self.source)).is_some()
+                && (crate::typing::mmio_access(predeclared).is_some()
+                    || crate::typing::dma_direction(predeclared).is_some())
             {
                 for argument in expression.arguments() {
                     self.walk_expression(argument.value(), state);

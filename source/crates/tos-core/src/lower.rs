@@ -3172,6 +3172,31 @@ impl<'source> Lowerer<'source> {
                 });
                 return Ok(Operand::Value(value));
             }
+            // A DMA ordering point lowers to its **own** operation for the same
+            // reason (ADR-0086 §4), and for a narrower one: a `Call` is exactly
+            // the thing a backend is free to inline away, and the whole content
+            // of this operation is that it may not be. It is not an MMIO
+            // access, and implies no device transaction.
+            if let Some(direction) = crate::typing::dma_direction(&name) {
+                if operands.len() != 1 {
+                    return Err(self.gap("DMA synchronisation arity", expression.span()));
+                }
+                let ty = self.unit_type();
+                let value = builder.define(ty);
+                builder.push(Instruction {
+                    result: Some(value),
+                    ty,
+                    op: Op::DmaSync {
+                        region: operands[0].clone(),
+                        direction,
+                    },
+                    source: at,
+                    runtime_contract: None,
+                    unsafe_block: builder.in_unsafe,
+                    unsafe_interface: None,
+                });
+                return Ok(Operand::Value(value));
+            }
         }
         let (target, ty) = match self.functions_by_name.get(&name) {
             Some(&index) => {

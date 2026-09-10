@@ -163,6 +163,12 @@ build_freestanding_runtime() {
 release_manifest() { python3 "$ROOT/tools/build-release-manifest.py" --check; }
 spdx() { sh "$ROOT/scripts/check-spdx.sh"; }
 dco() { sh "$ROOT/scripts/check-dco.sh"; }
+# The x86-64 half of ADR-0086, read out of the built image rather than out of
+# the source: exactly one LFENCE for `Consume`, no hardware fence for
+# `Publish`, and no non-temporal store anywhere the store-store premise covers.
+dma_ordering_backend() {
+    bash "$ROOT/scripts/tests/check-dma-ordering-backend.sh"
+}
 fmt() { (cd "$ROOT/source" && cargo fmt --all -- --check); }
 # `cargo test` covers the workspace default members. The UEFI loader is not one
 # — it is a target-only crate — so its host unit tests were never being run by
@@ -496,6 +502,7 @@ gate source     default   "unsafe-code safety evidence"                unsafe_sa
 gate source     default   "capsule provenance sidecar"                 capsule_provenance
 gate source     default   "freestanding runtime source"                freestanding_runtime_source
 gate source     default   "freestanding runtime build"                 build_freestanding_runtime
+gate source     default   "DMA ordering backend asymmetry"             dma_ordering_backend
 gate source     default   "cargo fmt"                                  fmt
 gate source     default   "cargo test"                                 tests
 gate source     default   "clippy host"                                clippy_host

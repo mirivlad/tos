@@ -79,9 +79,11 @@ pub use source::{
 };
 use tos_engine::{run_closure, Accounting, Closure, Refusal};
 pub use tos_engine::{
-    Access, Element, Handle, Observe, Reach, Request as CapabilityRequest, System, Trap,
+    Access, DmaSync, Element, Handle, Observe, Reach, Request as CapabilityRequest, System, Trap,
     Unreachable, Value,
 };
+/// Which DMA visibility edge one synchronisation establishes (ADR-0086 §4).
+pub use tos_ir::DmaSyncDirection;
 /// The integer widths a value carries, for a host building one.
 pub use tos_ir::IntKind;
 use tos_ir::Module;

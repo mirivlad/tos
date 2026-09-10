@@ -62,7 +62,12 @@ impl LimitKind {
 /// Value names the language supplies without declaration (docs/39 section 2).
 const PREDECLARED_VALUES: [&str; 6] = ["Some", "None", "Ok", "Err", "Completed", "Cancelled"];
 
-const PREDECLARED_FUNCTIONS: [&str; 20] = [
+const PREDECLARED_FUNCTIONS: [&str; 22] = [
+    // ADR-0086 §3: two directional visibility operations over a region the
+    // caller already holds. No width and no byte order: what they name is a
+    // direction, and the element type is irrelevant to synchronisation.
+    "dma_publish",
+    "dma_consume",
     // ADR-0081 §7: device access is width- and byte-order-explicit, because a
     // register's width belongs to the transaction rather than to a type.
     "mmio_read_u8",
@@ -539,7 +544,15 @@ fn diagnostic(code: &'static str, stage: Stage, span: Span, source: &SourceUnit)
 /// mapping retirement and the feature gate above — because until all of those
 /// existed, accepting a 1.3 module would have been accepting one whose semantics
 /// were partly absent.
-const LANGUAGE_VERSION: (u32, u32) = (1, 3);
+///
+/// **It moved last of ADR-0086's implementation for the same reason**, and the
+/// list is longer: the predeclared names and their type rule, the non-consuming
+/// use, `Op::DmaSync` and its direction, the `TOSIMAGE` tag and encoding
+/// version, the verifier's independent obligations, `System::dma_sync`, the
+/// x86-64 backend's asymmetry and the gate that reads it out of the built
+/// image. Until every one of those existed, a 1.4 module was refused whole by
+/// its header — which is what `E1602` is for.
+const LANGUAGE_VERSION: (u32, u32) = (1, 4);
 
 /// The minor in which a direct interface effect became legal (ADR-0080 §5).
 const DIRECT_INTERFACE_EFFECT_MINOR: u32 = 1;
@@ -550,6 +563,15 @@ const DIRECT_INTERFACE_EFFECT_MINOR: u32 = 1;
 /// accepted corpus already described. MMIO is not in the accepted language at
 /// all, so it is additive and takes one.
 const DEVICE_MEMORY_MINOR: u32 = 2;
+
+/// The minor in which DMA publication and consumption became part of the
+/// language (ADR-0086 §13).
+///
+/// **Additive and version-gated, exactly as device memory was.** The two
+/// operations are new source forms and a new verifier-visible IR semantic, so a
+/// module that did not ask for 1.4 does not get them — and an implementation
+/// that has not implemented 1.4 refuses such a module whole by its header.
+const DMA_ORDERING_MINOR: u32 = 4;
 
 /// The minor in which an interface stopped having to be its own value type
 /// (ADR-0085 §13, `SYSTEM_INTERFACE_V1` §4.3).
@@ -645,6 +667,46 @@ fn check_features_against_minor(
     }
     if minor < CAPABILITY_REPRESENTATION_MINOR {
         refuse_capability_representation(source, schema, &signatures, minor, out);
+    }
+    if minor < DMA_ORDERING_MINOR {
+        refuse_dma_ordering(source, schema, minor, out);
+    }
+}
+
+/// Refuses the DMA ordering operations in a module that did not claim them
+/// (ADR-0086 §13).
+///
+/// **Only the call sites**, because that is the whole of the feature's source
+/// surface: 1.4 adds no type constructor, no type name and no declaration form,
+/// so a signature naming a `DmaRegion` is a 1.2 module doing what 1.2 already
+/// admits. What a 1.3 module may not do is write the ordering point.
+fn refuse_dma_ordering(
+    source: &SourceUnit,
+    schema: &Schema,
+    minor: u32,
+    out: &mut Vec<Diagnostic>,
+) {
+    for function in schema.functions() {
+        let mut found = Vec::new();
+        predeclared_calls_in(
+            source,
+            function.body(),
+            &|name| crate::typing::dma_direction(name).is_some(),
+            &mut found,
+        );
+        for span in found {
+            out.push(
+                diagnostic(
+                    "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR",
+                    Stage::Type,
+                    span,
+                    source,
+                )
+                .with_field("feature", "DMA ordering")
+                .with_field("declared", minor)
+                .with_field("requires", DMA_ORDERING_MINOR),
+            );
+        }
     }
 }
 
@@ -768,15 +830,30 @@ fn refuse_device_memory(
     }
     for function in schema.functions() {
         let mut found = Vec::new();
-        device_accesses_in(source, function.body(), &mut found);
+        predeclared_calls_in(
+            source,
+            function.body(),
+            &|name| crate::typing::mmio_access(name).is_some(),
+            &mut found,
+        );
         for span in found {
             report(span);
         }
     }
 }
 
-/// Every device-memory access written inside a block, however deeply nested.
-fn device_accesses_in(source: &SourceUnit, block: &crate::parser::Block, out: &mut Vec<Span>) {
+/// Every call of a matching predeclared name written inside a block, however
+/// deeply nested.
+///
+/// One walk for both version gates: the device accesses of ADR-0081 and the DMA
+/// ordering points of ADR-0086 are found the same way and differ only in which
+/// names count, so the nesting rules are written once.
+fn predeclared_calls_in(
+    source: &SourceUnit,
+    block: &crate::parser::Block,
+    names: &dyn Fn(&str) -> bool,
+    out: &mut Vec<Span>,
+) {
     for statement in block.statements() {
         for expression in [statement.target(), statement.expression()]
             .into_iter()
@@ -785,9 +862,18 @@ fn device_accesses_in(source: &SourceUnit, block: &crate::parser::Block, out: &m
             crate::walk::walk_tree(expression, false, |node| {
                 if let crate::walk::Node::Expression(inner) = node {
                     if inner.form() == crate::parser::ExpressionForm::Call {
-                        if let Some(callee) = inner.inner() {
+                        // **`callee()`, not `inner()`.** This walk was written
+                        // for ADR-0081's device-memory gate and read the wrong
+                        // accessor, so it matched no call at all; the gate went
+                        // on passing because an MMIO access needs an
+                        // `MmioRegion` value, and the *type* half of the same
+                        // gate caught every module that could have one. The DMA
+                        // ordering feature has no type of its own (ADR-0086
+                        // §13), so its gate is the call site or nothing — which
+                        // is what surfaced this.
+                        if let Some(callee) = inner.callee() {
                             if callee.form() == crate::parser::ExpressionForm::Name
-                                && crate::typing::mmio_access(callee.span().text(source)).is_some()
+                                && names(callee.span().text(source))
                             {
                                 out.push(inner.span());
                             }
@@ -801,11 +887,11 @@ fn device_accesses_in(source: &SourceUnit, block: &crate::parser::Block, out: &m
             .into_iter()
             .flatten()
         {
-            device_accesses_in(source, nested, out);
+            predeclared_calls_in(source, nested, names, out);
         }
         if let Some(chained) = statement.else_if() {
             for nested in [chained.body(), chained.else_body()].into_iter().flatten() {
-                device_accesses_in(source, nested, out);
+                predeclared_calls_in(source, nested, names, out);
             }
         }
     }

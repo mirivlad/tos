@@ -119,7 +119,11 @@ grep -q '^TOS\.RUN\.PROCESS_TERMINATED process=1 by=0 ' "$LOG" ||
 # --- and the plan table is empty at the end -----------------------------------
 # A plan is destroyed by the loss of the one capability naming it, and a boot
 # that ended holding one has leaked a decision (ADR-0077 §6).
-grep -q '^TOS\.RUN\.PROCESS_RECLAIMED process=0 .* plans_live=0$' "$LOG" ||
+# **Not anchored at the end of the line.** The event gained
+# `dma_quarantined=` when DMA regions did (ADR-0084 §5f), and an assertion that
+# ended at `plans_live=0$` stopped matching a line it was still true of. What
+# this is about is the plan table, so it asks about the plan table.
+grep -q '^TOS\.RUN\.PROCESS_RECLAIMED process=0 .* plans_live=0\b' "$LOG" ||
     fail "a launch plan outlived the process that made it"
 
 # --- the number the module returned -------------------------------------------

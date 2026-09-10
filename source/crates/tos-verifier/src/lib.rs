@@ -1114,6 +1114,60 @@ fn check_instruction(
         }
     }
     match &instruction.op {
+        // **The DMA ordering operation, proved from the artifact** (ADR-0086
+        // §15). Nothing here is taken from a producer-supplied string: the
+        // operand's type is read out of the function's value table, and the
+        // direction is a closed discriminator the container already refused to
+        // invent.
+        Op::DmaSync { region, direction } => {
+            let _ = direction;
+            let Some(ty) = operand_type(module, function, region) else {
+                return Err(Finding::new(
+                    "V2021_REGION",
+                    at(),
+                    "a DMA synchronisation names an operand with no type",
+                ));
+            };
+            // Obligation 3 and 4: the exact type is one of the two DMA region
+            // constructors. A `Region`, an `MmioRegion`, a
+            // `Capability("platform.dma.Region")`, an aggregate, a `Shared`, a
+            // task, a guard and every scalar are refused here, together, by
+            // asking what the type *is* rather than what it resembles.
+            if !matches!(
+                module.type_of(ty),
+                Some(TypeDef::DmaRegion(_) | TypeDef::DmaRegionMut(_))
+            ) {
+                return Err(Finding::new(
+                    "V2021_REGION",
+                    at(),
+                    "a DMA synchronisation names an operand that is not a DmaRegion",
+                ));
+            }
+            // Obligation 6: the operation produces `unit`. An artifact that
+            // claimed a value from it would have a value the engine never
+            // writes.
+            if !matches!(module.type_of(instruction.ty), Some(TypeDef::Unit)) {
+                return Err(Finding::new(
+                    "V2021_REGION",
+                    at(),
+                    "a DMA synchronisation is typed as something other than unit",
+                ));
+            }
+            // Obligation 1, **checked last** for ADR-0085 §17.7's reason: every
+            // rule above is wrong about the operation at any minor, and only an
+            // artifact that is right about all of them has its version left as
+            // the one thing wrong with it.
+            if !declares_minor_at_least(&module.header.language_version, 4) {
+                return Err(Finding::new(
+                    "V2021_REGION",
+                    at(),
+                    alloc::format!(
+                        "a DMA synchronisation is not a form of declared language version {}",
+                        module.header.language_version
+                    ),
+                ));
+            }
+        }
         Op::Call { target, .. } => match target {
             CallTarget::Local(index) => {
                 if *index >= module.functions.len() {
@@ -2186,6 +2240,10 @@ fn operands_of(op: &Op) -> Vec<Operand> {
             all
         }
         Op::Capability { operands, .. } => operands.clone(),
+        // ADR-0086 §15 obligation 2. The region is an ordinary operand for
+        // every rule that applies to one, including naming a value the table
+        // has.
+        Op::DmaSync { region, .. } => alloc::vec![region.clone()],
         Op::Resource { amount, .. } => alloc::vec![amount.clone()],
         Op::Closure { captures, .. } => captures.clone(),
         Op::CallValue { callee, operands } => {

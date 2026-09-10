@@ -36,9 +36,9 @@ use alloc::vec::Vec;
 
 use crate::LockMode as tos_ir_lock_mode;
 use crate::{
-    AtomicOp, BinaryOp, Block, BorrowKind, CallTarget, CapabilitySource, Constant, Function,
-    Import, Instruction, Module, Op, Operand, Place, PlaceStep, ResourceKind, Signature,
-    SourceMapEntry, Terminator, TypeDef, UnaryOp, Variant,
+    AtomicOp, BinaryOp, Block, BorrowKind, CallTarget, CapabilitySource, Constant,
+    DmaSyncDirection, Function, Import, Instruction, Module, Op, Operand, Place, PlaceStep,
+    ResourceKind, Signature, SourceMapEntry, Terminator, TypeDef, UnaryOp, Variant,
 };
 
 /// The digest of a module, as `sha256:<hex>`.
@@ -568,6 +568,17 @@ fn write_op<S: Sink>(out: &mut Writer<S>, op: &Op) {
             write_operand(out, value);
             out.number(u128::from(*width));
             out.number(u128::from(*little_endian));
+        }
+        // ADR-0086 §14: the direction is part of the module's identity.
+        // `DmaSync(Publish, r)` and `DmaSync(Consume, r)` are different
+        // programs and must not hash alike.
+        Op::DmaSync { region, direction } => {
+            out.tag(40);
+            write_operand(out, region);
+            out.tag(match direction {
+                DmaSyncDirection::Publish => 0,
+                DmaSyncDirection::Consume => 1,
+            });
         }
         Op::Move { place } => {
             out.tag(4);

@@ -1,0 +1,54 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.dma_ordering version 1.4 profile full;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// TOS Core 1.4 (ADR-0086). Two directional visibility operations over a region
+// the caller already holds. They take no offset, no length and no address; they
+// return `unit`; and they require no capability effect, because authority here
+// is the operand — a value of the closed `DmaRegion` family, which nothing can
+// forge from scalar data.
+
+// **The queue shape, and why one barrier is not enough** (ADR-0086 §6b). A
+// device may observe an ownership marker without being notified, so descriptor
+// bytes are published before the marker becomes the handoff point, and the
+// marker is published before the notification.
+pub fn publish_a_batch(ring: DmaRegion<mut u8>, notify: MmioRegionMut) -> i64 {
+    ring[0B] = 7u8;
+    ring[1B] = 9u8;
+    dma_publish(ring);
+    ring[2B] = 1u8;
+    dma_publish(ring);
+    mmio_write_le_u16(notify, 0B, 3u64);
+    return 0i64;
+}
+
+// **The completion side, standing alone** (ADR-0086 §7). Nothing precedes the
+// consume that a device observation could anchor an ordering on, and that is
+// legal: `dma_consume` is a synchronisation point in its own right rather than
+// an operation whose meaning depends on a preceding status read.
+pub fn drain(ring: DmaRegion<mut u8>) -> u8 {
+    dma_consume(ring);
+    return ring[2B];
+}
+
+// **Both mutabilities** (ADR-0086 §3). Mutability is current CPU write
+// authority; a `DmaSync` is a visibility boundary and not a write, so a region
+// this function cannot write still publishes — over an empty set, which is
+// well defined.
+pub fn publish_read_only(ring: DmaRegion<u8>) -> u8 {
+    dma_publish(ring);
+    dma_consume(ring);
+    return ring[0B];
+}
+
+// **Use is not consumption** (ADR-0086 §3, ADR-0085 §8). One binding carries
+// four ordering points and is still the same value afterwards, which is what a
+// driver publishing one ring per batch depends on.
+pub fn reuse(ring: DmaRegion<mut u16>) -> u16 {
+    dma_publish(ring);
+    dma_consume(ring);
+    dma_publish(ring);
+    dma_consume(ring);
+    return ring[0B];
+}

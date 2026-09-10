@@ -140,12 +140,18 @@ mappings = int(reserve_lines["process_region_mapping_frames"])
 # this account is the device memory itself: it is pre-existing hardware state
 # that nothing funds and nothing reclaims.
 devices = int(reserve_lines["process_device_mapping_frames"])
+# DMA regions are a third kind of mapping and a fourth term (ADR-0084 §4): their
+# own aperture, mapped write-back rather than `UC`, costing tables like any
+# other. The reserve has carried this term since the DMA slice; the
+# decomposition did not print it, so this sum was 48 frames short of the reserve
+# it decomposes and the gate said so the first time it was run afterwards.
+dma = int(reserve_lines["process_dma_mapping_frames"])
 backing = int(reserve_lines["region_backing_frames"])
 processes = int(reserve_lines["processes"])
 check(
     "the reserve is its parts",
     reserve,
-    backing + processes * (identity + windows + devices + mappings),
+    backing + processes * (identity + windows + devices + dma + mappings),
 )
 # **And the device term is a real cost, not a zero that balances.** Dropping the
 # term from the formula makes the sum above disagree; making it *zero* would let
@@ -157,6 +163,12 @@ if devices <= 0:
         f"{devices}"
     )
 print(f"  the device-mapping reserve is a real cost: {devices}")
+# The same argument, for the same reason, one kind along.
+if dma <= 0:
+    raise SystemExit(
+        "memory-account: FAIL: the DMA-mapping reserve term is a real cost: " f"{dma}"
+    )
+print(f"  the DMA-mapping reserve is a real cost: {dma}")
 check(
     "and its total is the one the boot took",
     reserve,

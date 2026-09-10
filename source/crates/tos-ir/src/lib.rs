@@ -49,7 +49,7 @@ pub const LANGUAGE_VERSION: &str = "1.0";
 /// resolves to an interface path, which is what `Signature.effects` has always
 /// carried — so one schema represents both minors, and an artifact records
 /// which of them its module declared.
-pub const LANGUAGE_VERSIONS: &[&str] = &["1.0", "1.1", "1.2", "1.3"];
+pub const LANGUAGE_VERSIONS: &[&str] = &["1.0", "1.1", "1.2", "1.3", "1.4"];
 
 /// The Unicode baseline docs/43 section 2 fixes for V1.
 pub const UNICODE_BASELINE: &str = "UCD-17.0.0/UAX15-r57/NFC";
@@ -448,6 +448,31 @@ impl MemoryOrder {
     }
 }
 
+/// Which visibility edge one [`Op::DmaSync`] establishes (ADR-0086 §4).
+///
+/// **One closed discriminator rather than two unrelated operations.** The two
+/// source forms differ in exactly this bit: their operand shape, result type,
+/// ownership behaviour, verifier obligations and backend hook are identical, so
+/// two IR forms would duplicate eight rules to express one field.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DmaSyncDirection {
+    /// CPU → device. Writes to the region that happen-before the operation are
+    /// visible to the device before any device transaction that follows.
+    Publish,
+    /// Device → CPU. Device writes complete before the point are visible to
+    /// reads of the region that follow the operation in this context.
+    Consume,
+}
+
+impl DmaSyncDirection {
+    pub fn spelled(self) -> &'static str {
+        match self {
+            DmaSyncDirection::Publish => "Publish",
+            DmaSyncDirection::Consume => "Consume",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum AtomicOp {
     Load,
@@ -584,6 +609,22 @@ pub enum Op {
         value: Operand,
         width: u8,
         little_endian: bool,
+    },
+    /// A DMA visibility boundary for one region (ADR-0086 §4).
+    ///
+    /// **Its own operation for MMIO's reason and with none of MMIO's
+    /// semantics.** The backend must not be free to treat an ordering point as
+    /// an ordinary call that may disappear or move — which is why
+    /// [`Op::MmioRead`] exists too — but no device transaction is implied here,
+    /// and a backend may emit zero machine instructions for one while still
+    /// preserving the boundary (ADR-0086 §9).
+    ///
+    /// The region operand is a **non-consuming use**: the same value is usable
+    /// afterwards, which is the point, since a driver publishes one ring many
+    /// times. The result is `unit`.
+    DmaSync {
+        region: Operand,
+        direction: DmaSyncDirection,
     },
     /// Takes ownership of the value at a place.
     Move {
