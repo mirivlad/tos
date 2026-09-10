@@ -166,7 +166,10 @@ Three properties this section did not anticipate, each load-bearing:
   flushed. If that cannot be proved, the frames, the charge and the assignment
   are all held, and the function cannot be claimed again.
 
-The MMIO↔DMA ordering contract is still open and is Stage 4C-3's.
+The MMIO↔DMA ordering contract is still open and is Stage 4C-3's. **A
+proposed decision now exists and is not accepted** — ADR-0086 (Proposed,
+2026-09-10), two directional visibility operations over an existing
+`DmaRegion` — so this sentence stands until that decision is approved.
 
 **And one thing must not be written by accident** (ADR-0082 §5). On the no-IOMMU
 reference profile, TOS cannot claim hardware-enforced confinement of a malicious
