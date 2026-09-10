@@ -122,7 +122,7 @@ primitive-type: bool i8 i16 i32 i64 u8 u16 u32 u64 size duration string bytes un
 predeclared-type: Option Result Task TaskResult Shared Region DmaRegion MmioRegion MmioRegionMut Mutex RwLock MutexGuard ReadGuard WriteGuard Channel Event Semaphore Barrier Latch AtomicBool AtomicU32 AtomicU64 ConversionError slice array
 atomic-order: Relaxed Acquire Release AcqRel SeqCst
 predeclared-value: Some None Ok Err Completed Cancelled
-predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul share mmio_read_u8 mmio_read_le_u16 mmio_read_le_u32 mmio_read_le_u64 mmio_write_u8 mmio_write_le_u16 mmio_write_le_u32 mmio_write_le_u64
+predeclared-function: to_i8 to_i16 to_i32 to_i64 to_u8 to_u16 to_u32 to_u64 wrapping_add wrapping_sub wrapping_mul share mmio_read_u8 mmio_read_le_u16 mmio_read_le_u32 mmio_read_le_u64 mmio_write_u8 mmio_write_le_u16 mmio_write_le_u32 mmio_write_le_u64 dma_publish dma_consume
 special-token: _
 ```
 <!-- stage2-word-inventory:end -->

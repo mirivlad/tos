@@ -255,6 +255,18 @@ constructors use the same Call form and differ only at resolved-callee checking.
 right side after true. `?` evaluates its operand once and propagates the
 matching `Err` from the nearest enclosing return scope if it is not `Ok`.
 
+**Evaluation order is a relation among this program's own operations, and one
+relation reaches outside them** (ADR-0086, TOS Core 1.4). `dma_publish(region)`
+and `dma_consume(region)` state visibility between a context and the device a
+`DmaRegion` is associated with: after a publish, writes to that region which
+happen-before it are visible to the device before any device transaction that
+follows; after a consume, device writes complete before the point are visible to
+reads of that region that follow. They are directional, region-scoped, and say
+nothing about ordinary memory, atomics, another region, another context or MMIO
+against MMIO. Left-to-right evaluation constrains the order of steps; it has
+never said when a party that is not a TOS Core context can see their effects,
+and these two operations are the only place V1 says so.
+
 An executable block is a statement body, not a value container: it has no tail
 expression. `return expression;` is the only normal value return. A function
 body, closure body, and `spawn async`/`spawn parallel` body each establish a

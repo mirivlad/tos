@@ -153,3 +153,4 @@ docs/adr/0082-routed-interrupt-authority.md
 docs/adr/0083-repairing-the-stage1-validation-performance-metric.md
 docs/adr/0084-dma-authority-and-device-visible-addressing.md
 docs/adr/0085-an-interface-that-is-not-its-own-value-type.md
+docs/adr/0086-dma-publication-and-consumption-ordering.md

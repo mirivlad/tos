@@ -623,11 +623,12 @@ the term, and the whole lifecycle — and the DMA slice **inherits** that rule
 rather than restating it, adding a DMA mapping to the classification table and
 changing nothing else.
 
-**Forward reference, added 2026-09-10.** The MMIO↔DMA ordering contract has a
-proposal — ADR-0086, *Proposed and not accepted*. It reads §7 as this ADR wrote
-it: a wake says "something happened since you last looked" and carries no
-memory-visibility meaning, which is why the consume side needs an operation of
-its own rather than an ordering attached to `irq_wait`.
+**The MMIO↔DMA ordering contract is decided by ADR-0086** (Accepted
+2026-09-10), and it reads §7 as this ADR wrote it: a wake says "something
+happened since you last looked" and carries no memory-visibility meaning. That
+is precisely why the completion side became an operation of its own,
+`dma_consume`, rather than an ordering silently attached to `irq_wait` — the
+list above is unchanged, and one of its items now has a decision.
 
 ## Architecture impact statement
 

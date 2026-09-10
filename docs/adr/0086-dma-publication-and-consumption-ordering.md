@@ -2,17 +2,18 @@
 
 # ADR-0086: DMA publication and consumption ordering
 
-- Status: **Proposed**, at revision 2 (awaiting final Project Architect review).
+- Status: **Accepted (Project Architect-approved, 2026-09-10)**, at revision 2.
   Revision 1's two open questions are decided (§20); revision 1's six review
-  corrections are applied (§21)
+  corrections and the two revision-1 cost statements the final review found are
+  applied (§21). Stage 4C-3 implements this document
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-10, on revision 2 —
+  **granted before any of it was implemented**, which is the order ADR-0081 §0
+  recorded not having followed
 - Date: 2026-09-10
 - Decision level: **3** (§13). It adds two source operations, one
   verifier-visible IR operation, a `TOSIMAGE` encoding version and **TOS Core
   1.4** — and it writes the first ordering relation the language has ever had
   between a TOS Core context and an agent that is not one
-- Project Architect approval: *(none — this ADR is not accepted. Nothing in it
-  may be implemented before it is: not `Op::DmaSync`, not the encoding change,
-  not TOS Core 1.4, not the runtime hook)*
 - Related: **ADR-0081** §9, §10, §11 (device memory, observability, and the
   ordering gap this closes), **ADR-0082** §7 and §12 (delivery, and the boundary
   it left), **ADR-0084** §4, §5c, §7 (write-back DMA memory, P2–P4, and
@@ -54,11 +55,15 @@ because a queue was already half-written around an assumption.
 7. **Revision 1 was reviewed and returned with corrections**, on 2026-09-10:
    two approvals, one substantive semantic repair to the consume side, and four
    places where the draft claimed more than the accepted documents support. §21
-   records each. Revision 2 is what came back.
+   records each. Revision 2 is what came back;
+8. **Revision 2 was accepted on 2026-09-10**, after a final review removed two
+   surviving revision-1 statements about cost. Implementation began after that,
+   and not before.
 
-**Nothing in this ADR has been implemented.** The tree contains no `DmaSync`, no
-fence of any kind, no `System::dma_sync`, no encoding change, no TOS Core 1.4 and
-no virtqueue.
+**This decision was accepted before it was implemented**, which is worth
+recording because ADR-0081 §0 had to record the opposite. At acceptance the tree
+contained no `DmaSync`, no fence, no `System::dma_sync`, no encoding change, no
+TOS Core 1.4 and no virtqueue.
 
 ## 1. The gap, stated exactly
 
@@ -971,13 +976,12 @@ what §7 states — ADR-0082 §7's wake keeps exactly the meaning it has.
 
 ## 19. Cross-document reconciliation, on acceptance
 
-Recorded here so the edits are reviewed as part of the decision rather than
-discovered afterwards. **None of the normative edits happens before approval.**
-The only thing this slice writes into other documents is a *forward pointer* in
-each of the four places that name the open boundary — one sentence saying a
-proposed decision exists and is not accepted, which decides nothing and lets a
-reader of ADR-0081 §11 find this document instead of concluding the gap is
-untouched.
+Recorded here so the edits were reviewed as part of the decision rather than
+discovered afterwards. **They landed in the acceptance commit**, before any
+implementation, and the four forward pointers written while this was Proposed
+became the decision they pointed at. Historical statements are not rewritten:
+ADR-0081 §11, ADR-0082 §12 and ADR-0084 §7 still say what they decided and what
+they left open, and each now records that the open item has a decision.
 
 | Document | Change |
 |---|---|
@@ -986,7 +990,7 @@ untouched.
 | `docs/41` §4 | a note that these operations create **no** happens-before between TOS Core contexts, so the table stays exhaustive for what it covers |
 | `docs/42` §1 and the minor table | minor 4, attributed to this ADR, with the "accepted is not implemented" paragraph 1.3 already has |
 | `docs/43` §5 | the `region/DMA` family gains the ordering property it currently lacks, and the `DmaSync` verifier obligations of §15 |
-| `docs/44` | `E1608`'s feature name for this gate, and the conformance expectations of §16 |
+| `docs/44` | `E1608`'s feature name for this gate (`DMA ordering`), and the language-version line. **The `EXPECTATIONS.md` rows of §16 land with the implementation**, because a conformance row without its vector file is a claim the harness cannot run |
 | `docs/11` §DMA | "still open and is Stage 4C-3's" becomes the decision, once there is one |
 | ADR-0081 §11 | the boundary it named is closed by this decision — recorded as a forward reference, without rewriting what §11 decided |
 | ADR-0082 §12, ADR-0084 §7 | the same forward reference in each not-decided list |
