@@ -268,6 +268,11 @@ fencing, DMA synchronisation — is what a queue path needs, and deciding it und
 pressure from a read-only configuration probe would be deciding the portable DMA
 memory model by accident. It belongs to the DMA/queue slice.
 
+**Forward reference, added 2026-09-10 and deciding nothing here.** That slice
+arrived, and the proposal for it is ADR-0086 — *Proposed, not accepted*. Nothing
+in this section is amended by its existence, and §11 remains what Stage 4B
+decided until ADR-0086 is approved.
+
 ## 12. Bounds and alignment
 
 Every MMIO access is byte-offset based. For width `N`:

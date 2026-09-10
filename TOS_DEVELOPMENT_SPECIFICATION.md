@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `f1eff3b3f546f9b1cdac222bf30e7d99e54f09ad153b00232b230f1377360c8c`\
+Source-manifest SHA-256: `2df127abbc3a7cdafd9cca93a7d90a8dba33404d62fc88a5ae6ce0d7dd95c007`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -9572,7 +9572,10 @@ Three properties this section did not anticipate, each load-bearing:
   flushed. If that cannot be proved, the frames, the charge and the assignment
   are all held, and the function cannot be claimed again.
 
-The MMIO↔DMA ordering contract is still open and is Stage 4C-3's.
+The MMIO↔DMA ordering contract is still open and is Stage 4C-3's. **A
+proposed decision now exists and is not accepted** — ADR-0086 (Proposed,
+2026-09-10), two directional visibility operations over an existing
+`DmaRegion` — so this sentence stands until that decision is approved.
 
 **And one thing must not be written by accident** (ADR-0082 §5). On the no-IOMMU
 reference profile, TOS cannot claim hardware-enforced confinement of a malicious
@@ -28351,6 +28354,11 @@ fencing, DMA synchronisation — is what a queue path needs, and deciding it und
 pressure from a read-only configuration probe would be deciding the portable DMA
 memory model by accident. It belongs to the DMA/queue slice.
 
+**Forward reference, added 2026-09-10 and deciding nothing here.** That slice
+arrived, and the proposal for it is ADR-0086 — *Proposed, not accepted*. Nothing
+in this section is amended by its existence, and §11 remains what Stage 4B
+decided until ADR-0086 is approved.
+
 ## 12. Bounds and alignment
 
 Every MMIO access is byte-offset based. For width `N`:
@@ -29074,6 +29082,12 @@ block I/O. Bus mastering is decided here as far as §5d requires — the predica
 the term, and the whole lifecycle — and the DMA slice **inherits** that rule
 rather than restating it, adding a DMA mapping to the classification table and
 changing nothing else.
+
+**Forward reference, added 2026-09-10.** The MMIO↔DMA ordering contract has a
+proposal — ADR-0086, *Proposed and not accepted*. It reads §7 as this ADR wrote
+it: a wake says "something happened since you last looked" and carries no
+memory-visibility meaning, which is why the consume side needs an operation of
+its own rather than an ordering attached to `irq_wait`.
 
 ## Architecture impact statement
 
@@ -30137,6 +30151,11 @@ The MMIO↔DMA ordering contract (Stage 4C-3), device reset, VirtIO feature
 negotiation, queues, block I/O, scatter-gather beyond one contiguous region,
 IOMMU domain management, and any device-matching policy. A second DMA backend
 under an IOMMU is anticipated by §6's wording and is not designed here.
+
+**Forward reference, added 2026-09-10.** Stage 4C-3 has a proposal — ADR-0086,
+*Proposed and not accepted*. It rests on §4's write-back mapping and on §5c's P2,
+P3 and P4 as the premises of its reference-profile argument, and it adds no
+authority, no right and no operation to anything decided here.
 
 ## 8. Conformance evidence this ADR will require
 
