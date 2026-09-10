@@ -443,10 +443,12 @@ The operations apply to **the whole region**. The V1 source surface gains no
 
 The region is already bounded, already typed, and already the unit every other
 part of this model works in. A range parameter would be an optimisation
-hypothesis about platforms none of which are in front of us, and on the
-reference profile — where the implementation is a compiler barrier — it would
-optimise nothing at all while adding arithmetic the verifier would have to check
-and the nucleus-free path would have to bound.
+hypothesis about platforms none of which are in front of us. **On the reference
+profile, range scoping has no demonstrated benefit:** `Publish` is a
+compiler-only ordering point, and `Consume`'s `LFENCE` cost is independent of the
+region's byte extent (§11). A range parameter would therefore reduce neither
+mechanism on this profile, while adding arithmetic the verifier would have to
+check and the nucleus-free path would have to bound.
 
 **The trade is deliberate and stated:** whole-region semantics may cost more on a
 future non-coherent platform, where `consume` could imply cache maintenance over
@@ -912,13 +914,15 @@ unserved.
 
 **Schema operations on `platform.dma.Region`, consuming `SYSTEM_ABI_V1`
 selectors.** Wrong layer. Their semantics are a compiler, backend and platform
-visibility constraint over a region the caller already holds; on the reference
-profile the correct implementation is *no privileged transition and no hardware
-fence at all*, so every barrier would pay a ring-0 round trip for an operation
-that emits nothing. It would also bind a portable language memory-ordering
-primitive permanently to one ABI mechanism — and a future target that needs
-privileged cache maintenance is served by §12's backend helper without any of
-that.
+visibility constraint over a region the caller already holds, and **neither
+direction requires a privileged transition on the accepted x86-64 profile**:
+`Publish` requires only the compiler ordering boundary, and `Consume`
+additionally requires an ordinary **unprivileged** `LFENCE` (§11). Making either
+source operation a schema or `SYSTEM_ABI_V1` operation would therefore add a
+ring-0 round trip that is no part of the mechanism the semantic contract
+requires, and would bind a portable language ordering primitive to a privileged
+ABI unnecessarily — and a future target that genuinely needs privileged cache
+maintenance is served by §12's backend helper without any of that.
 
 **Relying on x86 ordering, QEMU behaviour, or source evaluation order.** Not a
 portable TOS contract, not checkable by a verifier, and — for evaluation order —
