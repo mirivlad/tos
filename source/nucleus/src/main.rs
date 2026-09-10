@@ -58,6 +58,11 @@ const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     + cfg!(feature = "test-dma-wrong-kind") as usize
     + cfg!(feature = "test-dma-unqualified") as usize
     + cfg!(feature = "test-dma-no-spend") as usize
+    // The driver boot: the same endowment as the DMA positive — the bus root
+    // and a memory authority, and nothing else — which is the point. A driver
+    // that configures a real device queue needs no authority the DMA slice did
+    // not already establish, and ring 0 is not told which device class it is.
+    + cfg!(feature = "test-dma-driver") as usize
     // These two share one binding, so they are one constant and are counted
     // once: the rollback boot is the memory-authority boot with a failure
     // injected, not a different endowment.
@@ -1385,7 +1390,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-dma-region",
         feature = "test-dma-wrong-kind",
         feature = "test-dma-unqualified",
-        feature = "test-dma-no-spend"
+        feature = "test-dma-no-spend",
+        feature = "test-dma-driver"
     ))]
     let first_endowment = {
         let Some(bus) = pci::endow_root(0, 0, 255) else {
@@ -1857,7 +1863,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-dma-region",
         feature = "test-dma-wrong-kind",
         feature = "test-dma-unqualified",
-        feature = "test-dma-no-spend"
+        feature = "test-dma-no-spend",
+        feature = "test-dma-driver"
     )))]
     // **Nothing, because the module asks for nothing.** ADR-0055 makes an
     // endowment what a launcher decided, and ADR-0061 makes each entry the
@@ -1888,7 +1895,8 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-dma-region",
         feature = "test-dma-wrong-kind",
         feature = "test-dma-unqualified",
-        feature = "test-dma-no-spend"
+        feature = "test-dma-no-spend",
+        feature = "test-dma-driver"
     )))]
     let first_endowment: [capability::Endowment; 0] = [];
     // The same chain, given to a process, so operation 16 can be asked for from

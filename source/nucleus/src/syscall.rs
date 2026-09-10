@@ -1693,7 +1693,8 @@ fn report_dma_region(caller: usize, index: u32, generation: u32, length: u64, he
     feature = "test-dma-region",
     feature = "test-dma-wrong-kind",
     feature = "test-dma-unqualified",
-    feature = "test-dma-no-spend"
+    feature = "test-dma-no-spend",
+    feature = "test-dma-driver"
 ))]
 fn report_dma_qualification(index: u32, generation: u32) {
     tos_serial::puts(b" express=");
@@ -1712,7 +1713,8 @@ fn report_dma_qualification(index: u32, generation: u32) {
     feature = "test-dma-region",
     feature = "test-dma-wrong-kind",
     feature = "test-dma-unqualified",
-    feature = "test-dma-no-spend"
+    feature = "test-dma-no-spend",
+    feature = "test-dma-driver"
 )))]
 fn report_dma_qualification(_index: u32, _generation: u32) {}
 
@@ -1743,7 +1745,8 @@ fn report_dma_qualification(_index: u32, _generation: u32) {}
     feature = "test-dma-region",
     feature = "test-dma-wrong-kind",
     feature = "test-dma-unqualified",
-    feature = "test-dma-no-spend"
+    feature = "test-dma-no-spend",
+    feature = "test-dma-driver"
 ))]
 fn report_region_identity(caller: usize, index: u32, generation: u32, held_before: usize) {
     let held_now = capability::held(caller);
@@ -1761,7 +1764,8 @@ fn report_region_identity(caller: usize, index: u32, generation: u32, held_befor
     feature = "test-dma-region",
     feature = "test-dma-wrong-kind",
     feature = "test-dma-unqualified",
-    feature = "test-dma-no-spend"
+    feature = "test-dma-no-spend",
+    feature = "test-dma-driver"
 )))]
 fn report_region_identity(_caller: usize, _index: u32, _generation: u32, _held_before: usize) {}
 
