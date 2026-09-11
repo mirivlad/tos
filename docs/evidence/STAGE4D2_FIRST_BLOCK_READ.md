@@ -193,11 +193,30 @@ can produce:
 | **all 512 bytes are sector 0's, and the sentinel is gone** | 524288 |
 
 and alongside the mask: **`used.len` = 513** — 512 data bytes plus the one
-device-written status byte, which is what the fact is about. Recorded, not
-asserted as an equality: §2.7.8.2 permits the device to write more than it
-reports and §2.7.8.3 forbids assuming anything past `len`, so the module
-requires only `len >= 513` before reading the data and the status, and bounds it
-above by the region size so a nonsense report is refused rather than recorded.
+device-written status byte, which is what the fact is about.
+
+**Why 513 is forced for an accepted completion of this chain**, from two clauses
+about two different parties:
+
+| Bound | Clause | Why |
+|---|---|---|
+| `len <= 513` | §2.7.8.2 — "The device MUST write at least `len` bytes … beginning at the first device-writable buffer" | this chain's device-writable extent is exactly 512 + 1 = 513 bytes, so a device reporting more would be claiming to have written past the buffers it was given |
+| `len >= 513` | §2.7.8.3 — "The driver MUST NOT make assumptions about data … beyond the first `len` bytes" | this driver reads all 512 data bytes **and** the status byte, so it may only do so when `len` covers them |
+
+Together they leave one admissible value, and the module refuses either side.
+**This is not a general VirtIO claim.** §2.7.8.2 still permits `len` to
+underestimate what was actually written; all that means here is that this driver
+cannot consume the full 513-byte result when it does, and refuses rather than
+reading bytes the contract will not stand behind.
+
+The value is still *recorded* by the harness rather than hard-coded in it, so
+what the device reported stays visible in the journal.
+
+**And there is no separate packing bound.** An earlier revision carried one —
+`len < 1048576`, described as rejecting a value larger than the region can hold,
+which it did not: everything from 514 to 1048575 passed it. The protocol bound
+above makes the packed field unable to overflow on its own, so the redundant
+number is gone rather than corrected.
 
 **Both publication points are in the artifact**, not just in the source: the
 module lowers to four `Op::DmaSync` sites — the initial ring publish, the publish

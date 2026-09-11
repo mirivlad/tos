@@ -633,11 +633,11 @@ const QUEUE_SHIFT: i64 = 1099511627776i64;
 // branch this boot validated under is a measured fact in the journal rather
 // than a claim in a comment.
 const NOTIFY_DATA_SHIFT: i64 = 72057594037927936i64;
-// The fields above are packed, so each needs a bound. `len` counts bytes the
-// device wrote into a chain whose device-writable part is 513 bytes long inside
-// a 4 KiB region; a device reporting more than the region holds is reporting
-// nonsense, and this is where that is refused.
-const LEN_LIMIT: u64 = 1048576u64;
+// **No separate packing bound is needed.** The fields above are packed into one
+// `i64`, so each needs a bound — and `len`'s comes from the protocol rather than
+// from the encoding: §2.7.8.2 makes `len > 513` impossible for this chain, and
+// the check below refuses it, so the field cannot overflow its 20 bits. A second
+// bound here would be a number with no clause behind it.
 
 // One `VIRTIO_BLK_T_IN` of sector 0, through the queue this module just built.
 //
@@ -788,26 +788,37 @@ fn read_sector_zero(
     }
     proved = proved + PROVED_USED_ID;
 
-    // `len` is the number of bytes written into the device-writable part of the
-    // chain, which here is the 512-byte data buffer **followed by the one-byte
-    // status** — so the fact being proved is that it covers the data *and the
-    // status*, which are both about to be read. §2.7.8.3 forbids assuming
-    // anything beyond the first `len` bytes and §2.7.8.2 permits the device to
-    // have written more than it reports, so nothing exact is asserted: the
-    // value is returned to the harness to be recorded.
+    // `len` is the number of bytes the device wrote into the device-writable
+    // part of the chain, which here is the 512-byte data buffer **followed by
+    // the one-byte status**. Two different bounds apply to it, and they come
+    // from two different clauses about two different parties.
     //
-    // The upper bound is what makes the report unambiguous rather than a
-    // conformance claim: this chain's device-writable part is 513 bytes inside a
-    // 4 KiB region, so a device reporting more than the region holds is
-    // reporting nonsense.
+    // **The protocol bound, from §2.7.8.2**: "The device MUST write at least
+    // `len` bytes to descriptor, beginning at the first device-writable
+    // buffer." This chain's device-writable extent is exactly 513 bytes, so a
+    // device reporting more than that would be claiming to have written past
+    // the buffers it was given. No conforming device can report `len > 513`
+    // **for this chain**.
+    //
+    // **The consumption requirement, from §2.7.8.3**: "The driver MUST NOT make
+    // assumptions about data in device-writable buffers beyond the first `len`
+    // bytes." This driver reads all 512 data bytes and the status byte, so it
+    // may only do so when `len >= 513`.
+    //
+    // Together those force `len == 513` for an **accepted** completion of this
+    // particular request. That is not a general VirtIO claim and must not be
+    // read as one: §2.7.8.2 still permits `len` to underestimate what was
+    // actually written, and all that means here is that this driver cannot
+    // consume the full 513-byte result when it does — so it refuses rather than
+    // reading bytes the contract will not stand behind.
     let used_len: u64 = read_le32(borrow region, used_offset + 8B);
+    if (used_len > SECTOR_COUNT + 1u64) {
+        give_up(borrow mut window);
+        return -59i64;
+    }
     if (used_len < SECTOR_COUNT + 1u64) {
         give_up(borrow mut window);
         return -54i64;
-    }
-    if (used_len >= LEN_LIMIT) {
-        give_up(borrow mut window);
-        return -59i64;
     }
     proved = proved + PROVED_LEN_COVERS_REQUEST;
 
