@@ -388,6 +388,11 @@ qemu_dma_region() {
 qemu_virtio_queue() {
     bash "$ROOT/source/host-tools/qemu-test/virtio-queue.sh"
 }
+# Stage 4D-2: one real VIRTIO_BLK_T_IN of sector 0 through that queue, proved by
+# a sentinel the device had to replace rather than by a success code.
+qemu_virtio_block_read() {
+    bash "$ROOT/source/host-tools/qemu-test/virtio-block-read.sh"
+}
 qemu_irq_routed() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/irq-routed.sh \
         target/preflight-qemu/irq-routed)
@@ -587,6 +592,7 @@ gate qemu       full-only "QEMU a claimed function cannot be relocated"   qemu_p
 gate qemu       full-only "QEMU a device interrupt wakes its driver"    qemu_irq_routed
 gate qemu       full-only "QEMU a textual driver makes and frees a DMA region" qemu_dma_region
 gate qemu       full-only "QEMU a textual driver configures one virtqueue"  qemu_virtio_queue
+gate qemu       full-only "QEMU a textual driver reads one real sector"    qemu_virtio_block_read
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0083 paired validation performance" qemu_paired_performance_conformance
