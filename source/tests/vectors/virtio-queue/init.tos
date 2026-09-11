@@ -266,11 +266,39 @@ fn usable_queue(maximum: u64) -> bool {
     return maximum >= QUEUE_FLOOR;
 }
 
+// **Adds status bits, and never replaces the byte** (VIRTIO §2.1.1).
+//
+// "The driver MUST update device status, setting bits to indicate the completed
+// steps of the driver initialization sequence ... The driver MUST NOT clear a
+// device status bit."
+//
+// So every non-zero transition is a read, an OR and a write — of the *device's*
+// current byte, not of the history this module remembers. That distinction is
+// the whole reason this reads the register rather than reconstructing it:
+// `DEVICE_NEEDS_RESET` is set by the **device** (§2.1.2), and a driver that
+// rebuilt the byte from its own expected sequence would erase it and then rely
+// on a device that had asked to be reset.
+//
+// Explicit reset writes 0 directly, which is what §2.1.1 means by reinitialized
+// and is the one write that is not additive.
+//
+// Returns the status the device reports afterwards, so a caller checks the bit
+// it asked for rather than assuming the write took.
+fn add_status(borrow mut window: MmioRegionMut, bits: u64) -> u64 {
+    let current: u64 = mmio_read_u8(window, DEVICE_STATUS);
+    mmio_write_u8(window, DEVICE_STATUS, current | bits);
+    return mmio_read_u8(window, DEVICE_STATUS);
+}
+
 // Sets the FAILED status bit, which §3.1.1 permits after initialization has
 // begun and irrecoverably failed. It is a statement to the device and not a TOS
 // mechanism: nothing in the system's authority depends on it.
+//
+// **Additive, like every other transition.** An earlier version of this wrote
+// `STATUS_FAILED` alone, which turned ACKNOWLEDGE|DRIVER|FEATURES_OK into
+// FAILED and cleared three bits §2.1.1 forbids clearing.
 fn give_up(borrow mut window: MmioRegionMut) -> unit {
-    mmio_write_u8(window, DEVICE_STATUS, STATUS_FAILED);
+    let ignored: u64 = add_status(borrow mut window, STATUS_FAILED);
 }
 
 // Zeroes the whole region, byte by byte.
@@ -344,8 +372,8 @@ fn negotiate(borrow mut window: MmioRegionMut) -> i64 {
     }
 
     // Steps 2 and 3.
-    mmio_write_u8(window, DEVICE_STATUS, STATUS_ACKNOWLEDGE);
-    mmio_write_u8(window, DEVICE_STATUS, STATUS_ACKNOWLEDGE + STATUS_DRIVER);
+    let acknowledged: u64 = add_status(borrow mut window, STATUS_ACKNOWLEDGE);
+    let driving: u64 = add_status(borrow mut window, STATUS_DRIVER);
 
     // Step 4. The device must have offered `VERSION_1`; this driver accepts it
     // and nothing else. Optional features the device offers and this driver
@@ -363,9 +391,8 @@ fn negotiate(borrow mut window: MmioRegionMut) -> i64 {
     mmio_write_le_u32(window, DRIVER_FEATURE, VERSION_1_IN_HIGH_DWORD);
 
     // Steps 5 and 6.
-    mmio_write_u8(window, DEVICE_STATUS,
-        STATUS_ACKNOWLEDGE + STATUS_DRIVER + STATUS_FEATURES_OK);
-    if ((mmio_read_u8(window, DEVICE_STATUS) & STATUS_FEATURES_OK) == 0u64) {
+    let offered: u64 = add_status(borrow mut window, STATUS_FEATURES_OK);
+    if ((offered & STATUS_FEATURES_OK) == 0u64) {
         give_up(borrow mut window);
         return -13i64;
     }
@@ -561,9 +588,8 @@ fn build_queue(
 
     // Step 8, and last. The device is live, with an empty queue and no buffer
     // to find in it.
-    mmio_write_u8(window, DEVICE_STATUS,
-        STATUS_ACKNOWLEDGE + STATUS_DRIVER + STATUS_FEATURES_OK + STATUS_DRIVER_OK);
-    if ((mmio_read_u8(window, DEVICE_STATUS) & STATUS_DRIVER_OK) == 0u64) {
+    let live: u64 = add_status(borrow mut window, STATUS_DRIVER_OK);
+    if ((live & STATUS_DRIVER_OK) == 0u64) {
         give_up(borrow mut window);
         return -34i64;
     }

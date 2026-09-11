@@ -94,6 +94,13 @@ specification() { python3 "$ROOT/tools/build-specification.py" --check; }
 specification_manifest() {
     python3 "$ROOT/scripts/check-specification-manifest.py" --root "$ROOT"
 }
+# VIRTIO 1.4 §2.1.1: a driver adds status bits and never replaces the byte, so
+# a bit the *device* set is not erased by a driver rebuilding the byte from the
+# sequence it believes it performed. Structural rather than a spelling: it reads
+# every DEVICE_STATUS write in every fixture that declares one.
+device_status_additive() {
+    bash "$ROOT/scripts/tests/check-device-status-additive.sh"
+}
 interface_contract_authority() {
     bash "$ROOT/scripts/tests/check-interface-contract-authority.sh"
 }
@@ -491,6 +498,7 @@ gate docs       default   "specification source manifest"              specifica
 gate docs       default   "release manifest and SHA256SUMS"            release_manifest
 gate docs       default   "interface-contract authority"               interface_contract_authority
 gate docs       default   "accepted interface schema"                  interface_schema
+gate docs       default   "VirtIO device status is additive"           device_status_additive
 gate docs       default   "system ABI operation numbers"               abi_operations
 gate docs       default   "launcher endowment constants"               endowment_constants
 gate docs       default   "Boot ABI event contract"                    boot_event_contract

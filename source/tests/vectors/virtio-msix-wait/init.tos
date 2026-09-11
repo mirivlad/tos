@@ -146,6 +146,9 @@ const STATUS_ACKNOWLEDGE: u64 = 1u64;
 const STATUS_DRIVER: u64 = 2u64;
 const STATUS_DRIVER_OK: u64 = 4u64;
 const STATUS_FEATURES_OK: u64 = 8u64;
+// §2.1.1: a driver that sets FAILED "MUST later reset the device before
+// attempting to re-initialize", which is why nothing after it continues.
+const STATUS_FAILED: u64 = 128u64;
 
 // `VIRTIO_F_VERSION_1` is feature bit 32 — bit 0 of the high dword. A modern
 // device refuses `FEATURES_OK` without it, which is why exactly this one is
@@ -159,6 +162,31 @@ const VERSION_1_IN_HIGH_DWORD: u64 = 1u64;
 // the nucleus's whole statement is "this source is entry 0 of this function".
 const CONFIG_ENTRY: u64 = 0u64;
 const NO_VECTOR: u64 = 65535u64;
+
+// **Adds status bits, and never replaces the byte** (VIRTIO §2.1.1).
+//
+// "The driver MUST update device status, setting bits to indicate the completed
+// steps of the driver initialization sequence ... The driver MUST NOT clear a
+// device status bit."
+//
+// So every non-zero transition is a read, an OR and a write of the *device's*
+// current byte rather than of the history this module remembers — which is what
+// keeps a device-set bit such as `DEVICE_NEEDS_RESET` (§2.1.2) from being
+// erased by a driver rebuilding the byte from its own expected sequence.
+//
+// Explicit reset writes 0 directly, and is the one write that is not additive.
+fn add_status(borrow mut window: MmioRegionMut, bits: u64) -> u64 {
+    let current: u64 = mmio_read_u8(window, DEVICE_STATUS);
+    mmio_write_u8(window, DEVICE_STATUS, current | bits);
+    return mmio_read_u8(window, DEVICE_STATUS);
+}
+
+// Gives up on the device, as §3.1.1 requires of a driver whose initialization
+// went irrecoverably wrong: "the driver SHOULD set the FAILED status bit ...
+// The driver MUST NOT continue initialization in that case."
+fn give_up(borrow mut window: MmioRegionMut) -> unit {
+    let ignored: u64 = add_status(borrow mut window, STATUS_FAILED);
+}
 
 // Brings the device up far enough to report a configuration change, and points
 // it at the entry this module claimed.
@@ -174,8 +202,8 @@ fn arm(borrow mut window: MmioRegionMut) -> i64 {
     if (mmio_read_u8(window, DEVICE_STATUS) != 0u64) {
         return -11i64;
     }
-    mmio_write_u8(window, DEVICE_STATUS, STATUS_ACKNOWLEDGE);
-    mmio_write_u8(window, DEVICE_STATUS, STATUS_ACKNOWLEDGE + STATUS_DRIVER);
+    let acknowledged: u64 = add_status(borrow mut window, STATUS_ACKNOWLEDGE);
+    let driving: u64 = add_status(borrow mut window, STATUS_DRIVER);
 
     // Feature negotiation, in the only shape a modern device accepts: the high
     // dword carries `VERSION_1`, and the low dword is taken as nothing.
@@ -186,14 +214,20 @@ fn arm(borrow mut window: MmioRegionMut) -> i64 {
     if ((high & VERSION_1_IN_HIGH_DWORD) == 0u64) {
         // A device that does not offer VERSION_1 is not the modern transport
         // this profile states, and the rest of this would be guesswork.
+        //
+        // **And giving up is a statement to the device** (§2.2.1): a driver
+        // that does not go into backwards compatibility mode "MUST set the
+        // FAILED device status bit and cease initialization". This module has
+        // no legacy path, so this is the branch that clause is about.
+        give_up(borrow mut window);
         return -12i64;
     }
     mmio_write_le_u32(window, DRIVER_FEATURE_SELECT, 1u64);
     mmio_write_le_u32(window, DRIVER_FEATURE, VERSION_1_IN_HIGH_DWORD);
 
-    mmio_write_u8(window, DEVICE_STATUS,
-        STATUS_ACKNOWLEDGE + STATUS_DRIVER + STATUS_FEATURES_OK);
-    if ((mmio_read_u8(window, DEVICE_STATUS) & STATUS_FEATURES_OK) == 0u64) {
+    let offered: u64 = add_status(borrow mut window, STATUS_FEATURES_OK);
+    if ((offered & STATUS_FEATURES_OK) == 0u64) {
+        give_up(borrow mut window);
         return -13i64;
     }
 
@@ -206,12 +240,13 @@ fn arm(borrow mut window: MmioRegionMut) -> i64 {
     if (mmio_read_le_u16(window, CONFIG_MSIX_VECTOR) == NO_VECTOR) {
         // The device refused the assignment, which it does when MSI-X is not
         // enabled — so this is also the check that the nucleus enabled it.
+        give_up(borrow mut window);
         return -14i64;
     }
 
-    mmio_write_u8(window, DEVICE_STATUS,
-        STATUS_ACKNOWLEDGE + STATUS_DRIVER + STATUS_FEATURES_OK + STATUS_DRIVER_OK);
-    if ((mmio_read_u8(window, DEVICE_STATUS) & STATUS_DRIVER_OK) == 0u64) {
+    let live: u64 = add_status(borrow mut window, STATUS_DRIVER_OK);
+    if ((live & STATUS_DRIVER_OK) == 0u64) {
+        give_up(borrow mut window);
         return -15i64;
     }
     return OK;

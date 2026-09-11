@@ -9,6 +9,11 @@
 //   a queue index the device does not have      ->  queue_size reads 0
 //   a queue larger than one DMA region holds    ->  the layout guard refuses
 //
+// and one conformance fact about how it gives up:
+//
+//   FAILED is added to the status                ->  ACKNOWLEDGE, DRIVER and
+//                                                    FEATURES_OK are still set
+//
 // **Each is the device's own answer or this module's own checked arithmetic.**
 // Nothing is arranged by a launcher constant and no fake device is built: the
 // first is what the real `virtio-blk-pci` endpoint says when asked, and the
@@ -275,11 +280,39 @@ fn usable_queue(maximum: u64) -> bool {
     return maximum >= QUEUE_FLOOR;
 }
 
+// **Adds status bits, and never replaces the byte** (VIRTIO §2.1.1).
+//
+// "The driver MUST update device status, setting bits to indicate the completed
+// steps of the driver initialization sequence ... The driver MUST NOT clear a
+// device status bit."
+//
+// So every non-zero transition is a read, an OR and a write — of the *device's*
+// current byte, not of the history this module remembers. That distinction is
+// the whole reason this reads the register rather than reconstructing it:
+// `DEVICE_NEEDS_RESET` is set by the **device** (§2.1.2), and a driver that
+// rebuilt the byte from its own expected sequence would erase it and then rely
+// on a device that had asked to be reset.
+//
+// Explicit reset writes 0 directly, which is what §2.1.1 means by reinitialized
+// and is the one write that is not additive.
+//
+// Returns the status the device reports afterwards, so a caller checks the bit
+// it asked for rather than assuming the write took.
+fn add_status(borrow mut window: MmioRegionMut, bits: u64) -> u64 {
+    let current: u64 = mmio_read_u8(window, DEVICE_STATUS);
+    mmio_write_u8(window, DEVICE_STATUS, current | bits);
+    return mmio_read_u8(window, DEVICE_STATUS);
+}
+
 // Sets the FAILED status bit, which §3.1.1 permits after initialization has
 // begun and irrecoverably failed. It is a statement to the device and not a TOS
 // mechanism: nothing in the system's authority depends on it.
+//
+// **Additive, like every other transition.** An earlier version of this wrote
+// `STATUS_FAILED` alone, which turned ACKNOWLEDGE|DRIVER|FEATURES_OK into
+// FAILED and cleared three bits §2.1.1 forbids clearing.
 fn give_up(borrow mut window: MmioRegionMut) -> unit {
-    mmio_write_u8(window, DEVICE_STATUS, STATUS_FAILED);
+    let ignored: u64 = add_status(borrow mut window, STATUS_FAILED);
 }
 
 // Zeroes the whole region, byte by byte.
@@ -353,8 +386,8 @@ fn negotiate(borrow mut window: MmioRegionMut) -> i64 {
     }
 
     // Steps 2 and 3.
-    mmio_write_u8(window, DEVICE_STATUS, STATUS_ACKNOWLEDGE);
-    mmio_write_u8(window, DEVICE_STATUS, STATUS_ACKNOWLEDGE + STATUS_DRIVER);
+    let acknowledged: u64 = add_status(borrow mut window, STATUS_ACKNOWLEDGE);
+    let driving: u64 = add_status(borrow mut window, STATUS_DRIVER);
 
     // Step 4. The device must have offered `VERSION_1`; this driver accepts it
     // and nothing else. Optional features the device offers and this driver
@@ -372,18 +405,19 @@ fn negotiate(borrow mut window: MmioRegionMut) -> i64 {
     mmio_write_le_u32(window, DRIVER_FEATURE, VERSION_1_IN_HIGH_DWORD);
 
     // Steps 5 and 6.
-    mmio_write_u8(window, DEVICE_STATUS,
-        STATUS_ACKNOWLEDGE + STATUS_DRIVER + STATUS_FEATURES_OK);
-    if ((mmio_read_u8(window, DEVICE_STATUS) & STATUS_FEATURES_OK) == 0u64) {
+    let offered: u64 = add_status(borrow mut window, STATUS_FEATURES_OK);
+    if ((offered & STATUS_FEATURES_OK) == 0u64) {
         give_up(borrow mut window);
         return -13i64;
     }
     return OK;
 }
 
-// One bit per refusal observed.
+// One bit per fact observed. Two are refusals; the third is a conformance
+// property of how this driver gives up, and is named for what it is.
 const REFUSED_ABSENT_QUEUE: i64 = 1i64;
 const REFUSED_LAYOUT: i64 = 2i64;
+const STATUS_PRESERVED: i64 = 4i64;
 
 // A queue index the reference device does not have. It has one block virtqueue,
 // so queue 1 is unavailable — and §4.1.4.3.1 requires the device to present 0
@@ -445,11 +479,27 @@ fn refusals(borrow mut window: MmioRegionMut) -> i64 {
     // The device is left refused rather than live: initialization began and
     // this module is giving up on it, which is what §3.1.1's FAILED bit says.
     give_up(borrow mut window);
+
+    // **And giving up added a bit rather than replacing the byte** (§2.1.1:
+    // "The driver MUST NOT clear a device status bit"). This boot has completed
+    // steps 1 through 6, so ACKNOWLEDGE, DRIVER and FEATURES_OK are set, and
+    // FAILED is now set beside them — all four, in the byte the device reports.
+    //
+    // **By mask and not by equality**, deliberately: a device may set bits of
+    // its own, `DEVICE_NEEDS_RESET` among them (§2.1.2), and a driver that
+    // asserted an exact byte would be asserting that the device said nothing.
+    let after: u64 = mmio_read_u8(window, DEVICE_STATUS);
+    let expected: u64 = STATUS_ACKNOWLEDGE | STATUS_DRIVER | STATUS_FEATURES_OK
+        | STATUS_FAILED;
+    if ((after & expected) != expected) {
+        return -45i64;
+    }
+    found = found + STATUS_PRESERVED;
     return found;
 }
 
-// 3 when both refusals were observed, and a negative naming the one that did
-// not hold.
+// 7 when both refusals were observed and the status bits survived giving up,
+// and a negative naming the one that did not hold.
 pub fn main() -> i64
     uses [device, budget, platform.pci.FunctionConfig, platform.irq.Source,
           platform.dma.Region]

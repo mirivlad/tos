@@ -159,12 +159,20 @@ echo "  NOT claimed: that the device performed DMA through it. No descriptor exi
 
 # --- the refusals the device really exhibits -----------------------------------
 #
-# Two of the negatives are the reference device's own answer or this driver's
-# own checked arithmetic rather than source-level claims about branches nobody
-# took, and they run as one boot:
+# Two refusals and one conformance fact run as one boot. The refusals are the
+# reference device's own answer or this driver's own checked arithmetic rather
+# than source-level claims about branches nobody took:
 #
 #   a queue index it does not have   ->  queue_size reads 0
 #   a queue larger than one region   ->  this driver's layout guard refuses
+#
+# and the third is a property of how this driver gives up (VIRTIO §2.1.1):
+#
+#   FAILED is *added* to the status  ->  ACKNOWLEDGE, DRIVER and FEATURES_OK
+#                                        are still set in the byte the device
+#                                        reports, checked by mask and not by
+#                                        equality, because a device may set bits
+#                                        of its own (§2.1.2)
 #
 # The rest of the negative list — a device that does not offer VERSION_1, one
 # that refuses FEATURES_OK, the MSI-X vector, queue_enable or DRIVER_OK — cannot
@@ -178,7 +186,8 @@ echo "  NOT claimed: that the device performed DMA through it. No descriptor exi
 # device simply cannot be made to fail it.
 REFUSED_ABSENT_QUEUE=1
 REFUSED_LAYOUT=2
-REFUSALS=$((REFUSED_ABSENT_QUEUE + REFUSED_LAYOUT))
+STATUS_PRESERVED=4
+OBSERVED=$((REFUSED_ABSENT_QUEUE + REFUSED_LAYOUT + STATUS_PRESERVED))
 
 bash "$HERE/run.sh" \
     --out "$OUT/refused" \
@@ -191,14 +200,17 @@ bash "$HERE/run.sh" \
     > /dev/null
 
 refused="$(completed refused)"
-[ "$refused" = "$REFUSALS" ] ||
-    fail "the refusal boot reported $refused, not the $REFUSALS the three refusals sum to"
+[ "$refused" = "$OBSERVED" ] ||
+    fail "the refusal boot reported $refused, not the $OBSERVED that its two refusals
+       and its one status-preservation fact sum to"
 
 # **And it never reached a live queue**, which is what makes it a negative: no
 # region was allocated, and the device was left FAILED rather than DRIVER_OK.
 grep -q "TOS.RUN.DMA_REGION " "$OUT/refused/events.log" &&
     fail "the refusal boot allocated a DMA region; it must refuse before one is needed"
 
-echo "virtio-queue: two refusals observed against the real device —"
-echo "  an absent queue presents size 0, and a queue larger than one region is"
-echo "  refused by this driver's layout guard before anything is programmed"
+echo "virtio-queue: two refusals and one conformance fact, against the real device —"
+echo "  an absent queue presents size 0; a queue larger than one region is refused"
+echo "  by this driver's layout guard before anything is programmed; and giving up"
+echo "  ADDS the FAILED bit — ACKNOWLEDGE, DRIVER and FEATURES_OK are still set in"
+echo "  the byte the device reports afterwards (VIRTIO 1.4 §2.1.1, by mask)"
