@@ -69,7 +69,8 @@ python3 "$GITROOT/scripts/check-capsule-provenance.py" --root "$GITROOT" \
 # write more than it reports).
 PROVED_ALL=1048575
 LEN_SHIFT=1048576
-QUEUE_SHIFT=4294967296
+QUEUE_SHIFT=1099511627776
+NOTIFY_DATA_SHIFT=72057594037927936
 
 bash "$HERE/run.sh" \
     --out "$OUT/live" \
@@ -88,7 +89,8 @@ value="$(sed -n 's/^TOS\.RUN\.COMPLETED value=i64:\(-\?[0-9]*\)$/\1/p' "$OUT/liv
 
 proved=$((value % LEN_SHIFT))
 used_len=$(((value / LEN_SHIFT) % (QUEUE_SHIFT / LEN_SHIFT)))
-queue_size=$((value / QUEUE_SHIFT))
+queue_size=$(((value / QUEUE_SHIFT) % (NOTIFY_DATA_SHIFT / QUEUE_SHIFT)))
+notification_data=$((value / NOTIFY_DATA_SHIFT))
 
 [ "$proved" = "$PROVED_ALL" ] || {
     echo "the module proved $proved of $PROVED_ALL" >&2
@@ -96,7 +98,7 @@ queue_size=$((value / QUEUE_SHIFT))
         "size_accepted:16" "layout_fits:32" "alignment:64" "desc_readback:128" \
         "driver_readback:256" "device_readback:512" "msix_accepted:1024" \
         "enabled:2048" "driver_ok:4096" "request_fits:8192" "notify_found:16384" \
-        "used_advanced:32768" "used_id:65536" "len_covers_data:131072" \
+        "used_advanced:32768" "used_id:65536" "len_covers_data_and_status:131072" \
         "status_ok:262144" "sector_read:524288"
     do
         bit="${pair##*:}"
@@ -104,6 +106,18 @@ queue_size=$((value / QUEUE_SHIFT))
     done
     fail "the request did not complete as the contract requires"
 }
+
+# **Which §4.1.4.4.1 branch the module validated under is a measured fact.** The
+# clause selects the notification-capability requirements by whether the *device
+# offers* `VIRTIO_F_NOTIFICATION_DATA` — bit 38 — which is a different question
+# from whether the driver negotiated it (§4.1.5.2.1, which decides the
+# notification width). This asserts what the reference endpoint actually reports
+# rather than what a driver that never negotiates it might assume.
+[ "$notification_data" = "0" ] ||
+    fail "the device now offers VIRTIO_F_NOTIFICATION_DATA (bit 38); the recorded
+       Stage 4D-2 evidence says it does not, and the 4-byte branch of §4.1.4.4.1
+       applies. The module validates under the branch it measured, so this is a
+       profile change to record rather than a driver defect."
 
 # **One region for the whole thing**, ring and request storage together: the
 # request added no allocation to the one the queue was built from.
@@ -127,7 +141,12 @@ echo "  woken by a real MSI-X interrupt, consumed before anything was read"
 echo "  used.idx advanced 0 -> 1, used.ring[0].id = 0, status = VIRTIO_BLK_S_OK"
 echo "  and all 512 bytes of the 0xA5 sentinel were replaced by sector 0's contents"
 echo "  queue size this driver settled on: $queue_size descriptors"
+echo "  VIRTIO_F_NOTIFICATION_DATA (bit 38) offered by the device: no — so"
+echo "  §4.1.4.4.1's 2-byte branch applied, and the driver notification is 16-bit"
+echo "  because the feature was not negotiated (§4.1.5.2.1), which is a"
+echo "  different question the module asks separately"
 echo "  used.len as the device reported it: $used_len bytes (recorded, not asserted"
-echo "  beyond covering the 512 data bytes — the device MAY write more than len)"
+echo "  beyond covering the 512 data bytes AND the status byte — the device MAY"
+echo "  write more than len, and a driver may assume nothing past it)"
 echo "  claimed: the device performed DMA into this region."
 echo "  NOT claimed: any client-facing block interface, or a steady-state budget."

@@ -189,6 +189,17 @@ const PROFILE_COMMON_OFFSET: u64 = 0u64;
 // than that does not carry the extra field, and this module refuses it rather
 // than reading whatever follows.
 const CFG_TYPE_NOTIFY: u64 = 2u64;
+
+// `VIRTIO_F_NOTIFICATION_DATA` is feature bit 38 — bit 6 of the high dword.
+//
+// **Two clauses turn on this feature and they ask different questions.**
+// §4.1.4.4.1 selects the notification *capability* requirements by whether the
+// device **offers** it; §4.1.5.2.1 selects a 16- or 32-bit driver notification
+// by whether the driver **negotiated** it. Collapsing the two would be reading
+// the capability under the wrong rule, or writing the wrong notification width
+// — so this module reads the offered bit for the first and uses its own
+// negotiation for the second.
+const NOTIFICATION_DATA_IN_HIGH_DWORD: u64 = 64u64;
 const CAP_LENGTH_BYTE: u64 = 2u64;
 const NOTIFY_CAP_BYTES: u64 = 20u64;
 const CAP_NOTIFY_MULTIPLIER: u64 = 16u64;
@@ -522,6 +533,52 @@ fn notify_capability(function: platform.pci.FunctionConfig) -> u64
     return found;
 }
 
+// Whether a value is a power of two. Zero is not one, which matters because
+// §4.1.4.4.1 admits 0 as a *separate* alternative rather than as a power of two.
+fn is_power_of_two(value: u64) -> bool {
+    if (value == 0u64) {
+        return false;
+    }
+    return (value & (value - 1u64)) == 0u64;
+}
+
+// The `notify_off_multiplier` rule of §4.1.4.4.1, **both branches**, selected by
+// what the device *offers*:
+//
+//   not offering VIRTIO_F_NOTIFICATION_DATA
+//     "The device MUST either present notify_off_multiplier as an even power of
+//      2, or present notify_off_multiplier as 0."
+//
+//   offering VIRTIO_F_NOTIFICATION_DATA
+//     "The device MUST either present notify_off_multiplier as a number that is
+//      a power of 2 that is also a multiple 4, or present notify_off_multiplier
+//      as 0."
+//
+// **The rule is checked, not observed.** The reference device presents 4, which
+// satisfies both branches — and one conforming value is not the clause being
+// enforced.
+fn multiplier_admitted(multiplier: u64, notification_data: bool) -> bool {
+    if (multiplier == 0u64) {
+        return true;
+    }
+    if (!is_power_of_two(multiplier)) {
+        return false;
+    }
+    if (notification_data) {
+        return (multiplier % 4u64) == 0u64;
+    }
+    return (multiplier % 2u64) == 0u64;
+}
+
+// What the device offers, read from its own register. Selecting a feature dword
+// is a write the driver is permitted (§4.1.4.3.2 forbids writing
+// `device_feature` itself, not `device_feature_select`), and what comes back is
+// read-only.
+fn offered_high_dword(borrow mut window: MmioRegionMut) -> u64 {
+    mmio_write_le_u32(window, DEVICE_FEATURE_SELECT, 1u64);
+    return mmio_read_le_u32(window, DEVICE_FEATURE);
+}
+
 // Brings a device-reported offset into the `size` domain, **bounded twice**.
 //
 // TOS Core V1 has no checked conversion whose destination is `size` (`docs/40`
@@ -559,7 +616,7 @@ const PROVED_REQUEST_FITS: i64 = 8192i64;
 const PROVED_NOTIFY_FOUND: i64 = 16384i64;
 const PROVED_USED_ADVANCED: i64 = 32768i64;
 const PROVED_USED_ID: i64 = 65536i64;
-const PROVED_LEN_COVERS_DATA: i64 = 131072i64;
+const PROVED_LEN_COVERS_REQUEST: i64 = 131072i64;
 const PROVED_STATUS_OK: i64 = 262144i64;
 const PROVED_SECTOR_READ: i64 = 524288i64;
 // The whole set, so a partial run cannot produce it.
@@ -571,7 +628,16 @@ const PROVED_ALL: i64 = 1048575i64;
 const LEN_SHIFT: i64 = 1048576i64;
 // And the queue size this driver settled on, so the layout in the evidence is
 // the one the boot actually derived rather than one a reader recomputed.
-const QUEUE_SHIFT: i64 = 4294967296i64;
+const QUEUE_SHIFT: i64 = 1099511627776i64;
+// And whether the device offered `VIRTIO_F_NOTIFICATION_DATA`, so the §4.1.4.4.1
+// branch this boot validated under is a measured fact in the journal rather
+// than a claim in a comment.
+const NOTIFY_DATA_SHIFT: i64 = 72057594037927936i64;
+// The fields above are packed, so each needs a bound. `len` counts bytes the
+// device wrote into a chain whose device-writable part is 513 bytes long inside
+// a 4 KiB region; a device reporting more than the region holds is reporting
+// nonsense, and this is where that is refused.
+const LEN_LIMIT: u64 = 1048576u64;
 
 // One `VIRTIO_BLK_T_IN` of sector 0, through the queue this module just built.
 //
@@ -587,6 +653,7 @@ fn read_sector_zero(
     used_offset: size,
     queue_end: size,
     chosen: u64,
+    notification_data: bool,
     proved_so_far: i64
 ) -> i64 uses [platform.dma.Region, platform.irq.Source] {
     let mut proved: i64 = proved_so_far;
@@ -722,17 +789,27 @@ fn read_sector_zero(
     proved = proved + PROVED_USED_ID;
 
     // `len` is the number of bytes written into the device-writable part of the
-    // chain, which here is the 512-byte data buffer followed by the one-byte
-    // status. **This module asserts only that it covers the data it is about to
-    // read** — §2.7.8.3 forbids assuming anything beyond the first `len` bytes,
-    // and §2.7.8.2 permits the device to have written more than it reports. The
-    // exact value is returned to the harness to be recorded, not asserted.
+    // chain, which here is the 512-byte data buffer **followed by the one-byte
+    // status** — so the fact being proved is that it covers the data *and the
+    // status*, which are both about to be read. §2.7.8.3 forbids assuming
+    // anything beyond the first `len` bytes and §2.7.8.2 permits the device to
+    // have written more than it reports, so nothing exact is asserted: the
+    // value is returned to the harness to be recorded.
+    //
+    // The upper bound is what makes the report unambiguous rather than a
+    // conformance claim: this chain's device-writable part is 513 bytes inside a
+    // 4 KiB region, so a device reporting more than the region holds is
+    // reporting nonsense.
     let used_len: u64 = read_le32(borrow region, used_offset + 8B);
     if (used_len < SECTOR_COUNT + 1u64) {
         give_up(borrow mut window);
         return -54i64;
     }
-    proved = proved + PROVED_LEN_COVERS_DATA;
+    if (used_len >= LEN_LIMIT) {
+        give_up(borrow mut window);
+        return -59i64;
+    }
+    proved = proved + PROVED_LEN_COVERS_REQUEST;
 
     let status_byte: u64 = region[status_offset];
     if (status_byte != BLK_S_OK) {
@@ -762,11 +839,16 @@ fn read_sector_zero(
     }
     proved = proved + PROVED_SECTOR_READ;
 
+    let mut observed: i64 = 0i64;
+    if (notification_data) {
+        observed = NOTIFY_DATA_SHIFT;
+    }
     match (to_i64(used_len)) {
         Ok(reported) => {
             match (to_i64(chosen)) {
                 Ok(size_used) => {
-                    return proved + reported * LEN_SHIFT + size_used * QUEUE_SHIFT;
+                    return proved + reported * LEN_SHIFT + size_used * QUEUE_SHIFT
+                        + observed;
                 }
                 Err(bad) => { return -58i64; }
             }
@@ -786,7 +868,8 @@ fn drive(
     borrow mut window: MmioRegionMut,
     region: DmaRegion<mut u8>,
     source: platform.irq.Source,
-    notify_at: size
+    notify_at: size,
+    notification_data: bool
 ) -> i64 uses [platform.dma.Region, platform.irq.Source] {
     let mut proved: i64 = PROVED_RESET + PROVED_VERSION_1 + PROVED_FEATURES_OK
         + PROVED_NOTIFY_FOUND;
@@ -909,7 +992,8 @@ fn drive(
     // **Everything above is initialization.** The region was allocated once,
     // the ring was written once, and the request below allocates nothing.
     return read_sector_zero(borrow mut window, region, source, notify_at,
-        desc_offset, avail_offset, used_offset, queue_end, chosen, proved);
+        desc_offset, avail_offset, used_offset, queue_end, chosen,
+        notification_data, proved);
 }
 
 // The whole boot.
@@ -962,28 +1046,55 @@ pub fn main() -> i64
                     if (ready != OK) {
                         return ready;
                     }
+                    // **Which branch of §4.1.4.4.1 applies is the device's
+                    // to decide, and it decides it by offering the feature or
+                    // not** — never by what this driver went on to negotiate.
+                    let offered: u64 = offered_high_dword(borrow mut window);
+                    let mut notification_data: bool = false;
+                    if ((offered & NOTIFICATION_DATA_IN_HIGH_DWORD) != 0u64) {
+                        notification_data = true;
+                    }
+                    let mut wanted_alignment: u64 = 2u64;
+                    let mut wanted_room: u64 = 2u64;
+                    if (notification_data) {
+                        wanted_alignment = 4u64;
+                        wanted_room = 4u64;
+                    }
+
+                    // "The cap.offset MUST be 2-byte aligned" — or 4-byte, on
+                    // the other branch. **Of `cap.offset` itself**, as the
+                    // clause states it, and not only of the address derived
+                    // from it: a conforming derived address does not make a
+                    // non-conforming capability conforming.
+                    if ((notify_offset % wanted_alignment) != 0u64) {
+                        give_up(borrow mut window);
+                        return -11i64;
+                    }
+                    if (!multiplier_admitted(multiplier, notification_data)) {
+                        give_up(borrow mut window);
+                        return -12i64;
+                    }
+
                     // `queue_notify_off` belongs to the queue, so it is read
                     // after selecting it (§4.1.4.4).
                     mmio_write_le_u16(window, QUEUE_SELECT, 0u64);
                     let notify_off: u64 = mmio_read_le_u16(window, QUEUE_NOTIFY_OFF);
-                    // §4.1.4.4.1: `cap.length >= queue_notify_off * multiplier + 2`
-                    // for a device not offering `VIRTIO_F_NOTIFICATION_DATA`,
-                    // which this one does not and this driver did not accept.
+                    // §4.1.4.4.1: `cap.length >= queue_notify_off * multiplier`
+                    // plus 2 on the not-offering branch and 4 on the other.
                     let within: u64 = notify_off * multiplier;
-                    if (notify_length < within + 2u64) {
+                    if (notify_length < within + wanted_room) {
                         give_up(borrow mut window);
                         return -8i64;
                     }
                     // §4.1.4.4: Queue Notify = cap.offset + queue_notify_off *
                     // notify_off_multiplier. Bounded by this driver's own window
-                    // before it is allowed into the `size` domain, and required
-                    // to be 2-byte aligned as §4.1.4.4.1 requires of it.
+                    // before it is allowed into the `size` domain.
                     let notify_address: u64 = notify_offset + within;
-                    if (notify_address + 2u64 > WINDOW_LIMIT) {
+                    if (notify_address + wanted_room > WINDOW_LIMIT) {
                         give_up(borrow mut window);
                         return -9i64;
                     }
-                    if ((notify_address % 2u64) != 0u64) {
+                    if ((notify_address % wanted_alignment) != 0u64) {
                         give_up(borrow mut window);
                         return -10i64;
                     }
@@ -993,7 +1104,7 @@ pub fn main() -> i64
                             match (pci_interrupt_claim(function, QUEUE_ENTRY)) {
                                 Ok(source) => {
                                     return drive(borrow mut window, region, source,
-                                        notify_at);
+                                        notify_at, notification_data);
                                 }
                                 Err(status) => {
                                     give_up(borrow mut window);

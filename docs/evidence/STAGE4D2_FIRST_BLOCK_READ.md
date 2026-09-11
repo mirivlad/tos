@@ -43,9 +43,9 @@ Read from the OASIS document, not from memory:
 | **§4.1.4.1** | `virtio_pci_cap`; `VIRTIO_PCI_CAP_NOTIFY_CFG` = 2 |
 | **§4.1.4.3** | the common configuration layout |
 | **§4.1.4.4** | `virtio_pci_notify_cap`; **Queue Notify = `cap.offset + queue_notify_off * notify_off_multiplier`** |
-| **§4.1.4.4.1** | `cap.offset` 2-byte aligned; multiplier an even power of 2 or 0; `cap.length >= queue_notify_off * multiplier + 2` |
+| **§4.1.4.4.1** | two branches, selected by whether the device **offers** `VIRTIO_F_NOTIFICATION_DATA` — see §2a |
 | **§4.1.5.1.2** | MSI-X vector configuration and its readback |
-| **§4.1.5.2** | a 16-bit notification when `VIRTIO_F_NOTIFICATION_DATA` is not negotiated |
+| **§4.1.5.2**, **§4.1.5.2.1** | "If VIRTIO_F_NOTIFICATION_DATA is not **negotiated**, the driver notification MUST be a 16-bit notification", and with `VIRTIO_F_NOTIF_CONFIG_DATA` not negotiated "the driver MUST set the notification value to the virtqueue index" |
 | **§4.1.5.3.1** | with `queue_msix_vector` = NO_VECTOR the device MUST NOT deliver an interrupt |
 | **§5.2.6** | `virtio_blk_req { le32 type; le32 reserved; le64 sector; u8 data[]; u8 status; }`; `VIRTIO_BLK_T_IN` = 0; `VIRTIO_BLK_S_OK` = 0 |
 
@@ -85,6 +85,58 @@ refuses if the two capabilities name different BARs.
 
 The module derives all of this at run time from the capability structure; the
 numbers above are the record of what the reference device presented.
+
+## 2a. Which branch of §4.1.4.4.1 applies, and why that is a different question
+
+**`VIRTIO_F_NOTIFICATION_DATA` — feature bit 38 — is NOT offered by the
+reference device.** Measured from the endpoint the Stage 4 profile selects, not
+inferred from QEMU's source or from the fact that this driver does not negotiate
+it:
+
+```text
+device_feature[ 0..31] = 0x30006e54
+device_feature[32..63] = 0x00000101
+
+bit 38 VIRTIO_F_NOTIFICATION_DATA     not offered
+bit 39 VIRTIO_F_NOTIF_CONFIG_DATA     not offered
+```
+
+**Two clauses turn on this feature and they ask different questions**, which is
+the distinction an earlier revision of this record collapsed:
+
+| Clause | Predicate | Answer here |
+|---|---|---|
+| §4.1.4.4.1 | does the device **offer** it? | **no** → the 2-byte branch |
+| §4.1.5.2.1 | did the driver **negotiate** it? | **no** → a 16-bit notification |
+
+The two happen to agree on this device, and they are still asked separately: a
+device may offer a feature a driver declines, and then the capability is
+governed by the stricter branch while the notification stays 16-bit.
+
+**The branch is now implemented rather than assumed.** The module reads the
+offered high dword from the device's own register and validates:
+
+| Check | Not offering (this device) | Offering |
+|---|---|---|
+| `cap.offset` alignment | **2-byte** | 4-byte |
+| `notify_off_multiplier` | 0, **or a power of two that is even** | 0, or a power of two that is a multiple of 4 |
+| `cap.length` | `>= queue_notify_off * multiplier + 2` | `… + 4` |
+
+Three things that were wrong or missing before: the branch was hard-coded to
+`+2`; `cap.offset`'s own alignment was never checked, only the derived Queue
+Notify address; and the multiplier rule was never checked at all. The reference
+device presents `4`, which satisfies **both** branches — and observing one
+conforming value is not the clause being enforced.
+
+**The refusal paths are source-level evidence.** A conforming device cannot
+exhibit a bad multiplier or a misaligned `cap.offset`, and no fake device was
+built to manufacture them.
+
+**The notification stays 16-bit**, and for §4.1.5.2.1's reason rather than
+§4.1.4.4.1's: this driver negotiates only `VIRTIO_F_VERSION_1`, so
+`VIRTIO_F_NOTIFICATION_DATA` is not negotiated whatever the device offered, and
+the value written is the virtqueue index 0 because `VIRTIO_F_NOTIF_CONFIG_DATA`
+is not negotiated either.
 
 ## 3. The layout inside the one 4 KiB region
 
@@ -136,15 +188,16 @@ can produce:
 | the notification capability was found and validated | 16384 |
 | **`used.idx` advanced 0 → 1** | 32768 |
 | **`used.ring[0].id` = 0**, the chain head this driver made available | 65536 |
-| **`used.len` covers the data** | 131072 |
+| **`used.len` covers the data and the status byte** | 131072 |
 | **status = `VIRTIO_BLK_S_OK`** | 262144 |
 | **all 512 bytes are sector 0's, and the sentinel is gone** | 524288 |
 
-and alongside the mask: **`used.len` = 513** — 512 data bytes plus the status
-byte. Recorded, not asserted beyond covering the data: §2.7.8.2 permits the
-device to write more than it reports, and §2.7.8.3 forbids assuming anything
-past `len`, so the module requires only `len >= 513` before reading all 512
-bytes.
+and alongside the mask: **`used.len` = 513** — 512 data bytes plus the one
+device-written status byte, which is what the fact is about. Recorded, not
+asserted as an equality: §2.7.8.2 permits the device to write more than it
+reports and §2.7.8.3 forbids assuming anything past `len`, so the module
+requires only `len >= 513` before reading the data and the status, and bounds it
+above by the region size so a nonsense report is refused rather than recorded.
 
 **Both publication points are in the artifact**, not just in the source: the
 module lowers to four `Op::DmaSync` sites — the initial ring publish, the publish
@@ -183,12 +236,22 @@ to decide it, §2.7.13.4.1's barrier-before-reading-`flags` does not apply:
 
 ## 7. Features, still minimal
 
-Only `VIRTIO_F_VERSION_1`. Not negotiated, though the device offers several:
-`INDIRECT_DESC`, `EVENT_IDX`, `RING_PACKED`, `RING_RESET`, `ACCESS_PLATFORM`,
-`IN_ORDER`, the notification-data features, and every block feature including
-the write and discard families. Offered-but-unselected features are not an
-error (§2.2.1), and the queue's layout and notification rules therefore depend
-on none of them.
+Only `VIRTIO_F_VERSION_1`. **What the device actually offers was measured**, and
+an earlier revision of this record listed features it does not:
+
+```text
+device_feature[ 0..31] = 0x30006e54
+device_feature[32..63] = 0x00000101
+```
+
+| Offered and declined | Not offered at all |
+|---|---|
+| `INDIRECT_DESC` (28), `EVENT_IDX` (29), `RING_RESET` (40) | `ACCESS_PLATFORM` (33), `RING_PACKED` (34), `IN_ORDER` (35), **`NOTIFICATION_DATA` (38)**, `NOTIF_CONFIG_DATA` (39) |
+| `VIRTIO_BLK_F_` SEG_MAX (2), GEOMETRY (4), BLK_SIZE (6), FLUSH (9), TOPOLOGY (10), CONFIG_WCE (11), DISCARD (13), WRITE_ZEROES (14) | |
+
+Offered-but-unselected features are not an error (§2.2.1), and the queue's
+layout and notification rules depend on none of them. The three that are *not
+offered* are listed separately because one of them selects a clause: see §2a.
 
 The request is non-destructive: one read, no write, no flush, no `GET_ID`, and
 no QEMU device property was added.
