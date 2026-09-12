@@ -311,7 +311,9 @@ fi
 #                  find. Since profile revision 2 the endpoint sits behind an
 #                  explicit PCIe root port: the port keeps the slot, and the
 #                  endpoint's own bus is what the firmware assigned
-#   backing        a raw image of a stated size with deterministic content
+#   backing        a raw image of a stated size with deterministic content:
+#                  sector 0 stays zero-filled, and sectors 1..STAGE4_SEEDED
+#                  each hold 512 copies of `0xC0 + sector` (see below)
 #   queues         one, recorded because feature negotiation is part of the
 #                  surface QEMU exposes
 #   iommu_platform off for this slice, and stated because the later DMA contract
@@ -320,6 +322,28 @@ if [ "$STAGE4_BLOCK" -eq 1 ]; then
     STAGE4_IMAGE="$OUT/stage4-block.img"
     rm -f "$STAGE4_IMAGE"
     dd if=/dev/zero of="$STAGE4_IMAGE" bs=1M count=16 status=none
+    # **Sector 0 stays zero-filled, and the sectors after it do not.**
+    #
+    # Stage 4D-2 reads sector 0 and proves the device wrote it by replacing a
+    # non-zero sentinel with the image's zeros, so sector 0's content is part of
+    # that accepted evidence and is not touched here.
+    #
+    # A stage that reads more than one sector needs the sectors to be **told
+    # apart**, or a second read satisfied by the first read's bytes would look
+    # exactly like a second read. So sector `n` of the first STAGE4_SEEDED
+    # sectors holds 512 copies of the byte `0xC0 + n`: deterministic, distinct
+    # per sector, and distinct from zero and from every sentinel a driver
+    # poisons a buffer with. The rule is the profile's contract with the
+    # fixtures, which compute the byte they expect from the sector they asked
+    # for rather than carrying a table of answers.
+    STAGE4_SEEDED=4
+    stage4_sector=1
+    while [ "$stage4_sector" -le "$STAGE4_SEEDED" ]; do
+        stage4_byte="$(printf '\\%o' $((0xC0 + stage4_sector)))"
+        head -c 512 /dev/zero | tr '\000' "$stage4_byte" |
+            dd of="$STAGE4_IMAGE" bs=512 seek="$stage4_sector" conv=notrunc status=none
+        stage4_sector=$((stage4_sector + 1))
+    done
     QEMU_ARGS+=(
         -drive "if=none,id=stage4blk,format=raw,file=$STAGE4_IMAGE"
     )
