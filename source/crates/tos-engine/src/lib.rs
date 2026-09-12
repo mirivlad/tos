@@ -48,8 +48,9 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use tos_ir::{
-    BinaryOp, CallTarget, CapabilitySource, Constant, DmaSyncDirection, Instruction, IntKind,
-    Module, Op, Operand, Place, PlaceStep, SourceRef, Terminator, TypeDef, TypeId, UnaryOp,
+    BinaryOp, BorrowKind, CallTarget, CapabilitySource, Constant, DmaSyncDirection, Instruction,
+    IntKind, Module, Op, Operand, Place, PlaceStep, SourceRef, Terminator, TypeDef, TypeId,
+    UnaryOp,
 };
 use tos_residency::{
     Failure, ModuleProvider, Residency, VerifiedClosureManifest, VerifiedModuleRecord,
@@ -878,12 +879,38 @@ struct Frame {
     /// here, which is what makes a call a transition rather than a recursion.
     instruction: usize,
     values: Vec<Option<Value>>,
+    /// Where each live mutable borrow of this activation points.
+    ///
+    /// **The identity a mutable borrow has to preserve.** `Op::Borrow` produces
+    /// a value, and a value is a copy of what it read — so the place the borrow
+    /// was taken of is not recoverable from the copy, and a write-back aimed at
+    /// the copy reaches nothing. This is where the place goes instead: keyed by
+    /// the slot the borrow defined, with every dynamic index already resolved
+    /// to the element it named **at the moment the borrow was taken**, which is
+    /// the moment the borrow fixed which location it is about.
+    ///
+    /// Owned, bounded and deterministic: a `Place` of resolved steps and the
+    /// element kind a region access would need. Nothing here is a host
+    /// reference, and nothing reaches into a module — so it survives the
+    /// caller's module being evicted while its callee runs, exactly as the rest
+    /// of the frame does.
+    borrows: BTreeMap<usize, BorrowedPlace>,
     charges: Charges,
     /// Block entries in this activation, for the escape guard the old loop kept
     /// per call.
     steps: u128,
     /// What this frame is waiting for, when it is suspended in a call.
     pending: Option<Pending>,
+}
+
+/// One location a live mutable borrow names.
+#[derive(Clone)]
+struct BorrowedPlace {
+    /// The borrowed place, with dynamic index steps resolved to constants.
+    place: Place,
+    /// The element kind, when the place is one a region serves. Resolved where
+    /// the module is in reach, so the write-back needs no module at all.
+    element: Option<Element>,
 }
 
 /// What a suspended frame does with the value its callee returns.
@@ -896,12 +923,16 @@ enum Pending {
     /// store the result.
     Call {
         result: Option<usize>,
-        /// `(callee parameter slot, caller value slot)` for each `borrow mut`
-        /// parameter whose caller operand names a value. Computed before the
-        /// call, from the callee's declared modes and the caller's operands.
-        writeback: Vec<(usize, usize)>,
+        /// `(callee parameter slot, the caller place it writes to)` for each
+        /// `borrow mut` parameter whose caller operand names a value. Computed
+        /// before the call, from the callee's declared modes, the caller's
+        /// operands and the places those operands borrow.
+        writeback: Vec<(usize, BorrowedPlace)>,
         /// Whether this call is inside an ADR-0066 measurement interval.
         marks: bool,
+        /// Where the call is written, so a write-back that cannot be performed
+        /// names the source it came from like every other runtime failure.
+        source: SourceRef,
     },
     /// A join or await: the result is the task's outcome, wrapped.
     Join { result: Option<usize> },
@@ -910,7 +941,7 @@ enum Pending {
     Cleanups {
         plans: Vec<CleanupPlan>,
         at: usize,
-        writeback: Vec<(usize, usize)>,
+        writeback: Vec<(usize, BorrowedPlace)>,
         source: SourceRef,
     },
 }
@@ -984,18 +1015,33 @@ const _: () = {
     owns_nothing_borrowed::<Value>();
 };
 
-/// Which of a callee's parameters write back into which of the caller's slots.
+/// Which of a callee's parameters write back into which of the caller's places.
 ///
 /// A `borrow mut` parameter names the caller's place, and the borrow rules
 /// guarantee no other alias is live for the duration of the call, so copying in
 /// and copying out is observationally the same as a reference and needs no
-/// aliasing machinery to be correct. The plan is computed before the call, from
-/// the callee's declared modes and the caller's operands, so the continuation
-/// carries indices rather than a slice into an instruction.
+/// aliasing machinery to be correct. **What has to survive the copy is which
+/// place**, and that is what this resolves.
 ///
-/// Only `Operand::Value` writes back, which is the semantics this replaces: a
-/// constant operand names no place to write to.
-fn writeback_plan(module: &Module, function: usize, operands: &[Operand]) -> Vec<(usize, usize)> {
+/// The operand is one of two things, and the difference is the whole of this
+/// function:
+///
+/// - a value `Op::Borrow` defined, which is a *copy* of the borrowed place.
+///   Writing the callee's result into that slot writes into the copy and
+///   reaches nothing, so the target is the place the borrow was taken of —
+///   `borrows`, recorded where the borrow happened;
+/// - a binding's own slot, which a lowered cleanup capture is (ADR-0035 passes
+///   the scope's bindings themselves). Then the slot *is* the place.
+///
+/// The plan is computed before the call, so the continuation carries owned
+/// places rather than a slice into an instruction, and `Operand::Constant`
+/// contributes nothing because a constant names no place to write to.
+fn writeback_plan(
+    module: &Module,
+    function: usize,
+    operands: &[Operand],
+    borrows: &BTreeMap<usize, BorrowedPlace>,
+) -> Vec<(usize, BorrowedPlace)> {
     let Some(body) = module.functions.get(function) else {
         return Vec::new();
     };
@@ -1004,22 +1050,136 @@ fn writeback_plan(module: &Module, function: usize, operands: &[Operand]) -> Vec
         if parameter.mode != tos_ir::PassMode::MutableBorrow {
             continue;
         }
-        if let Some(Operand::Value(slot)) = operands.get(position) {
-            plan.push((position, *slot));
-        }
+        let Some(Operand::Value(slot)) = operands.get(position) else {
+            continue;
+        };
+        let target = match borrows.get(slot) {
+            Some(borrowed) => borrowed.clone(),
+            None => BorrowedPlace {
+                place: Place {
+                    root: *slot,
+                    path: Vec::new(),
+                },
+                element: None,
+            },
+        };
+        plan.push((position, target));
     }
     plan
 }
 
-/// Copies a callee's final parameter slots into the caller's places.
-fn write_back(caller: &mut Frame, plan: &[(usize, usize)], callee: &[Option<Value>]) {
-    for (position, slot) in plan {
-        if let (Some(Some(value)), Some(target)) =
-            (callee.get(*position), caller.values.get_mut(*slot))
-        {
-            *target = Some(value.clone());
+/// Refuses a same-module call whose write-back would put a value of one type
+/// into a place of another.
+///
+/// **This is not belt-and-braces; it closes a hole the type system leaves
+/// open.** docs/39 gives a callable value's type as `function_type = "fn" "("
+/// type_list? ")" "->" type` — parameter *types* and a result, and **no
+/// parameter mode**. So the three modes are indistinguishable in a callable's
+/// type, and today a value call is not checked against that type at all: a
+/// closure declaring `borrow mut v: i32` is reachable through an
+/// `fn (i64) -> unit` binding. Its write-back would then put an `i32` into an
+/// `i64` place and leave the value graph holding a value of a type nothing
+/// declared, with nothing raised.
+///
+/// A named call cannot reach here wrong — the checker agrees a local call's
+/// argument types with its parameters (`E1215_ARGUMENT_TYPE_MISMATCH`) and a
+/// cross-module call's against the callee's lowered interface — so for those
+/// this only ever confirms what is already proved. A **value** call has no such
+/// proof, and this is the point at which one is required.
+///
+/// The comparison is between two `TypeId`s of **one** module's table, which is
+/// exact because types are interned: a value call always enters a body of the
+/// caller's own module (`Op::Closure` names a local function), so there is no
+/// cross-table comparison to get wrong. The caller's side is read from its own
+/// slot table, which holds the borrowed place's type for a `borrow mut`
+/// operand and the binding's type for a bare one.
+///
+/// Returns the first parameter position that disagrees.
+fn writeback_types_agree(
+    module: &Module,
+    callee: usize,
+    caller: usize,
+    operands: &[Operand],
+) -> Result<(), usize> {
+    let (Some(body), Some(home)) = (module.functions.get(callee), module.functions.get(caller))
+    else {
+        return Ok(());
+    };
+    for (position, parameter) in body.signature.parameters.iter().enumerate() {
+        if parameter.mode != tos_ir::PassMode::MutableBorrow {
+            continue;
+        }
+        let Some(Operand::Value(slot)) = operands.get(position) else {
+            continue;
+        };
+        let Some(held) = home.values.get(*slot) else {
+            return Err(position);
+        };
+        if *held != parameter.ty {
+            return Err(position);
         }
     }
+    Ok(())
+}
+
+/// Copies a callee's final parameter values into the places they borrowed.
+///
+/// **Everything it needs was resolved where the borrow was taken.** The path
+/// holds no dynamic step and the element kind came out of the type table then,
+/// so a write-back costs no residency and cannot fail for want of a module —
+/// which is the property the whole continuation is built on (ADR-0071 §6).
+///
+/// A callee parameter slot that holds nothing was moved out of by the callee,
+/// and there is no value to return to the place; that is the one case a
+/// mutable borrow writes nothing back.
+fn write_back(
+    system: &mut dyn System,
+    caller: &mut Frame,
+    plan: &[(usize, BorrowedPlace)],
+    callee: &[Option<Value>],
+    source: SourceRef,
+) -> Result<(), Trap> {
+    for (position, target) in plan {
+        let Some(Some(value)) = callee.get(*position) else {
+            continue;
+        };
+        let value = value.clone();
+        // A region is one handle and the bytes are the host's (ADR-0085 §9), so
+        // a place rooted at one is written through the same access an ordinary
+        // `Op::Write` uses rather than into a value graph that does not exist.
+        if let Some(Some(Value::Capability(handle))) = caller.values.get(target.place.root) {
+            if let (Some(element), [PlaceStep::Index(Some(index))]) =
+                (target.element, target.place.path.as_slice())
+            {
+                let handle = *handle;
+                system.access(Access {
+                    region: handle,
+                    index: *index,
+                    element,
+                    value: Some(value),
+                })?;
+                continue;
+            }
+        }
+        if target.place.path.is_empty() {
+            if let Some(slot) = caller.values.get_mut(target.place.root) {
+                *slot = Some(value);
+            }
+            continue;
+        }
+        let Some(Some(root)) = caller.values.get_mut(target.place.root) else {
+            return Err(Trap::new(
+                "RUNTIME_UNINITIALIZED_VALUE",
+                alloc::format!(
+                    "value {} is written before it is defined",
+                    target.place.root
+                ),
+                source,
+            ));
+        };
+        write_into(root, &target.place.path, value, source)?;
+    }
+    Ok(())
 }
 
 /// Stores a call's result in the caller's slot, when the instruction named one.
@@ -1343,6 +1503,7 @@ impl Engine<'_> {
             block: 0,
             instruction: 0,
             values,
+            borrows: BTreeMap::new(),
             charges: Charges::default(),
             steps: 1,
             pending: None,
@@ -1424,12 +1585,18 @@ impl Engine<'_> {
             ));
         };
         // The write-back plan, now that the callee's declared modes are in reach.
-        // It is index pairs and nothing else, so it survives both modules being
-        // evicted before the callee returns.
-        let plan = closure
-            .module_of(callee)
-            .map(|module| writeback_plan(module, index, operands))
-            .unwrap_or_default();
+        // The caller's borrow table is what says which *place* each operand
+        // borrows, and it lives in the caller's frame rather than in either
+        // module — which is why a cross-module plan can be computed here at all.
+        // What comes out is owned places and indices, so it survives both
+        // modules being evicted before the callee returns.
+        let plan = match frames.last() {
+            Some(caller) => closure
+                .module_of(callee)
+                .map(|module| writeback_plan(module, index, operands, &caller.borrows))
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
         if let Some(caller) = frames.last_mut() {
             if let Some(Pending::Call { writeback, .. }) = &mut caller.pending {
                 *writeback = plan;
@@ -1467,9 +1634,10 @@ impl Engine<'_> {
                 result,
                 writeback,
                 marks,
+                source,
             } => {
                 let caller = frames.last_mut().expect("a caller was observed");
-                write_back(caller, &writeback, &callee_values);
+                write_back(self.system, caller, &writeback, &callee_values, source)?;
                 store(caller, result, value);
                 let _ = marks;
                 #[cfg(feature = "measurement-marks")]
@@ -1498,7 +1666,7 @@ impl Engine<'_> {
             } => {
                 {
                     let caller = frames.last_mut().expect("a caller was observed");
-                    write_back(caller, &writeback, &callee_values);
+                    write_back(self.system, caller, &writeback, &callee_values, source)?;
                 }
                 self.run_cleanup(closure, frames, plans, at + 1, source)
             }
@@ -1539,7 +1707,10 @@ impl Engine<'_> {
             for capture in &plan.captures {
                 arguments.push(self.operand(module, capture, &caller.values, source)?);
             }
-            (arguments, writeback_plan(module, body, &plan.captures))
+            (
+                arguments,
+                writeback_plan(module, body, &plan.captures, &caller.borrows),
+            )
         };
         {
             let caller = frames.last_mut().expect("a caller was observed");
@@ -1617,13 +1788,7 @@ impl Engine<'_> {
                 let at = frame.instruction;
                 let instruction = &block.instructions[at];
                 self.spend(instruction.source)?;
-                match self.evaluate(
-                    module,
-                    frame.module,
-                    instruction,
-                    &mut frame.values,
-                    &mut frame.charges,
-                )? {
+                match self.evaluate(module, instruction, frame)? {
                     Evaluated::Value(produced) => {
                         if let (Some(slot), Some(value)) = (instruction.result, produced) {
                             if slot < frame.values.len() {
@@ -1751,14 +1916,28 @@ impl Engine<'_> {
         }
     }
 
+    /// Evaluates one instruction of a frame.
+    ///
+    /// The frame is destructured rather than passed piecewise: what an
+    /// instruction may touch is its activation's values, its record of live
+    /// mutable borrows and its charges, and naming the three as one binding
+    /// each keeps them disjoint borrows of the same frame without turning the
+    /// signature into a list nobody reads.
     fn evaluate(
         &mut self,
         module: &Module,
-        home: ClosureModuleId,
         instruction: &Instruction,
-        values: &mut [Option<Value>],
-        charges: &mut Charges,
+        frame: &mut Frame,
     ) -> Result<Evaluated, Trap> {
+        let Frame {
+            module: home,
+            function,
+            values,
+            borrows,
+            charges,
+            ..
+        } = frame;
+        let function = *function;
         let op = &instruction.op;
         let source = instruction.source;
         let _ = home;
@@ -1848,11 +2027,69 @@ impl Engine<'_> {
             // A read copies the value at a place; a move takes it. Both observe
             // the same location, and the verifier already proved that a moved
             // place is not read again on the same path.
-            Op::Read { place } | Op::Move { place } | Op::Borrow { place, .. } => {
+            Op::Read { place } | Op::Move { place } => {
                 match self.region_access(module, place, instruction.ty, None, values, source)? {
                     Some(element) => Some(element),
                     None => Some(self.read_place(place, values, source)?),
                 }
+            }
+            // **A borrow reads the same location and remembers which one it
+            // was.** The value it produces is a copy, like a read's, because
+            // that is all a value can be here — V1 has no source-visible
+            // pointer and the engine does not invent one. What a *mutable*
+            // borrow adds is the identity of the place, kept beside the frame's
+            // values so that the write-back at the end of the call it is passed
+            // to reaches the place rather than the copy.
+            //
+            // The place is resolved **now**: a `borrow mut p[i]` is about the
+            // element `i` named when the borrow was taken, and the exclusivity
+            // the checker proved is exactly what makes that location stable for
+            // the borrow's whole life.
+            //
+            // A shared borrow records nothing. It cannot write, so it has
+            // nothing to write back, and a `borrow` that left an entry here
+            // would be a `borrow mut` in everything but spelling.
+            Op::Borrow { place, kind } => {
+                let value = match self.region_access(
+                    module,
+                    place,
+                    instruction.ty,
+                    None,
+                    values,
+                    source,
+                )? {
+                    Some(element) => element,
+                    None => self.read_place(place, values, source)?,
+                };
+                if let (BorrowKind::Mutable, Some(slot)) = (kind, instruction.result) {
+                    let path: Vec<PlaceStep> = place
+                        .path
+                        .iter()
+                        .map(|step| self.resolve_step(step, values, source))
+                        .collect::<Result<_, _>>()?;
+                    borrows.insert(
+                        slot,
+                        BorrowedPlace {
+                            place: Place {
+                                root: place.root,
+                                path,
+                            },
+                            element: module.type_of(instruction.ty).and_then(Element::of),
+                        },
+                    );
+                    // **The table cannot outgrow the frame.** Its key is the
+                    // slot the borrow instruction defines, and a function's
+                    // slots are fixed when it is lowered — so a borrow inside a
+                    // loop rewrites one entry however many times it runs, and
+                    // the whole table is bounded by the activation it belongs
+                    // to. A future edit that keyed this by anything else runs
+                    // into this rather than past it.
+                    debug_assert!(
+                        borrows.len() <= values.len(),
+                        "the borrow table outgrew the frame it belongs to"
+                    );
+                }
+                Some(value)
             }
             Op::Write { place, value } => {
                 let value = self.operand(module, value, values, source)?;
@@ -1902,6 +2139,17 @@ impl Engine<'_> {
                     // `mark_after_call` fires when the continuation completes,
                     // which is after the writeback and on the trap path too.
                     CallTarget::Local(index) => {
+                        if let Err(position) =
+                            writeback_types_agree(module, *index, function, operands)
+                        {
+                            return Err(Trap::new(
+                                "RUNTIME_TYPE_CONFUSION",
+                                alloc::format!(
+                                    "parameter {position} borrows a place of a different type                                      than the one it would write back"
+                                ),
+                                source,
+                            ));
+                        }
                         #[cfg(feature = "measurement-marks")]
                         self.system.mark_before_call();
                         let arguments = match self.arguments(module, operands, values, source) {
@@ -1917,8 +2165,9 @@ impl Engine<'_> {
                             arguments,
                             pending: Pending::Call {
                                 result: instruction.result,
-                                writeback: writeback_plan(module, *index, operands),
+                                writeback: writeback_plan(module, *index, operands, borrows),
                                 marks: true,
+                                source,
                             },
                         });
                     }
@@ -1935,6 +2184,7 @@ impl Engine<'_> {
                                 result: instruction.result,
                                 writeback: Vec::new(),
                                 marks: false,
+                                source,
                             },
                         });
                     }
@@ -1981,13 +2231,38 @@ impl Engine<'_> {
                     arguments.push(self.operand(module, operand, values, source)?);
                 }
                 arguments.extend(captures);
+                // A closure's declared parameters carry their own modes, so a
+                // `borrow mut` one writes back exactly as it does at a named
+                // call. The captures that follow them are owned (ADR-0035
+                // reserves mutable-borrow captures for cleanups), and the plan
+                // never reaches them because `operands` covers the declared
+                // parameters alone.
+                //
+                // **And this is the one call form with no static agreement
+                // behind it.** A callable value's type carries no parameter
+                // mode at all and its parameter types are not checked at the
+                // call, so the body reached here may declare a `borrow mut` of
+                // a type the caller's place does not hold. That is refused, not
+                // performed: a write-back is the one thing a call does to the
+                // caller's own storage, and it may not do it blind.
+                if let Err(position) = writeback_types_agree(module, body, function, operands) {
+                    return Err(Trap::new(
+                        "RUNTIME_TYPE_CONFUSION",
+                        alloc::format!(
+                            "a value call reaches a body whose parameter {position} borrows a                              place of a different type than the one it would write back"
+                        ),
+                        source,
+                    ));
+                }
+                let writeback = writeback_plan(module, body, operands, borrows);
                 return Ok(Evaluated::Enter {
                     target: Target::Local(body),
                     arguments,
                     pending: Pending::Call {
                         result: instruction.result,
-                        writeback: Vec::new(),
+                        writeback,
                         marks: false,
+                        source,
                     },
                 });
             }
@@ -2107,7 +2382,7 @@ impl Engine<'_> {
                     for capture in &first.captures {
                         arguments.push(self.operand(module, capture, values, source)?);
                     }
-                    let writeback = writeback_plan(module, first.body, &first.captures);
+                    let writeback = writeback_plan(module, first.body, &first.captures, borrows);
                     let body = first.body;
                     return Ok(Evaluated::Enter {
                         target: Target::Local(body),

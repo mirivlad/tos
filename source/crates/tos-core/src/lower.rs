@@ -682,16 +682,16 @@ impl<'source> Lowerer<'source> {
                 Ok(self.intern(definition))
             }
             TypeSyntax::Array {
-                element,
-                length,
-                span,
+                element, length, ..
             } => {
                 let element = self.resolve_type(element)?;
-                let text = length.text(self.source);
-                let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
-                let Ok(count) = digits.parse::<u64>() else {
-                    return Err(self.gap("array length that is not a literal", *span));
-                };
+                // **The length is resolved here and reaches the artifact as a
+                // number.** ADR-0052 makes a constant *be* its value, so an
+                // `array<T, COUNT>` and an `array<T, 4>` of the same count are
+                // the same type in `tos-ir/v1` and the same bytes in the
+                // module's identity — which is what keeps verification and
+                // provenance deterministic across a rename of the constant.
+                let count = self.const_length(length)?;
                 Ok(self.intern(TypeDef::Array(element, count)))
             }
             TypeSyntax::Tuple { elements, .. } => {
@@ -960,6 +960,120 @@ impl<'source> Lowerer<'source> {
         lowered
     }
 
+    /// Evaluates a `const_expression` written in an array's length position.
+    ///
+    /// docs/39 gives that position its own production — `array_type = "array"
+    /// "<" type "," const_expression ">"` — and ADR-0052 §"What V1 already
+    /// decided" reads the `identifier` of a `const_primary` as a named
+    /// constant, since V1 grants no user generics and nothing else a name there
+    /// could denote. So this is the whole of what the accepted contract admits
+    /// and no more: two kinds of literal, a named constant, five operators and
+    /// parentheses.
+    fn const_length(&mut self, expression: &crate::parser::ConstExpr) -> Result<u64, Gap> {
+        use crate::parser::ConstExpr;
+        match expression {
+            ConstExpr::Literal(span) => count_of(span.text(self.source))
+                .ok_or_else(|| self.gap("array length that is not a count", *span)),
+            ConstExpr::Group { inner, .. } => self.const_length(inner),
+            ConstExpr::Name(span) => {
+                let name = span.text(self.source);
+                let Some(declaration) = self.const_declaration(name) else {
+                    return Err(self.gap("array length naming no module constant", *span));
+                };
+                // The same cycle guard a constant's ordinary use takes: a
+                // constant that names itself has no value to substitute, and
+                // ADR-0052's "the constant *is* its value" is what makes that a
+                // defect rather than a recursion.
+                if self.const_stack.contains(&name) {
+                    return Err(self.gap("constant cycle", *span));
+                }
+                let value = declaration.value();
+                self.const_stack.push(name);
+                let count = self.const_initializer_length(value);
+                self.const_stack.pop();
+                count
+            }
+            ConstExpr::Binary {
+                operator,
+                left,
+                right,
+                span,
+            } => {
+                let left = self.const_length(left)?;
+                let right = self.const_length(right)?;
+                let operator = operator.text(self.source);
+                let value = match operator {
+                    "+" => left.checked_add(right),
+                    "-" => left.checked_sub(right),
+                    "*" => left.checked_mul(right),
+                    "/" => left.checked_div(right),
+                    "%" => left.checked_rem(right),
+                    _ => None,
+                };
+                // Checked, like every other arithmetic the language performs
+                // (docs/40 §3): an array length that overflowed, went below
+                // zero or divided by zero is refused rather than wrapped into
+                // a count somebody would have to discover at run time.
+                value.ok_or_else(|| self.gap("array length that does not evaluate", *span))
+            }
+        }
+    }
+
+    /// Evaluates a named constant's initializer as a count.
+    ///
+    /// The initializer is an ordinary `Expression` — a constant may be declared
+    /// with any constant expression V1 admits — so only the forms a count can
+    /// come out of are accepted here, and everything else is refused where it
+    /// is written rather than coerced.
+    fn const_initializer_length(
+        &mut self,
+        expression: &crate::parser::Expression,
+    ) -> Result<u64, Gap> {
+        let at = expression.span();
+        match expression.form() {
+            ExpressionForm::Literal => count_of(at.text(self.source))
+                .ok_or_else(|| self.gap("array length that is not a count", at)),
+            ExpressionForm::Group => match expression.inner() {
+                Some(inner) => self.const_initializer_length(inner),
+                None => Err(self.gap("array length that does not evaluate", at)),
+            },
+            ExpressionForm::Name => {
+                let name = at.text(self.source);
+                let Some(declaration) = self.const_declaration(name) else {
+                    return Err(self.gap("array length naming no module constant", at));
+                };
+                if self.const_stack.contains(&name) {
+                    return Err(self.gap("constant cycle", at));
+                }
+                let value = declaration.value();
+                self.const_stack.push(name);
+                let count = self.const_initializer_length(value);
+                self.const_stack.pop();
+                count
+            }
+            ExpressionForm::Binary => {
+                let (Some(left), Some(right)) = (expression.left(), expression.right()) else {
+                    return Err(self.gap("array length that does not evaluate", at));
+                };
+                let Some(operator) = expression.operator_text(self.source) else {
+                    return Err(self.gap("array length that does not evaluate", at));
+                };
+                let left = self.const_initializer_length(left)?;
+                let right = self.const_initializer_length(right)?;
+                let value = match operator {
+                    "+" => left.checked_add(right),
+                    "-" => left.checked_sub(right),
+                    "*" => left.checked_mul(right),
+                    "/" => left.checked_div(right),
+                    "%" => left.checked_rem(right),
+                    _ => None,
+                };
+                value.ok_or_else(|| self.gap("array length that does not evaluate", at))
+            }
+            _ => Err(self.gap("array length that is not a constant expression", at)),
+        }
+    }
+
     fn gap(&self, construct: &'static str, span: Span) -> Gap {
         Gap {
             construct,
@@ -1214,7 +1328,7 @@ impl<'source> Lowerer<'source> {
     fn lower_captured_body(
         &mut self,
         name: &str,
-        declared: Vec<(String, TypeId)>,
+        declared: Vec<(String, TypeId, PassMode)>,
         body: &'source crate::parser::Block,
         result: TypeId,
         outer: &mut BodyBuilder,
@@ -1231,27 +1345,33 @@ impl<'source> Lowerer<'source> {
     fn lower_captured_body_with(
         &mut self,
         name: &str,
-        declared: Vec<(String, TypeId)>,
+        declared: Vec<(String, TypeId, PassMode)>,
         body: &'source crate::parser::Block,
         result: TypeId,
         capture_mode: PassMode,
         outer: &mut BodyBuilder,
     ) -> Result<(usize, Vec<Operand>), Gap> {
-        let mut bound: BTreeSet<String> = declared.iter().map(|(name, _)| name.clone()).collect();
+        let mut bound: BTreeSet<String> =
+            declared.iter().map(|(name, _, _)| name.clone()).collect();
         let mut free: Vec<String> = Vec::new();
         collect_free_names(self.source, body, &mut bound, &mut free);
 
         let mut parameters = Vec::new();
         let mut values: Vec<TypeId> = Vec::new();
         let mut scope: Vec<(String, ValueId)> = Vec::new();
-        for (name, ty) in &declared {
+        for (name, ty, mode) in &declared {
             let slot = values.len();
             values.push(*ty);
             scope.push((name.clone(), slot));
+            // **A declared parameter keeps the mode it was declared with.** A
+            // closure's parameter list is an ordinary parameter list (docs/39
+            // §"closure_parameters"), so `borrow mut` on one means there what
+            // it means on a named function's — and lowering it as `Owned`
+            // would be the frontend quietly deciding it means something else.
             parameters.push(Parameter {
                 name: name.clone(),
                 ty: *ty,
-                mode: PassMode::Owned,
+                mode: *mode,
             });
         }
         let mut captures: Vec<Operand> = Vec::new();
@@ -2637,7 +2757,12 @@ impl<'source> Lowerer<'source> {
                 for parameter in expression.parameters() {
                     let ty = self.resolve_type(parameter.ty())?;
                     parameter_types.push(ty);
-                    declared.push((parameter.name().text(self.source).to_string(), ty));
+                    let mode = match parameter.borrow_mode() {
+                        crate::parser::BorrowMode::Owned => PassMode::Owned,
+                        crate::parser::BorrowMode::Shared => PassMode::SharedBorrow,
+                        crate::parser::BorrowMode::Mutable => PassMode::MutableBorrow,
+                    };
+                    declared.push((parameter.name().text(self.source).to_string(), ty, mode));
                 }
                 // A closure body is its own return scope; its result is the
                 // type its declared function type gives it, and `unit` when the
@@ -3746,6 +3871,30 @@ fn first_returned_expression(block: &crate::parser::Block) -> Option<&Expression
         }
     }
     None
+}
+
+/// The count an `integer` or `size` literal denotes, or `None` when the token is
+/// neither.
+///
+/// A `size` literal carries a unit, and the units are the ones the language
+/// writes sizes in: `B`, `KiB`, `MiB`, `GiB`. An `integer` carries none. A
+/// literal of any other kind — boolean, string, byte string, duration — is not
+/// a count and gets no reading here, which is what keeps the array-length
+/// position to the `integer | size` the grammar gives it.
+fn count_of(text: &str) -> Option<u64> {
+    let digits: String = text.chars().take_while(|c| c.is_ascii_digit()).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let unit = &text[digits.len()..];
+    let scale: u64 = match unit {
+        "" | "B" => 1,
+        "KiB" => 1024,
+        "MiB" => 1024 * 1024,
+        "GiB" => 1024 * 1024 * 1024,
+        _ => return None,
+    };
+    digits.parse::<u64>().ok()?.checked_mul(scale)
 }
 
 fn borrow_kind(operator: &str) -> Option<tos_ir::BorrowKind> {
