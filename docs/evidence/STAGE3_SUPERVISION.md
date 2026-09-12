@@ -28,6 +28,39 @@ Neither could produce the run: the supervisor's return value is composed from
 services created, services latched and services blocked, and the journal is a
 sequence the supervisor writes.
 
+### The composite is checked against the run's own journal
+
+**Two of its three terms are architectural and one is not**, and the gate was
+corrected on 2026-09-12 to stop treating them alike.
+
+`created` and `latched` are decisions with an outcome — a service started, a
+budget exhausted — and the assertions beside them fix both. **`blocked` is an
+observation count**: the supervisor increments it every time it reconsiders a
+dependent service in a round while its dependency is not RUNNING, so it counts
+how many bounded rounds happened to look, and the real scheduler decides that by
+the order in which children end.
+
+The same unchanged binary has produced blocked counts of 1, 2 and 3 — reported
+as `1301`, `1302` and `1303`. The host gate had pinned the composite to `1302`
+and so failed about one run in four while the supervisor was behaving exactly as
+specified.
+
+**`BLOCKED` as a state is fully evidenced and nothing about that changed**: the
+gate still requires at least one real blocked decision, still requires it to be
+journalled in order, and §4 below still shows it is none of the three states it
+could be confused with. What the gate no longer asserts is *how many times a
+bounded round happened to observe it*. It now recomputes
+
+```text
+1000 + created * 10 + latched * 100 + blocked
+```
+
+from that run's own journal records and requires the supervisor's returned value
+to equal it — so the property under test is that **the report agrees with the
+decisions the supervisor journalled**, which is what the number was always for.
+A disagreement in either direction still fails, as does a run with no readable
+completion or with a completion missing for a worker that started.
+
 ## 2. The state machine
 
 Four states. The difference between them is the point, and each is journalled as

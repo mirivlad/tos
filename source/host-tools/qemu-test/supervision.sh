@@ -233,10 +233,83 @@ print("  other services still starting — so the latch is one service's and not
 PY
 
 # --- the number the supervisor returned ---------------------------------------
-# 1000 + created x10 + latched x100 + blocked. Composed so that no single
-# outcome produces it, and every part of it is a decision checked above.
-grep -q '^TOS\.RUN\.COMPLETED value=i64:1302$' "$LOG" ||
-    fail "the supervisor did not report the run this policy produces"
+#
+# `1000 + created x10 + latched x100 + blocked`, checked against **this run's own
+# journal** rather than against one remembered total.
+#
+# **Why it is not pinned to 1302 any more.** Two of those terms are architectural
+# and one is not. `created` and `latched` are decisions with an outcome — a
+# service started, a budget exhausted — and the assertions above already fix
+# them. `blocked` is an *observation count*: the supervisor increments it every
+# time it reconsiders a dependent service in a round while its dependency is not
+# yet RUNNING, so it counts how many bounded rounds happened to look, and the
+# real scheduler decides that by the order children end. The same unchanged
+# binary has produced 1, 2 and 3 — reported as 1301, 1302 and 1303, the last of
+# them recorded in the Stage 4D-1 evidence before this was understood.
+#
+# Pinning the composite therefore asserted a scheduling coincidence alongside two
+# facts, and failed about one in four runs while the supervisor was behaving
+# exactly as specified. **BLOCKED as a state is still fully evidenced** — the
+# assertion above requires at least one, and the journal-order checks require it
+# to be a real decision — and what is checked here is the property the number is
+# actually for: that the report the supervisor returned agrees with the decisions
+# it journalled.
+python3 - "$LOG" <<'PY'
+import re
+import sys
+
+log = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+
+def said(name):
+    pattern = (
+        r"^TOS\.RUN\.INTERFACE operation=endpoint_send_text status=0 said="
+        + re.escape(name)
+        + r"$"
+    )
+    return sum(1 for line in log if re.match(pattern, line.strip()))
+
+created = said("info.supervisor.result.created")
+latched = said("error.supervisor.state.failed")
+blocked = said("warn.supervisor.state.blocked")
+expected = 1000 + created * 10 + latched * 100 + blocked
+
+# **Which completion is the supervisor's, structurally.** Every supervised child
+# reports one of these too, so the run has one per worker that started plus the
+# supervisor's own — and the supervisor's is last, because it outlives the
+# children it supervises. Checking the count as well as taking the last one
+# means a child that started and never reported cannot hide behind the
+# arithmetic below.
+completions = [
+    line.strip() for line in log if line.startswith("TOS.RUN.COMPLETED ")
+]
+workers = sum(
+    1 for line in log if line.startswith("TOS.RUN.BEGIN path=system/boot/worker.tos ")
+)
+if len(completions) != workers + 1:
+    raise SystemExit(
+        "supervision: FAIL: "
+        f"{workers} worker(s) started and the boot reported {len(completions)} "
+        "completion value(s); a supervised run has one per worker plus the "
+        "supervisor's own"
+    )
+found = re.match(r"^TOS\.RUN\.COMPLETED value=i64:(-?\d+)$", completions[-1])
+if found is None:
+    raise SystemExit(
+        f"supervision: FAIL: the completion value is unreadable: {completions[-1]}"
+    )
+reported = int(found.group(1))
+if reported != expected:
+    raise SystemExit(
+        "supervision: FAIL: the supervisor reported "
+        f"{reported}, and the decisions it journalled compose to {expected} "
+        f"(created={created}, latched={latched}, blocked={blocked})"
+    )
+print(
+    f"  the supervisor returned {reported}, which is exactly the "
+    f"{created} creation(s), {latched} latch(es) and {blocked} blocked "
+    "observation(s) it journalled"
+)
+PY
 
 # --- the machine reached rest, and the account closed -------------------------
 # **Not anchored at the end of the line.** The event gained
@@ -253,3 +326,5 @@ echo "  children created out of a presented authority and ended on their own"
 echo "  endings observed through process_wait_child, as the record §4.2 declares"
 echo "  and the supervisor's own decisions journalled in the order it made them"
 echo "  blocked, restarted and latched, all in one run and all told apart"
+echo "  and the number it returned recomputed from the decisions it journalled,"
+echo "  rather than compared against one run's blocked-observation count"
