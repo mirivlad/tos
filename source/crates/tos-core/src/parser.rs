@@ -185,6 +185,49 @@ pub enum TypeSyntaxForm {
     Function,
 }
 
+/// One `const_expression` — the restricted arithmetic form V1 defines for an
+/// array's length (docs/39 §"const_expression", ADR-0052).
+///
+/// ```text
+/// const_expression = const_sum ;
+/// const_sum        = const_product ( ( "+" | "-" ) const_product )* ;
+/// const_product    = const_primary ( ( "*" | "/" | "%" ) const_primary )* ;
+/// const_primary    = integer | size | identifier | "(" const_expression ")" ;
+/// ```
+///
+/// **Its own node rather than the general expression grammar**, because the
+/// grammar makes it its own production: an array's length admits five operators
+/// and three primaries, and reusing `expression` here would admit calls, field
+/// access, casts and everything else, then need a second pass to take them
+/// away. ADR-0052 §"What V1 already decided" fixes what an `identifier` in this
+/// position can be: V1 grants no user generics, so a name here is a named
+/// constant and nothing else.
+#[derive(Debug, Eq, PartialEq)]
+pub enum ConstExpr {
+    /// An `integer` or `size` literal token.
+    Literal(Span),
+    /// An `identifier`, which is a named constant.
+    Name(Span),
+    /// `left op right`, left-associative as the grammar writes it.
+    Binary {
+        operator: Span,
+        left: Box<ConstExpr>,
+        right: Box<ConstExpr>,
+        span: Span,
+    },
+    /// `( inner )`.
+    Group { inner: Box<ConstExpr>, span: Span },
+}
+
+impl ConstExpr {
+    pub fn span(&self) -> Span {
+        match self {
+            Self::Literal(span) | Self::Name(span) => *span,
+            Self::Binary { span, .. } | Self::Group { span, .. } => *span,
+        }
+    }
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum TypeSyntax {
     Name {
@@ -206,7 +249,7 @@ pub enum TypeSyntax {
     },
     Array {
         element: Box<TypeSyntax>,
-        length: Span,
+        length: ConstExpr,
         span: Span,
     },
     Tuple {
@@ -2640,7 +2683,7 @@ impl<'source> TokenCursor<'source> {
         if name.text(self.source) == "array" {
             let element = self.parse_type()?;
             self.expect_kind(TokenKind::Comma, ParseErrorCode::ListSeparatorRequired)?;
-            let length = self.expect_literal()?;
+            let length = self.parse_const_expression()?;
             let end = self.expect_close_angle()?;
             return Ok(TypeSyntax::Array {
                 element: Box::new(element),
@@ -2686,6 +2729,87 @@ impl<'source> TokenCursor<'source> {
             Ok(Span::from(self.advance()))
         } else {
             Err(self.error_here(ParseErrorCode::ExpectedIdentifier))
+        }
+    }
+
+    /// `const_expression = const_sum` (docs/39).
+    fn parse_const_expression(&mut self) -> Result<ConstExpr, ParseError> {
+        self.parse_const_sum()
+    }
+
+    /// `const_sum = const_product ( ( "+" | "-" ) const_product )*`.
+    fn parse_const_sum(&mut self) -> Result<ConstExpr, ParseError> {
+        let mut left = self.parse_const_product()?;
+        while matches!(self.current_text(), "+" | "-") {
+            let operator = Span::from(self.advance());
+            let right = self.parse_const_product()?;
+            let span = Span {
+                start: left.span().start(),
+                end: right.span().end(),
+            };
+            left = ConstExpr::Binary {
+                operator,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    /// `const_product = const_primary ( ( "*" | "/" | "%" ) const_primary )*`.
+    fn parse_const_product(&mut self) -> Result<ConstExpr, ParseError> {
+        let mut left = self.parse_const_primary()?;
+        while matches!(self.current_text(), "*" | "/" | "%") {
+            let operator = Span::from(self.advance());
+            let right = self.parse_const_primary()?;
+            let span = Span {
+                start: left.span().start(),
+                end: right.span().end(),
+            };
+            left = ConstExpr::Binary {
+                operator,
+                left: Box::new(left),
+                right: Box::new(right),
+                span,
+            };
+        }
+        Ok(left)
+    }
+
+    /// `const_primary = integer | size | identifier | "(" const_expression ")"`.
+    ///
+    /// Exactly those three primaries. A boolean, a string, a byte string or a
+    /// duration is not one of them — the length of an array is a count — and
+    /// neither is anything else, so a token that begins none of the four
+    /// alternatives is `E1107_UNEXPECTED_TOKEN`: "the token cannot begin or
+    /// continue the construct being parsed and no more specific parser code
+    /// applies" (docs/44 §7). **Not `E1104_EXPECTED_LITERAL`**, which this
+    /// position used to report and which says "a literal is required here" — a
+    /// literal is exactly what `array<i64, "four">` has, and it is still not a
+    /// `const_primary`.
+    fn parse_const_primary(&mut self) -> Result<ConstExpr, ParseError> {
+        match self.current().kind() {
+            TokenKind::Integer | TokenKind::Size => {
+                Ok(ConstExpr::Literal(Span::from(self.advance())))
+            }
+            TokenKind::Identifier => Ok(ConstExpr::Name(Span::from(self.advance()))),
+            _ => {
+                let Some(open) = self.consume_kind(TokenKind::OpenParen) else {
+                    return Err(self.error_here(ParseErrorCode::UnexpectedToken));
+                };
+                let start = open.start();
+                let inner = self.parse_const_expression()?;
+                let close =
+                    self.expect_kind(TokenKind::CloseParen, ParseErrorCode::UnexpectedToken)?;
+                Ok(ConstExpr::Group {
+                    inner: Box::new(inner),
+                    span: Span {
+                        start,
+                        end: close.end(),
+                    },
+                })
+            }
         }
     }
 

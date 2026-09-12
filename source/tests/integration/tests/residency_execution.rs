@@ -279,6 +279,57 @@ fn a_mutable_borrow_writes_back_into_a_caller_that_was_evicted() {
     assert_eq!(chain.value(TWO).0, value);
 }
 
+/// The same, with the borrow **written at the call site**.
+///
+/// The test above passes the argument as a bare name, which lowers to the
+/// caller's own value slot — so its write-back landed in the right place for a
+/// reason that had nothing to do with borrowing. Written `borrow mut cell`, the
+/// argument lowers to an `Op::Borrow` result: a copy of the place in a fresh
+/// slot. That is the form a driver writes, it is the form that was silently
+/// dropping the callee's work, and it crosses a module boundary here because a
+/// cross-module plan is computed where the callee is resolved rather than where
+/// the call is written — a different code path from the local one, with the
+/// same obligation.
+#[test]
+fn a_mutable_borrow_written_at_the_call_site_crosses_a_module_boundary() {
+    let chain = chain(
+        "pub fn bump(borrow mut cell: i32) -> i32 { cell = cell + 10i32; return 1i32; }",
+        "pub fn touch(borrow mut cell: i32) -> i32 { return leaf.bump(borrow mut cell); }",
+        "pub fn main() -> i32 { let mut cell = 5i32; let flag = mid.touch(borrow mut cell); \
+         return cell + flag; }",
+    );
+    let (value, traffic) = chain.value(ONE);
+    assert_eq!(
+        value,
+        Value::Int(IntKind::I32, 16),
+        "the callee's write reached the reloaded caller's place"
+    );
+    assert!(traffic.evictions >= 2, "{traffic:?}");
+    assert_eq!(chain.value(TWO).0, value);
+}
+
+/// A cross-module mutable borrow of an **element**, with the caller evicted.
+///
+/// The place the borrow named — and the index that chose it — are resolved into
+/// the continuation where the borrow was taken, so the write-back needs neither
+/// module to be resident when it happens. Evicting the caller while the callee
+/// runs is what proves that rather than asserts it.
+#[test]
+fn a_cross_module_mutable_borrow_of_an_element_survives_eviction() {
+    let chain = chain(
+        "pub fn bump(borrow mut cell: i32) -> i32 { cell = cell + 10i32; return 1i32; }",
+        "pub fn touch(borrow mut cell: i32) -> i32 { return leaf.bump(borrow mut cell); }",
+        "pub fn main() -> i32 { let mut pool: array<i32, 3> = [1i32, 2i32, 3i32]; \
+         let flag = mid.touch(borrow mut pool[1B]); \
+         return pool[0B] * 1000i32 + pool[1B] * 10i32 + pool[2B] + flag; }",
+    );
+    let (value, traffic) = chain.value(ONE);
+    // Only element 1 moved: 1 * 1000 + 12 * 10 + 3 + 1.
+    assert_eq!(value, Value::Int(IntKind::I32, 1124));
+    assert!(traffic.evictions >= 2, "{traffic:?}");
+    assert_eq!(chain.value(TWO).0, value);
+}
+
 /// A cleanup chain that crosses an eviction between its bodies.
 ///
 /// ADR-0035 makes what one cleanup leaves visible to the next. Each body is a

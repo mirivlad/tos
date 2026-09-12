@@ -371,6 +371,18 @@ either:
   states that a named constant is admissible as `array<T, N>`'s compile-time
   `size`. The fixture writes the literal and says in its own text why.
 
+> **Addendum, 2026-09-12, after this stage closed.** Both findings were repaired
+> in a separate language-correctness change. Nothing above is amended: the
+> workarounds in `tests/vectors/virtio-block-reuse/init.tos` are the state of
+> the implementation at Stage 4D-3's closure and stay as they were written, and
+> the real-device witness recorded here was re-run against the repaired frontend
+> and engine and is byte for byte the same — the same completion value, the same
+> fuel, the same two interrupts, and Stage 4D-2's module digest unchanged at
+> `sha256:21101a2d…bcbcb3`. The repair's own evidence is the progress-log
+> entry of that date; its conformance sets are
+> `source/tests/integration/tests/mutable_borrow.rs` and
+> `source/tests/integration/tests/array_length_constants.rs`.
+
 ## 12. Stage 4 performance accounting
 
 ```text
