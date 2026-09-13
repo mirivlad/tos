@@ -1233,9 +1233,23 @@ impl<'source> Lowerer<'source> {
     /// docs/39 gives a closure or spawned body no result annotation, and V1 has
     /// no inference; the body says what it produces with an explicit `return`,
     /// which is exactly what this reads.
-    fn body_result(&mut self, body: &'source crate::parser::Block) -> Option<TypeId> {
+    /// The type a closure or spawned body returns, when a declaration fixes it.
+    ///
+    /// **The names in scope are part of what a declaration fixes.** A body whose
+    /// `return` names a captured binding or one of its own parameters has a
+    /// result the declarations already state, and answering `unit` for it would
+    /// give the lowered body a result type its `return` contradicts — a
+    /// `Task<unit>` that carries a record, a `fn () -> unit` that yields an
+    /// `i32`. So the two scopes a body can name are passed in: its declared
+    /// parameters, which shadow, and the enclosing bindings it may capture.
+    fn body_result(
+        &mut self,
+        body: &'source crate::parser::Block,
+        declared: &[(String, TypeId, PassMode)],
+        outer: &BodyBuilder,
+    ) -> Option<TypeId> {
         let expression = first_returned_expression(body)?;
-        self.static_expression_type(expression)
+        self.static_expression_type(expression, declared, outer)
     }
 
     /// The type of an expression that a declaration already fixes.
@@ -1243,13 +1257,20 @@ impl<'source> Lowerer<'source> {
     /// Only forms whose type is stated by a declaration are answered: a
     /// literal, a call to a declared function, a constructor. Anything else
     /// returns nothing, and the caller falls back rather than guessing.
-    fn static_expression_type(&mut self, expression: &'source Expression) -> Option<TypeId> {
+    fn static_expression_type(
+        &mut self,
+        expression: &'source Expression,
+        declared: &[(String, TypeId, PassMode)],
+        outer: &BodyBuilder,
+    ) -> Option<TypeId> {
         match expression.form() {
             ExpressionForm::Literal => {
                 let constant = self.literal_constant(expression).ok()?;
                 Some(self.constant_type(constant))
             }
-            ExpressionForm::Group => self.static_expression_type(expression.inner()?),
+            ExpressionForm::Group => {
+                self.static_expression_type(expression.inner()?, declared, outer)
+            }
             // The chain is walked with a loop rather than by recursing into
             // `left`: a left-associative run is as deep as it is long. The
             // answer is the same one the recursion gave — the first comparison
@@ -1263,7 +1284,7 @@ impl<'source> Lowerer<'source> {
                     }
                     let left = node.left()?;
                     if left.form() != ExpressionForm::Binary {
-                        return self.static_expression_type(left);
+                        return self.static_expression_type(left, declared, outer);
                     }
                     node = left;
                 }
@@ -1283,10 +1304,45 @@ impl<'source> Lowerer<'source> {
             }
             ExpressionForm::Name => {
                 let name = expression.span().text(self.source);
+                // A declared parameter shadows an enclosing binding, and both
+                // shadow a nullary variant constructor of the same spelling:
+                // the innermost scope that binds the name decides, which is the
+                // order ordinary resolution uses.
+                if let Some((_, ty, _)) = declared.iter().find(|(bound, _, _)| bound == name) {
+                    return Some(*ty);
+                }
+                if let Some(slot) = outer.lookup(name) {
+                    if let Some(ty) = outer.values.get(slot).copied() {
+                        return Some(ty);
+                    }
+                }
                 let &(ty, _) = self.variant_owner.get(name)?;
                 Some(ty)
             }
             _ => None,
+        }
+    }
+
+    /// The type of an operand, **including a constant's**.
+    ///
+    /// [`BodyBuilder::type_of`] cannot answer for a constant: the operand is an
+    /// index into a table the builder does not hold, and it substituted the
+    /// enclosing function's result type instead. That stand-in is invisible
+    /// until a declared type is built out of it — `[0u64, 0u64, 0u64]` inside a
+    /// function returning `i64` produced `array<i64, 3>`, and the binding it
+    /// initialised was declared `array<u64, 3>`. The aggregate and the place
+    /// then disagreed in the artifact, which is a type nothing in the program
+    /// wrote.
+    ///
+    /// So the constant table is consulted where it actually is.
+    fn operand_type(&mut self, operand: &Operand, builder: &BodyBuilder) -> TypeId {
+        match operand {
+            Operand::Value(value) => builder
+                .values
+                .get(*value)
+                .copied()
+                .unwrap_or(builder.result),
+            Operand::Constant(constant) => self.constant_type(*constant),
         }
     }
 
@@ -2529,7 +2585,7 @@ impl<'source> Lowerer<'source> {
                     let ty = if op.is_comparison() {
                         self.intern(TypeDef::Bool)
                     } else {
-                        builder.type_of(&accumulated)
+                        self.operand_type(&accumulated, builder)
                     };
                     let value = builder.define(ty);
                     let site = sites[index];
@@ -2626,7 +2682,7 @@ impl<'source> Lowerer<'source> {
                         Some("!") => UnaryOp::Not,
                         _ => return Err(self.gap("unary operator", node.span())),
                     };
-                    let ty = builder.type_of(&accumulated);
+                    let ty = self.operand_type(&accumulated, builder);
                     let value = builder.define(ty);
                     builder.push(Instruction {
                         result: Some(value),
@@ -2674,7 +2730,8 @@ impl<'source> Lowerer<'source> {
                 let mut element_types = Vec::new();
                 for element in expression.elements() {
                     let lowered = self.lower_expression(element, builder)?;
-                    element_types.push(builder.type_of(&lowered));
+                    let element = self.operand_type(&lowered, builder);
+                    element_types.push(element);
                     operands.push(lowered);
                 }
                 let ty = self.intern(TypeDef::Tuple(element_types));
@@ -2695,7 +2752,7 @@ impl<'source> Lowerer<'source> {
                 let mut element_type = self.unit_type();
                 for element in expression.elements() {
                     let lowered = self.lower_expression(element, builder)?;
-                    element_type = builder.type_of(&lowered);
+                    element_type = self.operand_type(&lowered, builder);
                     operands.push(lowered);
                 }
                 let ty = self.intern(TypeDef::Array(element_type, operands.len() as u64));
@@ -2767,7 +2824,9 @@ impl<'source> Lowerer<'source> {
                 // A closure body is its own return scope; its result is the
                 // type its declared function type gives it, and `unit` when the
                 // body produces nothing.
-                let result = self.body_result(body).unwrap_or_else(|| self.unit_type());
+                let result = self
+                    .body_result(body, &declared, builder)
+                    .unwrap_or_else(|| self.unit_type());
                 let name = self.body_name("closure", expression.span());
                 let (id, captures) =
                     self.lower_captured_body(&name, declared, body, result, builder)?;
@@ -2788,7 +2847,9 @@ impl<'source> Lowerer<'source> {
                 let Some(body) = expression.body() else {
                     return Err(self.gap("spawn without a body", expression.span()));
                 };
-                let payload = self.body_result(body).unwrap_or_else(|| self.unit_type());
+                let payload = self
+                    .body_result(body, &[], builder)
+                    .unwrap_or_else(|| self.unit_type());
                 let name = self.body_name("spawn", expression.span());
                 let (id, captures) =
                     self.lower_captured_body(&name, Vec::new(), body, payload, builder)?;
@@ -3325,8 +3386,20 @@ impl<'source> Lowerer<'source> {
         }
         let (target, ty) = match self.functions_by_name.get(&name) {
             Some(&index) => {
-                let result = self.schema.functions()[index].signature().result();
-                let ty = self.resolve_type(result)?;
+                let signature = self.schema.functions()[index].signature();
+                let declared = self.resolve_type(signature.result())?;
+                // **The callee's lowered result, not its written one.**
+                // docs/40 §4: an `async fn` declared `-> T` produces `Task<T>`,
+                // and the function this call names is lowered with exactly that
+                // signature. A call site that took the written `T` instead
+                // would declare a result slot of one type and receive a task
+                // handle of another — the declaration and the value disagreeing
+                // with nothing to notice it.
+                let ty = if signature.is_async() {
+                    self.intern(TypeDef::Task(declared))
+                } else {
+                    declared
+                };
                 (CallTarget::Local(index), ty)
             }
             None => {
