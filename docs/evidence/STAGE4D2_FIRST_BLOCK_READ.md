@@ -310,3 +310,50 @@ this is one request, once, with the ring at index 1.
 No second request. No write, flush, discard or `GET_ID`. No indirect
 descriptors, no `EVENT_IDX`, no packed ring, no multi-queue, no ring wrap, no
 batching, no used-buffer suppression, and no block service interface.
+
+## Addendum, 2026-09-13 — the lowered module digest moved, and why
+
+**Nothing above is amended.** This records a change to the *derived* artifact
+this evidence describes, made by a frontend correctness repair in a later
+language slice.
+
+```text
+source                   byte-identical
+                         tests/vectors/virtio-block-read/init.tos
+                         sha256:40abe34d756955959731b8436819c365101eeb74e02230a7f400c0501ad5177b
+
+lowered module digest    before  sha256:21101a2d3ba05a1c6ac99a5f6347c2a920c49b9f9fed9b164a064b6745bcbcb3
+                         after   sha256:c987d33d2849eee3842bfad5ee08285270bd255a7dee281e83d7785cd029c2a2
+```
+
+**Why it moved.** The lowerer could not type an operand that names the constant
+table — the operand is an index into a table the body builder does not hold —
+and substituted **the enclosing function's result type** in its place. Every
+value built out of such an operand inherited that substitute. In
+`read_sector_zero`, which returns `i64`, the expression `SECTOR_COUNT + 1u64`
+was therefore lowered as `i64` and passed to a `u64` parameter, and an array
+literal of `u64` constants would have become an `array<i64, …>` the same way.
+
+So the old digest identified a type table that did not say what the source
+denotes. The repaired lowerer reads the constant table where it actually is,
+and records the types the source actually denotes; the new digest identifies
+that artifact.
+
+**This is not a Stage 4D regression and nothing about the device changed.** A
+derived IR digest is expected to move when a frontend correctness repair changes
+the semantic artifact. The source is unchanged, the request is unchanged, the
+ordering is unchanged, and the engine's behaviour is unchanged — the engine
+carries runtime values, and the types that moved are the *declared* ones a
+verifier reads. Stage 4D-2's gate passes again on the corrected artifact, with
+the same proof mask, the same `used.len` of 513 and the same sentinel witness.
+
+Stage 4D-1 and Stage 4D-3 are likewise unchanged in source and in behaviour;
+Stage 4D-3's runtime witness is byte-identical —
+`TOS.RUN.COMPLETED value=i64:565994011492351` at `fuel=60032`, two MSI-X
+deliveries, chain heads 0 then 3, two of three descriptors reused.
+
+What made the repair necessary is recorded with the slice that made it: the
+independent verifier now checks a call's exact operand list — arity, operand
+types and declared result — as docs/43 §4 has always required, and canonical
+Stage 4D source could not satisfy that check while the lowerer was substituting
+a result type for an operand's own.

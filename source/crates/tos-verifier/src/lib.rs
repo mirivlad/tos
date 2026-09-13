@@ -1168,7 +1168,7 @@ fn check_instruction(
                 ));
             }
         }
-        Op::Call { target, .. } => match target {
+        Op::Call { target, operands } => match target {
             CallTarget::Local(index) => {
                 if *index >= module.functions.len() {
                     return Err(Finding::new(
@@ -1177,6 +1177,21 @@ fn check_instruction(
                         "a call names a function outside the table",
                     ));
                 }
+                // docs/43 §4: "A call names a declared imported or local
+                // function signature and supplies an **exact ordered operand
+                // list**", and the verifier "rechecks ... operand types,
+                // call/effect signatures". The signature is right here in the
+                // module, so there is nothing to take a producer's word for.
+                let signature = &module.functions[*index].signature;
+                check_signature(
+                    module,
+                    function,
+                    instruction,
+                    &signature.parameters,
+                    signature.result,
+                    operands,
+                    at,
+                )?;
             }
             CallTarget::Imported { import, name } => {
                 let Some(imported) = module.imports.get(*import) else {
@@ -1286,16 +1301,61 @@ fn check_instruction(
                 ));
             }
         }
-        Op::CallValue { callee, .. } => {
+        Op::CallValue { callee, operands } => {
             let ty = operand_type(module, function, callee);
-            if !matches!(
-                ty.and_then(|ty| module.type_of(ty)),
-                Some(TypeDef::Function(_, _))
-            ) {
+            let Some(TypeDef::Function(parameters, result)) = ty.and_then(|ty| module.type_of(ty))
+            else {
                 return Err(Finding::new(
                     "V2010_TYPE",
                     at(),
                     "a value call names an operand that is not of function type",
+                ));
+            };
+            // **The same obligation as a named call, from the callee's type
+            // rather than from its signature.** `TypeDef::Function` carries the
+            // ordered parameter types and the result, which is everything
+            // docs/43 §4 requires an exact operand list to be checked against —
+            // so a value call is verifiable here and is verified, rather than
+            // being taken on trust because the callee is a value.
+            //
+            // What this deliberately does **not** do is distinguish `Owned`,
+            // `SharedBorrow` and `MutableBorrow`: a function type encodes no
+            // `PassMode`, and that erasure is a recorded contract question
+            // rather than something to decide by implication here.
+            if operands.len() != parameters.len() {
+                return Err(Finding::new(
+                    "V2011_CFG",
+                    at(),
+                    alloc::format!(
+                        "a value call supplies {} operand(s) to a callee of {} parameter(s)",
+                        operands.len(),
+                        parameters.len()
+                    ),
+                ));
+            }
+            for (position, (operand, declared)) in operands.iter().zip(parameters).enumerate() {
+                let Some(actual) = operand_type(module, function, operand) else {
+                    return Err(Finding::new(
+                        "V2010_TYPE",
+                        at(),
+                        alloc::format!("operand {position} of a value call has no type"),
+                    ));
+                };
+                if actual != *declared {
+                    return Err(Finding::new(
+                        "V2010_TYPE",
+                        at(),
+                        alloc::format!(
+                            "operand {position} of a value call is not the declared parameter type"
+                        ),
+                    ));
+                }
+            }
+            if instruction.ty != *result {
+                return Err(Finding::new(
+                    "V2010_TYPE",
+                    at(),
+                    "a value call declares a result that is not the callee's",
                 ));
             }
         }
@@ -1544,6 +1604,68 @@ fn check_operand(
                 ));
             }
         }
+    }
+    Ok(())
+}
+
+/// The exact ordered operand list docs/43 §4 requires, checked against a
+/// signature the module itself declares.
+///
+/// Three obligations, and they are three because a call can be wrong in three
+/// independent ways: it can supply the wrong *number* of operands, an operand
+/// of the wrong *type*, or claim a *result* the callee does not produce. The
+/// third matters as much as the others — an instruction's result type is what
+/// every later instruction reads the slot as, so a call that declared someone
+/// else's result would let verified arithmetic run on a value of a type nothing
+/// produced.
+///
+/// **Modes are not compared, deliberately.** `Parameter` carries a `PassMode`
+/// and this looks only at `ty`, because what a caller must supply is a value of
+/// the parameter's type whichever mode it is passed in; whether the modes
+/// themselves are recoverable at a call is a separate, recorded question about
+/// the function type, not one to settle by implication here.
+fn check_signature(
+    module: &Module,
+    function: &Function,
+    instruction: &Instruction,
+    parameters: &[tos_ir::Parameter],
+    result: TypeId,
+    operands: &[Operand],
+    at: &dyn Fn() -> String,
+) -> Result<(), Finding> {
+    if operands.len() != parameters.len() {
+        return Err(Finding::new(
+            "V2011_CFG",
+            at(),
+            alloc::format!(
+                "a call supplies {} operand(s) to a callee of {} parameter(s)",
+                operands.len(),
+                parameters.len()
+            ),
+        ));
+    }
+    for (position, (operand, declared)) in operands.iter().zip(parameters).enumerate() {
+        let Some(actual) = operand_type(module, function, operand) else {
+            return Err(Finding::new(
+                "V2010_TYPE",
+                at(),
+                alloc::format!("operand {position} of a call has no type"),
+            ));
+        };
+        if actual != declared.ty {
+            return Err(Finding::new(
+                "V2010_TYPE",
+                at(),
+                alloc::format!("operand {position} of a call is not the declared parameter type"),
+            ));
+        }
+    }
+    if instruction.ty != result {
+        return Err(Finding::new(
+            "V2010_TYPE",
+            at(),
+            "a call declares a result that is not the callee's",
+        ));
     }
     Ok(())
 }
