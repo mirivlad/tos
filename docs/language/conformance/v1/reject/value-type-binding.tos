@@ -1,0 +1,11 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.value_type_binding version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// A binding's annotation constrains its initializer (docs/40 §2). Neither side
+// is an exact integer type, so `E1210` does not own this; nor is it an index,
+// an argument or a return. It is the residual case ADR-0087 names.
+pub fn main() -> unit {
+    let flag: bool = 1i64;
+}

@@ -654,7 +654,15 @@ impl<'source> Lowerer<'source> {
                 for argument in arguments {
                     lowered.push(self.resolve_type(argument)?);
                 }
-                let first = lowered.first().copied().unwrap_or(0);
+                // A constructor written with no type argument has none to
+                // give its parameter. Arity is `E1204`'s to report; what this
+                // may not do is invent index 0 and build a type out of it.
+                let first = match lowered.first().copied() {
+                    Some(first) => first,
+                    None => {
+                        return Err(self.gap("type constructor without its argument", *span));
+                    }
+                };
                 let definition = match spelled {
                     "Option" => TypeDef::Option(first),
                     "Task" => TypeDef::Task(first),
@@ -674,7 +682,12 @@ impl<'source> Lowerer<'source> {
                     "RwLock" => TypeDef::RwLock(first),
                     "Channel" => TypeDef::Channel(first),
                     "slice" => TypeDef::Slice(first),
-                    "Result" => TypeDef::Result(first, lowered.get(1).copied().unwrap_or(0)),
+                    "Result" => match lowered.get(1).copied() {
+                        Some(second) => TypeDef::Result(first, second),
+                        None => {
+                            return Err(self.gap("Result without its error type", *span));
+                        }
+                    },
                     _ => {
                         return Err(self.gap("constructed type", *span));
                     }
@@ -955,7 +968,7 @@ impl<'source> Lowerer<'source> {
             return Err(self.gap("constant cycle", declaration.value().span()));
         }
         self.const_stack.push(name);
-        let lowered = self.lower_expression(declaration.value(), builder);
+        let lowered = self.lower_expression(declaration.value(), builder, None);
         self.const_stack.pop();
         lowered
     }
@@ -1242,14 +1255,29 @@ impl<'source> Lowerer<'source> {
     /// `Task<unit>` that carries a record, a `fn () -> unit` that yields an
     /// `i32`. So the two scopes a body can name are passed in: its declared
     /// parameters, which shadow, and the enclosing bindings it may capture.
+    /// The result type of a closure or task body.
+    ///
+    /// **Two different answers used to be one.** A body that returns nothing
+    /// produces `unit` — that is the type it denotes. A body that returns
+    /// something this cannot type produces *something unknown*, and answering
+    /// `unit` for it lowered `Task<Message>` as `Task<unit>`. Only the first is
+    /// `unit`; the second ends the lowering.
     fn body_result(
         &mut self,
         body: &'source crate::parser::Block,
         declared: &[(String, TypeId, PassMode)],
         outer: &BodyBuilder,
-    ) -> Option<TypeId> {
-        let expression = first_returned_expression(body)?;
-        self.static_expression_type(expression, declared, outer)
+    ) -> Result<TypeId, Gap> {
+        let Some(expression) = first_returned_expression(body) else {
+            return Ok(self.unit_type());
+        };
+        match self.static_expression_type(expression, declared, outer) {
+            Some(ty) => Ok(ty),
+            None => Err(self.gap(
+                "body whose result type is not determined by a declaration",
+                expression.span(),
+            )),
+        }
     }
 
     /// The type of an expression that a declaration already fixes.
@@ -1265,8 +1293,8 @@ impl<'source> Lowerer<'source> {
     ) -> Option<TypeId> {
         match expression.form() {
             ExpressionForm::Literal => {
-                let constant = self.literal_constant(expression).ok()?;
-                Some(self.constant_type(constant))
+                let constant = self.literal_constant(expression, None).ok()?;
+                self.constant_type(constant).ok()
             }
             ExpressionForm::Group => {
                 self.static_expression_type(expression.inner()?, declared, outer)
@@ -1335,18 +1363,31 @@ impl<'source> Lowerer<'source> {
     /// wrote.
     ///
     /// So the constant table is consulted where it actually is.
-    fn operand_type(&mut self, operand: &Operand, builder: &BodyBuilder) -> TypeId {
+    /// The exact type of an operand, or a refusal to lower.
+    ///
+    /// **The only oracle, and it never guesses.** An SSA slot's type was
+    /// recorded when the slot was defined, and a constant's is fixed by the
+    /// constant table; both are facts this module already holds. What used to
+    /// be here instead was a lookup with a fallback — a missing slot and *every
+    /// constant* answered with the enclosing function's result type — and that
+    /// stand-in is invisible until a declared type is built out of it.
+    ///
+    /// A lookup that fails now ends the lowering. There is no valid-looking
+    /// `TypeId` to fall back to: not the function's result, not `unit`, not
+    /// index 0, not the container's own type. If this cannot say what the type
+    /// is, no artifact may be produced from it.
+    fn operand_type(&mut self, operand: &Operand, builder: &BodyBuilder) -> Result<TypeId, Gap> {
         match operand {
-            Operand::Value(value) => builder
-                .values
-                .get(*value)
-                .copied()
-                .unwrap_or(builder.result),
+            Operand::Value(value) => builder.values.get(*value).copied().ok_or(Gap {
+                construct: "operand naming no defined value",
+                byte_start: 0,
+                byte_end: 0,
+            }),
             Operand::Constant(constant) => self.constant_type(*constant),
         }
     }
 
-    fn constant_type(&mut self, constant: usize) -> TypeId {
+    fn constant_type(&mut self, constant: usize) -> Result<TypeId, Gap> {
         let definition = match self.constants.get(constant) {
             Some(Constant::Bool(_)) => TypeDef::Bool,
             Some(Constant::Int(kind, _)) => TypeDef::Int(*kind),
@@ -1354,9 +1395,16 @@ impl<'source> Lowerer<'source> {
             Some(Constant::Duration(_)) => TypeDef::Duration,
             Some(Constant::Text(_)) => TypeDef::Text,
             Some(Constant::Bytes(_)) => TypeDef::Bytes,
-            _ => TypeDef::Unit,
+            Some(Constant::Unit) => TypeDef::Unit,
+            None => {
+                return Err(Gap {
+                    construct: "operand naming no interned constant",
+                    byte_start: 0,
+                    byte_end: 0,
+                })
+            }
         };
-        self.intern(definition)
+        Ok(self.intern(definition))
     }
 
     // ---------------------------------------------------------- nested bodies
@@ -1438,7 +1486,12 @@ impl<'source> Lowerer<'source> {
                 // for itself.
                 continue;
             };
-            let ty = outer.values.get(slot).copied().unwrap_or(result);
+            // A capture names a binding of the enclosing scope; if its slot
+            // has no recorded type the capture cannot be typed, and the
+            // enclosing body's result is not an answer to that question.
+            let Some(ty) = outer.values.get(slot).copied() else {
+                return Err(self.gap("captured binding with no recorded type", body.span()));
+            };
             let captured = values.len();
             values.push(ty);
             scope.push((name.clone(), captured));
@@ -1508,8 +1561,8 @@ impl<'source> Lowerer<'source> {
         let Some(sequence) = statement.expression() else {
             return Err(self.gap("for without a sequence", statement.span()));
         };
-        let sequence = self.lower_expression(sequence, builder)?;
-        let sequence_type = builder.type_of(&sequence);
+        let sequence = self.lower_expression(sequence, builder, None)?;
+        let sequence_type = self.operand_type(&sequence, builder)?;
         let (element, length) = match self.types.get(sequence_type) {
             Some(TypeDef::Array(element, length)) => (*element, *length),
             // A slice has a runtime length, which V1 gives no source form to
@@ -1708,10 +1761,19 @@ impl<'source> Lowerer<'source> {
                 let Some(initializer) = statement.expression() else {
                     return Err(self.gap("let without an initializer", statement.span()));
                 };
-                let value = self.lower_expression(initializer, builder)?;
-                let ty = match statement.declared_type() {
-                    Some(declared) => self.resolve_type(declared)?,
-                    None => builder.type_of(&value),
+                // **The annotation is the initializer's context.** `docs/40` §2
+                // makes a written type the binding's type, so it is what an
+                // unsuffixed literal in the initializer takes — which is why it
+                // is resolved before the initializer is lowered rather than
+                // after.
+                let declared = match statement.declared_type() {
+                    Some(declared) => Some(self.resolve_type(declared)?),
+                    None => None,
+                };
+                let value = self.lower_expression(initializer, builder, declared)?;
+                let ty = match declared {
+                    Some(declared) => declared,
+                    None => self.operand_type(&value, builder)?,
                 };
                 let Some(pattern) = statement.pattern() else {
                     return Err(self.gap("let without a pattern", statement.span()));
@@ -1725,7 +1787,10 @@ impl<'source> Lowerer<'source> {
                     return Err(self.gap("assignment without both sides", statement.span()));
                 };
                 let place = self.lower_place(target, builder)?;
-                let value = self.lower_expression(expression, builder)?;
+                // The location assigned to states the type of what may be put
+                // in it, so it is the context of the value being written.
+                let wanted = self.place_type(&place, builder)?;
+                let value = self.lower_expression(expression, builder, Some(wanted))?;
                 builder.push(Instruction {
                     result: None,
                     ty: self.unit_type(),
@@ -1740,8 +1805,13 @@ impl<'source> Lowerer<'source> {
             StatementForm::Return => {
                 // ADR-0035: the action that caused the exit is evaluated first,
                 // then the cleanups of every block this return leaves.
+                // The function's declared result is what a returned expression
+                // is required to be, so it is that expression's context.
+                let wanted = builder.result;
                 let value = match statement.expression() {
-                    Some(expression) => Some(self.lower_expression(expression, builder)?),
+                    Some(expression) => {
+                        Some(self.lower_expression(expression, builder, Some(wanted))?)
+                    }
                     None => None,
                 };
                 self.emit_cleanups(0, builder);
@@ -1752,7 +1822,7 @@ impl<'source> Lowerer<'source> {
                 let Some(expression) = statement.expression() else {
                     return Ok(());
                 };
-                self.lower_expression(expression, builder)?;
+                self.lower_expression(expression, builder, None)?;
                 Ok(())
             }
             StatementForm::If => self.lower_if(statement, builder, at),
@@ -1827,7 +1897,7 @@ impl<'source> Lowerer<'source> {
                 let Some(expression) = statement.expression() else {
                     return Err(self.gap("cancel without a task", statement.span()));
                 };
-                let task = self.lower_expression(expression, builder)?;
+                let task = self.lower_expression(expression, builder, None)?;
                 let unit = self.unit_type();
                 builder.push(Instruction {
                     result: None,
@@ -1865,7 +1935,7 @@ impl<'source> Lowerer<'source> {
         let Some(head) = statement.expression() else {
             return Err(self.gap("if without a condition", statement.span()));
         };
-        let condition = self.lower_expression(head, builder)?;
+        let condition = self.lower_expression(head, builder, None)?;
         let then_block = builder.new_block(at);
         let else_block = builder.new_block(at);
         let join_block = builder.new_block(at);
@@ -1923,7 +1993,7 @@ impl<'source> Lowerer<'source> {
         let Some(head) = statement.expression() else {
             return Err(self.gap("while without a condition", statement.span()));
         };
-        let condition = self.lower_expression(head, builder)?;
+        let condition = self.lower_expression(head, builder, None)?;
         builder.set_terminator(Terminator::BranchIf {
             condition,
             true_target: body_block,
@@ -1996,7 +2066,7 @@ impl<'source> Lowerer<'source> {
         let Some(head) = statement.expression() else {
             return Err(self.gap("match without a subject", statement.span()));
         };
-        let subject = self.lower_expression(head, builder)?;
+        let subject = self.lower_expression(head, builder, None)?;
         let join_block = builder.new_block(at);
 
         // Arms are taken in **source order**, and the first irrefutable one ends
@@ -2049,7 +2119,7 @@ impl<'source> Lowerer<'source> {
             let depth = builder.scope.len();
             match branch.pattern().form() {
                 PatternForm::Tuple => {
-                    let subject_ty = builder.type_of(&subject);
+                    let subject_ty = self.operand_type(&subject, builder)?;
                     self.bind_pattern(branch.pattern(), subject_ty, subject.clone(), builder, at)?;
                 }
                 _ => self.bind_match_pattern(branch.pattern(), &subject, builder, at)?,
@@ -2176,7 +2246,12 @@ impl<'source> Lowerer<'source> {
                 root: *root,
                 path: alloc::vec![PlaceStep::Field(index)],
             };
-            let ty = self.payload_type(*root, variant, index, builder);
+            let Some(ty) = self.payload_type(*root, variant, index, builder) else {
+                return Err(self.gap(
+                    "pattern binding a payload position the subject does not have",
+                    name,
+                ));
+            };
             let slot = builder.define(ty);
             builder.push(Instruction {
                 result: Some(slot),
@@ -2195,30 +2270,33 @@ impl<'source> Lowerer<'source> {
     }
 
     /// The declared type of one payload position of a variant.
+    ///
+    /// `None` where the subject is not a variant type or has no payload at that
+    /// position. Both used to answer with **the subject's own type** — binding
+    /// a payload at the type of the enum it came out of.
     fn payload_type(
         &self,
         root: ValueId,
         variant: Option<usize>,
         position: usize,
         builder: &BodyBuilder,
-    ) -> TypeId {
-        let subject = builder.values.get(root).copied().unwrap_or(0);
+    ) -> Option<TypeId> {
+        let subject = builder.values.get(root).copied()?;
         match (self.types.get(subject), variant) {
             (Some(TypeDef::Nominal { variants, .. }), Some(index)) => variants
                 .get(index)
                 .and_then(|variant| variant.payload.get(position))
-                .copied()
-                .unwrap_or(subject),
-            (Some(TypeDef::Option(inner)), _) => *inner,
-            (Some(TypeDef::TaskResult(inner)), _) => *inner,
+                .copied(),
+            (Some(TypeDef::Option(inner)), _) => Some(*inner),
+            (Some(TypeDef::TaskResult(inner)), _) => Some(*inner),
             (Some(TypeDef::Result(ok, error)), Some(index)) => {
                 if index == 0 {
-                    *ok
+                    Some(*ok)
                 } else {
-                    *error
+                    Some(*error)
                 }
             }
-            _ => subject,
+            _ => None,
         }
     }
 
@@ -2424,8 +2502,15 @@ impl<'source> Lowerer<'source> {
                 let Some(name) = expression.name() else {
                     return Err(self.gap("field without a name", expression.span()));
                 };
-                let base = builder.values.get(place.root).copied().unwrap_or(0);
-                let index = self.field_index(base, name.text(self.source));
+                let Some(base) = builder.values.get(place.root).copied() else {
+                    return Err(self.gap(
+                        "field access on a place with no recorded type",
+                        expression.span(),
+                    ));
+                };
+                let Some(index) = self.field_index(base, name.text(self.source)) else {
+                    return Err(self.gap("field the record does not declare", name));
+                };
                 place.path.push(PlaceStep::Field(index));
                 Ok(place)
             }
@@ -2446,13 +2531,13 @@ impl<'source> Lowerer<'source> {
                 // was missing was not the mechanism but its use here.
                 match constant_index(index, self.source) {
                     Some(position) => place.path.push(PlaceStep::Index(Some(position))),
-                    None => match self.lower_expression(index, builder)? {
+                    None => match self.lower_expression(index, builder, None)? {
                         Operand::Value(value) => place.path.push(PlaceStep::DynamicIndex(value)),
                         // A constant operand that is not a literal position —
                         // a module constant, say. Materialized into a value so
                         // that the step names one thing rather than two.
                         Operand::Constant(id) => {
-                            let ty = builder.type_of(&Operand::Constant(id));
+                            let ty = self.constant_type(id)?;
                             let value = builder.define(ty);
                             builder.push(Instruction {
                                 result: Some(value),
@@ -2474,35 +2559,50 @@ impl<'source> Lowerer<'source> {
     }
 
     /// The declared position of a field in its record, by type.
-    fn field_index(&self, ty: TypeId, field: &str) -> usize {
+    ///
+    /// `None` where the type is not a record or the name is not one of its
+    /// fields — both of which used to answer `0`, projecting the first field of
+    /// whatever was there.
+    fn field_index(&self, ty: TypeId, field: &str) -> Option<usize> {
         let Some(TypeDef::Nominal { export_name, .. }) = self.types.get(ty) else {
-            return 0;
+            return None;
         };
-        let Some((_, names)) = self.nominals.get(export_name) else {
-            return 0;
-        };
-        names
-            .iter()
-            .position(|declared| declared == field)
-            .unwrap_or(0)
+        let (_, names) = self.nominals.get(export_name)?;
+        // **A field this record does not declare is not field 0.** The old
+        // answer projected the first field instead, so a misspelled name read
+        // a real location of a real type and nothing said otherwise.
+        names.iter().position(|declared| declared == field)
     }
 
+    /// Lowers an expression to an operand, under the type its position requires
+    /// when the accepted semantics give one.
+    ///
+    /// **`expected` is a contextual type, not a coercion.** `docs/40` §3 grants
+    /// exactly one contextual rule — an unsuffixed integer literal takes the
+    /// required type — and this carries the requirement to where that literal
+    /// is interned. Nothing else consults it to change what it builds: an
+    /// expression that denotes a value of another type still denotes it, and
+    /// the disagreement is the frontend's to report.
+    ///
+    /// `None` means the position states no type. That is not the same as "any
+    /// type will do": it is the case §3's default is about.
     fn lower_expression(
         &mut self,
         expression: &'source Expression,
         builder: &mut BodyBuilder,
+        expected: Option<TypeId>,
     ) -> Result<Operand, Gap> {
         let at = self.map(expression.span());
         match expression.form() {
             ExpressionForm::Literal => {
-                let constant = self.literal_constant(expression)?;
+                let constant = self.literal_constant(expression, expected)?;
                 Ok(Operand::Constant(constant))
             }
             ExpressionForm::Group => {
                 let Some(inner) = expression.inner() else {
                     return Err(self.gap("empty group", expression.span()));
                 };
-                self.lower_expression(inner, builder)
+                self.lower_expression(inner, builder, expected)
             }
             ExpressionForm::Name => {
                 let name = expression.span().text(self.source);
@@ -2535,7 +2635,7 @@ impl<'source> Lowerer<'source> {
             }
             ExpressionForm::Field | ExpressionForm::Index => {
                 let place = self.lower_place(expression, builder)?;
-                let ty = self.place_type(&place, builder);
+                let ty = self.place_type(&place, builder)?;
                 let value = builder.define(ty);
                 builder.push(Instruction {
                     result: Some(value),
@@ -2570,7 +2670,7 @@ impl<'source> Lowerer<'source> {
                 for node in &chain {
                     sites.push(self.map(node.span()));
                 }
-                let mut accumulated = self.lower_expression(innermost, builder)?;
+                let mut accumulated = self.lower_expression(innermost, builder, None)?;
                 for (index, node) in chain.iter().enumerate().rev() {
                     let Some(operator) = node.operator_text(self.source) else {
                         return Err(self.gap("binary without an operator", node.span()));
@@ -2581,11 +2681,11 @@ impl<'source> Lowerer<'source> {
                     let Some(right) = node.right() else {
                         return Err(self.gap("binary without both sides", node.span()));
                     };
-                    let right = self.lower_expression(right, builder)?;
+                    let right = self.lower_expression(right, builder, None)?;
                     let ty = if op.is_comparison() {
                         self.intern(TypeDef::Bool)
                     } else {
-                        self.operand_type(&accumulated, builder)
+                        self.operand_type(&accumulated, builder)?
                     };
                     let value = builder.define(ty);
                     let site = sites[index];
@@ -2615,7 +2715,7 @@ impl<'source> Lowerer<'source> {
                         return Err(self.gap("borrow without an operand", expression.span()));
                     };
                     let place = self.lower_place(operand, builder)?;
-                    let ty = self.place_type(&place, builder);
+                    let ty = self.place_type(&place, builder)?;
                     let value = builder.define(ty);
                     builder.push(Instruction {
                         result: Some(value),
@@ -2632,10 +2732,16 @@ impl<'source> Lowerer<'source> {
                     let Some(operand) = expression.inner() else {
                         return Err(self.gap("join without an operand", expression.span()));
                     };
-                    let task = self.lower_expression(operand, builder)?;
-                    let payload = match self.types.get(builder.type_of(&task)) {
+                    let task = self.lower_expression(operand, builder, None)?;
+                    let task_type = self.operand_type(&task, builder)?;
+                    let payload = match self.types.get(task_type) {
                         Some(TypeDef::Task(inner)) => *inner,
-                        _ => self.unit_type(),
+                        _ => {
+                            return Err(self.gap(
+                                "join or await applied to something that is not a task",
+                                expression.span(),
+                            ))
+                        }
                     };
                     let ty = self.intern(TypeDef::TaskResult(payload));
                     let value = builder.define(ty);
@@ -2675,14 +2781,14 @@ impl<'source> Lowerer<'source> {
                 for node in &chain {
                     sites.push(self.map(node.span()));
                 }
-                let mut accumulated = self.lower_expression(innermost, builder)?;
+                let mut accumulated = self.lower_expression(innermost, builder, None)?;
                 for (index, node) in chain.iter().enumerate().rev() {
                     let op = match node.operator_text(source) {
                         Some("-") => UnaryOp::Negate,
                         Some("!") => UnaryOp::Not,
                         _ => return Err(self.gap("unary operator", node.span())),
                     };
-                    let ty = self.operand_type(&accumulated, builder);
+                    let ty = self.operand_type(&accumulated, builder)?;
                     let value = builder.define(ty);
                     builder.push(Instruction {
                         result: Some(value),
@@ -2711,7 +2817,7 @@ impl<'source> Lowerer<'source> {
                 let Some(operand) = expression.inner() else {
                     return Err(self.gap("cast without an operand", expression.span()));
                 };
-                let operand = self.lower_expression(operand, builder)?;
+                let operand = self.lower_expression(operand, builder, None)?;
                 let value = builder.define(ty);
                 builder.push(Instruction {
                     result: Some(value),
@@ -2729,8 +2835,8 @@ impl<'source> Lowerer<'source> {
                 let mut operands = Vec::new();
                 let mut element_types = Vec::new();
                 for element in expression.elements() {
-                    let lowered = self.lower_expression(element, builder)?;
-                    let element = self.operand_type(&lowered, builder);
+                    let lowered = self.lower_expression(element, builder, None)?;
+                    let element = self.operand_type(&lowered, builder)?;
                     element_types.push(element);
                     operands.push(lowered);
                 }
@@ -2748,13 +2854,44 @@ impl<'source> Lowerer<'source> {
                 Ok(Operand::Value(value))
             }
             ExpressionForm::Array => {
+                // **The element type is the position's, or the elements' own —
+                // never the enclosing function's.** When the position declares
+                // an array, its element type is what each element is required
+                // to be, and what an unsuffixed literal among them takes. When
+                // it declares nothing, the elements decide, and they must agree:
+                // an array has one element type and this is where it is fixed.
+                let wanted = match expected.and_then(|ty| self.types.get(ty)) {
+                    Some(TypeDef::Array(element, _)) => Some(*element),
+                    _ => None,
+                };
                 let mut operands = Vec::new();
-                let mut element_type = self.unit_type();
+                let mut element_type: Option<TypeId> = wanted;
                 for element in expression.elements() {
-                    let lowered = self.lower_expression(element, builder)?;
-                    element_type = self.operand_type(&lowered, builder);
+                    let lowered = self.lower_expression(element, builder, wanted)?;
+                    let found = self.operand_type(&lowered, builder)?;
+                    match element_type {
+                        // Disagreement is not something to average out: the
+                        // elements deny each other an array type, and no
+                        // element's type is more the array's than another's.
+                        Some(settled) if settled != found => {
+                            return Err(
+                                self.gap("array elements of more than one type", element.span())
+                            );
+                        }
+                        Some(_) => {}
+                        None => element_type = Some(found),
+                    }
                     operands.push(lowered);
                 }
+                // An empty literal in a position that declares nothing denotes
+                // an array of no stated element type, and there is no type to
+                // give it. `unit` was the old answer and it was an invention.
+                let Some(element_type) = element_type else {
+                    return Err(self.gap(
+                        "empty array literal with no declared element type",
+                        expression.span(),
+                    ));
+                };
                 let ty = self.intern(TypeDef::Array(element_type, operands.len() as u64));
                 let value = builder.define(ty);
                 builder.push(Instruction {
@@ -2772,7 +2909,7 @@ impl<'source> Lowerer<'source> {
                 let Some(operand) = expression.inner() else {
                     return Err(self.gap("propagation without an operand", expression.span()));
                 };
-                let result = self.lower_expression(operand, builder)?;
+                let result = self.lower_expression(operand, builder, None)?;
                 let ok_block = builder.new_block(at);
                 builder.set_terminator(Terminator::PropagateError {
                     result: result.clone(),
@@ -2781,9 +2918,15 @@ impl<'source> Lowerer<'source> {
                 builder.current = ok_block;
                 // The Ok payload arrives as the block's value; its type is the
                 // Ok arm of the propagated Result.
-                let ty = match self.types.get(builder.type_of(&result)) {
+                let result_type = self.operand_type(&result, builder)?;
+                let ty = match self.types.get(result_type) {
                     Some(TypeDef::Result(ok, _)) => *ok,
-                    _ => self.unit_type(),
+                    _ => {
+                        return Err(self.gap(
+                            "error propagation applied to something that is not a Result",
+                            expression.span(),
+                        ))
+                    }
                 };
                 let value = builder.define(ty);
                 builder.push(Instruction {
@@ -2793,7 +2936,15 @@ impl<'source> Lowerer<'source> {
                         place: Place {
                             root: match &result {
                                 Operand::Value(id) => *id,
-                                Operand::Constant(_) => 0,
+                                // A constant is not a place, so there is no
+                                // root to project the Ok arm out of. Value 0 is
+                                // a different binding, not an absence.
+                                Operand::Constant(_) => {
+                                    return Err(self.gap(
+                                        "error propagation applied to a constant",
+                                        expression.span(),
+                                    ))
+                                }
                             },
                             path: alloc::vec![PlaceStep::Field(0)],
                         },
@@ -2824,9 +2975,7 @@ impl<'source> Lowerer<'source> {
                 // A closure body is its own return scope; its result is the
                 // type its declared function type gives it, and `unit` when the
                 // body produces nothing.
-                let result = self
-                    .body_result(body, &declared, builder)
-                    .unwrap_or_else(|| self.unit_type());
+                let result = self.body_result(body, &declared, builder)?;
                 let name = self.body_name("closure", expression.span());
                 let (id, captures) =
                     self.lower_captured_body(&name, declared, body, result, builder)?;
@@ -2847,9 +2996,7 @@ impl<'source> Lowerer<'source> {
                 let Some(body) = expression.body() else {
                     return Err(self.gap("spawn without a body", expression.span()));
                 };
-                let payload = self
-                    .body_result(body, &[], builder)
-                    .unwrap_or_else(|| self.unit_type());
+                let payload = self.body_result(body, &[], builder)?;
                 let name = self.body_name("spawn", expression.span());
                 let (id, captures) =
                     self.lower_captured_body(&name, Vec::new(), body, payload, builder)?;
@@ -2869,8 +3016,27 @@ impl<'source> Lowerer<'source> {
         }
     }
 
-    fn place_type(&self, place: &Place, builder: &BodyBuilder) -> TypeId {
-        let mut current = builder.values.get(place.root).copied().unwrap_or(0);
+    /// The exact type of the **location** a place denotes.
+    ///
+    /// One projection step, one answer, and a step that does not apply ends the
+    /// lowering. What used to be here answered `unwrap_or(0)` for an unknown
+    /// root — type index 0, whatever happened to be interned first — and
+    /// `_ => current` for a projection it did not recognise, which is the
+    /// relabelling defect stated as code: `a[i]` typed as `a`, a field typed as
+    /// its record, an element typed as its container. A read through such a
+    /// place declares the wrong type, and for a region the runtime takes the
+    /// **element width** from that declaration.
+    ///
+    /// Every legal V1 place is covered: a bare binding, a record field, a tuple
+    /// element, an array at a constant or a computed index, a slice, and a
+    /// region or DMA region at an index. A projection outside that set is not a
+    /// place this can type, and saying so is the whole point.
+    fn place_type(&self, place: &Place, builder: &BodyBuilder) -> Result<TypeId, Gap> {
+        let mut current = builder.values.get(place.root).copied().ok_or(Gap {
+            construct: "place rooted at no defined value",
+            byte_start: 0,
+            byte_end: 0,
+        })?;
         for step in &place.path {
             // **Both index steps, not only the constant one.** A literal
             // position is `Index` and a computed one is `DynamicIndex`, and they
@@ -2880,10 +3046,28 @@ impl<'source> Lowerer<'source> {
             let indexed = matches!(step, PlaceStep::Index(_) | PlaceStep::DynamicIndex(_));
             current = match (self.types.get(current), step) {
                 (Some(TypeDef::Nominal { fields, .. }), PlaceStep::Field(index)) => {
-                    fields.get(*index).copied().unwrap_or(current)
+                    match fields.get(*index).copied() {
+                        Some(field) => field,
+                        None => {
+                            return Err(Gap {
+                                construct: "record field outside the declared set",
+                                byte_start: 0,
+                                byte_end: 0,
+                            })
+                        }
+                    }
                 }
                 (Some(TypeDef::Tuple(elements)), PlaceStep::Field(index)) => {
-                    elements.get(*index).copied().unwrap_or(current)
+                    match elements.get(*index).copied() {
+                        Some(element) => element,
+                        None => {
+                            return Err(Gap {
+                                construct: "tuple element outside the declared arity",
+                                byte_start: 0,
+                                byte_end: 0,
+                            })
+                        }
+                    }
                 }
                 (Some(TypeDef::Array(element, _)), _) if indexed => *element,
                 (Some(TypeDef::Slice(element)), _) if indexed => *element,
@@ -2906,10 +3090,16 @@ impl<'source> Lowerer<'source> {
                 {
                     *element
                 }
-                _ => current,
+                _ => {
+                    return Err(Gap {
+                        construct: "place projection that does not apply to its container",
+                        byte_start: 0,
+                        byte_end: 0,
+                    })
+                }
             };
         }
-        current
+        Ok(current)
     }
 
     fn nullary_variant_type(&mut self, name: &str) -> TypeId {
@@ -2953,7 +3143,7 @@ impl<'source> Lowerer<'source> {
         if let Some(import) = self.capability_binding(&base) {
             let mut operands = Vec::new();
             for argument in expression.arguments() {
-                operands.push(self.lower_expression(argument.value(), builder)?);
+                operands.push(self.lower_expression(argument.value(), builder, None)?);
             }
             let ty = self.unit_type();
             let value = builder.define(ty);
@@ -2975,7 +3165,15 @@ impl<'source> Lowerer<'source> {
 
         // An atomic operation on a value of one of the three V1 atomic types.
         if let Some(slot) = builder.lookup(&base) {
-            let receiver_type = builder.values.get(slot).copied().unwrap_or(0);
+            // A binding whose slot has no recorded type is not an atomic,
+            // which is all this decides; the failure is caught where the type
+            // is actually required.
+            let Some(receiver_type) = builder.values.get(slot).copied() else {
+                return Err(self.gap(
+                    "operation on a binding with no recorded type",
+                    expression.span(),
+                ));
+            };
             let is_atomic = matches!(
                 self.types.get(receiver_type),
                 Some(TypeDef::AtomicBool) | Some(TypeDef::AtomicU32) | Some(TypeDef::AtomicU64)
@@ -3002,7 +3200,7 @@ impl<'source> Lowerer<'source> {
                 if !expression.arguments().is_empty() {
                     return Err(self.gap("lock operation arity", expression.span()));
                 }
-                let object = self.lower_expression(receiver, builder)?;
+                let object = self.lower_expression(receiver, builder, None)?;
                 let ty = self.intern(guard);
                 let value = builder.define(ty);
                 builder.push(Instruction {
@@ -3022,7 +3220,7 @@ impl<'source> Lowerer<'source> {
         if let Some(import) = self.module_binding(&base) {
             let mut operands = Vec::new();
             for argument in expression.arguments() {
-                operands.push(self.lower_expression(argument.value(), builder)?);
+                operands.push(self.lower_expression(argument.value(), builder, None)?);
             }
             // The callee's declared result, re-interned into this module's
             // type table. Lowering a call as `unit` because the signature was
@@ -3082,18 +3280,28 @@ impl<'source> Lowerer<'source> {
                     continue;
                 }
             }
-            operands.push(self.lower_expression(value, builder)?);
+            operands.push(self.lower_expression(value, builder, None)?);
         }
         let Some(&order) = orders.first() else {
             return Err(self.gap("atomic call without an order", expression.span()));
         };
         let failure_order = orders.get(1).copied();
-        let ty = builder.values.get(receiver).copied().unwrap_or(0);
+        let Some(ty) = builder.values.get(receiver).copied() else {
+            return Err(self.gap(
+                "atomic operation on a place with no recorded type",
+                expression.span(),
+            ));
+        };
         let result_type = match self.types.get(ty) {
             Some(TypeDef::AtomicBool) => self.intern(TypeDef::Bool),
             Some(TypeDef::AtomicU32) => self.intern(TypeDef::Int(IntKind::U32)),
             Some(TypeDef::AtomicU64) => self.intern(TypeDef::Int(IntKind::U64)),
-            _ => self.unit_type(),
+            _ => {
+                return Err(self.gap(
+                    "atomic operation on something that is not an atomic",
+                    expression.span(),
+                ))
+            }
         };
         let value = builder.define(result_type);
         builder.push(Instruction {
@@ -3157,14 +3365,22 @@ impl<'source> Lowerer<'source> {
         if let Some(slot) = builder.lookup(&name) {
             let mut operands = Vec::new();
             for argument in expression.arguments() {
-                operands.push(self.lower_expression(argument.value(), builder)?);
+                operands.push(self.lower_expression(argument.value(), builder, None)?);
             }
-            let ty = match self
-                .types
-                .get(builder.values.get(slot).copied().unwrap_or(0))
-            {
+            let Some(callee_type) = builder.values.get(slot).copied() else {
+                return Err(self.gap(
+                    "value call on a binding with no recorded type",
+                    expression.span(),
+                ));
+            };
+            let ty = match self.types.get(callee_type) {
                 Some(TypeDef::Function(_, result)) => *result,
-                _ => self.unit_type(),
+                _ => {
+                    return Err(self.gap(
+                        "value call on something that is not a function",
+                        expression.span(),
+                    ))
+                }
             };
             let value = builder.define(ty);
             builder.push(Instruction {
@@ -3187,7 +3403,7 @@ impl<'source> Lowerer<'source> {
             let field_names = field_names.clone();
             let mut ordered: Vec<Option<Operand>> = alloc::vec![None; field_names.len()];
             for (position, argument) in expression.arguments().iter().enumerate() {
-                let lowered = self.lower_expression(argument.value(), builder)?;
+                let lowered = self.lower_expression(argument.value(), builder, None)?;
                 let index = match argument.name() {
                     Some(label) => field_names
                         .iter()
@@ -3203,12 +3419,7 @@ impl<'source> Lowerer<'source> {
             let operands = ordered
                 .into_iter()
                 .map(|operand| {
-                    operand.unwrap_or(Operand::Constant(
-                        self.constant_index
-                            .get(&Constant::Unit)
-                            .copied()
-                            .unwrap_or(0),
-                    ))
+                    operand.unwrap_or(Operand::Constant(self.intern_constant(Constant::Unit)))
                 })
                 .collect::<Vec<_>>();
             let _ = unit;
@@ -3230,15 +3441,19 @@ impl<'source> Lowerer<'source> {
             if self.variant_owner.contains_key(&name) || is_predeclared_variant(&name) {
                 let mut operands = Vec::new();
                 for argument in expression.arguments() {
-                    operands.push(self.lower_expression(argument.value(), builder)?);
+                    operands.push(self.lower_expression(argument.value(), builder, None)?);
                 }
                 let ty = match self.variant_owner.get(&name) {
                     Some(&(ty, _)) => ty,
                     None => {
-                        let payload = operands
-                            .first()
-                            .map(|operand| builder.type_of(operand))
-                            .unwrap_or_else(|| self.intern(TypeDef::Unit));
+                        // The payload is the argument's own type. A nullary
+                        // `None` carries `unit` because it has no payload —
+                        // which is the type it denotes, not a stand-in for one
+                        // this could not work out.
+                        let payload = match operands.first() {
+                            Some(operand) => self.operand_type(operand, builder)?,
+                            None => self.intern(TypeDef::Unit),
+                        };
                         match name.as_str() {
                             "Some" | "None" => self.intern(TypeDef::Option(payload)),
                             "Ok" => {
@@ -3285,9 +3500,28 @@ impl<'source> Lowerer<'source> {
             return self.lower_interface_operation(&name, expression, builder, at);
         }
 
+        // **The callee's parameters are its arguments' context**, so the
+        // signature is resolved before the arguments are lowered rather than
+        // after. Only a declared function of this module has one in reach; an
+        // imported or predeclared callee states no type here, and an argument
+        // to one keeps the accepted default.
+        let parameters: Option<Vec<TypeId>> = match self.functions_by_name.get(&name) {
+            Some(&index) => {
+                let declared = self.schema.functions()[index].signature();
+                let mut types = Vec::new();
+                for parameter in declared.parameters() {
+                    types.push(self.resolve_type(parameter.ty())?);
+                }
+                Some(types)
+            }
+            None => None,
+        };
         let mut operands = Vec::new();
-        for argument in expression.arguments() {
-            operands.push(self.lower_expression(argument.value(), builder)?);
+        for (position, argument) in expression.arguments().iter().enumerate() {
+            let wanted = parameters
+                .as_ref()
+                .and_then(|types| types.get(position).copied());
+            operands.push(self.lower_expression(argument.value(), builder, wanted)?);
         }
         // `share` lowers to its own operation, never to an opaque helper call:
         // docs/43 section 3 forbids hiding shared-memory access behind one, and
@@ -3297,7 +3531,7 @@ impl<'source> Lowerer<'source> {
                 return Err(self.gap("share arity", expression.span()));
             };
             let operand = operand.clone();
-            let inner = builder.type_of(&operand);
+            let inner = self.operand_type(&operand, builder)?;
             let ty = self.intern(TypeDef::Shared(inner));
             let value = builder.define(ty);
             builder.push(Instruction {
@@ -3403,7 +3637,34 @@ impl<'source> Lowerer<'source> {
                 (CallTarget::Local(index), ty)
             }
             None => {
-                let ty = self.unit_type();
+                // **A predeclared operation's result is its own, not `unit`.**
+                // docs/39 §2 fixes the set, and the two that reach here carry
+                // a result the language states: a checked conversion answers
+                // `Result<D, ConversionError>` and a wrapping operation answers
+                // the type it operated on. Typing either as `unit` made a
+                // `match` over a conversion a match over nothing, which is what
+                // the place-projection repair then refused.
+                let ty = match predeclared_result(&name) {
+                    Some(Predeclared::Conversion(kind)) => {
+                        let destination = self.intern(TypeDef::Int(kind));
+                        let error = self.intern(TypeDef::ConversionError);
+                        self.intern(TypeDef::Result(destination, error))
+                    }
+                    Some(Predeclared::SameAsOperand) => match operands.first() {
+                        Some(operand) => self.operand_type(operand, builder)?,
+                        None => {
+                            return Err(self
+                                .gap("wrapping operation without an operand", expression.span()))
+                        }
+                    },
+                    Some(Predeclared::Unit) => self.unit_type(),
+                    None => {
+                        return Err(self.gap(
+                            "call naming neither a declared function nor a predeclared operation",
+                            expression.span(),
+                        ))
+                    }
+                };
                 (CallTarget::Predeclared(name), ty)
             }
         };
@@ -3505,7 +3766,7 @@ impl<'source> Lowerer<'source> {
         }
         let mut operands = Vec::new();
         for argument in values {
-            operands.push(self.lower_expression(argument.value(), builder)?);
+            operands.push(self.lower_expression(argument.value(), builder, None)?);
         }
         let ty = self.extern_result_type(name)?;
         let value = builder.define(ty);
@@ -3580,8 +3841,8 @@ impl<'source> Lowerer<'source> {
         }
         // Otherwise a capability the module **holds as a value**, because an
         // operation produced it or a parameter carried it.
-        let operand = self.lower_expression(named, builder)?;
-        let ty = builder.type_of(&operand);
+        let operand = self.lower_expression(named, builder, None)?;
+        let ty = self.operand_type(&operand, builder)?;
         let interface = match self.types.get(ty) {
             Some(TypeDef::Capability(path)) => {
                 let path = path.clone();
@@ -3643,7 +3904,31 @@ impl<'source> Lowerer<'source> {
         }
     }
 
-    fn literal_constant(&mut self, expression: &'source Expression) -> Result<usize, Gap> {
+    /// Interns the constant a literal denotes, **at the type its context
+    /// requires** when the literal does not fix one itself.
+    ///
+    /// `docs/40` §3: "an unsuffixed literal takes the required type instead."
+    /// So the contextual target is resolved *here*, where the constant is
+    /// built, and what reaches the artifact is the resolved value — `4` in a
+    /// `size` position is `Constant::Size(4)`, and in an `i64` position it is
+    /// `Constant::Int(I64, 4)`. There is no flag saying the literal was once
+    /// unsuffixed, because after contextual typing there is nothing left to
+    /// say: the canonical derived IR simply holds the resolved constant, and
+    /// that is the fact a verifier reads.
+    ///
+    /// A literal with a suffix fixes its own type and ignores the expectation;
+    /// disagreeing with the position is then an ordinary exact-type mismatch
+    /// for the frontend to report, not something to paper over here. A literal
+    /// with no numeric expectation keeps `docs/40` §3's default of `i32`.
+    ///
+    /// **The range is checked after the target is known**, which is the only
+    /// order that can work: `200` is a `u8` and is not an `i8`, and until the
+    /// position has spoken neither answer is available.
+    fn literal_constant(
+        &mut self,
+        expression: &'source Expression,
+        expected: Option<TypeId>,
+    ) -> Result<usize, Gap> {
         let text = expression.span().text(self.source);
         if text == "true" {
             return Ok(self.intern_constant(Constant::Bool(true)));
@@ -3668,10 +3953,34 @@ impl<'source> Lowerer<'source> {
             return Err(self.gap("integer literal magnitude", expression.span()));
         };
         if let Some(kind) = IntKind::parse(suffix) {
+            if !fits(kind, magnitude) {
+                return Err(self.gap("integer literal out of range", expression.span()));
+            }
             return Ok(self.intern_constant(Constant::Int(kind, magnitude)));
         }
+        if suffix.is_empty() {
+            // The contextual target, when the position gave one. `size` and the
+            // eight exact integer types are what §3 admits here; anything else
+            // the position may require is a disagreement the frontend reports,
+            // and this keeps the literal at its default rather than inventing a
+            // constant of a type the literal cannot denote.
+            let contextual = expected.and_then(|ty| match self.types.get(ty) {
+                Some(TypeDef::Int(kind)) => Some(Constant::Int(*kind, magnitude)),
+                Some(TypeDef::Size) if magnitude >= 0 => Some(Constant::Size(magnitude as u128)),
+                _ => None,
+            });
+            let constant = match contextual {
+                Some(constant) => constant,
+                None => Constant::Int(IntKind::I32, magnitude),
+            };
+            if let Constant::Int(kind, value) = constant {
+                if !fits(kind, value) {
+                    return Err(self.gap("integer literal out of range", expression.span()));
+                }
+            }
+            return Ok(self.intern_constant(constant));
+        }
         let constant = match suffix {
-            "" => Constant::Int(IntKind::I32, magnitude),
             "B" => Constant::Size(magnitude as u128),
             "KiB" => Constant::Size(magnitude as u128 * 1024),
             "MiB" => Constant::Size(magnitude as u128 * 1024 * 1024),
@@ -3683,6 +3992,54 @@ impl<'source> Lowerer<'source> {
             _ => return Err(self.gap("literal suffix", expression.span())),
         };
         Ok(self.intern_constant(constant))
+    }
+}
+
+/// What a predeclared operation's result type is derived from (docs/39 §2).
+enum Predeclared {
+    /// A checked conversion: `Result<D, ConversionError>`.
+    Conversion(IntKind),
+    /// A wrapping operation, whose result is its operand's type.
+    SameAsOperand,
+    /// An operation that produces nothing.
+    Unit,
+}
+
+/// The predeclared function set, and how each one's result is decided.
+///
+/// The list is closed by `docs/39` §2's `predeclared-function` class, so a name
+/// outside it is not a predeclared operation and lowering says so rather than
+/// giving it a type.
+fn predeclared_result(name: &str) -> Option<Predeclared> {
+    if let Some(destination) = name.strip_prefix("to_") {
+        if let Some(kind) = IntKind::parse(destination) {
+            return Some(Predeclared::Conversion(kind));
+        }
+    }
+    match name {
+        "wrapping_add" | "wrapping_sub" | "wrapping_mul" => Some(Predeclared::SameAsOperand),
+        "mmio_write_u8" | "mmio_write_le_u16" | "mmio_write_le_u32" | "mmio_write_le_u64"
+        | "dma_publish" | "dma_consume" => Some(Predeclared::Unit),
+        _ => None,
+    }
+}
+
+/// Whether a magnitude is representable in an exact integer type.
+///
+/// `docs/40` §3 gives each of the eight a fixed width and signedness, and a
+/// literal outside its type's range denotes no value of it. Checked against the
+/// type the literal actually has, which for an unsuffixed one is the type its
+/// position required.
+fn fits(kind: IntKind, magnitude: i128) -> bool {
+    match kind {
+        IntKind::I8 => (i8::MIN as i128..=i8::MAX as i128).contains(&magnitude),
+        IntKind::I16 => (i16::MIN as i128..=i16::MAX as i128).contains(&magnitude),
+        IntKind::I32 => (i32::MIN as i128..=i32::MAX as i128).contains(&magnitude),
+        IntKind::I64 => (i64::MIN as i128..=i64::MAX as i128).contains(&magnitude),
+        IntKind::U8 => (0..=u8::MAX as i128).contains(&magnitude),
+        IntKind::U16 => (0..=u16::MAX as i128).contains(&magnitude),
+        IntKind::U32 => (0..=u32::MAX as i128).contains(&magnitude),
+        IntKind::U64 => (0..=u64::MAX as i128).contains(&magnitude),
     }
 }
 
@@ -3725,15 +4082,6 @@ impl BodyBuilder {
         let id = self.values.len();
         self.values.push(ty);
         id
-    }
-
-    fn type_of(&self, operand: &Operand) -> TypeId {
-        match operand {
-            Operand::Value(value) => self.values.get(*value).copied().unwrap_or(self.result),
-            // A constant's type is fixed by the constant table; the operand
-            // alone does not carry it, and the verifier reads it from there.
-            Operand::Constant(_) => self.result,
-        }
     }
 
     fn new_block(&mut self, source: usize) -> usize {

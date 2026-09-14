@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.value_type_text_bytes version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// A byte string is not a string. The two are distinct types in docs/40 §1 and
+// no conversion relates them.
+pub fn main() -> unit {
+    let name: string = b"tos";
+}

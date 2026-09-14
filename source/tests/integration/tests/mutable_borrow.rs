@@ -659,19 +659,11 @@ fn a_value_call_may_not_write_back_through_a_mismatched_type() {
          let f: fn (i64) -> unit = fn (borrow mut v: i32) { v = 7i32; }; \
          f(borrow mut pool[0B]); return pool[0B]; }",
     ] {
-        let module = module_of(body);
-        let mut prepared = Prepared::launch(
-            &[&module],
-            &ResolutionSnapshot::default(),
-            "main",
-            RESIDENCY,
-        )
-        .expect("the fixture launches");
-        let trap = prepared
-            .run(Vec::new(), &mut Unreachable)
-            .expect("the entry exists")
-            .expect_err("a mismatched write-back is refused");
-        assert_eq!(trap.code, "RUNTIME_TYPE_CONFUSION", "{body}");
+        assert_eq!(
+            codes(body),
+            vec![String::from("E1216_VALUE_TYPE_MISMATCH")],
+            "{body}"
+        );
     }
 }
 

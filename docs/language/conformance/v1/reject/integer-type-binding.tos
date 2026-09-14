@@ -1,0 +1,10 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.integer_type_binding version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// **The precedence vector.** Two of the eight exact integer types disagree, so
+// `E1210` owns this and the residual code must not absorb it (ADR-0087 §2a).
+pub fn main() -> unit {
+    let count: i64 = 1i32;
+}

@@ -1203,7 +1203,7 @@ fn drive(
         // at the wrong slot.
         last_seen_used = ring_next(last_seen_used);
 
-        let status_byte: u64 = region[status_offset];
+        let status_byte: u64 = region[status_offset] as u64;
         if (status_byte != BLK_S_OK) {
             give_up(borrow mut window);
             return -61i64;

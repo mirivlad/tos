@@ -649,6 +649,55 @@ impl<'source> TypeChecker<'source> {
                     .expression()
                     .map(|expression| self.type_of(expression))
                     .unwrap_or(Type::Unknown);
+                // **An annotation constrains its initializer** (docs/40 §2), and
+                // until ADR-0087 allocated a code for the residual case nothing
+                // said so: `let flag: bool = 1i64;` was accepted, lowered, and
+                // left for the engine to discover if it discovered it at all.
+                //
+                // The numeric case stays `E1210`'s, which is more specific and
+                // already owns it; `Unknown` reports nothing, because reporting
+                // against an undetermined type would be a guess; and an
+                // unsuffixed literal agrees with any exact numeric type by
+                // §3's contextual rule, which `agrees_with` already encodes.
+                if let (Some(declared), Some(expression)) = (&declared, statement.expression()) {
+                    // **An annotation that names nothing is `E1203`'s**, and a
+                    // value-type finding against a type that does not resolve
+                    // would be reporting against a name rather than a type.
+                    // ADR-0087 §2a's precedence, applied to the one case where
+                    // the annotation itself is the defect.
+                    let resolvable = self.is_declared(declared);
+                    if resolvable && !inferred.agrees_with(declared) {
+                        // **Which code owns the mismatch** (ADR-0087 §2a). Two
+                        // of the eight exact integer types disagreeing is what
+                        // `E1210` is for — "a value of one integer type is
+                        // assigned … where a different integer type is
+                        // required" — and an initializer under an annotation is
+                        // that assignment. Everything else is the residual.
+                        let numeric =
+                            matches!((&inferred, declared), (Type::Integer(_), Type::Integer(_)));
+                        let binding = statement
+                            .pattern()
+                            .map(|pattern| pattern.span().text(self.source).to_string());
+                        let mut diagnostic = Diagnostic::new(
+                            if numeric {
+                                "E1210_INTEGER_TYPE_MISMATCH"
+                            } else {
+                                "E1216_VALUE_TYPE_MISMATCH"
+                            },
+                            Severity::Error,
+                            Stage::Type,
+                            expression.span(),
+                            self.source,
+                        )
+                        .with_field("context", "binding")
+                        .with_field("expected", declared.spell())
+                        .with_field("actual", inferred.spell());
+                        if let Some(binding) = binding {
+                            diagnostic = diagnostic.with_field("binding", binding);
+                        }
+                        self.diagnostics.push(diagnostic);
+                    }
+                }
                 let bound = declared.unwrap_or(inferred);
                 if let Some(pattern) = statement.pattern() {
                     self.require_irrefutable(pattern, &bound, "let");
@@ -1010,7 +1059,77 @@ impl<'source> TypeChecker<'source> {
                 }
                 _ => Type::Unknown,
             },
+            // A closure literal's type is its declared parameters and the
+            // result its body produces (docs/39 §"closure"). Typed here because
+            // a binding may be annotated with a function type, and an
+            // annotation that the closure does not satisfy is exactly the
+            // residual mismatch ADR-0087 names — undetermined, it agreed with
+            // every annotation and the disagreement reached the artifact.
+            ExpressionForm::Closure => {
+                let parameters: Vec<Type> = expression
+                    .parameters()
+                    .iter()
+                    .map(|parameter| resolve(self.source, parameter.ty()))
+                    .collect();
+                let result = match expression.body().and_then(|body| self.body_result(body)) {
+                    Some(result) => result,
+                    None => Type::Unit,
+                };
+                Type::Function(parameters, Box::new(result))
+            }
             _ => Type::Unknown,
+        }
+    }
+
+    /// The type a body's `return` statements produce, when they agree.
+    ///
+    /// A closure has no written result type, so the body is what says it. Where
+    /// the body returns nothing the result is `unit`; where its returns
+    /// disagree the type is undetermined rather than guessed at from the first
+    /// one.
+    fn body_result(&mut self, body: &'source Block) -> Option<Type> {
+        let mut settled: Option<Type> = None;
+        for statement in body.statements() {
+            if statement.form() != StatementForm::Return {
+                continue;
+            }
+            let produced = match statement.expression() {
+                Some(expression) => self.type_of(expression),
+                None => Type::Unit,
+            };
+            match &settled {
+                Some(existing) if !existing.agrees_with(&produced) => return None,
+                Some(_) => {}
+                None => settled = Some(produced),
+            }
+        }
+        settled
+    }
+
+    /// Whether a type this slice resolved is one the module actually declares.
+    ///
+    /// `resolve` turns any name into a `Type::Nominal`, including one that
+    /// names nothing — which is the names slice's finding to report, not this
+    /// one's.
+    fn is_declared(&self, ty: &Type) -> bool {
+        match ty {
+            Type::Nominal(name) => {
+                self.declarations.records.contains_key(name.as_str())
+                    || self
+                        .declarations
+                        .variants
+                        .values()
+                        .any(|(owner, _)| owner == name)
+            }
+            Type::Array(element) => self.is_declared(element),
+            Type::Tuple(elements) => elements.iter().all(|element| self.is_declared(element)),
+            Type::Constructed(_, arguments) => {
+                arguments.iter().all(|argument| self.is_declared(argument))
+            }
+            Type::Function(parameters, result) => {
+                parameters.iter().all(|p| self.is_declared(p)) && self.is_declared(result)
+            }
+            _ => true,
         }
     }
 
