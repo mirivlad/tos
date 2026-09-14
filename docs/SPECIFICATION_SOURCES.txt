@@ -155,3 +155,5 @@ docs/adr/0084-dma-authority-and-device-visible-addressing.md
 docs/adr/0085-an-interface-that-is-not-its-own-value-type.md
 docs/adr/0086-dma-publication-and-consumption-ordering.md
 docs/adr/0087-the-residual-value-type-diagnostic.md
+docs/adr/0088-the-predeclared-call-contract.md
+docs/adr/0089-the-call-arity-diagnostic.md

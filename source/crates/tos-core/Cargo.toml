@@ -12,3 +12,9 @@ name = "tos_core"
 [dependencies]
 tos-hash = { path = "../tos-hash" }
 tos-ir = { path = "../tos-ir" }
+tos-predeclared = { path = "../tos-predeclared" }
+
+# The build script computes the linked table's digests so `src/lib.rs` can
+# assert them at compile time. It reads the same crate the library links.
+[build-dependencies]
+tos-predeclared = { path = "../tos-predeclared" }

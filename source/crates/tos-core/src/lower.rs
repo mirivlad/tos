@@ -3363,18 +3363,20 @@ impl<'source> Lowerer<'source> {
         // function: the callee is an operand, so no name is resolved at run
         // time.
         if let Some(slot) = builder.lookup(&name) {
-            let mut operands = Vec::new();
-            for argument in expression.arguments() {
-                operands.push(self.lower_expression(argument.value(), builder, None)?);
-            }
             let Some(callee_type) = builder.values.get(slot).copied() else {
                 return Err(self.gap(
                     "value call on a binding with no recorded type",
                     expression.span(),
                 ));
             };
-            let ty = match self.types.get(callee_type) {
-                Some(TypeDef::Function(_, result)) => *result,
+            // **The callee's type is its arguments' context here too.** A
+            // function type carries its parameter types, so `f(1)` against
+            // `fn (i64)` gives the literal the type `docs/40` §3 says it takes
+            // — rather than the unsuffixed default, which the verifier would
+            // then refuse as an operand of the wrong type while the checker had
+            // accepted it.
+            let (declared, ty) = match self.types.get(callee_type) {
+                Some(TypeDef::Function(parameters, result)) => (parameters.clone(), *result),
                 _ => {
                     return Err(self.gap(
                         "value call on something that is not a function",
@@ -3382,6 +3384,11 @@ impl<'source> Lowerer<'source> {
                     ))
                 }
             };
+            let mut operands = Vec::new();
+            for (position, argument) in expression.arguments().iter().enumerate() {
+                let wanted = declared.get(position).copied();
+                operands.push(self.lower_expression(argument.value(), builder, wanted)?);
+            }
             let value = builder.define(ty);
             builder.push(Instruction {
                 result: Some(value),
@@ -3502,9 +3509,11 @@ impl<'source> Lowerer<'source> {
 
         // **The callee's parameters are its arguments' context**, so the
         // signature is resolved before the arguments are lowered rather than
-        // after. Only a declared function of this module has one in reach; an
-        // imported or predeclared callee states no type here, and an argument
-        // to one keeps the accepted default.
+        // after. A declared function of this module states one directly; a
+        // predeclared operation states one through the contract (ADR-0088),
+        // where the rule at a position determines a type. An imported callee
+        // still states nothing here, and an argument to one keeps the accepted
+        // default — which remains this slice's recorded open finding.
         let parameters: Option<Vec<TypeId>> = match self.functions_by_name.get(&name) {
             Some(&index) => {
                 let declared = self.schema.functions()[index].signature();
@@ -3516,107 +3525,26 @@ impl<'source> Lowerer<'source> {
             }
             None => None,
         };
+        // **A declared function of the same name wins**, because a predeclared
+        // function name is an ordinary identifier (`docs/39` §2) and this
+        // module's declaration is what the call resolves to.
+        let operation = match self.functions_by_name.contains_key(&name) {
+            true => None,
+            false => tos_predeclared::operation(&name),
+        };
         let mut operands = Vec::new();
         for (position, argument) in expression.arguments().iter().enumerate() {
-            let wanted = parameters
-                .as_ref()
-                .and_then(|types| types.get(position).copied());
+            let wanted = match (&parameters, operation) {
+                (Some(types), _) => types.get(position).copied(),
+                (None, Some(operation)) => {
+                    self.predeclared_expected(operation, position, &operands, builder)?
+                }
+                (None, None) => None,
+            };
             operands.push(self.lower_expression(argument.value(), builder, wanted)?);
         }
-        // `share` lowers to its own operation, never to an opaque helper call:
-        // docs/43 section 3 forbids hiding shared-memory access behind one, and
-        // the verifier rechecks the shareability requirement on this operation.
-        if name == "share" && !self.functions_by_name.contains_key(&name) {
-            let [operand] = operands.as_slice() else {
-                return Err(self.gap("share arity", expression.span()));
-            };
-            let operand = operand.clone();
-            let inner = self.operand_type(&operand, builder)?;
-            let ty = self.intern(TypeDef::Shared(inner));
-            let value = builder.define(ty);
-            builder.push(Instruction {
-                result: Some(value),
-                ty,
-                op: Op::Share { operand },
-                source: at,
-                runtime_contract: None,
-                unsafe_block: builder.in_unsafe,
-                unsafe_interface: None,
-            });
-            return Ok(Operand::Value(value));
-        }
-        // A device access lowers to its **own** operation (ADR-0081 §8), for
-        // the same reason `share` does and one more: an ordinary read may be
-        // eliminated, coalesced, repeated or reordered, and a device access may
-        // not. Hiding it in a `Call` would leave the observability rule with
-        // nothing in the artifact to attach to.
-        if !self.functions_by_name.contains_key(&name) {
-            if let Some(access) = crate::typing::mmio_access(&name) {
-                let wanted = if access.writes { 3 } else { 2 };
-                if operands.len() != wanted {
-                    return Err(self.gap("device access arity", expression.span()));
-                }
-                let region = operands[0].clone();
-                let offset = operands[1].clone();
-                let width = access.width as u8;
-                let ty = if access.writes {
-                    self.unit_type()
-                } else {
-                    self.intern(TypeDef::Int(tos_ir::IntKind::U64))
-                };
-                let value = builder.define(ty);
-                let op = if access.writes {
-                    Op::MmioWrite {
-                        region,
-                        offset,
-                        value: operands[2].clone(),
-                        width,
-                        little_endian: true,
-                    }
-                } else {
-                    Op::MmioRead {
-                        region,
-                        offset,
-                        width,
-                        little_endian: true,
-                    }
-                };
-                builder.push(Instruction {
-                    result: Some(value),
-                    ty,
-                    op,
-                    source: at,
-                    runtime_contract: None,
-                    unsafe_block: builder.in_unsafe,
-                    unsafe_interface: None,
-                });
-                return Ok(Operand::Value(value));
-            }
-            // A DMA ordering point lowers to its **own** operation for the same
-            // reason (ADR-0086 §4), and for a narrower one: a `Call` is exactly
-            // the thing a backend is free to inline away, and the whole content
-            // of this operation is that it may not be. It is not an MMIO
-            // access, and implies no device transaction.
-            if let Some(direction) = crate::typing::dma_direction(&name) {
-                if operands.len() != 1 {
-                    return Err(self.gap("DMA synchronisation arity", expression.span()));
-                }
-                let ty = self.unit_type();
-                let value = builder.define(ty);
-                builder.push(Instruction {
-                    result: Some(value),
-                    ty,
-                    op: Op::DmaSync {
-                        region: operands[0].clone(),
-                        direction,
-                    },
-                    source: at,
-                    runtime_contract: None,
-                    unsafe_block: builder.in_unsafe,
-                    unsafe_interface: None,
-                });
-                return Ok(Operand::Value(value));
-            }
+        if let Some(operation) = operation {
+            return self.lower_predeclared(operation, operands, expression, builder, at);
         }
         let (target, ty) = match self.functions_by_name.get(&name) {
             Some(&index) => {
@@ -3637,35 +3565,10 @@ impl<'source> Lowerer<'source> {
                 (CallTarget::Local(index), ty)
             }
             None => {
-                // **A predeclared operation's result is its own, not `unit`.**
-                // docs/39 §2 fixes the set, and the two that reach here carry
-                // a result the language states: a checked conversion answers
-                // `Result<D, ConversionError>` and a wrapping operation answers
-                // the type it operated on. Typing either as `unit` made a
-                // `match` over a conversion a match over nothing, which is what
-                // the place-projection repair then refused.
-                let ty = match predeclared_result(&name) {
-                    Some(Predeclared::Conversion(kind)) => {
-                        let destination = self.intern(TypeDef::Int(kind));
-                        let error = self.intern(TypeDef::ConversionError);
-                        self.intern(TypeDef::Result(destination, error))
-                    }
-                    Some(Predeclared::SameAsOperand) => match operands.first() {
-                        Some(operand) => self.operand_type(operand, builder)?,
-                        None => {
-                            return Err(self
-                                .gap("wrapping operation without an operand", expression.span()))
-                        }
-                    },
-                    Some(Predeclared::Unit) => self.unit_type(),
-                    None => {
-                        return Err(self.gap(
-                            "call naming neither a declared function nor a predeclared operation",
-                            expression.span(),
-                        ))
-                    }
-                };
-                (CallTarget::Predeclared(name), ty)
+                return Err(self.gap(
+                    "call naming neither a declared function nor a predeclared operation",
+                    expression.span(),
+                ))
             }
         };
         let value = builder.define(ty);
@@ -3673,6 +3576,153 @@ impl<'source> Lowerer<'source> {
             result: Some(value),
             ty,
             op: Op::Call { target, operands },
+            source: at,
+            runtime_contract: None,
+            unsafe_block: builder.in_unsafe,
+            unsafe_interface: None,
+        });
+        Ok(Operand::Value(value))
+    }
+
+    /// The type the contract determines for one predeclared argument position,
+    /// if it determines one (ADR-0088).
+    ///
+    /// **This is what makes an unsuffixed literal land in the right type.**
+    /// `docs/40` §3 lets an integer literal take its surrounding exact type,
+    /// and the surrounding type of `wrapping_add(count, 1)` is `count`'s. A
+    /// position whose rule names a class rather than a type — "any exact
+    /// integer", "a shareable value" — determines nothing, and the literal
+    /// keeps the accepted default.
+    ///
+    /// The earlier operands are already lowered when this is asked, which is
+    /// why a `SameAs` rule may only name an earlier position.
+    fn predeclared_expected(
+        &mut self,
+        operation: &'static tos_predeclared::Operation,
+        position: usize,
+        lowered: &[Operand],
+        builder: &BodyBuilder,
+    ) -> Result<Option<TypeId>, Gap> {
+        use tos_predeclared::ParameterRule as Rule;
+        let Some(rule) = operation.parameters.get(position) else {
+            return Ok(None);
+        };
+        let wanted = match rule {
+            Rule::Size => Some(self.intern(TypeDef::Size)),
+            Rule::Exactly(kind) => Some(self.intern(TypeDef::Int(*kind))),
+            Rule::SameAs(other) => match lowered.get(*other) {
+                Some(operand) => Some(self.operand_type(operand, builder)?),
+                None => None,
+            },
+            _ => None,
+        };
+        Ok(wanted)
+    }
+
+    /// The exact type a predeclared operation's result rule denotes.
+    ///
+    /// The same rule the checker read for the same call, so a call accepted
+    /// with one result type cannot be lowered with another.
+    fn predeclared_result_type(
+        &mut self,
+        operation: &'static tos_predeclared::Operation,
+        operands: &[Operand],
+        builder: &BodyBuilder,
+        span: Span,
+    ) -> Result<TypeId, Gap> {
+        use tos_predeclared::ResultRule as Rule;
+        let ty = match operation.result {
+            Rule::Unit => self.unit_type(),
+            Rule::Integer(kind) => self.intern(TypeDef::Int(kind)),
+            Rule::Conversion(kind) => {
+                let destination = self.intern(TypeDef::Int(kind));
+                let error = self.intern(TypeDef::ConversionError);
+                self.intern(TypeDef::Result(destination, error))
+            }
+            Rule::SameAsOperand(position) => {
+                let Some(operand) = operands.get(position) else {
+                    return Err(self.gap("a predeclared result without its operand", span));
+                };
+                self.operand_type(operand, builder)?
+            }
+            Rule::SharedOfOperand(position) => {
+                let Some(operand) = operands.get(position) else {
+                    return Err(self.gap("a predeclared result without its operand", span));
+                };
+                let inner = self.operand_type(operand, builder)?;
+                self.intern(TypeDef::Shared(inner))
+            }
+        };
+        Ok(ty)
+    }
+
+    /// Lowers one predeclared call to the IR form the contract states for it.
+    ///
+    /// **The form is part of the contract and not a local choice** (ADR-0088
+    /// §4). `share` becomes `Op::Share` because `docs/43` §3 forbids hiding a
+    /// shared-memory access behind an opaque call; a device access becomes its
+    /// own operation because an ordinary call may be eliminated, coalesced or
+    /// duplicated and a device access may not (ADR-0081 §8); a DMA ordering
+    /// point becomes its own because a `Call` is exactly the thing a backend is
+    /// free to inline away (ADR-0086 §4). Everything else is an ordinary
+    /// `Call` naming the operation.
+    ///
+    /// Arity is the checker's finding (`E1217`), so a wrong count reaching here
+    /// is a lowering gap rather than a silently shortened operand list.
+    fn lower_predeclared(
+        &mut self,
+        operation: &'static tos_predeclared::Operation,
+        operands: Vec<Operand>,
+        expression: &'source Expression,
+        builder: &mut BodyBuilder,
+        at: usize,
+    ) -> Result<Operand, Gap> {
+        if operands.len() != operation.arity() {
+            return Err(self.gap(
+                "a predeclared operation applied to the wrong number of arguments",
+                expression.span(),
+            ));
+        }
+        let ty = self.predeclared_result_type(operation, &operands, builder, expression.span())?;
+        let value = builder.define(ty);
+        let op = match operation.form {
+            tos_predeclared::Form::Call => Op::Call {
+                target: CallTarget::Predeclared(String::from(operation.name)),
+                operands,
+            },
+            tos_predeclared::Form::Share => Op::Share {
+                operand: operands[0].clone(),
+            },
+            tos_predeclared::Form::Mmio {
+                width,
+                writes: false,
+                little_endian,
+            } => Op::MmioRead {
+                region: operands[0].clone(),
+                offset: operands[1].clone(),
+                width,
+                little_endian,
+            },
+            tos_predeclared::Form::Mmio {
+                width,
+                writes: _,
+                little_endian,
+            } => Op::MmioWrite {
+                region: operands[0].clone(),
+                offset: operands[1].clone(),
+                value: operands[2].clone(),
+                width,
+                little_endian,
+            },
+            tos_predeclared::Form::DmaSync(direction) => Op::DmaSync {
+                region: operands[0].clone(),
+                direction,
+            },
+        };
+        builder.push(Instruction {
+            result: Some(value),
+            ty,
+            op,
             source: at,
             runtime_contract: None,
             unsafe_block: builder.in_unsafe,
@@ -3992,35 +4042,6 @@ impl<'source> Lowerer<'source> {
             _ => return Err(self.gap("literal suffix", expression.span())),
         };
         Ok(self.intern_constant(constant))
-    }
-}
-
-/// What a predeclared operation's result type is derived from (docs/39 §2).
-enum Predeclared {
-    /// A checked conversion: `Result<D, ConversionError>`.
-    Conversion(IntKind),
-    /// A wrapping operation, whose result is its operand's type.
-    SameAsOperand,
-    /// An operation that produces nothing.
-    Unit,
-}
-
-/// The predeclared function set, and how each one's result is decided.
-///
-/// The list is closed by `docs/39` §2's `predeclared-function` class, so a name
-/// outside it is not a predeclared operation and lowering says so rather than
-/// giving it a type.
-fn predeclared_result(name: &str) -> Option<Predeclared> {
-    if let Some(destination) = name.strip_prefix("to_") {
-        if let Some(kind) = IntKind::parse(destination) {
-            return Some(Predeclared::Conversion(kind));
-        }
-    }
-    match name {
-        "wrapping_add" | "wrapping_sub" | "wrapping_mul" => Some(Predeclared::SameAsOperand),
-        "mmio_write_u8" | "mmio_write_le_u16" | "mmio_write_le_u32" | "mmio_write_le_u64"
-        | "dma_publish" | "dma_consume" => Some(Predeclared::Unit),
-        _ => None,
     }
 }
 

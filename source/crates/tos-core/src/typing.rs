@@ -42,7 +42,6 @@ use crate::parser::{
     Statement, StatementForm, TypeSyntax,
 };
 use crate::{Diagnostic, Severity, SourceUnit, Stage};
-use tos_ir::DmaSyncDirection;
 
 /// The exact fixed-width integer type names (docs/40 section 1).
 const INTEGER_TYPES: [&str; 8] = ["i8", "i16", "i32", "i64", "u8", "u16", "u32", "u64"];
@@ -81,50 +80,6 @@ const NONCONSTRUCTIBLE_TYPES: [&str; 19] = [
     "AtomicU32",
     "AtomicU64",
 ];
-
-/// One device-memory access the language declares (ADR-0081 §7).
-///
-/// **Width and byte order are part of the operation, not of a type.** A device
-/// register's width belongs to the transaction — the same window carries 8-,
-/// 16- and 32-bit registers — so an element type would be a claim about the
-/// window that no device makes.
-#[derive(Clone, Copy)]
-pub(crate) struct MmioAccess {
-    /// Bytes moved, which is also the alignment the offset must satisfy.
-    pub(crate) width: u64,
-    /// Whether this is a write. A write requires the mutable form.
-    pub(crate) writes: bool,
-}
-
-/// The access one predeclared name performs, if it is one.
-pub(crate) fn mmio_access(name: &str) -> Option<MmioAccess> {
-    let access = |width, writes| Some(MmioAccess { width, writes });
-    match name {
-        "mmio_read_u8" => access(1, false),
-        "mmio_read_le_u16" => access(2, false),
-        "mmio_read_le_u32" => access(4, false),
-        "mmio_read_le_u64" => access(8, false),
-        "mmio_write_u8" => access(1, true),
-        "mmio_write_le_u16" => access(2, true),
-        "mmio_write_le_u32" => access(4, true),
-        "mmio_write_le_u64" => access(8, true),
-        _ => None,
-    }
-}
-
-/// Which DMA visibility edge one predeclared name establishes (ADR-0086 §3).
-///
-/// **The element type is irrelevant to synchronisation**, so unlike
-/// [`mmio_access`] this carries no width and no byte order: what a `DmaSync`
-/// names is a direction and a region, and the bytes in the region are not its
-/// business.
-pub(crate) fn dma_direction(name: &str) -> Option<DmaSyncDirection> {
-    match name {
-        "dma_publish" => Some(DmaSyncDirection::Publish),
-        "dma_consume" => Some(DmaSyncDirection::Consume),
-        _ => None,
-    }
-}
 
 /// The internal constructor name for a region written with or without `mut`.
 fn mutable_region_name(written: &str, mutable: bool) -> String {
@@ -563,6 +518,40 @@ fn resolve(source: &SourceUnit, ty: &TypeSyntax) -> Type {
 /// Whether a type belongs to the integer family docs/40 section 3 governs.
 fn is_integer_family(ty: &Type) -> bool {
     matches!(ty, Type::Integer(_) | Type::Size)
+}
+
+/// The constructor or record name a type is written with, or `""` for a type
+/// that has none. A nominal rule asks what a type *is*, so a scalar, a tuple
+/// and an array answer nothing rather than something that resembles a region.
+fn nominal_name(ty: &Type) -> &str {
+    match ty {
+        Type::Constructed(name, _) | Type::Nominal(name) => name.as_str(),
+        _ => "",
+    }
+}
+
+/// The source type a predeclared operation's result rule denotes (ADR-0088).
+///
+/// The same rule the lowerer reads for the same call's IR type, so a call the
+/// checker typed one way cannot be lowered another.
+fn predeclared_result(rule: tos_predeclared::ResultRule, actual: &[Type]) -> Type {
+    use tos_predeclared::ResultRule as Rule;
+    match rule {
+        Rule::Unit => Type::Unit,
+        Rule::Integer(kind) => Type::Integer(String::from(kind.spelled())),
+        Rule::Conversion(kind) => Type::Constructed(
+            String::from("Result"),
+            alloc::vec![
+                Type::Integer(String::from(kind.spelled())),
+                Type::Nominal(String::from("ConversionError")),
+            ],
+        ),
+        Rule::SameAsOperand(position) => actual.get(position).cloned().unwrap_or(Type::Unknown),
+        Rule::SharedOfOperand(position) => Type::Constructed(
+            String::from("Shared"),
+            alloc::vec![actual.get(position).cloned().unwrap_or(Type::Unknown)],
+        ),
+    }
 }
 
 /// Whether a type is one V1 source may not fabricate a value of (ADR-0039).
@@ -1409,178 +1398,248 @@ impl<'source> TypeChecker<'source> {
         );
     }
 
-    /// The type of `share(x)` (ADR-0037 section 4).
+    /// Reports `E1217_CALL_ARITY_MISMATCH` (ADR-0089).
     ///
-    /// ```text
-    /// share(T) -> Shared<T>    only when T is transitively immutable and Shareable
-    /// ```
+    /// A call that supplies a different number of arguments than the resolved
+    /// callee declares is refused **before** any argument is compared to a
+    /// parameter, because with the wrong number of arguments there is no
+    /// complete positional correspondence to type-check: the third argument of
+    /// a two-parameter function corresponds to nothing, and a diagnostic
+    /// pairing them would be describing a correspondence the source does not
+    /// have. `docs/43` §4 has always required an exact ordered operand list;
+    /// this is the source-level code that says when one was not supplied.
+    fn report_arity(
+        &mut self,
+        span: crate::Span,
+        callee: &str,
+        expected: usize,
+        actual: usize,
+        context: &'static str,
+    ) {
+        self.diagnostics.push(
+            Diagnostic::new(
+                "E1217_CALL_ARITY_MISMATCH",
+                Severity::Error,
+                Stage::Type,
+                span,
+                self.source,
+            )
+            .with_field("callee", callee.to_string())
+            .with_field("expected", expected)
+            .with_field("actual", actual)
+            .with_field("context", context),
+        );
+    }
+
+    /// One predeclared call, checked against the shared contract (ADR-0088).
     ///
-    /// `share` is a language operation, not a library call: it is the only way
-    /// an affine region handle becomes usable from several tasks, and making it
-    /// explicit is what stops an ownership transfer from looking like a read.
-    /// An argument that does not satisfy the requirement is
-    /// `E1215_ARGUMENT_TYPE_MISMATCH` — the general code ADR-0037 section 5
-    /// settles on — rather than a code invented for this one operation.
-    /// The type of one device-memory access (ADR-0081 §7).
+    /// **One authority for all of them.** `share`, the device accesses, the DMA
+    /// ordering points and the checked conversions were four hand-written rules
+    /// in this file, each knowing its own names, its own arity and its own
+    /// result, and the conversions checked no argument at all — `to_u8(true)`
+    /// and `to_u8(1u64, 2u64)` were both accepted here. They are now one walk
+    /// over one table, which the lowerer reads for the same result type and the
+    /// independent verifier reads for the same obligations.
     ///
-    /// A read takes the region and a byte offset and yields `u64`; a write
-    /// takes a value too and yields `unit`. The offset is exact `size`, as
-    /// every other bounded index in this language is. **A write requires
-    /// `MmioRegionMut`** — the read-only form is read-only in the type as well
-    /// as in the page table, and this is the half of that the checker owns.
-    /// Types `dma_publish(region)` and `dma_consume(region)` (ADR-0086 §3).
-    ///
-    /// **The rule is over the closed existing family and is nominal.** The
-    /// operand's type is `DmaRegion<T>` or `DmaRegion<mut T>` and nothing else:
-    /// not an ordinary `Region`, not an `MmioRegion`, not a capability, and not
-    /// "some type that looks region-like". Both mutabilities are accepted,
-    /// because mutability is current CPU write authority and this operation is
-    /// a visibility boundary rather than a write — on an immutable region with
-    /// nothing ordered before it, the publication set is simply empty.
-    fn dma_sync_type(
+    /// **The specialised semantics stay where they are.** The table says that
+    /// `share`'s operand satisfies the Shareable rule and that a DMA ordering
+    /// point names the closed `DmaRegion` family; what it does not do is decide
+    /// whether a particular type is shareable, which is this checker's own
+    /// traversal over its own types and the verifier's over its own.
+    fn predeclared_type(
         &mut self,
         expression: &'source Expression,
         actual: &[Type],
-        name: &str,
+        operation: &'static tos_predeclared::Operation,
     ) -> Type {
-        if actual.len() != 1 {
-            return Type::Unit;
-        }
-        let region = &actual[0];
-        if matches!(region, Type::Unknown) {
-            return Type::Unit;
-        }
-        let named = match region {
-            Type::Constructed(name, _) | Type::Nominal(name) => name.as_str(),
-            _ => "",
-        };
-        if named != "DmaRegion" && named != DMA_REGION_MUT {
-            self.diagnostics.push(
-                Diagnostic::new(
-                    "E1215_ARGUMENT_TYPE_MISMATCH",
-                    Severity::Error,
-                    Stage::Type,
-                    expression
-                        .arguments()
-                        .first()
-                        .map_or(expression.span(), |a| a.span()),
-                    self.source,
-                )
-                .with_field("requirement", name)
-                .with_field("expected", "DmaRegion")
-                .with_field("actual", region.spell()),
+        if actual.len() != operation.arity() {
+            self.report_arity(
+                expression.span(),
+                operation.name,
+                operation.arity(),
+                actual.len(),
+                "predeclared",
             );
-        }
-        Type::Unit
-    }
-
-    fn mmio_type(
-        &mut self,
-        expression: &'source Expression,
-        actual: &[Type],
-        access: MmioAccess,
-    ) -> Type {
-        let wanted = if access.writes { 3 } else { 2 };
-        if actual.len() != wanted {
             return Type::Unknown;
         }
-        let result = if access.writes {
-            Type::Unit
-        } else {
-            Type::Integer(String::from("u64"))
-        };
-        let region = &actual[0];
-        let named = match region {
-            Type::Constructed(name, _) | Type::Nominal(name) => name.as_str(),
-            _ => "",
-        };
-        let readable = named == "MmioRegion" || named == "MmioRegionMut";
-        let writable = named == "MmioRegionMut";
-        if matches!(region, Type::Unknown) {
-            return result;
-        }
-        if !readable || (access.writes && !writable) {
-            self.diagnostics.push(
-                Diagnostic::new(
-                    "E1215_ARGUMENT_TYPE_MISMATCH",
-                    Severity::Error,
-                    Stage::Type,
-                    expression
-                        .arguments()
-                        .first()
-                        .map_or(expression.span(), |a| a.span()),
-                    self.source,
-                )
-                .with_field("requirement", "device-memory access")
-                .with_field(
-                    "expected",
-                    if access.writes {
-                        "MmioRegionMut"
-                    } else {
-                        "MmioRegion"
-                    },
-                )
-                .with_field("actual", region.spell()),
-            );
-            return result;
-        }
-        // The offset, and a written value, are ordinary checked arguments.
-        if let Some(offset) = expression.arguments().get(1) {
-            if !matches!(
-                actual[1],
-                Type::Size | Type::UnsuffixedInteger | Type::Unknown
-            ) {
-                self.diagnostics.push(
-                    Diagnostic::new(
-                        "E1211_INDEX_TYPE_MISMATCH",
-                        Severity::Error,
-                        Stage::Type,
-                        offset.span(),
-                        self.source,
-                    )
-                    .with_field("expected", "size")
-                    .with_field("actual", actual[1].spell()),
-                );
-            }
-        }
-        result
-    }
-
-    fn share_type(&mut self, expression: &'source Expression, actual: &[Type]) -> Type {
-        let [argument] = actual else {
-            // Arity is not this slice's finding; the call simply has no type.
-            return Type::Unknown;
-        };
-        if matches!(argument, Type::Unknown) {
-            return Type::Unknown;
-        }
-        let shareable = match argument {
-            Type::Constructed(name, _) => region_facts(name).map(|facts| facts.shareable),
-            _ => None,
-        };
-        let acceptable = shareable.unwrap_or(true) && transitively_immutable(argument, 0);
-        if !acceptable {
+        for (position, rule) in operation.parameters.iter().enumerate() {
             let span = expression
                 .arguments()
-                .first()
-                .map(|first| first.span())
-                .unwrap_or(expression.span());
-            self.diagnostics.push(
-                Diagnostic::new(
-                    "E1215_ARGUMENT_TYPE_MISMATCH",
-                    Severity::Error,
-                    Stage::Type,
-                    span,
-                    self.source,
-                )
-                .with_field("callee", "share")
-                .with_field("position", 0usize)
-                .with_field("expected", "a transitively immutable, shareable type")
-                .with_field("actual", argument.spell()),
-            );
-            return Type::Unknown;
+                .get(position)
+                .map_or(expression.span(), |argument| argument.span());
+            self.check_parameter_rule(operation.name, position, span, *rule, actual);
         }
-        Type::Constructed(String::from("Shared"), alloc::vec![argument.clone()])
+        predeclared_result(operation.result, actual)
+    }
+
+    /// One argument position against the rule the contract states for it.
+    ///
+    /// An undetermined argument reports nothing: that would be a guess rather
+    /// than a disagreement. Every other rule keeps the code the registry
+    /// already allocates for the kind of position it is — a byte offset that is
+    /// not `size` is `E1211` exactly as an index is, two exact integer types
+    /// that disagree are `E1210`, and everything else is the residual
+    /// `E1215` with the fields ADR-0037 gives it.
+    fn check_parameter_rule(
+        &mut self,
+        callee: &str,
+        position: usize,
+        span: crate::Span,
+        rule: tos_predeclared::ParameterRule,
+        actual: &[Type],
+    ) {
+        use tos_predeclared::ParameterRule as Rule;
+        let given = &actual[position];
+        if matches!(given, Type::Unknown) {
+            return;
+        }
+        match rule {
+            Rule::Integer => {
+                if !matches!(given, Type::Integer(_) | Type::UnsuffixedInteger) {
+                    self.report_argument(span, callee, position, "an exact integer type", given);
+                }
+            }
+            Rule::IntegerOrSize => {
+                if !is_integer_family(given) && !matches!(given, Type::UnsuffixedInteger) {
+                    self.report_argument(
+                        span,
+                        callee,
+                        position,
+                        "an exact integer type or size",
+                        given,
+                    );
+                }
+            }
+            // A byte offset is a bounded offset into a mapping, which is the
+            // position `E1211` already owns for arrays, slices and regions.
+            Rule::Size => {
+                if !matches!(given, Type::Size | Type::UnsuffixedInteger) {
+                    self.diagnostics.push(
+                        Diagnostic::new(
+                            "E1211_INDEX_TYPE_MISMATCH",
+                            Severity::Error,
+                            Stage::Type,
+                            span,
+                            self.source,
+                        )
+                        .with_field("expected", "size")
+                        .with_field("actual", given.spell()),
+                    );
+                }
+            }
+            Rule::Exactly(kind) => {
+                let wanted = Type::Integer(String::from(kind.spelled()));
+                self.report_disagreement(span, callee, position, &wanted, given);
+            }
+            // The type of an earlier operand, which is why the rules are
+            // evaluated left to right and a `SameAs` never names a later one.
+            Rule::SameAs(other) => {
+                let wanted = actual[other].clone();
+                if matches!(wanted, Type::Unknown) {
+                    return;
+                }
+                self.report_disagreement(span, callee, position, &wanted, given);
+            }
+            Rule::MmioRegion | Rule::MmioRegionMut => {
+                let mutable = matches!(rule, Rule::MmioRegionMut);
+                let named = nominal_name(given);
+                let acceptable = if mutable {
+                    named == "MmioRegionMut"
+                } else {
+                    named == "MmioRegion" || named == "MmioRegionMut"
+                };
+                if !acceptable {
+                    let reported = self
+                        .argument_diagnostic(span)
+                        .with_field("requirement", "device-memory access")
+                        .with_field(
+                            "expected",
+                            if mutable {
+                                "MmioRegionMut"
+                            } else {
+                                "MmioRegion"
+                            },
+                        )
+                        .with_field("actual", given.spell());
+                    self.diagnostics.push(reported);
+                }
+            }
+            Rule::DmaRegion => {
+                let named = nominal_name(given);
+                if named != "DmaRegion" && named != DMA_REGION_MUT {
+                    let reported = self
+                        .argument_diagnostic(span)
+                        .with_field("requirement", callee.to_string())
+                        .with_field("expected", "DmaRegion")
+                        .with_field("actual", given.spell());
+                    self.diagnostics.push(reported);
+                }
+            }
+            Rule::Shareable => {
+                let shareable = match given {
+                    Type::Constructed(name, _) => region_facts(name).map(|facts| facts.shareable),
+                    _ => None,
+                };
+                if !shareable.unwrap_or(true) || !transitively_immutable(given, 0) {
+                    self.report_argument(
+                        span,
+                        callee,
+                        position,
+                        "a transitively immutable, shareable type",
+                        given,
+                    );
+                }
+            }
+        }
+    }
+
+    /// An exact type disagreement at an argument position, under whichever code
+    /// owns it: `E1210` when both sides are numeric and the numeric rule is the
+    /// one broken, and the residual `E1215` otherwise.
+    fn report_disagreement(
+        &mut self,
+        span: crate::Span,
+        callee: &str,
+        position: usize,
+        wanted: &Type,
+        given: &Type,
+    ) {
+        if given.agrees_with(wanted) {
+            return;
+        }
+        if is_integer_family(given) && is_integer_family(wanted) {
+            self.check_integer_agreement(span, wanted, given, "argument");
+            return;
+        }
+        let expected = wanted.spell();
+        self.report_argument(span, callee, position, &expected, given);
+    }
+
+    fn argument_diagnostic(&self, span: crate::Span) -> Diagnostic {
+        Diagnostic::new(
+            "E1215_ARGUMENT_TYPE_MISMATCH",
+            Severity::Error,
+            Stage::Type,
+            span,
+            self.source,
+        )
+    }
+
+    fn report_argument(
+        &mut self,
+        span: crate::Span,
+        callee: &str,
+        position: usize,
+        expected: &str,
+        given: &Type,
+    ) {
+        let reported = self
+            .argument_diagnostic(span)
+            .with_field("callee", callee.to_string())
+            .with_field("position", position)
+            .with_field("expected", expected)
+            .with_field("actual", given.spell());
+        self.diagnostics.push(reported);
     }
 
     /// Reports an argument that does not satisfy its declared parameter type.
@@ -1613,19 +1672,51 @@ impl<'source> TypeChecker<'source> {
         if wanted.agrees_with(given) {
             return;
         }
-        self.diagnostics.push(
-            Diagnostic::new(
-                "E1215_ARGUMENT_TYPE_MISMATCH",
-                Severity::Error,
-                Stage::Type,
-                span,
-                self.source,
-            )
-            .with_field("callee", callee.to_string())
-            .with_field("position", position)
-            .with_field("expected", wanted.spell())
-            .with_field("actual", given.spell()),
-        );
+        let expected = wanted.spell();
+        self.report_argument(span, callee, position, &expected, given);
+    }
+
+    /// Checks a call whose callee has a declared or derived parameter list.
+    ///
+    /// The list is exact in both directions (`docs/43` §4), so a wrong count is
+    /// `E1217` and stops here; only a call whose arguments correspond one to
+    /// one with parameters has positions worth comparing.
+    fn check_positional_arguments(
+        &mut self,
+        expression: &'source Expression,
+        callee: &str,
+        parameters: &[Type],
+        actual: &[Type],
+        context: &'static str,
+    ) {
+        // Only a positional list lines up with the parameter order; a named
+        // list belongs to a constructor and is checked by field name.
+        if expression
+            .arguments()
+            .iter()
+            .any(|argument| argument.name().is_some())
+        {
+            return;
+        }
+        if parameters.len() != actual.len() {
+            self.report_arity(
+                expression.span(),
+                callee,
+                parameters.len(),
+                actual.len(),
+                context,
+            );
+            return;
+        }
+        for (position, ((wanted, given), argument)) in parameters
+            .iter()
+            .zip(actual)
+            .zip(expression.arguments())
+            .enumerate()
+        {
+            self.check_integer_agreement(argument.span(), wanted, given, "argument");
+            self.check_argument_agreement(callee, position, argument.span(), wanted, given);
+        }
     }
 
     fn call_type(&mut self, expression: &'source Expression) -> Type {
@@ -1640,55 +1731,51 @@ impl<'source> TypeChecker<'source> {
             return Type::Unknown;
         }
         let name = callee.span().text(self.source);
-        if name == "share" {
-            return self.share_type(expression, &actual);
+        // **Resolved in the order the lowerer resolves it**, because a call the
+        // two read differently is a call whose artifact says something its
+        // source did not.
+        //
+        // A binding first: a callable value is an in-scope name, and an inner
+        // binding shadows an outer declaration as any other name does. Its
+        // parameter list is exact in the same way a declared function's is, and
+        // until now nothing in source checked it at all.
+        if let Some(bound) = self.lookup(name) {
+            let Type::Function(parameters, result) = bound else {
+                // Calling a binding that is not callable. The lowerer refuses
+                // it; the registry allocates no code for it, so this reports
+                // nothing rather than inventing one.
+                return Type::Unknown;
+            };
+            self.check_positional_arguments(
+                expression,
+                name,
+                &parameters,
+                &actual,
+                "callable value",
+            );
+            return *result;
         }
-        if let Some(access) = mmio_access(name) {
-            return self.mmio_type(expression, &actual, access);
-        }
-        if dma_direction(name).is_some() {
-            return self.dma_sync_type(expression, &actual, name);
-        }
+        // Then a function this module declares. **It wins over a predeclared
+        // name**: `docs/39` §2 makes reserved words, primitives, predeclared
+        // types and predeclared *values* unshadowable and stops there, so a
+        // predeclared function name is an ordinary identifier and a module that
+        // declares `fn share(...)` has declared a function. The lowerer has
+        // always resolved it that way; this file used to check the predeclared
+        // rule first and type the call as the operation nobody called.
         if let Some((parameters, result)) = self.declarations.functions.get(name) {
             let result = result.clone();
             let parameters = parameters.clone();
-            // Only a positional list lines up with the parameter order; a named
-            // list belongs to a constructor and is checked by field name.
-            if expression
-                .arguments()
-                .iter()
-                .all(|argument| argument.name().is_none())
-                && parameters.len() == actual.len()
-            {
-                for (position, ((wanted, given), argument)) in parameters
-                    .iter()
-                    .zip(&actual)
-                    .zip(expression.arguments())
-                    .enumerate()
-                {
-                    self.check_integer_agreement(argument.span(), wanted, given, "argument");
-                    self.check_argument_agreement(name, position, argument.span(), wanted, given);
-                }
-            }
+            self.check_positional_arguments(expression, name, &parameters, &actual, "local named");
             return result;
+        }
+        if let Some(operation) = tos_predeclared::operation(name) {
+            return self.predeclared_type(expression, &actual, operation);
         }
         if self.declarations.records.contains_key(name) {
             return Type::Nominal(name.to_string());
         }
         if let Some((owner, _)) = self.declarations.variants.get(name) {
             return Type::Nominal(owner.clone());
-        }
-        // The fixed checked conversions return `Result<D, ConversionError>`.
-        if let Some(destination) = name.strip_prefix("to_") {
-            if INTEGER_TYPES.contains(&destination) {
-                return Type::Constructed(
-                    String::from("Result"),
-                    alloc::vec![
-                        Type::Integer(destination.to_string()),
-                        Type::Nominal(String::from("ConversionError")),
-                    ],
-                );
-            }
         }
         Type::Unknown
     }

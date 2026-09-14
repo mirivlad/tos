@@ -34,14 +34,12 @@
 //! satisfy still lowers to a move that relabels the place it names, and the
 //! verifier does not yet refuse that — see the slice's report.
 //!
-//! **The predeclared gap is narrower than it was, and still open.** Local
-//! lowering now gives the covered predeclared operations their actual result
-//! types — `to_<int>` is `Result<D, ConversionError>`, `wrapping_*` is its
-//! operand's type — because typing a real result as `unit` was one more face of
-//! the same unsound oracle. That does not close the verifier's side: the
-//! independent verifier still holds no typed predeclared signature set, not
-//! even the set of names, so it can check neither their arity nor their operand
-//! types nor their declared result. That remains a separate blocker.
+//! **The predeclared gap is closed** (ADR-0088). One declarative contract now
+//! states each predeclared operation's minor, arity, operand rules, result and
+//! IR form, the frontend checks source against it and the independent verifier
+//! checks artifacts against it — from its own traversal, over this artifact's
+//! own type table, with the table's content digest as an input to both sides as
+//! `docs/43` §5 requires. Those cases live in `predeclared_contract.rs`.
 //!
 //! **Parameter modes are not compared, and that is deliberate.** A function
 //! type carries no `PassMode`, so `Owned`, `SharedBorrow` and `MutableBorrow`
@@ -60,6 +58,25 @@ fn content_id(bytes: &[u8]) -> String {
     let mut hex = [0u8; 64];
     tos_hash::hex(&digest, &mut hex);
     format!("sha256:{}", core::str::from_utf8(&hex).unwrap())
+}
+
+/// The first diagnostic a fixture receives, as a code, or `"accepted"`.
+///
+/// **A source-level refusal is a different obligation from a verifier finding**
+/// and the file needs both: since ADR-0089 the frontend refuses a wrong
+/// argument count itself, so the malformed sources below no longer reach the
+/// verifier at all. What the verifier still refuses independently is a forged
+/// artifact, and those cases are further down.
+fn checked(body: &str) -> String {
+    let text = format!("module app.calls version 1.4 profile full; {ENVELOPE} {body}");
+    let source = SourceReader::read(text.as_bytes()).expect("transport-valid source");
+    let schema = Parser::parse_schema(&source)
+        .into_accepted()
+        .expect("the fixture parses");
+    match Checker::check(&source, &schema).first() {
+        None => String::from("accepted"),
+        Some(diagnostic) => String::from(diagnostic.code()),
+    }
 }
 
 /// Lowers a fixture the checker accepts, without verifying it.
@@ -144,48 +161,48 @@ fn a_correct_value_call_verifies() {
 #[test]
 fn a_local_call_with_too_few_operands_is_refused() {
     assert_eq!(
-        verdict_of(
+        checked(
             "fn add(a: i64, b: i64) -> i64 { return a + b; } \
              pub fn main() -> i64 { return add(1i64); }"
         ),
-        "V2011_CFG"
+        "E1217_CALL_ARITY_MISMATCH"
     );
 }
 
 #[test]
 fn a_local_call_with_too_many_operands_is_refused() {
     assert_eq!(
-        verdict_of(
+        checked(
             "fn one(a: i64) -> i64 { return a; } \
              pub fn main() -> i64 { return one(1i64, 2i64); }"
         ),
-        "V2011_CFG"
+        "E1217_CALL_ARITY_MISMATCH"
     );
 }
 
 #[test]
 fn a_value_call_with_too_few_operands_is_refused() {
     assert_eq!(
-        verdict_of(
-            "pub fn main() -> i64 { let f = fn (a: i64, b: i64) { }; f(1i64); return 0i64; }"
-        ),
-        "V2011_CFG"
+        checked("pub fn main() -> i64 { let f = fn (a: i64, b: i64) { }; f(1i64); return 0i64; }"),
+        "E1217_CALL_ARITY_MISMATCH"
     );
 }
 
 #[test]
 fn a_value_call_with_too_many_operands_is_refused() {
     assert_eq!(
-        verdict_of("pub fn main() -> i64 { let f = fn (a: i64) { }; f(1i64, 2i64); return 0i64; }"),
-        "V2011_CFG"
+        checked("pub fn main() -> i64 { let f = fn (a: i64) { }; f(1i64, 2i64); return 0i64; }"),
+        "E1217_CALL_ARITY_MISMATCH"
     );
 }
 
+/// And an argument of the wrong type at a callable value, which the checker
+/// could not see either until the callee's function type was read here.
 #[test]
 fn a_value_call_with_a_wrong_operand_type_is_refused() {
     assert_eq!(
-        verdict_of("pub fn main() -> i64 { let f = fn (a: i64) { }; f(true); return 0i64; }"),
-        "V2010_TYPE"
+        checked("pub fn main() -> i64 { let f = fn (a: i64) { }; f(true); return 0i64; }"),
+        "E1215_ARGUMENT_TYPE_MISMATCH"
     );
 }
 
@@ -196,11 +213,11 @@ fn a_value_call_with_a_wrong_operand_type_is_refused() {
 #[test]
 fn a_value_call_result_is_checked_against_the_function_type() {
     assert_eq!(
-        verdict_of(
+        checked(
             "fn wants(b: bool) -> i64 { return 0i64; } \
              pub fn main() -> i64 { let f = fn (a: i64) { }; return wants(f(1i64)); }"
         ),
-        "V2010_TYPE"
+        "E1215_ARGUMENT_TYPE_MISMATCH"
     );
 }
 

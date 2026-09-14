@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/tos-hash",
+    "crates/tos-predeclared",
     "crates/tos-serial",
     "crates/tos-ir",
     "crates/tos-verifier",
@@ -35,6 +36,7 @@ members = [
 exclude = []
 default-members = [
     "crates/tos-hash",
+    "crates/tos-predeclared",
     "crates/tos-serial",
     "crates/tos-ir",
     "crates/tos-verifier",

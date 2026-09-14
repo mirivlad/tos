@@ -2,8 +2,9 @@
 
 # ADR-0081: Region access and device-memory observation
 
-- Status: **Accepted (Project Architect-approved)**
-- Date: 2026-09-04
+- Status: **Accepted (Project Architect-approved)**, amended 2026-09-15 — see
+  §7a, which states the carrier type rule §7 left implicit
+- Date: 2026-09-04; §7a amended 2026-09-15
 - Decision level: **3** — it decides how a TOS Core module reads and writes
   through every kind of granted memory, adds a sealed device-memory kind to the
   language, and fixes the observability rule device registers require. It adds
@@ -209,6 +210,64 @@ The offset is a byte offset of exact type `size`. There is no physical address,
 no pointer, no generic cast and no device-memory slice. Reads work through
 either form; **writes require `MmioRegionMut`**.
 
+### 7a. The carrier type, stated (amendment, 2026-09-15)
+
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-15, granted before
+  implementation of the amendment
+
+**§7 fixed the offset's type and the shape of each access and left the carrier
+type implicit.** It said the offset is a byte offset of exact type `size`, and
+it said nothing about the type of the value a read yields or a write takes. An
+unstated rule is not an absent one for long: the frontend checked nothing there,
+so a value of any type was accepted at a write, and an offset or value spelled
+as an unsuffixed literal took `i32` — the default of `docs/40` §3 — because no
+position stated a type for it to take. An `i32` therefore stood where this
+decision requires a `size`, and where a register takes a full word.
+
+**The rule, and it is symmetric:**
+
+```text
+mmio_read_u8(region, offset)      -> u64
+mmio_read_le_u16(region, offset)  -> u64
+mmio_read_le_u32(region, offset)  -> u64
+mmio_read_le_u64(region, offset)  -> u64
+
+mmio_write_u8(region, offset, value: u64)      -> unit
+mmio_write_le_u16(region, offset, value: u64)  -> unit
+mmio_write_le_u32(region, offset, value: u64)  -> unit
+mmio_write_le_u64(region, offset, value: u64)  -> unit
+```
+
+Every V1 MMIO read returns exact `u64`. Every V1 MMIO write takes exact `u64`
+as its value operand. The offset remains exact `size`.
+
+**The transaction's width is the operation's, not the carrier's.** Which bytes
+cross the bus, and in which order, is decided by the operation named in source
+— `u8`, `le_u16`, `le_u32`, `le_u64` — and by the width and byte order the
+verifier-visible IR operation carries. It is never decided by the integer type
+of the value flowing in or out. §7's reason is unchanged and this is its
+consequence: a device register's width belongs to the transaction rather than to
+the value's type, so the type that carries the value is the same at every width
+and a narrowing or widening of the *bus* transaction is not a source integer
+coercion. Narrowing the value itself is ordinary source work — a suffix, or the
+checked conversion `docs/40` §3 provides — and it happens before or after the
+access, never inside it.
+
+This is consistent with every canonical driver already in the tree, which
+consumes even a one-byte read as `u64`.
+
+**No minor moves.** MMIO is the TOS Core 1.2 feature and this states the type
+contract of the operations 1.2 already has. No source form is added, removed or
+reinterpreted, so `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` does not apply and no
+module header changes.
+
+**Where the rule now lives.** ADR-0088's declarative predeclared-call contract
+carries it as authority — parameter rules `(MmioRegion | MmioRegionMut, size)`
+and `(MmioRegionMut, size, u64)`, results `u64` and `unit` — so the frontend
+checks it, the lowerer gives an unsuffixed literal at either position the type
+this decision requires, and the independent verifier proves it of an artifact
+under §8 below.
+
 ## 8. An MMIO access is an observable operation, and the IR says so
 
 It lowers to its own verifier-visible operations — `MmioRead` and `MmioWrite` —
@@ -220,6 +279,19 @@ value came from.
 The verifier independently proves the operand is exactly an MMIO region kind,
 that a write names the mutable form, and that the enclosing artifact declares a
 language version in which the operation exists.
+
+**Recorded rather than tidied, as §0 records its own chronology: this paragraph
+was true of the decision and not of the implementation until 2026-09-15.**
+`Op::MmioRead` and `Op::MmioWrite` had no verifier arm at all — not a weak one,
+none — so a forged artifact could read through an ordinary `Region`, write
+through a read-only `MmioRegion`, offset by an `i64`, write a `bool`, claim any
+result, use a width no accepted access has, or perform the whole thing in a
+module declaring 1.0, and be accepted. It went unnoticed because the frontend
+refused every one of those in source and no negative asked the verifier the same
+question. The obligations above, plus §7a's carrier rule and the width and byte
+order the instruction carries, are proved independently from 2026-09-15, each
+with a forged-IR negative that damages exactly one fact of a module that
+verified a moment earlier.
 
 ## 9. Observability — the load-bearing new memory rule
 
