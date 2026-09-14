@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `2b666eeb605ee038f21cce13cd445529ffa260de7c11aca09cb80bde435f602d`\
+Source-manifest SHA-256: `8fc20fee83fbb135dfd57ee7932542503a918a833f4313d836821a4a6cc91205`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -8407,6 +8407,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1212_INVALID_AS_CONVERSION` | an `as` conversion between ordinary value types is not an integer widening that preserves signedness; a conversion touching a capability or another nonconstructible type is routed to `E1502` or `E1213` and is not this code |
 | `E1213_NONCONSTRUCTIBLE_TYPE` | an operation brings into existence a value of a type V1 source may not fabricate one of — `Task`, `Shared`, `Region`, `DmaRegion`, `Mutex`, `RwLock`, `MutexGuard`, `ReadGuard`, `WriteGuard`, `Channel`, `Event`, `Semaphore`, `Barrier`, `Latch`, an atomic, a slice, or a function or closure type. The operations are an `as` conversion whose target or operand type is one of them (`operation=as`), and such a type applied to arguments (`operation=construct`), which docs/39 §5's single Call/Construct form makes the constructor form. `TaskResult<T>` is not among them: `Completed` and `Cancelled` build one. **The boundary:** the name applied is a construction; the same name written alone in value position constructs nothing and is `E1202`. A capability is `E1502` and takes precedence (ADR-0039 revision 4, ADR-0064) |
 | `E1215_ARGUMENT_TYPE_MISMATCH` | an argument of a resolved call or predeclared operation does not satisfy the declared exact type or the operation's type requirement, and no more specific code describes it. The residual of `E1210`, `E1211`, `E1212`, `E1213`, `E1502` and `E1222`, never a catch-all for an unresolved callee, which is a resolution finding with precedence. Fields: `callee`, `position` or `parameter`, `expected`, `actual`; an operation requirement may use `requirement` and `reason` instead (ADR-0037) |
+| `E1216_VALUE_TYPE_MISMATCH` | an expression's value does not have the exact type its statically typed context requires, and no more specific accepted diagnostic owns that mismatch (ADR-0087). Fields: `context`, `expected`, `actual`, and optionally `binding`, `field` or `element`. `context` names the kind of typed position: `binding`, `assignment`, `array element`, `record field`, `tuple element`, `enum payload`, `branch`. **Residual by construction**: `E1210` owns two exact numeric types, `E1211` an index, `E1215` a call or predeclared argument, `E1222` a return, `E1204`/`E1206` a constructor's shape, and the ownership and capability codes their own rules; this is what is left. An **unsuffixed** integer literal under an exact numeric annotation is not a mismatch at all — docs/40 §3 makes it take the required type — so `let x: size = 4;` and `let x: i64 = 4;` are not this code |
 | `E1223_REFUTABLE_PATTERN` | a `let` or `for` pattern may fail to match the value it binds, in a context that binds unconditionally (ADR-0046). Irrefutability is recursive: a tuple pattern is irrefutable exactly when every element is, and a constructor pattern only when its type has no other variant. Fields: `context` (`let` or `for`), `reason`, `expected`. Reported only once the pattern has a settled meaning — an undetermined type, an unresolved constructor or a mismatched payload arity are other codes' conditions and take precedence |
 | `E1220_NONEXHAUSTIVE_MATCH` | a `match` over an enum, `Option`, `Result` or `TaskResult` leaves a variant uncovered and has no wildcard or binding arm |
 | `E1221_MISSING_RETURN` | control can reach the end of a function whose declared return type is not `unit`, or of a closure or spawned body that returns a value on another path |
@@ -32083,6 +32084,172 @@ sentence of §6 and §7. The consume *contract* was kept exactly as written and
 its *implementation* was strengthened to match it — not the other way round.
 
 <!-- END docs/adr/0086-dma-publication-and-consumption-ordering.md -->
+
+---
+
+<!-- BEGIN docs/adr/0087-the-residual-value-type-diagnostic.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0087: the residual value-type diagnostic
+
+- Status: **Accepted (Project Architect-approved, 2026-09-14)**
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-14, granted before
+  implementation
+- Date: 2026-09-14
+- Decision level: **2**. It allocates one diagnostic code and changes no source
+  syntax, no semantic rule and no artifact schema
+- Related: `docs/40` §2 and §3 (typed bindings, exact types, contextual integer
+  literals), `docs/44` §7 (the diagnostic registry), ADR-0052 (constants are
+  compile-time values), ADR-0032 (diagnostic regions and recovery)
+
+## 1. The gap, stated exactly
+
+`docs/40` §2 makes a binding's annotation part of its type:
+
+> A `let` binding has the declared type when one is written and the
+> initializer's type otherwise.
+
+and §3 makes the language's types **exact** — there is no subtyping and no
+implicit conversion between them. Together those say that
+
+```tos
+let flag: bool = 1i64;
+```
+
+is not a program. Nothing in the accepted registry says so.
+
+The registry owns four type mismatches and each is about a *particular*
+position:
+
+| Code | Position it owns |
+|---|---|
+| `E1210_INTEGER_TYPE_MISMATCH` | a value of one integer type where a different exact integer type is required |
+| `E1211_INDEX_TYPE_MISMATCH` | an index that is not `size` |
+| `E1215_ARGUMENT_TYPE_MISMATCH` | an argument of a resolved call or predeclared operation |
+| `E1222_RETURN_TYPE_MISMATCH` | a `return` against the declared result |
+
+A `bool` initializer under an `i64` annotation is none of them. Neither is a
+`string` assigned to a `bytes` binding, nor an aggregate built at one type and
+bound at another. The frontend's typing slice says so in its own text — it
+reports "only the integer case the contract states" — and the consequence is
+that every other exact-type disagreement is accepted, lowered, and discovered by
+the engine if it is discovered at all.
+
+**This is a hole in the registry, not in the language.** The rule the program
+above breaks is already accepted. What is missing is the code that names the
+breach.
+
+## 2. Decision
+
+Allocate **`E1216_VALUE_TYPE_MISMATCH`**:
+
+> an expression's value does not have the exact type its statically typed
+> context requires, and no more specific accepted diagnostic owns that mismatch.
+
+Required fields: `context`, `expected`, `actual`. A more specific field —
+`binding`, `field`, `element` — may accompany them where it helps a reader find
+the position, and never in place of the three.
+
+`context` names the *kind* of typed position, so that one code stays readable
+across the positions it has to cover: `binding`, `assignment`, `array element`,
+`record field`, `tuple element`, `enum payload`, `branch`.
+
+### 2a. Precedence
+
+`E1216` is **residual**. A mismatch is reported under it only when no other
+accepted diagnostic owns the rule actually violated:
+
+```text
+E1210_INTEGER_TYPE_MISMATCH     two exact numeric types disagree
+E1211_INDEX_TYPE_MISMATCH       an index is not `size`
+E1215_ARGUMENT_TYPE_MISMATCH    a call or predeclared argument, absent a
+                                more specific numeric code
+E1222_RETURN_TYPE_MISMATCH      a `return` against the declared result
+E1204_TYPE_ARGUMENT_ARITY       a type constructor's argument count
+E1206_MISSING_RECORD_FIELD      a constructor's field set
+E12xx ownership / capability    where that rule is the one broken
+E1216_VALUE_TYPE_MISMATCH       everything else, and only then
+```
+
+Two consequences worth stating, because both are easy to get wrong:
+
+- an `i32` initializer under an `i64` annotation is **`E1210`**, not `E1216` —
+  the numeric code owns it and is more specific;
+- an **unsuffixed** integer literal under any exact numeric annotation is **not
+  a mismatch at all**. `docs/40` §3 makes it take the required type, so
+  `let x: size = 4;` is a `size` and `let x: i64 = 4;` is an `i64`. A residual
+  code that reported those would be contradicting the contextual-typing rule
+  rather than completing the registry.
+
+## 3. What this is not
+
+**Not a new language rule.** Every program `E1216` rejects was already outside
+`docs/40` §2 and §3; the frontend accepted it because no code existed to report
+it. A conforming implementation that already rejected these programs — under
+whatever code — was not wrong about the language.
+
+**Not a new source form**, so `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` does not
+apply and **no TOS Core minor is required**. `docs/44` §7 fixes that code to a
+module using "a source form added in a later minor"; nothing here adds one.
+Canonical module headers keep the versions they declare, and no fixture's
+`version` line changes on account of this decision.
+
+**Not a change to contextual typing.** §2a's second consequence is the existing
+rule restated, not narrowed.
+
+**Not an arity diagnostic.** Wrong call arity remains unnamed in the registry
+and is deliberately left so: it is a different question about a different
+position, and inventing a second code inside a decision about this one would be
+the drift this ADR exists to stop.
+
+## 4. Conformance
+
+`docs/language/conformance/v1/reject/` gains vectors for the residual cases —
+a `bool` initializer under a numeric annotation, a `bytes` value under a `text`
+annotation, an aggregate bound at the wrong element type — and
+`docs/language/conformance/v1/accept/` gains the contextual-literal cases that
+must **not** be reported: an unsuffixed literal under `i64`, under `u64` and
+under `size`.
+
+The precedence rule is itself conformance-visible: a vector whose mismatch is
+numeric must report `E1210` and not `E1216`, which is what stops the residual
+code from absorbing the specific ones over time.
+
+## 5. Architecture impact statement
+
+- **Change level**: 2 — one registry entry, no syntax, no semantics, no schema.
+- **Invariants affected**: none. `docs/02`'s type-soundness expectation is
+  served rather than altered.
+- **Canonical representation**: unchanged. No source form is added, removed or
+  respelled.
+- **Trusted base**: unchanged. The diagnostic is a frontend refusal; the
+  independent verifier's obligations are untouched by this decision.
+- **Source-to-runtime**: unchanged for every program that was already valid.
+  Programs this rejects never had a defined lowering.
+- **Recovery and rollback**: none required. A frontend that reports the code is
+  compatible with artifacts built before it existed.
+- **Stage gate**: none. This is contract completeness rather than stage work.
+- **Threat model**: narrows an accept path — a static mismatch reaching the
+  engine — and opens none.
+- **Performance**: no measured path is touched.
+- **Compatibility profile**: unchanged; both profiles.
+- **Dependencies, licence, patent**: none.
+- **Tests**: the vectors of §4, plus frontend tests for each `context` value.
+
+## 6. What this ADR does not decide
+
+The general typed-value invariant — that every lowered operand, value and place
+carries one exact type, with no fallback able to make the runtime value graph
+disagree with the verified type graph — is the slice this diagnostic was needed
+for, and it is decided by its own work rather than here. `E1216` names a breach;
+it does not say how a frontend comes to know the types it compares.
+
+Wrong call arity, imported-call signature transport, predeclared signature
+transport and callable `PassMode` erasure all remain open and are all
+deliberately untouched.
+
+<!-- END docs/adr/0087-the-residual-value-type-diagnostic.md -->
 
 ---
 

@@ -1113,6 +1113,35 @@ fn check_instruction(
             }
         }
     }
+    // **A place may not be relabelled** (docs/43 §4: the verifier rechecks
+    // operand types). A read, a move and a borrow answer with the location's
+    // own type; a write puts a value of that type into it. The region case was
+    // settled above against the region's element, so this is every other place.
+    if region_element_of(module, function, instruction).is_none() {
+        if let Some(place) = place_of(&instruction.op) {
+            if let Some(projected) = projected_place_type(module, function, place) {
+                let claimed = match &instruction.op {
+                    Op::Write { value, .. } => operand_type(module, function, value),
+                    Op::Read { .. } | Op::Move { .. } | Op::Borrow { .. } => Some(instruction.ty),
+                    _ => None,
+                };
+                if let Some(claimed) = claimed {
+                    if claimed != projected {
+                        return Err(Finding::new(
+                            "V2010_TYPE",
+                            at(),
+                            "an access carries a type the place it names does not hold",
+                        ));
+                    }
+                }
+            }
+            // A place this cannot derive is left unchecked rather than refused.
+            // The families it covers are the ones the artifact carries enough
+            // evidence for; a variant payload is not one of them, and refusing
+            // what it cannot derive would reject valid modules rather than
+            // prove anything about invalid ones.
+        }
+    }
     match &instruction.op {
         // **The DMA ordering operation, proved from the artifact** (ADR-0086
         // §15). Nothing here is taken from a producer-supplied string: the
@@ -1668,6 +1697,78 @@ fn check_signature(
         ));
     }
     Ok(())
+}
+
+/// The exact type of the location a place denotes, derived from the artifact.
+///
+/// **Derived, never trusted.** The instruction carries a declared type; this
+/// works out the only legal one from the root's recorded type and the steps the
+/// place actually takes. Where the two disagree the artifact is relabelling a
+/// location — declaring that a read of a record field yields the record, or
+/// that an element of an array of `i64` is an `i32` — and every instruction
+/// downstream then operates under a static assumption the run does not meet.
+///
+/// `None` means the place is not one this can type, which for a verifier is the
+/// same answer as wrong: it will not sign what it cannot derive.
+/// The place an access names, when the operation is one.
+fn place_of(op: &Op) -> Option<&tos_ir::Place> {
+    match op {
+        Op::Read { place }
+        | Op::Move { place }
+        | Op::Write { place, .. }
+        | Op::Borrow { place, .. } => Some(place),
+        _ => None,
+    }
+}
+
+/// Whether this instruction's place is served by a region, which the check
+/// above already settled against the region's element type.
+fn region_element_of(
+    module: &Module,
+    function: &Function,
+    instruction: &Instruction,
+) -> Option<TypeId> {
+    let place = place_of(&instruction.op)?;
+    region_element(module, function, place)
+}
+
+fn projected_place_type(
+    module: &Module,
+    function: &Function,
+    place: &tos_ir::Place,
+) -> Option<TypeId> {
+    let mut current = function.values.get(place.root).copied()?;
+    for step in &place.path {
+        let indexed = matches!(
+            step,
+            tos_ir::PlaceStep::Index(_) | tos_ir::PlaceStep::DynamicIndex(_)
+        );
+        current = match (module.type_of(current), step) {
+            (Some(TypeDef::Nominal { fields, .. }), tos_ir::PlaceStep::Field(index)) => {
+                fields.get(*index).copied()?
+            }
+            (Some(TypeDef::Tuple(elements)), tos_ir::PlaceStep::Field(index)) => {
+                elements.get(*index).copied()?
+            }
+            (Some(TypeDef::Array(element, _)), _) if indexed => *element,
+            (Some(TypeDef::Slice(element)), _) if indexed => *element,
+            (Some(TypeDef::Region(element)), _)
+            | (Some(TypeDef::RegionMut(element)), _)
+            | (Some(TypeDef::DmaRegion(element)), _)
+            | (Some(TypeDef::DmaRegionMut(element)), _)
+                if indexed =>
+            {
+                *element
+            }
+            // **A variant payload is not derivable from the place.** A
+            // `Result`'s payload is `Field(0)` whichever arm it is, and which
+            // arm that is belongs to the match that bound it, not to the place.
+            // So this says it cannot derive one rather than guessing `ok` and
+            // calling an `Err` binding a relabel.
+            _ => return None,
+        };
+    }
+    Some(current)
 }
 
 fn operand_type(module: &Module, function: &Function, operand: &Operand) -> Option<TypeId> {

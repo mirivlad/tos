@@ -822,7 +822,7 @@ fn read_sector_zero(
     }
     proved = proved + PROVED_LEN_COVERS_REQUEST;
 
-    let status_byte: u64 = region[status_offset];
+    let status_byte: u64 = region[status_offset] as u64;
     if (status_byte != BLK_S_OK) {
         give_up(borrow mut window);
         return -55i64;

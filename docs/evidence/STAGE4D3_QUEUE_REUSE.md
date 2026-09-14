@@ -433,3 +433,70 @@ execution barriers in ring 3 (ADR-0086 §11).
 bash source/host-tools/qemu-test/virtio-block-reuse.sh
 ./scripts/preflight.sh --profile qemu
 ```
+
+## Addendum, 2026-09-14 — one line of this fixture's source was invalid, and is corrected
+
+**Nothing above is amended.** The historical evidence stands for the historical
+source at its historical commit; this records the corrected canonical source and
+the artifact it now produces.
+
+```text
+canonical source   before  sha256:681b265faea54d00b70974c3707cccd337baff8e2f5e3db58f27e62c7fe9a74c
+                   after   sha256:dfe0fa97861640d7711ce03a7d05cb1b6cf7433c992f7d2651cfb0c3a3ef32d2
+
+module digest      before  sha256:f45c9639641a9cbd563b494c0e38cf6b406a3db6a39a2a76c34b04166505c858
+                   after   sha256:e372e735d3f1a709da4b0f42c2fe7330f992abc8c90fc8beaa2696f45f3ed9ee
+```
+
+### The change
+
+```diff
+- let status_byte: u64 = region[status_offset];
++ let status_byte: u64 = region[status_offset] as u64;
+```
+
+One line, at `tests/vectors/virtio-block-reuse/init.tos:1206`. Nothing else in
+the fixture moved — not the pool, not the free queue, not the ring counters, not
+the wrap arithmetic, not a sentinel, not a descriptor.
+
+### Why the old line was invalid under the accepted contract
+
+The region is `DmaRegion<mut u8>`, so `region[status_offset]` denotes a **`u8`**,
+and `docs/40` §3 makes the eight integer types exact with `as` as the only
+widening between them. A `u8` bound to a `u64` annotation without it is
+`E1210_INTEGER_TYPE_MISMATCH`.
+
+**This fixture is its own witness that the conversion was intended.** Twenty-seven
+lines below the corrected one it already reads
+
+```tos
+let observed: u64 = region[data_offset] as u64;
+```
+
+— the same projection, the same widening, written out. The status line simply
+omitted it, and no frontend check existed to notice.
+
+### Why the previous runs were correct anyway
+
+The engine compares integer **magnitudes** rather than kinds, so the status
+check answered correctly with a `Value::Int(U8, 0)` in a slot declared `u64`.
+The defect was latent rather than active: an artifact whose declared type and
+runtime value disagreed, masked by how the comparison happens to work.
+
+### What did not change
+
+No VirtIO, PCI, DMA, queue or block-protocol semantics, and no hardware
+behaviour. The device-visible witness after the re-run is byte for byte the one
+this evidence records:
+
+```text
+TOS.RUN.COMPLETED value=i64:565994011492351
+avail.idx 0 -> 2, consumed used entries 0 -> 2
+chain heads 0 then 3, descriptors reused 2 of 3
+two real MSI-X deliveries counted by the nucleus
+```
+
+The engine's instruction accounting moved by exactly the added conversion —
+`fuel` 60032 → 60034, one `Widen` on a path executed **twice**, once per request.
+That is the frontend's accounting of the program rather than anything the device
+observes, and the two is itself a small confirmation that both requests ran.

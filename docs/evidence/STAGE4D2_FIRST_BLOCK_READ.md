@@ -357,3 +357,66 @@ independent verifier now checks a call's exact operand list — arity, operand
 types and declared result — as docs/43 §4 has always required, and canonical
 Stage 4D source could not satisfy that check while the lowerer was substituting
 a result type for an operand's own.
+
+## Addendum, 2026-09-14 — one line of this fixture's source was invalid, and is corrected
+
+**Nothing above is amended, and the historical evidence stands for the historical
+source at its historical commit.** This records a correction to the canonical
+source and the derived artifact it produces.
+
+```text
+canonical source   before  sha256:40abe34d756955959731b8436819c365101eeb74e02230a7f400c0501ad5177b
+                   after   sha256:d8a7b1fc809fe0c331fc96b20e8d0374da518419f00e8711840ffd1b8c1dec41
+
+module digest      before  sha256:c987d33d2849eee3842bfad5ee08285270bd255a7dee281e83d7785cd029c2a2
+                   after   sha256:9296549f537c551e2048ba84846cf965258fa006ea18bd57aadb2eccf6d8896a
+```
+
+### The change
+
+```diff
+- let status_byte: u64 = region[status_offset];
++ let status_byte: u64 = region[status_offset] as u64;
+```
+
+One line, at `tests/vectors/virtio-block-read/init.tos:825`. Nothing else in the
+fixture moved.
+
+### Why the old line was invalid under the accepted contract
+
+The region is `DmaRegion<mut u8>`, so `region[status_offset]` denotes a **`u8`**.
+`docs/40` §3 makes the eight integer types exact — there is no subtyping and no
+implicit conversion between them — and gives `as` as the widening that preserves
+signedness. Binding a `u8` to a `u64` annotation without it is
+`E1210_INTEGER_TYPE_MISMATCH`, and always was.
+
+It went unreported because the frontend's typing slice never compared a `let`'s
+annotation with its initializer: it computed both and kept the annotation. A
+typed-value repair gave the checker that comparison, and the line was refused.
+
+**The same fixture already wrote the conversion elsewhere.** Twenty-seven lines
+further on, the sibling Stage 4D-3 module reads
+`region[data_offset] as u64` — the author's own idiom for exactly this widening,
+omitted here. The correction expresses what the program always intended.
+
+### Why the previous runs were correct anyway
+
+The engine compares integer **magnitudes** rather than kinds, so
+`status_byte != BLK_S_OK` answered correctly with a `Value::Int(U8, 0)` in a
+slot declared `u64`. The defect was latent: a mistyped artifact that the runtime
+happened to mask, not a program that was type-correct.
+
+### What did not change
+
+No VirtIO, PCI, DMA, queue or block-protocol semantics. No descriptor, no
+ordering point, no notification, no interrupt path, no authority, no fixture
+geometry. The device-visible witness after the re-run is what it was:
+
+```text
+used.idx advanced 0 -> 1, used.ring[0].id = 0, status = VIRTIO_BLK_S_OK
+used.len = 513, all 512 bytes of the 0xA5 sentinel replaced by sector 0
+```
+
+The engine's own instruction accounting moved by exactly the added conversion —
+`fuel` 42737 → 42738, one `Widen` on a path executed once. That is the frontend's
+accounting of the program, not anything the device can observe.

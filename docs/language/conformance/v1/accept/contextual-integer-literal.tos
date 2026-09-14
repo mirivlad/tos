@@ -1,0 +1,20 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.contextual_integer_literal version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// An unsuffixed integer literal takes the type its position requires (docs/40
+// §3), so none of these is a mismatch — and the lowered constant is of the
+// resolved type rather than of the default.
+pub fn take(value: u64) -> u64 {
+    return value;
+}
+
+pub fn main() -> i64 {
+    let counted: size = 4;
+    let wide: i64 = 7;
+    let unsigned: u64 = 9;
+    let defaulted = 3;
+    let taken: u64 = take(11);
+    return 0;
+}
