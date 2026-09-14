@@ -28,6 +28,18 @@
 //! present tree produces. They matched, which is the claim; recording them here
 //! is what keeps them matching.
 //!
+//! **ADR-0088 moved the 1.2 module's identity, and the reason is in its
+//! source.** Its body is `mmio_read_le_u64(window, 0B)`, and the device
+//! access's offset parameter has exact type `size` — which, until the
+//! predeclared contract existed, no component ever said at a call site. The
+//! frontend now gives every predeclared argument position the type the
+//! contract states, so `size` is in the artifact's type table and the module
+//! digest names that table. The instruction stream is unchanged, byte for
+//! byte; what moved is a type the source always denoted and the artifact never
+//! recorded. The same repair is what makes `mmio_read_le_u64(window, 0)` lower
+//! its offset as `size` instead of `i32`, which is the defect the entry is a
+//! side effect of — see ADR-0088 §7.
+//!
 //! ADR-0085 §11's tag table is covered by the fourth module, which names every
 //! type in it. `capability_interface_digest` is over **imported interface
 //! paths**, not over the interface schema's text, so moving
@@ -215,9 +227,9 @@ fn an_existing_module_keeps_its_digest_and_its_exact_image() {
         ),
         (
             V1_2,
-            "sha256:b29a565ade7b17bc94ea97ac7536cbee8b7a2fac438a577a3f42667a1cab917e",
-            471,
-            "7ba2d78d35912a0be895d8e6646dffe7beb262397899a32aada4476ee56b1d0e",
+            "sha256:f49b81dc844ffee35542085cf3d21d04796ca73dd1d9ebb14eab5dd2c13e5ff9",
+            472,
+            "4d930729e5ffa0a4c2765ca8ad869dfcab28fec2f13d0a3452ff660914bb97b5",
         ),
         (
             EVERY_TAG,

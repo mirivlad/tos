@@ -1078,7 +1078,8 @@ impl<'source> OwnershipChecker<'source> {
         //
         // `share` is the operation that *does* consume, and it still does: this
         // names the eight accesses, the two DMA ordering points, and nothing
-        // else.
+        // else. Asked of the predeclared contract (ADR-0088) rather than of a
+        // list kept here, so the set stays the one every other component reads.
         //
         // **The DMA points are non-consuming for a sharper reason** (ADR-0086
         // §3): a driver publishes one ring many times, so an operation that
@@ -1087,8 +1088,12 @@ impl<'source> OwnershipChecker<'source> {
         if let Some(callee) = expression.callee() {
             let predeclared = callee.span().text(self.source);
             if callee.form() == ExpressionForm::Name
-                && (crate::typing::mmio_access(predeclared).is_some()
-                    || crate::typing::dma_direction(predeclared).is_some())
+                && tos_predeclared::operation(predeclared).is_some_and(|operation| {
+                    matches!(
+                        operation.form,
+                        tos_predeclared::Form::Mmio { .. } | tos_predeclared::Form::DmaSync(_)
+                    )
+                })
             {
                 for argument in expression.arguments() {
                     self.walk_expression(argument.value(), state);

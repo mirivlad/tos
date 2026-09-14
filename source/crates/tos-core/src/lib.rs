@@ -68,6 +68,76 @@ mod unicode {
     include!(concat!(env!("OUT_DIR"), "/unicode_tables.rs"));
 }
 
+// The linked predeclared table's own digests, computed by this crate's build
+// script from the crate this build actually links.
+include!(concat!(env!("OUT_DIR"), "/predeclared_digests.rs"));
+
+/// **The predeclared contract content this frontend is written for**
+/// (`docs/43` §5, ADR-0088 §6).
+///
+/// `docs/43` §5 permits the frontend and the independent verifier to share one
+/// declarative table "only if its content digest is input to both components".
+/// This is the frontend's input. It is stated here, in the frontend's own
+/// source, and compared below against the digest of the table this build links
+/// — so a table edited under this component fails **its compilation**, not its
+/// test suite. `tos-verifier` states the same values independently and neither
+/// reads the other's.
+pub const ACCEPTED_PREDECLARED_DIGESTS: [(u32, &str); 5] = [
+    (
+        0,
+        "849bd9de6a7c0c485ffbcc972791a5768c724a4165d67087fd1961e863f7f555",
+    ),
+    (
+        1,
+        "26848cb863d7727c9b6787e141da156df418ea57af0471863a5767fe9f170bb3",
+    ),
+    (
+        2,
+        "c5e8ffbb3467768e15a235b57c56bdde1a359cb707ad5f33ee45f721b357c2a5",
+    ),
+    (
+        3,
+        "a4bad47aac6cdb361ced38352fde05acfedb47d4a6c331b8cd4762fd3daec02c",
+    ),
+    (
+        4,
+        "9d496d76b8e8b25157547fe6a5d81fb3c32c0dc7f331d3e19779ee1e2271a17c",
+    ),
+];
+
+/// Whether two digest tables state the same thing, evaluated at compile time.
+const fn digests_agree(stated: &[(u32, &str); 5], linked: &[(u32, &str); 5]) -> bool {
+    let mut entry = 0;
+    while entry < 5 {
+        if stated[entry].0 != linked[entry].0 {
+            return false;
+        }
+        let one = stated[entry].1.as_bytes();
+        let other = linked[entry].1.as_bytes();
+        if one.len() != other.len() {
+            return false;
+        }
+        let mut byte = 0;
+        while byte < one.len() {
+            if one[byte] != other[byte] {
+                return false;
+            }
+            byte += 1;
+        }
+        entry += 1;
+    }
+    true
+}
+
+/// **The binding, and it is fail-closed at compile time.** A predeclared
+/// contract whose content is not the content this frontend was written for is
+/// not a contract this frontend may check or lower against: it and the verifier
+/// would be holding two languages while each believed it held the agreed one.
+const _: () = assert!(
+    digests_agree(&ACCEPTED_PREDECLARED_DIGESTS, &LINKED_PREDECLARED_DIGESTS),
+    "the linked tos-predeclared table is not the contract this frontend states"
+);
+
 pub const MAX_SOURCE_BYTES: usize = 256 * 1024;
 
 /// Diagnostics retained for one module (docs/44 section 2).

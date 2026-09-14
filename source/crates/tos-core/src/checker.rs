@@ -564,15 +564,6 @@ const DIRECT_INTERFACE_EFFECT_MINOR: u32 = 1;
 /// all, so it is additive and takes one.
 const DEVICE_MEMORY_MINOR: u32 = 2;
 
-/// The minor in which DMA publication and consumption became part of the
-/// language (ADR-0086 §13).
-///
-/// **Additive and version-gated, exactly as device memory was.** The two
-/// operations are new source forms and a new verifier-visible IR semantic, so a
-/// module that did not ask for 1.4 does not get them — and an implementation
-/// that has not implemented 1.4 refuses such a module whole by its header.
-const DMA_ORDERING_MINOR: u32 = 4;
-
 /// The minor in which an interface stopped having to be its own value type
 /// (ADR-0085 §13, `SYSTEM_INTERFACE_V1` §4.3).
 ///
@@ -663,49 +654,66 @@ fn check_features_against_minor(
         }
     }
     if minor < DEVICE_MEMORY_MINOR {
-        refuse_device_memory(source, schema, &signatures, minor, out);
+        refuse_device_memory_types(source, schema, &signatures, minor, out);
     }
     if minor < CAPABILITY_REPRESENTATION_MINOR {
         refuse_capability_representation(source, schema, &signatures, minor, out);
     }
-    if minor < DMA_ORDERING_MINOR {
-        refuse_dma_ordering(source, schema, minor, out);
-    }
+    refuse_predeclared_above_minor(source, schema, minor, out);
 }
 
-/// Refuses the DMA ordering operations in a module that did not claim them
-/// (ADR-0086 §13).
+/// Refuses a call of a predeclared operation the module's own minor does not
+/// have (ADR-0088 §3).
 ///
-/// **Only the call sites**, because that is the whole of the feature's source
-/// surface: 1.4 adds no type constructor, no type name and no declaration form,
-/// so a signature naming a `DmaRegion` is a 1.2 module doing what 1.2 already
-/// admits. What a 1.3 module may not do is write the ordering point.
-fn refuse_dma_ordering(
+/// **One gate for the whole namespace**, where there were two hand-written
+/// ones that each knew a feature's names, its minor and its label. Both the
+/// required minor and the feature's name now come from the contract, so a later
+/// minor that adds an operation brings its gate with it instead of needing one
+/// written here — which is the failure ADR-0086's gate had, where the walk
+/// existed and matched nothing.
+///
+/// **A declared function of the same name is not a predeclared call.** A
+/// predeclared function name is an ordinary identifier (`docs/39` §2), so a
+/// module that declares `fn dma_publish` has declared a function, and refusing
+/// it for the minor would be refusing a call the language never gated.
+fn refuse_predeclared_above_minor(
     source: &SourceUnit,
     schema: &Schema,
     minor: u32,
     out: &mut Vec<Diagnostic>,
 ) {
+    let contract = tos_predeclared::Contract::at_minor(minor);
+    let declared: alloc::collections::BTreeSet<&str> = schema
+        .functions()
+        .iter()
+        .map(|function| function.signature().name().text(source))
+        .chain(
+            schema
+                .extern_functions()
+                .iter()
+                .map(|signature| signature.name().text(source)),
+        )
+        .collect();
     for function in schema.functions() {
         let mut found = Vec::new();
-        predeclared_calls_in(
-            source,
-            function.body(),
-            &|name| crate::typing::dma_direction(name).is_some(),
-            &mut found,
-        );
-        for span in found {
-            out.push(
-                diagnostic(
-                    "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR",
-                    Stage::Type,
-                    span,
-                    source,
-                )
-                .with_field("feature", "DMA ordering")
-                .with_field("declared", minor)
-                .with_field("requires", DMA_ORDERING_MINOR),
-            );
+        calls_in(source, function.body(), &mut found);
+        for (span, name) in found {
+            if declared.contains(name) {
+                continue;
+            }
+            if let tos_predeclared::Lookup::RequiresMinor(operation) = contract.lookup(name) {
+                out.push(
+                    diagnostic(
+                        "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR",
+                        Stage::Type,
+                        span,
+                        source,
+                    )
+                    .with_field("feature", operation.feature)
+                    .with_field("declared", minor)
+                    .with_field("requires", operation.minimum_minor),
+                );
+            }
         }
     }
 }
@@ -793,18 +801,24 @@ fn names_a_represented_interface(source: &SourceUnit, ty: &crate::parser::TypeSy
     }
 }
 
-/// Refuses the device-memory feature in a module that did not claim it.
+/// Refuses the **type** half of the device-memory feature in a module that did
+/// not claim it.
 ///
-/// Both halves of the feature are caught: naming one of the types, and calling
-/// one of the accesses. A module that could name the type but not the operation
-/// would still be a 1.0 module holding a 1.2 value.
-fn refuse_device_memory(
+/// Both halves of the feature are caught, and they are caught in two places: a
+/// module that could name the type but not the operation would still be a 1.0
+/// module holding a 1.2 value, and a module that could call the access but not
+/// name the type would be a 1.0 module performing one. The call half belongs to
+/// every predeclared operation at once and is in
+/// [`refuse_predeclared_above_minor`]; this is the half that is about a written
+/// type, which no call-site walk can see.
+fn refuse_device_memory_types(
     source: &SourceUnit,
     schema: &Schema,
     signatures: &[&crate::parser::FunctionSignature],
     minor: u32,
     out: &mut Vec<Diagnostic>,
 ) {
+    let _ = schema;
     let mut report = |span| {
         out.push(
             diagnostic(
@@ -828,31 +842,20 @@ fn refuse_device_memory(
             report(signature.span());
         }
     }
-    for function in schema.functions() {
-        let mut found = Vec::new();
-        predeclared_calls_in(
-            source,
-            function.body(),
-            &|name| crate::typing::mmio_access(name).is_some(),
-            &mut found,
-        );
-        for span in found {
-            report(span);
-        }
-    }
 }
 
-/// Every call of a matching predeclared name written inside a block, however
-/// deeply nested.
+/// Every call written inside a block, however deeply nested, as its span and
+/// the name it applies.
 ///
-/// One walk for both version gates: the device accesses of ADR-0081 and the DMA
-/// ordering points of ADR-0086 are found the same way and differ only in which
-/// names count, so the nesting rules are written once.
-fn predeclared_calls_in(
-    source: &SourceUnit,
+/// **The name comes back with the span** rather than being filtered inside the
+/// walk, because the caller needs it: the feature a call belongs to and the
+/// minor it requires are properties of the operation, read from the contract,
+/// and a walk that answered only "one of these matched" would have to be given
+/// the answer it was supposed to find.
+fn calls_in<'source>(
+    source: &'source SourceUnit,
     block: &crate::parser::Block,
-    names: &dyn Fn(&str) -> bool,
-    out: &mut Vec<Span>,
+    out: &mut Vec<(Span, &'source str)>,
 ) {
     for statement in block.statements() {
         for expression in [statement.target(), statement.expression()]
@@ -872,10 +875,8 @@ fn predeclared_calls_in(
                         // §13), so its gate is the call site or nothing — which
                         // is what surfaced this.
                         if let Some(callee) = inner.callee() {
-                            if callee.form() == crate::parser::ExpressionForm::Name
-                                && names(callee.span().text(source))
-                            {
-                                out.push(inner.span());
+                            if callee.form() == crate::parser::ExpressionForm::Name {
+                                out.push((inner.span(), callee.span().text(source)));
                             }
                         }
                     }
@@ -887,11 +888,11 @@ fn predeclared_calls_in(
             .into_iter()
             .flatten()
         {
-            predeclared_calls_in(source, nested, names, out);
+            calls_in(source, nested, out);
         }
         if let Some(chained) = statement.else_if() {
             for nested in [chained.body(), chained.else_body()].into_iter().flatten() {
-                predeclared_calls_in(source, nested, names, out);
+                calls_in(source, nested, out);
             }
         }
     }

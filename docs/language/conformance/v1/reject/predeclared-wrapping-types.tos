@@ -1,0 +1,12 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.predeclared_wrapping_types version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 0]
+
+// The precedence vector. Both operands are exact integer types and they
+// disagree, so `E1210` owns it; reporting `E1215` here would let the residual
+// argument code absorb the specific numeric one.
+pub fn main() -> i64 {
+    wrapping_add(1u64, 2i32);
+    return 0i64;
+}

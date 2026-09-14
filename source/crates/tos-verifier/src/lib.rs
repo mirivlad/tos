@@ -41,6 +41,78 @@ mod image;
 mod limits;
 mod representation;
 
+// The linked predeclared table's own digests, computed by this crate's build
+// script from the crate this build actually links.
+include!(concat!(env!("OUT_DIR"), "/predeclared_digests.rs"));
+
+/// **The predeclared contract content this verifier is written for**
+/// (`docs/43` §5, ADR-0088 §6).
+///
+/// `docs/43` §5 permits a shared declarative type/interface table "only if its
+/// content digest is input to both components". This is the verifier's input.
+/// It is stated here, in the verifier's own source, and compared below against
+/// the digest of the table this build links — so a table edited under this
+/// component fails **its compilation**, not its test suite. The frontend states
+/// the same values independently and neither reads the other's.
+pub const ACCEPTED_PREDECLARED_DIGESTS: [(u32, &str); 5] = [
+    (
+        0,
+        "849bd9de6a7c0c485ffbcc972791a5768c724a4165d67087fd1961e863f7f555",
+    ),
+    (
+        1,
+        "26848cb863d7727c9b6787e141da156df418ea57af0471863a5767fe9f170bb3",
+    ),
+    (
+        2,
+        "c5e8ffbb3467768e15a235b57c56bdde1a359cb707ad5f33ee45f721b357c2a5",
+    ),
+    (
+        3,
+        "a4bad47aac6cdb361ced38352fde05acfedb47d4a6c331b8cd4762fd3daec02c",
+    ),
+    (
+        4,
+        "9d496d76b8e8b25157547fe6a5d81fb3c32c0dc7f331d3e19779ee1e2271a17c",
+    ),
+];
+
+/// Whether two digest tables state the same thing, evaluated at compile time.
+///
+/// Written as index loops over bytes because that is what a `const fn` can do:
+/// the point is not the comparison but *when* it happens.
+const fn digests_agree(stated: &[(u32, &str); 5], linked: &[(u32, &str); 5]) -> bool {
+    let mut entry = 0;
+    while entry < 5 {
+        if stated[entry].0 != linked[entry].0 {
+            return false;
+        }
+        let one = stated[entry].1.as_bytes();
+        let other = linked[entry].1.as_bytes();
+        if one.len() != other.len() {
+            return false;
+        }
+        let mut byte = 0;
+        while byte < one.len() {
+            if one[byte] != other[byte] {
+                return false;
+            }
+            byte += 1;
+        }
+        entry += 1;
+    }
+    true
+}
+
+/// **The binding, and it is fail-closed at compile time.** A predeclared
+/// contract whose content is not the content this verifier was written for is
+/// not a contract this verifier may read: the two would be checking artifacts
+/// against different languages while each believed it held the agreed one.
+const _: () = assert!(
+    digests_agree(&ACCEPTED_PREDECLARED_DIGESTS, &LINKED_PREDECLARED_DIGESTS),
+    "the linked tos-predeclared table is not the contract this verifier states"
+);
+
 pub use image::{verify_image, ImageRefusal, VerifiedImage};
 pub use limits::Limits;
 pub use representation::{Representation, Represented, REPRESENTED};
@@ -1197,6 +1269,59 @@ fn check_instruction(
                 ));
             }
         }
+        // **The device-access obligations ADR-0081 §8 states, met here.**
+        //
+        // > The verifier independently proves the operand is exactly an MMIO
+        // > region kind, that a write names the mutable form, and that the
+        // > enclosing artifact declares a language version in which the
+        // > operation exists.
+        //
+        // The decision said so and the implementation did not do it: these two
+        // operations had no arm at all, so a forged artifact could read through
+        // an ordinary `Region`, write through a read-only `MmioRegion`, offset
+        // by an `i64`, write a `bool`, claim any result, use a width no
+        // hardware access has, or perform the whole thing in a module declaring
+        // 1.0. Each of those is refused below, and each has a forged-IR
+        // negative.
+        //
+        // These are static type, version and shape checks. The runtime bounds
+        // and alignment checks an access performs are a different obligation
+        // and are untouched.
+        Op::MmioRead {
+            region,
+            offset,
+            width,
+            little_endian,
+        } => {
+            check_device_access(
+                module,
+                function,
+                instruction,
+                &[region, offset],
+                *width,
+                false,
+                *little_endian,
+                at,
+            )?;
+        }
+        Op::MmioWrite {
+            region,
+            offset,
+            value,
+            width,
+            little_endian,
+        } => {
+            check_device_access(
+                module,
+                function,
+                instruction,
+                &[region, offset, value],
+                *width,
+                true,
+                *little_endian,
+                at,
+            )?;
+        }
         Op::Call { target, operands } => match target {
             CallTarget::Local(index) => {
                 if *index >= module.functions.len() {
@@ -1244,7 +1369,17 @@ fn check_instruction(
                     }
                 }
             }
-            CallTarget::Predeclared(_) => {}
+            // **No longer an empty branch** (ADR-0088). `docs/39` §2 fixes the
+            // predeclared namespace and the contract states each operation's
+            // minor, arity, operand rules and result; until this arm existed a
+            // forged artifact could call `to_u8` with no operands, with three,
+            // with a `bool`, or claim any result at all, and every check here
+            // passed it. The contract is declarative data whose content digest
+            // is an input to this component (`docs/43` §5); the answers below
+            // are still derived from this artifact's own type table.
+            CallTarget::Predeclared(name) => {
+                check_predeclared(module, function, instruction, name, operands, at)?;
+            }
         },
         Op::Const(constant) => {
             if *constant >= module.constants.len() {
@@ -1635,6 +1770,372 @@ fn check_operand(
         }
     }
     Ok(())
+}
+
+/// One device-memory access, against the contract the artifact's declared
+/// language version selects (ADR-0081 §7–§8, ADR-0088 §5).
+///
+/// **The width and the byte order are looked up, not compared to a list kept
+/// here.** An instruction carries a width and an order, and the question is
+/// whether that pair is one an accepted operation produces: a 3-byte access, a
+/// 16-byte one, or a big-endian one is a device access the language has no
+/// operation for, whatever else is right about the instruction. Asking the
+/// shared declarative table is what keeps a second width table out of the
+/// verifier — and the table is data, so this is still the verifier's own
+/// derivation.
+///
+/// Findings are `V2021_REGION`, which is the code this family already uses for
+/// `Op::Share` and `Op::DmaSync`, including for their result-type and version
+/// obligations. One operation family, one code, and the message says which
+/// obligation failed.
+#[allow(clippy::too_many_arguments)]
+fn check_device_access(
+    module: &Module,
+    function: &Function,
+    instruction: &Instruction,
+    operands: &[&Operand],
+    width: u8,
+    writes: bool,
+    little_endian: bool,
+    at: &dyn Fn() -> String,
+) -> Result<(), Finding> {
+    let Some(minor) = declared_minor(&module.header.language_version) else {
+        return Err(Finding::new(
+            "V2002_SCHEMA",
+            at(),
+            "a device access is in an artifact whose language version is unreadable",
+        ));
+    };
+    let Some(operation) = tos_predeclared::mmio_operation(width, writes, little_endian) else {
+        return Err(Finding::new(
+            "V2021_REGION",
+            at(),
+            alloc::format!(
+                "a device {} of width {width} and {} byte order is no accepted operation",
+                if writes { "write" } else { "read" },
+                if little_endian {
+                    "little-endian"
+                } else {
+                    "big-endian"
+                }
+            ),
+        ));
+    };
+    // The IR fixes these operand counts structurally, so this can only fail if
+    // the schema and the contract have drifted apart — which is exactly when a
+    // silent mismatch would be worst.
+    if operands.len() != operation.arity() {
+        return Err(Finding::new(
+            "V2011_CFG",
+            at(),
+            alloc::format!(
+                "a device access carries {} operand(s) where {} takes {}",
+                operands.len(),
+                operation.name,
+                operation.arity()
+            ),
+        ));
+    }
+    let mut actual = Vec::new();
+    for (position, operand) in operands.iter().enumerate() {
+        let Some(resolved) = operand_definition(module, function, operand) else {
+            return Err(Finding::new(
+                "V2021_REGION",
+                at(),
+                alloc::format!(
+                    "{} of a device access has no type",
+                    device_position(position, writes)
+                ),
+            ));
+        };
+        actual.push(resolved);
+    }
+    for (position, rule) in operation.parameters.iter().enumerate() {
+        if !satisfies(module, *rule, &actual, position) {
+            return Err(Finding::new(
+                "V2021_REGION",
+                at(),
+                alloc::format!(
+                    "{} of {} is not what the operation requires",
+                    device_position(position, writes),
+                    operation.name
+                ),
+            ));
+        }
+    }
+    let Some(declared) = module.type_of(instruction.ty) else {
+        return Err(Finding::new(
+            "V2021_REGION",
+            at(),
+            "a device access declares a result outside the type table",
+        ));
+    };
+    // A read answers exact `u64` at every width and a write answers `unit` —
+    // ADR-0081 §7's carrier rule, which the amendment states and the table
+    // carries. The width belongs to the transaction, never to the value's type.
+    if !result_is(module, operation.result, &actual, declared) {
+        return Err(Finding::new(
+            "V2021_REGION",
+            at(),
+            alloc::format!(
+                "a device {} is typed as something other than {}",
+                if writes { "write" } else { "read" },
+                if writes { "unit" } else { "u64" }
+            ),
+        ));
+    }
+    // Checked last for ADR-0085 §17.7's reason: every rule above is wrong about
+    // the access at any minor, and only an artifact right about all of them has
+    // its version left as the one thing wrong with it.
+    if operation.minimum_minor > minor {
+        return Err(Finding::new(
+            "V2021_REGION",
+            at(),
+            alloc::format!(
+                "a device access is not a form of declared language version {}",
+                module.header.language_version
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// What an operand position of a device access is, for a reader of a finding.
+fn device_position(position: usize, writes: bool) -> &'static str {
+    match (position, writes) {
+        (0, _) => "the region",
+        (1, _) => "the byte offset",
+        (2, true) => "the written value",
+        _ => "an operand",
+    }
+}
+
+/// The declared minor of a language version this schema represents.
+///
+/// Read from the header the module carries, because `docs/42` §1's rule is that
+/// a module receives the language *its header declared*. An unparsable version
+/// has already been refused by `check_schema`; answering `None` here is the
+/// fail-closed direction for a caller that reaches it anyway.
+fn declared_minor(version: &str) -> Option<u32> {
+    match version.split_once('.') {
+        Some(("1", declared)) => declared.parse::<u32>().ok(),
+        _ => None,
+    }
+}
+
+/// One predeclared call, against the contract the artifact's own declared
+/// language version selects (ADR-0088 §5).
+///
+/// Six obligations, and the order they are checked in is deliberate. The name,
+/// the form, the count, the operands and the result are all things wrong with
+/// the *operation*; the declared minor is checked last, so that an artifact
+/// which is right about all of them has its version left as the one thing wrong
+/// with it — the rule ADR-0085 §17.7 settled for the capability gate and
+/// ADR-0086 for the DMA one.
+fn check_predeclared(
+    module: &Module,
+    function: &Function,
+    instruction: &Instruction,
+    name: &str,
+    operands: &[Operand],
+    at: &dyn Fn() -> String,
+) -> Result<(), Finding> {
+    let Some(minor) = declared_minor(&module.header.language_version) else {
+        return Err(Finding::new(
+            "V2002_SCHEMA",
+            at(),
+            "a predeclared call is in an artifact whose language version is unreadable",
+        ));
+    };
+    let contract = tos_predeclared::Contract::at_minor(minor);
+    let operation = match contract.lookup(name) {
+        tos_predeclared::Lookup::Unknown => {
+            return Err(Finding::new(
+                "V2011_CFG",
+                at(),
+                alloc::format!("a call names {name}, which is no predeclared operation"),
+            ))
+        }
+        // Available or not at this minor, everything below is true of the
+        // operation itself; the minor is the last thing asked.
+        tos_predeclared::Lookup::RequiresMinor(operation)
+        | tos_predeclared::Lookup::Available(operation) => operation,
+    };
+    // **The form is part of the contract.** `share`, the device accesses and
+    // the DMA ordering points each lower to their own verifier-visible
+    // operation, for reasons `docs/43` §3, ADR-0081 §8 and ADR-0086 §4 give,
+    // and an artifact writing one as an opaque `Call` is hiding exactly what
+    // those decisions put in the open.
+    if operation.form != tos_predeclared::Form::Call {
+        return Err(Finding::new(
+            "V2011_CFG",
+            at(),
+            alloc::format!("{name} is written as a call, and it has its own operation"),
+        ));
+    }
+    if operands.len() != operation.arity() {
+        return Err(Finding::new(
+            "V2011_CFG",
+            at(),
+            alloc::format!(
+                "a call supplies {} operand(s) to {name}, which takes {}",
+                operands.len(),
+                operation.arity()
+            ),
+        ));
+    }
+    let mut actual = Vec::new();
+    for (position, operand) in operands.iter().enumerate() {
+        let Some(resolved) = operand_definition(module, function, operand) else {
+            return Err(Finding::new(
+                "V2010_TYPE",
+                at(),
+                alloc::format!("operand {position} of {name} has no type"),
+            ));
+        };
+        actual.push(resolved);
+    }
+    for (position, rule) in operation.parameters.iter().enumerate() {
+        if !satisfies(module, *rule, &actual, position) {
+            return Err(Finding::new(
+                "V2010_TYPE",
+                at(),
+                alloc::format!("operand {position} of {name} is not the type its rule requires"),
+            ));
+        }
+    }
+    let Some(declared) = module.type_of(instruction.ty) else {
+        return Err(Finding::new(
+            "V2010_TYPE",
+            at(),
+            alloc::format!("a call to {name} declares a result outside the type table"),
+        ));
+    };
+    if !result_is(module, operation.result, &actual, declared) {
+        return Err(Finding::new(
+            "V2010_TYPE",
+            at(),
+            alloc::format!("a call to {name} declares a result the operation does not produce"),
+        ));
+    }
+    if operation.minimum_minor > minor {
+        return Err(Finding::new(
+            "V2011_CFG",
+            at(),
+            alloc::format!(
+                "{name} is not an operation of declared language version {}",
+                module.header.language_version
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// The exact type of one operand, as a **definition** and, where the artifact
+/// has one, as an identifier too.
+///
+/// [`operand_type`] answers with a `TypeId`, which a constant may not have: a
+/// constant carries its own type and nothing in `tos-ir/v1` requires that type
+/// to be interned merely because a constant of it appears. For a check
+/// comparing against a declared parameter's `TypeId` that is the right answer —
+/// a type the callee's signature names is in the table by construction. For a
+/// rule that asks what *class* a type is in it is the wrong one, because "not
+/// interned" is not "not an integer", and a verifier that refused `to_u8(300u64)`
+/// for it would be refusing a correct artifact.
+fn operand_definition(
+    module: &Module,
+    function: &Function,
+    operand: &Operand,
+) -> Option<(Option<TypeId>, TypeDef)> {
+    match operand {
+        Operand::Value(value) => {
+            let ty = function.values.get(*value).copied()?;
+            Some((Some(ty), module.type_of(ty)?.clone()))
+        }
+        Operand::Constant(constant) => {
+            let definition = match module.constants.get(*constant)? {
+                Constant::Unit => TypeDef::Unit,
+                Constant::Bool(_) => TypeDef::Bool,
+                Constant::Int(kind, _) => TypeDef::Int(*kind),
+                Constant::Size(_) => TypeDef::Size,
+                Constant::Duration(_) => TypeDef::Duration,
+                Constant::Text(_) => TypeDef::Text,
+                Constant::Bytes(_) => TypeDef::Bytes,
+            };
+            let id = module.types.iter().position(|ty| *ty == definition);
+            Some((id, definition))
+        }
+    }
+}
+
+/// Whether the operand at a position satisfies the contract's rule for it.
+///
+/// Every answer comes from this artifact's own types. A rule that names a class
+/// — "any exact integer" — is a question about what the type *is*, not about
+/// what a producer called it, and a rule relating two positions is answered by
+/// comparing the two derived types rather than two claims.
+fn satisfies(
+    module: &Module,
+    rule: tos_predeclared::ParameterRule,
+    actual: &[(Option<TypeId>, TypeDef)],
+    position: usize,
+) -> bool {
+    use tos_predeclared::ParameterRule as Rule;
+    let Some((id, definition)) = actual.get(position) else {
+        return false;
+    };
+    match rule {
+        Rule::Integer => matches!(definition, TypeDef::Int(_)),
+        Rule::IntegerOrSize => matches!(definition, TypeDef::Int(_) | TypeDef::Size),
+        Rule::Size => matches!(definition, TypeDef::Size),
+        Rule::Exactly(kind) => matches!(definition, TypeDef::Int(found) if *found == kind),
+        // The same type, and an integer one: "the same exact integer type" is
+        // two requirements and an artifact may fail either.
+        Rule::SameAs(other) => {
+            matches!(definition, TypeDef::Int(_))
+                && actual.get(other).map(|(_, other)| other) == Some(definition)
+        }
+        Rule::MmioRegion => matches!(definition, TypeDef::MmioRegion | TypeDef::MmioRegionMut),
+        Rule::MmioRegionMut => matches!(definition, TypeDef::MmioRegionMut),
+        Rule::DmaRegion => matches!(definition, TypeDef::DmaRegion(_) | TypeDef::DmaRegionMut(_)),
+        // The one rule whose answer needs the type graph rather than the type,
+        // so it needs an identifier to walk from. A constant has no region and
+        // no guard anywhere under it, which is the reason it may have none.
+        Rule::Shareable => match id {
+            Some(ty) => {
+                !region_facts(module, *ty).is_some_and(|(shareable, _)| !shareable)
+                    && transitively_immutable(module, *ty, 0)
+            }
+            None => true,
+        },
+    }
+}
+
+/// Whether the instruction's declared result is the one the contract states.
+fn result_is(
+    module: &Module,
+    rule: tos_predeclared::ResultRule,
+    actual: &[(Option<TypeId>, TypeDef)],
+    declared: &TypeDef,
+) -> bool {
+    use tos_predeclared::ResultRule as Rule;
+    let of = |position: usize| actual.get(position).map(|(_, definition)| definition);
+    match rule {
+        Rule::Unit => matches!(declared, TypeDef::Unit),
+        Rule::Integer(kind) => matches!(declared, TypeDef::Int(found) if *found == kind),
+        Rule::Conversion(kind) => match declared {
+            TypeDef::Result(ok, error) => {
+                matches!(module.type_of(*ok), Some(TypeDef::Int(found)) if *found == kind)
+                    && matches!(module.type_of(*error), Some(TypeDef::ConversionError))
+            }
+            _ => false,
+        },
+        Rule::SameAsOperand(position) => of(position) == Some(declared),
+        Rule::SharedOfOperand(position) => match declared {
+            TypeDef::Shared(inner) => module.type_of(*inner) == of(position),
+            _ => false,
+        },
+    }
 }
 
 /// The exact ordered operand list docs/43 §4 requires, checked against a
@@ -2747,5 +3248,60 @@ mod snapshot_tests {
         assert!(snapshot.provides_capability("system.audit.Logger"));
         assert!(!snapshot.provides_capability("system.time.Clockwork"));
         assert!(!ResolutionSnapshot::default().declares_capabilities());
+    }
+
+    /// **The predeclared contract this verifier was built against** (`docs/43`
+    /// §5, ADR-0088 §6).
+    ///
+    /// The condition on a shared declarative table is that its content digest
+    /// is an input to *both* components. This is this component's input: the
+    /// values are written here, in the verifier, and compared with the table's
+    /// own canonical digest. The frontend side states the same values in its
+    /// own tests and neither reads them from the other. A table edited under
+    /// either component fails that component's build, which is what stops two
+    /// implementations from quietly holding two contracts.
+    const PREDECLARED_CONTRACT: [(u32, &str); 5] = [
+        (
+            0,
+            "849bd9de6a7c0c485ffbcc972791a5768c724a4165d67087fd1961e863f7f555",
+        ),
+        (
+            1,
+            "26848cb863d7727c9b6787e141da156df418ea57af0471863a5767fe9f170bb3",
+        ),
+        (
+            2,
+            "c5e8ffbb3467768e15a235b57c56bdde1a359cb707ad5f33ee45f721b357c2a5",
+        ),
+        (
+            3,
+            "a4bad47aac6cdb361ced38352fde05acfedb47d4a6c331b8cd4762fd3daec02c",
+        ),
+        (
+            4,
+            "9d496d76b8e8b25157547fe6a5d81fb3c32c0dc7f331d3e19779ee1e2271a17c",
+        ),
+    ];
+
+    #[test]
+    fn the_predeclared_contract_is_the_one_this_verifier_was_built_against() {
+        for (minor, expected) in PREDECLARED_CONTRACT {
+            let contract = tos_predeclared::Contract::at_minor(minor);
+            let hex =
+                alloc::string::String::from_utf8(tos_predeclared::hex_digest(&contract).to_vec())
+                    .expect("hex is ASCII");
+            assert_eq!(hex, expected, "TOS Core 1.{minor}");
+        }
+    }
+
+    /// The minor is read from the artifact's own header, and an unreadable one
+    /// selects no contract at all rather than a plausible one.
+    #[test]
+    fn a_declared_minor_is_read_from_the_header() {
+        assert_eq!(declared_minor("1.4"), Some(4));
+        assert_eq!(declared_minor("1.0"), Some(0));
+        assert_eq!(declared_minor("2.0"), None);
+        assert_eq!(declared_minor("1.x"), None);
+        assert_eq!(declared_minor("nonsense"), None);
     }
 }

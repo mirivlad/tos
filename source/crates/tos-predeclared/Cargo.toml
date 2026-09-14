@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+[package]
+name = "tos-predeclared"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-or-later"
+description = "The authoritative declarative TOS Core V1 predeclared-call contract (ADR-0088): names, minors, arity and type rules, shared by the frontend and the independent verifier."
+publish = false
+
+[lib]
+name = "tos_predeclared"
+
+[dependencies]
+tos-hash = { path = "../tos-hash" }
+tos-ir = { path = "../tos-ir" }

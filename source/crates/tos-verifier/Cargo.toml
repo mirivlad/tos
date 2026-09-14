@@ -14,3 +14,15 @@ name = "tos_verifier"
 tos-ir = { path = "../tos-ir" }
 tos-image = { path = "../tos-image" }
 tos-hash = { path = "../tos-hash" }
+# The declarative predeclared-call contract (ADR-0088). `docs/43` §5 permits a
+# shared declarative table exactly when its content digest is an input to both
+# components; `ACCEPTED_PREDECLARED_DIGESTS` in `src/lib.rs` is that input, and
+# it is a compile-time assertion rather than a test. The table carries no
+# frontend code and no behaviour: a verifier that reads it still derives every
+# answer itself.
+tos-predeclared = { path = "../tos-predeclared" }
+
+# The build script computes the linked table's digests so `src/lib.rs` can
+# assert them at compile time. It reads the same crate the library links.
+[build-dependencies]
+tos-predeclared = { path = "../tos-predeclared" }
