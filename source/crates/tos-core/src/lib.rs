@@ -49,10 +49,13 @@ mod walk;
 pub use checker::{check_slice, Checker, CHECK_SLICES};
 pub use diagnostic::{Diagnostic, DiagnosticField, ModuleIdentity, Position, Severity, Stage};
 pub use interface::{CompactTypeId, LoweringInterface, ResolvedImport, VerificationSurface};
-pub use lower::{lower_module, lower_module_in_set, Gap, ModuleContext, FRONTEND_IDENTITY};
+pub use lower::{
+    check_imported_calls, lower_module, lower_module_in_set, Gap, ModuleContext, FRONTEND_IDENTITY,
+};
 pub use modules::{
     check_module_cycles, check_module_membership, check_module_set, check_module_summaries,
     check_qualified_types_of, check_source_set, resolve_set, ModuleEntry, Resolution,
+    MAX_IMPORT_EDGES,
 };
 pub use parser::{
     Block, BorrowMode, CallArgument, ConstDeclaration, EnumDeclaration, EnumVariant,

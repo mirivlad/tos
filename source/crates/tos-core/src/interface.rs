@@ -356,13 +356,25 @@ fn nominal_code(kind: NominalKind) -> u8 {
     }
 }
 
-/// What the lowerer reads from a dependency, and nothing else.
+/// What the frontend reads from a dependency, and nothing else.
 ///
-/// Audited against the production lowerer: it resolves an import's content
-/// identity, looks up the result type of an exported name a call reaches, and
-/// rebuilds that type. Parameters, modes, effects, visibility and the async flag
-/// are not read anywhere, so they are not carried anywhere — a field kept "for
-/// later" is a field that is measured now.
+/// Audited against the production frontend: it resolves an import's content
+/// identity, and for an exported name a call reaches it reads the **ordered
+/// parameter types** and the **result**. Modes, effects, visibility and the
+/// async flag are not read anywhere, so they are not carried anywhere — a field
+/// kept "for later" is a field that is measured now.
+///
+/// **The result needs no reconstruction.** `Signature::result` of an export is
+/// already the call-site result: an `async fn` declared `-> T` is lowered with
+/// `Task<T>` and the export table records what was lowered. So `is_async` is
+/// not carried, because nothing here would do anything with it.
+///
+/// **Parameters are carried because a source diagnostic needs them.** Until a
+/// dependency has been lowered there is no signature for an imported call to be
+/// checked against, so an imported call with the wrong number or the wrong type
+/// of arguments reached the artifact unexamined. The check that closes that runs
+/// in the caller's own lowering turn, where this view is live, and it reads
+/// exactly these two things.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LoweringInterface {
     content_id: String,
@@ -370,6 +382,15 @@ pub struct LoweringInterface {
     names: TextStore,
     /// The result type of each export, by the same index.
     results: Vec<CompactTypeId>,
+    /// Parameter types of every export, end to end, in declaration order.
+    ///
+    /// Kept in one run with a range per export rather than a `Vec` per export:
+    /// an export's parameters are contiguous, so a parameter costs four bytes
+    /// and an export costs four more for the offset that ends the one before
+    /// it. No length is stored, because the next offset is the length.
+    parameters: Vec<CompactTypeId>,
+    /// `n + 1` offsets into `parameters` for `n` exports.
+    parameter_ranges: Vec<u32>,
     types: CompactTypes,
 }
 
@@ -383,14 +404,24 @@ impl LoweringInterface {
         let mut builder = Builder::new(module);
         let mut names = TextStore::new();
         let mut results = Vec::with_capacity(module.exports.len());
+        let mut parameters = Vec::new();
+        let mut parameter_ranges = Vec::with_capacity(module.exports.len() + 1);
+        parameter_ranges.push(0);
         for signature in &module.exports {
             names.push(&signature.name);
             results.push(builder.carry(signature.result));
+            for parameter in &signature.parameters {
+                let carried = builder.carry(parameter.ty);
+                parameters.push(carried);
+            }
+            parameter_ranges.push(parameters.len() as u32);
         }
         LoweringInterface {
             content_id: module.header.content_id.clone(),
             names,
             results,
+            parameters,
+            parameter_ranges,
             types: builder.finish(),
         }
     }
@@ -400,11 +431,33 @@ impl LoweringInterface {
         &self.content_id
     }
 
+    /// Where an exported name sits, if the module exports it.
+    fn position_of(&self, name: &str) -> Option<usize> {
+        (0..self.names.len()).find(|at| self.names.get(*at as u32) == name)
+    }
+
+    /// Whether the module exports this name at all.
+    pub fn exports(&self, name: &str) -> bool {
+        self.position_of(name).is_some()
+    }
+
     /// The result type of an exported name, as a compact id.
+    ///
+    /// Already the call-site result: an `async fn` declared `-> T` exports
+    /// `Task<T>`, because that is what it was lowered with.
     pub fn result_of(&self, name: &str) -> Option<CompactTypeId> {
-        (0..self.names.len())
-            .find(|at| self.names.get(*at as u32) == name)
-            .map(|at| self.results[at])
+        self.position_of(name).map(|at| self.results[at])
+    }
+
+    /// The ordered parameter types of an exported name.
+    ///
+    /// An empty slice is a nullary export; `None` is a name this module does
+    /// not export, which is a different fact and a different diagnostic.
+    pub fn parameters_of(&self, name: &str) -> Option<&[CompactTypeId]> {
+        let at = self.position_of(name)?;
+        let start = self.parameter_ranges[at] as usize;
+        let end = self.parameter_ranges[at + 1] as usize;
+        Some(&self.parameters[start..end])
     }
 
     /// One entry of the type graph, as a `TypeDef` over compact child ids.
@@ -429,6 +482,8 @@ impl LoweringInterface {
             + self.content_id.capacity()
             + self.names.retained_bytes()
             + self.results.capacity() * core::mem::size_of::<CompactTypeId>()
+            + self.parameters.capacity() * core::mem::size_of::<CompactTypeId>()
+            + self.parameter_ranges.capacity() * core::mem::size_of::<u32>()
             + self.types.retained_bytes()
     }
 

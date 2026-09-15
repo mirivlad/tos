@@ -209,9 +209,43 @@ fn check_report(path: &Path) -> Option<String> {
             companion_schema,
         ));
     }
-    check_source_set(&entries)
+    if let Some(code) = check_source_set(&entries)
         .into_iter()
         .find(|diagnostic| diagnostic.code() != "E1603_MODULE_PATH_MISMATCH")
+        .map(|diagnostic| diagnostic.code().to_string())
+    {
+        return Some(code);
+    }
+    // **And then the check that needs the dependencies lowered.** An imported
+    // call has no exact signature to be held to until the module it calls has
+    // been lowered, so the set-wide pass above cannot see it; the caller's own
+    // lowering turn is the first moment it can, and a corpus vector about an
+    // imported call is evidence for that pass or for nothing.
+    let mut lowered = Vec::new();
+    for (path, companion_source, companion_schema) in &loaded {
+        let context = tos_core::ModuleContext {
+            source_set: String::from("tos-core-conformance"),
+            path: canonical_path(companion_source, companion_schema),
+            content_id: std::format!("sha256:{}", path.display()),
+            dependency_digest: String::from("sha256:0"),
+            capability_interface_digest: String::from("sha256:0"),
+        };
+        let Ok(module) = tos_core::lower_module(companion_source, companion_schema, &context)
+        else {
+            continue;
+        };
+        let name = module.header.module_name.clone();
+        lowered.push((name, tos_core::LoweringInterface::of(&module)));
+    }
+    let imports: Vec<tos_core::ResolvedImport<'_>> = lowered
+        .iter()
+        .map(|(name, interface)| tos_core::ResolvedImport {
+            name: name.as_str(),
+            interface,
+        })
+        .collect();
+    tos_core::check_imported_calls(&source, &schema, &imports)
+        .first()
         .map(|diagnostic| diagnostic.code().to_string())
 }
 

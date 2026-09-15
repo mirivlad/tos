@@ -2,7 +2,8 @@
 
 # ADR-0071: Bounded verified-module residency and the module provider
 
-- Status: **Accepted**
+- Status: **Accepted**, amended 2026-09-15 — see §1a, which states the
+  dependency-first order of the closure a launch is handed
 - Date: 2026-08-26 (accepted 2026-08-27)
 - Decision level: 2 — it fixes how many verified modules an execution may hold
   at once, what supplies the rest, and what survives a module image being
@@ -69,6 +70,32 @@ Two consequences, both intended:
 
 An execution whose closure cannot be verified in full does not start. There is
 no partial launch, and no "verify the rest when we get there".
+
+#### 1a. The closure is dependency-first (amendment, 2026-09-15)
+
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-15, granted before
+  implementation of the amendment
+
+**The exact resolved closure a launch is handed is in dependency-first order:
+every module appears after every module it imports.** It is part of the
+canonical launch representation, not an optimisation and not a property of
+whichever builder happened to produce it — the source builder already emits this
+order, so no canonical artifact moves because the rule is now stated.
+
+During launch, when the module at position `N` is verified, every module its
+imports name must **already have been verified successfully earlier in this same
+launch**. A forward dependency is refused with `V2012_IMPORT`, and a cyclic
+artifact therefore fails by the same rule without a second cycle algorithm.
+
+**Why it is load-bearing.** An imported call can only be checked against the
+dependency's own exported signature, and the only trustworthy source of that
+signature is the artifact this launch has already verified. Dependency-first
+order is what makes that artifact exist by the time the caller is reached. The
+export surface is reconstructed transiently under §5's reload rule and dropped
+immediately: no typed surface enters the record of §2, the manifest, the
+declared resolution snapshot or a bundle declaration, so §1's peak claim and
+§2's fixed-shape record are untouched. What crosses from one module's turn to
+the next is the artifact identity §5 already needed.
 
 ### 2. What survives: a fixed-shape module record, and a closure manifest beside it
 

@@ -78,7 +78,22 @@ use tos_ir::{
 mod parse;
 mod write;
 
-pub use parse::parse;
+pub use parse::{parse, parse_export_prefix};
+
+/// A module's declared interface, reconstructed without its bodies.
+///
+/// What [`parse_export_prefix`] returns: the sections a caller's imported calls
+/// must be checked against, decoded by the same reader that decodes a whole
+/// module. It is transient by design — an imported-call check reads it and
+/// drops it — so nothing here is compacted for retention.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ExportPrefix {
+    pub header: Header,
+    pub types: Vec<TypeDef>,
+    pub imports: Vec<Import>,
+    pub capability_imports: Vec<CapabilityImport>,
+    pub exports: Vec<Signature>,
+}
 pub use write::encode;
 
 /// The magic. Eight bytes, and not the experimental prototype's.

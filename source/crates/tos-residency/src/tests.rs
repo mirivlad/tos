@@ -57,7 +57,16 @@ fn module(name: &str, content: &str, imports: &[(&str, &str)]) -> Module {
             })
             .collect(),
         capability_imports: Vec::new(),
-        exports: Vec::new(),
+        // The canonical public projection of `functions` below (`docs/43` §2),
+        // which the verifier proves rather than assumes.
+        exports: vec![Signature {
+            name: String::from("answer"),
+            visibility: Visibility::Public,
+            is_async: false,
+            parameters: Vec::new(),
+            result: 0,
+            effects: Vec::new(),
+        }],
         constants: vec![Constant::Int(IntKind::I32, 7)],
         functions: vec![Function {
             signature: Signature {

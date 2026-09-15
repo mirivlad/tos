@@ -1,0 +1,13 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.imported_surface version 1.0 profile bootstrap;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 4]
+
+// The module the vector below imports. Its exported signature is the only
+// authority for a call into it: docs/43 §2 makes `Module::exports` the
+// canonical public projection of this module's public functions, and a launch
+// checks an imported call against the artifact it verified rather than against
+// anything declared beside it.
+pub fn take(value: i64) -> i64 {
+    return value;
+}

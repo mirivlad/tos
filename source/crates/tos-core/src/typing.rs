@@ -361,12 +361,55 @@ pub(crate) fn binding_types(source: &SourceUnit, schema: &Schema) -> BTreeMap<us
 }
 
 fn analyse(source: &SourceUnit, schema: &Schema) -> (Vec<Diagnostic>, BTreeMap<usize, Type>) {
+    analysed(source, schema, &[])
+}
+
+/// The same typing pass, told what the modules this one imports actually export.
+///
+/// **The one pass, twice, with different knowledge.** The set-wide check runs it
+/// with nothing: a dependency has not been lowered then, so there is no exact
+/// signature for an imported call and inventing one would be a guess. The
+/// caller's own lowering turn runs it again with the interfaces its dependencies
+/// left behind, and the imported calls are checked there — which is the first
+/// moment anything could check them.
+pub(crate) fn check_imported(
+    source: &SourceUnit,
+    schema: &Schema,
+    imports: &[crate::ResolvedImport<'_>],
+) -> Vec<Diagnostic> {
+    analysed(source, schema, imports).0
+}
+
+fn analysed(
+    source: &SourceUnit,
+    schema: &Schema,
+    imports: &[crate::ResolvedImport<'_>],
+) -> (Vec<Diagnostic>, BTreeMap<usize, Type>) {
     let declarations = collect(source, schema);
+    // An import states a module name and a local binding; a resolved dependency
+    // states the module name and its interface. The binding is what source
+    // writes, so the two are joined here rather than at every call site.
+    let mut imported = BTreeMap::new();
+    for declaration in schema.outline().prefix().imports() {
+        if declaration.kind() != crate::parser::ImportKind::Module {
+            continue;
+        }
+        let target: Vec<&str> = declaration
+            .path()
+            .iter()
+            .map(|segment| segment.text(source))
+            .collect();
+        let target = target.join(".");
+        if let Some(resolved) = imports.iter().find(|import| import.name == target) {
+            imported.insert(declaration.binding().text(source), resolved.interface);
+        }
+    }
     let mut checker = TypeChecker {
         source,
         declarations,
         scopes: Vec::new(),
         bindings: BTreeMap::new(),
+        imported,
         diagnostics: Vec::new(),
     };
     for function in schema.functions() {
@@ -530,6 +573,60 @@ fn nominal_name(ty: &Type) -> &str {
     }
 }
 
+/// One type of a dependency's interface, in this checker's own vocabulary.
+///
+/// **A spelling, for a source diagnostic.** The checker compares source types,
+/// which name a nominal by its export name and carry no defining module; the
+/// independent verifier compares the same types across two artifacts with the
+/// defining module's content identity, which is the comparison that has to be
+/// exact. What this produces is good enough to say "you passed a `bool` where a
+/// `i64` is declared" and never claims to be more.
+///
+/// A constructor this vocabulary cannot spell answers `Unknown`, which agrees
+/// with everything — the checker reports a disagreement or nothing, never a
+/// guess.
+fn imported_type(
+    interface: &crate::LoweringInterface,
+    ty: crate::CompactTypeId,
+    depth: usize,
+) -> Type {
+    use tos_ir::TypeDef;
+    if depth > 32 {
+        return Type::Unknown;
+    }
+    let Some(definition) = interface.type_at(ty as tos_ir::TypeId) else {
+        return Type::Unknown;
+    };
+    let inner =
+        |id: tos_ir::TypeId| imported_type(interface, id as crate::CompactTypeId, depth + 1);
+    let constructed =
+        |name: &str, arguments: Vec<Type>| Type::Constructed(String::from(name), arguments);
+    match definition {
+        TypeDef::Unit => Type::Unit,
+        TypeDef::Bool => Type::Bool,
+        TypeDef::Int(kind) => Type::Integer(String::from(kind.spelled())),
+        TypeDef::Size => Type::Size,
+        TypeDef::Duration => Type::Duration,
+        TypeDef::Text => Type::Text,
+        TypeDef::Bytes => Type::Bytes,
+        TypeDef::ConversionError => Type::Nominal(String::from("ConversionError")),
+        TypeDef::Option(a) => constructed("Option", alloc::vec![inner(a)]),
+        TypeDef::Task(a) => constructed("Task", alloc::vec![inner(a)]),
+        TypeDef::TaskResult(a) => constructed("TaskResult", alloc::vec![inner(a)]),
+        TypeDef::Shared(a) => constructed("Shared", alloc::vec![inner(a)]),
+        TypeDef::Region(a) => constructed("Region", alloc::vec![inner(a)]),
+        TypeDef::RegionMut(a) => constructed(REGION_MUT, alloc::vec![inner(a)]),
+        TypeDef::DmaRegion(a) => constructed("DmaRegion", alloc::vec![inner(a)]),
+        TypeDef::DmaRegionMut(a) => constructed(DMA_REGION_MUT, alloc::vec![inner(a)]),
+        TypeDef::Slice(a) => constructed("slice", alloc::vec![inner(a)]),
+        TypeDef::Result(a, b) => constructed("Result", alloc::vec![inner(a), inner(b)]),
+        TypeDef::Array(a, _) => Type::Array(alloc::boxed::Box::new(inner(a))),
+        TypeDef::Tuple(elements) => Type::Tuple(elements.into_iter().map(inner).collect()),
+        TypeDef::Nominal { export_name, .. } => Type::Nominal(export_name),
+        _ => Type::Unknown,
+    }
+}
+
 /// The source type a predeclared operation's result rule denotes (ADR-0088).
 ///
 /// The same rule the lowerer reads for the same call's IR type, so a call the
@@ -583,6 +680,14 @@ struct TypeChecker<'source> {
     scopes: Vec<BTreeMap<&'source str, Type>>,
     /// Binding name offset to its type, for the ownership slice.
     bindings: BTreeMap<usize, Type>,
+    /// Local import binding to the exact interface of the module it resolved
+    /// to, when one has been lowered (ADR-0071's dependency-first order).
+    ///
+    /// Empty during the set-wide check, which runs before any dependency has
+    /// been lowered and therefore has no signature to check an imported call
+    /// against. Populated for the caller's own lowering turn, which is the
+    /// first moment the information exists.
+    imported: BTreeMap<&'source str, &'source crate::LoweringInterface>,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -1337,6 +1442,59 @@ impl<'source> TypeChecker<'source> {
     /// type, never from the name of the operation alone: a `.lock()` written on
     /// anything else is not a guard, and inferring one from the spelling would
     /// be the guess ADR-0035 forbids.
+    /// A call of a function another module exports, against that module's exact
+    /// interface (ADR-0071 §1).
+    ///
+    /// `None` means this is not an imported call — the receiver is not an
+    /// import binding, or no dependency has been lowered yet — and the caller
+    /// goes on to the forms that share the shape.
+    ///
+    /// **The exported result needs no reconstruction.** An `async fn` declared
+    /// `-> T` exports `Task<T>`, because that is what it was lowered with, so
+    /// the call site takes the export's result as it stands.
+    fn imported_call_type(
+        &mut self,
+        expression: &'source Expression,
+        callee: &'source Expression,
+        actual: &[Type],
+    ) -> Option<Type> {
+        let (Some(name), Some(receiver)) = (callee.name(), callee.inner()) else {
+            return None;
+        };
+        if receiver.form() != ExpressionForm::Name {
+            return None;
+        }
+        let binding = receiver.span().text(self.source);
+        let interface = *self.imported.get(binding)?;
+        let name = name.text(self.source);
+        // The import resolved and the module is known, so a name it does not
+        // export is an unresolved value name and not a type disagreement.
+        let Some(parameters) = interface.parameters_of(name) else {
+            self.diagnostics.push(
+                Diagnostic::new(
+                    "E1202_UNKNOWN_VALUE_NAME",
+                    Severity::Error,
+                    Stage::Type,
+                    callee.span(),
+                    self.source,
+                )
+                .with_field("name", alloc::format!("{binding}.{name}"))
+                .with_field("module", binding),
+            );
+            return Some(Type::Unknown);
+        };
+        let declared: Vec<Type> = parameters
+            .iter()
+            .map(|ty| imported_type(interface, *ty, 0))
+            .collect();
+        self.check_positional_arguments(expression, name, &declared, actual, "imported named");
+        let result = interface
+            .result_of(name)
+            .map(|ty| imported_type(interface, ty, 0))
+            .unwrap_or(Type::Unknown);
+        Some(result)
+    }
+
     fn lock_operation_type(&mut self, callee: &'source Expression) -> Type {
         let (Some(name), Some(receiver)) = (callee.name(), callee.inner()) else {
             return Type::Unknown;
@@ -1725,6 +1883,9 @@ impl<'source> TypeChecker<'source> {
             return Type::Unknown;
         };
         if callee.form() == ExpressionForm::Field {
+            if let Some(ty) = self.imported_call_type(expression, callee, &actual) {
+                return ty;
+            }
             return self.lock_operation_type(callee);
         }
         if callee.form() != ExpressionForm::Name {

@@ -236,6 +236,7 @@ name = "tos-tests-integration"
 version = "0.1.0"
 dependencies = [
  "tos-boot-protocol",
+ "tos-bundle",
  "tos-cache",
  "tos-capsule",
  "tos-core",

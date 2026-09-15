@@ -57,6 +57,22 @@ Use `./scripts/preflight.sh --full` when the change touches boot, capsule parsin
 or QEMU-visible behavior; it additionally runs fuzzing and both QEMU suites.
 Preflight reports all selected gate results and does not install missing tools.
 
+**The provenance profile is a post-commit, pre-push gate**, and running it
+earlier proves nothing about the sign-off. `scripts/check-dco.sh` reads the
+trailers of commits reachable from `HEAD`, so a run made before the commit
+exists validates every commit *except* the one being written — which is the one
+that can be missing a trailer. Run it after committing and before pushing:
+
+```sh
+git commit -s ...
+./scripts/preflight.sh --profile provenance
+git push
+```
+
+Recorded because it happened: a commit reached `origin/main` without its
+trailer, the gate had been run only against the working tree beforehand, and the
+repair cost a history amendment on a published tip.
+
 ## AI-assisted contributions
 
 AI tools may be used, but the human submitter remains responsible for:

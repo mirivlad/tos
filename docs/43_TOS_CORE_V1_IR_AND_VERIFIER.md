@@ -46,6 +46,17 @@ Functions, ordered by fully qualified source name
 Source-map entries, ordered by source unit then byte start/end
 ```
 
+**`Module::exports` is exactly the canonical public projection of
+`Module::functions`**: the signature of every public entry, of only public
+entries, each once, in the canonical order the function table already fixes.
+The verifier proves it independently — it reconstructs the expected table from
+the artifact's own functions and compares, with full signature equality
+including parameter modes, the async flag and declared effects — because what a
+run actually enters is a function, and an export table that described anything
+else would be a description of a module nobody executes. A table that is not
+that projection is not the canonical form of the section and is refused as
+`V2004_TABLE_ORDER`.
+
 All source strings are normalized UTF-8 according to the language version's
 fixed Unicode baseline; for V1 that is UCD 17.0.0/UAX #15 Revision 57 NFC.
 Runtime `string` values are not silently normalized. All identifiers/paths

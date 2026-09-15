@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 498
+- files in the release package: 501
 - active system invariants: 21
-- architecture decision records: 89 (40 accepted)
+- architecture decision records: 90 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -114,9 +114,9 @@ Architecture decision records
 - docs/adr/0068-what-the-two-stage3-latency-budgets-measure.md — ADR-0068: Which of the two Stage 3 latency budgets is a conformance budget [**Accepted** (Project Architect-approved)]
 - docs/adr/0069-stage3-reference-process-grant.md — ADR-0069: The Stage 3 reference process grant [**Accepted**]
 - docs/adr/0070-compact-verified-execution-image.md — ADR-0070: A compact verified module image [**Accepted**]
-- docs/adr/0071-bounded-verified-module-residency.md — ADR-0071: Bounded verified-module residency and the module provider [**Accepted**]
+- docs/adr/0071-bounded-verified-module-residency.md — ADR-0071: Bounded verified-module residency and the module provider [**Accepted**, amended 2026-09-15 — see §1a, which states the]
 - docs/adr/0072-source-backed-launch-workspace.md — ADR-0072: The launch workspace, and what a process grant is for [**Accepted**]
-- docs/adr/0073-build-to-image-launch.md — ADR-0073: Build-to-image launch and verifier-owned process admission [**Accepted**]
+- docs/adr/0073-build-to-image-launch.md — ADR-0073: Build-to-image launch and verifier-owned process admission [**Accepted**, amended 2026-09-15 — see §4, which states the]
 - docs/adr/0074-build-workspace-and-launch-bundle.md — ADR-0074: The build workspace, the launch bundle, and who owns them [**Accepted** (Project Architect-approved)]
 - docs/adr/0075-region-object-lifecycle.md — ADR-0075: Region object lifecycle, the mutable-to-immutable transition, and reclamation [**Accepted**]
 - docs/adr/0076-unified-memory-funding.md — ADR-0076: One physical account — frames, memory authority, process grants and region backing [**Accepted**]
@@ -133,6 +133,7 @@ Architecture decision records
 - docs/adr/0087-the-residual-value-type-diagnostic.md — ADR-0087: the residual value-type diagnostic [**Accepted (Project Architect-approved, 2026-09-14)**]
 - docs/adr/0088-the-predeclared-call-contract.md — ADR-0088: the predeclared-call contract [**Accepted (Project Architect-approved, 2026-09-14)**]
 - docs/adr/0089-the-call-arity-diagnostic.md — ADR-0089: the call-arity diagnostic [**Accepted (Project Architect-approved, 2026-09-14)**]
+- docs/adr/0090-the-resolved-closure-import-edge-ceiling.md — ADR-0090: the resolved-closure import-edge ceiling [**Accepted (Project Architect-approved, 2026-09-15)**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

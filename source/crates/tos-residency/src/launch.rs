@@ -15,7 +15,9 @@
 
 use alloc::vec::Vec;
 
-use tos_verifier::{verify_image, VerifiedModule};
+use tos_verifier::{
+    verify_image_in_closure, VerifiedArtifactEvidence, VerifiedDependencies, VerifiedModule,
+};
 
 use crate::{
     fixed_digest, resolved_module_identity, source_set_identity, ClosureModuleId, Envelope,
@@ -54,6 +56,73 @@ pub struct Launched {
     pub entry_receipt: VerifiedModule,
 }
 
+/// What this launch has proved so far, offered to the verifier of the next
+/// module (ADR-0071 §1, §5).
+///
+/// **The only source of a dependency's signature in the production path.** It
+/// holds one opaque, fixed-size evidence token per module already verified —
+/// no export name, no signature, nothing of variable length — and reaches the
+/// bytes through the same `ClosureSource` the launch was handed. The verifier
+/// hashes those bytes against the token before it reads a single export.
+///
+/// It lives for the length of the launch and is dropped with it. Nothing here
+/// becomes execution state: what survives a launch is the fixed record per
+/// module and the manifest, exactly as before.
+struct Verified<'a> {
+    source: &'a dyn ClosureSource,
+    /// `(module name, closure position, evidence)`, in verification order.
+    proved: Vec<(alloc::string::String, usize, VerifiedArtifactEvidence)>,
+    /// Unique `(caller, resolved dependency)` relationships seen so far
+    /// (`docs/44` §2, ADR-0090).
+    ///
+    /// **One `usize`, and it is the whole of the enforcement.** The frontend
+    /// refuses a source set above the ceiling with `E1609`, and the launch does
+    /// not take its word for that: the number of authenticated dependency
+    /// reopens this launch will perform is exactly this count, so the component
+    /// that performs them counts them. Fixed size, alive for the launch only,
+    /// and it reaches neither the module record nor the manifest.
+    edges: usize,
+}
+
+impl Verified<'_> {
+    fn position_of(&self, module_name: &str) -> Option<usize> {
+        self.proved
+            .iter()
+            .find(|(name, _, _)| name == module_name)
+            .map(|(_, position, _)| *position)
+    }
+}
+
+impl VerifiedDependencies for Verified<'_> {
+    fn states_closure(&self) -> bool {
+        true
+    }
+
+    fn evidence(&self, module_name: &str) -> Option<VerifiedArtifactEvidence> {
+        self.proved
+            .iter()
+            .find(|(name, _, _)| name == module_name)
+            .map(|(_, _, evidence)| *evidence)
+    }
+
+    fn add_edges(&mut self, count: usize) -> usize {
+        self.edges += count;
+        self.edges
+    }
+
+    fn read_image(&self, module_name: &str, read: &mut dyn FnMut(&[u8])) {
+        let Some(position) = self.position_of(module_name) else {
+            return;
+        };
+        // The same immutable snapshot the launch verified, reached the same
+        // way. Whether it is the same *bytes* is the verifier's question, and
+        // it asks it with a hash rather than with this lookup.
+        if let Some(image) = self.source.image(position) {
+            read(&image);
+        }
+    }
+}
+
 /// Verifies the exact resolved closure, sequentially, and builds the manifest.
 ///
 /// `entry` is the position of the entry module and `entry_function` the name of
@@ -72,6 +141,11 @@ pub fn launch(
     records.resize(count, None);
     let mut entry_index: Option<usize> = None;
     let mut entry_receipt: Option<VerifiedModule> = None;
+    let mut proved = Verified {
+        source,
+        proved: Vec::with_capacity(count),
+        edges: 0,
+    };
 
     for (position, slot) in records.iter_mut().enumerate() {
         let image = source.image(position).ok_or(Failure::Missing(position))?;
@@ -79,7 +153,13 @@ pub fn launch(
         // The whole trusted path in one call: the digest is taken over the
         // exact bytes that are then parsed, the parser treats them as hostile,
         // and the verifier reaches its own conclusion from what it reconstructs.
-        let verified = verify_image(&image, &resolution(position), limits)
+        //
+        // **And the closure is dependency-first** (ADR-0071 §1), so every module
+        // this one imports has already been through this loop and left evidence
+        // behind. A caller that arrives before its dependency — and therefore
+        // any cycle — is refused by the verifier rather than checked against a
+        // declaration.
+        let verified = verify_image_in_closure(&image, &resolution(position), limits, &mut proved)
             .map_err(|refusal| Failure::from_refusal(position, refusal))?;
 
         let receipt = verified.receipt();
@@ -109,6 +189,12 @@ pub fn launch(
                 .position(|function| function.signature.name == entry_function);
             entry_receipt = Some(verified.receipt().clone());
         }
+
+        // One fixed-size token per module, and nothing else crosses to the next
+        // turn: sixty-four bytes of identity, no export name and no signature.
+        proved
+            .proved
+            .push((receipt.module_name.clone(), position, verified.evidence()));
 
         // The materialized module is released here, and this is the line the
         // whole flat-peak claim rests on.

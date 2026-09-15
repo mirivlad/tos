@@ -113,7 +113,9 @@ const _: () = assert!(
     "the linked tos-predeclared table is not the contract this verifier states"
 );
 
-pub use image::{verify_image, ImageRefusal, VerifiedImage};
+pub use image::{
+    verify_image, verify_image_in_closure, ImageRefusal, VerifiedArtifactEvidence, VerifiedImage,
+};
 pub use limits::Limits;
 pub use representation::{Representation, Represented, REPRESENTED};
 
@@ -584,15 +586,33 @@ pub fn verify(
     snapshot: &ResolutionSnapshot,
     limits: &Limits,
 ) -> Result<VerifiedModule, Finding> {
+    verify_in_closure(module, snapshot, limits, &mut NoDependencies)
+}
+
+/// The same obligations, plus the ones that need the rest of the closure.
+///
+/// **This is what a launch calls.** An imported call can only be checked
+/// against the dependency that was verified for it, so the obligation lives
+/// where the dependency is reachable — and `verify` above is the same function
+/// told that nothing else has been verified, which is the honest answer for a
+/// caller checking one artifact on its own.
+pub fn verify_in_closure(
+    module: &Module,
+    snapshot: &ResolutionSnapshot,
+    limits: &Limits,
+    dependencies: &mut dyn VerifiedDependencies,
+) -> Result<VerifiedModule, Finding> {
     check_limits(module, limits)?;
     check_schema(module)?;
     check_source_identity(module)?;
     check_table_order(module)?;
+    check_export_projection(module)?;
     check_types_and_imports(module, snapshot)?;
     check_control_flow(module, snapshot)?;
     check_ownership_and_profile(module)?;
     check_tasks_sync_atomics_unsafe(module)?;
     check_source_maps(module)?;
+    check_imported_calls(module, dependencies, limits)?;
 
     Ok(VerifiedModule {
         module_digest: tos_ir::module_digest(module),
@@ -1908,6 +1928,477 @@ fn device_position(position: usize, writes: bool) -> &'static str {
         (2, true) => "the written value",
         _ => "an operand",
     }
+}
+
+/// What a launch knows about the modules it has already verified.
+///
+/// **The production authority is `tos-residency::launch`**, which builds one of
+/// these from its own successful verifications and from the closure source it
+/// was handed. Nothing outside this crate can mint a
+/// [`VerifiedArtifactEvidence`], so an implementation of this trait can only
+/// hand back evidence some verification actually produced: the trait is a way
+/// of *reaching* what a launch already proved, never a way of asserting it.
+///
+/// The image is offered through a callback rather than returned, so a launch
+/// whose images live behind a shared handle lends the bytes instead of copying
+/// a third of a megabyte per imported dependency.
+pub trait VerifiedDependencies {
+    /// Whether a closure is being stated at all.
+    ///
+    /// `false` means "nothing has been verified alongside this module", which
+    /// is the honest answer for a caller checking one artifact on its own, and
+    /// is the same shape as an empty `ResolutionSnapshot`: there is nothing to
+    /// compare against, so the closure obligations do not apply.
+    ///
+    /// **A launch always answers `true`**, which is what makes a dependency it
+    /// cannot produce evidence for a refusal there rather than a check quietly
+    /// skipped. The two cases must not be inferred from the same silence.
+    fn states_closure(&self) -> bool;
+
+    /// The evidence for a module of this name, if this launch verified one.
+    fn evidence(&self, module_name: &str) -> Option<VerifiedArtifactEvidence>;
+
+    /// Lends that module's immutable image to `read`, if it can be obtained.
+    fn read_image(&self, module_name: &str, read: &mut dyn FnMut(&[u8]));
+
+    /// Records this module's unique caller-to-dependency relationships and
+    /// answers the closure's running total (`docs/44` §2, ADR-0090).
+    ///
+    /// **The count lives with the launch and the ceiling lives here.** The
+    /// number of authenticated dependency reopens a closure demands is exactly
+    /// the number of these edges, so the component that performs them keeps the
+    /// counter — one `usize`, alive for the launch only — and the component that
+    /// owns the accepted limits decides when it is too many.
+    fn add_edges(&mut self, count: usize) -> usize;
+}
+
+/// A verifier asked about a module outside any closure.
+///
+/// For a caller checking one artifact on its own — a test, a tool, a fixture.
+/// It states that nothing has been verified, so the closure obligations below
+/// have nothing to check against and are not checked. It is **not** the
+/// production path: `tos-residency::launch` supplies a real one.
+pub struct NoDependencies;
+
+impl VerifiedDependencies for NoDependencies {
+    fn states_closure(&self) -> bool {
+        false
+    }
+
+    fn add_edges(&mut self, _count: usize) -> usize {
+        0
+    }
+
+    fn evidence(&self, _module_name: &str) -> Option<VerifiedArtifactEvidence> {
+        None
+    }
+
+    fn read_image(&self, _module_name: &str, _read: &mut dyn FnMut(&[u8])) {}
+}
+
+/// `Module::exports` is the canonical public projection of `Module::functions`.
+///
+/// `docs/43` §2 names the section "Imports and exported signatures", and what
+/// the runtime actually enters is a function: `Closure::export_of` resolves a
+/// name against the resident module's own `functions` filtered by visibility,
+/// never against this table. So a table that disagreed with that projection
+/// would be a description of a module nobody executes — and until this check
+/// existed, the verifier compared the two not at all and an artifact could
+/// carry any export table it liked above any bodies it liked.
+///
+/// The comparison is **full `Signature` equality**, every field the schema
+/// represents: name, visibility, parameters with their types *and* modes, the
+/// result, the async flag and the declared effects. That does not make an
+/// imported call mode-aware — modes are still not compared at a call — it makes
+/// the authenticated export table a true description of the function execution
+/// will enter.
+///
+/// `V2004_TABLE_ORDER` owns it because what is wrong is the table: it is not
+/// the canonical form of the section, whether the defect is a missing entry, an
+/// extra one, a private function published, a duplicate, or a field that does
+/// not match the body it claims to describe.
+fn check_export_projection(module: &Module) -> Result<(), Finding> {
+    let expected: Vec<&tos_ir::Signature> = module
+        .functions
+        .iter()
+        .filter(|function| function.signature.visibility == tos_ir::Visibility::Public)
+        .map(|function| &function.signature)
+        .collect();
+    if expected.len() != module.exports.len() {
+        return Err(Finding::new(
+            "V2004_TABLE_ORDER",
+            "exports",
+            alloc::format!(
+                "the module declares {} public function(s) and exports {} signature(s)",
+                expected.len(),
+                module.exports.len()
+            ),
+        ));
+    }
+    for (position, (declared, exported)) in expected.iter().zip(&module.exports).enumerate() {
+        if *declared != exported {
+            return Err(Finding::new(
+                "V2004_TABLE_ORDER",
+                alloc::format!("exports[{position}]"),
+                alloc::format!(
+                    "the exported signature of {} is not the signature of the function it names",
+                    exported.name
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// One imported call of the module being verified, indexed once.
+struct ImportedCall<'a> {
+    function: usize,
+    import: usize,
+    name: &'a str,
+    operands: &'a [Operand],
+    result: TypeId,
+    at: String,
+}
+
+/// Every imported named call in the caller, found in one pass.
+///
+/// **One scan, not one per dependency.** A caller importing many modules would
+/// otherwise be walked once for each of them; this walks its instruction stream
+/// once and groups what it finds. The index is bounded by the caller's own
+/// accepted instruction ceiling and dies with this verification.
+fn imported_calls(module: &Module) -> Vec<ImportedCall<'_>> {
+    let mut found = Vec::new();
+    for (index, function) in module.functions.iter().enumerate() {
+        for (block_index, block) in function.blocks.iter().enumerate() {
+            for instruction in &block.instructions {
+                if let Op::Call {
+                    target: CallTarget::Imported { import, name },
+                    operands,
+                } = &instruction.op
+                {
+                    found.push(ImportedCall {
+                        function: index,
+                        import: *import,
+                        name: name.as_str(),
+                        operands,
+                        result: instruction.ty,
+                        at: alloc::format!("functions[{index}].blocks[{block_index}]"),
+                    });
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether a type of this module is the same type as one of a dependency's.
+///
+/// **Structure and nominal identity, across two type tables.** A type id is a
+/// position in the table that holds it, so nothing can be compared by index:
+/// the two graphs are walked together. A nominal type is equal only when the
+/// module that *defined* it is the same module — the content identity, not the
+/// spelling — so two records named `Point` declared by two modules stay two
+/// types however alike their fields are.
+fn types_agree(
+    caller: &Module,
+    caller_ty: TypeId,
+    dependency: &[TypeDef],
+    dependency_ty: TypeId,
+    depth: usize,
+) -> bool {
+    if depth > tos_ir::MAX_TYPE_DEPTH {
+        return false;
+    }
+    let (Some(here), Some(there)) = (caller.type_of(caller_ty), dependency.get(dependency_ty))
+    else {
+        return false;
+    };
+    let pair = |a: &TypeId, b: &TypeId| types_agree(caller, *a, dependency, *b, depth + 1);
+    let list = |a: &[TypeId], b: &[TypeId]| {
+        a.len() == b.len() && a.iter().zip(b).all(|(one, other)| pair(one, other))
+    };
+    match (here, there) {
+        (TypeDef::Unit, TypeDef::Unit)
+        | (TypeDef::Bool, TypeDef::Bool)
+        | (TypeDef::Size, TypeDef::Size)
+        | (TypeDef::Duration, TypeDef::Duration)
+        | (TypeDef::Text, TypeDef::Text)
+        | (TypeDef::Bytes, TypeDef::Bytes)
+        | (TypeDef::ConversionError, TypeDef::ConversionError)
+        | (TypeDef::MmioRegion, TypeDef::MmioRegion)
+        | (TypeDef::MmioRegionMut, TypeDef::MmioRegionMut)
+        | (TypeDef::Event, TypeDef::Event)
+        | (TypeDef::Semaphore, TypeDef::Semaphore)
+        | (TypeDef::Barrier, TypeDef::Barrier)
+        | (TypeDef::Latch, TypeDef::Latch)
+        | (TypeDef::AtomicBool, TypeDef::AtomicBool)
+        | (TypeDef::AtomicU32, TypeDef::AtomicU32)
+        | (TypeDef::AtomicU64, TypeDef::AtomicU64) => true,
+        (TypeDef::Int(one), TypeDef::Int(other)) => one == other,
+        (TypeDef::Option(a), TypeDef::Option(b))
+        | (TypeDef::Task(a), TypeDef::Task(b))
+        | (TypeDef::TaskResult(a), TypeDef::TaskResult(b))
+        | (TypeDef::Shared(a), TypeDef::Shared(b))
+        | (TypeDef::Region(a), TypeDef::Region(b))
+        | (TypeDef::DmaRegion(a), TypeDef::DmaRegion(b))
+        | (TypeDef::RegionMut(a), TypeDef::RegionMut(b))
+        | (TypeDef::DmaRegionMut(a), TypeDef::DmaRegionMut(b))
+        | (TypeDef::Mutex(a), TypeDef::Mutex(b))
+        | (TypeDef::RwLock(a), TypeDef::RwLock(b))
+        | (TypeDef::MutexGuard(a), TypeDef::MutexGuard(b))
+        | (TypeDef::ReadGuard(a), TypeDef::ReadGuard(b))
+        | (TypeDef::WriteGuard(a), TypeDef::WriteGuard(b))
+        | (TypeDef::Channel(a), TypeDef::Channel(b))
+        | (TypeDef::Slice(a), TypeDef::Slice(b)) => pair(a, b),
+        (TypeDef::Result(a, e), TypeDef::Result(b, f)) => pair(a, b) && pair(e, f),
+        (TypeDef::Array(a, n), TypeDef::Array(b, m)) => n == m && pair(a, b),
+        (TypeDef::Tuple(a), TypeDef::Tuple(b)) => list(a, b),
+        (TypeDef::Function(a, r), TypeDef::Function(b, s)) => list(a, b) && pair(r, s),
+        (TypeDef::Capability(a), TypeDef::Capability(b)) => a == b,
+        (
+            TypeDef::Nominal {
+                module_content_id: one_module,
+                export_name: one_name,
+                kind: one_kind,
+                fields: one_fields,
+                variants: one_variants,
+            },
+            TypeDef::Nominal {
+                module_content_id: other_module,
+                export_name: other_name,
+                kind: other_kind,
+                fields: other_fields,
+                variants: other_variants,
+            },
+        ) => {
+            one_module == other_module
+                && one_name == other_name
+                && one_kind == other_kind
+                && list(one_fields, other_fields)
+                && one_variants.len() == other_variants.len()
+                && one_variants
+                    .iter()
+                    .zip(other_variants)
+                    .all(|(a, b)| a.name == b.name && list(&a.payload, &b.payload))
+        }
+        _ => false,
+    }
+}
+
+/// Imported calls, against the exact dependency artifact this launch verified.
+///
+/// **The declared resolution is not the authority here and never was one.** A
+/// `ResolutionSnapshot` is what a producer *says* the closure resolved to, and
+/// until this check existed a caller was admitted because its import named a
+/// module the snapshot happened to describe — so a hostile declaration naming
+/// an export the real module does not have, or agreeing perfectly with a forged
+/// caller about a signature the real module does not declare, was accepted and
+/// discovered, if at all, by the engine.
+///
+/// What is authority is the dependency artifact this same launch already
+/// verified. ADR-0071 §5's reload rule applies exactly: the evidence minted by
+/// that verification names the artifact digest, the bytes offered are hashed
+/// here and compared with it, and only bytes that *are* that artifact are
+/// parsed. Semantic verification is not repeated — it already happened, to
+/// these bytes.
+///
+/// The reconstructed surface is transient: one dependency is open at a time and
+/// the decoded prefix is dropped before the next is opened, so nothing about a
+/// module's export types survives this function, let alone the launch.
+fn check_imported_calls(
+    module: &Module,
+    dependencies: &mut dyn VerifiedDependencies,
+    limits: &Limits,
+) -> Result<(), Finding> {
+    if !dependencies.states_closure() {
+        return Ok(());
+    }
+    // **The topology quota, counted by the component that pays it** (ADR-0090).
+    // An edge is one unique `(caller, resolved dependency)` pair — two bindings
+    // of one module are one relationship, authenticated once however many call
+    // sites reach it — and the running total is checked before this module's
+    // dependencies are opened, so a closure above the ceiling is refused at the
+    // edge that crosses it rather than after the work the rest of it wanted.
+    let mut distinct: Vec<&str> = module
+        .imports
+        .iter()
+        .map(|import| import.module_name.as_str())
+        .collect();
+    distinct.sort_unstable();
+    distinct.dedup();
+    let edges = dependencies.add_edges(distinct.len());
+    if edges > limits.closure_edges {
+        return Err(Finding::new(
+            "V2001_LIMIT",
+            "resolved closure direct dependency edges",
+            alloc::format!(
+                "{edges} unique caller-to-dependency edge(s) exceeds the ceiling of {}",
+                limits.closure_edges
+            ),
+        ));
+    }
+    let calls = imported_calls(module);
+    // A dependency-first closure is what makes this check possible at all
+    // (ADR-0071 §1): every module a caller imports has been verified before the
+    // caller is. A forward dependency — and therefore any cycle — is refused
+    // here rather than found by a second algorithm.
+    for (index, import) in module.imports.iter().enumerate() {
+        let Some(evidence) = dependencies.evidence(&import.module_name) else {
+            return Err(Finding::new(
+                "V2012_IMPORT",
+                alloc::format!("import {index}"),
+                alloc::format!(
+                    "{} has not been verified earlier in this closure",
+                    import.module_name
+                ),
+            ));
+        };
+        if !import.module_content_id.is_empty()
+            && !evidence.states_content_id(&import.module_content_id)
+        {
+            return Err(Finding::new(
+                "V2012_IMPORT",
+                alloc::format!("import {index}"),
+                alloc::format!(
+                    "{} was verified as another content identity than the one this module claims",
+                    import.module_name
+                ),
+            ));
+        }
+    }
+    // One dependency open at a time, in import order, and only those a call
+    // actually reaches.
+    //
+    // **Once per dependency, not once per binding** (ADR-0090 §2a). Two
+    // bindings of one module are one relationship: the quota above counted them
+    // once, and this is the work that count is a bound on, so it is paid once
+    // too. Every call site reaching any binding of a dependency is checked
+    // against the single surface its one authenticated reopen reconstructs.
+    let mut opened: Vec<&str> = Vec::new();
+    for (index, import) in module.imports.iter().enumerate() {
+        let name = import.module_name.as_str();
+        if opened.contains(&name) {
+            continue;
+        }
+        if !calls
+            .iter()
+            .any(|call| module.imports[call.import].module_name == import.module_name)
+        {
+            continue;
+        }
+        opened.push(name);
+        let evidence = dependencies
+            .evidence(&import.module_name)
+            .expect("the loop above refused an import without evidence");
+        let mut outcome: Result<(), Finding> = Err(Finding::new(
+            "V2012_IMPORT",
+            alloc::format!("import {index}"),
+            alloc::format!(
+                "the image of {} is not available to authenticate",
+                import.module_name
+            ),
+        ));
+        dependencies.read_image(&import.module_name, &mut |image| {
+            outcome = check_against_dependency(module, &calls, index, &evidence, image, limits);
+        });
+        outcome?;
+    }
+    Ok(())
+}
+
+/// The authenticated reopen, for one dependency of one caller.
+fn check_against_dependency(
+    module: &Module,
+    calls: &[ImportedCall<'_>],
+    import: usize,
+    evidence: &VerifiedArtifactEvidence,
+    image: &[u8],
+    limits: &Limits,
+) -> Result<(), Finding> {
+    let name = &module.imports[import].module_name;
+    // **Before any export datum is read.** Wrong bytes are a refusal, never a
+    // fallback and never a reparse of something else.
+    if !evidence.authenticates(image) {
+        return Err(Finding::new(
+            "V2012_IMPORT",
+            alloc::format!("import {import}"),
+            alloc::format!("the image offered for {name} is not the artifact this launch verified"),
+        ));
+    }
+    let prefix =
+        tos_image::parse_export_prefix(image, &image::parse_limits(limits)).map_err(|error| {
+            Finding::new(
+                "V2012_IMPORT",
+                alloc::format!("import {import}"),
+                alloc::format!("the verified artifact of {name} did not reconstruct: {error:?}"),
+            )
+        })?;
+    // Every call site that reaches this dependency through **any** of the
+    // caller's bindings of it, against the one surface just reconstructed.
+    for call in calls
+        .iter()
+        .filter(|call| module.imports[call.import].module_name == *name)
+    {
+        let Some(signature) = prefix
+            .exports
+            .iter()
+            .find(|signature| signature.name == call.name)
+        else {
+            return Err(Finding::new(
+                "V2012_IMPORT",
+                call.at.clone(),
+                alloc::format!("{name} does not export {}", call.name),
+            ));
+        };
+        if call.operands.len() != signature.parameters.len() {
+            return Err(Finding::new(
+                "V2011_CFG",
+                call.at.clone(),
+                alloc::format!(
+                    "a call supplies {} operand(s) to {name}.{}, which takes {}",
+                    call.operands.len(),
+                    call.name,
+                    signature.parameters.len()
+                ),
+            ));
+        }
+        for (position, (operand, declared)) in
+            call.operands.iter().zip(&signature.parameters).enumerate()
+        {
+            let caller = &module.functions[call.function];
+            let Some(actual) = operand_type(module, caller, operand) else {
+                return Err(Finding::new(
+                    "V2010_TYPE",
+                    call.at.clone(),
+                    alloc::format!("operand {position} of {name}.{} has no type", call.name),
+                ));
+            };
+            if !types_agree(module, actual, &prefix.types, declared.ty, 0) {
+                return Err(Finding::new(
+                    "V2010_TYPE",
+                    call.at.clone(),
+                    alloc::format!(
+                        "operand {position} of {name}.{} is not the declared parameter type",
+                        call.name
+                    ),
+                ));
+            }
+        }
+        // The export's result is already the call-site result: an `async fn`
+        // declared `-> T` is lowered with `Task<T>` and the export table
+        // records what was lowered, so nothing is reconstructed here.
+        if !types_agree(module, call.result, &prefix.types, signature.result, 0) {
+            return Err(Finding::new(
+                "V2010_TYPE",
+                call.at.clone(),
+                alloc::format!(
+                    "a call to {name}.{} declares a result the export does not produce",
+                    call.name
+                ),
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// The declared minor of a language version this schema represents.

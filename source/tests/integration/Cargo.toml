@@ -18,6 +18,7 @@ tos-image = { path = "../../crates/tos-image" }
 tos-engine = { path = "../../crates/tos-engine" }
 tos-cache = { path = "../../crates/tos-cache" }
 tos-pipeline = { path = "../../crates/tos-pipeline" }
+tos-bundle = { path = "../../crates/tos-bundle" }
 tos-predeclared = { path = "../../crates/tos-predeclared" }
 tos-residency = { path = "../../crates/tos-residency" }
 tos-launch = { path = "../../crates/tos-launch" }

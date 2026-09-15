@@ -199,3 +199,123 @@ fn a_nominal_result_type_keeps_the_identity_of_the_module_that_declared_it() {
         .expect("the entry adopted the record type");
     assert_eq!(adopted, declared);
 }
+
+/// The resolved closure's direct dependency edges are bounded (ADR-0090).
+///
+/// **An edge is one unique `(caller, resolved dependency)` pair.** It is not an
+/// import declaration and not `docs/41` §6's `resource imports`, which bounds
+/// transitive module dependencies. The ceiling exists because the number of
+/// authenticated dependency reopens a launch performs is exactly this number,
+/// and every other accepted ceiling left a conforming closure able to demand
+/// tens of thousands of them.
+mod import_edges {
+    use tos_core::{check_source_set, ModuleEntry, Parser, SourceReader, MAX_IMPORT_EDGES};
+
+    const ENVELOPE: &str = "resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, \
+         workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 255]";
+
+    /// A set whose resolved closure has exactly `target` unique edges.
+    ///
+    /// Each module imports up to eight predecessors, and the last one that
+    /// contributes takes only as many as the target still needs — so the number
+    /// is exact rather than "the nearest a formula reaches".
+    fn texts_with_edges(target: usize) -> (Vec<String>, usize) {
+        let mut texts: Vec<String> = Vec::new();
+        let mut edges = 0usize;
+        let mut index = 0usize;
+        while edges < target || texts.is_empty() {
+            let want = core::cmp::min(core::cmp::min(index, 8), target - edges);
+            let head: String = (0..index)
+                .rev()
+                .take(want)
+                .map(|d| format!("import set.e{d} as d{d}; "))
+                .collect();
+            texts.push(format!(
+                "module set.e{index} version 1.0 profile bootstrap; {head}{ENVELOPE} \
+                 pub fn f() -> i32 {{ return 0i32; }}"
+            ));
+            edges += want;
+            index += 1;
+        }
+        (texts, edges)
+    }
+
+    fn first_code_of(texts: &[String]) -> Option<String> {
+        let read: Vec<_> = texts
+            .iter()
+            .map(|text| SourceReader::read(text.as_bytes()).expect("transport-valid"))
+            .collect();
+        let schemas: Vec<_> = read
+            .iter()
+            .map(|source| {
+                Parser::parse_schema(source)
+                    .into_accepted()
+                    .expect("the fixture parses")
+            })
+            .collect();
+        let paths: Vec<String> = (0..texts.len())
+            .map(|index| format!("set/e{index}.tos"))
+            .collect();
+        let entries: Vec<ModuleEntry<'_>> = (0..texts.len())
+            .map(|at| ModuleEntry::new(&paths[at], &read[at], &schemas[at]))
+            .collect();
+        check_source_set(&entries)
+            .into_iter()
+            .next()
+            .map(|diagnostic| diagnostic.code().to_string())
+    }
+
+    #[test]
+    fn a_closure_at_the_ceiling_is_accepted() {
+        let (texts, edges) = texts_with_edges(MAX_IMPORT_EDGES);
+        assert_eq!(edges, 1024);
+        assert_eq!(first_code_of(&texts), None);
+    }
+
+    #[test]
+    fn one_edge_past_the_ceiling_is_refused() {
+        let (texts, edges) = texts_with_edges(MAX_IMPORT_EDGES + 1);
+        assert_eq!(edges, 1025);
+        assert_eq!(
+            first_code_of(&texts).as_deref(),
+            Some("E1609_IMPORT_EDGE_LIMIT")
+        );
+    }
+
+    /// Two bindings of one module are one relationship and cost one edge, so a
+    /// set that would be over the ceiling counted by declarations is inside it
+    /// counted by edges.
+    #[test]
+    fn duplicate_bindings_of_one_module_cost_one_edge() {
+        let mut texts = vec![format!(
+            "module set.e0 version 1.0 profile bootstrap; {ENVELOPE} \
+             pub fn f() -> i32 {{ return 0i32; }}"
+        )];
+        let bindings: String = (0..64)
+            .map(|at| format!("import set.e0 as d{at}; "))
+            .collect();
+        texts.push(format!(
+            "module set.e1 version 1.0 profile bootstrap; {bindings}{ENVELOPE} \
+             pub fn g() -> i32 {{ return 0i32; }}"
+        ));
+        let read: Vec<_> = texts
+            .iter()
+            .map(|text| SourceReader::read(text.as_bytes()).expect("transport-valid"))
+            .collect();
+        let schemas: Vec<_> = read
+            .iter()
+            .map(|source| {
+                Parser::parse_schema(source)
+                    .into_accepted()
+                    .expect("the fixture parses")
+            })
+            .collect();
+        let paths = ["set/e0.tos", "set/e1.tos"];
+        let entries: Vec<ModuleEntry<'_>> = (0..2)
+            .map(|at| ModuleEntry::new(paths[at], &read[at], &schemas[at]))
+            .collect();
+        // Sixty-four declarations, one relationship: nothing about the edge
+        // budget is consumed by naming the same module again.
+        assert!(check_source_set(&entries).is_empty());
+    }
+}

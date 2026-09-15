@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `bc81689a10084a89c33f2db05bf2ebd17159b5448fbd9cee00556c151dfe7e98`\
+Source-manifest SHA-256: `13455f1001eded2fcd5659e9e2e7d22b1e7ba517676c69cd2c1877a3770b3c08`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -701,6 +701,22 @@ Before pushing, run the local repository gates from the repository root:
 Use `./scripts/preflight.sh --full` when the change touches boot, capsule parsing
 or QEMU-visible behavior; it additionally runs fuzzing and both QEMU suites.
 Preflight reports all selected gate results and does not install missing tools.
+
+**The provenance profile is a post-commit, pre-push gate**, and running it
+earlier proves nothing about the sign-off. `scripts/check-dco.sh` reads the
+trailers of commits reachable from `HEAD`, so a run made before the commit
+exists validates every commit *except* the one being written — which is the one
+that can be missing a trailer. Run it after committing and before pushing:
+
+```sh
+git commit -s ...
+./scripts/preflight.sh --profile provenance
+git push
+```
+
+Recorded because it happened: a commit reached `origin/main` without its
+trailer, the gate had been run only against the working tree beforehand, and the
+repair cost a history amendment on a published tip.
 
 ## AI-assisted contributions
 
@@ -7939,6 +7955,17 @@ Functions, ordered by fully qualified source name
 Source-map entries, ordered by source unit then byte start/end
 ```
 
+**`Module::exports` is exactly the canonical public projection of
+`Module::functions`**: the signature of every public entry, of only public
+entries, each once, in the canonical order the function table already fixes.
+The verifier proves it independently — it reconstructs the expected table from
+the artifact's own functions and compares, with full signature equality
+including parameter modes, the async flag and declared effects — because what a
+run actually enters is a function, and an export table that described anything
+else would be a description of a module nobody executes. A table that is not
+that projection is not the canonical form of the section and is refused as
+`V2004_TABLE_ORDER`.
+
 All source strings are normalized UTF-8 according to the language version's
 fixed Unicode baseline; for V1 that is UCD 17.0.0/UAX #15 Revision 57 NFC.
 Runtime `string` values are not silently normalized. All identifiers/paths
@@ -8223,6 +8250,7 @@ ceiling without a contract extension:
 ```text
 normalized source unit             256 KiB
 module dependency closure          256 modules
+resolved closure direct dependency edges    1024
 module/import graph depth          64
 identifier bytes                   128
 string/bytes literal bytes         64 KiB
@@ -8425,6 +8453,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 | `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
 | `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` | the module uses a source form added in a later minor than its own header declares. Fields: `feature`, `declared`, `requires`. The accepted feature names are `direct interface effect` (1.1), `device memory` (1.2), `capability representation` (1.3) and `DMA ordering` (1.4, ADR-0086). A module receives the language its header claims, so a 1.1 form in a 1.0 module is refused here rather than accepted by a frontend that happens to implement both (ADR-0080) |
+| `E1609_IMPORT_EDGE_LIMIT` | the exact resolved module closure contains more than 1024 unique direct module-dependency edges (ADR-0090). Fields: `limit`, `actual`. An **edge** is one unique `(caller module identity, resolved dependency module identity)` pair, never an import declaration: two bindings of one module from one caller are one relationship and cost one edge, and an unresolvable or ambiguous import contributes none — `E1604` and `E1605` own those. A capability-interface import contributes none. Reported on the import declaration whose new unique edge first crosses the ceiling under the resolver's canonical traversal. **Not `resource imports`**, which `docs/41` §6 defines as maximum *transitive* module dependencies; this bounds edges in a whole closure, and neither quantity bounds the other. The independent verifier enforces the same ceiling during launch as `V2001_LIMIT` |
 
 ### Concurrency (stage `type`)
 
@@ -24193,7 +24222,8 @@ coverage and complete docs/43 §1 conformance.
 
 # ADR-0071: Bounded verified-module residency and the module provider
 
-- Status: **Accepted**
+- Status: **Accepted**, amended 2026-09-15 — see §1a, which states the
+  dependency-first order of the closure a launch is handed
 - Date: 2026-08-26 (accepted 2026-08-27)
 - Decision level: 2 — it fixes how many verified modules an execution may hold
   at once, what supplies the rest, and what survives a module image being
@@ -24260,6 +24290,32 @@ Two consequences, both intended:
 
 An execution whose closure cannot be verified in full does not start. There is
 no partial launch, and no "verify the rest when we get there".
+
+#### 1a. The closure is dependency-first (amendment, 2026-09-15)
+
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-15, granted before
+  implementation of the amendment
+
+**The exact resolved closure a launch is handed is in dependency-first order:
+every module appears after every module it imports.** It is part of the
+canonical launch representation, not an optimisation and not a property of
+whichever builder happened to produce it — the source builder already emits this
+order, so no canonical artifact moves because the rule is now stated.
+
+During launch, when the module at position `N` is verified, every module its
+imports name must **already have been verified successfully earlier in this same
+launch**. A forward dependency is refused with `V2012_IMPORT`, and a cyclic
+artifact therefore fails by the same rule without a second cycle algorithm.
+
+**Why it is load-bearing.** An imported call can only be checked against the
+dependency's own exported signature, and the only trustworthy source of that
+signature is the artifact this launch has already verified. Dependency-first
+order is what makes that artifact exist by the time the caller is reached. The
+export surface is reconstructed transiently under §5's reload rule and dropped
+immediately: no typed surface enters the record of §2, the manifest, the
+declared resolution snapshot or a bundle declaration, so §1's peak claim and
+§2's fixed-shape record are untouched. What crosses from one module's turn to
+the next is the artifact identity §5 already needed.
 
 ### 2. What survives: a fixed-shape module record, and a closure manifest beside it
 
@@ -25184,7 +25240,8 @@ present it as if it did.
 
 # ADR-0073: Build-to-image launch and verifier-owned process admission
 
-- Status: **Accepted**
+- Status: **Accepted**, amended 2026-09-15 — see §4, which states the
+  dependency-first order of an exact image closure
 - Date: 2026-08-28
 - Decision level: 2 — it fixes where a source closure is turned into images,
   what a runtime process is handed, and which component decides that what it was
@@ -25323,6 +25380,17 @@ instruction.
 The runtime does not search for modules: the closure it is given is already
 resolved. That is a statement about *which* modules, not about whether they are
 valid.
+
+**The closure is ordered, and the order is part of what it is (amendment,
+2026-09-15; Project Architect approval: Vladimir Tomashevskiy, 2026-09-15).**
+Members are in dependency-first order — every module after every module it
+imports — as ADR-0071 §1a states for the launch side. The build already emits
+that order, so no artifact and no bundle byte moves; what changes is that a
+closure presented in another order is refused rather than verified in whatever
+order it arrived. That costs the bundle no format change: the order is a
+property of the member sequence the format already carries, and a hostile
+reordering is refused by the verifier reaching a caller whose dependency it has
+not yet proved.
 
 ## 5. Reload is unchanged
 
@@ -32801,6 +32869,247 @@ Imported named-call signatures, their source diagnostics, imported and callable
 across the bundle boundary all remain open and are all deliberately untouched.
 
 <!-- END docs/adr/0089-the-call-arity-diagnostic.md -->
+
+---
+
+<!-- BEGIN docs/adr/0090-the-resolved-closure-import-edge-ceiling.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0090: the resolved-closure import-edge ceiling
+
+- Status: **Accepted (Project Architect-approved, 2026-09-15)**
+- Project Architect approval: Vladimir Tomashevskiy, 2026-09-15, granted before
+  implementation
+- Date: 2026-09-15
+- Decision level: **2**. It adds one topology hard limit and one diagnostic
+  code. No source form, no semantic operation, no schema field
+- Related: `docs/44` §2 (the hard-limit table this joins), `docs/41` §6
+  (`resource imports`, which this is **not**), `docs/42` §1 (module resolution),
+  ADR-0071 §1a and §5 (dependency-first launch, the exact-byte reload rule this
+  bounds the use of), ADR-0073 §4
+
+## 1. What is bounded, and why it needed bounding
+
+An imported call may be checked only against the export signature of the exact
+dependency artifact this launch already verified. The launch therefore reopens
+that artifact — authenticates its bytes against the trusted artifact digest,
+reconstructs its export prefix, checks the caller's calls, and drops the
+reconstruction. Nothing is retained: that is the property ADR-0071 §2's
+fixed-shape record exists to protect, and it is not negotiable.
+
+The cost of that discipline is one authenticated reopen per
+caller-to-dependency relationship, **measured at approximately 7.1 ms** for a
+ceiling-sized module. What was missing was any bound on how many such
+relationships a conforming closure may contain.
+
+It was not small. Under the ceilings already accepted — 256 modules, graph depth
+64 — the densest admissible closure reaches **32 256** edges, which is
+**≈229 s** of reopen work. Measured, not estimated: 1 920 edges over 64 modules
+cost `18 287 ms` against a `4 662 ms` no-import baseline, and the per-edge cost
+is stable across closure sizes.
+
+## 2. Decision
+
+`docs/44` §2 gains one line:
+
+```text
+resolved closure direct dependency edges    1024
+```
+
+It sits beside `module dependency closure 256 modules` and
+`module/import graph depth 64`, because it is the same kind of statement: a
+property of the closure's shape, checked before work proportional to it begins.
+
+### 2a. What an edge is
+
+One **unique pair**:
+
+```text
+(caller module identity, resolved dependency module identity)
+```
+
+in the exact resolved closure. Not an import declaration:
+
+```tos
+import up as first;
+import up as second;
+```
+
+is **one** edge once both resolve to the same dependency, because it is one
+relationship to every consumer of the graph — a launch authenticates that
+dependency once and checks every call site in that caller against the single
+reopened surface. Counting declarations would bill the source for a shape it
+does not have.
+
+An unresolvable or ambiguous import contributes no edge: `E1604` and `E1605`
+own those, and an edge that does not exist may not consume the budget.
+
+A capability-interface import contributes no edge. It introduces no module
+dependency, and this decision does not invent a relation under which it would.
+
+### 2b. Why not `resource imports`
+
+`docs/41` §6 defines that field as **"maximum transitive module
+dependencies"** — a count of modules reachable from one module. This is a count
+of edges in a whole closure. One does not bound the other in either direction:
+a closure of 256 modules each within a small transitive bound can still carry
+tens of thousands of edges, and a single module with a large transitive bound
+may declare one. Reusing the field would have bounded neither quantity while
+appearing to bound both.
+
+### 2c. Why 1024
+
+Measured, from the tree this decision was made in:
+
+| | |
+|---|---:|
+| modules in the repository (`.tos`) | 182 |
+| direct dependency edges across all of them | **49** |
+| largest single real closure | **3 modules / 4 edges** |
+| largest direct-import count of any real module | **4** |
+| densest previously admissible synthetic closure | 32 256 edges |
+
+1024 is **256× the largest real closure** in the tree and bounds the reopen
+amplification to ≈7.3 s before any optimisation of the reopen itself. 2048 was
+considered and rejected: it doubles the bound on a measured expensive operation
+to buy headroom nothing in the tree, or anything resembling it, is near.
+
+**No language minor.** This adds no source form and reinterprets none, so
+`E1608` does not apply and no module header changes.
+
+## 3. `E1609_IMPORT_EDGE_LIMIT`
+
+Stage `type`. Allocated here:
+
+> the exact resolved module closure contains more than 1024 unique direct
+> module-dependency edges.
+
+Required fields: `limit`, `actual`. The first refusal carries `limit=1024`,
+`actual=1025`.
+
+It is reported on the source `import` declaration whose successfully resolved
+**new unique** dependency edge first crosses the ceiling, walking the modules in
+the order the resolver produced and each module's imports in source order, so
+the same set always names the same declaration. A duplicate caller-to-dependency
+relation is never counted twice, so it can never be the declaration reported.
+
+It belongs to the `E16xx` family because the condition is a property of module
+resolution and topology, beside import-not-found, ambiguity and cycles — not a
+property of a module's declared resource envelope.
+
+## 4. The launch enforces it independently
+
+`docs/43` §5 makes a frontend's success no input to verifier acceptance, and
+that applies here exactly: a launch does not admit a closure because a frontend
+says it counted the edges.
+
+Walking the dependency-first closure (ADR-0071 §1a), the launch deduplicates
+each module's imported module identities, adds them to **one closure-wide
+`usize`**, and refuses the first total above the ceiling with the existing
+`V2001_LIMIT`, whose subject names the breached limit — `resolved closure direct
+dependency edges`. No new verifier code is allocated.
+
+The counter is fixed size and exists only for the launch. It does not enter
+`VerifiedModuleRecord`, `VerifiedClosureManifest` or any execution state, so
+ADR-0071 §1's flat launch peak and §2's fixed-shape record are untouched.
+
+**It refuses where the ceiling is crossed**, before the dependencies of the
+remaining modules are opened — the point of a topology quota is that the work it
+bounds is not performed first.
+
+## 5. The architecture this completes
+
+> Imported-call authentication retains no variable-size export state across
+> module turns. Each used dependency is reopened from the exact artifact bytes
+> previously verified by this launch, checked against its trusted artifact
+> identity, prefix-parsed transiently, and dropped. The total number of such
+> caller-to-dependency relationships is bounded by the resolved-closure
+> direct-edge ceiling of 1024.
+
+That last sentence is what this decision adds, and it is what closes the
+32 256-edge amplification.
+
+### 5a. Why the retained frontier was rejected
+
+The alternative was to verify dependencies in closure order and **retain** a
+compact typed signature surface for each until its last importing caller had
+been verified. It was rejected because it violates ADR-0071's lifetime rule:
+after a module is verified only its fixed-shape record survives, and a
+variable-length export surface living across module verifications is exactly
+what that rule forbids. Measured, a wide fan-in would have retained 255 such
+surfaces at once.
+
+### 5b. Why a bounded cache was rejected
+
+A fixed-size LRU of already-reconstructed surfaces was measured against every
+shape, simulated over the exact reopen sequence. It does not work, and the
+reason is structural: the access pattern is a scan, not a working set. At 256
+modules a cache of sixteen surfaces removes **0.5 %** of the parses in the dense
+case and **none at all** in a chain or a wide fan-in. It would have cost
+retained state for nothing.
+
+## 6. Architecture impact statement
+
+- **Change level**: 2 — one topology limit, one diagnostic code.
+- **Invariants affected**: none weakened. ADR-0071 §1's flat launch peak and
+  §2's fixed-shape record are preserved; this is what makes preserving them
+  affordable.
+- **Canonical representation**: unchanged. No source form, no `tos-ir/v1` field,
+  no `TOSBUNDLE` version.
+- **Trusted base**: unchanged. The launch gains one `usize`.
+- **Source-to-runtime**: unchanged for every closure within the ceiling, which
+  is every closure in the tree by a factor of 256.
+- **Recovery and rollback**: none required.
+- **Stage gate**: none.
+- **Threat model**: closes a resource-amplification path — a conforming closure
+  demanding ≈229 s of authenticated reopen work — and opens none.
+- **Performance**: bounds a measured expensive operation. The ceiling's own cost
+  is recorded rather than assumed.
+- **Compatibility profile**: unchanged; both profiles.
+- **Dependencies, licence, patent**: none.
+- **Tests**: the exact 1024/1025 source boundary, duplicate-binding
+  deduplication, and the re-measured reopen and launch costs. On the launch
+  side the boundary is exact on both sides and the closure's edges are
+  **counted from the artifacts**, never taken from a fixture's label: a closure
+  of exactly 1024 unique pairs launches, and one of exactly 1025 is refused
+  `V2001_LIMIT`. The refusal is proved to land *before* the crossing edge's
+  work by the reopen ledger rather than by position — the launch is handed a
+  recording closure source, and after the crossing caller's own image is read
+  nothing is read at all, so 1024 authenticated reopens were paid and the
+  1025th was not.
+
+## 7. What the exact boundary test corrected (2026-09-15)
+
+The exact launch-side boundary above found §2a stated but not implemented. The
+ADR's reason for counting two bindings of one dependency as one edge is that
+"a launch authenticates that dependency once and checks every call site in that
+caller against the single reopened surface" — and the verifier's reopen loop
+walked `module.imports` by **declaration**, authenticating the same dependency
+again for each binding of it. The quota counted relationships while the work was
+paid per declaration, so one edge of budget could buy up to 255 authenticated
+reopens and the amplification this ADR exists to close was not closed: 256
+modules each binding one dependency 255 times is 255 edges — comfortably inside
+the ceiling — and 65 025 reopens.
+
+The implementation was corrected to the decision, not the decision to the
+implementation: the reopen loop now opens each distinct dependency once per
+caller and checks every call site reaching any binding of it against that one
+surface. No acceptance decision changes — the same call sites are checked
+against the same exports — and edges and reopens are now the same number, which
+is what makes the ceiling a bound on the work.
+
+## 8. What this ADR does not decide
+
+**It does not repair `resource imports`.** A separate discrepancy was found
+while measuring: the verifier checks `module.imports.len()` against that
+envelope value, while `docs/41` §6 defines it as maximum *transitive* module
+dependencies. That is a real and separate correctness item, recorded in
+`PROGRESS.md`, and it is not redefined, reused or silently corrected here.
+
+Imported `PassMode`, callable `PassMode` and Stage 4D-4 remain untouched.
+
+<!-- END docs/adr/0090-the-resolved-closure-import-edge-ceiling.md -->
 
 ---
 

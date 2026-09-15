@@ -59,6 +59,7 @@ ceiling without a contract extension:
 ```text
 normalized source unit             256 KiB
 module dependency closure          256 modules
+resolved closure direct dependency edges    1024
 module/import graph depth          64
 identifier bytes                   128
 string/bytes literal bytes         64 KiB
@@ -261,6 +262,7 @@ necessarily ASCII, such as `@`, `$`, `#`, `` ` ``, `'` or `\` — takes `E1013`.
 | `E1606_IMPORT_CYCLE` | the import graph contains a cycle; the ordered cycle path is a field |
 | `E1607_PRIVATE_PUBLIC_TYPE` | a module-private nominal type appears in the transitive public type surface of a `pub` function signature |
 | `E1608_FEATURE_REQUIRES_LANGUAGE_MINOR` | the module uses a source form added in a later minor than its own header declares. Fields: `feature`, `declared`, `requires`. The accepted feature names are `direct interface effect` (1.1), `device memory` (1.2), `capability representation` (1.3) and `DMA ordering` (1.4, ADR-0086). A module receives the language its header claims, so a 1.1 form in a 1.0 module is refused here rather than accepted by a frontend that happens to implement both (ADR-0080) |
+| `E1609_IMPORT_EDGE_LIMIT` | the exact resolved module closure contains more than 1024 unique direct module-dependency edges (ADR-0090). Fields: `limit`, `actual`. An **edge** is one unique `(caller module identity, resolved dependency module identity)` pair, never an import declaration: two bindings of one module from one caller are one relationship and cost one edge, and an unresolvable or ambiguous import contributes none — `E1604` and `E1605` own those. A capability-interface import contributes none. Reported on the import declaration whose new unique edge first crosses the ceiling under the resolver's canonical traversal. **Not `resource imports`**, which `docs/41` §6 defines as maximum *transitive* module dependencies; this bounds edges in a whole closure, and neither quantity bounds the other. The independent verifier enforces the same ceiling during launch as `V2001_LIMIT` |
 
 ### Concurrency (stage `type`)
 
