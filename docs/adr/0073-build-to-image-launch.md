@@ -2,7 +2,8 @@
 
 # ADR-0073: Build-to-image launch and verifier-owned process admission
 
-- Status: **Accepted**
+- Status: **Accepted**, amended 2026-09-15 — see §4, which states the
+  dependency-first order of an exact image closure
 - Date: 2026-08-28
 - Decision level: 2 — it fixes where a source closure is turned into images,
   what a runtime process is handed, and which component decides that what it was
@@ -141,6 +142,17 @@ instruction.
 The runtime does not search for modules: the closure it is given is already
 resolved. That is a statement about *which* modules, not about whether they are
 valid.
+
+**The closure is ordered, and the order is part of what it is (amendment,
+2026-09-15; Project Architect approval: Vladimir Tomashevskiy, 2026-09-15).**
+Members are in dependency-first order — every module after every module it
+imports — as ADR-0071 §1a states for the launch side. The build already emits
+that order, so no artifact and no bundle byte moves; what changes is that a
+closure presented in another order is refused rather than verified in whatever
+order it arrived. That costs the bundle no format change: the order is a
+property of the member sequence the format already carries, and a hostile
+reordering is refused by the verifier reaching a caller whose dependency it has
+not yet proved.
 
 ## 5. Reload is unchanged
 

@@ -79,6 +79,32 @@ pub fn lower_module(
     lower_module_in_set(source, schema, context, &[])
 }
 
+/// Checks a caller's imported named calls against its resolved dependencies.
+///
+/// **The first moment this can be checked at all.** The set-wide check runs
+/// before any module is lowered, so no dependency's exact signature exists
+/// then; the caller's own lowering turn is the first point at which its source
+/// and its dependencies' interfaces are both in hand (ADR-0071 §1's
+/// dependency-first order is what puts them there).
+///
+/// The diagnostics are ordinary source diagnostics at `Stage::Type` — the rule
+/// broken is a typing rule, and where the frontend happened to notice it is not
+/// a property of the rule. The pipeline phase that reports the refusal is
+/// `Lower`, honestly, because that is the phase in which the information first
+/// existed; the set-wide Check pass is not credited with knowing something it
+/// could not have known.
+///
+/// **Run this before lowering, never instead of it.** A call that fails here
+/// must be refused as source; lowering it and reporting a `Gap` would report a
+/// valid-source-the-lowerer-cannot-represent for a program that is not valid.
+pub fn check_imported_calls(
+    source: &SourceUnit,
+    schema: &Schema,
+    imports: &[ResolvedImport<'_>],
+) -> Vec<crate::Diagnostic> {
+    crate::typing::check_imported(source, schema, imports)
+}
+
 /// Lowers one checked module of a source set, with its dependencies resolved.
 ///
 /// Two things need the dependencies and cannot be honest without them: an
@@ -836,6 +862,7 @@ impl<'source> Lowerer<'source> {
         operation: &str,
         at: Span,
     ) -> Result<TypeId, Gap> {
+        let _ = at;
         let Some(target) = self.import_target(base) else {
             return Ok(self.unit_type());
         };
@@ -845,10 +872,42 @@ impl<'source> Lowerer<'source> {
             // empty content id above says the same thing about the same import.
             return Ok(self.unit_type());
         };
+        // **A name the module does not export is source, and is refused as
+        // source.** This used to be a `Gap`, which says "valid checked source
+        // this lowerer cannot faithfully represent" — the wrong statement about
+        // a program that names a function nobody wrote. `check_imported_calls`
+        // reports it as `E1202_UNKNOWN_VALUE_NAME` before lowering begins, so
+        // reaching here at all means the check was skipped, and `unit` is the
+        // same honest placeholder an unresolved import gets.
         let Some(result) = resolved.interface.result_of(operation) else {
-            return Err(self.gap("call to a name the imported module does not export", at));
+            return Ok(self.unit_type());
         };
         Ok(self.adopt_type(resolved.interface, result as TypeId))
+    }
+
+    /// The exported parameter types of an imported callable, in this module's
+    /// type table, when the dependency is resolved and exports the name.
+    fn imported_parameter_types(
+        &mut self,
+        base: &str,
+        operation: &str,
+    ) -> Result<Option<Vec<TypeId>>, Gap> {
+        let Some(target) = self.import_target(base) else {
+            return Ok(None);
+        };
+        let Some(resolved) = self.resolved_import(&target) else {
+            return Ok(None);
+        };
+        let Some(carried) = resolved.interface.parameters_of(operation) else {
+            return Ok(None);
+        };
+        let carried: Vec<crate::CompactTypeId> = carried.to_vec();
+        let interface = resolved.interface;
+        let mut adopted = Vec::with_capacity(carried.len());
+        for ty in carried {
+            adopted.push(self.adopt_type(interface, ty as TypeId));
+        }
+        Ok(Some(adopted))
     }
 
     /// Re-interns a type from another module's table into this one.
@@ -3218,9 +3277,19 @@ impl<'source> Lowerer<'source> {
 
         // A function of an imported module.
         if let Some(import) = self.module_binding(&base) {
+            // **The callee's parameters are its arguments' context here too.**
+            // An unsuffixed literal passed to `up.take(1)` takes the type the
+            // export declares, exactly as it does at a local call — the two
+            // paths differ in where the signature comes from and in nothing
+            // else. A dependency that is not resolved states no type, and the
+            // literal keeps the accepted default.
+            let declared = self.imported_parameter_types(&base, &operation)?;
             let mut operands = Vec::new();
-            for argument in expression.arguments() {
-                operands.push(self.lower_expression(argument.value(), builder, None)?);
+            for (position, argument) in expression.arguments().iter().enumerate() {
+                let wanted = declared
+                    .as_ref()
+                    .and_then(|types| types.get(position).copied());
+                operands.push(self.lower_expression(argument.value(), builder, wanted)?);
             }
             // The callee's declared result, re-interned into this module's
             // type table. Lowering a call as `unit` because the signature was

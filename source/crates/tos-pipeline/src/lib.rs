@@ -938,6 +938,20 @@ fn build_with(
                 })
             })
             .collect();
+        // **The imported calls, checked as source, before anything is lowered.**
+        // The set-wide check ran before any dependency existed, so this is the
+        // first moment a call into another module can be held to that module's
+        // exact signature. A failure here is a source refusal reported at the
+        // phase in which the information first existed — `Lower` — and never a
+        // `Gap`, which would say the source was valid and the lowerer merely
+        // unable to represent it.
+        let imported = tos_core::check_imported_calls(&source, schema, &imports);
+        if !imported.is_empty() {
+            return Ok(Produced::Refused(Run::Diagnosed {
+                stage: PipelineStage::Lower,
+                diagnostics: imported,
+            }));
+        }
         let module = match lower_module_in_set(&source, schema, &context, &imports) {
             Ok(module) => module,
             Err(gap) => return Ok(Produced::Refused(Run::NotLowered(gap))),

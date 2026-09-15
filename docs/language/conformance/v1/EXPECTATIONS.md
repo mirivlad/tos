@@ -33,6 +33,7 @@
 | C026 | `accept/capability-effects.tos` | Bootstrap | accepts a declared effect set, a caller that declares the same effect, and a pure call chain | declared authority is exact and transitive |
 | C027 | `accept/atomic-orders.tos` | Full | accepts every order each atomic operation class admits, including a compare-exchange whose failure order is no stronger than its success order | typed atomic order legality |
 | C028 | `accept/dma-ordering.tos` | Full | accepts `dma_publish` and `dma_consume` over `DmaRegion<T>` and `DmaRegion<mut T>`, with the region still usable after four ordering points | ADR-0086 §3, §6b, §7: two directional visibility operations over the closed region family, non-consuming, taking no address and requiring no capability effect |
+| C029 | `accept/imported-surface.tos` | Bootstrap | accepts a module whose public functions are its export surface | `docs/43` §2: `Module::exports` is the canonical public projection of `Module::functions`, which the independent verifier proves rather than assumes |
 | C025 | `accept/defer-cleanup-order.tos` | Full | accepts a resource used after its cleanup is registered, two cleanups released in reverse registration order, and a returning path that runs its cleanup | `defer` registers without taking ownership and runs on the exit path reached |
 | R001 | `reject/use-after-move.tos` | Bootstrap | `E1301_USE_AFTER_MOVE` | affine ownership negative |
 | R002 | `reject/borrow-escape.tos` | Bootstrap | `E1302_CONFLICTING_BORROW` | a mutable borrow cannot coexist with later borrow/use |
@@ -142,6 +143,7 @@
 | R092 | `reject/call-arity-predeclared.tos` | Bootstrap | `E1217_CALL_ARITY_MISMATCH` with `callee=to_u8`, `expected=1`, `actual=2`, `context=predeclared` | ADR-0088/0089: the predeclared contract states the exact arity, and until it existed `to_u8(1u64, 2u64)` was accepted by checker, lowerer and verifier alike |
 | R093 | `reject/predeclared-argument-type.tos` | Bootstrap | `E1215_ARGUMENT_TYPE_MISMATCH` with `callee=to_u8`, `position=0`, `expected=an exact integer type or size`, `actual=bool` | ADR-0088: a checked conversion's operand rule is part of the contract; the checker used to type the result and look at no argument |
 | R094 | `reject/predeclared-wrapping-types.tos` | Bootstrap | `E1210_INTEGER_TYPE_MISMATCH` | **The predeclared precedence vector** (ADR-0088 §5). Two exact integer types disagree at a predeclared argument, so the numeric code owns it and the residual `E1215` does not absorb it |
+| R095 | `reject/imported-unknown-member.tos` | Bootstrap | `E1202_UNKNOWN_VALUE_NAME` with `name=up.no_such_function`, `module=up` | ADR-0071 §1: once the import qualifier resolves, a qualified value member the module does not export resolves to no module item. Reported by the dependency-aware source check that runs in the caller's own lowering turn — the first phase in which the dependency's exact interface exists — and never as a lowering `Gap` |
 
 R029 and R030 also fix the precedence between the two codes for a character that
 cannot be tokenized: a non-ASCII scalar value outside a literal or comment is

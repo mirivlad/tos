@@ -16,6 +16,34 @@
 use super::*;
 
 /// Reads untrusted bytes into a module value the semantic verifier can check.
+/// Reconstructs a module's declared interface and stops.
+///
+/// **For the one question a launch asks about a module it has already
+/// verified**: what does it export, and with which exact types. ADR-0071 §5
+/// lets an image whose artifact digest is already trusted be reloaded without
+/// repeating semantic verification; this reads only what an imported call has
+/// to be checked against, so no function body, no constant and no source-map
+/// entry is materialized at all.
+///
+/// The section order `docs/43` §2 fixes is what makes it possible: the export
+/// signatures precede the constants and the functions, so this is a prefix of
+/// the same stream and not a seek into it.
+///
+/// **It is not verification.** The bytes must already be known to be the exact
+/// bytes of a verified artifact before anything here is treated as a fact; this
+/// function reconstructs, and reconstruction is not a verdict.
+pub fn parse_export_prefix(image: &[u8], limits: &ParseLimits) -> Result<ExportPrefix, ImageError> {
+    let (payload, encoding) = unframe(image)?;
+    let mut input = In {
+        bytes: payload,
+        at: 0,
+        limits: *limits,
+        strings: Vec::new(),
+        encoding,
+    };
+    input.prefix()
+}
+
 pub fn parse(image: &[u8], limits: &ParseLimits) -> Result<Module, ImageError> {
     let (payload, encoding) = unframe(image)?;
     let mut input = In {
@@ -172,7 +200,16 @@ impl In<'_> {
         }
     }
 
-    fn module(&mut self) -> Result<Module, ImageError> {
+    /// Everything up to and including the export table.
+    ///
+    /// **The one decoder, stopped early.** `module` continues from here and
+    /// `export_prefix` does not: both read these sections with the same
+    /// framing, the same canonical string table, the same varints, the same
+    /// bounds and the same `TypeDef`, `Import`, `CapabilityImport` and
+    /// `Signature` decoders, because they are the same code. A second reader
+    /// for the same bytes is a second set of canonicality rules to keep in
+    /// agreement, which is the defect this avoids rather than the cost.
+    fn prefix(&mut self) -> Result<ExportPrefix, ImageError> {
         self.string_table()?;
         let header = self.header()?;
 
@@ -208,6 +245,24 @@ impl In<'_> {
             exports.push(self.signature()?);
         }
 
+        Ok(ExportPrefix {
+            header,
+            types,
+            imports,
+            capability_imports,
+            exports,
+        })
+    }
+
+    fn module(&mut self) -> Result<Module, ImageError> {
+        let ExportPrefix {
+            header,
+            types,
+            imports,
+            capability_imports,
+            exports,
+        } = self.prefix()?;
+
         let count = self.count("constants", self.limits.table_entries)?;
         let mut constants = Vec::with_capacity(count);
         for _ in 0..count {
@@ -237,19 +292,22 @@ impl In<'_> {
     /// The string table, checked for canonical order as it is read.
     fn string_table(&mut self) -> Result<(), ImageError> {
         let count = self.count("string table", MAX_STRINGS)?;
-        let mut strings = Vec::with_capacity(count);
-        let mut previous: Option<String> = None;
+        let mut strings: Vec<String> = Vec::with_capacity(count);
         for _ in 0..count {
             let bytes = self.blob("string")?;
             let text = core::str::from_utf8(bytes).map_err(|_| ImageError::BadUtf8)?;
-            if let Some(previous) = &previous {
+            // The predecessor is the entry already stored, so the canonical
+            // order is checked against it rather than against a second copy of
+            // it. The rule is unchanged and the comparison is the same one; what
+            // is gone is one allocation per string, which a launch pays once per
+            // authenticated dependency reopen and there are up to a thousand of
+            // those (ADR-0090).
+            if let Some(previous) = strings.last() {
                 if previous.as_str() >= text {
                     return Err(ImageError::NonCanonicalTable("string table"));
                 }
             }
-            let owned = String::from(text);
-            previous = Some(owned.clone());
-            strings.push(owned);
+            strings.push(String::from(text));
         }
         self.strings = strings;
         Ok(())

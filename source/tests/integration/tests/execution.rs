@@ -792,21 +792,27 @@ fn calling_pair_with_dependency_fuel(
 
 /// The budget a run is held to is the entry's, read out of what was verified.
 ///
-/// The closure is handed over entry-first, and the module at the end of it
-/// declares a hundred times the entry's fuel. A launch that took the run's
-/// envelope from the last image it was given — or from anything the side that
-/// encoded the images said beside them — would report that number. What bounds
-/// this run is the receipt the target's own verifier issued for the entry.
+/// The dependency declares a hundred times the entry's fuel. A launch that took
+/// the run's envelope from any image but the entry's — from the first it was
+/// handed, from the largest, or from anything the side that encoded the images
+/// said beside them — would report that number. What bounds this run is the
+/// receipt the target's own verifier issued for the entry.
+///
+/// **The closure is dependency-first** (ADR-0071 §1), which it has to be: a
+/// caller is verified against the dependency this launch already proved, so the
+/// entry cannot precede what it imports. The fixture used to hand the pair over
+/// entry-first to make the same point; the point survives the order and the
+/// order is now part of the representation rather than a convenience.
 #[test]
 fn the_run_is_bounded_by_the_entry_envelope_the_target_verified() {
     let (dependency, entry) = calling_pair_with_dependency_fuel(1_000_000);
-    let images: Vec<tos_residency::ImageSnapshot> = [&entry.0, &dependency.0]
+    let images: Vec<tos_residency::ImageSnapshot> = [&dependency.0, &entry.0]
         .iter()
         .map(|module| tos_image::encode(module).0.into_boxed_slice().into())
         .collect();
 
     let mut prepared =
-        Prepared::launch_images(images, &ResolutionSnapshot::default(), 0, "main", RESIDENCY)
+        Prepared::launch_images(images, &ResolutionSnapshot::default(), 1, "main", RESIDENCY)
             .expect("the closure launches");
     let outcome = prepared
         .run(Vec::new(), &mut Unreachable)
@@ -948,28 +954,36 @@ fn a_module_the_run_never_calls_is_still_verified_at_launch() {
 
 /// A closure that does not contain what its entry imports is not a closure.
 ///
-/// Under an all-resident set this was a trap at the call. It is now a refusal
-/// before the first instruction: the caller's import map is resolved against
-/// trusted membership when the caller is loaded, and a slot that names a
-/// non-member has no answer — so the caller is never admitted at all.
+/// Under an all-resident set this was a trap at the call, and then a refusal at
+/// load. It is now a refusal **during verification of the caller itself**: a
+/// dependency-first closure means every module a caller imports has already been
+/// verified when the caller is reached, so an import naming a module this launch
+/// never verified is refused there (ADR-0071 §1) rather than discovered when the
+/// call is made.
 #[test]
 fn a_closure_missing_what_its_entry_imports_refuses_the_run() {
     let (_, entry) = calling_pair();
     match launched(&[&entry.0], "main") {
-        Ok(mut prepared) => match prepared.run(Vec::new(), &mut Unreachable) {
-            Err(Refusal::EntryNotResident(Failure::WrongModule { module: 0 })) => {}
-            other => panic!("a call with nothing to call was admitted: {other:?}"),
-        },
-        Err(failure) => panic!("the launch itself failed differently: {failure:?}"),
+        Ok(_) => panic!("a caller was admitted without the module it imports"),
+        Err(Failure::Verifier { module: 0, finding }) => {
+            assert_eq!(finding.code, "V2012_IMPORT");
+            assert!(
+                finding.detail.contains("has not been verified earlier"),
+                "{finding:?}"
+            );
+        }
+        Err(other) => panic!("the launch failed differently: {other:?}"),
     }
 }
 
 /// The right name is not enough.
 ///
 /// A closure holding another revision of the module under the same name is not
-/// the module this caller was lowered and verified against. Membership keys on
-/// the exact `(declared name, resolved content identity)` pair, so the other
-/// revision is a different member — and the caller's import resolves to nothing.
+/// the module this caller was lowered and verified against. The caller's import
+/// states the content identity it resolved to, and the evidence this launch
+/// minted for the module it actually verified states another — so the caller is
+/// refused while it is being verified, against the artifact this launch proved
+/// rather than against a declaration or a membership table.
 #[test]
 fn a_dependency_of_another_revision_under_the_same_name_refuses_the_run() {
     let (_, entry) = calling_pair();
@@ -978,10 +992,16 @@ fn a_dependency_of_another_revision_under_the_same_name_refuses_the_run() {
         "system/lib/math.tos",
         "pub fn double(value: i32) -> i32 { return value * 3i32; }",
     );
-    let mut prepared = launched(&[&other.0, &entry.0], "main").expect("both modules verify");
-    match prepared.run(Vec::new(), &mut Unreachable) {
-        Err(Refusal::EntryNotResident(Failure::WrongModule { module: 1 })) => {}
-        other => panic!("a substituted dependency was accepted: {other:?}"),
+    match launched(&[&other.0, &entry.0], "main") {
+        Ok(_) => panic!("a substituted dependency was accepted"),
+        Err(Failure::Verifier { module: 1, finding }) => {
+            assert_eq!(finding.code, "V2012_IMPORT");
+            assert!(
+                finding.detail.contains("another content identity"),
+                "{finding:?}"
+            );
+        }
+        Err(other) => panic!("the launch failed differently: {other:?}"),
     }
 }
 

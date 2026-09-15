@@ -384,7 +384,57 @@ pub fn check_module_membership(
         }
     }
 
+    diagnostics.extend(check_import_edges(modules, resolution));
     diagnostics
+}
+
+/// The accepted ceiling on direct dependency edges in one resolved closure
+/// (`docs/44` §2, ADR-0090).
+pub const MAX_IMPORT_EDGES: usize = 1024;
+
+/// Refuses a resolved closure with more direct dependency edges than the
+/// accepted ceiling (ADR-0090).
+///
+/// **An edge is one unique `(caller, resolved dependency)` pair**, not one
+/// import declaration. Two bindings of the same module from one caller are one
+/// relationship and cost one edge, because they are one relationship to every
+/// consumer of the graph: a launch authenticates that dependency once and checks
+/// every call site in that caller against the one reopened surface.
+///
+/// **It is a topology quota, not a resource envelope.** `docs/41` §6's
+/// `resource imports` is "maximum transitive module dependencies" — a count of
+/// modules reachable from one module — and this is a count of edges in the whole
+/// resolved closure. Using one for the other would bound neither.
+///
+/// The refusal lands on the import declaration whose new unique edge first
+/// crosses the ceiling, walking modules in the order the resolver produced them
+/// and each module's imports in source order, so the same set always names the
+/// same declaration.
+///
+/// An unresolvable or ambiguous import contributes no edge: `E1604` and `E1605`
+/// already own those, and counting an edge that does not exist would refuse a
+/// closure for a relationship the source set does not contain.
+fn check_import_edges(modules: &[ModuleSummary], resolution: &Resolution) -> Vec<Diagnostic> {
+    let mut edges = 0usize;
+    for module in modules {
+        let mut seen: BTreeSet<usize> = BTreeSet::new();
+        for import in module.module_imports() {
+            let Some(&dependency) = resolution.resolved.get(&import.target) else {
+                continue;
+            };
+            if !seen.insert(dependency) {
+                continue;
+            }
+            edges += 1;
+            if edges > MAX_IMPORT_EDGES {
+                return alloc::vec![located("E1609_IMPORT_EDGE_LIMIT", Stage::Type, import.at)
+                    .with_module(module.identity())
+                    .with_field("limit", MAX_IMPORT_EDGES)
+                    .with_field("actual", edges)];
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// The qualified-type check for **one** module, against the set it belongs to.

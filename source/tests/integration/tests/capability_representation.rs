@@ -134,6 +134,22 @@ fn region_value(module: &Module, function: usize) -> Operand {
     Operand::Value(value)
 }
 
+/// Keeps `Module::exports` the canonical public projection of `functions` after
+/// a forgery has changed a public signature (`docs/43` §2).
+///
+/// **So that the case under test is the only thing wrong with the artifact.**
+/// The verifier now proves that projection independently, and a fixture that
+/// damaged a signature and left the export table describing the old one would
+/// be refused for the stale table before it was refused for what it is about.
+fn reproject_exports(module: &mut Module) {
+    module.exports = module
+        .functions
+        .iter()
+        .filter(|function| function.signature.visibility == tos_ir::Visibility::Public)
+        .map(|function| function.signature.clone())
+        .collect();
+}
+
 /// Rewrites the capability position, the interface the instruction claims, and
 /// the effects the function declares — the three things a forger controls.
 fn forge(module: &mut Module, source: CapabilitySource, claims: &str, declares: &[&str]) {
@@ -148,6 +164,7 @@ fn forge(module: &mut Module, source: CapabilitySource, claims: &str, declares: 
             }
         }
     }
+    reproject_exports(module);
 }
 
 fn refuse(module: &Module) -> tos_verifier::Finding {

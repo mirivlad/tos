@@ -193,6 +193,15 @@ fn reaching_an_interface_the_function_never_declared_is_refused() {
     for function in &mut module.functions {
         function.signature.effects.clear();
     }
+    // The export table is the canonical projection of those signatures
+    // (`docs/43` §2), so it moves with them: what this fixture is about is the
+    // undeclared reach, not a stale table.
+    module.exports = module
+        .functions
+        .iter()
+        .filter(|function| function.signature.visibility == tos_ir::Visibility::Public)
+        .map(|function| function.signature.clone())
+        .collect();
     let finding = verify(&module, &ResolutionSnapshot::default(), &Limits::default())
         .expect_err("an interface reached without being declared is refused");
     assert_eq!(finding.code, "V2033_UNSAFE");

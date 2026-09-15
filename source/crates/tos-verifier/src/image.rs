@@ -29,7 +29,7 @@ use alloc::string::String;
 use tos_image::{ImageError, ParseLimits};
 use tos_ir::Module;
 
-use crate::{verify, Finding, Limits, ResolutionSnapshot, VerifiedModule};
+use crate::{Finding, Limits, ResolutionSnapshot, VerifiedModule};
 
 /// The accepted ceilings, as the parser's bounds.
 ///
@@ -37,7 +37,7 @@ use crate::{verify, Finding, Limits, ResolutionSnapshot, VerifiedModule};
 /// docs/44 §2 publishes them, [`Limits`] declares them, and the parser is handed
 /// them as data so that a format reading untrusted bytes does not depend on the
 /// verifier that will read what it produces.
-fn parse_limits(limits: &Limits) -> ParseLimits {
+pub(crate) fn parse_limits(limits: &Limits) -> ParseLimits {
     ParseLimits {
         table_entries: limits.table_entries,
         modules: limits.modules,
@@ -96,12 +96,70 @@ impl VerifiedImage {
         &self.module
     }
 
+    /// The evidence a launch keeps about this artifact while it verifies the
+    /// rest of the closure.
+    ///
+    /// Obtainable only from a `VerifiedImage`, which is obtainable only from a
+    /// successful verification. That chain is the whole of its authority.
+    pub fn evidence(&self) -> VerifiedArtifactEvidence {
+        VerifiedArtifactEvidence {
+            artifact_digest: self.artifact_digest,
+            content_id: tos_hash::sha256(self.receipt.content_id.as_bytes()),
+            seal: Seal,
+        }
+    }
+
     /// Takes the module out, leaving the receipt behind.
     ///
     /// What a launch does: the materialized module is released and the receipt
     /// and digest survive it (ADR-0071 §2).
     pub fn into_parts(self) -> (VerifiedModule, [u8; 32], Module) {
         (self.receipt, self.artifact_digest, self.module)
+    }
+}
+
+/// **Proof that this verifier verified an exact artifact, and nothing else.**
+///
+/// ADR-0071 §5 lets an image whose artifact identity is already trusted be
+/// reloaded without repeating semantic verification. What makes that safe is
+/// *whose* trust the identity is: a launch that accepted a digest handed to it
+/// by the side that produced the images would be reloading whatever that side
+/// wanted it to.
+///
+/// So this token is minted in exactly one place — a successful
+/// [`verify_image`] — and its fields are private with no public constructor,
+/// no `Default`, no literal and no setter. A caller cannot build one, cannot
+/// alter one, and cannot derive one from a `VerifiedModuleRecord`, whose fields
+/// are public and therefore prove nothing.
+///
+/// **It carries identity and no semantics.** Sixty-four bytes: the artifact
+/// digest of the exact bytes that were verified, and a commitment to the
+/// content identity the receipt recorded. No export name, no signature, no
+/// type — nothing of variable length, so nothing about a module's surface can
+/// survive inside it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct VerifiedArtifactEvidence {
+    artifact_digest: [u8; 32],
+    content_id: [u8; 32],
+    seal: Seal,
+}
+
+impl VerifiedArtifactEvidence {
+    /// Whether these exact bytes are the artifact this evidence was minted for.
+    ///
+    /// The hash is taken here, over the slice the caller is offering, and
+    /// compared with the digest the verifier recorded. A caller that offers one
+    /// slice to be hashed and another to be read has no way to express that:
+    /// there is one slice.
+    pub fn authenticates(&self, image: &[u8]) -> bool {
+        tos_hash::sha256(image) == self.artifact_digest
+    }
+
+    /// Whether a content identity a caller's import claims is the one the
+    /// verified module recorded. Compared as a digest so the token stays fixed
+    /// size whatever a conforming identity string costs.
+    pub fn states_content_id(&self, content_id: &str) -> bool {
+        tos_hash::sha256(content_id.as_bytes()) == self.content_id
     }
 }
 
@@ -126,9 +184,24 @@ pub fn verify_image(
     snapshot: &ResolutionSnapshot,
     limits: &Limits,
 ) -> Result<VerifiedImage, ImageRefusal> {
+    verify_image_in_closure(image, snapshot, limits, &mut crate::NoDependencies)
+}
+
+/// The same, inside a closure whose earlier modules this launch has verified.
+///
+/// **The production entry.** `tos-residency::launch` calls this one, so an
+/// imported call is checked against the dependency artifact this same launch
+/// proved rather than against a declaration that arrived with the bytes.
+pub fn verify_image_in_closure(
+    image: &[u8],
+    snapshot: &ResolutionSnapshot,
+    limits: &Limits,
+    dependencies: &mut dyn crate::VerifiedDependencies,
+) -> Result<VerifiedImage, ImageRefusal> {
     let artifact_digest = tos_hash::sha256(image);
     let module = tos_image::parse(image, &parse_limits(limits)).map_err(ImageRefusal::Parser)?;
-    let receipt = verify(&module, snapshot, limits).map_err(ImageRefusal::Verifier)?;
+    let receipt = crate::verify_in_closure(&module, snapshot, limits, dependencies)
+        .map_err(ImageRefusal::Verifier)?;
     Ok(VerifiedImage {
         receipt,
         artifact_digest,
@@ -168,7 +241,16 @@ mod tests {
             types: vec![TypeDef::Int(IntKind::I32)],
             imports: Vec::new(),
             capability_imports: Vec::new(),
-            exports: Vec::new(),
+            // The canonical public projection of `functions` below, which the
+            // verifier now proves rather than assumes (`docs/43` §2).
+            exports: vec![Signature {
+                name: String::from("answer"),
+                visibility: Visibility::Public,
+                is_async: false,
+                parameters: Vec::new(),
+                result: 0,
+                effects: Vec::new(),
+            }],
             constants: vec![Constant::Int(IntKind::I32, 7)],
             functions: vec![Function {
                 signature: Signature {

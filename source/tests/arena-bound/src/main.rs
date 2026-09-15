@@ -223,11 +223,15 @@ enum Body {
     /// Types declared here and named through an import there: the body that
     /// makes the set-wide qualified-type check do work.
     Qualified,
+    /// Every export carrying docs/44's parameter ceiling: the widest carried
+    /// signature a conforming source unit can declare.
+    Parameters,
 }
 
 impl Body {
     fn of(name: &str) -> Body {
         match name {
+            "parameters" => Body::Parameters,
             "functions" => Body::Functions,
             "types" => Body::Types,
             "nested" => Body::Nested,
@@ -249,6 +253,7 @@ impl Body {
             Body::Statements => "statements",
             Body::SmallObjects => "small",
             Body::Qualified => "qualified",
+            Body::Parameters => "parameters",
         }
     }
 
@@ -261,6 +266,7 @@ impl Body {
             5 => Body::Statements,
             6 => Body::SmallObjects,
             7 => Body::Qualified,
+            8 => Body::Parameters,
             _ => Body::Mixed,
         }
     }
@@ -269,6 +275,7 @@ impl Body {
         BODY.store(
             match self {
                 Body::Mixed => 0,
+                Body::Parameters => 8,
                 Body::Functions => 1,
                 Body::Types => 2,
                 Body::Nested => 3,
@@ -541,6 +548,16 @@ fn main() {
             "balanced" => Shape::Balanced,
             _ => Shape::Chain,
         };
+        // The interface a dependency leaves behind is decided by what it
+        // exports, so which body the fixture writes is part of this measurement
+        // rather than a detail of the generator.
+        Body::of(
+            &std::env::args()
+                .skip_while(|argument| argument != "--body")
+                .nth(1)
+                .unwrap_or_default(),
+        )
+        .select();
         phased_lowering(shape, modules, SOURCE_CEILING);
         return;
     }
@@ -2431,6 +2448,20 @@ fn fill_to(text: &mut String, index: usize, bytes: usize) {
             }
             Body::Exports => {
                 format!("pub fn export{index}_{filler}(value: i32) -> i32 {{ return value; }} ")
+            }
+            // The adversarial interface: every export carries docs/44's
+            // parameter ceiling, so a carried signature is as wide as a
+            // conforming source unit can make it.
+            Body::Parameters => {
+                let mut chunk = format!("pub fn wide{index}_{filler}(");
+                for at in 0..128 {
+                    if at > 0 {
+                        chunk.push(',');
+                    }
+                    chunk.push_str(&format!("a{at}:i32"));
+                }
+                chunk.push_str(") -> i32 { return a0; } ");
+                chunk
             }
             Body::SmallObjects => format!("pub record S{index}_{filler} [x: i32] "),
             // Every module declares its own types and names the previous
