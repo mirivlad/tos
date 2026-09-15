@@ -87,7 +87,7 @@ fn is_frontend_code(code: &str) -> bool {
 /// A vector recording one of these must now be rejected rather than merely
 /// parse; the list grows as each check lands, so a check cannot be implemented
 /// without its corpus evidence starting to bind.
-const IMPLEMENTED_CHECKS: [&str; 48] = [
+const IMPLEMENTED_CHECKS: [&str; 49] = [
     "E1216_VALUE_TYPE_MISMATCH",
     "E1217_CALL_ARITY_MISMATCH",
     "E1608_FEATURE_REQUIRES_LANGUAGE_MINOR",
@@ -136,32 +136,46 @@ const IMPLEMENTED_CHECKS: [&str; 48] = [
     "E1700_RESOURCE_DECLARATION_REQUIRED",
     "E1703_DUPLICATE_RESOURCE_DECLARATION",
     "E1704_UNKNOWN_RESOURCE_LIMIT",
+    "E1705_IMPORT_ENVELOPE_EXCEEDED",
 ];
 
 /// Modules a vector needs in its source set, by canonical path.
 ///
 /// A vector that imports another module cannot be resolved alone: the qualified
 /// names it writes are decided by the module its binding names.
+/// **Transitively**, because a vector about a transitive property needs the
+/// modules behind the ones it names.
+///
+/// A corpus module's dependency may itself import, and a set missing that third
+/// module does not resolve — which would replace the finding the vector is
+/// evidence for with `E1604_IMPORT_NOT_FOUND`.
 fn companion_paths(root: &Path, source_text: &str) -> Vec<PathBuf> {
-    let mut paths = Vec::new();
-    for line in source_text.lines() {
-        let Some(rest) = line.trim().strip_prefix("import ") else {
-            continue;
-        };
-        let name = rest
-            .split([' ', ';'])
-            .next()
-            .unwrap_or_default()
-            .trim_end_matches(';');
-        if name.is_empty() {
-            continue;
-        }
-        let leaf = name.rsplit('.').next().unwrap_or_default();
-        for directory in ["conformance/v1/accept", "conformance/v1/reject", "examples"] {
-            let candidate = root
-                .join(directory)
-                .join(std::format!("{}.tos", leaf.replace('_', "-")));
-            if candidate.is_file() {
+    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut pending: Vec<String> = std::vec![source_text.to_string()];
+    while let Some(text) = pending.pop() {
+        for line in text.lines() {
+            let Some(rest) = line.trim().strip_prefix("import ") else {
+                continue;
+            };
+            let name = rest
+                .split([' ', ';'])
+                .next()
+                .unwrap_or_default()
+                .trim_end_matches(';');
+            if name.is_empty() {
+                continue;
+            }
+            let leaf = name.rsplit('.').next().unwrap_or_default();
+            for directory in ["conformance/v1/accept", "conformance/v1/reject", "examples"] {
+                let candidate = root
+                    .join(directory)
+                    .join(std::format!("{}.tos", leaf.replace('_', "-")));
+                if !candidate.is_file() || paths.contains(&candidate) {
+                    continue;
+                }
+                if let Ok(bytes) = fs::read(&candidate) {
+                    pending.push(std::string::String::from_utf8_lossy(&bytes).into_owned());
+                }
                 paths.push(candidate);
             }
         }

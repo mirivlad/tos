@@ -1191,6 +1191,14 @@ impl GeneratedSourceProvider {
 
     /// A deterministic module for a position: a chain, each importing the one
     /// below it.
+    ///
+    /// **Each declares the envelope its position actually needs.** In a chain
+    /// the module at position `at` reaches every module below it, so its
+    /// `resource imports` is `at` — `docs/41` §6 bounds *transitive* module
+    /// dependencies, not the one `import` written here. This generator used to
+    /// declare a flat `imports: 4`, which made every chain longer than five
+    /// modules non-conforming under a contract that already said so; the
+    /// fixture was wrong, and the language is not adjusted to admit it.
     fn text(&self, at: usize) -> String {
         if at == 0 {
             return lib("set.m0", "pub fn value0() -> i32 { return 0i32; }");
@@ -1200,7 +1208,7 @@ impl GeneratedSourceProvider {
             "module set.m{at} version 1.0 profile bootstrap; \
              import set.m{below} as prev; \
              resource [fuel: 100000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
-             sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 4] \
+             sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: {at}] \
              pub fn value{at}() -> i32 {{ return prev.value{below}() + 1i32; }} \
              pub fn main() -> i32 {{ return prev.value{below}() + 1i32; }}"
         )

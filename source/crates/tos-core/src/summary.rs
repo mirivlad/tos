@@ -58,6 +58,15 @@ impl Located {
     }
 }
 
+/// A module's declared `resource imports` value, and the span that declares it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DeclaredImports {
+    /// The declared maximum, as written.
+    pub value: u128,
+    /// The value token, which is what a finding about the declaration points at.
+    pub at: Located,
+}
+
 /// One import, as resolution needs it.
 #[derive(Clone, Debug)]
 pub struct ImportSummary {
@@ -185,6 +194,16 @@ pub struct ModuleSummary {
     /// `sha256:<hex>` of the normalized source this was derived from.
     pub content_id: String,
     pub imports: Vec<ImportSummary>,
+    /// The `resource imports` value this module declares, and where it is
+    /// written.
+    ///
+    /// `docs/41` §6 makes it the module's maximum **transitive** module
+    /// dependencies, which is a property of the resolved graph and not of this
+    /// module's text — so set-wide resolution is the first pass that can
+    /// compare it with anything, and the value has to travel this far to be
+    /// compared. `None` when the module declares no `imports` key at all, which
+    /// `E1700_RESOURCE_DECLARATION_REQUIRED` already owns.
+    pub declared_imports: Option<DeclaredImports>,
     /// Every type name this module declares, for a qualified name to resolve.
     pub declared_types: TypeNames,
     /// Every qualified type name this module writes.
@@ -256,6 +275,24 @@ impl ModuleSummary {
             })
             .collect();
 
+        let declared_imports = schema
+            .outline()
+            .resource()
+            .limits()
+            .iter()
+            .find(|limit| limit.name().text(source) == "imports")
+            .and_then(|limit| {
+                limit
+                    .value()
+                    .text(source)
+                    .parse::<u128>()
+                    .ok()
+                    .map(|value| DeclaredImports {
+                        value,
+                        at: Located::of(source, limit.value()),
+                    })
+            });
+
         let declared_types = TypeNames::of(crate::types::declared_type_names(source, schema));
 
         let qualified_uses = if with_uses {
@@ -280,6 +317,7 @@ impl ModuleSummary {
             header: Located::of(source, header.span()),
             content_id: content_id(source.bytes()),
             imports,
+            declared_imports,
             declared_types,
             qualified_uses,
         }

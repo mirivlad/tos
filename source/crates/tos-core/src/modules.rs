@@ -321,7 +321,35 @@ pub fn check_module_summaries(modules: &[ModuleSummary]) -> Vec<Diagnostic> {
     let by_name = &resolution.resolved;
     check_qualified_types(modules, by_name, &mut diagnostics);
     diagnostics.extend(find_cycles(modules, by_name));
+    // **Last, and only over a graph that resolved.** `resource imports` counts
+    // the modules reachable from one module, and a graph with an unresolvable
+    // import, an ambiguous one, a cycle, or more edges than the closure ceiling
+    // admits has no exact reachable set to count. Those four own the earlier
+    // refusal; this one waits for a graph worth measuring (ADR-0091 §3).
+    if graph_resolved(&diagnostics) {
+        diagnostics.extend(check_import_envelopes(modules, &resolution));
+    }
     diagnostics
+}
+
+/// Whether the import graph resolved into something with an exact shape.
+///
+/// **Only the four graph findings gate it.** A path that disagrees with a
+/// header, or a qualified name a module does not declare, leaves the graph
+/// exactly as resolvable as it was: the modules are the same, the edges are the
+/// same, and the reachable set is the same. Suppressing a resource finding for
+/// an unrelated one would make a module's declared envelope go unchecked
+/// because of something else the same set happened to get wrong.
+pub fn graph_resolved(diagnostics: &[Diagnostic]) -> bool {
+    !diagnostics.iter().any(|diagnostic| {
+        matches!(
+            diagnostic.code(),
+            "E1604_IMPORT_NOT_FOUND"
+                | "E1605_AMBIGUOUS_IMPORT"
+                | "E1606_IMPORT_CYCLE"
+                | "E1609_IMPORT_EDGE_LIMIT"
+        )
+    })
 }
 
 /// Everything set-wide resolution can decide **without a module's type
@@ -467,6 +495,82 @@ pub fn check_module_cycles(modules: &[ModuleSummary], resolution: &Resolution) -
 /// hand.
 fn located(code: &'static str, stage: Stage, at: crate::summary::Located) -> Diagnostic {
     Diagnostic::at(code, Severity::Error, stage, at.span, at.start, at.end)
+}
+
+/// Refuses a module whose exact resolved transitive dependency set is larger
+/// than its declared `resource imports` (`docs/41` §6, ADR-0091).
+///
+/// **The count is of modules, not of declarations.** Unique resolved module
+/// identities reachable from the module, direct and indirect together, the
+/// module itself excluded, and two bindings of one dependency counted once —
+/// which is the same definition of a dependency ADR-0090 §2a settled for edges,
+/// because the word cannot mean two things one paragraph apart. A
+/// capability-interface import names a contract rather than a module of this
+/// source set (`docs/42` §4), so it contributes nothing.
+///
+/// Computed from the **resolved** graph rather than from source spelling: two
+/// names that resolve to one module are one dependency however they are
+/// written, and a name that resolves to nothing is not a dependency at all.
+///
+/// The walk is over indices of the resolved set, which resolution has already
+/// proved acyclic and bounded at `MAX_IMPORT_EDGES` edges, so it terminates and
+/// its cost is bounded by the closure the caller was handed.
+pub fn check_import_envelopes(
+    modules: &[ModuleSummary],
+    resolution: &Resolution,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    for (index, module) in modules.iter().enumerate() {
+        // A module declaring no `imports` key has nothing to breach here;
+        // `E1700_RESOURCE_DECLARATION_REQUIRED` already refuses the omission.
+        let Some(declared) = module.declared_imports.as_ref() else {
+            continue;
+        };
+        let reached = reachable_from(index, modules, resolution);
+        let actual = reached.len() as u128;
+        if actual <= declared.value {
+            continue;
+        }
+        diagnostics.push(
+            located(
+                "E1705_IMPORT_ENVELOPE_EXCEEDED",
+                Stage::Resource,
+                declared.at,
+            )
+            .with_module(module.identity())
+            .with_field("declared", declared.value)
+            .with_field("actual", actual),
+        );
+    }
+    diagnostics
+}
+
+/// Every module reachable from `index`, by resolved-set position, excluding
+/// `index` itself.
+fn reachable_from(
+    index: usize,
+    modules: &[ModuleSummary],
+    resolution: &Resolution,
+) -> BTreeSet<usize> {
+    let mut reached: BTreeSet<usize> = BTreeSet::new();
+    let mut pending: Vec<usize> = alloc::vec![index];
+    while let Some(at) = pending.pop() {
+        for import in modules[at].module_imports() {
+            let Some(&dependency) = resolution.resolved.get(&import.target) else {
+                continue;
+            };
+            // The module is not its own dependency. A cycle would be the only
+            // way back to it and `E1606` has already refused one, but the guard
+            // is written rather than argued: a set is exact or it is not.
+            if dependency == index {
+                continue;
+            }
+            if reached.insert(dependency) {
+                pending.push(dependency);
+            }
+        }
+    }
+    reached
 }
 
 /// Resolves every qualified type name against the module its binding names.
