@@ -158,3 +158,4 @@ docs/adr/0087-the-residual-value-type-diagnostic.md
 docs/adr/0088-the-predeclared-call-contract.md
 docs/adr/0089-the-call-arity-diagnostic.md
 docs/adr/0090-the-resolved-closure-import-edge-ceiling.md
+docs/adr/0091-the-transitive-import-envelope.md

@@ -658,11 +658,42 @@ fn check_limits(module: &Module, limits: &Limits) -> Result<(), Finding> {
             ));
         }
     }
-    if module.imports.len() as u128 > module.header.resource_envelope.imports {
+    // **The strongest fact one artifact can honestly prove about its own
+    // `resource imports`** (`docs/41` §6).
+    //
+    // The key is "maximum transitive module dependencies", and a verifier
+    // holding one module has no authenticated graph to compute a transitive set
+    // from — the launch does that, in `check_transitive_dependencies`. What is
+    // provable here is that the module's **unique direct** dependencies are a
+    // subset of its transitive ones, so exceeding the envelope directly
+    // exceeds it transitively. Necessary, never sufficient.
+    //
+    // Deduplicated, because ADR-0090 §2a settled what a dependency is: two
+    // bindings of one module are one relationship. Comparing the raw
+    // declaration count refused conforming modules for how they spelled their
+    // bindings.
+    //
+    // `V2022_RESOURCE`, not `V2001_LIMIT`: this is a module breaching the
+    // envelope it declared for itself, which is what that code owns — beside
+    // too many cleanups at one exit and `workers > 1` under Bootstrap. The
+    // table-count checks above are published implementation ceilings and stay
+    // `V2001_LIMIT`.
+    let mut direct: Vec<&str> = module
+        .imports
+        .iter()
+        .map(|import| import.module_name.as_str())
+        .collect();
+    direct.sort_unstable();
+    direct.dedup();
+    if direct.len() as u128 > module.header.resource_envelope.imports {
         return Err(Finding::new(
-            "V2001_LIMIT",
-            "imports",
-            "more imports than the declared resource envelope allows",
+            "V2022_RESOURCE",
+            "header.resource_envelope.imports",
+            alloc::format!(
+                "{} unique direct module dependencies exceeds the declared {}",
+                direct.len(),
+                module.header.resource_envelope.imports
+            ),
         ));
     }
     for (index, function) in module.functions.iter().enumerate() {

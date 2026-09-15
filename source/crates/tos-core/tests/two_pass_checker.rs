@@ -13,8 +13,9 @@
 //! included. A one-pass run is the oracle.
 
 use tos_core::{
-    check_module_cycles, check_module_membership, check_module_summaries, check_qualified_types_of,
-    resolve_set, Diagnostic, ModuleEntry, ModuleSummary, Parser, SourceReader,
+    check_import_envelopes, check_module_cycles, check_module_membership, check_module_summaries,
+    check_qualified_types_of, resolve_set, Diagnostic, ModuleEntry, ModuleSummary, Parser,
+    SourceReader,
 };
 
 /// One unit of a fixture set.
@@ -75,6 +76,12 @@ fn two_pass(units: &[Unit]) -> Vec<Diagnostic> {
         );
     }
     diagnostics.extend(check_module_cycles(&summaries, &resolution));
+    // Last, and only over a graph that resolved — the same condition
+    // `check_module_summaries` applies, because a caller assembling the phases
+    // has to report the same thing in the same order (ADR-0091 §3).
+    if tos_core::graph_resolved(&diagnostics) {
+        diagnostics.extend(check_import_envelopes(&summaries, &resolution));
+    }
     diagnostics
 }
 

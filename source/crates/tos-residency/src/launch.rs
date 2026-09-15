@@ -123,6 +123,88 @@ impl VerifiedDependencies for Verified<'_> {
     }
 }
 
+/// The accepted V1 module-dependency-closure ceiling (`docs/44` §2).
+///
+/// Not a tunable: a profile may declare a lower bound, and a higher one is a
+/// versioned contract change rather than a configuration choice.
+pub const MAX_CLOSURE_MODULES: usize = 256;
+
+/// The refusal a closure larger than the ceiling earns.
+///
+/// `V2001_LIMIT` because this is a published implementation ceiling and not a
+/// module's own declared envelope, and the subject names the limit in the exact
+/// words of the `docs/44` §2 table so an audit record can be read against it.
+fn closure_too_large(count: usize, ceiling: usize) -> tos_verifier::Finding {
+    tos_verifier::Finding {
+        code: "V2001_LIMIT",
+        location: alloc::string::String::from("module dependency closure"),
+        detail: alloc::format!("{count} modules exceeds the ceiling of {ceiling}"),
+        causes: Vec::new(),
+    }
+}
+
+/// The set of closure positions one module transitively depends on.
+///
+/// **Fixed at 256 bits**, one per admissible closure position, because the
+/// closure ceiling is 256 modules and a launch refuses a larger one before this
+/// type is ever constructed. Thirty-two bytes whatever a module declares: a
+/// module importing 256 others costs exactly what a leaf costs, so nothing here
+/// is sized by an attacker-supplied count.
+///
+/// **It never contains the module's own position.** Dependency-first order puts
+/// every dependency before its dependents, so a bit at or above the module's
+/// own position cannot be set — self-exclusion is structural rather than
+/// subtracted afterwards.
+#[derive(Clone, Copy, Default)]
+struct Reachable {
+    words: [u64; 4],
+}
+
+impl Reachable {
+    /// The transitive set of `module`, from the positions already proved.
+    fn of(module: &tos_ir::Module, proved: &Verified<'_>, earlier: &[Reachable]) -> Reachable {
+        let mut set = Reachable::default();
+        for import in &module.imports {
+            // A name with no position names no module this launch verified;
+            // the verifier has already refused that, and counting it here would
+            // be inventing a dependency rather than proving one.
+            let Some(at) = proved.position_of(&import.module_name) else {
+                continue;
+            };
+            // Two bindings of one module reach the same position, so the same
+            // bit: a duplicate declaration is one dependency (ADR-0090 §2a).
+            set.words[at / 64] |= 1u64 << (at % 64);
+            let Some(inherited) = earlier.get(at) else {
+                continue;
+            };
+            for (word, carried) in set.words.iter_mut().zip(inherited.words) {
+                *word |= carried;
+            }
+        }
+        set
+    }
+
+    fn count(&self) -> u32 {
+        self.words.iter().map(|word| word.count_ones()).sum()
+    }
+}
+
+/// The refusal a module earns for depending on more than it declared.
+///
+/// `V2022_RESOURCE`: the module breaches the envelope it declared for itself,
+/// which is the same class as too many cleanups at one exit. It is not
+/// `V2001_LIMIT`, which belongs to published implementation ceilings.
+fn over_declared_imports(actual: u32, declared: u128) -> tos_verifier::Finding {
+    tos_verifier::Finding {
+        code: "V2022_RESOURCE",
+        location: alloc::string::String::from("header.resource_envelope.imports"),
+        detail: alloc::format!(
+            "{actual} transitive module dependencies exceeds the declared {declared}"
+        ),
+        causes: Vec::new(),
+    }
+}
+
 /// Verifies the exact resolved closure, sequentially, and builds the manifest.
 ///
 /// `entry` is the position of the entry module and `entry_function` the name of
@@ -137,8 +219,32 @@ pub fn launch(
     entry_function: &str,
 ) -> Result<Launched, Failure> {
     let count = source.count();
+    // **The closure ceiling, before anything proportional to the closure.**
+    // `docs/44` §2 publishes 256 modules, and everything below — the record
+    // table, the membership vector, the reachability sets — is sized by a
+    // number the provider supplies. A ceiling checked after the allocation it
+    // bounds is not a ceiling, so this is the first statement of the launch.
+    //
+    // A profile may publish a *lower* limit and it is honoured; it may not
+    // publish a higher one, because raising an accepted V1 ceiling is a
+    // versioned contract change (`docs/44` §2), so the effective bound is the
+    // smaller of the two.
+    let effective_modules = core::cmp::min(limits.modules, MAX_CLOSURE_MODULES);
+    if count > effective_modules {
+        // The module named is the first position the closure cannot admit —
+        // where the ceiling is crossed, exactly as ADR-0090's edge ceiling
+        // reports. No image at or after it is read.
+        return Err(Failure::Verifier {
+            module: effective_modules,
+            finding: closure_too_large(count, effective_modules),
+        });
+    }
     let mut records: Vec<Option<VerifiedModuleRecord>> = Vec::with_capacity(count);
     records.resize(count, None);
+    // One fixed 256-bit set per closure position, and the ceiling above is what
+    // makes 256 bits enough. Launch-lifetime only: it is dropped with this
+    // function and reaches neither the record nor the manifest.
+    let mut reachable: Vec<Reachable> = Vec::with_capacity(count);
     let mut entry_index: Option<usize> = None;
     let mut entry_receipt: Option<VerifiedModule> = None;
     let mut proved = Verified {
@@ -161,6 +267,25 @@ pub fn launch(
         // declaration.
         let verified = verify_image_in_closure(&image, &resolution(position), limits, &mut proved)
             .map_err(|refusal| Failure::from_refusal(position, refusal))?;
+
+        // **`resource imports`, exactly** (`docs/41` §6). The module's transitive
+        // dependency set is the union of its unique direct dependencies and
+        // theirs, and dependency-first order (ADR-0071 §1a) means every one of
+        // those sets is already final. Every input is authenticated: the import
+        // table comes from the artifact this launch just verified, and a name
+        // resolves to a position only for a module this launch verified earlier
+        // — `check_imported_calls` already refuses an import with no evidence,
+        // or whose content identity disagrees with it. `ResolutionSnapshot` is
+        // not consulted, so a hostile declaration cannot shrink this count.
+        let reached = Reachable::of(verified.module(), &proved, &reachable);
+        let declared = verified.module().header.resource_envelope.imports;
+        if u128::from(reached.count()) > declared {
+            return Err(Failure::Verifier {
+                module: position,
+                finding: over_declared_imports(reached.count(), declared),
+            });
+        }
+        reachable.push(reached);
 
         let receipt = verified.receipt();
         // The control identity is a commitment to the exact pair, so a module

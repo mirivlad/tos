@@ -1,0 +1,14 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.import_envelope_chain version 1.0 profile bootstrap;
+
+import conformance.imported_surface as up;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 1]
+
+// One module is reachable from here — `conformance.imported_surface`, which
+// imports nothing — so `imports: 1` is the exact truth about this module and it
+// is accepted. It is also the middle of the chain the reject vector beside it
+// uses: its dependency is what makes that module's count two rather than one.
+pub fn relay(value: i64) -> i64 {
+    return up.take(value);
+}

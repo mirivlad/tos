@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+module conformance.import_envelope_exceeded version 1.0 profile bootstrap;
+
+import conformance.import_envelope_chain as middle;
+
+resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: 1]
+
+// One import declaration, two module dependencies. `docs/41` §6 bounds the
+// transitive count, and `conformance.import_envelope_chain` brings
+// `conformance.imported_surface` with it, so this module reaches two modules
+// while declaring room for one. The count is of modules reachable from here,
+// not of the `import` lines written here.
+pub fn main() -> i64 {
+    return middle.relay(21i64);
+}

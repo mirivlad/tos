@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 501
+- files in the release package: 504
 - active system invariants: 21
-- architecture decision records: 90 (40 accepted)
+- architecture decision records: 91 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -134,6 +134,7 @@ Architecture decision records
 - docs/adr/0088-the-predeclared-call-contract.md — ADR-0088: the predeclared-call contract [**Accepted (Project Architect-approved, 2026-09-14)**]
 - docs/adr/0089-the-call-arity-diagnostic.md — ADR-0089: the call-arity diagnostic [**Accepted (Project Architect-approved, 2026-09-14)**]
 - docs/adr/0090-the-resolved-closure-import-edge-ceiling.md — ADR-0090: the resolved-closure import-edge ceiling [**Accepted (Project Architect-approved, 2026-09-15)**]
+- docs/adr/0091-the-transitive-import-envelope.md — ADR-0091: `resource imports` is a count of modules, and it is counted [**Accepted (Project Architect-approved, 2026-09-15)**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

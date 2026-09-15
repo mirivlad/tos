@@ -319,3 +319,187 @@ mod import_edges {
         assert!(check_source_set(&entries).is_empty());
     }
 }
+
+/// A module declares the most **transitive** module dependencies it may have
+/// (`docs/41` §6, ADR-0091).
+///
+/// Not its direct declarations. The count is of unique resolved module
+/// identities reachable from the module, direct and indirect together, the
+/// module itself excluded, and two bindings of one dependency counted once.
+/// Until this slice nothing compared the declaration with that quantity at all:
+/// the only check in the tree compared it with `module.imports.len()`, which
+/// admitted a module sitting above any number of indirect dependencies and
+/// refused one that spelled a single dependency twice.
+mod import_envelopes {
+    use tos_core::{check_source_set, Diagnostic, ModuleEntry, Parser, SourceReader};
+
+    fn envelope(imports: usize) -> String {
+        format!(
+            "resource [fuel: 1000, stack: 64KiB, allocation: 4KiB, tasks: 1, workers: 1, \
+             sync: 0, shared: 0B, cleanup: 16, recursion: 8, imports: {imports}]"
+        )
+    }
+
+    /// Checks a set whose modules are `set.m0 …`, in the order given.
+    fn diagnostics_of(texts: &[String]) -> Vec<Diagnostic> {
+        let read: Vec<_> = texts
+            .iter()
+            .map(|text| SourceReader::read(text.as_bytes()).expect("transport-valid"))
+            .collect();
+        let schemas: Vec<_> = read
+            .iter()
+            .map(|source| {
+                Parser::parse_schema(source)
+                    .into_accepted()
+                    .expect("the fixture parses")
+            })
+            .collect();
+        let paths: Vec<String> = (0..texts.len())
+            .map(|index| format!("set/m{index}.tos"))
+            .collect();
+        let entries: Vec<ModuleEntry<'_>> = (0..texts.len())
+            .map(|at| ModuleEntry::new(&paths[at], &read[at], &schemas[at]))
+            .collect();
+        check_source_set(&entries)
+    }
+
+    /// A chain `m0 <- m1 <- … <- m{len-1}`, every module declaring `imports`.
+    fn chain(len: usize, imports: usize) -> Vec<String> {
+        (0..len)
+            .map(|at| {
+                let head = if at == 0 {
+                    String::new()
+                } else {
+                    format!("import set.m{} as prev; ", at - 1)
+                };
+                let body = if at == 0 {
+                    "pub fn f() -> i32 { return 0i32; }"
+                } else {
+                    "pub fn f() -> i32 { return prev.f() + 1i32; }"
+                };
+                format!(
+                    "module set.m{at} version 1.0 profile bootstrap; {head}{} {body}",
+                    envelope(imports)
+                )
+            })
+            .collect()
+    }
+
+    /// **The fail-open shape.** `m2 -> m1 -> m0`, and `m2` declares one.
+    ///
+    /// Two modules are reachable from `m2`, so the declaration is short by one
+    /// and the module is refused. Before this slice the whole chain ran: the
+    /// only check in the path saw one direct import and was satisfied.
+    #[test]
+    fn a_module_above_its_declared_transitive_count_is_refused() {
+        let mut texts = chain(3, 8);
+        // Only the top of the chain under-declares, so exactly one module is
+        // named and the finding cannot be a side effect of the others.
+        texts[2] = texts[2].replace("imports: 8", "imports: 1");
+        let diagnostics = diagnostics_of(&texts);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        let finding = &diagnostics[0];
+        assert_eq!(finding.code(), "E1705_IMPORT_ENVELOPE_EXCEEDED");
+        assert_eq!(finding.field("declared"), Some("1"));
+        assert_eq!(finding.field("actual"), Some("2"));
+    }
+
+    /// The indirect dependency is what the declaration was short of, so a chain
+    /// one longer is short by one more.
+    #[test]
+    fn the_count_reaches_through_the_whole_chain() {
+        let mut texts = chain(4, 8);
+        texts[3] = texts[3].replace("imports: 8", "imports: 1");
+        let diagnostics = diagnostics_of(&texts);
+        assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+        assert_eq!(diagnostics[0].field("actual"), Some("3"));
+    }
+
+    /// **The duplicate-binding shape.** Two declarations, one dependency.
+    ///
+    /// `imports: 1` is the truth about this module and it is accepted. The
+    /// check in the tree before this slice refused it, because it counted the
+    /// declarations rather than the modules they resolve to.
+    #[test]
+    fn two_bindings_of_one_dependency_are_one_dependency() {
+        let texts = vec![
+            format!(
+                "module set.m0 version 1.0 profile bootstrap; {} \
+                 pub fn f() -> i32 {{ return 0i32; }}",
+                envelope(0)
+            ),
+            format!(
+                "module set.m1 version 1.0 profile bootstrap; \
+                 import set.m0 as one; import set.m0 as two; {} \
+                 pub fn g() -> i32 {{ return one.f() + two.f(); }}",
+                envelope(1)
+            ),
+        ];
+        assert!(
+            diagnostics_of(&texts).is_empty(),
+            "{:?}",
+            diagnostics_of(&texts)
+        );
+    }
+
+    /// **The exact boundary.** `N` transitive dependencies with `imports: N`
+    /// accepts, and `imports: N - 1` does not.
+    #[test]
+    fn the_boundary_is_exact() {
+        for length in [2usize, 5, 17] {
+            let top = length - 1;
+            let mut accepted = chain(length, 255);
+            accepted[top] = accepted[top].replace("imports: 255", &format!("imports: {top}"));
+            assert!(
+                diagnostics_of(&accepted).is_empty(),
+                "a chain of {length} with imports: {top} is exact"
+            );
+
+            let mut refused = chain(length, 255);
+            refused[top] = refused[top].replace("imports: 255", &format!("imports: {}", top - 1));
+            let diagnostics = diagnostics_of(&refused);
+            assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
+            assert_eq!(diagnostics[0].code(), "E1705_IMPORT_ENVELOPE_EXCEEDED");
+            assert_eq!(
+                diagnostics[0].field("actual").map(str::to_string),
+                Some(top.to_string())
+            );
+        }
+    }
+
+    /// A capability import is a contract, not a module of this source set
+    /// (`docs/42` §4), so it is not a dependency and does not consume the
+    /// envelope.
+    #[test]
+    fn a_capability_import_is_not_a_module_dependency() {
+        let texts = vec![format!(
+            "module set.m0 version 1.0 profile bootstrap; \
+             import capability system.ipc.Endpoint as endpoint; {} \
+             pub fn f() -> i32 {{ return 0i32; }}",
+            envelope(0)
+        )];
+        assert!(
+            diagnostics_of(&texts).is_empty(),
+            "{:?}",
+            diagnostics_of(&texts)
+        );
+    }
+
+    /// An unresolved graph has no exact reachable set, so the graph failure owns
+    /// the refusal and this check does not add a second sentence about a count
+    /// it could not compute.
+    #[test]
+    fn an_unresolvable_import_owns_the_refusal_alone() {
+        let texts = vec![format!(
+            "module set.m0 version 1.0 profile bootstrap; \
+             import set.absent as gone; {} \
+             pub fn f() -> i32 {{ return 0i32; }}",
+            envelope(0)
+        )];
+        let codes: Vec<&str> = diagnostics_of(&texts)
+            .iter()
+            .map(|diagnostic| diagnostic.code())
+            .collect();
+        assert_eq!(codes, vec!["E1604_IMPORT_NOT_FOUND"]);
+    }
+}
