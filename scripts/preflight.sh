@@ -399,6 +399,13 @@ qemu_virtio_block_read() {
 qemu_virtio_block_reuse() {
     bash "$ROOT/source/host-tools/qemu-test/virtio-block-reuse.sh"
 }
+# Stage 4D-4: two VIRTIO_BLK_T_IN outstanding **together** in that queue. Both
+# chains are built out of a pool exactly two chains wide and exposed by one
+# store that moves `avail.idx` by two, and the completions are associated by
+# `used_elem.id` in whichever order the device produces them.
+qemu_virtio_block_two_inflight() {
+    bash "$ROOT/source/host-tools/qemu-test/virtio-block-two-inflight.sh"
+}
 qemu_irq_routed() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/irq-routed.sh \
         target/preflight-qemu/irq-routed)
@@ -600,6 +607,7 @@ gate qemu       full-only "QEMU a textual driver makes and frees a DMA region" q
 gate qemu       full-only "QEMU a textual driver configures one virtqueue"  qemu_virtio_queue
 gate qemu       full-only "QEMU a textual driver reads one real sector"    qemu_virtio_block_read
 gate qemu       full-only "QEMU one queue serves more than one request"    qemu_virtio_block_reuse
+gate qemu       full-only "QEMU two requests outstanding together"         qemu_virtio_block_two_inflight
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0083 paired validation performance" qemu_paired_performance_conformance
