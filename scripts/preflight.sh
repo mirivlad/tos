@@ -406,6 +406,14 @@ qemu_virtio_block_reuse() {
 qemu_virtio_block_two_inflight() {
     bash "$ROOT/source/host-tools/qemu-test/virtio-block-two-inflight.sh"
 }
+# Stage 4D-5: the first real block write. One `VIRTIO_BLK_T_OUT` of 512 bytes
+# the module composed, proved by an independent `VIRTIO_BLK_T_IN` of the same
+# sector into a different buffer — the status byte is not the evidence. The
+# device's own `capacity` is read under §2.5.1's generation protocol first,
+# because §5.2.6.1 forbids a request beyond it.
+qemu_virtio_block_write() {
+    bash "$ROOT/source/host-tools/qemu-test/virtio-block-write.sh"
+}
 qemu_irq_routed() {
     (cd "$ROOT/source" && bash host-tools/qemu-test/irq-routed.sh \
         target/preflight-qemu/irq-routed)
@@ -608,6 +616,7 @@ gate qemu       full-only "QEMU a textual driver configures one virtqueue"  qemu
 gate qemu       full-only "QEMU a textual driver reads one real sector"    qemu_virtio_block_read
 gate qemu       full-only "QEMU one queue serves more than one request"    qemu_virtio_block_reuse
 gate qemu       full-only "QEMU two requests outstanding together"         qemu_virtio_block_two_inflight
+gate qemu       full-only "QEMU a textual driver writes a real sector"     qemu_virtio_block_write
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0083 paired validation performance" qemu_paired_performance_conformance
