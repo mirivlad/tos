@@ -23,6 +23,7 @@
 #                                    [--require "EV ..."] [--forbid "EV ..."]
 #                                    [--timeout SECONDS] [--event-timestamps FILE] [--accel tcg|kvm]
 #                                    [--stage4-block-device]
+#                                    [--stage4-block-sectors N]
 #                                    [--await-line REGEX --then-qmp JSON ...]
 #                                    [--interactive --display gtk|sdl] [--no-framebuffer]
 #
@@ -73,6 +74,11 @@ NO_FRAMEBUFFER=0
 # Stage 4 discovers. Off by default, so every Stage 1-3 gate keeps running the
 # ADR-0040 reference profile byte for byte.
 STAGE4_BLOCK=0
+# **Per-run only, and the default is the reference profile.** A gate that needs
+# a device too small for the sector it is about to ask for sets this; every
+# other caller gets the 16 MiB image with its seeded sectors, byte for byte as
+# before. The Stage 4 profile itself is unchanged (ADR-0084 revision 5).
+STAGE4_BLOCK_SECTORS=""
 # A *legacy*-transport VirtIO block device, for the negative that shows the
 # textual parser reports absence rather than inventing defaults. It is not part
 # of the Stage 4 reference profile: ADR-0079 §7 fixes that as modern transport.
@@ -104,6 +110,7 @@ while [ $# -gt 0 ]; do
         --accel)    QEMU_ACCEL="$2"; shift 2 ;;
         --no-framebuffer) NO_FRAMEBUFFER=1; shift ;;
         --stage4-block-device) STAGE4_BLOCK=1; shift ;;
+        --stage4-block-sectors) STAGE4_BLOCK_SECTORS="$2"; shift 2 ;;
         --stage4-block-device-legacy) STAGE4_BLOCK=1; STAGE4_BLOCK_LEGACY=1; shift ;;
         --interactive) INTERACTIVE=1; shift ;;
         --display)  DISPLAY_BACKEND="$2"; shift 2 ;;
@@ -321,6 +328,13 @@ fi
 if [ "$STAGE4_BLOCK" -eq 1 ]; then
     STAGE4_IMAGE="$OUT/stage4-block.img"
     rm -f "$STAGE4_IMAGE"
+    if [ -n "$STAGE4_BLOCK_SECTORS" ]; then
+        # **A deliberately small device, for a gate that must be refused.** The
+        # seeded sectors below are skipped: a disk this small has nowhere to put
+        # them, and a negative about capacity needs no content. Opt-in, so the
+        # reference image is untouched for every other gate.
+        dd if=/dev/zero of="$STAGE4_IMAGE" bs=512 count="$STAGE4_BLOCK_SECTORS" status=none
+    else
     dd if=/dev/zero of="$STAGE4_IMAGE" bs=1M count=16 status=none
     # **Sector 0 stays zero-filled, and the sectors after it do not.**
     #
@@ -344,6 +358,7 @@ if [ "$STAGE4_BLOCK" -eq 1 ]; then
             dd of="$STAGE4_IMAGE" bs=512 seek="$stage4_sector" conv=notrunc status=none
         stage4_sector=$((stage4_sector + 1))
     done
+    fi
     QEMU_ARGS+=(
         -drive "if=none,id=stage4blk,format=raw,file=$STAGE4_IMAGE"
     )
