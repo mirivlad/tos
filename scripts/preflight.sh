@@ -624,6 +624,7 @@ gate qemu       full-only "QEMU a textual driver reads one real sector"    qemu_
 gate qemu       full-only "QEMU one queue serves more than one request"    qemu_virtio_block_reuse
 gate qemu       full-only "QEMU two requests outstanding together"         qemu_virtio_block_two_inflight
 gate qemu       full-only "QEMU a textual driver writes a real sector"     qemu_virtio_block_write
+gate qemu       full-only "QEMU a capability crosses in a message"      qemu_capability_transfer
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0083 paired validation performance" qemu_paired_performance_conformance

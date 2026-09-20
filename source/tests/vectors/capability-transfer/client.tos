@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The client: it calls, and the first time it calls it hands over a capability.
+//
+// It holds `call` on the server's endpoint and `send` on a second endpoint —
+// and **only** `send` on that one. What it delegates is therefore an authority
+// it holds and the server does not, which is what makes the server's use of it
+// evidence rather than coincidence.
+//
+// Two rounds, differing in one thing: the first carries the capability, the
+// second carries nothing. The server's account of both is what this module's
+// own exit status is read against.
+
+module system.boot.client version 1.4 profile full;
+
+import capability system.ipc.Endpoint as inbox;
+import capability system.ipc.Endpoint as channel;
+
+resource [
+    fuel: 8192,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+// The call that delegates one capability with the request. The delegated
+// capability comes first, which is the shape every operation that hands one on
+// takes (ADR-0077 §3).
+extern fn endpoint_call_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [channel, inbox];
+
+extern fn endpoint_call(
+    cap: system.ipc.Endpoint, length: u64
+) -> i64 uses [inbox];
+
+const OK: i64 = 0i64;
+
+//  1  the call that carried a capability was answered
+//  2  the call that carried nothing was answered
+pub fn main() -> i64 uses [inbox, channel] {
+    let mut found: i64 = 0i64;
+    if (endpoint_call_carrying(channel, inbox, 0u64) == OK) {
+        found = found + 1i64;
+    }
+    if (endpoint_call(inbox, 0u64) == OK) {
+        found = found + 2i64;
+    }
+    return found;
+}

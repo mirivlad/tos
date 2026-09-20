@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `bbc6b4005995f87bf68f6074efeb85beab868111108e7dfc7d7002b7ef178d5b`\
+Source-manifest SHA-256: `f9dd58b7af492a82d82d3cfaf6bebd8afdeb98f0bcfcfe60ebdec4e0fd07de3d`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -3535,7 +3535,26 @@ such a module whole by its header.
 | `endpoint_receive` | `system.ipc.Endpoint` with `receive` | *(none)* | `i64` | 2 |
 | `endpoint_call` | `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
 | `endpoint_send_text` | `system.ipc.Endpoint` with `send` | `message: string` (≤ 256) | `i64` | 1 |
+| `endpoint_receive_call` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCall, i64>` | 2 |
+| `endpoint_call_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
 | `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
+
+`endpoint_receive_call` is `endpoint_receive` differing in what it produces —
+the third pair of rows over one selector in this document, after
+`endpoint_send_text` and the two device-window maps. `endpoint_receive` is
+unchanged and remains the way to take a message whose capabilities do not
+matter. What the new row adds is the ability to **serve** a call: the right to
+answer arrives in the receiver's transfer table (`IPC_V1` §4) and until now
+nothing in this schema could name it.
+
+`endpoint_call_carrying` is `endpoint_call` delegating one capability with the
+request. **The delegated capability comes first and declares `none`**, which is
+`endow_for_launch`'s rule and for its reason: what is required is that the
+caller *hold* it, and resolving it proves that. The nucleus already reads the
+sender's transfer table and delegates at exactly the rights the sender holds
+(`IPC_V1` §6); this row is what lets a module write that table. A call reserves
+the last transfer slot for its answer, so it may carry three capabilities of its
+own; this row carries one, which is what publication and lookup need.
 
 ### `system.ipc.Reply`
 
@@ -3694,6 +3713,30 @@ reads, and a gate holds the two together.
 Two facts, because neither is derivable from the other: a handle is an index in
 one table and means nothing in another, and an instance identity is not
 authority (ADR-0067 §7).
+
+### `system.ipc.ReceivedCall`
+
+| Field | Type |
+|---|---|
+| `reply` | `system.ipc.Reply` |
+| `carried` | `system.ipc.Endpoint` |
+
+Two facts from one receive, for the reason `CreatedProcess` is a record: the
+nucleus writes both into the receiver's own transfer table before the receive
+returns — the reply in the last slot, always, and the delegated capability in
+the first — and a second receive to fetch the second fact would take the *next*
+message.
+
+**`carried` is declared an endpoint because that is the kind this surface
+carries.** It is what the receiver expects, not a proof about what arrived: a
+caller that delegates another kind of capability does not turn it into an
+endpoint, and the handle goes on naming the sender's object. Every operation
+resolves object kind and right at the nucleus before acting, so such a handle
+fails closed at first use with `E_NO_CAPABILITY`, and nothing is forgeable —
+a handle is an index into a table the process cannot address
+(`CAPABILITY_V1` §7). A message that carried nothing leaves the slot zero, and
+a handle of all zeros names nothing in any table, so `carried` is then a
+capability that fails the same way.
 
 ### `system.process.ChildEnding`
 

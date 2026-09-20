@@ -264,6 +264,36 @@ pub const RECORDS: &[Record] = &[
             },
         ],
     },
+    // What a received call carried: the right to answer it, and the one
+    // capability the caller delegated with it.
+    //
+    // **Two facts from one receive, for the same reason `CreatedProcess` is a
+    // record.** The nucleus writes both into the receiver's own transfer table
+    // before the receive returns — the reply always in the last slot
+    // (`IPC_V1` §4), the delegated capability in the first — and neither is
+    // derivable from the other. A second receive to fetch the second fact
+    // would take the *next* message, so one operation has to answer with both.
+    //
+    // **The delegated capability is declared as an endpoint** because that is
+    // the one kind this surface carries (ADR-0093 P3 needs a published
+    // endpoint and nothing else). It is a declaration about what the receiver
+    // expects, and a caller that delegates another kind does not make it one:
+    // the handle stays what the sender's object was, and every operation
+    // resolves kind and right at the nucleus before acting, so a mismatch
+    // fails closed at first use with `E_NO_CAPABILITY`.
+    Record {
+        path: "system.ipc.ReceivedCall",
+        fields: &[
+            Field {
+                name: "reply",
+                ty: "system.ipc.Reply",
+            },
+            Field {
+                name: "carried",
+                ty: "system.ipc.Endpoint",
+            },
+        ],
+    },
     // What a wait observed, as `PROCESS_IDENTITY_V1` and ADR-0067 record it.
     //
     // **The three optional facts are `Option`, not a value beside a flag.**
@@ -336,6 +366,40 @@ pub const ACCEPTED: &[Interface] = &[
                 name: "endpoint_receive",
                 capabilities: &[Requirement::of("system.ipc.Endpoint", "receive")],
                 parameters: &[],
+                result: "i64",
+            },
+            // The same ABI selector as `endpoint_receive`, differing in what it
+            // produces — the third pair of schema rows over one selector in
+            // this table, after `endpoint_send_text` and the two device-window
+            // maps (ADR-0081 §5).
+            //
+            // `endpoint_receive` stays exactly as it is, and four existing
+            // vectors go on draining a journal with it. What this adds is the
+            // ability to *serve* a call, which no canonical textual module has
+            // ever been able to do: the right to answer arrives in the
+            // receiver's transfer table and nothing could name it.
+            Operation {
+                name: "endpoint_receive_call",
+                capabilities: &[Requirement::of("system.ipc.Endpoint", "receive")],
+                parameters: &[],
+                result: "Result<system.ipc.ReceivedCall, i64>",
+            },
+            // `endpoint_call`, carrying one capability the caller holds.
+            //
+            // **The delegated capability comes first**, which is ADR-0077 §3's
+            // shape for every operation that hands one on: declared once per
+            // interface, so the exact nominal type is retained at the call site
+            // and no erased capability value appears in TOS Core. The nucleus
+            // already reads the sender's transfer table and delegates at
+            // exactly the rights the sender holds; this row is what lets a
+            // module write that table.
+            Operation {
+                name: "endpoint_call_carrying",
+                capabilities: &[
+                    Requirement::held("system.ipc.Endpoint"),
+                    Requirement::of("system.ipc.Endpoint", "call"),
+                ],
+                parameters: &[Parameter::fixed("u64")],
                 result: "i64",
             },
             Operation {

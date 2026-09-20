@@ -1,0 +1,222 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// A capability crosses between two canonical textual processes in a message,
+// and the process that receives it can do something it could not do before.
+//
+// **Why this boot exists.** ADR-0093 accepted P3: the interface registry is an
+// ordinary textual service, and a client obtains an endpoint capability by
+// looking it up rather than being endowed with it at launch. That is
+// impossible unless a textual module can put a capability into a message and
+// another can take it out — and until now none could, nor could a textual
+// service answer a call at all, because the right to answer arrives in the
+// receiver's transfer table (`IPC_V1` §4) and nothing in the schema could name
+// it. This is the smallest boot that proves both: no device, no registry, no
+// block protocol, one capability.
+//
+// **The evidence is an asymmetry, not a success.** This module holds the
+// endpoint `channel` with `receive` and **no** `send`. Its child holds the
+// same endpoint with `send` and no `receive` — one endpoint, two names,
+// disjoint rights, which `IPC_V1` §2's one-receiver rule makes the natural
+// shape rather than a contrivance. So:
+//
+//   this module sends on its own `channel` handle   -> must be refused
+//   the child calls, delegating its `channel` handle
+//   this module sends on what arrived               -> must succeed
+//
+// Same operation, same endpoint, same process, one instant apart. The only
+// difference is which capability it went through, so what the message carried
+// was **authority** and not a number.
+//
+// The second round is the other half: the same call carrying nothing leaves
+// the slot zero, and a handle of all zeros names nothing in any table. A host
+// that handed out something usable where nothing was sent fails here.
+
+module system.boot.init version 1.4 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability system.ipc.Endpoint as inbox;
+import capability system.ipc.Endpoint as channel;
+
+resource [
+    fuel: 65536,
+    stack: 16KiB,
+    allocation: 4KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 8
+]
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+// Declared once and reached through both endpoint bindings, so `uses` names
+// the interface rather than either of them. The delegated capability is the
+// operation's own first capability (ADR-0077 §3), and the rights asked for are
+// intersected with what this process holds.
+extern fn endow_for_launch(
+    held: system.ipc.Endpoint,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+extern fn capability_release(
+    cap: system.process.Control
+) -> i64 uses [process];
+
+// The receive that produces what the message carried, rather than a status.
+extern fn endpoint_receive_call(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCall, i64> uses [inbox];
+
+// Reached through two different capabilities below: this module's own
+// `channel`, which lacks `send`, and the one that arrived in a message, which
+// has it. `uses` names the interface because the second is a value rather than
+// an import.
+extern fn endpoint_send(
+    cap: system.ipc.Endpoint, length: u64
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn endpoint_receive(
+    cap: system.ipc.Endpoint
+) -> i64 uses [channel];
+
+extern fn endpoint_reply(
+    cap: system.ipc.Reply, length: u64
+) -> i64 uses [system.ipc.Reply];
+
+const OK: i64 = 0i64;
+const E_NO_CAPABILITY: i64 = -1i64;
+// What the child is given: `call` on the endpoint this module receives on, and
+// `send` on the endpoint this module only receives on. Nothing else — no
+// authority to create, to spend, or to receive anything.
+const RIGHT_CALL: u64 = 4u64;
+const RIGHT_SEND: u64 = 1u64;
+const NO_SELF_RIGHTS: u64 = 0u64;
+// The reference runtime arena. `MIN_GRANT` is 8 MiB and `MAX_GRANT` 96 MiB;
+// a figure outside that domain is `E_BAD_ARGUMENT` rather than `E_LIMIT`,
+// because no authority could ever serve it.
+const CLIENT_GRANT: u64 = 56623104u64;
+
+//   1  the client was created
+//   2  the first receive produced a call
+//   4  this module cannot send on its own inbox — sends are right-checked
+//   8  it can send through the capability the message carried
+//  16  and that capability named `channel`: the message is waiting there
+//  32  the second receive produced a call
+//  64  the empty slot is refused
+//
+// A run that proves the mechanism reports 127. The client's two calls being
+// answered is asserted by the gate from the log, not by this module: a call
+// that was not answered is a client that never returned.
+// **The effect set names the interfaces too**, not only the bindings. Two of
+// the operations below act through a capability this function did not import —
+// the reply and the carried endpoint both arrived in a message — so what they
+// act through is the interface, and the verifier requires it to be declared
+// here exactly as an imported binding would be (`V2033`).
+pub fn main() -> i64
+    uses [process, memory, inbox, channel, system.ipc.Endpoint, system.ipc.Reply]
+{
+    let mut found: i64 = 0i64;
+
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            let called: i64 = endow_for_launch(inbox, builder, RIGHT_CALL, "inbox");
+            if (called != OK) {
+                return called - 1000i64;
+            }
+            let sending: i64 = endow_for_launch(channel, builder, RIGHT_SEND, "channel");
+            if (sending != OK) {
+                return sending - 1100i64;
+            }
+            match (launch_plan_seal(process, builder)) {
+                Ok(plan) => {
+                    match (process_create_funded(
+                        process, memory, plan,
+                        "system/boot/client.tos", CLIENT_GRANT, NO_SELF_RIGHTS
+                    )) {
+                        Ok(child) => {
+                            found = found + 1i64;
+                            let released: i64 = capability_release(child.control);
+                        }
+                        Err(uncreated) => { return uncreated - 3000i64; }
+                    }
+                }
+                Err(unsealed) => { return unsealed - 2000i64; }
+            }
+        }
+        Err(unplanned) => { return unplanned - 4000i64; }
+    }
+
+    // --- round one: the call that carried a capability -----------------------
+    match (endpoint_receive_call(inbox)) {
+        Ok(first) => {
+            found = found + 2i64;
+            // **The control.** This module holds `inbox` with `receive` and
+            // `call` and no `send`, so this must be refused. Without it, the
+            // send below would prove only that `endpoint_send` returns zero.
+            if (endpoint_send(inbox, 0u64) == E_NO_CAPABILITY) {
+                found = found + 4i64;
+            }
+            // The capability that arrived in the message. Same operation, same
+            // process, one instant later.
+            if (endpoint_send(first.carried, 0u64) == OK) {
+                found = found + 8i64;
+            }
+            // **And it named `channel`, not merely some endpoint.** This
+            // module receives on `channel`; a message is here only if the send
+            // above went to that endpoint, so the handle the message carried
+            // was the child's name for this one.
+            if (endpoint_receive(channel) == OK) {
+                found = found + 16i64;
+            }
+            let answered: i64 = endpoint_reply(first.reply, 0u64);
+            if (answered != OK) { return answered - 5000i64; }
+        }
+        Err(refused) => { return refused - 6000i64; }
+    }
+
+    // --- round two: the same call, carrying nothing --------------------------
+    match (endpoint_receive_call(inbox)) {
+        Ok(second) => {
+            found = found + 32i64;
+            // The slot the nucleus wrote is zero. This module holds a value the
+            // language calls an endpoint and the nucleus calls nothing at all,
+            // and this is where the two meet.
+            if (endpoint_send(second.carried, 0u64) == E_NO_CAPABILITY) {
+                found = found + 64i64;
+            }
+            let answered: i64 = endpoint_reply(second.reply, 0u64);
+            if (answered != OK) { return answered - 7000i64; }
+        }
+        Err(refused) => { return refused - 8000i64; }
+    }
+
+    // **The client's own account is deliberately not collected.** An earlier
+    // draft ended with `process_wait_child`, and it cancelled: the census
+    // found both contexts blocked and the liveness rule fired, which is the
+    // rule working rather than a defect. Nothing here needs it — every fact
+    // this boot claims is one this process observed itself, and a supervision
+    // step would put a second question in the same boot.
+    return found;
+}
