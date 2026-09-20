@@ -33,6 +33,7 @@
 // `check-endowment-constants.sh` now holds this one against the source it is
 // about, so a constant cannot be added without joining it.
 const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
+    + cfg!(feature = "test-capability-transfer") as usize
     + cfg!(feature = "test-supervisor") as usize
     + cfg!(feature = "test-deadlock") as usize
     + cfg!(feature = "test-call-reply") as usize
@@ -1677,6 +1678,61 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
             },
         ]
     };
+    // Two endpoints, and the difference between them is the whole boot. The
+    // boot process may `call` the first and the server it creates is endowed
+    // `receive` on it; the second it holds outright and **delegates in a
+    // message**, which is the thing no canonical textual module could do
+    // before. `wait_child` because the server's own account of what it
+    // observed is how the negative round is read back.
+    #[cfg(feature = "test-capability-transfer")]
+    let first_endowment = {
+        let (Some(inbox), Some(channel)) = (ipc::create(), ipc::create()) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        [
+            // `create` and nothing more. No `wait_child`: this boot collects no
+            // ending, and a right nothing uses would be authority granted for
+            // the shape of the constant rather than for what the module does.
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            // This process **is** the server: it receives on its inbox and
+            // its child is endowed `call` on it. `IPC_V1` §2 allows exactly
+            // one holder of `receive` per endpoint, which is what decides
+            // these two roles rather than a preference.
+            capability::Endowment::Existing {
+                binding: binding(b"inbox"),
+                object: capability::Object::Endpoint(inbox),
+                // `call` is here only so the plan can hand it to the child:
+                // `launch_plan_endow` intersects what is asked with what the
+                // creator holds, so a right the creator lacks is a right the
+                // child does not get. **`send` is deliberately absent**, and
+                // that absence is what the boot measures — this process's
+                // refusal on its own inbox is the control for the send it then
+                // performs through a capability that arrived in a message.
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            // The endpoint the whole boot turns on. This process holds
+            // `send | receive` so that it can endow its child with `send`;
+            // **it then holds one name carrying both and hands out a name
+            // carrying one**, and what the evidence rests on is that the
+            // child's name is the only one in this boot that the child can
+            // delegate back.
+            capability::Endowment::Existing {
+                binding: binding(b"channel"),
+                object: capability::Object::Endpoint(channel),
+                rights: tos_launch::RIGHT_SEND | tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+        ]
+    };
     // ADR-0078: everything a supervisor is made of, and nothing more. `create`
     // and `terminate` over itself, and the root's remainder to spend. Every
     // other capability that boot reaches is one an operation produced — the
@@ -1857,6 +1913,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-deputy",
         feature = "test-runtime-authority",
         feature = "test-supervision",
+        feature = "test-capability-transfer",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-lifecycle",
@@ -1889,6 +1946,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-region-transport",
         feature = "test-runtime-authority",
         feature = "test-supervision",
+        feature = "test-capability-transfer",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-bundle-launch",

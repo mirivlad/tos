@@ -1157,6 +1157,16 @@ enum Produced {
     /// **A number is not authority**: nothing downstream accepts one where a
     /// capability belongs, which is what keeps a BAR value data (ADR-0079 §10).
     Number,
+    /// `Result<system.ipc.ReceivedCall, i64>`: the right to answer the call
+    /// just received, and the one capability its caller delegated.
+    ///
+    /// **Both are read out of this process's own transfer table**, which the
+    /// nucleus filled before the receive returned: the reply from the last
+    /// slot, always (`IPC_V1` §4), and the delegated capability from the
+    /// first. Nothing is minted here — a handle is an index into a table this
+    /// process cannot address (`CAPABILITY_V1` §7), so this reads names the
+    /// nucleus wrote and could not invent one if it tried.
+    ReceivedCall,
     /// `Result<system.process.ChildEnding, i64>`: the record operation 14 wrote
     /// at `WAIT_CHILD_RECORD`, as the value it describes.
     ///
@@ -1168,13 +1178,31 @@ enum Produced {
     ChildEnding,
 }
 
+/// Where one of an operation's capabilities goes.
+///
+/// **Two destinations, because the ABI has two.** A capability the operation
+/// acts *through* goes in a register, which is every operation this host
+/// performed before now. A capability the operation *hands on* goes into the
+/// message's transfer table at the offset ADR-0058 fixed, and the nucleus
+/// reads it from there — `resolve_transfers` resolves it with no required
+/// right, because sending a capability is not an operation on the object it
+/// names, and delegates it at exactly the rights the sender holds.
+#[derive(Clone, Copy)]
+enum Placed {
+    /// In the register the operation assigns it.
+    Register(Reg),
+    /// In slot `index` of this process's own outgoing transfer table, with the
+    /// count the row's own `Slot::Fixed` puts in the count register.
+    Transfer(usize),
+}
+
 struct Performed {
     interface: &'static str,
     name: &'static str,
     operation: u64,
     /// Where each capability supplied from an `import capability` goes, in the
     /// order §4 declares them.
-    capabilities: &'static [Reg],
+    capabilities: &'static [Placed],
     /// Where each declared value goes, in the order §4 declares them.
     values: &'static [Slot],
     result: Produced,
@@ -1185,7 +1213,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.ipc.Endpoint",
         name: "endpoint_send",
         operation: ENDPOINT_SEND,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         // §5 rows 1, 3 and 4: the length goes where a one-capability
         // operation's first value goes, which is `rsi`.
         values: &[Slot::Number(Reg::Rsi)],
@@ -1195,7 +1223,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.ipc.Endpoint",
         name: "endpoint_send_text",
         operation: ENDPOINT_SEND,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         // The payload where `IPC_V1` §3 puts one, and its length where §5 row 1
         // puts that. The bound is the schema's 256, which is §3's inline bound:
         // a longer message is refused before the call is made, not truncated.
@@ -1210,15 +1238,37 @@ const PERFORMED: &[Performed] = &[
         interface: "system.ipc.Endpoint",
         name: "endpoint_receive",
         operation: ENDPOINT_RECEIVE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[],
+        result: Produced::Status,
+    },
+    // The same selector, producing the two capabilities the receive delivered
+    // instead of only its status.
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_receive_call",
+        operation: ENDPOINT_RECEIVE,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[],
+        result: Produced::ReceivedCall,
+    },
+    // A call carrying one capability. The delegated one goes into transfer
+    // slot 0 and the count register says one; `IPC_V1` §4 reserves the last
+    // slot for the answer, so a call may carry three of its own and this
+    // carries one.
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_call_carrying",
+        operation: ENDPOINT_CALL,
+        capabilities: &[Placed::Transfer(0), Placed::Register(Reg::Rdi)],
+        values: &[Slot::Number(Reg::Rsi), Slot::Fixed(Reg::R10, 1)],
         result: Produced::Status,
     },
     Performed {
         interface: "system.ipc.Endpoint",
         name: "endpoint_call",
         operation: ENDPOINT_CALL,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         // §5 rows 1, 3 and 4: the length goes where a one-capability
         // operation's first value goes, which is `rsi`.
         values: &[Slot::Number(Reg::Rsi)],
@@ -1231,7 +1281,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.ipc.Endpoint",
         name: "endow_for_launch",
         operation: LAUNCH_PLAN_ENDOW,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[
             Slot::Held(Reg::Rsi),
             Slot::Number(Reg::R10),
@@ -1251,7 +1301,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.memory.Authority",
         name: "endow_for_launch",
         operation: LAUNCH_PLAN_ENDOW,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[
             Slot::Held(Reg::Rsi),
             Slot::Number(Reg::R10),
@@ -1267,7 +1317,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.process.Control",
         name: "endow_for_launch",
         operation: LAUNCH_PLAN_ENDOW,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[
             Slot::Held(Reg::Rsi),
             Slot::Number(Reg::R10),
@@ -1283,7 +1333,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.ipc.Reply",
         name: "endpoint_reply",
         operation: ENDPOINT_REPLY,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         // §5 rows 1, 3 and 4: the length goes where a one-capability
         // operation's first value goes, which is `rsi`.
         values: &[Slot::Number(Reg::Rsi)],
@@ -1295,7 +1345,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.ipc.Reply",
         name: "endpoint_reply_receive",
         operation: ENDPOINT_REPLY_RECEIVE,
-        capabilities: &[Reg::Rdi, Reg::Rsi],
+        capabilities: &[Placed::Register(Reg::Rdi), Placed::Register(Reg::Rsi)],
         values: &[Slot::Number(Reg::Rdx)],
         result: Produced::Status,
     },
@@ -1307,7 +1357,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.memory.Authority",
         name: "capability_attenuate_scoped",
         operation: CAPABILITY_ATTENUATE_SCOPED,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[Slot::Number(Reg::Rsi)],
         result: Produced::Authority,
     },
@@ -1315,7 +1365,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.memory.Authority",
         name: "capability_release",
         operation: CAPABILITY_RELEASE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[],
         result: Produced::Status,
     },
@@ -1323,7 +1373,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.process.Control",
         name: "capability_attenuate",
         operation: CAPABILITY_ATTENUATE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[Slot::Number(Reg::Rsi)],
         result: Produced::Authority,
     },
@@ -1331,7 +1381,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.process.Control",
         name: "capability_release",
         operation: CAPABILITY_RELEASE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[],
         result: Produced::Status,
     },
@@ -1339,7 +1389,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.process.Control",
         name: "process_terminate",
         operation: PROCESS_TERMINATE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[],
         result: Produced::Status,
     },
@@ -1347,7 +1397,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.process.Control",
         name: "launch_plan_create",
         operation: LAUNCH_PLAN_CREATE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[],
         result: Produced::Authority,
     },
@@ -1355,7 +1405,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.process.Control",
         name: "launch_plan_seal",
         operation: LAUNCH_PLAN_SEAL,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[Slot::Held(Reg::Rsi)],
         result: Produced::Authority,
     },
@@ -1363,7 +1413,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.process.Control",
         name: "process_create_funded",
         operation: PROCESS_CREATE_FUNDED,
-        capabilities: &[Reg::Rdi, Reg::Rsi],
+        capabilities: &[Placed::Register(Reg::Rdi), Placed::Register(Reg::Rsi)],
         values: &[
             Slot::Held(Reg::Rdx),
             Slot::Text {
@@ -1380,7 +1430,7 @@ const PERFORMED: &[Performed] = &[
         interface: "system.process.Control",
         name: "process_wait_child",
         operation: PROCESS_WAIT_CHILD,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         // §5 row 14 puts this operation's flags in `rsi`.
         values: &[Slot::Number(Reg::Rsi)],
         result: Produced::ChildEnding,
@@ -1396,7 +1446,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.Bus",
         name: "pci_function_claim",
         operation: PCI_FUNCTION_CLAIM,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         // §5 row 24: bus, device and function, in the three registers after the
         // capability. Three values rather than one packed word — a packed BDF
         // would have unused bits and therefore a canonical form to argue about,
@@ -1413,7 +1463,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.Bus",
         name: "endow_for_launch",
         operation: LAUNCH_PLAN_ENDOW,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[
             Slot::Held(Reg::Rsi),
             Slot::Number(Reg::R10),
@@ -1429,7 +1479,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.Bus",
         name: "capability_attenuate",
         operation: CAPABILITY_ATTENUATE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[Slot::Number(Reg::Rsi)],
         result: Produced::Authority,
     },
@@ -1437,7 +1487,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.Bus",
         name: "capability_release",
         operation: CAPABILITY_RELEASE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[],
         result: Produced::Status,
     },
@@ -1447,7 +1497,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.FunctionConfig",
         name: "pci_config_read",
         operation: PCI_CONFIG_READ,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[Slot::Number(Reg::Rsi), Slot::Number(Reg::Rdx)],
         result: Produced::Number,
     },
@@ -1455,7 +1505,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.FunctionConfig",
         name: "pci_config_write",
         operation: PCI_CONFIG_WRITE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[
             Slot::Number(Reg::Rsi),
             Slot::Number(Reg::Rdx),
@@ -1470,7 +1520,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.FunctionConfig",
         name: "pci_bar_map_read",
         operation: PCI_BAR_MAP,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[
             Slot::Number(Reg::Rsi),
             Slot::Number(Reg::Rdx),
@@ -1483,7 +1533,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.FunctionConfig",
         name: "pci_bar_map_write",
         operation: PCI_BAR_MAP,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[
             Slot::Number(Reg::Rsi),
             Slot::Number(Reg::Rdx),
@@ -1499,7 +1549,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.FunctionConfig",
         name: "pci_interrupt_claim",
         operation: PCI_INTERRUPT_CLAIM,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[Slot::Number(Reg::Rsi)],
         result: Produced::Authority,
     },
@@ -1509,7 +1559,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.irq.Source",
         name: "irq_wait",
         operation: IRQ_WAIT,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[],
         result: Produced::Status,
     },
@@ -1517,7 +1567,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.irq.Source",
         name: "endow_for_launch",
         operation: LAUNCH_PLAN_ENDOW,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[
             Slot::Held(Reg::Rsi),
             Slot::Number(Reg::R10),
@@ -1533,7 +1583,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.irq.Source",
         name: "capability_attenuate",
         operation: CAPABILITY_ATTENUATE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[Slot::Number(Reg::Rsi)],
         result: Produced::Authority,
     },
@@ -1541,7 +1591,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.irq.Source",
         name: "capability_release",
         operation: CAPABILITY_RELEASE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[],
         result: Produced::Status,
     },
@@ -1549,7 +1599,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.FunctionConfig",
         name: "endow_for_launch",
         operation: LAUNCH_PLAN_ENDOW,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[
             Slot::Held(Reg::Rsi),
             Slot::Number(Reg::R10),
@@ -1565,7 +1615,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.FunctionConfig",
         name: "capability_attenuate",
         operation: CAPABILITY_ATTENUATE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[Slot::Number(Reg::Rsi)],
         result: Produced::Authority,
     },
@@ -1573,7 +1623,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.FunctionConfig",
         name: "capability_release",
         operation: CAPABILITY_RELEASE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[],
         result: Produced::Status,
     },
@@ -1604,7 +1654,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.pci.FunctionConfig",
         name: "dma_region_allocate",
         operation: DMA_REGION_ALLOCATE,
-        capabilities: &[Reg::Rdi, Reg::Rsi],
+        capabilities: &[Placed::Register(Reg::Rdi), Placed::Register(Reg::Rsi)],
         values: &[Slot::Number(Reg::Rdx)],
         result: Produced::Mapping { writable: true },
     },
@@ -1612,7 +1662,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.dma.Region",
         name: "dma_device_address",
         operation: DMA_DEVICE_ADDRESS,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[Slot::Number(Reg::Rsi)],
         result: Produced::Number,
     },
@@ -1620,7 +1670,7 @@ const PERFORMED: &[Performed] = &[
         interface: "platform.dma.Region",
         name: "capability_release",
         operation: CAPABILITY_RELEASE,
-        capabilities: &[Reg::Rdi],
+        capabilities: &[Placed::Register(Reg::Rdi)],
         values: &[],
         result: Produced::Status,
     },
@@ -2080,7 +2130,7 @@ impl System for Endowment<'_> {
         }
         // The capabilities the schema declares, in the order it declares them,
         // each from its own `import capability` binding (ADR-0056, ADR-0063).
-        for (register, argument) in performed.capabilities.iter().zip(call.arguments) {
+        for (placement, argument) in performed.capabilities.iter().zip(call.arguments) {
             let Value::Capability(held) = argument else {
                 return Err(Trap::new(
                     "RUNTIME_TYPE_CONFUSION",
@@ -2088,7 +2138,15 @@ impl System for Endowment<'_> {
                     call.source,
                 ));
             };
-            registers[*register as usize] = held.get();
+            match placement {
+                Placed::Register(register) => registers[*register as usize] = held.get(),
+                // SAFETY: the transfer table is at the offset ADR-0058 fixes in
+                // this process's own argument region, and the index is a
+                // constant of the row, inside the contract's maximum.
+                Placed::Transfer(index) => unsafe {
+                    set_transferred(self.arguments, *index, held.get())
+                },
+            }
         }
         // A `Fixed` slot takes no argument: it is the row's own constant, so
         // the argument cursor does not advance for it.
@@ -2231,7 +2289,9 @@ impl System for Endowment<'_> {
         // not end and the mapping is still this process's — which is why this
         // reads `status` rather than assuming the call did what it was asked.
         if performed.name == "capability_release" && status == OK {
-            if let Some(register) = performed.capabilities.first() {
+            // Its capability is the one it acts through, so it is in a
+            // register: a release delegates nothing and has no transfer slot.
+            if let Some(Placed::Register(register)) = performed.capabilities.first() {
                 self.mappings.retire(registers[*register as usize]);
             }
         }
@@ -2280,6 +2340,23 @@ impl System for Endowment<'_> {
                 Value::Aggregate(alloc::vec![
                     Value::Capability(Handle::new(value)),
                     Value::Int(IntKind::U64, u128::from(instance) as i128),
+                ])
+            }
+            Produced::ReceivedCall => {
+                // SAFETY: the transfer table is at the offset ADR-0058 fixes in
+                // this process's own argument region, and both indices are
+                // inside `MAX_TRANSFERRED_CAPABILITIES`.
+                let reply = unsafe {
+                    transferred(
+                        self.arguments,
+                        tos_launch::MAX_TRANSFERRED_CAPABILITIES as usize - 1,
+                    )
+                };
+                // SAFETY: as above.
+                let carried = unsafe { transferred(self.arguments, 0) };
+                Value::Aggregate(alloc::vec![
+                    Value::Capability(Handle::new(reply)),
+                    Value::Capability(Handle::new(carried)),
                 ])
             }
             Produced::ChildEnding => {
