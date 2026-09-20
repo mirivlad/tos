@@ -7892,10 +7892,16 @@ divider — qualifier-bound идентичность active-preemption reference
 
 **G. Как супервизор узнаёт, что сервис закончился — ЗАКРЫТО 2026-08-25:
 ADR-0067 принят Project Architect (вариант D) и реализован end-to-end.**
-Операции 14 `process_wait_child` и 15 `process_create_with_generation` есть в
-`SYSTEM_ABI_V1`, в `nucleus/src/syscall.rs` и в `nucleus/src/process.rs`;
-tombstone живёт в слоте процесса, а десять тестов ADR закрыты 10/10 (запись
-журнала от 2026-08-25 и последующая — об исчерпании слотов). Статус берётся из
+Операция 14 `process_wait_child` есть в `SYSTEM_ABI_V1`, в
+`nucleus/src/syscall.rs` и в `nucleus/src/process.rs`; tombstone живёт в слоте
+процесса, а десять тестов ADR закрыты 10/10 (запись журнала от 2026-08-25 и
+последующая — об исчерпании слотов). **Операция 15
+`process_create_with_generation` с тех пор снята** ADR-0076 §4 вместе с
+операцией 8 и всегда отвечает `E_NOT_SUPPORTED`: её единственная добавка —
+supervisor-asserted restart generation — переехала в операцию 19
+`process_create_funded`, в `CREATE_FUNDED_RECORD`. Номер 15 закреплён навсегда
+и не переиспользуется. Реализованность ADR-0067 от этого не меняется; меняется
+то, какую операцию на неё правильно ссылаться. Статус берётся из
 строки `- Status:` самого ADR — там **Accepted (option D)**. Формулировка ниже
 сохранена как запись того, чем это было до принятия, и её слова «остаётся
 Proposed» и «реализация не начата» с тех пор неверны.
