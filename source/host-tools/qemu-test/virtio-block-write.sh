@@ -334,6 +334,82 @@ grep -q "TOS.RUN.PCI_ASSIGNED .*express=1 " "$EVENTS" ||
 grep -q "TOS.RUN.PCI_ASSIGNED .*dma=1 " "$EVENTS" ||
     fail "P5 does not hold: the profile did not qualify the target endpoint"
 
+# --- what happens to the device when the process dies --------------------------
+#
+# **The process ends holding everything**: the PCI function, its MMIO window,
+# its interrupt source and its DMA region. Nothing in the module releases them,
+# so this boot is the process-death teardown path, and Stage 4C's accepted rules
+# say exactly what must follow.
+#
+# **This is not the explicit-release path.** `dma-region.sh` gates that one — a
+# module that calls `capability_release` and then finds both stale paths closed.
+# The two are different obligations and neither test proves the other: explicit
+# release is a module's decision, and this is what the nucleus does when nobody
+# decided anything.
+#
+# Ordering is the evidence, not presence. Live DMA backing must not go straight
+# back to the ordinary pool: it enters quarantine first (`kept=1`), the
+# assignment is drained — memory decoding and bus mastering off — and only then
+# is the run proved safe, returned and its charge refunded. The scan starts
+# after the module's own completion line, so these are facts about the teardown
+# and not about anything the driver did while it ran.
+teardown_after_process_death() {
+    local frames="$1" deliveries="$2"
+    python3 - "$EVENTS" "$frames" "$deliveries" <<'    CHECK' || fail "the process-death teardown is missing or out of order"
+import re, sys
+
+events = [line.rstrip("\r\n") for line in open(sys.argv[1], encoding="utf-8", errors="replace")]
+frames, deliveries = int(sys.argv[2]), int(sys.argv[3])
+
+# Bound to this boot: the frame count is the region this gate already asserted,
+# and the delivery count is this boot's two requests. An unrelated teardown of
+# some other region or source cannot satisfy them.
+steps = [
+    ("the module completed, so what follows is teardown",
+     re.compile(r"^TOS\.RUN\.COMPLETED value=i64:\d+$")),
+    ("live DMA backing enters quarantine rather than the pool",
+     re.compile(r"^TOS\.RUN\.DMA_QUARANTINED region=\d+ process=0 frames=%d "
+                r"charge_outstanding=1 kept=1 asserted_by=nucleus$" % frames)),
+    ("the assignment is drained: memory decoding and bus mastering off",
+     re.compile(r"^TOS\.RUN\.PCI_ENABLES .* memory_decoding=0 bus_mastering=0 "
+                r"memory_space=0 bus_master=0 asserted_by=nucleus$")),
+    ("the quarantined run is proved safe, returned and its charge refunded",
+     re.compile(r"^TOS\.RUN\.DMA_RECLAIMED process=0 frames=%d drained=1 refunded=1 "
+                r"asserted_by=nucleus$" % frames)),
+    ("the interrupt source is released and its vector retired",
+     re.compile(r"^TOS\.RUN\.IRQ_RELEASED source=\d+ entry=0 vector=\d+ "
+                r"deliveries=%d cancelled_waiter=0 vector_retired=1 asserted_by=nucleus$"
+                % deliveries)),
+    ("the process is reclaimed with no quarantined DMA frames left",
+     re.compile(r"^TOS\.RUN\.PROCESS_RECLAIMED process=0 .* dma_quarantined=0$")),
+]
+
+at = 0
+for label, pattern in steps:
+    while at < len(events) and not pattern.match(events[at]):
+        at += 1
+    if at == len(events):
+        print("  missing, or not after the step before it: " + label)
+        sys.exit(1)
+    at += 1
+sys.exit(0)
+    CHECK
+}
+
+teardown_after_process_death "$((8192 / 4096))" "$deliveries"
+
+# --- and ring 0 still knows nothing about the device it drove ------------------
+#
+# ADR-0082 §9, with the token list extended for the protocol Stage 4D completed.
+# Stage 4B and Stage 4C-1 check this with a list frozen before rings, indices,
+# request types and sectors existed in this tree; the shared list in
+# `stage4-profile.sh` covers them, and it is run **here** so that a future change
+# leaking block-protocol semantics into a production binary turns the ordinary
+# `qemu` profile red.
+leaked="$(stage4_device_vocabulary_leak "$ROOT")"
+[ -z "$leaked" ] ||
+    fail "a production binary mentions device-protocol vocabulary: $leaked"
+
 # --- the capacity negative, on a device too small to hold the sector -----------
 #
 # **The same module, the same capsule, a smaller disk.** It must refuse before it
@@ -383,6 +459,13 @@ echo "  one 8 KiB DMA region, capability_delta=1, one MSI-X source, $deliveries 
 echo "  host corroboration: the backing image is the reference image with sector"
 echo "  $TARGET_SECTOR rewritten and no other byte changed — a target-and-location check,"
 echo "  NOT a durability claim"
+echo "  process death: the boot ends holding the function, its window, its source"
+echo "  and its region, and the nucleus quarantines the 2 DMA frames rather than"
+echo "  pooling them, drains the assignment, reclaims and refunds them, retires"
+echo "  vector 48 with its source, and reports dma_quarantined=0 — asserted in"
+echo "  that order, and distinct from dma-region.sh's explicit-release path"
+echo "  ring 0, the runtime binary and the engine contain no VirtIO or block"
+echo "  protocol vocabulary, checked with comments stripped"
 echo "  negative: the same capsule on a $UNDERSIZED_SECTORS-sector device refuses with -44 before"
 echo "  publishing anything, and the nucleus counted 0 interrupts, so no request"
 echo "  reached the device"
