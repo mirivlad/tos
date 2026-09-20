@@ -64,9 +64,43 @@ stage4_target_claim() {
         "$STAGE4_TARGET_BUS" "$STAGE4_TARGET_DEVICE" "$STAGE4_TARGET_FUNCTION"
 }
 
+# **The device-protocol vocabulary no production binary may contain.**
+#
+# ADR-0082 §9: the nucleus may know an MSI-X table entry's layout and how to
+# acknowledge through the local APIC; it may not know what a queue is or that
+# this is a block device. Stage 4B and Stage 4C-1 each check that inline with a
+# token list frozen before Stage 4D existed, so the completed block-protocol
+# vocabulary — rings, indices, request types, sectors — was never guarded. This
+# is that list, and the Stage 4D-5 gate runs it, so a leak makes the ordinary
+# `qemu` profile red rather than being found by reading.
+#
+# **Device semantics, not English nouns.** Bare `queue`, `descriptor`,
+# `capacity` and `status` describe generic nucleus, x86 and runtime machinery
+# and are deliberately absent; every token here names something only a VirtIO
+# block driver has a reason to write.
+#
+# Scanned with comments stripped, over the three source trees the boot actually
+# runs: ring 0, the ring-3 runtime binary, and the engine that binary links.
+STAGE4_DEVICE_VOCABULARY='virtio|virtqueue|virtq_desc|virtq_avail|virtq_used|virtio_blk|blk_req|blk_t_in|blk_t_out|blk_s_ok|avail_idx|used_idx|avail_ring|used_ring|used_elem|queue_notify|queue_enable|queue_desc|queue_driver|queue_device|queue_select|queue_msix|notify_off|desc_f_next|desc_f_write|sector|device_status|driver_ok|feature_select'
+
+# **One narrow, documented exception.** PCI Express has its own Device Status
+# register, and ADR-0084 §5b makes its Transactions Pending bit ring 0's
+# business: it is how the nucleus proves a function has no non-posted request
+# outstanding before that function's memory returns to the pool. The token is
+# blanked rather than the line dropped, so a genuine leak sharing a line with it
+# still matches.
+stage4_device_vocabulary_leak() {
+    local root="$1"
+    find "$root/nucleus/src" "$root/runtime-image/src" "$root/crates/tos-engine/src" \
+        -name '*.rs' -print0 |
+        xargs -0 sed -e 's://.*::' -e 's:/\*.*\*/::' -e 's:EXPRESS_DEVICE_STATUS::g' |
+        grep -niE "$STAGE4_DEVICE_VOCABULARY" || true
+}
+
 if [ "${0##*/}" = "stage4-profile.sh" ]; then
     echo "stage4 profile revision $STAGE4_PROFILE_REVISION"
     echo "  root port: $(stage4_port_fields)"
     echo "  endpoint:  $(stage4_target_fields)"
     echo "  claim:     pci_function_claim(bus, $(stage4_target_claim))"
+    echo "  device vocabulary guarded: $STAGE4_DEVICE_VOCABULARY"
 fi
