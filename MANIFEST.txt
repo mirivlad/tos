@@ -38,9 +38,9 @@ Generated convenience view
 
 Composition (derived, not hand-maintained)
 ------------------------------------------
-- files in the release package: 508
+- files in the release package: 510
 - active system invariants: 21
-- architecture decision records: 91 (40 accepted)
+- architecture decision records: 93 (40 accepted)
 
 Architecture decision records
 -----------------------------
@@ -135,6 +135,8 @@ Architecture decision records
 - docs/adr/0089-the-call-arity-diagnostic.md — ADR-0089: the call-arity diagnostic [**Accepted (Project Architect-approved, 2026-09-14)**]
 - docs/adr/0090-the-resolved-closure-import-edge-ceiling.md — ADR-0090: the resolved-closure import-edge ceiling [**Accepted (Project Architect-approved, 2026-09-15)**]
 - docs/adr/0091-the-transitive-import-envelope.md — ADR-0091: `resource imports` is a count of modules, and it is counted [**Accepted (Project Architect-approved, 2026-09-15)**]
+- docs/adr/0092-reset-authority.md — ADR-0092: Who may reset a PCI function, and what "reset" means [**Proposed**]
+- docs/adr/0093-block-device-publication-and-lifetime.md — ADR-0093: Publication and lifetime of `block.device.v1` [**Proposed**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.
