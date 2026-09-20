@@ -95,6 +95,15 @@ permitted 512 "writing a placement register back unchanged was refused"
 permitted 1024 "a window no longer derives the extent measured at claim time"
 permitted 2048 "an ordinary unrelated configuration field is no longer writable"
 
+# --- and the route that reached past every refusal above (ADR-0092 §5a) -------
+# An FLR returns the configuration registers to their defaults, the BARs among
+# them, so it moves every placement at once without writing any of them.
+# ADR-0082 §5a reserved the registers and not this operation; its Type-1 row had
+# Secondary Bus Reset and its Type-0 row had no analogue. R1a is that analogue.
+refused 4096 "Initiate Function Level Reset"
+permitted 8192 "writing Device Control back unchanged was refused"
+permitted 16384 "a write changing an unreserved bit of Device Control was refused, so the rule is not bit-precise"
+
 # --- the claim leaves the function in a defined state -------------------------
 # ADR-0082 §5b, §5c, §5d. The nucleus is the only party that sees what firmware
 # left, so it is the only party that can say so.
@@ -107,6 +116,10 @@ echo "  every base-address register is refused, both halves of the 64-bit pair"
 echo "  among them, and so is the expansion ROM register; a window still derives"
 echo "  the extent measured at claim time, writing a placement register back"
 echo "  unchanged is still permitted, and an unrelated field is still writable"
+echo "  and Initiate Function Level Reset is refused, while an unreserved bit of"
+echo "  the same Device Control word still takes a changing write — the route"
+echo "  that returns every base-address register to its default at once, closed"
+echo "  by ADR-0092 R1a without reserving a register a driver has business in"
 echo "  this fixture reported value=434 before the narrowing — BAR1, BAR4 low,"
 echo "  BAR4 high and a stale window all accepted — and reports $value now"
 sed -n 's/^\(TOS\.RUN\.PCI_NORMALISED .*\)$/  \1/p' "$OUT/events.log"
