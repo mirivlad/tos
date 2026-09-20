@@ -304,6 +304,25 @@ const EXPRESS_NO_SNOOP_BIT: u64 = 11;
 /// and later only.
 const EXPRESS_IDO_REQUEST_BIT: u64 = 8;
 const EXPRESS_IDO_COMPLETION_BIT: u64 = 9;
+/// Device Control bit 15: Initiate Function Level Reset (ADR-0092, option
+/// R1a).
+///
+/// **Not an ordering condition — a resource-placement one, reached by a
+/// different route.** An FLR returns the function's configuration registers to
+/// their defaults, the BARs among them, while ADR-0081 §13 measured them once
+/// at claim time and §14 keeps the assignment alive on the premise that the
+/// measurement is still what the function decodes. ADR-0082 §5a reserved those
+/// registers and stated the reason — "make the model's assumption hold rather
+/// than teach three mechanisms to chase a moving resource" — but reserved only
+/// the registers, not the one operation that clears them all at once. Its
+/// Type 1 row shows it regarded reset as its business: Secondary Bus Reset is
+/// there. This is the Type 0 analogue it did not have.
+///
+/// **The bit reads as zero**, being write-1-to-initiate and self-clearing, so
+/// the shared "would change" rule is exactly "would set" here: a driver's
+/// ordinary business in this register — maximum payload size, extended tags,
+/// maximum read request — is untouched, and so is writing back what is there.
+const EXPRESS_INITIATE_FLR_BIT: u64 = 15;
 /// Device Status bit 5: the function has issued non-posted requests that have
 /// not completed.
 const EXPRESS_TRANSACTIONS_PENDING: u64 = 1 << 5;
@@ -1344,13 +1363,23 @@ fn write_is_permitted(entry: &Assignment, offset: u64, width: u64, value: u64) -
         }
     }
     // The ordering and coherency bits the DMA teardown proof rests on
-    // (ADR-0084 §5c). **Four bits of two registers, and not the registers**: a
-    // driver has ordinary business in Device Control — maximum payload size,
-    // extended tags, maximum read request — and reserving all of it would be the
-    // wide narrowing ADR-0082 §5a already refused for a Command register.
+    // (ADR-0084 §5c), and Initiate Function Level Reset (ADR-0092 §5a).
+    // **Five bits of two registers, and not the registers**: a driver has
+    // ordinary business in Device Control — maximum payload size, extended
+    // tags, maximum read request — and reserving all of it would be the wide
+    // narrowing ADR-0082 §5a already refused for a Command register.
+    //
+    // Four of the five are about how the device's traffic is ordered and
+    // snooped; the fifth is about whether the function's resource placement
+    // survives at all, and it is here rather than with the placement registers
+    // because it lives in this word and is judged by the same rule.
     if entry.express.present() {
         let control = u64::from(entry.express.capability) + EXPRESS_DEVICE_CONTROL;
-        for bit in [EXPRESS_RELAXED_ORDERING_BIT, EXPRESS_NO_SNOOP_BIT] {
+        for bit in [
+            EXPRESS_RELAXED_ORDERING_BIT,
+            EXPRESS_NO_SNOOP_BIT,
+            EXPRESS_INITIATE_FLR_BIT,
+        ] {
             if changes_bit_of_word(entry, offset, width, value, control, bit) {
                 return false;
             }

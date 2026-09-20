@@ -54,6 +54,24 @@ const EXPANSION_ROM: u64 = 48u64;
 // somewhere else entirely.
 const HEADER_TYPE: u64 = 14u64;
 
+// The PCI Express Capability, found by walking the list so that nothing here
+// depends on where this particular device happens to put it.
+const MAX_CAPABILITIES: u64 = 64u64;
+const FIRST_CAPABILITY: u64 = 64u64;
+const LAST_CAPABILITY: u64 = 240u64;
+const CAPABILITY_POINTER: u64 = 52u64;
+const CAP_ID_EXPRESS: u64 = 16u64;
+// Device Control, within that capability.
+const EXPRESS_DEVICE_CONTROL: u64 = 8u64;
+// Bit 15 of it: Initiate Function Level Reset (ADR-0092 §5a). Write-1 to
+// initiate and self-clearing, so it reads as zero and "would change" is
+// "would set".
+const INITIATE_FLR: u64 = 32768u64;
+// Bit 3 of the same word: Enable Unsupported Request Reporting. An error
+// reporting enable, which is the driver's ordinary business — the control that
+// keeps the refusal above from being a blanket refusal of the register.
+const UNSUPPORTED_REQUEST_REPORTING: u64 = 8u64;
+
 fn read_at(function: platform.pci.FunctionConfig, offset: u64, width: u64) -> u64
     uses [platform.pci.FunctionConfig]
 {
@@ -89,6 +107,35 @@ fn accepts_write(function: platform.pci.FunctionConfig, offset: u64) -> u64
         return 0u64;
     }
     return 1u64;
+}
+
+fn express_capability(function: platform.pci.FunctionConfig) -> u64
+    uses [platform.pci.FunctionConfig]
+{
+    let mut at: u64 = read_at(function, CAPABILITY_POINTER, 1u64);
+    let mut steps: u64 = 0u64;
+    let mut found: u64 = 0u64;
+    while (steps < MAX_CAPABILITIES) {
+        if (at < FIRST_CAPABILITY) {
+            steps = MAX_CAPABILITIES;
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (at > LAST_CAPABILITY) {
+                steps = MAX_CAPABILITIES;
+            }
+        }
+        if (steps < MAX_CAPABILITIES) {
+            if (read_at(function, at, 1u64) == CAP_ID_EXPRESS) {
+                found = at;
+                steps = MAX_CAPABILITIES;
+            }
+            if (steps < MAX_CAPABILITIES) {
+                at = read_at(function, at + 1u64, 1u64);
+                steps = steps + 1u64;
+            }
+        }
+    }
+    return found;
 }
 
 //   1  BAR0     2  BAR1     4  BAR2     8  BAR3    16  BAR4    32  BAR5
@@ -155,6 +202,50 @@ pub fn main() -> i64 uses [bus, platform.pci.FunctionConfig] {
             let cache_line: u64 = read_at(function, 12u64, 1u64);
             if (pci_config_write(function, 12u64, 1u64, cache_line) == 0i64) {
                 found = found + 2048i64;
+            }
+
+            // --- and the route that reached past all of it (ADR-0092 §5a) ---
+            //
+            // An FLR returns the configuration registers to their defaults, the
+            // BARs among them, so it moves every placement above at once
+            // without writing any of them. §5a of ADR-0082 reserved the
+            // registers and not this; R1a of ADR-0092 closes it.
+            //
+            // 4096  setting Initiate Function Level Reset was **accepted** —
+            //       the reachability this narrowing exists to close
+            // 8192  writing Device Control back unchanged is still permitted
+            //16384  and a write that changes an *unreserved* bit of the same
+            //       word is still permitted, so the rule is bit-precise rather
+            //       than a refusal of the register
+            let express: u64 = express_capability(function);
+            if (express != 0u64) {
+                let control_at: u64 = express + EXPRESS_DEVICE_CONTROL;
+                let control: u64 = read_at(function, control_at, 2u64);
+
+                // The bit reads as zero, so this write would set it.
+                let flr: i64 =
+                    pci_config_write(function, control_at, 2u64, control | INITIATE_FLR);
+                if (flr == 0i64) { found = found + 4096i64; }
+
+                if (pci_config_write(function, control_at, 2u64, control) == 0i64) {
+                    found = found + 8192i64;
+                }
+
+                let toggled: u64 = control | UNSUPPORTED_REQUEST_REPORTING;
+                if (toggled != control) {
+                    if (pci_config_write(function, control_at, 2u64, toggled) == 0i64) {
+                        found = found + 16384i64;
+                    }
+                    let restored: i64 =
+                        pci_config_write(function, control_at, 2u64, control);
+                } else {
+                    let cleared: u64 = control - UNSUPPORTED_REQUEST_REPORTING;
+                    if (pci_config_write(function, control_at, 2u64, cleared) == 0i64) {
+                        found = found + 16384i64;
+                    }
+                    let restored: i64 =
+                        pci_config_write(function, control_at, 2u64, control);
+                }
             }
 
             // The header type travels out with the result, so the report can say
