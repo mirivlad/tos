@@ -2,13 +2,15 @@
 
 # ADR-0093: Publication and lifetime of `block.device.v1`
 
-- Status: **Proposed**
+- Status: **Accepted (option P3)** (Project Architect-approved, 2026-09-21)
+- Project Architect approval: 2026-09-21, on the option set below — **granted
+  before any of it was implemented**
 - Date: 2026-09-21
-- Decision level: **2** under `docs/21`. P1 adds nothing; P2 adds an object
-  kind, two operations to the closed `SYSTEM_ABI_V1` §5 table and an
-  interface-name namespace to the trusted base; P3 and P4 add no ABI surface
-  but fix where a system-wide naming authority lives, which every later stage
-  inherits
+- Decision level: **2** under `docs/21`. As accepted it adds no ABI operation,
+  no capability kind and nothing to the nucleus: it fixes where a naming
+  authority lives, which every later stage inherits. The options weighed and
+  not taken are kept in §4 — P2 would have added an object kind, two
+  operations and an interface-name namespace to the trusted base
 - Related: **ADR-0051** §2 (publishing is a requested authority, never a
   self-declared `provides`) and its evidence list, which names an "interface
   registry" no accepted decision defines (§2); **ADR-0077** §3–§5 (a launch
@@ -29,8 +31,8 @@ about a registry, about lookup, or about what an entry's lifetime is — and
 `docs/11` §Crashes-and-restart step 4, "restore published interface endpoints",
 is an obligation on whatever is chosen.
 
-**Nothing is chosen here.** Four options with their consequences, no preference,
-and P1…P4 in enumeration order rather than rank.
+**The decision is P3, and §3a records it.** The options in §4 are kept
+unchanged as the record of what was weighed; they are no longer offered.
 
 **Scope is fixed and narrow by direction of the Project Architect.** The
 interface surface is `read`, `write`, `capacity` and nothing else. No
@@ -102,7 +104,91 @@ Question 8 is the one this ADR exists for. The others can be answered by any
 competent design; 8 is where a wrong answer is silently wrong, because a client
 that cannot tell "not done" from "done, answer lost" will retry a **write**.
 
-## 4. The options
+## 3a. The decision: P3, at Stage 4 scale
+
+**The registry is an ordinary textual service.** Publication and lookup are IPC
+calls against it, its rules are inspectable canonical text, and the nucleus
+gains nothing.
+
+**Why, recorded as the reasons given rather than reconstructed:** the nucleus
+does not acquire a global interface-name namespace; naming authority is not
+merged into supervisor authority, which ADR-0051 §3 separated on purpose;
+publication and lookup stay ordinary IPC/capability operations of an ordinary
+service; the rules stay inspectable text; a client can obtain an endpoint
+capability by lookup and repeat the lookup after a restart; and that last point
+is what makes stale-client case C provable at Stage 4 rather than merely
+described.
+
+### The answers to §3's eight questions
+
+1. **Who holds the publication capability.** Each publisher, granted by its
+   launcher from a sealed launch plan (ADR-0077 §3–§5), as the authority to
+   publish `block.device.v1` and nothing else. The name service holds the
+   registry; it does not hold anyone's right to publish.
+2. **How a published interface comes into existence.** The block service calls
+   the name service over IPC, presenting its publication capability and the
+   endpoint it wants named. No self-declaration; ADR-0051 §2 unchanged.
+3. **How a client obtains a capability naming it.** A lookup call to the name
+   service, which answers with an endpoint capability for the publisher. The
+   client must therefore hold an endpoint capability for the **name service**,
+   supplied by its launcher — one wiring step remains under every option and
+   this is where it sits.
+4. **What happens to the publication when the service dies.** The entry is
+   invalidated. The name service must learn of the death; how it learns is
+   §3b.
+5. **What happens to the capability the client already holds.** It keeps naming
+   an endpoint whose receiver is gone. It is **not** retroactively made to name
+   the successor: a name minted for one instance does not silently become a
+   name for another, which is what makes case C distinguishable at all.
+6. **What the client does after a restart.** A fresh lookup, obtaining an
+   endpoint capability for the successor.
+7. **Is re-lookup the mandatory recovery mechanism.** **Yes, at Stage 4.** It
+   is the only one: the old capability is not repaired, and nothing re-endows a
+   running client. A client that does not re-look-up does not recover.
+8. **Distinguishability.** Cases A, B and C are distinguishable and are proved
+   by three separate assertions. **Case D stays intentionally ambiguous** —
+   §5a.
+
+## 3b. Bootstrap, at the minimum the decision needs
+
+**Stated as a requirement, not designed as an orchestration system.** Three
+facts and no more:
+
+- **Order.** The name service is started before the block service, because the
+  block service's first act after initialization is to publish. The capsule
+  already carries boot-critical textual modules (`docs/11` §Bootstrapping) and
+  the launcher already decides order; nothing new is required to express it.
+- **Wiring.** Both the block service and the client receive an endpoint
+  capability for the name service from their own sealed launch plans. The name
+  service is reached by capability like anything else, never by a well-known
+  name.
+- **Its own recovery.** The name service is restartable by the same supervisor
+  mechanism as any other service (ADR-0067 operation 14, ADR-0076 §3 funding,
+  ADR-0077 plans). **Its registry does not survive its own death**, and that is
+  the accepted Stage 4 answer: entries are re-published by services that are
+  themselves restarted, and a client holding a stale name-service capability is
+  in case B with respect to the name service. Persisting a registry across its
+  own restart would require durable state, which is `docs/09`'s and the
+  engineering exit's, and is explicitly not Stage 4's.
+
+**Not decided here and not needed here:** health probes, restart-loop bounds,
+start-order declaration syntax, dependency resolution, or any general boot
+orchestration. Restart policy remains canonical supervisor text (ADR-0077 §8).
+
+### What Stage 4 does not get from P3
+
+**No service-discovery framework.** One interface, `block.device.v1`, one
+publisher, one lookup. **No** enumeration API, multi-device registry, metadata
+framework, discovery protocol, interface versioning negotiation, or query
+language. A name service that can answer one question about one interface is
+the whole of it, and growing it is a later decision with its own reasons.
+
+## 4. The options, as weighed
+
+**Kept as the record of what was decided against.** P3 was taken.
+
+### The four, as enumerated
+
 
 ### P1 — no registry at Stage 4; the launcher wires client to service
 
@@ -204,10 +290,29 @@ The four stale-client cases, and what each option can guarantee.
 **Case D is the important one and no option solves it.** A block write whose
 answer was lost is exactly where "retry" and "do not retry" differ, and no
 capability mechanism can distinguish "the device never got it" from "the device
-did it and the answer died with the process". The honest options are to leave
-it ambiguous and say so, or to make the operation idempotent at the interface
-level — and the second is a property of `block.device.v1`'s *shape*, not of its
-publication, which is why this ADR names it and does not decide it.
+did it and the answer died with the process".
+
+### 5a. Case D is intentionally ambiguous, and that is the decision
+
+**Accepted 2026-09-21.** No idempotency, request journal, transaction id,
+exactly-once semantics or other mechanism is added at Stage 4 for the sole
+purpose of removing case D. The boundary is stated instead:
+
+> If the old block service accepted a write request and died before delivering
+> the reply, the client receives no guarantee that lets it distinguish "the
+> write was not performed" from "the write was performed and the reply was
+> lost".
+
+**This is not a Stage 4 failure and not an open defect.** It is a deliberate
+boundary of the current `block.device.v1`, of the same kind and stated in the
+same form as Stage 4D-5's non-claims about durability. An idempotent `write`
+remains available as a separate interface-level decision later, if a need for
+it appears; it is a property of the interface's *shape*, not of its
+publication, which is why this ADR names the lever and does not pull it.
+
+**The Stage 4 evidence must carry this as an explicit non-claim.** A gate
+asserting that a client always knows would be asserting something no option
+delivers — see §10 item 4.
 
 **What this means for Stage 4 evidence.** Case D must be written into the
 slice's evidence as an explicit non-claim, in the form Stage 4D-5 already uses
@@ -273,10 +378,12 @@ is not what `docs/11` step 5 describes, and the slice would have to say so.
 - **Persistent object/state storage and the capsule-to-repository handoff.**
   Stage 4 deliverables under `docs/16`, and not in this slice.
 
-## 10. Conformance evidence this ADR would require once accepted
+## 10. Conformance evidence this decision requires
 
-Listed so acceptance carries its test obligations, and **not** to be written
-into any evidence document before the tests exist and are gated.
+**Acceptance carries these test obligations.** They are **not** to be written
+into any evidence document before the tests exist and are gated — evidence
+follows a passing gate and never precedes one. Under P3 as accepted, item 5
+does not arise.
 
 1. A service that was not granted the publication capability cannot publish,
    and says so in the audit record (ADR-0051's requirement, finally testable).

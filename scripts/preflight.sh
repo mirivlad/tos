@@ -94,6 +94,12 @@ specification() { python3 "$ROOT/tools/build-specification.py" --check; }
 specification_manifest() {
     python3 "$ROOT/scripts/check-specification-manifest.py" --root "$ROOT"
 }
+# The journal's one present-tense list of open decisions against the ADR files
+# themselves. PROGRESS.md is chronological, so a summary sentence in it is the
+# thing that goes stale; this is why that list is checked rather than trusted.
+open_decisions() {
+    bash "$ROOT/scripts/check-open-decisions.sh"
+}
 # VIRTIO 1.4 §2.1.1: a driver adds status bits and never replaces the byte, so
 # a bit the *device* set is not erased by a driver rebuilding the byte from the
 # sequence it believes it performed. Structural rather than a spelling: it reads
@@ -521,6 +527,7 @@ gate_parity() {
 
 gate docs       default   "generated specification"                    specification
 gate docs       default   "specification source manifest"              specification_manifest
+gate docs       default   "open decisions match the ADR files"         open_decisions
 gate docs       default   "release manifest and SHA256SUMS"            release_manifest
 gate docs       default   "interface-contract authority"               interface_contract_authority
 gate docs       default   "accepted interface schema"                  interface_schema

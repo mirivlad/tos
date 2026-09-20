@@ -2,14 +2,18 @@
 
 # ADR-0092: Who may reset a PCI function, and what "reset" means
 
-- Status: **Proposed**
+- Status: **Accepted (option R1a)** (Project Architect-approved, 2026-09-21)
+- Project Architect approval: 2026-09-21, on the option set below — **granted
+  before any of it was implemented**, which is the order ADR-0081 §0 recorded
+  not having followed and ADR-0086 followed
 - Date: 2026-09-21
-- Decision level: **2** under `docs/21`. R2 and R3 each add a right to the
-  `PciFunction` declared set and an operation to the closed `SYSTEM_ABI_V1` §5
-  table; R3 additionally creates a power one process holds over hardware
-  another process is driving, which is a threat-model addition in its own right
-  (§9). R1 and R4 add no ABI surface but still decide §3's disposition, which is
-  why all four are in one decision rather than three
+- Decision level: **2** under `docs/21`. As accepted it adds no ABI operation
+  and no right: it adds one bit to the reserved set of an existing operation,
+  which changes what `pci_config_write` refuses and is therefore a change to an
+  accepted interface contract. The options that were weighed and not taken (R2,
+  R3) would each have added a right and an operation, and R3 a cross-process
+  power over hardware; they are kept in §6 as the record of what was decided
+  against
 - Related: **ADR-0079** §4 (reset listed open, no right allocated), §10 (the
   `PciFunction` rights table); **ADR-0081** §13 (BARs measured once at claim
   time), §14 (descendants keep an assignment alive); **ADR-0082** §5a (resource
@@ -28,9 +32,17 @@ acceptance criterion until the question below is fixed, and the Project
 Architect has directed that the reachability recorded in §3 be dispositioned
 deliberately rather than inherited.
 
-**Nothing is chosen here.** Four options are set out with their consequences.
-No option is marked preferred, and the ordering R1…R4 is the order they were
-enumerated in, not a ranking.
+**The decision is R1a, and §5a records it.** The options in §6 are kept
+unchanged as the record of what was weighed; they are no longer offered.
+
+**What R1a is, and what it is not.** It is a deliberate closing of the
+reachability §3 records: Initiate Function Level Reset joins the fields a CPL-3
+`config_write` may not change. **It is not a finding that TOS has no need of
+third-party reset.** T3 is real, `docs/11` §Crashes-and-restart step 2 is
+written about it, and a wedged — as opposed to dead — driver is exactly the
+case it answers. It is deferred to the bus/management service, with its
+reasons, in §5a. A later decision that allocates a reset authority is
+anticipated by this one, not contradicted by it.
 
 **The persistent-data reading is already fixed and this ADR is written under
 it.** The Project Architect selected Branch A on 2026-09-21: Stage 4 proves
@@ -72,7 +84,7 @@ a device status bit" and admits exactly one non-additive write: the literal
 write". So the mechanism T1 needs is not merely unforbidden, it is already
 carved out.
 
-## 3. The finding: FLR appears reachable through `config_write`
+## 3. The finding: FLR was reachable through `config_write`
 
 **Recorded as analysis of the source, not as a demonstrated defect.** It was
 not attempted against the device, deliberately and on the Project Architect's
@@ -104,7 +116,7 @@ and only as the thing Transactions Pending is normally read for — "the bit an
 FLR waits on, used here without entering reset". No decision anywhere says
 whether a function's holder may enter reset.
 
-## 4. Why this is a conflict and not a curiosity: FLR against ADR-0081 §14
+## 4. Why it was a conflict and not a curiosity: FLR against ADR-0081 §14
 
 An FLR returns the function's configuration registers to their defaults. **That
 includes the Base Address Registers.**
@@ -143,9 +155,9 @@ downstream address routing or downstream device **state**". So reset was
 recognised as a thing the rule must catch, on a bridge. A function's own FLR
 is the Type 0 analogue and is absent from the Type 0 row.
 
-Whether that absence is an oversight of §5a's rule or a deliberate allowance of
-a holder's power over its own function is exactly what this ADR must settle. It
-is not settled here.
+Whether that absence was an oversight of §5a's rule or a deliberate allowance
+of a holder's power over its own function is what this ADR settles: §5a decides
+it was an oversight, and closes it.
 
 ## 5. Constraints any option must respect
 
@@ -166,7 +178,68 @@ is not settled here.
    Whatever is reserved is reserved on the "would change" rule, not on the
    register.
 
-## 6. The options
+## 5a. The decision: R1a
+
+**Initiate Function Level Reset — bit 15 of the PCI Express Capability's
+Device Control register — joins the fields a CPL-3 `pci_config_write` may not
+change.**
+
+1. **The refusal is on the existing "would change" rule** (ADR-0082 §5a), bit
+   by bit. A read of Device Control is untouched. A write that puts back the
+   value already there proceeds, so a driver doing an ordinary read-modify-write
+   of maximum payload size, extended tags or maximum read request is never
+   refused for having covered a bit it did not alter. Only a write that would
+   set bit 15 where it is not already set is refused, with `E_NO_CAPABILITY` —
+   the argument is well formed and what the caller lacks is the authority.
+2. **No new ABI operation and no new right.** The `PciFunction` rights table of
+   ADR-0079 §10 is unchanged, and its `reset` row still reads "no right
+   allocated". That row is now true by decision rather than by omission.
+3. **A function's holder may not FLR its own function.** T2 is closed.
+4. **Recovery of a dead block driver at Stage 4 is T1**: a successor instance
+   writes `0` to the VirtIO `DEVICE_STATUS` register through its own window and
+   re-runs §3.1's initialization sequence. Nothing new is required for it, and
+   `check-device-status-additive` already admits the literal `0u64` as the one
+   legitimate non-additive write.
+5. **T3 is deferred to the bus/management service**, and deferred is the right
+   word. `docs/11` §Crashes-and-restart step 2 describes it, a wedged driver
+   needs it, and nothing here says otherwise. What Stage 4 needs is recovery
+   from a **dead** driver, which T1 serves; the case where the holder is alive
+   and uncooperative is not a Stage 4 acceptance criterion and is not solved by
+   pretending it is.
+
+### Why the §4 conflict closes
+
+With bit 15 reserved there is no CPL-3 route that returns the BARs to defaults
+under a live assignment. ADR-0081 §13's single claim-time measurement stays the
+layout the function decodes; ADR-0081 §14's descendants keep resting on a
+measurement that remains true; ADR-0082 §4's nucleus mapping of the MSI-X table
+and §5's extent computation from a cached BIR keep their premise. The rule
+ADR-0082 §5a stated — make the model's assumption hold rather than teach three
+mechanisms to chase a moving resource — is extended to the one route that
+reached past it, and its Type 0 row now covers what its Type 1 row already
+covered in Secondary Bus Reset.
+
+### What this costs
+
+One bit of narrowing on a register whose remainder stays the driver's. That is
+the cheapest of the five options and the only one that closes §4 without
+answering a question about live descendants, because under R1a the question
+does not arise.
+
+### What remains open after this decision
+
+T3, and with it: shared-device reset policy, reset of a function held by a live
+uncooperative process, and any reset domain larger than one function. All of it
+belongs to the bus/management service and none of it is claimed to be
+unnecessary.
+
+## 6. The options, as weighed
+
+**Kept as the record of what was decided against.** R1a was taken; R1b, R2, R3
+and R4 were not.
+
+### The four, as enumerated
+
 
 ### R1 — no reset object; the successor resets at the VirtIO level
 
@@ -269,10 +342,15 @@ uncooperative, and any notion of a reset domain larger than one function.
 - **Restart policy.** When to restart, how often and when to stop is canonical
   supervisor text (ADR-0077 §8), not this.
 
-## 11. Conformance evidence this ADR would require once accepted
+## 11. Conformance evidence this decision requires
 
-Listed so that acceptance carries its test obligations, and **not** to be
-written into any evidence document before the tests exist and are gated.
+**Acceptance carries these test obligations.** They are **not** to be written
+into any evidence document before the tests exist and are gated — evidence
+follows a passing gate and never precedes one.
+
+Under R1a as accepted, items 1 and 3 are required and item 2 does not arise,
+because no reset a CPL-3 caller can perform reaches a live descendant. Item 4
+belongs to whatever later decision allocates a third-party reset authority.
 
 1. Under R1a: a CPL-3 write setting Initiate FLR is refused with
    `E_NO_CAPABILITY`, and a write-back of the register's current value is

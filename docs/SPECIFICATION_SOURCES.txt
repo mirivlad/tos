@@ -159,3 +159,5 @@ docs/adr/0088-the-predeclared-call-contract.md
 docs/adr/0089-the-call-arity-diagnostic.md
 docs/adr/0090-the-resolved-closure-import-edge-ceiling.md
 docs/adr/0091-the-transitive-import-envelope.md
+docs/adr/0092-reset-authority.md
+docs/adr/0093-block-device-publication-and-lifetime.md
