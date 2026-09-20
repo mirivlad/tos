@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `22510d525407418ce31f0fdc07d43c59ea2a00a399f79d4368f0306d1fd60690`\
+Source-manifest SHA-256: `bbc6b4005995f87bf68f6074efeb85beab868111108e7dfc7d7002b7ef178d5b`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -2801,7 +2801,7 @@ are marked and are exactly those a process can only apply to itself.
 
 | 25 | `pci_config_read` | PCI function capability with `config_read` | reads `rdx` bytes of conventional configuration space at offset `rsi` of the function **that capability names**, and returns the value in `rdx`. `E_BAD_ARGUMENT` for a width that is not 1, 2 or 4, an offset not a multiple of the width, or an access reaching past byte 256 |
 
-| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25. **Some of the function's state is the nucleus's and is refused with `E_NO_CAPABILITY`** — the MSI and MSI-X capabilities, the resource-placement registers of the reported header type, and the Command and Bridge Control bits that decide decoding, mastering and downstream routing. The table below §5 states the set and the "would change" rule; reads are unaffected |
+| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25. **Some of the function's state is the nucleus's and is refused with `E_NO_CAPABILITY`** — the MSI and MSI-X capabilities, the resource-placement registers of the reported header type, the Command and Bridge Control bits that decide decoding, mastering and downstream routing, and Initiate Function Level Reset (ADR-0092). The table below §5 states the set and the "would change" rule; reads are unaffected |
 
 | 27 | `pci_bar_map` | PCI function capability with `map` | maps BAR `rsi` of the function that capability names, from page-aligned offset `rdx` for page-aligned length `r10`, writable when `r8` is non-zero, and returns a device-memory capability in `rdx` (ADR-0081 §13). The physical base is taken from the assignment's own measured BAR state — **a caller never supplies an address** — and the window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime. `E_BAD_ARGUMENT` for a BAR index outside the architectural range or an unaligned, zero or overflowing window; `E_NO_CAPABILITY` for an I/O or unimplemented BAR, a range not inside the BAR's extent, or **a window overlapping the function's MSI-X table or pending-bit array** (ADR-0082 §5); `E_LIMIT` when no mapping slot is free or the caller already holds as many windows as it may |
 
@@ -2839,7 +2839,10 @@ memory at all *inside* ranges these operations already reach. Before this, a
 holder of `map` and `config_write` could program an arbitrary message address
 and data — an interrupt of its choosing on a vector of its choosing — could
 relocate the very BAR the MSI-X table lives in, and could make the device a bus
-master, without holding anything that named any of it.
+master, without holding anything that named any of it. **And it could clear
+every one of those registers at once**: ADR-0082 §5a reserved the
+resource-placement registers and not the operation that returns them to
+defaults, which ADR-0092 §3 records and its §5a closes.
 
 | Reserved | Because |
 |---|---|
@@ -2849,6 +2852,7 @@ master, without holding anything that named any of it.
 | a write that would **change** the resource-placement registers of the function's **reported header type** | the assignment measured them once and everything derives from that measurement |
 | a write that would **change** Memory Space Enable or Bus Master Enable | each follows a predicate over live descendants, not a caller |
 | on a Type-1 header, I/O Space Enable and the Bridge Control bits that alter downstream routing or reset | a bridge's forwarding is its resource placement |
+| a write that would **set** Initiate Function Level Reset, bit 15 of the PCI Express Capability's Device Control register | an FLR returns the function's configuration registers to their defaults, the BARs among them, and the assignment measured those once (ADR-0092 §5a). The rest of Device Control — maximum payload size, extended tags, maximum read request — stays the driver's |
 
 **Reads are untouched.** Where a table lives, where a function decodes and
 whether it is a bus master are facts about hardware, and a fact is not
@@ -27556,9 +27560,9 @@ the remaining illustrative names cannot be read as accepted.
 | interrupt binding and acknowledgement | **open**, constrained by `docs/11` §Interrupts and ADR-0049 |
 | DMA authority | **open**, constrained by ADR-0037 §2 and `docs/11` §DMA |
 | IOMMU semantics | **open** |
-| reset authority | **open**, and no right is allocated for it |
+| reset authority | **decided in part by ADR-0092.** No right is allocated, now by decision rather than omission: a function's holder may not reset it, and Initiate FLR joins the reserved fields. Third-party reset of a wedged driver's function stays open and is deferred to the bus/management service |
 | VirtIO negotiation, queues, block I/O | **open** |
-| publication of `block.device.v1` | **open**; its shape needs nothing new (ADR-0051 §2, `CAPABILITY_V1` §6) |
+| publication of `block.device.v1` | **decided by ADR-0093**: a registry is an ordinary textual name service, and its shape indeed needed nothing new (ADR-0051 §2, `CAPABILITY_V1` §6) |
 
 ## 5. D1 — the root of PCI authority, and who holds it
 
@@ -27816,11 +27820,15 @@ and acknowledgement, DMA authority, IOMMU semantics, reset, VirtIO feature
 negotiation, VirtIO queues, block reads and writes, device matching policy,
 `block.device.v1`, persistent state and repository handoff.
 
-**Three of these have since been decided, and this list is not rewritten to
+**Several of these have since been decided, and this list is not rewritten to
 pretend it always knew.** BAR → MMIO mapping and device-memory region semantics
-by **ADR-0081** (§13, §5); interrupt routing and acknowledgement by **ADR-0082**.
-The rest remain open, and DMA authority, IOMMU semantics and the MMIO↔DMA
-ordering contract are Stage 4C-2's.
+by **ADR-0081** (§13, §5); interrupt routing and acknowledgement by
+**ADR-0082**; DMA authority by **ADR-0084** and the MMIO↔DMA ordering contract
+by **ADR-0086**; VirtIO negotiation, queues and block I/O by Stage 4D-1…4D-5;
+**reset in part** by **ADR-0092** — a holder may not reset its own function,
+and third-party reset is deferred rather than denied; and `block.device.v1`
+publication by **ADR-0093**. Still open: IOMMU semantics, device matching
+policy, persistent state and the repository handoff.
 
 **Device matching remains deliberately open.** Reading identifiers is discovery;
 deciding which driver should own them is policy, and it comes later.
@@ -33429,6 +33437,783 @@ module's own statement, and a module declaring more than it uses is conforming.
 Callable `PassMode`, imported `PassMode` and Stage 4D-4 remain untouched.
 
 <!-- END docs/adr/0091-the-transitive-import-envelope.md -->
+
+---
+
+<!-- BEGIN docs/adr/0092-reset-authority.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0092: Who may reset a PCI function, and what "reset" means
+
+- Status: **Accepted (option R1a)** (Project Architect-approved, 2026-09-21)
+- Project Architect approval: 2026-09-21, on the option set below — **granted
+  before any of it was implemented**, which is the order ADR-0081 §0 recorded
+  not having followed and ADR-0086 followed
+- Date: 2026-09-21
+- Decision level: **2** under `docs/21`. As accepted it adds no ABI operation
+  and no right: it adds one bit to the reserved set of an existing operation,
+  which changes what `pci_config_write` refuses and is therefore a change to an
+  accepted interface contract. The options that were weighed and not taken (R2,
+  R3) would each have added a right and an operation, and R3 a cross-process
+  power over hardware; they are kept in §6 as the record of what was decided
+  against
+- Related: **ADR-0079** §4 (reset listed open, no right allocated), §10 (the
+  `PciFunction` rights table); **ADR-0081** §13 (BARs measured once at claim
+  time), §14 (descendants keep an assignment alive); **ADR-0082** §5a (resource
+  placement is static for an assignment; Secondary Bus Reset reserved on a
+  bridge), §5b, §5d, §6, §9; **ADR-0084** §5b (the drain proof, and Transactions
+  Pending as the bit an FLR waits on); `docs/11` §Crashes-and-restart;
+  `docs/34`; `SYSTEM_ABI_V1` §5 operations 24–31;
+  `docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §6 and §11, which is the note
+  this decision was raised from and is not authority for anything
+
+## 0. What this decision is for
+
+Stage 4's identity gate asks for "crash/restart and device-**reset** behavior"
+(`docs/37`). The Stage 4 client/service slice cannot state its device-reset
+acceptance criterion until the question below is fixed, and the Project
+Architect has directed that the reachability recorded in §3 be dispositioned
+deliberately rather than inherited.
+
+**The decision is R1a, and §5a records it.** The options in §6 are kept
+unchanged as the record of what was weighed; they are no longer offered.
+
+**What R1a is, and what it is not.** It is a deliberate closing of the
+reachability §3 records: Initiate Function Level Reset joins the fields a CPL-3
+`config_write` may not change. **It is not a finding that TOS has no need of
+third-party reset.** T3 is real, `docs/11` §Crashes-and-restart step 2 is
+written about it, and a wedged — as opposed to dead — driver is exactly the
+case it answers. It is deferred to the bus/management service, with its
+reasons, in §5a. A later decision that allocates a reset authority is
+anticipated by this one, not contradicted by it.
+
+**The persistent-data reading is already fixed and this ADR is written under
+it.** The Project Architect selected Branch A on 2026-09-21: Stage 4 proves
+that the write reached the device, that a later read sees the change, and that
+the data remains available across a stop and restart of the block service.
+Power-loss durability, `VIRTIO_BLK_F_FLUSH` and ungraceful-termination evidence
+are **not** Stage 4's and are not arguments in this ADR.
+
+## 1. The problem
+
+A device whose driver has died or wedged is left in a device-defined state with
+its queues configured and its rings holding whatever the dead driver published.
+What the nucleus does today is drain the **assignment** — ADR-0082 §5d clears
+Bus Master Enable, memory decoding goes off, and ADR-0084 §5b proves no
+non-posted request is outstanding — and that is a statement about the *bus*,
+not about the device. The device still believes it has a driver.
+
+The nucleus cannot fix that, and must not: ADR-0082 §9 forbids ring 0 from
+knowing what a queue is or that this function is a block device. So returning a
+function to a known device-level state is necessarily somebody else's act, and
+today no capability in this system carries that power on purpose.
+
+## 2. Three things are called "reset", and they are not one decision
+
+| | what it is | who could do it today |
+|---|---|---|
+| **T1 — VirtIO device reset by the successor** | writing `0` to the VirtIO `DEVICE_STATUS` register and re-running §3.1's initialization sequence | a new driver instance, through a window it holds. Needs nothing new |
+| **T2 — PCI Function Level Reset by the function's own holder** | setting Initiate Function Level Reset, bit 15 of the PCI Express Capability's Device Control register | **apparently a holder of `config_write` today — see §3** |
+| **T3 — reset of a function by a third party** | a supervisor or bus service resetting a function it does not hold, because the driver is dead or wedged | nobody. There is no right and no object |
+
+Only T3 plainly needs the right ADR-0079 §10 says is unallocated. T1 needs
+nothing. T2 is the one this ADR exists to disposition, because the system's
+answer to it today appears to be "yes, by accident".
+
+**T1 is already permitted by the tooling, which is worth recording.** The
+`check-device-status-additive` gate enforces §2.1.1's "the driver MUST NOT clear
+a device status bit" and admits exactly one non-additive write: the literal
+`0u64`, named in the gate as "explicit reset, the one legitimate non-additive
+write". So the mechanism T1 needs is not merely unforbidden, it is already
+carved out.
+
+## 3. The finding: FLR was reachable through `config_write`
+
+**Recorded as analysis of the source, not as a demonstrated defect.** It was
+not attempted against the device, deliberately and on the Project Architect's
+instruction; what follows is what the code says.
+
+`write_is_permitted` in `nucleus/src/pci.rs` refuses a CPL-3 configuration
+write that would change: the MSI and MSI-X capability structures; the
+resource-placement registers of the reported header type; three Command
+register bits; four ordering bits across PCI Express Device Control and Device
+Control 2; and, on a Type 1 header, the four Bridge Control bits that alter
+downstream routing or downstream device state. Everything else in conventional
+configuration space is writable by a holder of `config_write`, at any offset
+below 256 and any width of 1, 2 or 4 bytes.
+
+The Device Control exclusion is bit-precise and its comment says why:
+
+> **Four bits of two registers, and not the registers**: a driver has ordinary
+> business in Device Control — maximum payload size, extended tags, maximum
+> read request — and reserving all of it would be the wide narrowing ADR-0082
+> §5a already refused for a Command register.
+
+That reasoning is sound and this ADR does not reopen it. The observation is
+narrower: **Initiate Function Level Reset is bit 15 of that same register and
+is not among the four.** By the code as written, a write of Device Control with
+bit 15 set is permitted.
+
+**FLR is mentioned nowhere else in the repository** except in ADR-0084, twice,
+and only as the thing Transactions Pending is normally read for — "the bit an
+FLR waits on, used here without entering reset". No decision anywhere says
+whether a function's holder may enter reset.
+
+## 4. Why it was a conflict and not a curiosity: FLR against ADR-0081 §14
+
+An FLR returns the function's configuration registers to their defaults. **That
+includes the Base Address Registers.**
+
+ADR-0081 §13 measures each BAR **once, at claim time**, and every later mapping
+derives its physical base from that measurement. ADR-0082 §4 maps the MSI-X
+table the same way, and §5's first refusal computes the table's extent from a
+cached BIR. ADR-0081 §14 then keeps the assignment alive while any descendant
+exists — a mapped window or, by ADR-0082 §6, an interrupt source — precisely so
+that the cached layout stays the layout the live function decodes.
+
+ADR-0082 §5a closed the direct route to breaking that, and it was measured
+rather than supposed:
+
+```text
+BAR1  accepted a CPL-3 write   ← and BAR1 is the MSI-X table's own BAR
+BAR4  accepted a CPL-3 write   ← the modern structures, low half
+BAR5  accepted a CPL-3 write   ← the high half of the same 64-bit resource
+and a window was still derived from BAR4 after BAR4 had been rewritten
+```
+
+Its conclusion was that relocation is "**incompatible with the assignment model
+already accepted by ADR-0081**, and the resolution is to make the model's
+assumption hold rather than to teach three mechanisms to chase a moving
+resource."
+
+**FLR reaches the same outcome by a different route.** §5a reserved the
+registers; it did not reserve the operation that clears them wholesale. The
+assignment would still be live, its descendants still mapped, the nucleus still
+holding a measurement of a decode the function no longer performs.
+
+**One route of the same family was reserved, which shows the rule's intent.**
+ADR-0082 §5a's Type 1 protected set includes **Secondary Bus Reset** — a
+Bridge Control bit — listed among "the Bridge Control fields that alter
+downstream address routing or downstream device **state**". So reset was
+recognised as a thing the rule must catch, on a bridge. A function's own FLR
+is the Type 0 analogue and is absent from the Type 0 row.
+
+Whether that absence was an oversight of §5a's rule or a deliberate allowance
+of a holder's power over its own function is what this ADR settles: §5a decides
+it was an oversight, and closes it.
+
+## 5. Constraints any option must respect
+
+1. **Ring 0 knows no device semantics** (ADR-0082 §9, gated since 2026-09-20 by
+   the extended vocabulary guard in `stage4-profile.sh`). No option may put
+   VirtIO initialization, queue knowledge or block semantics in the nucleus.
+2. **A capability, never an ambient path** (ADR-0079 §5, ADR-0082 §5). Reset
+   reached by holding a function rather than by being a driver.
+3. **Descendants keep an assignment alive** (ADR-0081 §14, ADR-0082 §6). Any
+   reset that changes decode must say what happens to live windows and sources,
+   and it may not leave the nucleus holding a stale measurement.
+4. **The drain proof must remain valid** (ADR-0084 §5b). It reads Transactions
+   Pending *without entering reset*; an option that enters reset during or
+   around teardown must say how the two interact.
+5. **No right without an operation** (ADR-0079 §10's own reason for allocating
+   none). An option that adds a right adds the operation in the same decision.
+6. **Reads stay allowed and idempotent writes stay allowed** (ADR-0082 §5a).
+   Whatever is reserved is reserved on the "would change" rule, not on the
+   register.
+
+## 5a. The decision: R1a
+
+**Initiate Function Level Reset — bit 15 of the PCI Express Capability's
+Device Control register — joins the fields a CPL-3 `pci_config_write` may not
+change.**
+
+1. **The refusal is on the existing "would change" rule** (ADR-0082 §5a), bit
+   by bit. A read of Device Control is untouched. A write that puts back the
+   value already there proceeds, so a driver doing an ordinary read-modify-write
+   of maximum payload size, extended tags or maximum read request is never
+   refused for having covered a bit it did not alter. Only a write that would
+   set bit 15 where it is not already set is refused, with `E_NO_CAPABILITY` —
+   the argument is well formed and what the caller lacks is the authority.
+2. **No new ABI operation and no new right.** The `PciFunction` rights table of
+   ADR-0079 §10 is unchanged, and its `reset` row still reads "no right
+   allocated". That row is now true by decision rather than by omission.
+3. **A function's holder may not FLR its own function.** T2 is closed.
+4. **Recovery of a dead block driver at Stage 4 is T1**: a successor instance
+   writes `0` to the VirtIO `DEVICE_STATUS` register through its own window and
+   re-runs §3.1's initialization sequence. Nothing new is required for it, and
+   `check-device-status-additive` already admits the literal `0u64` as the one
+   legitimate non-additive write.
+5. **T3 is deferred to the bus/management service**, and deferred is the right
+   word. `docs/11` §Crashes-and-restart step 2 describes it, a wedged driver
+   needs it, and nothing here says otherwise. What Stage 4 needs is recovery
+   from a **dead** driver, which T1 serves; the case where the holder is alive
+   and uncooperative is not a Stage 4 acceptance criterion and is not solved by
+   pretending it is.
+
+### Why the §4 conflict closes
+
+With bit 15 reserved there is no CPL-3 route that returns the BARs to defaults
+under a live assignment. ADR-0081 §13's single claim-time measurement stays the
+layout the function decodes; ADR-0081 §14's descendants keep resting on a
+measurement that remains true; ADR-0082 §4's nucleus mapping of the MSI-X table
+and §5's extent computation from a cached BIR keep their premise. The rule
+ADR-0082 §5a stated — make the model's assumption hold rather than teach three
+mechanisms to chase a moving resource — is extended to the one route that
+reached past it, and its Type 0 row now covers what its Type 1 row already
+covered in Secondary Bus Reset.
+
+### What this costs
+
+One bit of narrowing on a register whose remainder stays the driver's. That is
+the cheapest of the five options and the only one that closes §4 without
+answering a question about live descendants, because under R1a the question
+does not arise.
+
+### What remains open after this decision
+
+T3, and with it: shared-device reset policy, reset of a function held by a live
+uncooperative process, and any reset domain larger than one function. All of it
+belongs to the bus/management service and none of it is claimed to be
+unnecessary.
+
+## 6. The options, as weighed
+
+**Kept as the record of what was decided against.** R1a was taken; R1b, R2, R3
+and R4 were not.
+
+### The four, as enumerated
+
+
+### R1 — no reset object; the successor resets at the VirtIO level
+
+A restarted driver writes `0` to `DEVICE_STATUS` through its own window and
+re-runs the initialization sequence. T1 only.
+
+**Requires a disposition of T2 in the same breath**, and there are two
+sub-forms that are genuinely different decisions:
+
+- **R1a** — reserve Initiate FLR the way ADR-0082 §5a reserves the placement
+  registers, on the same bit-precise "would change" rule. The Type 0 protected
+  row gains one bit and the §4 conflict closes. No new right, no new operation.
+- **R1b** — permit FLR as a holder's legitimate power over its own function,
+  and state what happens to descendants. This is not free: §4's conflict has to
+  be answered, and the only honest answers are that the assignment's
+  descendants are invalidated, or that the nucleus re-measures, or that FLR is
+  permitted only when no descendant exists.
+
+### R2 — a `reset` right on the function capability, with an operation
+
+The holder may reset the function it holds; a third party may not. Requires
+deciding what the operation does at the PCI level (FLR, or something narrower),
+what happens to live descendants, and whether the assignment's generation
+advances — which is the same question §4 poses, now answered deliberately.
+
+### R3 — a separate reset authority, held by a supervisor or bus service
+
+A third party may reset a function it does not hold. This is T3, and it is what
+a wedged driver actually requires, because in that case the holder is the
+problem. Requires an object, a right, an operation, and a rule for what it does
+to a live assignment, its descendants and any process still holding them.
+
+### R4 — defer
+
+State that Stage 4 proves recovery without device-level reset, and that reset
+arrives with the bus/management separation. **This still requires disposing of
+§3**: leaving the finding unstated is not deferral, it is silence about a
+reachable power.
+
+## 7. Consequences
+
+| | R1a | R1b | R2 | R3 | R4 |
+|---|---|---|---|---|---|
+| new ABI surface | none | none | one right, one operation | one right, one operation, one object | none |
+| reaches a **wedged** driver | no | no | no — the holder is the wedged one | **yes** | no |
+| reaches a **dead** driver's device | yes, via the successor | yes | yes | yes | yes, via the successor |
+| §4 conflict | **closed** | must be answered explicitly | must be answered explicitly | must be answered explicitly, and across processes | left standing unless §3 is dispositioned separately |
+| trusted-base impact | one more reserved bit | none, and one fewer invariant | ring 0 gains an operation, no device semantics | ring 0 gains an operation usable across an ownership boundary | none |
+| `docs/34` impact | none | a driver may invalidate its own mappings | as R1b | **new**: a denial-of-service primitive against a running driver | none |
+| interacts with ADR-0084 §5b | no | during teardown, yes | yes | yes | no |
+
+## 8. What each would let Stage 4 prove, and what it leaves outside
+
+| | proves at Stage 4 | leaves outside Stage 4 |
+|---|---|---|
+| **R1a** | a successor brings the device back from whatever the dead instance left, by re-initialization alone; `docs/11` step 2 answered as "not needed at this stage", with a reason; the §4 route closed | third-party reset; any architected return to a known state that does not depend on the device's own initialization sequence |
+| **R1b** | the same, plus a stated and bounded FLR power for a function's holder | third-party reset; a reset that is safe with descendants live, unless that is the stated answer |
+| **R2** | the same as R1, plus an architected reset that does not rely on the device's initialization sequence being able to recover it | third-party reset — the case `docs/11` step 2 is actually written about |
+| **R3** | `docs/11` step 2 as written: a supervisor resetting a device whose driver cannot | the bus/management service itself; R3 gives the right, not the service |
+| **R4** | nothing about reset. The gate's "device-reset behavior" evidence line is **recorded as not met** rather than met by a narrower reading | all of it |
+
+**What Stage 4 actually needs is narrow.** Under Branch A the lifecycle claims
+are: a crash with a request in flight, the assignment teardown, a restart, and
+re-initialization by the successor. Every one of those is reachable with T1
+alone. T3 is what `docs/11` step 2 describes and what a wedged — as opposed to
+dead — driver needs, and no Stage 4 acceptance criterion requires it.
+
+**What can wait for the bus/management service**: T3 in full, shared-device
+reset policy, reset of a function held by a process that is alive and
+uncooperative, and any notion of a reset domain larger than one function.
+
+## 9. Obligations each option creates for later stages
+
+- **R1a** creates one more entry in the protected-register table that Stage 5's
+  recovery paths and Stage 6's self-modification inherit. Cheapest.
+- **R1b** creates a standing rule that a driver may invalidate its own
+  mappings, which every later mapping consumer must be written against.
+- **R2** creates a versioned operation in `SYSTEM_ABI_V1` that Stage 5 and
+  Stage 6 must keep working, and a reset semantics that a future IOMMU decision
+  must compose with.
+- **R3** creates a cross-process power over hardware. It must enter `docs/34`
+  as its own threat entry with negative tests: a right that can reset a device
+  someone else is driving is a denial-of-service primitive, and it has to be
+  introduced as one rather than discovered to be one. It also pre-commits the
+  shape of the bus/management service that will hold it.
+- **R4** creates the obligation to re-raise this before any stage claims
+  device-reset behaviour, and to carry §3 as a known, stated reachability in
+  the meantime.
+
+## 10. What this ADR does not decide
+
+- **IOMMU semantics.** Open in ADR-0079 §4, untouched here.
+- **Whether the §3 reachability is a defect.** That is the disposition asked
+  for, not a premise.
+- **Any experiment.** No FLR is to be attempted against the device under this
+  ADR; the Project Architect directed analysis by source-reading for this
+  stage, and §3 is written to that standard.
+- **The bus/management service.** R3 would allocate the right such a service
+  needs; it does not design it.
+- **Restart policy.** When to restart, how often and when to stop is canonical
+  supervisor text (ADR-0077 §8), not this.
+
+## 11. Conformance evidence this decision requires
+
+**Acceptance carries these test obligations.** They are **not** to be written
+into any evidence document before the tests exist and are gated — evidence
+follows a passing gate and never precedes one.
+
+Under R1a as accepted, items 1 and 3 are required and item 2 does not arise,
+because no reset a CPL-3 caller can perform reaches a live descendant. Item 4
+belongs to whatever later decision allocates a third-party reset authority.
+
+1. Under R1a: a CPL-3 write setting Initiate FLR is refused with
+   `E_NO_CAPABILITY`, and a write-back of the register's current value is
+   permitted, on the same "would change" rule as the placement registers.
+2. Under any option permitting a reset: a live window and a live interrupt
+   source across that reset behave exactly as the option says they do —
+   invalidated, re-measured, or the reset refused — proved by a negative that
+   fails when the rule is removed.
+3. Under any option: the nucleus still contains no device-protocol vocabulary,
+   by the `stage4-profile.sh` guard.
+4. Under R3: a process that holds no capability for a function cannot reset it,
+   and the denial-of-service reachability is stated in `docs/34` with a test.
+
+<!-- END docs/adr/0092-reset-authority.md -->
+
+---
+
+<!-- BEGIN docs/adr/0093-block-device-publication-and-lifetime.md -->
+
+<!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
+
+# ADR-0093: Publication and lifetime of `block.device.v1`
+
+- Status: **Accepted (option P3)** (Project Architect-approved, 2026-09-21)
+- Project Architect approval: 2026-09-21, on the option set below — **granted
+  before any of it was implemented**
+- Date: 2026-09-21
+- Decision level: **2** under `docs/21`. As accepted it adds no ABI operation,
+  no capability kind and nothing to the nucleus: it fixes where a naming
+  authority lives, which every later stage inherits. The options weighed and
+  not taken are kept in §4 — P2 would have added an object kind, two
+  operations and an interface-name namespace to the trusted base
+- Related: **ADR-0051** §2 (publishing is a requested authority, never a
+  self-declared `provides`) and its evidence list, which names an "interface
+  registry" no accepted decision defines (§2); **ADR-0077** §3–§5 (a launch
+  plan is how a creator endows a child), §8 (no restart policy in the nucleus);
+  **ADR-0067** (a supervisor learns of an ending through operation 14);
+  **ADR-0076** §3 (funded creation); `CAPABILITY_V1` §3, §4, §6; `IPC_V1` §2,
+  §4, §5, §7; `SYSTEM_ABI_V1` §5 operations 1–4, 13, 14, 19, 20;
+  `docs/11` §Driver-interfaces and §Crashes-and-restart; `docs/09`;
+  `docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §3, §8, §12, which is the note
+  this decision was raised from and is not authority for anything
+
+## 0. What this decision is for
+
+A client must reach a running block service without knowing which process it
+is, and what it holds must behave defensibly when that service dies and is
+replaced. `CAPABILITY_V1` §6 fixes the **right to publish**. It fixes nothing
+about a registry, about lookup, or about what an entry's lifetime is — and
+`docs/11` §Crashes-and-restart step 4, "restore published interface endpoints",
+is an obligation on whatever is chosen.
+
+**The decision is P3, and §3a records it.** The options in §4 are kept
+unchanged as the record of what was weighed; they are no longer offered.
+
+**Scope is fixed and narrow by direction of the Project Architect.** The
+interface surface is `read`, `write`, `capacity` and nothing else. No
+filesystem, no partitions, no cache, no object store, no enumeration framework,
+no multi-device management. This ADR decides **lifetime and publication
+semantics**; the wire shape of the three operations is interface design inside
+`IPC_V1` and is not an ADR question unless it needs something `IPC_V1` does not
+offer, which on present analysis it does not.
+
+## 1. What is already decided, and must not be re-decided
+
+- **Publishing is an authority the system grants** (ADR-0051 §2). A service does
+  not declare `provides "block.device.v1"`; it *requests* the authority to
+  publish that interface through the accepted capability-import form, where the
+  nominal capability type **is** the interface. The launcher reads
+  `capability_imports` from the verified IR and grants or denies under policy.
+  `docs/37`'s Stage 3 failure condition "textual manifest grants itself
+  authority" is why.
+- **The right to publish is itself a capability** whose nominal type is the
+  interface (`CAPABILITY_V1` §6). There is no self-declared `provides`, and the
+  registry never holds an entry no one granted.
+- **Endowment needs no new mechanism.** A sealed launch plan carries whatever
+  the creator gives the child (ADR-0077 §3–§5, operations 19 and 20).
+- **Endpoints, delegation, attenuation and revocation are decided**
+  (`IPC_V1` §2, `CAPABILITY_V1` §4). So is what a call carries (`IPC_V1` §4,
+  operation 3: at most three capabilities of its own, one place being spoken
+  for by the answer) and how a server answers and re-waits in one crossing
+  (operation 13).
+- **A supervisor learns of an ending** through operation 14 with
+  `RIGHT_WAIT_CHILD` (ADR-0067), and restart policy is canonical supervisor
+  text, not nucleus policy (ADR-0077 §8).
+
+## 2. What is not decided, and the gap that shows it
+
+Nothing anywhere defines a registry: not what object it is, not who holds it,
+not how a client asks it anything, not what happens to an entry when its
+publisher dies.
+
+**And an accepted ADR already depends on one.** ADR-0051's evidence list
+requires that a service whose publish capability is denied "does not appear in
+the **interface registry**". That sentence assumes an object that no accepted
+decision has ever specified. It is not a contradiction — an absent thing cannot
+contain a denied entry — but it is a requirement written against a mechanism
+that does not exist, and this ADR is where that is either supplied or
+consciously deferred.
+
+**One number is already spent.** `OBJECT_INTERFACE = 4` is allocated in
+`tos-launch`'s object-kind sequence and `InterfacePublication` exists in the
+frontend's `ObjectKind`, while `nucleus/src/capability.rs` has no such kind.
+The number is reserved and unimplemented. P2 would fill it; P1, P3 and P4 leave
+it reserved and empty, which is a state worth naming rather than leaving to be
+rediscovered.
+
+## 3. The questions this decision must answer
+
+Each option in §4 is judged against all eight.
+
+1. **Who holds the publication capability?**
+2. **How does a published interface come into existence?**
+3. **How does a client obtain a capability naming it?**
+4. **What happens to the publication when the service dies?**
+5. **What happens to the capability a client already holds?**
+6. **What does a client do after the service restarts?**
+7. **Is re-lookup a mandatory recovery mechanism, or one of several?**
+8. **Which stale-client cases are guaranteed distinguishable, and which are
+   deliberately left ambiguous?**
+
+Question 8 is the one this ADR exists for. The others can be answered by any
+competent design; 8 is where a wrong answer is silently wrong, because a client
+that cannot tell "not done" from "done, answer lost" will retry a **write**.
+
+## 3a. The decision: P3, at Stage 4 scale
+
+**The registry is an ordinary textual service.** Publication and lookup are IPC
+calls against it, its rules are inspectable canonical text, and the nucleus
+gains nothing.
+
+**Why, recorded as the reasons given rather than reconstructed:** the nucleus
+does not acquire a global interface-name namespace; naming authority is not
+merged into supervisor authority, which ADR-0051 §3 separated on purpose;
+publication and lookup stay ordinary IPC/capability operations of an ordinary
+service; the rules stay inspectable text; a client can obtain an endpoint
+capability by lookup and repeat the lookup after a restart; and that last point
+is what makes stale-client case C provable at Stage 4 rather than merely
+described.
+
+### The answers to §3's eight questions
+
+1. **Who holds the publication capability.** Each publisher, granted by its
+   launcher from a sealed launch plan (ADR-0077 §3–§5), as the authority to
+   publish `block.device.v1` and nothing else. The name service holds the
+   registry; it does not hold anyone's right to publish.
+2. **How a published interface comes into existence.** The block service calls
+   the name service over IPC, presenting its publication capability and the
+   endpoint it wants named. No self-declaration; ADR-0051 §2 unchanged.
+3. **How a client obtains a capability naming it.** A lookup call to the name
+   service, which answers with an endpoint capability for the publisher. The
+   client must therefore hold an endpoint capability for the **name service**,
+   supplied by its launcher — one wiring step remains under every option and
+   this is where it sits.
+4. **What happens to the publication when the service dies.** The entry is
+   invalidated. The name service must learn of the death; how it learns is
+   §3b.
+5. **What happens to the capability the client already holds.** It keeps naming
+   an endpoint whose receiver is gone. It is **not** retroactively made to name
+   the successor: a name minted for one instance does not silently become a
+   name for another, which is what makes case C distinguishable at all.
+6. **What the client does after a restart.** A fresh lookup, obtaining an
+   endpoint capability for the successor.
+7. **Is re-lookup the mandatory recovery mechanism.** **Yes, at Stage 4.** It
+   is the only one: the old capability is not repaired, and nothing re-endows a
+   running client. A client that does not re-look-up does not recover.
+8. **Distinguishability.** Cases A, B and C are distinguishable and are proved
+   by three separate assertions. **Case D stays intentionally ambiguous** —
+   §5a.
+
+## 3b. Bootstrap, at the minimum the decision needs
+
+**Stated as a requirement, not designed as an orchestration system.** Three
+facts and no more:
+
+- **Order.** The name service is started before the block service, because the
+  block service's first act after initialization is to publish. The capsule
+  already carries boot-critical textual modules (`docs/11` §Bootstrapping) and
+  the launcher already decides order; nothing new is required to express it.
+- **Wiring.** Both the block service and the client receive an endpoint
+  capability for the name service from their own sealed launch plans. The name
+  service is reached by capability like anything else, never by a well-known
+  name.
+- **Its own recovery.** The name service is restartable by the same supervisor
+  mechanism as any other service (ADR-0067 operation 14, ADR-0076 §3 funding,
+  ADR-0077 plans). **Its registry does not survive its own death**, and that is
+  the accepted Stage 4 answer: entries are re-published by services that are
+  themselves restarted, and a client holding a stale name-service capability is
+  in case B with respect to the name service. Persisting a registry across its
+  own restart would require durable state, which is `docs/09`'s and the
+  engineering exit's, and is explicitly not Stage 4's.
+
+**Not decided here and not needed here:** health probes, restart-loop bounds,
+start-order declaration syntax, dependency resolution, or any general boot
+orchestration. Restart policy remains canonical supervisor text (ADR-0077 §8).
+
+### What Stage 4 does not get from P3
+
+**No service-discovery framework.** One interface, `block.device.v1`, one
+publisher, one lookup. **No** enumeration API, multi-device registry, metadata
+framework, discovery protocol, interface versioning negotiation, or query
+language. A name service that can answer one question about one interface is
+the whole of it, and growing it is a later decision with its own reasons.
+
+## 4. The options, as weighed
+
+**Kept as the record of what was decided against.** P3 was taken.
+
+### The four, as enumerated
+
+
+### P1 — no registry at Stage 4; the launcher wires client to service
+
+The launcher creates the endpoint, endows the service with `receive` and the
+client with `call`, both through sealed launch plans. Publication is deferred
+whole.
+
+1. Nobody — no publication capability is granted or needed.
+2. It does not. There is an endpoint, not a publication.
+3. From its own launch plan, before its first instruction runs.
+4. Nothing; there is no publication.
+5. It names an endpoint whose receiver is gone. `IPC_V1` §2 and the liveness
+   rule decide what a call on it does.
+6. Whatever the supervisor arranges; the client has no way to ask for a new
+   name.
+7. There is no lookup, so recovery cannot be by re-lookup. It must be by the
+   supervisor re-endowing, which means restarting the client, or by the
+   endpoint outliving its receiver.
+8. Narrowest set — see §5.
+
+### P2 — a registry object in the nucleus
+
+Publish and lookup become operations; `OBJECT_INTERFACE` is filled.
+
+1. A service endowed with an `InterfacePublication` capability naming
+   `block.device.v1`.
+2. The service calls publish, presenting the publication capability and the
+   endpoint it wants named.
+3. A lookup operation, by interface name.
+4. The nucleus observes the death and decides: entry removed, or entry retained
+   and marked.
+5. The nucleus decides: revoked by generation, or left naming a dead endpoint.
+6. Re-lookup.
+7. Available and can be made mandatory.
+8. Widest set, at the cost below.
+
+**The cost is the trusted base.** An interface-name namespace in ring 0 is a
+naming authority in the binary trusted base, and `docs/38`'s Tier 0 invariants
+and `AGENTS.md` §8's narrow-nucleus rule both bear on it. It also collides at
+Stage 5 with `/system` being a commit tree and `/dev` being a capability
+namespace (`docs/09`).
+
+### P3 — a registry as an ordinary textual service
+
+A name service holding publication entries, reached over IPC like anything
+else.
+
+1. Each publisher, granted by its launcher; the name service holds the registry
+   itself.
+2. The service calls the name service over IPC, presenting its publication
+   capability.
+3. A lookup call to the name service, for which the client needs an endpoint
+   capability for **it** — which the launcher must supply, so one wiring step
+   remains no matter what.
+4. The name service decides, and it must learn of the death — which means it
+   needs the supervisory relationship of ADR-0067 or a notification from
+   whoever has it.
+5. As P2, but decided in canonical text.
+6. Re-lookup.
+7. Available and can be made mandatory.
+8. Wide, and the rules are inspectable text rather than nucleus behaviour.
+
+**Its own bootstrapping question.** The name service must exist before any
+driver, which touches `docs/11`'s bootstrapping sequence, and it must itself be
+restartable — a registry that cannot be restarted is a single point of failure
+with extra steps.
+
+### P4 — the supervisor is the registry
+
+It already creates both parties and already learns of endings through operation
+14. It hands out endpoint capabilities as part of launching a client.
+
+1. The supervisor, as part of its existing authority over what it creates.
+2. The supervisor records that a service it launched serves an interface.
+3. From the supervisor: at launch, or by asking it later.
+4. The supervisor knows first — operation 14 is exactly this notification.
+5. The supervisor decides; it can revoke, or leave it and answer questions
+   about it.
+6. Ask the supervisor again.
+7. Available; whether mandatory is a choice inside P4.
+8. Wide, with the caveat below.
+
+**It makes the supervisor a single point of failure for device access**, and
+`docs/34` must say so. It also blurs supervision and naming, which ADR-0051 §3
+deliberately separated — supervision is "decisions *about* a component",
+naming is a fact about the system.
+
+## 5. Question 8 in detail: what is distinguishable, and what is not
+
+The four stale-client cases, and what each option can guarantee.
+
+| case | P1 | P2 / P3 / P4 |
+|---|---|---|
+| **A.** client blocked in `endpoint_call` when the service dies | distinguishable — the call fails, and `IPC_V1` §4 with the liveness rule says how | distinguishable, same mechanism |
+| **B.** client holds a capability for an endpoint whose receiver is gone, and has not yet called | distinguishable — the first call fails | distinguishable; with re-lookup the client can also obtain a live name |
+| **C.** client calls after a restart, holding a pre-restart capability | **not** distinguishable from B without a registry: the client can only observe that its call fails, and cannot tell "gone" from "replaced" | distinguishable — lookup answers with the new publication, and generation says it is a different one |
+| **D.** a request the old instance accepted and never answered | **ambiguous, and deliberately so — under every option** | **ambiguous, and deliberately so** |
+
+**Case D is the important one and no option solves it.** A block write whose
+answer was lost is exactly where "retry" and "do not retry" differ, and no
+capability mechanism can distinguish "the device never got it" from "the device
+did it and the answer died with the process".
+
+### 5a. Case D is intentionally ambiguous, and that is the decision
+
+**Accepted 2026-09-21.** No idempotency, request journal, transaction id,
+exactly-once semantics or other mechanism is added at Stage 4 for the sole
+purpose of removing case D. The boundary is stated instead:
+
+> If the old block service accepted a write request and died before delivering
+> the reply, the client receives no guarantee that lets it distinguish "the
+> write was not performed" from "the write was performed and the reply was
+> lost".
+
+**This is not a Stage 4 failure and not an open defect.** It is a deliberate
+boundary of the current `block.device.v1`, of the same kind and stated in the
+same form as Stage 4D-5's non-claims about durability. An idempotent `write`
+remains available as a separate interface-level decision later, if a need for
+it appears; it is a property of the interface's *shape*, not of its
+publication, which is why this ADR names the lever and does not pull it.
+
+**The Stage 4 evidence must carry this as an explicit non-claim.** A gate
+asserting that a client always knows would be asserting something no option
+delivers — see §10 item 4.
+
+**What this means for Stage 4 evidence.** Case D must be written into the
+slice's evidence as an explicit non-claim, in the form Stage 4D-5 already uses
+for durability. A gate that asserted "the client always knows" would be
+asserting something no option delivers.
+
+## 6. Consequences
+
+| | P1 | P2 | P3 | P4 |
+|---|---|---|---|---|
+| client can find a service it did not launch | no | yes | yes | only via the supervisor |
+| trusted-base growth | none | **a namespace in ring 0** | none | none |
+| new ABI surface | none | object kind + 2 operations | none | none |
+| fills `OBJECT_INTERFACE` | no | yes | no | no |
+| answers ADR-0051's registry requirement | no | yes | yes | yes |
+| `docs/11` step 4 | vacuous | met | met | met |
+| case C distinguishable | **no** | yes | yes | yes |
+| case D | ambiguous | ambiguous | ambiguous | ambiguous |
+| new single point of failure | none | the nucleus, which is one anyway | the name service | **the supervisor** |
+
+## 7. What each would let Stage 4 prove, and what it leaves outside
+
+| | proves at Stage 4 | leaves outside Stage 4 |
+|---|---|---|
+| **P1** | the whole Branch-A data path and the whole lifecycle, with "who found whom" outside the frame. The identity gate's question is answered | `docs/11` step 4; case C; any claim that a client *recovers* rather than *is re-launched* |
+| **P2** | additionally: a client reaches a service by interface, and a pre-restart name is provably distinct from a post-restart one | the Stage 5 reconciliation of a ring-0 namespace with `/system` and `/dev` |
+| **P3** | the same, in canonical text, with the rules inspectable | the name service's own supervision and bootstrap ordering |
+| **P4** | the same, with no new component | the separation ADR-0051 §3 drew between supervising and naming |
+
+**The narrowing P1 causes should be named now, not discovered in the evidence.**
+Without a registry there is no re-lookup, so §3's question 7 has no mechanism
+and case C is not distinguishable. The stale-client criterion then becomes "the
+capability the client already holds behaves thus" rather than "the client
+recovers by re-acquiring". That is a smaller claim and a defensible one, but it
+is not what `docs/11` step 5 describes, and the slice would have to say so.
+
+## 8. Obligations each option creates for later stages
+
+- **P1** obliges a later stage to introduce publication before any component
+  can reach a service it did not launch, and leaves ADR-0051's evidence
+  requirement unsatisfiable until then.
+- **P2** creates a ring-0 interface namespace that Stage 5 must reconcile with
+  `/system` as a commit tree and `/dev` as a capability namespace, and that
+  Stage 6's self-modification must keep coherent across activation.
+- **P3** creates a service that must exist before any driver and must itself be
+  restartable, which touches `docs/11`'s bootstrapping sequence and Stage 5's
+  activation order.
+- **P4** makes the supervisor load-bearing for device access; it must enter
+  `docs/34` as such, and Stage 5 must decide what happens to naming when the
+  supervisor is itself replaced by activation.
+
+## 9. What this ADR does not decide
+
+- **The wire shape of `read`, `write` and `capacity`.** Interface design inside
+  `IPC_V1`; no new IPC mechanism, capability type or ABI operation is to be
+  created for it.
+- **Idempotency of `write`.** Named in §5 as the only lever on case D, and left
+  to the interface's own decision.
+- **Anything beyond the three operations.** Filesystem, partitions, cache,
+  object store, enumeration, multi-device management: out of scope by
+  direction.
+- **Restart policy.** Canonical supervisor text (ADR-0077 §8).
+- **Persistent object/state storage and the capsule-to-repository handoff.**
+  Stage 4 deliverables under `docs/16`, and not in this slice.
+
+## 10. Conformance evidence this decision requires
+
+**Acceptance carries these test obligations.** They are **not** to be written
+into any evidence document before the tests exist and are gated — evidence
+follows a passing gate and never precedes one. Under P3 as accepted, item 5
+does not arise.
+
+1. A service that was not granted the publication capability cannot publish,
+   and says so in the audit record (ADR-0051's requirement, finally testable).
+2. A client reaches the service holding **only** an endpoint capability: no
+   function, no window, no source, no DMA region, and no means of naming the
+   device.
+3. Cases A, B and — under P2/P3/P4 — C are each distinguished by a separate
+   assertion, so that no one of them is satisfied by another's evidence.
+4. Case D is recorded as an explicit non-claim, in the form Stage 4D-5 uses for
+   durability.
+5. Under P2: the nucleus still contains no device-protocol vocabulary, and the
+   namespace it gained is bounded and stated.
+
+<!-- END docs/adr/0093-block-device-publication-and-lifetime.md -->
 
 ---
 

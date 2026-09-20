@@ -137,9 +137,9 @@ the remaining illustrative names cannot be read as accepted.
 | interrupt binding and acknowledgement | **open**, constrained by `docs/11` §Interrupts and ADR-0049 |
 | DMA authority | **open**, constrained by ADR-0037 §2 and `docs/11` §DMA |
 | IOMMU semantics | **open** |
-| reset authority | **open**, and no right is allocated for it |
+| reset authority | **decided in part by ADR-0092.** No right is allocated, now by decision rather than omission: a function's holder may not reset it, and Initiate FLR joins the reserved fields. Third-party reset of a wedged driver's function stays open and is deferred to the bus/management service |
 | VirtIO negotiation, queues, block I/O | **open** |
-| publication of `block.device.v1` | **open**; its shape needs nothing new (ADR-0051 §2, `CAPABILITY_V1` §6) |
+| publication of `block.device.v1` | **decided by ADR-0093**: a registry is an ordinary textual name service, and its shape indeed needed nothing new (ADR-0051 §2, `CAPABILITY_V1` §6) |
 
 ## 5. D1 — the root of PCI authority, and who holds it
 
@@ -397,11 +397,15 @@ and acknowledgement, DMA authority, IOMMU semantics, reset, VirtIO feature
 negotiation, VirtIO queues, block reads and writes, device matching policy,
 `block.device.v1`, persistent state and repository handoff.
 
-**Three of these have since been decided, and this list is not rewritten to
+**Several of these have since been decided, and this list is not rewritten to
 pretend it always knew.** BAR → MMIO mapping and device-memory region semantics
-by **ADR-0081** (§13, §5); interrupt routing and acknowledgement by **ADR-0082**.
-The rest remain open, and DMA authority, IOMMU semantics and the MMIO↔DMA
-ordering contract are Stage 4C-2's.
+by **ADR-0081** (§13, §5); interrupt routing and acknowledgement by
+**ADR-0082**; DMA authority by **ADR-0084** and the MMIO↔DMA ordering contract
+by **ADR-0086**; VirtIO negotiation, queues and block I/O by Stage 4D-1…4D-5;
+**reset in part** by **ADR-0092** — a holder may not reset its own function,
+and third-party reset is deferred rather than denied; and `block.device.v1`
+publication by **ADR-0093**. Still open: IOMMU semantics, device matching
+policy, persistent state and the repository handoff.
 
 **Device matching remains deliberately open.** Reading identifiers is discovery;
 deciding which driver should own them is policy, and it comes later.

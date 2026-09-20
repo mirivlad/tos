@@ -194,7 +194,7 @@ are marked and are exactly those a process can only apply to itself.
 
 | 25 | `pci_config_read` | PCI function capability with `config_read` | reads `rdx` bytes of conventional configuration space at offset `rsi` of the function **that capability names**, and returns the value in `rdx`. `E_BAD_ARGUMENT` for a width that is not 1, 2 or 4, an offset not a multiple of the width, or an access reaching past byte 256 |
 
-| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25. **Some of the function's state is the nucleus's and is refused with `E_NO_CAPABILITY`** — the MSI and MSI-X capabilities, the resource-placement registers of the reported header type, and the Command and Bridge Control bits that decide decoding, mastering and downstream routing. The table below §5 states the set and the "would change" rule; reads are unaffected |
+| 26 | `pci_config_write` | PCI function capability with `config_write` | writes the low `rdx` bytes of `r10` to offset `rsi` of the function that capability names, under the bounds of 25. **Some of the function's state is the nucleus's and is refused with `E_NO_CAPABILITY`** — the MSI and MSI-X capabilities, the resource-placement registers of the reported header type, the Command and Bridge Control bits that decide decoding, mastering and downstream routing, and Initiate Function Level Reset (ADR-0092). The table below §5 states the set and the "would change" rule; reads are unaffected |
 
 | 27 | `pci_bar_map` | PCI function capability with `map` | maps BAR `rsi` of the function that capability names, from page-aligned offset `rdx` for page-aligned length `r10`, writable when `r8` is non-zero, and returns a device-memory capability in `rdx` (ADR-0081 §13). The physical base is taken from the assignment's own measured BAR state — **a caller never supplies an address** — and the window is written to the argument region at `MMIO_MAP_RECORD` for the caller's runtime. `E_BAD_ARGUMENT` for a BAR index outside the architectural range or an unaligned, zero or overflowing window; `E_NO_CAPABILITY` for an I/O or unimplemented BAR, a range not inside the BAR's extent, or **a window overlapping the function's MSI-X table or pending-bit array** (ADR-0082 §5); `E_LIMIT` when no mapping slot is free or the caller already holds as many windows as it may |
 
@@ -232,7 +232,10 @@ memory at all *inside* ranges these operations already reach. Before this, a
 holder of `map` and `config_write` could program an arbitrary message address
 and data — an interrupt of its choosing on a vector of its choosing — could
 relocate the very BAR the MSI-X table lives in, and could make the device a bus
-master, without holding anything that named any of it.
+master, without holding anything that named any of it. **And it could clear
+every one of those registers at once**: ADR-0082 §5a reserved the
+resource-placement registers and not the operation that returns them to
+defaults, which ADR-0092 §3 records and its §5a closes.
 
 | Reserved | Because |
 |---|---|
@@ -242,6 +245,7 @@ master, without holding anything that named any of it.
 | a write that would **change** the resource-placement registers of the function's **reported header type** | the assignment measured them once and everything derives from that measurement |
 | a write that would **change** Memory Space Enable or Bus Master Enable | each follows a predicate over live descendants, not a caller |
 | on a Type-1 header, I/O Space Enable and the Bridge Control bits that alter downstream routing or reset | a bridge's forwarding is its resource placement |
+| a write that would **set** Initiate Function Level Reset, bit 15 of the PCI Express Capability's Device Control register | an FLR returns the function's configuration registers to their defaults, the BARs among them, and the assignment measured those once (ADR-0092 §5a). The rest of Device Control — maximum payload size, extended tags, maximum read request — stays the driver's |
 
 **Reads are untouched.** Where a table lives, where a function decodes and
 whether it is a bus master are facts about hardware, and a fact is not
