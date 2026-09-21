@@ -1252,6 +1252,15 @@ const PERFORMED: &[Performed] = &[
         values: &[],
         result: Produced::ReceivedCall,
     },
+    // The same selector as `endpoint_call`, producing the answer's length.
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_call_for",
+        operation: ENDPOINT_CALL,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[Slot::Number(Reg::Rsi)],
+        result: Produced::Number,
+    },
     // A send carrying one capability, for an answer that must deliver one:
     // a reply copies payload bytes only.
     Performed {
@@ -2375,6 +2384,10 @@ impl System for Endowment<'_> {
                 Value::Aggregate(alloc::vec![
                     Value::Capability(Handle::new(reply)),
                     Value::Capability(Handle::new(carried)),
+                    // The inline length the nucleus returned for this receive,
+                    // which is what a protocol above these primitives has to
+                    // say anything with.
+                    Value::Int(IntKind::U64, u128::from(value) as i128),
                 ])
             }
             Produced::ChildEnding => {

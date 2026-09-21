@@ -1,0 +1,91 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The client of a real block device, holding no part of the machine.
+//
+// What it holds is `call` on the registry's lookup endpoint and two names for
+// an inbox of its own. It has no PCI function, no mapped window, no interrupt
+// source, no DMA region and no memory authority; it has no name for the block
+// service either, until the registry gives it one.
+//
+//   look up `block.device.v1`
+//     -> a capability arrives on the inbox
+//     -> call it, naming a sector
+//     -> the answer is how many of that sector's 512 bytes are zero
+//
+// **The number is the device's, not this module's.** The service fills its DMA
+// buffer with 0xA5 before the request, so a run in which no DMA happened
+// answers 0. 256 is the inline bound of `IPC_V1` §3 and therefore what a whole
+// zero-filled sector reports.
+
+module system.client.block version 1.4 profile full;
+
+import capability system.ipc.Endpoint as registry;
+import capability system.ipc.Endpoint as inbox;
+import capability system.ipc.Endpoint as reply_to;
+
+resource [
+    fuel: 32768,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn endpoint_call_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [reply_to, registry];
+
+extern fn endpoint_receive_call(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCall, i64> uses [inbox];
+
+// The call whose answer is a number rather than only a status.
+extern fn endpoint_call_for(
+    cap: system.ipc.Endpoint, length: u64
+) -> Result<u64, i64> uses [system.ipc.Endpoint];
+
+const OK: i64 = 0i64;
+// The sector this client asks for. Sector 0 of the reference backing image,
+// which is zero-filled — and the service has no way to know that is what makes
+// the answer checkable, because the service only reports what it found.
+const WANTED_SECTOR: u64 = 0u64;
+// A whole sector of zeroes, capped at `IPC_V1` §3's inline bound.
+const WHOLE_SECTOR: u64 = 256u64;
+
+//  1  the lookup was answered
+//  2  a capability arrived on the inbox
+//  4  calling it reached the service and the service answered
+//  8  the answer is a whole sector of zeroes, so the device really wrote
+pub fn main() -> i64
+    uses [registry, inbox, reply_to, system.ipc.Endpoint]
+{
+    let mut found: i64 = 0i64;
+
+    if (endpoint_call_carrying(reply_to, registry, 0u64) == OK) {
+        found = found + 1i64;
+    }
+    match (endpoint_receive_call(inbox)) {
+        Ok(delivery) => {
+            found = found + 2i64;
+            match (endpoint_call_for(delivery.carried, WANTED_SECTOR)) {
+                Ok(zeros) => {
+                    found = found + 4i64;
+                    if (zeros == WHOLE_SECTOR) {
+                        found = found + 8i64;
+                    }
+                }
+                Err(refused) => { return refused - 1000i64; }
+            }
+        }
+        Err(refused) => { return refused - 2000i64; }
+    }
+
+    return found;
+}

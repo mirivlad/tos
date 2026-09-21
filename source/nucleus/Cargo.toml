@@ -48,6 +48,10 @@ test-capability-transfer = []
 # no name for it. The boot process is the launcher and nothing else — it holds
 # four endpoints only long enough to decide who receives on them, and lets go.
 test-name-service = []
+# The Stage 4 client/service path end to end: a launcher, the P3 registry, a
+# block service that drives the reference device, and a client holding no part
+# of the machine. The PCI root goes to exactly one of the four.
+test-block-service = []
 # ADR-0078: the boot process holds `create` and `terminate` over itself and the
 # root's remainder, which is everything a supervisor needs to scope a budget,
 # plan a child, create it, refine its authority and end it — every step after

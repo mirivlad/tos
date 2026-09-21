@@ -292,6 +292,15 @@ pub const RECORDS: &[Record] = &[
                 name: "carried",
                 ty: "system.ipc.Endpoint",
             },
+            // What the message said, in the only channel `IPC_V1` §3 gives a
+            // receiver without an argument region it can read: the inline
+            // length, bounded at 256. A protocol above these primitives is
+            // free to mean something by it, and the block service below means
+            // a sector number by a request's and a byte count by an answer's.
+            Field {
+                name: "length",
+                ty: "u64",
+            },
         ],
     },
     // What a wait observed, as `PROCESS_IDENTITY_V1` and ADR-0067 record it.
@@ -441,6 +450,17 @@ pub const ACCEPTED: &[Interface] = &[
                 capabilities: &[Requirement::of("system.ipc.Endpoint", "call")],
                 parameters: &[Parameter::fixed("u64")],
                 result: "i64",
+            },
+            // The same selector, producing the answer's length instead of
+            // discarding it. The nucleus already wakes a caller with
+            // `Answer::value(length)`; until now no row named it, so a textual
+            // caller could learn that its call was answered and nothing about
+            // the answer.
+            Operation {
+                name: "endpoint_call_for",
+                capabilities: &[Requirement::of("system.ipc.Endpoint", "call")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "Result<u64, i64>",
             },
             // The same ABI operation, with the payload declared as the value it
             // is rather than as a length over bytes the module cannot write.
