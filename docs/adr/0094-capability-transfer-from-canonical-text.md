@@ -2,8 +2,12 @@
 
 # ADR-0094: How a canonical textual module carries a capability in a message
 
-- Status: **Proposed**
-- Date: 2026-09-21
+- Status: **Resolved by existing semantics and a minimal textual extension**
+  (Project Architect-directed, 2026-09-21). No option was chosen, because the
+  implementation showed the question did not need one: the nucleus was not
+  changed, no ABI operation was added, and three schema rows and a record were
+  enough. §11 records what was built and what it did **not** settle
+- Date: 2026-09-21, resolved 2026-09-21
 - Decision level: **2 or 3, depending on the option** (§8). Every option adds
   TOS Core surface and therefore a language minor; option B additionally adds
   `SYSTEM_ABI_V1` operations, which is what took ADR-0086 to level 3
@@ -353,3 +357,44 @@ And Stage 4 does not close.
   their own bound, and nothing here needs them.
 - Any widening of the nucleus's transport: the counts, offsets and rules of
   ADR-0057 and ADR-0058 stand as they are.
+
+## 11. How it was resolved, and what it did not settle
+
+**Written after the fact, from two boots that pass.** The Project Architect
+directed that this ADR stay research until the nearest vertical slice was
+finished, and that it close this way if no new architectural obligation
+appeared. None did.
+
+**What was built** — `capability-transfer.sh` and `name-service.sh`:
+
+| | |
+|---|---|
+| nucleus | **unchanged**. Transport, reply creation, delegation rights and the receiver's own naming were all already there |
+| ABI | **unchanged**. No operation added; the rows sit over selectors 1, 2, 3 and 6 |
+| schema | `system.ipc.ReceivedCall { reply, carried }`, and `endpoint_receive_call`, `endpoint_call_carrying`, `endpoint_send_carrying`, and `capability_release` on `system.ipc.Endpoint` |
+| bridge | `Placed`, telling a register destination from a transfer slot, and `Produced::ReceivedCall`, which reads the two slots the nucleus filled |
+
+So of §6's options the outcome is **A**, and the §6.1 strain was measured
+rather than argued: a call carrying nothing leaves the slot zero, the receiver
+holds a value the language calls an endpoint and the nucleus calls nothing, and
+the first use of it is refused `E_NO_CAPABILITY`. Declared type is a claim the
+nucleus checks at use, and it fails closed.
+
+**Two things the implementation found that the analysis had not.**
+
+1. **A reply cannot carry a capability.** `ipc::hand` copies payload bytes from
+   the replier's argument region into the waiting caller's and never touches
+   the transfer table. So a service whose answer must deliver a capability
+   delivers it as a message, to a channel the asker handed over in its own
+   request. That shaped ADR-0093 P3's lookup protocol and required nothing new.
+2. **`IPC_V1` §2 makes `capability_release` necessary on an endpoint.** One
+   process may hold `receive`, so a launcher cannot hand a child a `receive` it
+   is still holding — `grant` refuses the creation whole. Endowing the plan and
+   then releasing its own name is how a receiving role is given away.
+
+**What this closure does not settle, and is not a claim to have settled.**
+§3's open question stands: `is_delegable()` admits a `Reply`, so the right to
+answer a call can be forwarded, while `launch_plan_endow` refuses one. Nothing
+built here forwards a reply, so nothing here decides whether canonical text
+should be able to. It is carried forward as an open question of the IPC
+contract rather than answered by silence.

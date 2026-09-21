@@ -1,0 +1,237 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The launcher, and nothing else. It creates three processes, decides what each
+// holds, and ends — it is not the registry, does not supervise, and never
+// learns whether anything worked.
+//
+// **Its whole job is the shape of three capability sets**, because that is what
+// makes the boot evidence rather than a demonstration:
+//
+//   registry   `receive` on publish, `receive` on lookup
+//   publisher  `call` on publish, `receive` and `call` on its service endpoint
+//   client     `call` on lookup, `receive` and `call` on an inbox of its own
+//
+// The client holds no name for the service and no name for publish. What it
+// ends up calling, it can only have obtained through a message.
+//
+// **Why it lets go of four handles.** `IPC_V1` §2 allows one holder of
+// `receive` per endpoint, so a creator cannot hand a child a `receive` it is
+// still holding: `grant` refuses it, and the whole creation fails. Endowing the
+// plan and then releasing its own name is how a receiving role is given away —
+// the plan took a reference of its own (ADR-0077 §5), so the entry outlives the
+// release. The two call-only names are kept, because the publisher and the
+// client still have to be given `call` on those same endpoints.
+
+module system.boot.init version 1.4 profile full;
+
+import capability system.process.Control as process;
+import capability system.memory.Authority as memory;
+import capability system.ipc.Endpoint as publish_full;
+import capability system.ipc.Endpoint as publish_call;
+import capability system.ipc.Endpoint as lookup_full;
+import capability system.ipc.Endpoint as lookup_call;
+import capability system.ipc.Endpoint as service_full;
+import capability system.ipc.Endpoint as inbox_full;
+
+resource [
+    fuel: 131072,
+    stack: 16KiB,
+    allocation: 8KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 12,
+    imports: 12
+]
+
+extern fn launch_plan_create(
+    cap: system.process.Control
+) -> Result<system.process.LaunchPlanBuilder, i64> uses [process];
+
+extern fn endow_for_launch(
+    held: system.ipc.Endpoint,
+    plan: system.process.LaunchPlanBuilder,
+    rights: u64,
+    binding: string
+) -> i64 uses [system.ipc.Endpoint];
+
+extern fn launch_plan_seal(
+    cap: system.process.Control,
+    plan: system.process.LaunchPlanBuilder
+) -> Result<system.process.LaunchPlan, i64> uses [process];
+
+extern fn process_create_funded(
+    cap: system.process.Control,
+    funding: system.memory.Authority,
+    plan: system.process.LaunchPlan,
+    entry: string,
+    grant: u64,
+    self_rights: u64
+) -> Result<system.process.CreatedProcess, i64> uses [process, memory];
+
+// Only the endpoint form is declared. The children's own `Control` handles are
+// not released: this process creates three and ends, and a second `extern` of
+// the same name over a different interface is not how one item is declared
+// twice.
+extern fn capability_release(
+    cap: system.ipc.Endpoint
+) -> i64 uses [system.ipc.Endpoint];
+
+const OK: i64 = 0i64;
+const RIGHT_SEND: u64 = 1u64;
+const RIGHT_RECEIVE: u64 = 2u64;
+const RIGHT_CALL: u64 = 4u64;
+const NO_SELF_RIGHTS: u64 = 0u64;
+// Well inside `MIN_GRANT`'s 8 MiB floor and far under `MAX_GRANT`. Three
+// children at the reference 54 MiB would not fit the pool beside this process,
+// and none of them needs it: the heaviest textual process in this tree peaks
+// around 310 KiB.
+const CHILD_GRANT: u64 = 8388608u64;
+
+// Each plan is built in its own function, because a plan is a capability value
+// and this language has no null one to declare a variable with before it
+// exists. Three functions, three sealed plans, and the nesting stays shallow.
+fn registry_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, publish_full, lookup_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(publish_full, builder, RIGHT_RECEIVE, "publish") != OK) {
+                return Err(-1001i64);
+            }
+            if (endow_for_launch(lookup_full, builder, RIGHT_RECEIVE, "lookup") != OK) {
+                return Err(-1002i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 1200i64); }
+    }
+}
+
+fn publisher_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, publish_call, service_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(publish_call, builder, RIGHT_CALL, "registry") != OK) {
+                return Err(-2001i64);
+            }
+            // Two names for one endpoint, with disjoint rights. `IPC_V1` §2
+            // allows one holder of `receive`, so what the publisher hands to
+            // the registry has to be a name that cannot receive — and this is
+            // where that name is made, by the creator, rather than by an
+            // attenuation the publisher performs on itself.
+            if (endow_for_launch(service_full, builder, RIGHT_RECEIVE, "serve") != OK) {
+                return Err(-2002i64);
+            }
+            if (endow_for_launch(service_full, builder, RIGHT_CALL, "advertise") != OK) {
+                return Err(-2003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 2200i64); }
+    }
+}
+
+fn client_plan() -> Result<system.process.LaunchPlan, i64>
+    uses [process, lookup_call, inbox_full, system.ipc.Endpoint]
+{
+    match (launch_plan_create(process)) {
+        Ok(builder) => {
+            if (endow_for_launch(lookup_call, builder, RIGHT_CALL, "registry") != OK) {
+                return Err(-3001i64);
+            }
+            if (endow_for_launch(inbox_full, builder, RIGHT_RECEIVE, "inbox") != OK) {
+                return Err(-3002i64);
+            }
+            // `send`, not `call`: the registry answers by sending, and a name
+            // that could call would let the registry block on this client.
+            if (endow_for_launch(inbox_full, builder, RIGHT_SEND, "reply_to") != OK) {
+                return Err(-3003i64);
+            }
+            return launch_plan_seal(process, builder);
+        }
+        Err(unplanned) => { return Err(unplanned - 3200i64); }
+    }
+}
+
+fn start(plan: system.process.LaunchPlan, entry: string) -> i64
+    uses [process, memory]
+{
+    match (process_create_funded(
+        process, memory, plan, entry, CHILD_GRANT, NO_SELF_RIGHTS
+    )) {
+        Ok(child) => {
+            return OK;
+        }
+        Err(uncreated) => { return uncreated; }
+    }
+}
+
+//   1  the registry was created
+//   2  the publisher was created
+//   4  the client was created
+//   8  the publish endpoint's receiving name was let go
+//  16  the lookup endpoint's was
+//  32  the service endpoint's was
+//  64  the inbox's was
+//
+// 127, and the releases are in it because they are not tidiness: `IPC_V1` §2
+// allows one holder of `receive`, so without each of them `grant` refuses the
+// child that had to receive on that endpoint and the creation fails whole.
+pub fn main() -> i64
+    uses [process, memory, publish_full, publish_call, lookup_full, lookup_call,
+          service_full, inbox_full, system.ipc.Endpoint]
+{
+    match (registry_plan()) {
+        Ok(registry) => {
+            match (publisher_plan()) {
+                Ok(publisher) => {
+                    match (client_plan()) {
+                        Ok(client) => {
+                            // Every receiving name this process still holds,
+                            // let go — before any child that needs one exists.
+                            let mut let_go: i64 = 0i64;
+                            if (capability_release(publish_full) == OK) {
+                                let_go = let_go + 8i64;
+                            }
+                            if (capability_release(lookup_full) == OK) {
+                                let_go = let_go + 16i64;
+                            }
+                            if (capability_release(service_full) == OK) {
+                                let_go = let_go + 32i64;
+                            }
+                            if (capability_release(inbox_full) == OK) {
+                                let_go = let_go + 64i64;
+                            }
+                            return let_go + launch(registry, publisher, client);
+                        }
+                        Err(refused) => { return refused; }
+                    }
+                }
+                Err(refused) => { return refused; }
+            }
+        }
+        Err(refused) => { return refused; }
+    }
+}
+
+fn launch(
+    registry: system.process.LaunchPlan,
+    publisher: system.process.LaunchPlan,
+    client: system.process.LaunchPlan
+) -> i64 uses [process, memory] {
+    let mut found: i64 = 0i64;
+    let started_registry: i64 = start(registry, "system/registry/nameservice.tos");
+    if (started_registry != OK) { return started_registry - 5000i64; }
+    found = found + 1i64;
+    let started_publisher: i64 = start(publisher, "system/service/publisher.tos");
+    if (started_publisher != OK) { return started_publisher - 6000i64; }
+    found = found + 2i64;
+    let started_client: i64 = start(client, "system/client/consumer.tos");
+    if (started_client != OK) { return started_client - 7000i64; }
+    found = found + 4i64;
+    return found;
+}

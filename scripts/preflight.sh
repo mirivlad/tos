@@ -414,6 +414,19 @@ qemu_virtio_block_two_inflight() {
 }
 # Stage 4D-5: the first real block write. One `VIRTIO_BLK_T_OUT` of 512 bytes
 # the module composed, proved by an independent `VIRTIO_BLK_T_IN` of the same
+# A capability crosses between two canonical textual processes in a message,
+# which ADR-0093 P3 needs and nothing in the schema could express: a textual
+# service could not answer a call, put a capability into a message, or take one
+# out. The nucleus was not changed.
+qemu_capability_transfer() {
+    bash "$ROOT/source/host-tools/qemu-test/capability-transfer.sh"
+}
+# ADR-0093 P3 performed: a textual registry, a publisher that registers its
+# endpoint with it, and a client that reaches that endpoint having been given
+# no name for it — plus the registry ending under the client, which is case B.
+qemu_name_service() {
+    bash "$ROOT/source/host-tools/qemu-test/name-service.sh"
+}
 # sector into a different buffer — the status byte is not the evidence. The
 # device's own `capacity` is read under §2.5.1's generation protocol first,
 # because §5.2.6.1 forbids a request beyond it.
@@ -625,6 +638,7 @@ gate qemu       full-only "QEMU one queue serves more than one request"    qemu_
 gate qemu       full-only "QEMU two requests outstanding together"         qemu_virtio_block_two_inflight
 gate qemu       full-only "QEMU a textual driver writes a real sector"     qemu_virtio_block_write
 gate qemu       full-only "QEMU a capability crosses in a message"      qemu_capability_transfer
+gate qemu       full-only "QEMU a client looks a service up"            qemu_name_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0083 paired validation performance" qemu_paired_performance_conformance

@@ -1,0 +1,77 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The service that publishes `block.device.v1` and then answers what the
+// registry sent people to.
+//
+// It holds two names for one endpoint: `serve`, which receives, and
+// `advertise`, which calls. It publishes the second. `IPC_V1` §2 allows one
+// holder of `receive` per endpoint, so what it hands out must be a name that
+// cannot receive — and a launcher that granted two names with disjoint rights
+// is how that is arranged, not an attenuation this module performs.
+//
+// It answers three calls and ends: two from a client that looked it up twice,
+// and one more the client makes **after the registry has gone**.
+
+module system.service.publisher version 1.4 profile full;
+
+import capability system.ipc.Endpoint as registry;
+import capability system.ipc.Endpoint as serve;
+import capability system.ipc.Endpoint as advertise;
+
+resource [
+    fuel: 16384,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn endpoint_call_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [advertise, registry];
+
+extern fn endpoint_receive_call(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCall, i64> uses [serve];
+
+extern fn endpoint_reply(
+    cap: system.ipc.Reply, length: u64
+) -> i64 uses [system.ipc.Reply];
+
+const OK: i64 = 0i64;
+
+//  1  the registration was accepted
+//  2  the first call arrived through the published capability
+//  4  the second did
+//  8  and the third — made after the registry had ended
+pub fn main() -> i64 uses [registry, serve, advertise, system.ipc.Reply] {
+    let mut found: i64 = 0i64;
+
+    if (endpoint_call_carrying(advertise, registry, 0u64) == OK) {
+        found = found + 1i64;
+    }
+
+    let mut served: i64 = 0i64;
+    while (served < 3i64) {
+        match (endpoint_receive_call(serve)) {
+            Ok(request) => {
+                let answered: i64 = endpoint_reply(request.reply, 0u64);
+                if (answered != OK) { return answered - 1000i64; }
+                served = served + 1i64;
+                if (served == 1i64) { found = found + 2i64; }
+                if (served == 2i64) { found = found + 4i64; }
+                if (served == 3i64) { found = found + 8i64; }
+            }
+            Err(refused) => { return refused - 2000i64; }
+        }
+    }
+
+    return found;
+}

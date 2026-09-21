@@ -34,6 +34,7 @@
 // about, so a constant cannot be added without joining it.
 const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     + cfg!(feature = "test-capability-transfer") as usize
+    + cfg!(feature = "test-name-service") as usize
     + cfg!(feature = "test-supervisor") as usize
     + cfg!(feature = "test-deadlock") as usize
     + cfg!(feature = "test-call-reply") as usize
@@ -1684,6 +1685,76 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // message**, which is the thing no canonical textual module could do
     // before. `wait_child` because the server's own account of what it
     // observed is how the negative round is read back.
+    // ADR-0093 P3. **Eight entries, and the shape is the decision**: four
+    // endpoints, each named twice — once carrying `receive`, for the plan of
+    // whichever child is to receive on it, and once carrying only what a caller
+    // needs. `IPC_V1` §2 allows one holder of `receive`, so the boot process
+    // hands out the receiving names and then releases its own; the call-only
+    // names stay, because the publisher and the client still have to be given
+    // `call` on those same endpoints.
+    //
+    // The boot process itself is a launcher and nothing else: `create`, the
+    // root's remainder, and no part in what the three children then do.
+    #[cfg(feature = "test-name-service")]
+    let first_endowment = {
+        let (Some(publish), Some(lookup), Some(service), Some(inbox)) =
+            (ipc::create(), ipc::create(), ipc::create(), ipc::create())
+        else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        [
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"publish_full"),
+                object: capability::Object::Endpoint(publish),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"publish_call"),
+                object: capability::Object::Endpoint(publish),
+                rights: tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"lookup_full"),
+                object: capability::Object::Endpoint(lookup),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"lookup_call"),
+                object: capability::Object::Endpoint(lookup),
+                rights: tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            // One name, carrying both, because the publisher needs both and
+            // this process is where its two names are made.
+            capability::Endowment::Existing {
+                binding: binding(b"service_full"),
+                object: capability::Object::Endpoint(service),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            // As above, and `send` rather than `call`: the registry answers a
+            // lookup by sending, so a name that could call would let it block
+            // on the client it is answering.
+            capability::Endowment::Existing {
+                binding: binding(b"inbox_full"),
+                object: capability::Object::Endpoint(inbox),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+        ]
+    };
     #[cfg(feature = "test-capability-transfer")]
     let first_endowment = {
         let (Some(inbox), Some(channel)) = (ipc::create(), ipc::create()) else {
@@ -1914,6 +1985,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-runtime-authority",
         feature = "test-supervision",
         feature = "test-capability-transfer",
+        feature = "test-name-service",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-lifecycle",
@@ -1947,6 +2019,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-runtime-authority",
         feature = "test-supervision",
         feature = "test-capability-transfer",
+        feature = "test-name-service",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-bundle-launch",

@@ -20,12 +20,18 @@
 #   authority   the `- Status:` line of each docs/adr/*.md
 #   claim       the ```open-decisions fence in PROGRESS.md, one ADR id per line
 #
-# An ADR counts as open when its status line does not contain "Accepted".
+# An ADR counts as open when its status line contains neither "Accepted" nor
+# "Resolved". **Two ways for a decision to be over, and they are not the same
+# thing.** Most end by being accepted; ADR-0094 ended by the implementation
+# showing there was nothing to decide — the nucleus needed no change and no
+# option of its own §6 was taken — and calling that "Accepted" would claim a
+# decision nobody made.
 # Bold markers, parenthetical option names and trailing prose are all ignored,
 # which is why the test is a substring and not an equality: statuses in this
 # tree are written as `**Accepted**`, `**Accepted (option R1a)** (Project
 # Architect-approved, 2026-09-21)`, `**Accepted**, amended 2026-09-15 — see §1a`
-# and `**Proposed** (awaiting Project Architect decision)`.
+# `**Proposed** (awaiting Project Architect decision)`, and
+# `**Resolved by existing semantics and a minimal textual extension**`.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -40,7 +46,7 @@ actual="$(
         status="$(grep -m1 '^- Status:' "$adr" || true)"
         [ -n "$status" ] || fail "$(basename "$adr") has no '- Status:' line"
         case $status in
-            *Accepted*) ;;
+            *Accepted* | *Resolved*) ;;
             *) basename "$adr" | cut -d- -f1 | sed 's/^/ADR-/' ;;
         esac
     done | sort

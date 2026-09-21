@@ -272,6 +272,8 @@ such a module whole by its header.
 | `endpoint_send_text` | `system.ipc.Endpoint` with `send` | `message: string` (≤ 256) | `i64` | 1 |
 | `endpoint_receive_call` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCall, i64>` | 2 |
 | `endpoint_call_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
+| `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
+| `capability_release` | `system.ipc.Endpoint` with `none` | *(none)* | `i64` | 6 |
 | `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
 
 `endpoint_receive_call` is `endpoint_receive` differing in what it produces —
@@ -281,6 +283,21 @@ unchanged and remains the way to take a message whose capabilities do not
 matter. What the new row adds is the ability to **serve** a call: the right to
 answer arrives in the receiver's transfer table (`IPC_V1` §4) and until now
 nothing in this schema could name it.
+
+`endpoint_send_carrying` is the same for a send, and it exists because **a
+reply cannot carry a capability**: the nucleus answers a call by copying the
+payload from the replier's argument region into the waiting caller's and does
+nothing with the transfer table. A service whose answer must deliver a
+capability therefore delivers it as a message, to a channel the asker handed
+over in its own request — ordinary capability discipline, and no change to what
+a reply is.
+
+`capability_release` is `CAPABILITY_V1` §4's release, declared on this
+interface as it is on four others. **`IPC_V1` §2 is why an endpoint needs it**:
+one process may hold `receive` on an endpoint, so a launcher cannot hand a
+child a `receive` it is still holding. Endowing the plan and then releasing its
+own name is how a creator gives away a receiving role, and the plan holds a
+reference of its own, so the entry survives the release (ADR-0077 §5).
 
 `endpoint_call_carrying` is `endpoint_call` delegating one capability with the
 request. **The delegated capability comes first and declares `none`**, which is
