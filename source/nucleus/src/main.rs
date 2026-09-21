@@ -35,6 +35,7 @@
 const ENDOWMENT_CONSTANTS: usize = cfg!(feature = "test-two-processes") as usize
     + cfg!(feature = "test-capability-transfer") as usize
     + cfg!(feature = "test-name-service") as usize
+    + cfg!(feature = "test-block-service") as usize
     + cfg!(feature = "test-supervisor") as usize
     + cfg!(feature = "test-deadlock") as usize
     + cfg!(feature = "test-call-reply") as usize
@@ -1685,6 +1686,101 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
     // message**, which is the thing no canonical textual module could do
     // before. `wait_child` because the server's own account of what it
     // observed is how the negative round is read back.
+    // The Stage 4 client/service path, end to end. Four processes: this
+    // launcher, the ADR-0093 P3 registry, the block service that drives the
+    // reference device, and a client that holds no part of the machine.
+    //
+    // **The PCI root is endowed here and handed on to exactly one child.** It
+    // carries `claim` and names no function, because which device is worth
+    // claiming is policy and a launcher that picked one would be the nucleus
+    // choosing a device (ADR-0079 §5). The client's plan names none of it.
+    #[cfg(feature = "test-block-service")]
+    let first_endowment = {
+        let (Some(publish), Some(lookup), Some(service), Some(inbox)) =
+            (ipc::create(), ipc::create(), ipc::create(), ipc::create())
+        else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-endpoint\r\n");
+            mem_fail();
+        };
+        let Some(bus) = pci::endow_root(0, 0, 255) else {
+            tos_serial::puts(b"TOS.RUN.UNSTARTABLE reason=no-pci-root\r\n");
+            mem_fail();
+        };
+        tos_serial::puts(b"TOS.RUN.PCI_ROOT segment=0 first_bus=0 last_bus=255 rights=claim");
+        tos_serial::puts(b" asserted_by=launcher\r\n");
+        pci::qualify_dma(
+            pci::STAGE4_TARGET.0,
+            pci::STAGE4_TARGET.1,
+            pci::STAGE4_TARGET.2,
+            pci::STAGE4_TARGET.3,
+        );
+        [
+            capability::Endowment::Own {
+                binding: binding(b"process"),
+                rights: tos_launch::RIGHT_CREATE,
+            },
+            capability::Endowment::Remainder {
+                binding: binding(b"memory"),
+                rights: tos_launch::RIGHT_SPEND,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"publish_full"),
+                object: capability::Object::Endpoint(publish),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"publish_call"),
+                object: capability::Object::Endpoint(publish),
+                rights: tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"lookup_full"),
+                object: capability::Object::Endpoint(lookup),
+                rights: tos_launch::RIGHT_RECEIVE,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"lookup_call"),
+                object: capability::Object::Endpoint(lookup),
+                rights: tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"service_full"),
+                object: capability::Object::Endpoint(service),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_CALL,
+                scope: 0,
+            },
+            // **A send-name the launcher keeps.** ADR-0077 §2 bounds a launch
+            // plan at four capabilities, and the block service needs five
+            // things — the registry, its own two names, the bus and an
+            // authority to spend. So the registry does not travel in its plan:
+            // the launcher sends it afterwards, through this, and the service's
+            // first receive is how it learns where to publish. A capability
+            // arriving in a message rather than in an endowment is the
+            // mechanism this stage exists to have, used where the bound bites.
+            capability::Endowment::Existing {
+                binding: binding(b"service_send"),
+                object: capability::Object::Endpoint(service),
+                rights: tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"inbox_full"),
+                object: capability::Object::Endpoint(inbox),
+                rights: tos_launch::RIGHT_RECEIVE | tos_launch::RIGHT_SEND,
+                scope: 0,
+            },
+            capability::Endowment::Existing {
+                binding: binding(b"device"),
+                object: capability::Object::PciBus(bus),
+                rights: tos_launch::RIGHT_CLAIM,
+                scope: 0,
+            },
+        ]
+    };
     // ADR-0093 P3. **Eight entries, and the shape is the decision**: four
     // endpoints, each named twice — once carrying `receive`, for the plan of
     // whichever child is to receive on it, and once carrying only what a caller
@@ -1986,6 +2082,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-supervision",
         feature = "test-capability-transfer",
         feature = "test-name-service",
+        feature = "test-block-service",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-lifecycle",
@@ -2020,6 +2117,7 @@ pub extern "C" fn boot_entry(bi_raw: *const BootInfo) -> ! {
         feature = "test-supervision",
         feature = "test-capability-transfer",
         feature = "test-name-service",
+        feature = "test-block-service",
         feature = "test-build-topology",
         feature = "test-pci-discovery",
         feature = "test-bundle-launch",

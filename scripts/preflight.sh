@@ -424,6 +424,12 @@ qemu_capability_transfer() {
 # ADR-0093 P3 performed: a textual registry, a publisher that registers its
 # endpoint with it, and a client that reaches that endpoint having been given
 # no name for it — plus the registry ending under the client, which is case B.
+# The Stage 4 client/service data path end to end: a separate textual
+# client, IPC, a textual block service that drives the reference device,
+# DMA, VirtIO, a real interrupt, and an answer that is the device's.
+qemu_block_service() {
+    bash "$ROOT/source/host-tools/qemu-test/block-service.sh"
+}
 qemu_name_service() {
     bash "$ROOT/source/host-tools/qemu-test/name-service.sh"
 }
@@ -639,6 +645,7 @@ gate qemu       full-only "QEMU two requests outstanding together"         qemu_
 gate qemu       full-only "QEMU a textual driver writes a real sector"     qemu_virtio_block_write
 gate qemu       full-only "QEMU a capability crosses in a message"      qemu_capability_transfer
 gate qemu       full-only "QEMU a client looks a service up"            qemu_name_service
+gate qemu       full-only "QEMU a client reads through a service"      qemu_block_service
 gate qemu       full-only "QEMU flags a process was holding"           qemu_direction_flag
 gate qemu       full-only "QEMU BootInfo identity mismatch self-test"  qemu_bootinfo_identity_mismatch
 gate qemu       full-only "Stage 1 ADR-0083 paired validation performance" qemu_paired_performance_conformance

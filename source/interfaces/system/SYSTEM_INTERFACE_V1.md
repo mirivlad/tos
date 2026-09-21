@@ -272,6 +272,7 @@ such a module whole by its header.
 | `endpoint_send_text` | `system.ipc.Endpoint` with `send` | `message: string` (≤ 256) | `i64` | 1 |
 | `endpoint_receive_call` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCall, i64>` | 2 |
 | `endpoint_call_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
+| `endpoint_call_for` | `system.ipc.Endpoint` with `call` | `length: u64` | `Result<u64, i64>` | 3 |
 | `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
 | `capability_release` | `system.ipc.Endpoint` with `none` | *(none)* | `i64` | 6 |
 | `endow_for_launch` | `system.ipc.Endpoint` with `none` | `plan: system.process.LaunchPlanBuilder`, `rights: u64`, `binding: string` (≤ 64) | `i64` | 22 |
@@ -472,8 +473,14 @@ authority (ADR-0067 §7).
 |---|---|
 | `reply` | `system.ipc.Reply` |
 | `carried` | `system.ipc.Endpoint` |
+| `length` | `u64` |
 
-Two facts from one receive, for the reason `CreatedProcess` is a record: the
+`endpoint_call_for` is `endpoint_call` producing the answer's length instead of
+discarding it: the nucleus already wakes a caller with `Answer::value(length)`,
+and until this row no operation named it, so a textual caller could learn that
+its call was answered and nothing about the answer.
+
+Three facts from one receive, for the reason `CreatedProcess` is a record: the
 nucleus writes both into the receiver's own transfer table before the receive
 returns — the reply in the last slot, always, and the delegated capability in
 the first — and a second receive to fetch the second fact would take the *next*
@@ -489,6 +496,11 @@ a handle is an index into a table the process cannot address
 (`CAPABILITY_V1` §7). A message that carried nothing leaves the slot zero, and
 a handle of all zeros names nothing in any table, so `carried` is then a
 capability that fails the same way.
+
+**`length` is the inline length the message carried** (`IPC_V1` §3, bounded at
+256). It is the only thing a receiver can be told without reading an argument
+region, so a protocol built above these primitives says what it has to say with
+it — and what it means is that protocol's business, not this contract's.
 
 ### `system.process.ChildEnding`
 
