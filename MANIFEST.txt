@@ -137,7 +137,7 @@ Architecture decision records
 - docs/adr/0091-the-transitive-import-envelope.md — ADR-0091: `resource imports` is a count of modules, and it is counted [**Accepted (Project Architect-approved, 2026-09-15)**]
 - docs/adr/0092-reset-authority.md — ADR-0092: Who may reset a PCI function, and what "reset" means [**Accepted (option R1a)** (Project Architect-approved, 2026-09-21)]
 - docs/adr/0093-block-device-publication-and-lifetime.md — ADR-0093: Publication and lifetime of `block.device.v1` [**Accepted (option P3)** (Project Architect-approved, 2026-09-21)]
-- docs/adr/0094-capability-transfer-from-canonical-text.md — ADR-0094: How a canonical textual module carries a capability in a message [**Proposed**]
+- docs/adr/0094-capability-transfer-from-canonical-text.md — ADR-0094: How a canonical textual module carries a capability in a message [**Resolved by existing semantics and a minimal textual extension**]
 
 Legal note: project policy is not jurisdiction-specific legal advice or a
 freedom-to-operate opinion.

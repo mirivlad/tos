@@ -35,6 +35,7 @@ those jobs is not visible from the repository, so this gate does not claim it
 from __future__ import annotations
 
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -76,6 +77,37 @@ def inventory(root: Path) -> dict[str, int]:
     return profiles
 
 
+def gates_have_functions(root: Path) -> list[str]:
+    """Every gate the inventory declares names a function the script defines.
+
+    **A declared gate whose function does not exist is invisible to everything
+    else here.** `--list` prints it, so the profile counts agree with CI and
+    the parity rule below holds; only running it would fail, with the shell
+    saying "not found" — and the qemu profile is `full-only`, so that can sit
+    in the tree for a while. It did: `qemu_capability_transfer` was declared in
+    one commit and defined in none, because an edit that added both was aborted
+    between the two halves.
+
+    The inventory prints a label rather than a function name, so this reads the
+    fourth field of each `gate` line out of the script itself, which is the same
+    single declaration `--list` reads.
+    """
+    text = (root / PREFLIGHT).read_text(encoding="utf-8")
+    defined = set(re.findall(r"^([a-z0-9_]+)\(\) *\{", text, re.MULTILINE))
+    defined |= set(re.findall(r"^([a-z0-9_]+)\(\) *\{.*\}$", text, re.MULTILINE))
+    missing = []
+    for line in text.splitlines():
+        if not line.startswith("gate "):
+            continue
+        function = line.split()[-1]
+        if function not in defined:
+            missing.append(
+                f"gate function '{function}' is declared in the inventory and "
+                "defined nowhere in the script"
+            )
+    return missing
+
+
 def profile_invoked(command: str) -> str | None:
     """The profile a step runs, or `None` when the step runs no profile."""
     words = command.split()
@@ -97,6 +129,8 @@ def main() -> int:
     args = parser.parse_args()
     root = args.root.resolve()
     failures: list[str] = []
+
+    failures.extend(gates_have_functions(root))
 
     profiles = inventory(root)
     invoked: dict[str, list[str]] = {}

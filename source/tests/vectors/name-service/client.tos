@@ -1,0 +1,120 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The client. It is the point of the whole slice: **it reaches a service it
+// was never given.**
+//
+// What it holds is `call` on the registry's lookup endpoint and two names for
+// an inbox of its own — one to receive on, one to hand over so it can be
+// answered. It holds no name for the service, no name for the registry's
+// publish endpoint, and nothing of the machine at all: no PCI function, no
+// device window, no interrupt source, no DMA region, no memory authority.
+//
+// Four steps, and each is a different claim:
+//
+//   1  look up, and call what came back            — the capability path works
+//   2  look up again, carrying its own inbox       — and that registers nothing
+//   3  call the service after the registry has     — a capability outlives the
+//      ended                                         service that handed it over
+//   4  look up once more                           — and that does not
+
+module system.client.consumer version 1.4 profile full;
+
+import capability system.ipc.Endpoint as registry;
+import capability system.ipc.Endpoint as inbox;
+import capability system.ipc.Endpoint as reply_to;
+
+resource [
+    fuel: 32768,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn endpoint_call_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [reply_to, registry];
+
+extern fn endpoint_receive_call(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCall, i64> uses [inbox];
+
+extern fn endpoint_call(
+    cap: system.ipc.Endpoint, length: u64
+) -> i64 uses [system.ipc.Endpoint];
+
+const OK: i64 = 0i64;
+const E_CANCELLED: i64 = -5i64;
+
+//   1  the first lookup was answered
+//   2  a capability arrived on the inbox
+//   4  calling it reached the service
+//   8  the second lookup was answered
+//  16  a capability arrived again
+//  32  calling that one reached the service too — so carrying its own inbox
+//      into `lookup` did not make the registry hand out the client's endpoint
+//  64  the first capability still works after the registry has ended
+// 128  and a lookup then does not: the liveness rule cancels it
+pub fn main() -> i64
+    uses [registry, inbox, reply_to, system.ipc.Endpoint]
+{
+    let mut found: i64 = 0i64;
+
+    // --- step 1 --------------------------------------------------------------
+    if (endpoint_call_carrying(reply_to, registry, 0u64) == OK) {
+        found = found + 1i64;
+    }
+    // **Everything else happens inside this arm**, because the capability the
+    // first lookup produced has to survive until step 3 and an `import
+    // capability` is a binding rather than a value this language can assign one
+    // to. The match arm is the scope that holds it.
+    match (endpoint_receive_call(inbox)) {
+        Ok(first) => {
+            found = found + 2i64;
+            if (endpoint_call(first.carried, 0u64) == OK) {
+                found = found + 4i64;
+            }
+
+            // --- step 2: the same question, carrying this client's own inbox -
+            if (endpoint_call_carrying(reply_to, registry, 0u64) == OK) {
+                found = found + 8i64;
+            }
+            match (endpoint_receive_call(inbox)) {
+                Ok(second) => {
+                    found = found + 16i64;
+                    // If what this client carried had been registered, this
+                    // would name its own inbox and the call would not reach the
+                    // service.
+                    if (endpoint_call(second.carried, 0u64) == OK) {
+                        found = found + 32i64;
+                    }
+                }
+                Err(refused) => { return refused - 2000i64; }
+            }
+
+            // --- step 3: the registry has ended; the capability has not ------
+            if (endpoint_call(first.carried, 0u64) == OK) {
+                found = found + 64i64;
+            }
+        }
+        Err(refused) => { return refused - 1000i64; }
+    }
+
+    // --- step 4: and asking again is a different matter ----------------------
+    // Nothing receives on the registry's lookup endpoint any more. The message
+    // is queued and this context waits for an answer that cannot come, so the
+    // liveness rule ends the wait — existing IPC semantics answering, not a
+    // case this slice invents.
+    if (endpoint_call_carrying(reply_to, registry, 0u64) == E_CANCELLED) {
+        found = found + 128i64;
+    }
+
+    return found;
+}

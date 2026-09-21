@@ -384,6 +384,40 @@ pub const ACCEPTED: &[Interface] = &[
                 parameters: &[],
                 result: "Result<system.ipc.ReceivedCall, i64>",
             },
+            // `endpoint_send`, carrying one capability the sender holds.
+            //
+            // **A reply cannot carry one**, which is what makes this row
+            // necessary rather than a convenience: `ipc::hand` copies the
+            // payload from the replier's argument region into the waiting
+            // caller's and does nothing with the transfer table, so an answer
+            // that must deliver a capability delivers it as a message to a
+            // channel the asker supplied. That is ordinary capability
+            // discipline — you hand over a way to be answered — and it keeps
+            // the nucleus untouched.
+            Operation {
+                name: "endpoint_send_carrying",
+                capabilities: &[
+                    Requirement::held("system.ipc.Endpoint"),
+                    Requirement::of("system.ipc.Endpoint", "send"),
+                ],
+                parameters: &[Parameter::fixed("u64")],
+                result: "i64",
+            },
+            // `CAPABILITY_V1` §4's release, declared on this interface as it is
+            // on four others.
+            //
+            // **`IPC_V1` §2 is why an endpoint needs it.** One process may hold
+            // `receive` on an endpoint, so a launcher cannot hand a child a
+            // `receive` it is still holding — `grant` refuses it. Endowing the
+            // plan and then letting go of its own name is how a creator gives
+            // away a receiving role, and the plan holds its own reference, so
+            // the entry survives the release (ADR-0077 §5).
+            Operation {
+                name: "capability_release",
+                capabilities: &[Requirement::held("system.ipc.Endpoint")],
+                parameters: &[],
+                result: "i64",
+            },
             // `endpoint_call`, carrying one capability the caller holds.
             //
             // **The delegated capability comes first**, which is ADR-0077 §3's

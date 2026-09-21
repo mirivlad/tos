@@ -43,6 +43,11 @@ test-supervision = []
 # will receive on, and a second endpoint it delegates *in the message* — the
 # one the server's use of it proves arrived.
 test-capability-transfer = []
+# ADR-0093 P3 performed: a textual name service, a publisher that registers its
+# endpoint with it, and a client that reaches that endpoint having been given
+# no name for it. The boot process is the launcher and nothing else — it holds
+# four endpoints only long enough to decide who receives on them, and lets go.
+test-name-service = []
 # ADR-0078: the boot process holds `create` and `terminate` over itself and the
 # root's remainder, which is everything a supervisor needs to scope a budget,
 # plan a child, create it, refine its authority and end it — every step after

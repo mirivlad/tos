@@ -1252,6 +1252,24 @@ const PERFORMED: &[Performed] = &[
         values: &[],
         result: Produced::ReceivedCall,
     },
+    // A send carrying one capability, for an answer that must deliver one:
+    // a reply copies payload bytes only.
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "endpoint_send_carrying",
+        operation: ENDPOINT_SEND,
+        capabilities: &[Placed::Transfer(0), Placed::Register(Reg::Rdi)],
+        values: &[Slot::Number(Reg::Rsi), Slot::Fixed(Reg::R10, 1)],
+        result: Produced::Status,
+    },
+    Performed {
+        interface: "system.ipc.Endpoint",
+        name: "capability_release",
+        operation: CAPABILITY_RELEASE,
+        capabilities: &[Placed::Register(Reg::Rdi)],
+        values: &[],
+        result: Produced::Status,
+    },
     // A call carrying one capability. The delegated one goes into transfer
     // slot 0 and the count register says one; `IPC_V1` §4 reserves the last
     // slot for the answer, so a call may carry three of its own and this
