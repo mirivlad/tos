@@ -300,6 +300,7 @@ such a module whole by its header.
 | `endpoint_receive_call` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCall, i64>` | 2 |
 | `endpoint_call_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
 | `endpoint_call_word` | `system.ipc.Endpoint` with `call` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
+| `endpoint_call_word_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `word: u64` | `i64` | 3 |
 | `endpoint_send_region` | `system.ipc.Endpoint` with `send`, then `system.memory.Region` with `none` | *(none)* | `i64` | 1 |
 | `endpoint_receive_region` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<Region<u8>, i64>` | 2 |
 | `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
@@ -353,6 +354,18 @@ not a protocol this contract can carry: the nucleus copies exactly that many
 bytes, the bound of §3 applies to it, and no value larger than 256 can be stated
 at all. These two rows give a number somewhere honest to travel and leave
 `length` meaning what §5 rows 1, 3 and 4 say it means.
+
+`endpoint_call_word_carrying` is `endpoint_call_carrying` with the request's own
+number in the payload. **Both placements already exist**: the delegated capability
+goes into transfer slot 0 as that row puts it, and the `u64` goes where
+`endpoint_call_word` puts one — into the payload, filling the length register
+itself, so a protocol cannot reach that register through this row either.
+
+It exists because **a reply cannot carry a region** any more than it can carry a
+capability: `ipc::hand` copies payload bytes and touches neither the transfer
+table nor the region area. So a service whose answer is a region answers on a
+channel the asker handed over, and the asker has to say *what it wants* and
+*where to answer* in one message.
 
 `endpoint_send_region` moves one **immutable ordinary region** through the
 message's region area, and `endpoint_receive_region` produces what arrived.

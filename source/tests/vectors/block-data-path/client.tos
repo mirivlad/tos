@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The client of a real block device, holding no part of the machine — and this
+// time it gets the bytes.
+//
+// What it holds is `call` on the registry's lookup endpoint and two names for an
+// inbox of its own. No PCI function, no mapped window, no interrupt source, no
+// DMA region, no memory authority — so it could not have made a region either,
+// and what it indexes can only have arrived in a message.
+//
+//   look up the service
+//     -> a capability arrives on the inbox
+//     -> call it, naming a sector and handing over a channel
+//     -> the sector's 512 bytes arrive on that channel, as a region
+//     -> read every one of them
+//
+// **This is `STAGE4_DATA_PATH_BOUNDARY.md` §1's boundary reached.** The bytes
+// cross IPC as an immutable `Region<u8>` (`IPC_V1` §5), mapped by the nucleus at
+// an address this module never learns: it indexes a capability and the host does
+// the arithmetic against the region's own extent.
+//
+// **Every byte is checked, against a value derived from the sector asked for.**
+// Sector `n` of the reference image holds 512 copies of `0xC0 + n`, so this module
+// computes the byte it expects rather than carrying a table of answers — and the
+// count it reports is how many agreed. One corrupted byte lowers it.
+
+module system.client.block version 1.5 profile full;
+
+import capability system.ipc.Endpoint as registry;
+import capability system.ipc.Endpoint as inbox;
+import capability system.ipc.Endpoint as reply_to;
+
+resource [
+    fuel: 262144,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn endpoint_call_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [reply_to, registry];
+
+extern fn endpoint_receive_call(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCall, i64> uses [inbox];
+
+// The request: the sector in the payload, and the channel to answer on in the
+// transfer slot. One message, because a reply can carry neither.
+extern fn endpoint_call_word_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    word: u64
+) -> i64 uses [reply_to, system.ipc.Endpoint];
+
+// And the bytes, as a region this process was handed.
+extern fn endpoint_receive_region(
+    cap: system.ipc.Endpoint
+) -> Result<Region<u8>, i64> uses [inbox];
+
+const OK: i64 = 0i64;
+// **A seeded sector, not sector 0.** Sector 0 of the reference image is
+// zero-filled, and zero is what untouched memory looks like: a proof about 512
+// bytes must not be satisfiable by memory nobody wrote. Sector 1 holds 512 copies
+// of 0xC1.
+const WANTED_SECTOR: u64 = 1u64;
+const SEED_BASE: u64 = 192u64;
+const SECTOR_BYTES: size = 512B;
+const SECTOR_COUNT: u64 = 512u64;
+
+// The byte the requested sector should hold, computed rather than looked up.
+fn seeded_byte(sector: u64) -> u8 {
+    match (to_u8((SEED_BASE + sector) % 256u64)) {
+        Ok(byte) => { return byte; }
+        Err(unconvertible) => { return 0u8; }
+    }
+}
+
+// How many of the sector's 512 bytes are that byte.
+//
+// **Counted here, in canonical text, and nowhere else.** The number this returns
+// is what the boot reports and what the gate reads; nothing on the host inspects
+// the region, and no checksum computed outside this module stands in for it.
+fn agreeing(borrow payload: Region<u8>, sector: u64) -> u64 {
+    let wanted: u8 = seeded_byte(sector);
+    let mut at: size = 0B;
+    let mut agreed: u64 = 0u64;
+    while (at < SECTOR_BYTES) {
+        if (payload[at] == wanted) {
+            agreed = agreed + 1u64;
+        }
+        at = at + 1B;
+    }
+    return agreed;
+}
+
+//  1  the lookup was answered
+//  2  a capability arrived on the inbox
+//  4  the request reached the service and the service answered
+//  8  a region arrived on the channel this client handed over
+// 16  and all 512 of its bytes are the ones the requested sector holds
+pub fn main() -> i64
+    uses [registry, inbox, reply_to, system.ipc.Endpoint, system.memory.Region]
+{
+    let mut found: i64 = 0i64;
+
+    if (endpoint_call_carrying(reply_to, registry, 0u64) == OK) {
+        found = found + 1i64;
+    }
+    match (endpoint_receive_call(inbox)) {
+        Ok(delivery) => {
+            found = found + 2i64;
+            // The request. The service answers on `reply_to` with the bytes and
+            // then replies to this call, so the reply returning means both
+            // happened — and the region is already on the inbox when it does.
+            if (endpoint_call_word_carrying(reply_to, delivery.carried, WANTED_SECTOR) != OK) {
+                return -1001i64;
+            }
+            found = found + 4i64;
+            match (endpoint_receive_region(inbox)) {
+                Ok(payload) => {
+                    found = found + 8i64;
+                    if (agreeing(borrow payload, WANTED_SECTOR) == SECTOR_COUNT) {
+                        found = found + 16i64;
+                    }
+                }
+                Err(refused) => { return refused - 2000i64; }
+            }
+        }
+        Err(refused) => { return refused - 3000i64; }
+    }
+
+    return found;
+}

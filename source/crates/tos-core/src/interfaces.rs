@@ -530,6 +530,26 @@ pub const ACCEPTED: &[Interface] = &[
             // the first capability is **the one being delegated** — so the
             // exact nominal type is retained at every call site and no erased
             // capability value exists anywhere in TOS Core.
+            // `endpoint_call_carrying` with the request's own number in the
+            // payload: one capability the caller delegates and one `u64` where
+            // `IPC_V1` §3 puts a payload.
+            //
+            // **Both placements already exist and neither is new.** A call
+            // reserves the last transfer slot for its answer, so it may carry
+            // three capabilities of its own and this carries one; the word goes
+            // where `endpoint_call_word` puts one. What it adds is that a request
+            // can say *what it wants* and *where to answer* in one message, which
+            // is what a service whose answer is a region needs — a reply cannot
+            // carry one, so the asker hands over a channel.
+            Operation {
+                name: "endpoint_call_word_carrying",
+                capabilities: &[
+                    Requirement::held("system.ipc.Endpoint"),
+                    Requirement::of("system.ipc.Endpoint", "call"),
+                ],
+                parameters: &[Parameter::fixed("u64")],
+                result: "i64",
+            },
             // A send that moves one **immutable ordinary region** through the
             // message's region area (ADR-0097, `IPC_V1` §3, §5, ADR-0058).
             //

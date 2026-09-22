@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `9b8a363a4c898a1d4b094116ede368ee842d4e746947ec93ff431a930635ad9a`\
+Source-manifest SHA-256: `22196c614a6fb22b876191788800cae0302becca8b925064b59448e0f5822933`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -160,17 +160,28 @@ originated in a real device read: the service's buffer was 0xA5 until the device
 wrote it, and a run with no DMA would have answered zero. The registry is an
 ordinary textual service, as ADR-0093 decided; the nucleus gained nothing.
 
-**What that slice does not prove, stated because it is easy to overstate.** The
-client does not read a sector. 512 bytes of block data do not cross IPC: one
-number computed from them does. The data path
-`docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1 describes — client memory
-through IPC into the service's DMA memory — is not reached, because a region
-cannot yet be transferred in a message from canonical text. The publication
-authority *is* the one `CAPABILITY_V1` §6 accepts, as ADR-0095 amended it on
-2026-09-23: a dedicated publication endpoint whose identity fixes what may be
+**And since 2026-09-23 the bytes themselves cross.** All 512 bytes of one sector
+reach that client as an ordinary immutable `Region<u8>`: it requests a sector and
+hands over a channel, the service performs the real VirtIO/DMA read, copies the
+bytes once out of device-visible memory — the copy ADR-0037 forces rather than one
+anybody chose — freezes the region and sends it through the message's region area,
+and the client indexes every byte. That is the data path
+`docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1 describes, in the read direction.
+The client holds no hardware authority and cannot even request the region
+interface, so what it reads can only have arrived in a message; the bytes are
+counted in canonical text, and one corrupted byte fails the gate.
+
+The publication authority *is* the one `CAPABILITY_V1` §6 accepts, as ADR-0095
+amended it: a dedicated publication endpoint whose identity fixes what may be
 published through it, with the registry holding `receive` and the authorised
-service holding `call`, so no interface name travels in the protocol and a
-process that cannot name that endpoint cannot publish.
+service holding `call`, so no interface name travels in the protocol and a process
+that cannot name that endpoint cannot publish.
+
+**What is still not proved**, stated because it is easy to overstate: one sector,
+one client, one service, and reading only. Writing through this path, durability
+beyond Stage 4D-5's read-back, more than one sector in flight, request framing and
+zero-copy are none of them designed — and ADR-0037 makes zero-copy unreachable by
+decision rather than by omission.
 
 TOS is not yet a user shell, application environment, or desktop operating
 system. What it does with a disk is single sector reads and one write, reached
@@ -446,11 +457,11 @@ registry it looked it up through (`qemu_name_service`, ADR-0093 P3), over a
 capability that crossed in a message (`qemu_capability_transfer`, ADR-0094). The
 device side of that slice is 4D-2's and re-proves 4D-2's facts and no more.
 
-It does **not** prove that block *data* crosses IPC — 512 bytes never do, one
-number does — nor queue multiplexing, scheduling, filesystem integration, a
-generic driver subsystem, or restart and republication (ADR-0093 case C). None of
-those is designed. The next slice is a region crossing IPC from canonical text,
-which is what turns "the client got a number" into "the client got the bytes".
+It does **not** prove queue multiplexing, scheduling, filesystem integration, a
+generic driver subsystem, restart and republication (ADR-0093 case C), or writing
+through the client/service path. None of those is designed. What remains before
+Stage 4 can be considered for closure is case C, crash and reset lifecycle
+evidence, the Stage 4 performance report, and a closure review.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a
@@ -3600,6 +3611,7 @@ such a module whole by its header.
 | `endpoint_receive_call` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<system.ipc.ReceivedCall, i64>` | 2 |
 | `endpoint_call_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `length: u64` | `i64` | 3 |
 | `endpoint_call_word` | `system.ipc.Endpoint` with `call` | `word: u64` | `Result<system.ipc.Answer, i64>` | 3 |
+| `endpoint_call_word_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `call` | `word: u64` | `i64` | 3 |
 | `endpoint_send_region` | `system.ipc.Endpoint` with `send`, then `system.memory.Region` with `none` | *(none)* | `i64` | 1 |
 | `endpoint_receive_region` | `system.ipc.Endpoint` with `receive` | *(none)* | `Result<Region<u8>, i64>` | 2 |
 | `endpoint_send_carrying` | `system.ipc.Endpoint` with `none`, then `system.ipc.Endpoint` with `send` | `length: u64` | `i64` | 1 |
@@ -3653,6 +3665,18 @@ not a protocol this contract can carry: the nucleus copies exactly that many
 bytes, the bound of §3 applies to it, and no value larger than 256 can be stated
 at all. These two rows give a number somewhere honest to travel and leave
 `length` meaning what §5 rows 1, 3 and 4 say it means.
+
+`endpoint_call_word_carrying` is `endpoint_call_carrying` with the request's own
+number in the payload. **Both placements already exist**: the delegated capability
+goes into transfer slot 0 as that row puts it, and the `u64` goes where
+`endpoint_call_word` puts one — into the payload, filling the length register
+itself, so a protocol cannot reach that register through this row either.
+
+It exists because **a reply cannot carry a region** any more than it can carry a
+capability: `ipc::hand` copies payload bytes and touches neither the transfer
+table nor the region area. So a service whose answer is a region answers on a
+channel the asker handed over, and the asker has to say *what it wants* and
+*where to answer* in one message.
 
 `endpoint_send_region` moves one **immutable ordinary region** through the
 message's region area, and `endpoint_receive_region` produces what arrived.

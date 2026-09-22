@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// The interface registry, as ADR-0093 P3 decided it: an ordinary textual
+// service. The nucleus holds no interface namespace, the supervisor holds no
+// registry, and the rules below are canonical text a reader can check.
+//
+// **Two endpoints separate registering from asking.** A process that can reach
+// `publish` may register; one that can only reach `lookup` cannot, and not
+// because this module checks a list — because it holds no name for the other
+// endpoint.
+//
+// **That is `CAPABILITY_V1` §6 as ADR-0095 amended it.** §6 makes the right to
+// publish a capability naming a **dedicated publication object** whose identity
+// fixes what may be published through it — so the endpoint this module receives
+// on *is* the authority for `block.device.v1`, and possession of a `call` name
+// for it is what permits publication. No interface name travels in the protocol,
+// because this endpoint represents exactly one publication class.
+//
+// It said the opposite until 2026-09-23, when §6 still required the authority's
+// nominal type to be the published interface. That requirement asked for an
+// enforcement no layer of this system performs — a launch plan records object,
+// rights and binding, and the startup check compares object *kinds* — and
+// ADR-0095 §1 records why it was narrowed instead of implemented.
+//
+// **An answer cannot carry a capability**, so the answer to a lookup is not
+// the delivery. `ipc::hand` copies payload bytes from the replier's region
+// into the waiting caller's and does not touch the transfer table. So a lookup
+// hands over a channel to be answered on, this service sends the registered
+// capability to that channel, and only then replies. Ordinary capability
+// discipline, and the nucleus is untouched.
+//
+// **What arrives on `lookup` is never registered.** It is the asker's return
+// channel and nothing else. That this is what keeps a second lookup answering
+// with the publisher's endpoint after a client has carried its own is
+// `name-service.sh`'s claim; here there is one lookup.
+
+module system.registry.nameservice version 1.5 profile full;
+
+import capability system.ipc.Endpoint as publish;
+import capability system.ipc.Endpoint as lookup;
+
+resource [
+    fuel: 16384,
+    stack: 8KiB,
+    allocation: 2KiB,
+    tasks: 1,
+    workers: 1,
+    sync: 0,
+    shared: 0B,
+    cleanup: 0,
+    recursion: 8,
+    imports: 4
+]
+
+extern fn endpoint_receive_call(
+    cap: system.ipc.Endpoint
+) -> Result<system.ipc.ReceivedCall, i64> uses [system.ipc.Endpoint];
+
+extern fn endpoint_send_carrying(
+    held: system.ipc.Endpoint,
+    on: system.ipc.Endpoint,
+    length: u64
+) -> i64 uses [system.ipc.Endpoint, system.ipc.Endpoint];
+
+extern fn endpoint_reply(
+    cap: system.ipc.Reply, length: u64
+) -> i64 uses [system.ipc.Reply];
+
+const OK: i64 = 0i64;
+
+// Serves one registration and one lookup, and ends.
+//
+//  1  the registration arrived, carrying a capability
+//  2  the lookup was answered with it
+//
+// **One registration and one lookup.** That a second lookup still answers with
+// the publisher's endpoint — that what a client carries into `lookup` registers
+// nothing — is `name-service.sh`'s claim and is proved there.
+pub fn main() -> i64
+    uses [publish, lookup, system.ipc.Endpoint, system.ipc.Reply]
+{
+    let mut found: i64 = 0i64;
+
+    // --- registration --------------------------------------------------------
+    match (endpoint_receive_call(publish)) {
+        Ok(registration) => {
+            found = found + 1i64;
+            let acknowledged: i64 = endpoint_reply(registration.reply, 0u64);
+            if (acknowledged != OK) { return acknowledged - 1000i64; }
+
+            // --- the lookup ---------------------------------------------------
+            match (endpoint_receive_call(lookup)) {
+                Ok(first) => {
+                    // `first.carried` is the asker's return channel. The
+                    // registered capability goes to it; the channel itself is
+                    // not remembered.
+                    if (endpoint_send_carrying(registration.carried, first.carried, 0u64) == OK) {
+                        found = found + 2i64;
+                    }
+                    let answered: i64 = endpoint_reply(first.reply, 0u64);
+                    if (answered != OK) { return answered - 2000i64; }
+                }
+                Err(refused) => { return refused - 3000i64; }
+            }
+
+        }
+        Err(refused) => { return refused - 6000i64; }
+    }
+
+    return found;
+}
