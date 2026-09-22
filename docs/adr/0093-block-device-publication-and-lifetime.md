@@ -396,3 +396,39 @@ does not arise.
    durability.
 5. Under P2: the nucleus still contains no device-protocol vocabulary, and the
    namespace it gained is bounded and stated.
+
+## 11. Implementation divergence found 2026-09-23, and what it leaves open
+
+**Dated amendment. Nothing above is changed and nothing above is withdrawn.**
+§3a.1, §3a.2 and §10.1 are what this decision accepted; this section records
+that the implementation of them is incomplete, so that the difference is not
+discovered a third time.
+
+`name-service.sh` (2026-09-21) and `block-service.sh` (2026-09-21) build a P3
+registry that registers whatever arrives on the endpoint it receives on. The
+publisher holds an ordinary `system.ipc.Endpoint`, not an authority whose
+nominal type is the interface; no interface name travels in the protocol; and
+nothing in either boot names `block.device.v1`. So §3a.2's "presenting its
+publication capability" is not what happens, and §10.1's negative evidence — a
+service that was not granted the publication capability cannot publish — is
+**not proved and is not claimed**. The gates and the fixtures now say so in as
+many words; an earlier version of them claimed the opposite.
+
+**The implementation is the suspect, not this ADR.** Three things stand in the
+way of implementing what was accepted, and each is a decision rather than a
+task: no accepted schema declares a per-interface publication path and
+`SYSTEM_INTERFACE_V1` §2 makes such a path a new Tier 2 contract; which object
+kind such a capability names is undecided, with `OBJECT_INTERFACE = 4` reserved
+by §2 and left empty by P3; and a textual registry cannot check the kind of what
+a message handed it (ADR-0094 §11). The gap, the four options and what each one
+touches are in `docs/research/PUBLICATION_AUTHORITY_CONFLICT.md`, which accepts
+nothing.
+
+- Open question: ADR-0093-Q1 — the publication authority of §3a.1–§3a.2,
+  `CAPABILITY_V1` §6 and ADR-0051 §2 is not implemented: what a publisher
+  presents is an ordinary endpoint capability rather than one whose nominal type
+  is the published interface, so §10.1's negative conformance evidence has no
+  subject and is recorded BLOCKED. Options Q1-A…Q1-D are in
+  `docs/research/PUBLICATION_AUTHORITY_CONFLICT.md` §5 and none is chosen. Until
+  it is answered, no document may describe reaching a generic `publish` endpoint
+  as `CAPABILITY_V1` §6's publication authority.

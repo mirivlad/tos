@@ -94,9 +94,12 @@ specification() { python3 "$ROOT/tools/build-specification.py" --check; }
 specification_manifest() {
     python3 "$ROOT/scripts/check-specification-manifest.py" --root "$ROOT"
 }
-# The journal's one present-tense list of open decisions against the ADR files
-# themselves. PROGRESS.md is chronological, so a summary sentence in it is the
-# thing that goes stale; this is why that list is checked rather than trusted.
+# The journal's two present-tense lists against the ADR files themselves: which
+# ADRs are not over, and which questions an ADR raised and did not answer.
+# PROGRESS.md is chronological, so a summary sentence in it is the thing that
+# goes stale; this is why both lists are checked rather than trusted. The second
+# exists because a question outlives its decision — an ADR can close on the day
+# it was raised and leave one standing.
 open_decisions() {
     bash "$ROOT/scripts/check-open-decisions.sh"
 }
@@ -112,6 +115,13 @@ interface_contract_authority() {
 }
 interface_schema() {
     bash "$ROOT/scripts/tests/check-interface-schema.sh"
+}
+# What the Stage 4 client/service slice may be said to prove, against what an
+# accepted schema row can actually carry. A scalar crossing IPC is not block data
+# crossing IPC, and while no row places a region in a message, no document may say
+# otherwise.
+stage4_data_path_claims() {
+    bash "$ROOT/scripts/tests/check-stage4-data-path-claims.sh"
 }
 abi_operations() {
     bash "$ROOT/scripts/tests/check-abi-operations.sh"
@@ -546,10 +556,11 @@ gate_parity() {
 
 gate docs       default   "generated specification"                    specification
 gate docs       default   "specification source manifest"              specification_manifest
-gate docs       default   "open decisions match the ADR files"         open_decisions
+gate docs       default   "open decisions and questions match the ADRs" open_decisions
 gate docs       default   "release manifest and SHA256SUMS"            release_manifest
 gate docs       default   "interface-contract authority"               interface_contract_authority
 gate docs       default   "accepted interface schema"                  interface_schema
+gate docs       default   "Stage 4 data-path claims"                   stage4_data_path_claims
 gate docs       default   "VirtIO device status is additive"           device_status_additive
 gate docs       default   "system ABI operation numbers"               abi_operations
 gate docs       default   "launcher endowment constants"               endowment_constants

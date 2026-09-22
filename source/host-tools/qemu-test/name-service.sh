@@ -20,12 +20,24 @@
 # hands over a channel to be answered on and the registry sends the registered
 # capability to it. Ordinary capability discipline; ring 0 unchanged.
 #
-# **Two endpoints are the publication authority.** A process that can reach
-# `publish` may register; one that can only reach `lookup` cannot, because it
-# holds no name for the other endpoint — `CAPABILITY_V1` §6 with nothing added.
-# The client proves the other half by carrying its own inbox into `lookup`: the
-# registry uses it to answer and registers nothing, so the second lookup still
-# hands out the publisher's endpoint and the publisher serves that call too.
+# **Two endpoints separate registering from asking, and that is all they do.**
+# A process that can reach `publish` may register; one that can only reach
+# `lookup` cannot, because it holds no name for the other endpoint. The client
+# proves that half itself by carrying its own inbox into `lookup`: the registry
+# uses it to answer and registers nothing, so the second lookup still hands out
+# the publisher's endpoint and the publisher serves that call too.
+#
+# **This is NOT `CAPABILITY_V1` §6's publication authority, and an earlier
+# version of this file said it was.** §6 and ADR-0051 §2 make the right to
+# publish a capability **whose nominal type is the interface being published**,
+# so that a launcher reading a module's `capability_imports` sees which
+# interface it intends to publish and grants or denies that. What this boot has
+# is an ordinary `system.ipc.Endpoint` under the binding name `publish`: no
+# interface name travels in the protocol, the registry holds one unnamed entry,
+# and nothing anywhere names `block.device.v1`. The negative evidence
+# ADR-0093 §10.1 requires — a service that was not granted the publication
+# capability cannot register that interface — is therefore **not** provable in
+# this boot, and no assertion below claims it is. Tracked as ADR-0093-Q1.
 #
 # **Case B is in the same boot.** The registry serves one registration and two
 # lookups and ends. The client then calls the service again through the
@@ -176,6 +188,10 @@ echo "  to a channel the asker handed over; the nucleus was not changed"
 echo "  what the client carried into \`lookup\` registered nothing: the second"
 echo "  lookup handed out the publisher's endpoint again and the publisher"
 echo "  served that call too"
+echo "  NOT claimed: publication authority in the sense of CAPABILITY_V1 §6."
+echo "  The capability presented is an ordinary endpoint, not one whose nominal"
+echo "  type is the published interface, and no interface name travels here —"
+echo "  so ADR-0093 §10.1's negative is not proved in this boot: ADR-0093-Q1"
 echo "  case B: the registry ended after two lookups; the capability the client"
 echo "  already held went on working, and a further lookup was cancelled -5 by"
 echo "  the liveness rule — existing IPC semantics, not a new case"

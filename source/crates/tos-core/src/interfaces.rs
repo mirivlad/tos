@@ -292,13 +292,45 @@ pub const RECORDS: &[Record] = &[
                 name: "carried",
                 ty: "system.ipc.Endpoint",
             },
-            // What the message said, in the only channel `IPC_V1` §3 gives a
-            // receiver without an argument region it can read: the inline
-            // length, bounded at 256. A protocol above these primitives is
-            // free to mean something by it, and the block service below means
-            // a sector number by a request's and a byte count by an answer's.
+            // How many payload bytes arrived, bounded at 256 by `IPC_V1` §3.
+            // **A length and nothing else**: a receiver reads it to decide
+            // whether the bytes its protocol expects are there, and a protocol
+            // that meant its own scalar by it would be describing a message
+            // whose declared size is not its size.
             Field {
                 name: "length",
+                ty: "u64",
+            },
+            // And the eight bytes the payload begins with, as a little-endian
+            // `u64`. Meaningless unless `length` is at least eight — which is
+            // the receiver's own check, in canonical text, because
+            // `IPC_V1` §1 puts request/reply above these primitives and not in
+            // them.
+            Field {
+                name: "word",
+                ty: "u64",
+            },
+        ],
+    },
+    // What a call was answered with: how long the answer was, and the eight
+    // bytes it begins with.
+    //
+    // **Two facts, and the first is why the second can exist honestly.** The
+    // nucleus wakes a caller with the answer's inline length, so a row that
+    // produced only that number invited a service to encode its result *as* the
+    // length — which is a message whose declared size is not its size. This
+    // record gives the caller the length as a length and the answer as a
+    // payload, and leaves the check that the two agree where `IPC_V1` §1 puts
+    // a protocol: in the text above the primitive.
+    Record {
+        path: "system.ipc.Answer",
+        fields: &[
+            Field {
+                name: "length",
+                ty: "u64",
+            },
+            Field {
+                name: "word",
                 ty: "u64",
             },
         ],
@@ -451,16 +483,19 @@ pub const ACCEPTED: &[Interface] = &[
                 parameters: &[Parameter::fixed("u64")],
                 result: "i64",
             },
-            // The same selector, producing the answer's length instead of
-            // discarding it. The nucleus already wakes a caller with
-            // `Answer::value(length)`; until now no row named it, so a textual
-            // caller could learn that its call was answered and nothing about
-            // the answer.
+            // The same selector, with the caller's `u64` in the payload where
+            // `IPC_V1` §3 puts a payload, and the answer read back out of the
+            // same place.
+            //
+            // **The declared `u64` is the message, not its length.** The length
+            // register is filled from the eight bytes written and is not
+            // reachable from a module, so a protocol above this row cannot put
+            // its own scalar there — which is the defect this row replaced.
             Operation {
-                name: "endpoint_call_for",
+                name: "endpoint_call_word",
                 capabilities: &[Requirement::of("system.ipc.Endpoint", "call")],
                 parameters: &[Parameter::fixed("u64")],
-                result: "Result<u64, i64>",
+                result: "Result<system.ipc.Answer, i64>",
             },
             // The same ABI operation, with the payload declared as the value it
             // is rather than as a length over bytes the module cannot write.
@@ -502,6 +537,16 @@ pub const ACCEPTED: &[Interface] = &[
         operations: &[
             Operation {
                 name: "endpoint_reply",
+                capabilities: &[Requirement::of("system.ipc.Reply", "reply")],
+                parameters: &[Parameter::fixed("u64")],
+                result: "i64",
+            },
+            // The same selector, answering with a `u64` in the payload rather
+            // than with a length alone. `endpoint_call_word`'s mirror, and the
+            // reason a service has nothing to gain by making its result the
+            // length of an answer it did not send.
+            Operation {
+                name: "endpoint_reply_word",
                 capabilities: &[Requirement::of("system.ipc.Reply", "reply")],
                 parameters: &[Parameter::fixed("u64")],
                 result: "i64",
