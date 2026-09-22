@@ -550,6 +550,17 @@ selftest_spdx_json() { sh "$ROOT/scripts/tests/check-spdx-json.sh"; }
 selftest_gate_parity() {
     bash "$ROOT/scripts/tests/check-gate-parity.sh"
 }
+# The two enforcement gates added in the 2026-09-23 corrective round, each against
+# the truth table it is supposed to have. Both were wrong on a state that never
+# occurs today and would have occurred later: one lifted its bound on any single
+# condition where its own comment claimed it needed all of them, and the other
+# could not express "nothing is open" at all.
+selftest_open_decisions() {
+    bash "$ROOT/scripts/tests/check-open-decisions.sh"
+}
+selftest_stage4_data_path_claims() {
+    bash "$ROOT/scripts/tests/check-stage4-data-path-claims-selftest.sh"
+}
 selftest_measurement_observer() {
     python3 "$ROOT/source/host-tools/qemu-test/test-measure-channel.py"
     python3 "$ROOT/source/host-tools/qemu-test/test-qualify-observer.py"
@@ -609,6 +620,8 @@ gate selftest   default   "SPDX assembly classification self-test"     selftest_
 gate selftest   default   "SPDX asset classification self-test"        selftest_spdx_assets
 gate selftest   default   "SPDX JSON classification self-test"         selftest_spdx_json
 gate selftest   default   "gate parity self-test"                      selftest_gate_parity
+gate selftest   default   "open-decision gate self-test"               selftest_open_decisions
+gate selftest   default   "Stage 4 data-path claim gate self-test"     selftest_stage4_data_path_claims
 gate selftest   default   "measurement observer self-test"             selftest_measurement_observer
 gate selftest   default   "run-tos launcher self-test"                 run_tos_launcher
 gate selftest   default   "interactive QEMU mode self-test"            qemu_interactive_mode

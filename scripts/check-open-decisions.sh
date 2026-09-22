@@ -29,19 +29,34 @@
 #
 # An ADR counts as open when its status line contains neither "Accepted" nor
 # "Resolved". **Two ways for a decision to be over, and they are not the same
-# thing.** Most end by being accepted; ADR-0094 ended by the implementation
-# showing there was nothing to decide — the nucleus needed no change and no
-# option of its own §6 was taken — and calling that "Accepted" would claim a
-# decision nobody made.
+# thing.** Most end by being accepted; ADR-0094 ended by being resolved — the
+# nucleus needed no change, and the Project Architect directed the closure rather
+# than ruling on a submission — and calling that "Accepted" would claim an
+# approval nobody gave. Its §11b now names the outcome as §6.1's option A,
+# reached by implementing rather than by weighing; an earlier version of this
+# comment said no option of §6 was taken, which contradicted §11 and is corrected
+# here.
 # Bold markers, parenthetical option names and trailing prose are all ignored,
 # which is why the test is a substring and not an equality: statuses in this
 # tree are written as `**Accepted**`, `**Accepted (option R1a)** (Project
 # Architect-approved, 2026-09-21)`, `**Accepted**, amended 2026-09-15 — see §1a`
 # `**Proposed** (awaiting Project Architect decision)`, and
 # `**Resolved by existing semantics and a minimal textual extension**`.
+#
+#   bash scripts/check-open-decisions.sh [--root DIR]
+#
+# `--root` exists for `scripts/tests/check-open-decisions.sh`, which builds
+# miniature journals to prove the three fence states and the zero state of each
+# list. Nothing else passes it.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+while [ "$#" -gt 0 ]; do
+    case $1 in
+        --root) ROOT="$(cd "$2" && pwd)"; shift 2 ;;
+        *) echo "unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
 
 fail() {
     echo "check-open-decisions: FAIL: $*" >&2
@@ -59,12 +74,24 @@ actual="$(
     done | sort
 )"
 
-claimed="$(
-    awk '/^```open-decisions$/{inside=1; next} /^```$/{inside=0} inside' \
-        "$ROOT/PROGRESS.md" | sed '/^[[:space:]]*$/d' | sort
-)"
+# **A fence that is there and empty is not a fence that is missing**, and the
+# first version of this gate could not tell them apart: it required the extracted
+# text to be non-empty, so "every ADR is over" — the state this project is trying
+# to reach — was unrepresentable. Presence is read from the fence header and
+# contents are read separately, so the three states are three states.
+fence_present() {
+    grep -qxF "\`\`\`$1" "$ROOT/PROGRESS.md"
+}
 
-[ -n "$claimed" ] || fail "PROGRESS.md has no \`\`\`open-decisions fence"
+contents_of() {
+    awk -v opened="\`\`\`$1" \
+        '$0 == opened {inside=1; next} /^```$/{inside=0} inside' \
+        "$ROOT/PROGRESS.md" | sed '/^[[:space:]]*$/d' | sort
+}
+
+fence_present open-decisions ||
+    fail "PROGRESS.md has no \`\`\`open-decisions fence"
+claimed="$(contents_of open-decisions)"
 
 if [ "$actual" != "$claimed" ]; then
     echo "check-open-decisions: the journal's list and the ADR files disagree" >&2
@@ -88,8 +115,12 @@ fi
 #
 # The id is `ADR-NNNN-QN` and its ADR must exist, so a question cannot be
 # orphaned by a file rename or invented for an ADR nobody wrote.
+# **`|| true` because no match is a result.** `grep` exits 1 when nothing matches,
+# and under `set -e` that ended the gate the moment every question was answered —
+# the zero state again, one layer below the fence. Found by the self-test beside
+# this file rather than by the day it would have happened.
 questions="$(
-    grep -h '^- Open question: ' "$ROOT"/docs/adr/*.md |
+    { grep -h '^- Open question: ' "$ROOT"/docs/adr/*.md || true; } |
         sed 's/^- Open question: \([A-Za-z0-9-]*\).*$/\1/' | sort -u
 )"
 
@@ -104,12 +135,9 @@ for id in $questions; do
         fail "open question $id names no ADR file in docs/adr/"
 done
 
-asked="$(
-    awk '/^```open-questions$/{inside=1; next} /^```$/{inside=0} inside' \
-        "$ROOT/PROGRESS.md" | sed '/^[[:space:]]*$/d' | sort
-)"
-
-[ -n "$asked" ] || fail "PROGRESS.md has no \`\`\`open-questions fence"
+fence_present open-questions ||
+    fail "PROGRESS.md has no \`\`\`open-questions fence"
+asked="$(contents_of open-questions)"
 
 if [ "$questions" != "$asked" ]; then
     echo "check-open-decisions: the journal's questions and the ADR files disagree" >&2
@@ -120,6 +148,9 @@ if [ "$questions" != "$asked" ]; then
     fail "update the \`\`\`open-questions fence, or the ADR whose question was answered"
 fi
 
-echo "check-open-decisions: OK ($(echo "$actual" | wc -l | tr -d ' ') open," \
-     "$(echo "$questions" | grep -c .) unanswered question(s)," \
+# **Counted with `grep -c .`, not `wc -l`.** An empty list is one empty line to
+# `wc`, so the state this project is working towards would have been reported as
+# "1 open" — a gate whose success message contradicts its own finding.
+echo "check-open-decisions: OK ($(printf '%s\n' "$actual" | grep -c .) open," \
+     "$(printf '%s\n' "$questions" | grep -c .) unanswered question(s)," \
      "$(ls "$ROOT"/docs/adr/*.md | wc -l | tr -d ' ') ADR(s) read)"
