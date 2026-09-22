@@ -49,7 +49,14 @@ pub const LANGUAGE_VERSION: &str = "1.0";
 /// resolves to an interface path, which is what `Signature.effects` has always
 /// carried — so one schema represents both minors, and an artifact records
 /// which of them its module declared.
-pub const LANGUAGE_VERSIONS: &[&str] = &["1.0", "1.1", "1.2", "1.3", "1.4"];
+///
+/// **1.5 is here for the same reason** (ADR-0097). `RegionFamily` admits
+/// `TypeDef::Region(_)` and `TypeDef::RegionMut(_)` at a capability position, and
+/// both type constructors have been in this schema since V1: what changed is
+/// which positions they may occupy, which is an acceptance rule of the language
+/// and not a shape in the artifact. No `tos-ir/v1` field is added, removed or
+/// re-meant, so one schema still represents every minor.
+pub const LANGUAGE_VERSIONS: &[&str] = &["1.0", "1.1", "1.2", "1.3", "1.4", "1.5"];
 
 /// The Unicode baseline docs/43 section 2 fixes for V1.
 pub const UNICODE_BASELINE: &str = "UCD-17.0.0/UAX15-r57/NFC";

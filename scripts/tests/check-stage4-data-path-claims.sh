@@ -133,9 +133,19 @@ done
 
 # --- condition 1: does an accepted schema row carry an ordinary Region<T>? ------
 #
-# Scoped to the IPC interfaces, because a region parameter on some other
-# interface is not a message payload. `Region<mut ...>` and every `DmaRegion`
-# spelling are excluded above and are excluded here.
+# **An IPC row with an ordinary-region capability position**, which is the shape
+# the accepted surface actually took: `endpoint_send_region` requires
+# `system.ipc.Endpoint` with `send` and then `system.memory.Region` held, and it is
+# the second requirement that makes it a region carrier. An earlier version of this
+# detector looked for a `Parameter::fixed("Region<...")` value parameter, which
+# ADR-0097 §2b showed was *possible* and §3 did not choose — so it read zero
+# against a schema that carries the thing.
+#
+# **The family is checked, not the path spelling.** What decides that a position
+# takes an ordinary region is the interface's representation, so the detector reads
+# `RegionFamily` out of the frontend's own table and then looks for a `system.ipc.*`
+# operation requiring an interface of that family. A DMA region cannot satisfy it:
+# `DmaRegionFamily` is a different member and §4.3 rule 1 forbids sharing one.
 schema_region_payload=$(python3 - "$TABLE" <<'PY'
 import pathlib
 import re
@@ -144,31 +154,31 @@ import sys
 text = pathlib.Path(sys.argv[1]).read_text()
 start = text.index("pub const ACCEPTED")
 end = text.index("\n];", start)
+body = text[start:end]
+
+# Which interfaces the frontend's table gives the ordinary-region family. Read
+# rather than assumed, so a renamed member is a zero here and not a false pass.
+ordinary = set()
 interface = None
-found = 0
-for line in text[start:end].splitlines():
+for line in body.splitlines():
     stripped = line.strip()
-    path = re.match(r'path: "([a-zA-Z.]+)",', stripped)
+    path = re.match(r'path: "([\w.]+)",', stripped)
     if path:
         interface = path.group(1)
+    if stripped == "representation: Representation::RegionFamily," and interface:
+        ordinary.add(interface)
+
+# And which `system.ipc.*` operations require one. The requirement may be split
+# across lines by rustfmt, so the block is flattened first.
+flat = re.sub(r"\s+", " ", body)
+found = 0
+for block in re.split(r'path: "', flat)[1:]:
+    name = block.split('"', 1)[0]
+    if not name.startswith("system.ipc."):
         continue
-    if not (interface or "").startswith("system.ipc."):
-        continue
-    # A *parameter*, because the boundary needs the client to send one. A region
-    # an operation produced is how one comes into existence (`docs/42` §2) and
-    # says nothing about whether it can travel.
-    if "Parameter::" not in stripped:
-        continue
-    # The canonical spellings `docs/40` §3 fixes. `DmaRegion<` is rejected by the
-    # word boundary, and `mut` inside the type argument is rejected outright.
-    for parameter in re.findall(r'"([^"]*)"', stripped):
-        if not re.search(r'(^|[^A-Za-z])Region<', parameter):
-            continue
-        if "DmaRegion<" in parameter:
-            continue
-        if re.search(r'Region<\s*mut\b', parameter):
-            continue
-        found += 1
+    for required in re.findall(r'Requirement::(?:of|held)\( ?"([\w.]+)"', block):
+        if required in ordinary:
+            found += 1
 print(found)
 PY
 )

@@ -42,6 +42,18 @@ pub enum Representation {
     AsInterface,
     /// `TypeDef::DmaRegion(_)` or `TypeDef::DmaRegionMut(_)`, any element type.
     DmaRegionFamily,
+    /// `TypeDef::Region(_)` or `TypeDef::RegionMut(_)`, any element type
+    /// (ADR-0097 §8a).
+    ///
+    /// **The family recognises the generic region type family; the schema names
+    /// one element type.** Membership here is a fact about which TOS Core values
+    /// may occupy a capability position of `system.memory.Region`, and it is
+    /// over any element type exactly as `DmaRegionFamily` is. Which regions any
+    /// *operation* accepts or produces is a different question, answered by that
+    /// operation's own exact parameter and result spellings — and every accepted
+    /// row names `u8` (ADR-0097 §8b). That is not schema polymorphism and this
+    /// is not where it would be introduced.
+    RegionFamily,
 }
 
 /// One interface whose representation is not the default, as this crate knows
@@ -55,15 +67,22 @@ pub struct Represented {
 
 /// Every interface whose representation is **not** the default.
 ///
-/// One row, and the shape of the table is the cardinality rule: a family
-/// appears at most once, so `interface_of` below is a function rather than a
-/// search that could find two answers. `SYSTEM_INTERFACE_V1` §4.3 rule 1 is
-/// what makes that safe to rely on, and it is why deriving an interface from an
-/// operand's type is possible at all.
-pub const REPRESENTED: &[Represented] = &[Represented {
-    interface: "platform.dma.Region",
-    representation: Representation::DmaRegionFamily,
-}];
+/// The shape of the table is the cardinality rule: a family appears at most once,
+/// so `interface_of` below is a function rather than a search that could find two
+/// answers. `SYSTEM_INTERFACE_V1` §4.3 rule 1 is what makes that safe to rely on,
+/// and it is why deriving an interface from an operand's type is possible at all.
+/// The unit test below proves it over this table rather than trusting that the
+/// table is short.
+pub const REPRESENTED: &[Represented] = &[
+    Represented {
+        interface: "platform.dma.Region",
+        representation: Representation::DmaRegionFamily,
+    },
+    Represented {
+        interface: "system.memory.Region",
+        representation: Representation::RegionFamily,
+    },
+];
 
 /// How a capability of this interface is represented.
 ///
@@ -80,9 +99,10 @@ pub fn representation_of(interface: &str) -> Representation {
 /// representation (ADR-0085 §4a).
 ///
 /// An import is typed `TypeDef::Capability(interface)`. `AsInterface` is
-/// importable because an import is exactly that type; `DmaRegionFamily` is not,
-/// because no import can be. Derived rather than declared, so there is no
-/// second flag to keep in step.
+/// importable because an import is exactly that type; neither region family is,
+/// because no import can be — there is nowhere in an `import capability`
+/// declaration for an element type or a mutability to come from. Derived rather
+/// than declared, so there is no second flag to keep in step.
 pub fn startup_importable(representation: Representation) -> bool {
     matches!(representation, Representation::AsInterface)
 }
@@ -98,6 +118,7 @@ pub fn startup_importable(representation: Representation) -> bool {
 pub fn interface_of(ty: &TypeDef) -> Option<&'static str> {
     let family = match ty {
         TypeDef::DmaRegion(_) | TypeDef::DmaRegionMut(_) => Representation::DmaRegionFamily,
+        TypeDef::Region(_) | TypeDef::RegionMut(_) => Representation::RegionFamily,
         _ => return None,
     };
     REPRESENTED
@@ -152,6 +173,10 @@ mod tests {
             representation_of("platform.dma.Region"),
             Representation::DmaRegionFamily
         );
+        assert_eq!(
+            representation_of("system.memory.Region"),
+            Representation::RegionFamily
+        );
     }
 
     /// Importability follows from the representation and from nothing else
@@ -160,6 +185,7 @@ mod tests {
     fn only_the_default_representation_is_startup_importable() {
         assert!(startup_importable(Representation::AsInterface));
         assert!(!startup_importable(Representation::DmaRegionFamily));
+        assert!(!startup_importable(Representation::RegionFamily));
     }
 
     /// The two arms of the derivation ADR-0085 §7 adds, and everything that is
@@ -179,19 +205,46 @@ mod tests {
             interface_of(&TypeDef::DmaRegion(7)),
             Some("platform.dma.Region")
         );
-        // And nothing else is a member of any family — an ordinary region, a
-        // device window, a scalar, or a capability of the very interface this
-        // family represents. The last is the one that matters: the interface's
-        // own path is **not** a member of the family that represents it.
+        // And the ordinary region family answers its own interface and not the
+        // DMA one (ADR-0097 §8a). **The two families are disjoint and each has
+        // one interface**, which is what keeps the derivation a function now that
+        // there are two non-default rows.
+        assert_eq!(
+            interface_of(&TypeDef::Region(0)),
+            Some("system.memory.Region")
+        );
+        assert_eq!(
+            interface_of(&TypeDef::RegionMut(0)),
+            Some("system.memory.Region")
+        );
+        assert_eq!(
+            interface_of(&TypeDef::Region(7)),
+            Some("system.memory.Region")
+        );
+        // And nothing else is a member of any family — a device window, a scalar,
+        // or a capability of the very interface a family represents. The last is
+        // the one that matters: an interface's own path is **not** a member of the
+        // family that represents it.
         for outside in [
-            TypeDef::Region(0),
-            TypeDef::RegionMut(0),
             TypeDef::MmioRegion,
             TypeDef::MmioRegionMut,
             TypeDef::Unit,
             TypeDef::Capability(alloc::string::String::from("platform.dma.Region")),
+            TypeDef::Capability(alloc::string::String::from("system.memory.Region")),
         ] {
             assert_eq!(interface_of(&outside), None, "{outside:?} is not a family");
+        }
+    }
+
+    /// **Neither region family answers the other's interface**, which is
+    /// ADR-0097 §9's negatives 2 and 3 at the level this table decides them.
+    #[test]
+    fn the_two_region_families_do_not_answer_for_each_other() {
+        for dma in [TypeDef::DmaRegion(0), TypeDef::DmaRegionMut(0)] {
+            assert_ne!(interface_of(&dma), Some("system.memory.Region"));
+        }
+        for ordinary in [TypeDef::Region(0), TypeDef::RegionMut(0)] {
+            assert_ne!(interface_of(&ordinary), Some("platform.dma.Region"));
         }
     }
 }

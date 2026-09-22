@@ -212,38 +212,35 @@ fn reaching_an_interface_the_function_never_declared_is_refused() {
 }
 
 #[test]
-fn no_accepted_interface_admits_a_region() {
+fn the_region_operations_are_the_ones_the_schema_declares_rules_for() {
+    // **This test used to assert that no interface admitted a region at all.**
     // `IPC_V1` §9.6 asks for evidence that a region transferred linearly is
-    // unmapped from the sender. This is the evidence that the question does not
-    // arise in this contract version, which the accepted documents decide
-    // between them rather than leave to an implementation:
+    // unmapped from its sender, and until ADR-0097 the accepted documents made
+    // that question unreachable: `SYSTEM_INTERFACE_V1` §8 declared no region
+    // operation, so no region originated and nothing travelled.
     //
-    //   - `IPC_V1` §5 makes the mode a property of a declaration: a region
-    //     "leaves the sender's address space at transfer, **if the interface
-    //     declares the transfer linear**";
-    //   - `SYSTEM_INTERFACE_V1` §8 declares no region operation at all, and says
-    //     why: `docs/42` §2 requires a region grant to originate through an
-    //     operation whose interface declares element type, alignment, access,
-    //     size, DMA domain, lifetime and transfer rules.
+    // ADR-0097 makes it reachable, so the property this holds is the one that is
+    // still true and still worth a gate: **every region an accepted schema
+    // originates comes from an operation whose interface declares `docs/42` §2's
+    // seven grant facts**, and the set of such operations is exactly the one
+    // named below. A schema that quietly grew a region result would make §9.6
+    // reachable and unevidenced in the same commit, which is what this refuses.
     //
-    // So no interface declares a region operation, so no region originates, so
-    // nothing travels linearly or otherwise. That is stricter than refusing a
-    // message with too many regions, and it is checked here rather than asserted
-    // in prose — a schema that quietly grew a region parameter would make §9.6
-    // reachable and unevidenced in the same commit.
+    // §9.6's evidence itself is `region-transfer-text.sh`: the sender's release of
+    // the handle it sent is refused, and its mapping is retired with it.
+    //
+    // A region at a *value* parameter is still refused here. ADR-0097 §2b records
+    // that a produced capability may travel as one and §3 did not take that shape:
+    // the accepted rows carry a region at a **capability position**, where §4.3's
+    // representation rule governs it, and a value parameter would put it where no
+    // representation is consulted.
     let mut originating: Vec<(&str, &str)> = Vec::new();
     for interface in tos_core::interfaces::ACCEPTED {
-        assert_ne!(
-            interface.object,
-            tos_core::interfaces::ObjectKind::Region,
-            "{} names a region, so a capability of it would be a region grant",
-            interface.path
-        );
         for operation in interface.operations {
             for parameter in operation.parameters {
                 assert!(
                     !names_a_memory_region(parameter.ty),
-                    "{}::{} takes {}, so a region crosses an interface that declares no rules for one",
+                    "{}::{} takes {} as a value parameter, where no representation rule governs it",
                     interface.path,
                     operation.name,
                     parameter.ty
@@ -272,11 +269,21 @@ fn no_accepted_interface_admits_a_region() {
             }
         }
     }
+    // Two grant origins and two that re-issue or deliver. The distinction is the
+    // document's (`SYSTEM_INTERFACE_V1` §8's "Not a grant origin" lines), and
+    // `check-interface-schema.sh` is what holds each origin to its own seven
+    // facts; what this adds is that the Rust table agrees about which rows return
+    // a region at all.
     assert_eq!(
         originating,
-        vec![("platform.pci.FunctionConfig", "dma_region_allocate")],
-        "the operations that originate a region are not the ones the accepted \
-         schema declares grant facts for"
+        vec![
+            ("system.ipc.Endpoint", "endpoint_receive_region"),
+            ("system.memory.Authority", "region_allocate"),
+            ("system.memory.Region", "region_freeze"),
+            ("platform.pci.FunctionConfig", "dma_region_allocate"),
+        ],
+        "the operations that return a region are not the ones the accepted \
+         schema declares rules for"
     );
 }
 
@@ -508,7 +515,9 @@ fn the_capability_representation_relation_is_closed_and_one_to_one() {
         // what makes adding a member a compile error here rather than a silent
         // widening.
         match interface.representation {
-            Representation::AsInterface | Representation::DmaRegionFamily => {}
+            Representation::AsInterface
+            | Representation::DmaRegionFamily
+            | Representation::RegionFamily => {}
         }
         if interface.representation != Representation::AsInterface {
             by_family
@@ -532,14 +541,21 @@ fn the_capability_representation_relation_is_closed_and_one_to_one() {
         );
     }
 
-    // And the one non-default row is the one ADR-0085 accepted, in both tables
-    // that carry it — the frontend's, which decides what a capability position
-    // takes, and the verifier's own, which must not read the frontend's.
+    // And the non-default rows are the ones ADR-0085 and ADR-0097 accepted, in
+    // both tables that carry them — the frontend's, which decides what a
+    // capability position takes, and the verifier's own, which must not read the
+    // frontend's.
     assert_eq!(
         by_family
             .get(&Representation::DmaRegionFamily)
             .map(Vec::as_slice),
         Some(["platform.dma.Region"].as_slice())
+    );
+    assert_eq!(
+        by_family
+            .get(&Representation::RegionFamily)
+            .map(Vec::as_slice),
+        Some(["system.memory.Region"].as_slice())
     );
     let verifier: Vec<(&str, &str)> = tos_verifier::REPRESENTED
         .iter()
@@ -547,8 +563,11 @@ fn the_capability_representation_relation_is_closed_and_one_to_one() {
         .collect();
     assert_eq!(
         verifier,
-        vec![("platform.dma.Region", "DmaRegionFamily")],
-        "the verifier's own closed table is not the accepted non-default row"
+        vec![
+            ("platform.dma.Region", "DmaRegionFamily"),
+            ("system.memory.Region", "RegionFamily"),
+        ],
+        "the verifier's own closed table is not the accepted non-default rows"
     );
 }
 
@@ -560,19 +579,26 @@ fn representation_name(representation: tos_verifier::Representation) -> &'static
     match representation {
         tos_verifier::Representation::AsInterface => "AsInterface",
         tos_verifier::Representation::DmaRegionFamily => "DmaRegionFamily",
+        tos_verifier::Representation::RegionFamily => "RegionFamily",
     }
 }
 
-/// Every interface accepted before ADR-0085 still has the default.
+/// Every interface accepted before an amendment still has the default.
 ///
-/// §14's first compatibility claim, checked structurally: if this holds, the
-/// verifier's extended derivation is the old derivation on the same inputs for
-/// every one of them, and no existing program can have changed meaning.
+/// ADR-0085 §14's first compatibility claim, checked structurally and now over
+/// two amendments: if this holds, the verifier's extended derivation is the old
+/// derivation on the same inputs for every other interface, and no existing
+/// program can have changed meaning. The exemptions are named one by one rather
+/// than skipped by a predicate, so a third would have to be added here
+/// deliberately.
 #[test]
-fn every_interface_but_the_one_amendment_is_as_interface() {
+fn every_interface_but_the_amendments_is_as_interface() {
     use tos_core::interfaces::{Representation, ACCEPTED};
     for interface in ACCEPTED {
-        if interface.path == "platform.dma.Region" {
+        if matches!(
+            interface.path,
+            "platform.dma.Region" | "system.memory.Region"
+        ) {
             continue;
         }
         assert_eq!(

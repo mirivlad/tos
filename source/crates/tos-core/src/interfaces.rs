@@ -143,6 +143,17 @@ pub enum Representation {
     /// representation → interface a function — and that is what a verifier
     /// deriving an interface from an operand's type needs.
     DmaRegionFamily,
+    /// `TypeDef::Region(_)` or `TypeDef::RegionMut(_)`, any element type
+    /// (ADR-0097 §8a). Belongs to `system.memory.Region` and to nothing else.
+    ///
+    /// **A family recognises a language type family; a row names one element
+    /// type.** Membership is over any element type, exactly as
+    /// `DmaRegionFamily`'s is, because that is what decides which TOS Core values
+    /// may occupy a capability position. What any *operation* accepts or produces
+    /// is its own exact spelling, and every accepted row names `u8`
+    /// (ADR-0097 §8b). The two statements are not in tension and neither is
+    /// schema polymorphism.
+    RegionFamily,
 }
 
 impl Representation {
@@ -165,6 +176,7 @@ impl Representation {
         match self {
             Representation::AsInterface => "AsInterface",
             Representation::DmaRegionFamily => "DmaRegionFamily",
+            Representation::RegionFamily => "RegionFamily",
         }
     }
 }
@@ -518,6 +530,51 @@ pub const ACCEPTED: &[Interface] = &[
             // the first capability is **the one being delegated** — so the
             // exact nominal type is retained at every call site and no erased
             // capability value exists anywhere in TOS Core.
+            // A send that moves one **immutable ordinary region** through the
+            // message's region area (ADR-0097, `IPC_V1` §3, §5, ADR-0058).
+            //
+            // **A different area from a carried capability, and that is the
+            // point.** Capabilities travel at `MESSAGE_CAPABILITIES` with their
+            // own count and a bound of four; regions travel at `MESSAGE_REGIONS`
+            // with their own count and a bound of two. `endpoint_send_carrying`
+            // writes the first; this writes the second, and neither is the other.
+            //
+            // **The region comes second and declares `none`.** §4.1 makes the
+            // first requirement the declaring interface, so the endpoint is
+            // first; what is required of the region is that the sender *hold* it,
+            // which resolving it proves. The transfer is **linear**: the sender
+            // loses the region and its mappings atomically (`IPC_V1` §5,
+            // ADR-0075 §5a), so this is the one row of this schema whose success
+            // takes something away from its caller.
+            Operation {
+                name: "endpoint_send_region",
+                capabilities: &[
+                    Requirement::of("system.ipc.Endpoint", "send"),
+                    Requirement::held("system.memory.Region"),
+                ],
+                parameters: &[],
+                result: "i64",
+            },
+            // And the receive that produces what arrived (ADR-0097 §8c).
+            //
+            // **Its own row over selector 2, and deliberately not a field on
+            // `system.ipc.ReceivedCall`.** That record is what the
+            // capability-transfer and publication surfaces read, and its four
+            // fields matched by position are part of what those boots prove; a
+            // fifth would change the record all of them carry to serve a message
+            // shape none of them has.
+            //
+            // **It fails closed and it carries no envelope.** A message with
+            // nothing in the first region slot, or one whose reported window is
+            // not a usable extent, is a refusal rather than an empty region. One
+            // region and nothing else: no count, no iteration, no second slot, no
+            // payload, no capability, no reply.
+            Operation {
+                name: "endpoint_receive_region",
+                capabilities: &[Requirement::of("system.ipc.Endpoint", "receive")],
+                parameters: &[],
+                result: "Result<Region<u8>, i64>",
+            },
             Operation {
                 name: "endow_for_launch",
                 capabilities: &[Requirement::held("system.ipc.Endpoint")],
@@ -570,6 +627,20 @@ pub const ACCEPTED: &[Interface] = &[
         object: ObjectKind::MemoryAuthority,
         representation: Representation::AsInterface,
         operations: &[
+            // The one operation of this schema that originates an **ordinary**
+            // region (ADR-0097). It is declared here, on the authority, for the
+            // reason `dma_region_allocate` is declared on the assignment: the
+            // capability that pays is the capability the operation is reached
+            // through, and there is no region to reach it through yet.
+            //
+            // `docs/42` §2's seven grant facts are declared in
+            // `SYSTEM_INTERFACE_V1`, beside this row, and a gate reads them.
+            Operation {
+                name: "region_allocate",
+                capabilities: &[Requirement::of("system.memory.Authority", "spend")],
+                parameters: &[Parameter::fixed("size")],
+                result: "Result<Region<mut u8>, i64>",
+            },
             Operation {
                 name: "endow_for_launch",
                 capabilities: &[Requirement::held("system.memory.Authority")],
@@ -593,6 +664,49 @@ pub const ACCEPTED: &[Interface] = &[
             Operation {
                 name: "capability_release",
                 capabilities: &[Requirement::held("system.memory.Authority")],
+                parameters: &[],
+                result: "i64",
+            },
+        ],
+    },
+    // The ordinary region, as an authority (ADR-0097). **It exists because one
+    // operation cannot avoid a capability position**: `IPC_V1` §5 forbids sending
+    // a writable region at all, so a region must be frozen before it can travel,
+    // and operation 18 takes the region in `rdi` as the operation's own
+    // capability. There is nowhere else for it to go, and a capability position
+    // is what §4.3's representation rule governs.
+    //
+    // **Not startup-importable**, derived rather than declared: an import is
+    // typed `Capability(I)` and there is nowhere in
+    // `import capability system.memory.Region as r` for an element type or a
+    // mutability to come from. A region is *made* out of an authority the process
+    // was granted, or *received* in a message.
+    Interface {
+        path: "system.memory.Region",
+        object: ObjectKind::Region,
+        representation: Representation::RegionFamily,
+        operations: &[
+            // The consuming mutable-to-immutable transition (ADR-0075 §3,
+            // `SYSTEM_ABI_V1` §5 row 18). The handle presented goes stale and the
+            // result is the immutable form — which is the only form `IPC_V1` §5
+            // lets cross a message.
+            //
+            // **`write` is the right it requires**, not `read`: freezing is a
+            // change to the object, and a holder that could only read it has no
+            // business ending everybody else's ability to write.
+            Operation {
+                name: "region_freeze",
+                capabilities: &[Requirement::of("system.memory.Region", "write")],
+                parameters: &[],
+                result: "Result<Region<u8>, i64>",
+            },
+            // `CAPABILITY_V1` §4's release, declared here as it is on five other
+            // interfaces. A region's release also retires its mapping
+            // (ADR-0085 §8a), which is why a released region cannot be indexed
+            // afterwards rather than merely failing at its next operation.
+            Operation {
+                name: "capability_release",
+                capabilities: &[Requirement::held("system.memory.Region")],
                 parameters: &[],
                 result: "i64",
             },
@@ -1007,6 +1121,7 @@ pub fn interface_of_representation(ty: &tos_ir::TypeDef) -> Option<&'static str>
         tos_ir::TypeDef::DmaRegion(_) | tos_ir::TypeDef::DmaRegionMut(_) => {
             Representation::DmaRegionFamily
         }
+        tos_ir::TypeDef::Region(_) | tos_ir::TypeDef::RegionMut(_) => Representation::RegionFamily,
         _ => return None,
     };
     ACCEPTED

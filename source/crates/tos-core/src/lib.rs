@@ -2637,6 +2637,7 @@ pub fn main() -> i64 uses [SPELLING] {
         assert!(check_header("1.2").is_empty());
         assert!(check_header("1.3").is_empty());
         assert!(check_header("1.4").is_empty());
+        assert!(check_header("1.5").is_empty());
 
         let major = check_header("2.0");
         assert_eq!(major.len(), 1);
@@ -2648,11 +2649,11 @@ pub fn main() -> i64 uses [SPELLING] {
         // number: a minor this implementation does not perform is refused before
         // any of the module's syntax is read, so a module never receives part of
         // a language.
-        let minor = check_header("1.5");
+        let minor = check_header("1.6");
         assert_eq!(minor.len(), 1);
         assert_eq!(minor[0].code(), "E1602_UNSUPPORTED_LANGUAGE_MINOR");
-        assert_eq!(minor[0].field("declared"), Some("5"));
-        assert_eq!(minor[0].field("supported"), Some("4"));
+        assert_eq!(minor[0].field("declared"), Some("6"));
+        assert_eq!(minor[0].field("supported"), Some("5"));
     }
 
     #[test]
