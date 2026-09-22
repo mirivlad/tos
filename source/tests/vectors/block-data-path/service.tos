@@ -30,45 +30,42 @@
 // module chose — frozen, and sent through `MESSAGE_REGIONS` to a channel the
 // client handed over in its request.
 //
-// **The sector is the client's and the answer is the device's.** Both travel as
-// the message's inline payload — eight little-endian bytes at `MESSAGE_PAYLOAD`
-// where `IPC_V1` §3 puts a payload, with the message's declared length being
-// eight, which is what it is. The request's eight bytes are the sector to read;
-// the answer's are how many of the 512 bytes the device wrote are zero. The
-// reference backing image is zero-filled and the buffer is filled with 0xA5
-// before the request, so a missing DMA answers 0 and a real one answers 512.
-// Neither number is in the client.
+// **Which sector is the client's; the bytes are the device's.** The request
+// carries the sector as eight little-endian bytes at `MESSAGE_PAYLOAD`, where
+// `IPC_V1` §3 puts a payload, and the reply carries how many of the 512 bytes
+// matched — but the reply is an acknowledgement and not the answer. **The answer
+// is the 512 bytes themselves**, and they leave this process as a region.
 //
-// **512 could not have travelled as a length**, which is the shortest statement
-// of why the payload is where it belongs: `IPC_V1` §3 bounds an inline message
-// at 256 bytes, the nucleus copies exactly as many bytes as a length declares,
-// and a message whose declared size is not its size is not a message this
-// contract carries.
+// **The client checks them, and does not take this service's word.** The count in
+// the reply is what this module found; the client counts again over the region it
+// was handed. A service that lied about the count would be caught by the client,
+// and a service that sent the wrong bytes would be caught by the same check.
 //
-// **What does NOT cross this boundary: the sector's 512 bytes.** The client
-// receives a number computed from them by this service and never the bytes
-// themselves. `docs/research/STAGE4_DATA_PATH_BOUNDARY.md` §1 describes the
-// full path as client memory to IPC to service to DMA memory, and a region
-// crossing IPC from canonical text does not exist yet (ADR-0094 §10).
+// **The sector asked for is a seeded one, and sector 0 is not used.** Sector 0 of
+// the reference image is zero-filled, and zero is what untouched memory looks
+// like — a proof about 512 bytes must not be satisfiable by memory nobody wrote.
+// Sector `n` of the first few sectors holds 512 copies of `0xC0 + n`, and this
+// module derives the byte it expects from the sector the client requested rather
+// than carrying a table of answers.
 //
 // **One request, deliberately.** That a single queue serves more than one is
 // Stage 4D-3's claim and is proved there; re-proving it here would put two
 // questions in one boot.
 //
 // Stage 4D-1 proved the device accepted an empty queue. This proves the device
-// *used* it: one `VIRTIO_BLK_T_IN` of sector 0, 512 bytes, through a
+// *used* it: one `VIRTIO_BLK_T_IN` of the requested sector, 512 bytes, through a
 // three-descriptor chain, and the bytes come back from the backing image.
 //
 //   3 descriptors -> publish -> avail.idx=1 -> publish -> notify
 //                 -> irq_wait -> dma_consume -> used.idx=1 -> used.id=0
 //                 -> status=OK -> 512 device-written bytes
 //
-// **The proof that DMA happened is a sentinel, not a success code.** Both
-// `VIRTIO_BLK_T_IN` and `VIRTIO_BLK_S_OK` are 0, and the reference backing image
-// is explicitly zero-filled — so "status is 0 and the data is 0" is exactly what
-// untouched memory looks like. The data buffer is therefore filled with a
-// non-zero sentinel and the status byte with a non-success sentinel before the
-// request, and what is checked afterwards is that the **device replaced them**.
+// **The proof that DMA happened is a sentinel, not a success code.**
+// `VIRTIO_BLK_S_OK` is 0, so a status byte of zero is also what untouched memory
+// looks like. The data buffer is therefore filled with a non-zero sentinel and the
+// status byte with a non-success sentinel before the request, and what is checked
+// afterwards is that the **device replaced them** — for the data, with the seeded
+// byte the requested sector holds.
 //
 //   pci_function_claim     ->  the reference endpoint, from the bus root
 //   pci_config_read        ->  the device's own VirtIO capability structure
@@ -347,8 +344,11 @@ const SEED_BASE: u64 = 192u64;
 const STATUS_BYTES: size = 1B;
 
 // **The sentinels.** `VIRTIO_BLK_T_IN` is 0, `VIRTIO_BLK_S_OK` is 0 and the
-// reference backing image is explicitly zero-filled, so zero proves nothing on
-// its own. These are what the device has to replace.
+// `VIRTIO_BLK_S_OK` is 0, so a zero status byte proves nothing on its own, and a
+// zero data byte proves nothing either — the image's sector 0 is zero-filled,
+// which is why this slice never asks for it. These are what the device has to
+// replace: the status with `VIRTIO_BLK_S_OK`, and every data byte with the seeded
+// byte the requested sector holds.
 const DATA_SENTINEL: u64 = 165u64;
 const STATUS_SENTINEL: u64 = 255u64;
 
@@ -753,7 +753,8 @@ const NOTIFY_DATA_SHIFT: i64 = 72057594037927936i64;
 // the check below refuses it, so the field cannot overflow its 20 bits. A second
 // bound here would be a number with no clause behind it.
 
-// One `VIRTIO_BLK_T_IN` of sector 0, through the queue this module just built.
+// One `VIRTIO_BLK_T_IN` of the sector the client asked for, through the queue this
+// module just built.
 //
 // Returns `PROVED_ALL + used.len * LEN_SHIFT`, or a negative naming the step
 // that did not hold.
@@ -1054,20 +1055,13 @@ fn perform(
     }
     proved = proved + PROVED_STATUS_OK;
 
-    // **And the sentinel is gone.** The reference backing image is explicitly
-    // zero-filled, so sector 0 is 512 zero bytes — and every one of them was
-    // 0xA5 until the device wrote it. This is the whole difference between "the
-    // call returned success" and "the device performed DMA into this region".
-    // **Counted rather than merely asserted**, because the count is the answer.
-    // Every one of these bytes was 0xA5 until the device wrote it, so a run in
-    // which no DMA happened counts zero — and that is the number the client
-    // would be told.
     // **The count is a `u64` and the index is a `size`**, which is not a style
     // choice: `size` is the exact type of every region index, and TOS Core V1
     // has no checked conversion in either direction between it and an integer
     // (`docs/40` §3 fixes the set at `to_i8`..`to_u64`, none of which accepts
     // or produces a `size`). A count that has to leave this module as a number
     // is therefore counted as a number from the start.
+    //
     // **The sentinel is gone, and the bytes are the image's.** Sector `n` of the
     // reference image holds 512 copies of `0xC0 + n`, and every one of those
     // bytes was 0xA5 until the device wrote it. This service counts how many are

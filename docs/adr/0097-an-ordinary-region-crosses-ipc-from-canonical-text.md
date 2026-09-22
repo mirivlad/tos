@@ -136,7 +136,7 @@ than that.
 | row 3 | a send that carries a region: `system.ipc.Endpoint` with `send`, plus the region, over operation **1**, placing the handle in `MESSAGE_REGIONS[0]` and the count in the region-count register. The region may be a **value** parameter (§2b), which keeps the capability-position count at one |
 | row 4 | a receive that produces what arrived: the existing `system.ipc.ReceivedCall` gaining a region field, or a sibling record. The nucleus writes `MessageRegion { handle, base, length }` for the receiver, and the bridge records the mapping from it so an indexed access resolves |
 | bridge | a `Placed`/`Slot` destination for the region area — the mirror of `Placed::Transfer` for a different area with a different count and bound — and mapping registration for an ordinary region, reading `REGION_ALLOCATE_RECORD` on allocation and `MESSAGE_REGIONS` on receipt |
-| nucleus, ABI | **unchanged.** No operation is added and none is re-specified |
+| nucleus, ABI | **no production nucleus semantics or ABI change.** No operation is added and none is re-specified, no object kind is filled, and nothing the production nucleus does differs. Test-only feature and endowment wiring for the conformance boot is evidence plumbing and is counted honestly rather than as nothing — see §10 |
 | language | TOS Core **1.5**, moved last |
 
 **Why a reply cannot be used, so that nobody proposes it.** `ipc::hand` copies
@@ -313,3 +313,20 @@ receiver indexes the bytes it was sent.
 own row, the bridge, the rows and every gate above exist — the order ADR-0085 and
 ADR-0086 each moved theirs in, and for the same reason: accepting a 1.5 module
 before then would be accepting one whose semantics were partly absent.
+
+## 10. What "no nucleus change" means here, precisely
+
+**It means no production nucleus semantics and no ABI change, and it does not mean
+the nucleus source was untouched.** The conformance boot §9 requires needs a
+launcher constant of its own — a `test-region-transfer-text` Cargo feature and the
+endowment it builds — exactly as every other QEMU gate in this tree has one. That
+is evidence plumbing: the production nucleus artifact is built without those
+features, each gate asserts its hash is unchanged while the isolated one is built,
+and `check-feature-builds.sh` type-checks every feature so none rots.
+
+Saying "no nucleus change" flatly would be false, and the distinction is worth the
+sentence: what must not change to keep this a Level 3 schema decision rather than a
+trusted-base one is **what the nucleus does**, and that is unchanged. Nothing in
+`syscall.rs`, `capability.rs`, `ipc.rs`, `region.rs` or `plan.rs` behaves
+differently, no operation number is added or re-specified, and `OBJECT_INTERFACE`
+stays reserved and empty.
