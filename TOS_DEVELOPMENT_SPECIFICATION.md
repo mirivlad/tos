@@ -6,7 +6,7 @@
 > This file is a non-normative convenience view. Individual source documents and accepted ADRs govern according to `docs/38_NORMATIVE_DOCUMENT_HIERARCHY.md`.
 
 Version: 0.2.1\
-Source-manifest SHA-256: `22196c614a6fb22b876191788800cae0302becca8b925064b59448e0f5822933`\
+Source-manifest SHA-256: `4fbc8d6ac8245771dffe2f34291dc73975bf734578c8e44ee5230d390cbeb378`\
 Generator: `tools/build-specification.py`
 
 ---
@@ -178,10 +178,11 @@ service holding `call`, so no interface name travels in the protocol and a proce
 that cannot name that endpoint cannot publish.
 
 **What is still not proved**, stated because it is easy to overstate: one sector,
-one client, one service, and reading only. Writing through this path, durability
-beyond Stage 4D-5's read-back, more than one sector in flight, request framing and
-zero-copy are none of them designed — and ADR-0037 makes zero-copy unreachable by
-decision rather than by omission.
+one client, one service, and reading only. Writing through this path, more than one
+sector in flight, request framing and zero-copy are none of them designed — and
+ADR-0037 makes zero-copy unreachable by decision rather than by omission. Nothing
+here is persistent object storage or the capsule-to-repository handoff, which are
+`docs/16`'s own separate Stage 4 deliverables.
 
 TOS is not yet a user shell, application environment, or desktop operating
 system. What it does with a disk is single sector reads and one write, reached
@@ -459,9 +460,21 @@ device side of that slice is 4D-2's and re-proves 4D-2's facts and no more.
 
 It does **not** prove queue multiplexing, scheduling, filesystem integration, a
 generic driver subsystem, restart and republication (ADR-0093 case C), or writing
-through the client/service path. None of those is designed. What remains before
-Stage 4 can be considered for closure is case C, crash and reset lifecycle
-evidence, the Stage 4 performance report, and a closure review.
+through the client/service path. None of those is designed.
+
+**What Stage 4 still owes, from `docs/16`'s own deliverable list**, named
+separately rather than collected under one word:
+
+- **persistent object/state storage**, and the **capsule-to-repository handoff** —
+  two distinct deliverables, neither of which is durability and neither of which
+  exists. `docs/16`'s engineering exit for this stage is "persistent storage works
+  through a textual user-space driver", and a driver that reads and writes sectors
+  is not yet that;
+- **crash/reset and adversarial-device tests**;
+- ADR-0093 **case C**: restart and republication, with a stale client capability
+  that must not silently retarget;
+- the **Stage 4 performance contract report**;
+- current-state documentation, and a closure review.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a
@@ -34969,7 +34982,7 @@ than that.
 | row 3 | a send that carries a region: `system.ipc.Endpoint` with `send`, plus the region, over operation **1**, placing the handle in `MESSAGE_REGIONS[0]` and the count in the region-count register. The region may be a **value** parameter (§2b), which keeps the capability-position count at one |
 | row 4 | a receive that produces what arrived: the existing `system.ipc.ReceivedCall` gaining a region field, or a sibling record. The nucleus writes `MessageRegion { handle, base, length }` for the receiver, and the bridge records the mapping from it so an indexed access resolves |
 | bridge | a `Placed`/`Slot` destination for the region area — the mirror of `Placed::Transfer` for a different area with a different count and bound — and mapping registration for an ordinary region, reading `REGION_ALLOCATE_RECORD` on allocation and `MESSAGE_REGIONS` on receipt |
-| nucleus, ABI | **unchanged.** No operation is added and none is re-specified |
+| nucleus, ABI | **no production nucleus semantics or ABI change.** No operation is added and none is re-specified, no object kind is filled, and nothing the production nucleus does differs. Test-only feature and endowment wiring for the conformance boot is evidence plumbing and is counted honestly rather than as nothing — see §10 |
 | language | TOS Core **1.5**, moved last |
 
 **Why a reply cannot be used, so that nobody proposes it.** `ipc::hand` copies
@@ -35146,6 +35159,23 @@ receiver indexes the bytes it was sent.
 own row, the bridge, the rows and every gate above exist — the order ADR-0085 and
 ADR-0086 each moved theirs in, and for the same reason: accepting a 1.5 module
 before then would be accepting one whose semantics were partly absent.
+
+## 10. What "no nucleus change" means here, precisely
+
+**It means no production nucleus semantics and no ABI change, and it does not mean
+the nucleus source was untouched.** The conformance boot §9 requires needs a
+launcher constant of its own — a `test-region-transfer-text` Cargo feature and the
+endowment it builds — exactly as every other QEMU gate in this tree has one. That
+is evidence plumbing: the production nucleus artifact is built without those
+features, each gate asserts its hash is unchanged while the isolated one is built,
+and `check-feature-builds.sh` type-checks every feature so none rots.
+
+Saying "no nucleus change" flatly would be false, and the distinction is worth the
+sentence: what must not change to keep this a Level 3 schema decision rather than a
+trusted-base one is **what the nucleus does**, and that is unchanged. Nothing in
+`syscall.rs`, `capability.rs`, `ipc.rs`, `region.rs` or `plan.rs` behaves
+differently, no operation number is added or re-specified, and `OBJECT_INTERFACE`
+stays reserved and empty.
 
 <!-- END docs/adr/0097-an-ordinary-region-crosses-ipc-from-canonical-text.md -->
 

@@ -163,10 +163,11 @@ service holding `call`, so no interface name travels in the protocol and a proce
 that cannot name that endpoint cannot publish.
 
 **What is still not proved**, stated because it is easy to overstate: one sector,
-one client, one service, and reading only. Writing through this path, durability
-beyond Stage 4D-5's read-back, more than one sector in flight, request framing and
-zero-copy are none of them designed — and ADR-0037 makes zero-copy unreachable by
-decision rather than by omission.
+one client, one service, and reading only. Writing through this path, more than one
+sector in flight, request framing and zero-copy are none of them designed — and
+ADR-0037 makes zero-copy unreachable by decision rather than by omission. Nothing
+here is persistent object storage or the capsule-to-repository handoff, which are
+`docs/16`'s own separate Stage 4 deliverables.
 
 TOS is not yet a user shell, application environment, or desktop operating
 system. What it does with a disk is single sector reads and one write, reached
@@ -444,9 +445,21 @@ device side of that slice is 4D-2's and re-proves 4D-2's facts and no more.
 
 It does **not** prove queue multiplexing, scheduling, filesystem integration, a
 generic driver subsystem, restart and republication (ADR-0093 case C), or writing
-through the client/service path. None of those is designed. What remains before
-Stage 4 can be considered for closure is case C, crash and reset lifecycle
-evidence, the Stage 4 performance report, and a closure review.
+through the client/service path. None of those is designed.
+
+**What Stage 4 still owes, from `docs/16`'s own deliverable list**, named
+separately rather than collected under one word:
+
+- **persistent object/state storage**, and the **capsule-to-repository handoff** —
+  two distinct deliverables, neither of which is durability and neither of which
+  exists. `docs/16`'s engineering exit for this stage is "persistent storage works
+  through a textual user-space driver", and a driver that reads and writes sectors
+  is not yet that;
+- **crash/reset and adversarial-device tests**;
+- ADR-0093 **case C**: restart and republication, with a stale client capability
+  that must not silently retarget;
+- the **Stage 4 performance contract report**;
+- current-state documentation, and a closure review.
 
 What runs today, on the real freestanding boot path: the UEFI loader, the
 nucleus, a verified ring-3 runtime image, processes created and funded out of a
